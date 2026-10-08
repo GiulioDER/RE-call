@@ -8,12 +8,18 @@ already is, so none of that code changes:
   changes, and a query is an exact cosine over all of it. At a local memory's size (thousands to
   tens of thousands of chunks) that costs milliseconds, and an exact search can only match or
   beat pgvector's approximate HNSW walk.
-* **Keyword leg.** SQLite FTS5 with the Porter stemmer. The query is the OR of its terms minus
-  PostgreSQL's English stop words, the shape `PgVectorStore._query_sparse` builds with
-  `to_tsvector('english', ...)`. A chunk whose `numeric_values` contain a number from the query
-  ranks first among the matches, which is what the Postgres store's 0.25 boost does in practice
-  (its `ts_rank` values sit far below 0.25). FTS5 ranks with BM25, Postgres with `ts_rank`, so this
-  leg's order can differ; that difference is measured, not assumed away.
+* **Keyword leg.** SQLite FTS5 with the Porter stemmer, ranked by PostgreSQL's own `ts_rank`
+  formula rather than FTS5's BM25. The query is the OR of its terms minus PostgreSQL's English
+  stop words, the shape `PgVectorStore._query_sparse` builds with `to_tsvector('english', ...)`.
+  With every lexeme at the default weight D (0.1) and no length normalisation, which is how the
+  Postgres store calls it, `ts_rank` over an OR query is the mean over the query's terms of
+  ``0.1 * (1 + 1/4 + ... + 1/tf**2) / 1.64493406685`` (tsrank.c `calc_rank_or`, occurrences capped at
+  256 as a tsvector caps positions), plus the store's 0.25 boost for a matching number. The counts
+  come from FTS5's own index (`fts5vocab`), so stemming is the tokenizer's on both sides. Measured
+  2026-10-07 on the memory corpus: BM25 agreed with Postgres on 0.40 of the keyword top 10 and
+  0.62 of the fused top 5 (recall-lab `d2980fe`), which is why this leg copies the formula.
+  Postgres breaks rank ties by physical row order, which no other store can reproduce; this one
+  breaks them by chunk id.
 * **Writes.** `replace_sources` keeps `first_indexed_at` across a re-index and also deletes by
   `(project, root-relative file)`, as the Postgres store does, so a memo re-indexed from another
   root replaces its old rows instead of landing beside them.
@@ -65,6 +71,13 @@ _DELETE_PROJECT_FILES = (
     "DELETE FROM chunks WHERE json_extract(metadata, '$.project') = ? "
     "AND json_extract(metadata, '$.file') IN (SELECT value FROM json_each(?))"
 )
+#: `ts_rank` pieces: pi**2/6 normalises the occurrence series, and a tsvector keeps at most 256
+#: positions per lexeme, so later occurrences add nothing.
+_ZETA_TWO = 1.64493406685
+_MAX_POSITIONS = 256
+_OCCURRENCE_WEIGHT = [0.0]
+for _n in range(1, _MAX_POSITIONS + 1):
+    _OCCURRENCE_WEIGHT.append(_OCCURRENCE_WEIGHT[-1] + 1.0 / (_n * _n))
 
 
 class LiteStoreError(RecallError, ValueError):
@@ -93,14 +106,14 @@ def _numeric_terms(text: str) -> list[str]:
     return terms
 
 
-def _fts_query(text: str) -> str:
-    """The OR of the query's terms, stop words dropped, each quoted so FTS5 reads it as a term."""
+def _query_terms(text: str) -> list[str]:
+    """The query's words in order, lower-cased, stop words and repeats dropped."""
     terms: list[str] = []
     for term in _TERM.findall(text.lower()):
         if term in ENGLISH_STOP_WORDS or term in terms:
             continue
         terms.append(term)
-    return " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)
+    return terms
 
 
 @dataclass(frozen=True)
@@ -119,8 +132,10 @@ class _Matrix:
     version: int
     rows: list[_Row]
     by_id: dict[str, int]
+    by_rowid: dict[int, int]
     vectors: Any  # numpy float32 array, rows normalised
     fingerprint: str  # `recall.lite.calibration.corpus_digest` of these rows
+    newest: str | None  # max `indexed_at`; the fixed-width UTC format sorts as text, as SQL's max does
 
 
 def _matches(scope: Scope, row: _Row) -> bool:
@@ -197,6 +212,8 @@ class LiteStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._create_schema()
         self._matrix: _Matrix | None = None
+        self._calibration_cache: tuple[tuple[int, int, str], CalibrationResolution, dict[str, str]] | None = None
+        self._query_terms_ready = False
         self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
 
     @classmethod
@@ -251,6 +268,7 @@ class LiteStore:
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                     text, content='chunks', content_rowid='rowid', tokenize='porter unicode61'
                 );
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vocab USING fts5vocab(chunks_fts, 'instance');
                 CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
                     INSERT INTO chunks_fts(rowid, text) VALUES (new.rowid, new.text);
                 END;
@@ -437,7 +455,10 @@ class LiteStore:
         return int(self._metadata_values("SELECT count(*) FROM chunks")[0][0])
 
     def newest_indexed_at(self) -> datetime | None:
-        return _parse_time(self._metadata_values("SELECT max(indexed_at) FROM chunks")[0][0])
+        # From the cached rows, not SQL: `trusted_search` asks on every search, and `max(indexed_at)`
+        # has no index to use, so it read the whole table, embeddings included. Measured 2026-10-07
+        # on the 13,304 chunk memory corpus: 134 ms of a 200 ms strict search.
+        return _parse_time(self._load().newest)
 
     def iter_chunks(self, batch_size: int = 1000) -> Iterator[Chunk]:
         """Every chunk by id, fetched `batch_size` rows at a time, as `PgVectorStore.iter_chunks`
@@ -490,7 +511,15 @@ class LiteStore:
             from recall.lite.calibration import corpus_digest
 
             fingerprint = corpus_digest([(row.id, row.text) for row in rows])
-            self._matrix = _Matrix(version, rows, {row.id: i for i, row in enumerate(rows)}, vectors / norms, fingerprint)
+            self._matrix = _Matrix(
+                version,
+                rows,
+                {row.id: i for i, row in enumerate(rows)},
+                {row.rowid: i for i, row in enumerate(rows)},
+                vectors / norms,
+                fingerprint,
+                max((row.indexed_at for row in rows), default=None),
+            )
             return self._matrix
 
     def _query_vector(self, vector: Sequence[float]) -> Any:
@@ -531,8 +560,19 @@ class LiteStore:
         positions = np.arange(len(matrix.rows)) if allowed is None else np.asarray(allowed, dtype=np.int64)
         if positions.size == 0:
             return []
-        scores = matrix.vectors[positions] @ self._query_vector(vector)
-        order = sorted(range(positions.size), key=lambda i: (-float(scores[i]), matrix.rows[int(positions[i])].id))[:k]
+        # Unscoped, multiply the cached matrix itself: indexing it with every position would copy
+        # all of it (54 MB on the 13,304 chunk memory corpus) on every query, which measured
+        # 2026-10-07 as most of a 114 ms dense search against 5 ms for the product alone.
+        vectors = matrix.vectors if allowed is None else matrix.vectors[positions]
+        scores = vectors @ self._query_vector(vector)
+        # Select with numpy, then order only those in Python. Every row scoring at least the k-th
+        # best is kept, so a tie straddling the cut, however wide, is still broken by chunk id.
+        if k < positions.size:
+            cutoff = scores[np.argpartition(-scores, k - 1)[:k]].min()
+            head = np.flatnonzero(scores >= cutoff)
+        else:
+            head = np.arange(positions.size)
+        order = sorted(head.tolist(), key=lambda i: (-float(scores[i]), matrix.rows[int(positions[i])].id))[:k]
         return [self._hit(matrix.rows[int(positions[i])], float(scores[i])) for i in order]
 
     def top_cosine(self, vector: list[float]) -> float:
@@ -552,6 +592,24 @@ class LiteStore:
                 found[cid] = float(matrix.vectors[position] @ q)
         return found
 
+    def _stemmed_terms(self, text: str) -> list[str]:
+        """The query's terms as the FTS5 tokenizer stores them: stop words out, Porter-stemmed."""
+        terms = _query_terms(text)
+        if not terms:
+            return []
+        with self._lock:
+            if not self._query_terms_ready:
+                self._conn.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_terms USING fts5(text, tokenize='porter unicode61')"
+                )
+                self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_vocab USING fts5vocab(temp, query_terms, 'row')")
+                self._query_terms_ready = True
+            self._conn.execute("DELETE FROM temp.query_terms")
+            self._conn.execute("INSERT INTO temp.query_terms(text) VALUES (?)", (" ".join(terms),))
+            stemmed = [str(row[0]) for row in self._conn.execute("SELECT term FROM temp.query_vocab ORDER BY term")]
+            self._conn.execute("DELETE FROM temp.query_terms")
+        return stemmed
+
     def query_sparse(
         self,
         text: str,
@@ -560,38 +618,45 @@ class LiteStore:
         vec: list[float] | None = None,
         scope: Scope | None = None,
     ) -> list[ScoredChunk]:
-        """Keyword top `k`: FTS5 over stemmed terms, numeric matches first, then BM25.
+        """Keyword top `k`, ranked by PostgreSQL's `ts_rank` (see the module docstring).
 
         `score` is the dense cosine with `vec` when one is given (as the Postgres store returns it),
-        else a positive keyword rank (higher is better).
+        else the `ts_rank` value plus the numeric boost.
         """
         if k <= 0:
             raise ValueError("k must be a positive int")
-        query = _fts_query(text)
-        if not query:
+        terms = self._stemmed_terms(text)
+        if not terms:
             return []
         matrix = self._load()
         effective = coerce_scope(scope, source)
+        weight: dict[int, float] = {}
         with self._lock:
-            matched = self._conn.execute(
-                "SELECT rowid, bm25(chunks_fts) FROM chunks_fts WHERE chunks_fts MATCH ?", (query,)
-            ).fetchall()
-        by_rowid = {row.rowid: row for row in matrix.rows}
+            for term in terms:
+                for rowid, occurrences in self._conn.execute(
+                    "SELECT doc, count(*) FROM chunks_vocab WHERE term = ? GROUP BY doc", (term,)
+                ):
+                    weight[int(rowid)] = weight.get(int(rowid), 0.0) + _OCCURRENCE_WEIGHT[min(int(occurrences), _MAX_POSITIONS)]
         numeric = set(_numeric_terms(text))
-        ranked: list[tuple[bool, float, str, _Row]] = []
-        for rowid, bm25 in matched:
-            row = by_rowid.get(rowid)
-            if row is None or not _matches(effective, row):
+        ranked: list[tuple[float, str, _Row]] = []
+        for rowid, total in weight.items():
+            position = matrix.by_rowid.get(rowid)
+            if position is None:
                 continue
+            row = matrix.rows[position]
+            if not effective.is_empty and not _matches(effective, row):
+                continue
+            rank = 0.1 * total / _ZETA_TWO / len(terms)
             values = row.metadata.get("numeric_values")
-            boosted = bool(numeric) and isinstance(values, list) and any(str(v) in numeric for v in values)
-            ranked.append((boosted, -float(bm25), row.id, row))
-        ranked.sort(key=lambda t: (not t[0], -t[1], t[2]))
+            if numeric and isinstance(values, list) and any(str(v) in numeric for v in values):
+                rank += 0.25
+            ranked.append((rank, row.id, row))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
         top = ranked[:k]
         if vec is not None:
-            cosines = self.cosines_for([t[3].id for t in top], vec)
-            return [self._hit(t[3], cosines.get(t[3].id, 0.0)) for t in top]
-        return [self._hit(t[3], t[1] + (1.0 if t[0] else 0.0)) for t in top]
+            cosines = self.cosines_for([item[2].id for item in top], vec)
+            return [self._hit(item[2], cosines.get(item[2].id, 0.0)) for item in top]
+        return [self._hit(item[2], item[0]) for item in top]
 
     def query_learned_sparse(self, *args: Any, **kwargs: Any) -> list[ScoredChunk]:
         raise LiteStoreError("learned sparse retrieval needs the full (Postgres) install")
@@ -614,15 +679,46 @@ class LiteStore:
                 [("embedder_model", model), ("embedder_dimension", str(dimension))],
             )
 
+    def _latest_calibration(self) -> tuple[int, str] | None:
+        row = self._metadata_values("SELECT rowid, payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1")
+        return (int(row[0][0]), str(row[0][1])) if row else None
+
     def latest_calibration_json(self) -> str | None:
-        row = self._metadata_values("SELECT payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1")
-        return str(row[0][0]) if row else None
+        latest = self._latest_calibration()
+        return latest[1] if latest else None
+
+    def _calibration_state(self) -> tuple[CalibrationResolution, dict[str, str]]:
+        """Resolution and binding, recomputed only when the calibration or the corpus changed.
+
+        Every search asks for both. Parsing the artifact and verifying its checksum on each call
+        cost more than the search itself, so the result is kept against the exact stored bytes and
+        the corpus version: an edit to the stored calibration, a new one, or any corpus write
+        recomputes it, and nothing else does.
+        """
+        from recall.lite.calibration import pipeline_fingerprint, resolve
+
+        latest = self._latest_calibration()
+        key = (latest[0], self._load().version, latest[1]) if latest else (0, self._load().version, "")
+        cached = self._calibration_cache
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
+        resolution = resolve(self)
+        meta = dict(self._metadata_values("SELECT key, value FROM meta"))
+        binding = {
+            "tenant_id": self._tenant,
+            "generation_id": self.lite_generation_id(),
+            "corpus_fingerprint": self.corpus_fingerprint(),
+        }
+        if "embedder_model" in meta:
+            binding["embedder_model"] = meta["embedder_model"]
+            binding["embedder_dimension"] = meta["embedder_dimension"]
+            binding["pipeline_fingerprint"] = pipeline_fingerprint(meta["embedder_model"], int(meta["embedder_dimension"]))
+        self._calibration_cache = (key, resolution, binding)
+        return resolution, binding
 
     def resolve_calibration(self) -> CalibrationResolution:
         """What `trusted_search` asks every search: see `recall.lite.calibration.resolve`."""
-        from recall.lite.calibration import resolve
-
-        return resolve(self)
+        return self._calibration_state()[0]
 
     def generation_binding(self) -> dict[str, str]:
         """The identity `trusted_search` checks the runtime embedder against.
@@ -631,19 +727,7 @@ class LiteStore:
         vectors, not a model name. Until then there is no model to compare and no threshold to
         protect, so the binding names the corpus only.
         """
-        meta = dict(self._metadata_values("SELECT key, value FROM meta"))
-        binding = {
-            "tenant_id": self._tenant,
-            "generation_id": self.lite_generation_id(),
-            "corpus_fingerprint": self.corpus_fingerprint(),
-        }
-        if "embedder_model" in meta:
-            from recall.lite.calibration import pipeline_fingerprint
-
-            binding["embedder_model"] = meta["embedder_model"]
-            binding["embedder_dimension"] = meta["embedder_dimension"]
-            binding["pipeline_fingerprint"] = pipeline_fingerprint(meta["embedder_model"], int(meta["embedder_dimension"]))
-        return binding
+        return dict(self._calibration_state()[1])
 
     # ------------------------------------------------------------------ supersession
 
