@@ -15,6 +15,7 @@ import threading
 import time
 from typing import Any
 
+from recall.atomizer import MICRO_VIEW_SIZE
 from recall.types import Chunk, ScoredChunk
 from recall_aml.add_flight import add_fingerprint
 from recall_aml.atomic_views import (
@@ -135,7 +136,9 @@ WINDOW_SIZE_ENV = "RECALL_AML_WORD_WINDOW_SIZE"
 WINDOW_STRIDE_ENV = "RECALL_AML_WORD_WINDOW_STRIDE"
 
 
-def _window_override(size: int | None, stride: int | None) -> tuple[int, int] | None:
+def _window_override(
+    size: int | None, stride: int | None, *, min_overlap: int = 0
+) -> tuple[int, int] | None:
     """``RECALL_AML_WORD_WINDOW_SIZE`` and ``_STRIDE`` when set, else None (the variant decides).
 
     Only a variant that already builds word windows may be overridden: the atomic views and
@@ -158,6 +161,13 @@ def _window_override(size: int | None, stride: int | None) -> tuple[int, int] | 
         raise ValueError(
             f"{WINDOW_SIZE_ENV}={new_size} and {WINDOW_STRIDE_ENV}={new_stride}: both must be "
             "positive and the stride may not exceed the size"
+        )
+    if new_size - new_stride < min_overlap:
+        # The Add-time atomic views must fit inside the window overlap (``window_views``); a
+        # smaller overlap fails every Add, which a check on the configuration alone never sees.
+        raise ValueError(
+            f"{WINDOW_SIZE_ENV}={new_size} and {WINDOW_STRIDE_ENV}={new_stride} leave a "
+            f"{new_size - new_stride}-word overlap; this variant's atomic views need {min_overlap}"
         )
     return new_size, new_stride
 
@@ -546,7 +556,11 @@ class HostedService:
             self._behavior = replace(self._behavior, compiler=False)
         # L3 (recall-lab, 2026-10-08): a Textual-only experiment override of the raw window size
         # and stride, for a variant that already windows. Unset, the variant decides.
-        window = _window_override(self._behavior.word_window_size, self._behavior.word_window_stride)
+        window = _window_override(
+            self._behavior.word_window_size,
+            self._behavior.word_window_stride,
+            min_overlap=MICRO_VIEW_SIZE if self._behavior.atomic_views_at_add else 0,
+        )
         if window is not None:
             self._behavior = replace(
                 self._behavior, word_window_size=window[0], word_window_stride=window[1]
