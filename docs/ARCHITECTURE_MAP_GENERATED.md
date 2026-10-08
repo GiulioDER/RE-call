@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 311
+Modules: 312
 Cross package edges: 317
-Source tree fingerprint: `0371c6ad80275fbcc410649503fc64820a2ed627cb8cebb345ea6cd0d819a43b`
+Source tree fingerprint: `c5fea1db4dbc063d90c3597c8702b6c90aa7c8b404a30c26f77244ddb4817ae1`
 
 ## Highest fan in modules
 
@@ -19,7 +19,7 @@ Source tree fingerprint: `0371c6ad80275fbcc410649503fc64820a2ed627cb8cebb345ea6c
 | 161 | `recall_mcp.codex_server` |
 | 160 | `recall_mcp.server` |
 | 145 | `recall_mcp.service` |
-| 133 | `recall.cli_commands.setup_wizard` |
+| 137 | `recall.cli_commands.setup_wizard` |
 | 129 | `recall.desktop.main` |
 | 123 | `recall.cli_commands.dashboard_cmd` |
 | 123 | `recall.cli_commands.reasoning_cmd` |
@@ -75,12 +75,12 @@ Source tree fingerprint: `0371c6ad80275fbcc410649503fc64820a2ed627cb8cebb345ea6c
 | 15 | `recall.wizard.headless` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
+| 14 | `recall.cli_commands.setup_wizard` |
 | 14 | `recall.dashboard.server` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall_mcp.indexing` |
 | 14 | `recall_mcp.provenance` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
-| 13 | `recall.cli_commands.setup_wizard` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.reasoning` |
 | 13 | `recall_mcp.desktop_ingest` |
@@ -467,7 +467,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.reasoning_cmd` | 11 | 123 |
 | `recall.cli_commands.schema_cmd` | 2 | 72 |
 | `recall.cli_commands.secret_cmd` | 1 | 3 |
-| `recall.cli_commands.setup_wizard` | 13 | 133 |
+| `recall.cli_commands.setup_wizard` | 14 | 137 |
 | `recall.codex` | 1 | 1 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 13 |
@@ -573,6 +573,7 @@ They are observations, not automatic failures.
 | `recall.lite` | 1 | 58 |
 | `recall.lite.calibration` | 7 | 57 |
 | `recall.lite.inspect` | 2 | 58 |
+| `recall.lite.setup` | 5 | 79 |
 | `recall.lite.store` | 6 | 57 |
 | `recall.manifest` | 3 | 14 |
 | `recall.memory_index` | 6 | 37 |
