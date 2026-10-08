@@ -30,6 +30,14 @@ class LiteFileReport:
     threshold: float | None = None
     separability: float | None = None
     error: str | None = None
+    fingerprint: str = ""  # `corpus_digest` of the rows, as `LiteStore.corpus_fingerprint` computes it
+    embedder_model: str | None = None
+    calibrated_at: str | None = None
+
+    @property
+    def generation_id(self) -> str:
+        """The id `LiteStore.lite_generation_id` gives this corpus."""
+        return "lite-" + self.fingerprint[:16]
 
 
 def inspect_lite_file(path: str | Path) -> LiteFileReport:
@@ -57,16 +65,17 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
             raise ValueError("embedding width must be positive")
     except (KeyError, TypeError, ValueError) as exc:
         return LiteFileReport(target, exists=True, error=f"invalid embedding width metadata: {exc}")
-    status, threshold, separability = CalibrationStatus.MISSING, None, None
+    status, threshold, separability, calibrated_at = CalibrationStatus.MISSING, None, None, None
+    # The store's identity since PR 896's audit: ids, texts AND stored vectors (restack fix; a
+    # pair digest here would never equal `LiteStore.corpus_fingerprint` and read as stale).
+    fingerprint = corpus_digest([(str(r[0]), str(r[1]), bytes(r[3])) for r in rows])
     if latest is not None:
         try:
             artifact = artifact_from_json(str(latest[0]))
         except Exception as exc:  # BROAD-CATCH: fail-open  # a tampered artifact is reported, not raised
             return LiteFileReport(target, exists=True, error=f"the stored calibration does not verify: {exc}")
-        threshold, separability = artifact.threshold, artifact.separability
-        # The store's identity since PR 896's audit: ids, texts AND stored vectors (restack fix; a
-        # pair digest raised on unpacking, and would never equal `LiteStore.corpus_fingerprint`).
-        if artifact.corpus_fingerprint != corpus_digest([(str(r[0]), str(r[1]), bytes(r[3])) for r in rows]):
+        threshold, separability, calibrated_at = artifact.threshold, artifact.separability, artifact.created_at
+        if artifact.corpus_fingerprint != fingerprint:
             status = CalibrationStatus.STALE
         elif not artifact.certified:
             status = CalibrationStatus.UNCERTIFIED
@@ -82,4 +91,7 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         calibration=status,
         threshold=threshold,
         separability=separability,
+        fingerprint=fingerprint,
+        embedder_model=meta.get("embedder_model"),
+        calibrated_at=calibrated_at,
     )

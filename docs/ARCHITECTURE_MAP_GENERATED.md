@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 310
+Modules: 311
 Cross package edges: 317
-Source tree fingerprint: `32ea43ce68aa13bbf809843fc1008b6c31caaa5e93e3ef087a86078ea71e948f`
+Source tree fingerprint: `76d217a56b1e7e24cdec3c2255adbf694f5e83a188fb1d7d4517c53a2f6f4a8e`
 
 ## Highest fan in modules
 
@@ -21,7 +21,9 @@ Source tree fingerprint: `32ea43ce68aa13bbf809843fc1008b6c31caaa5e93e3ef087a8607
 | 145 | `recall_mcp.service` |
 | 133 | `recall.cli_commands.setup_wizard` |
 | 129 | `recall.desktop.main` |
+| 123 | `recall.cli_commands.dashboard_cmd` |
 | 123 | `recall.cli_commands.reasoning_cmd` |
+| 122 | `recall.dashboard.server` |
 | 121 | `recall.desktop.install_ui` |
 | 120 | `recall.cli_commands.doctor_cmd` |
 | 119 | `recall.doctor` |
@@ -29,8 +31,6 @@ Source tree fingerprint: `32ea43ce68aa13bbf809843fc1008b6c31caaa5e93e3ef087a8607
 | 116 | `recall.desktop.ui` |
 | 116 | `recall.wizard.headless` |
 | 116 | `recall.wizard.state` |
-| 115 | `recall.cli_commands.dashboard_cmd` |
-| 114 | `recall.dashboard.server` |
 | 109 | `recall.wizard.uninstall` |
 | 104 | `recall_agent` |
 | 103 | `recall_agent._sdk` |
@@ -38,24 +38,24 @@ Source tree fingerprint: `32ea43ce68aa13bbf809843fc1008b6c31caaa5e93e3ef087a8607
 | 103 | `recall_mcp.reasoning_engine` |
 | 101 | `recall_mcp.graph_first_api` |
 | 101 | `recall_mcp.query_construction_api` |
+| 99 | `recall.dashboard.activity` |
+| 97 | `recall.dashboard.graph` |
+| 97 | `recall.dashboard.triage` |
 | 97 | `recall_mcp.reasoning_admin` |
+| 96 | `recall.dashboard.edit` |
+| 95 | `recall.dashboard.corpus` |
+| 95 | `recall.dashboard.review` |
 | 94 | `recall.cli_commands.calibration_cmd` |
+| 94 | `recall.dashboard.db` |
+| 94 | `recall.dashboard.lite_db` |
 | 92 | `recall.cli_commands.provenance_cmd` |
 | 92 | `recall.wizard.projects` |
-| 91 | `recall.dashboard.activity` |
-| 89 | `recall.dashboard.graph` |
-| 89 | `recall.dashboard.triage` |
 | 89 | `recall.quickstart` |
 | 89 | `recall_mcp.federation_adapter` |
 | 89 | `recall_mcp.provenance` |
 | 88 | `recall.cli_commands.extract_rewrite` |
 | 88 | `recall.wizard.stack` |
 | 88 | `recall_mcp.related_api` |
-| 87 | `recall` |
-| 87 | `recall.dashboard.edit` |
-| 87 | `recall_mcp.retrieval` |
-| 86 | `recall.cli_commands.index_search` |
-| 86 | `recall.dashboard.corpus` |
 
 ## Modules with the most direct imports
 
@@ -454,7 +454,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands._shared` | 9 | 71 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
 | `recall.cli_commands.calibration_cmd` | 5 | 94 |
-| `recall.cli_commands.dashboard_cmd` | 2 | 115 |
+| `recall.cli_commands.dashboard_cmd` | 4 | 123 |
 | `recall.cli_commands.doctor_cmd` | 1 | 120 |
 | `recall.cli_commands.extract_rewrite` | 12 | 88 |
 | `recall.cli_commands.generation_cmd` | 11 | 76 |
@@ -474,16 +474,17 @@ They are observations, not automatic failures.
 | `recall.control_plane` | 5 | 27 |
 | `recall.current_state` | 5 | 18 |
 | `recall.dashboard` | 0 | 0 |
-| `recall.dashboard.activity` | 5 | 91 |
+| `recall.dashboard.activity` | 5 | 99 |
 | `recall.dashboard.config` | 2 | 73 |
-| `recall.dashboard.corpus` | 3 | 86 |
-| `recall.dashboard.db` | 2 | 85 |
-| `recall.dashboard.edit` | 7 | 87 |
-| `recall.dashboard.graph` | 5 | 89 |
+| `recall.dashboard.corpus` | 3 | 95 |
+| `recall.dashboard.db` | 4 | 94 |
+| `recall.dashboard.edit` | 7 | 96 |
+| `recall.dashboard.graph` | 5 | 97 |
+| `recall.dashboard.lite_db` | 5 | 94 |
 | `recall.dashboard.markdown` | 0 | 0 |
-| `recall.dashboard.review` | 8 | 86 |
-| `recall.dashboard.server` | 13 | 114 |
-| `recall.dashboard.triage` | 5 | 89 |
+| `recall.dashboard.review` | 8 | 95 |
+| `recall.dashboard.server` | 13 | 122 |
+| `recall.dashboard.triage` | 5 | 97 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 53 |
 | `recall.dependency_invalidation` | 3 | 16 |
