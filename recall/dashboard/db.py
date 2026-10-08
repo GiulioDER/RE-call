@@ -36,6 +36,13 @@ class DatabaseUnavailable(RuntimeError, RecallError):
 class DashboardDB:
     dsn: str
 
+    @property
+    def lite(self) -> bool:
+        """A `sqlite:///` store: every query below is answered by `recall.dashboard.lite_db`."""
+        from recall.lite import is_lite_dsn
+
+        return is_lite_dsn(self.dsn)
+
     @contextmanager
     def connect(self) -> Iterator[Any]:
         import psycopg
@@ -69,6 +76,10 @@ def _embedder(identity: Any) -> dict[str, Any]:
 
 def availability(db: DashboardDB) -> dict[str, Any]:
     """Whether the database answers, its version, and the schema level it is at."""
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.availability(db.dsn)
     with db.connect() as c:
         version = c.execute("select current_setting('server_version')").fetchone()[0]
         role = c.execute("select current_user").fetchone()[0]
@@ -82,6 +93,10 @@ def availability(db: DashboardDB) -> dict[str, Any]:
 
 def tenants(db: DashboardDB) -> list[dict[str, Any]]:
     """Every tenant with its active generation, embedder, size and calibration."""
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.tenants(db.dsn)
     with db.connect() as c:
         rows = c.execute(
             "select t.tenant_id, t.active_generation_id, t.updated_at, g.state, g.activated_at, g.pipeline_identity "
@@ -121,6 +136,10 @@ def tenants(db: DashboardDB) -> list[dict[str, Any]]:
 
 
 def generations(db: DashboardDB, tenant: str, limit: int = 15) -> list[dict[str, Any]]:
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.generations(db.dsn, tenant, limit)
     with db.connect() as c:
         rows = c.execute(
             "select generation_id, state, created_at, activated_at, retired_at, failure_reason, created_by "
@@ -133,6 +152,10 @@ def generations(db: DashboardDB, tenant: str, limit: int = 15) -> list[dict[str,
 
 def lifecycle_events(db: DashboardDB, tenant: str, limit: int = 100) -> list[dict[str, Any]]:
     """Index builds, promotions, calibrations, forgets: everything but searches, newest first."""
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.lifecycle_events(db.dsn, tenant, limit)
     with db.connect() as c:
         rows = c.execute(
             "select event_type, actor, generation_id, source_uri, created_at from recall_audit_events "
@@ -173,6 +196,10 @@ def _summarise(payload: Any) -> dict[str, Any]:
 
 def searches(db: DashboardDB, tenant: str, limit: int = 100, contains: str = "") -> list[dict[str, Any]]:
     """Recorded searches, newest first, optionally only those whose query contains `contains`."""
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.searches(db.dsn, tenant, limit, contains)
     with db.connect() as c:
         rows = c.execute(
             "select event_id, event_type, actor, generation_id, payload, created_at from recall_audit_events "
@@ -188,6 +215,10 @@ def searches(db: DashboardDB, tenant: str, limit: int = 100, contains: str = "")
 
 
 def search(db: DashboardDB, tenant: str, event_id: str) -> dict[str, Any] | None:
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.search(db.dsn, tenant, event_id)
     with db.connect() as c:
         row = c.execute(
             "select event_id, event_type, actor, generation_id, payload, created_at from recall_audit_events "
@@ -238,6 +269,10 @@ def control(db: DashboardDB, tenant: str) -> dict[str, Any]:
     `use_report` rows, which agents write with `recall_report_use`. The summary says how many
     searches there were beside how many reports, so a reader can see how much is testimony.
     """
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.control(db.dsn, tenant)
     memos: dict[str, dict[str, Any]] = {}
 
     def memo(source: str) -> dict[str, Any]:
@@ -284,6 +319,10 @@ def control(db: DashboardDB, tenant: str) -> dict[str, Any]:
 
 def use_reports(db: DashboardDB, tenant: str, limit: int = 50, source: str = "") -> list[dict[str, Any]]:
     """Agent reports, newest first; with `source`, only those naming that memory as used or wrong."""
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.use_reports(db.dsn, tenant, limit, source)
     with db.connect() as c:
         rows = c.execute(
             "select event_id, actor, payload, created_at from recall_audit_events "
@@ -305,6 +344,10 @@ def use_reports(db: DashboardDB, tenant: str, limit: int = 50, source: str = "")
 
 
 def top_sources(db: DashboardDB, tenant: str, generation: str, limit: int = 40) -> list[dict[str, Any]]:
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.top_sources(db.dsn, tenant, generation, limit)
     with db.connect() as c:
         rows = c.execute(
             "select source_uri, count(*), max(indexed_at) from recall_chunks_v1 where tenant_id = %s and generation_id = %s "
@@ -335,6 +378,10 @@ def stale_reports(db: DashboardDB, tenants: tuple[str, ...], limit: int = MAX_ST
     """
     if not tenants:
         return []
+    if db.lite:
+        from recall.dashboard import lite_db
+
+        return lite_db.stale_reports(db.dsn, tenants, limit)
     with db.connect() as c:
         rows = c.execute(
             "select event_id, tenant_id, payload, created_at from recall_audit_events "
