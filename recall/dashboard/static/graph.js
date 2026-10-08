@@ -15,6 +15,7 @@
     link: document.getElementById("show-link"),
     supersedes: document.getElementById("show-supersedes"),
     pending: document.getElementById("show-pending"),
+    shares: document.getElementById("show-shares"),
     hubs: document.getElementById("show-hubs"),
     motion: document.getElementById("show-motion"),
   };
@@ -25,6 +26,11 @@
   const timeLabel = document.getElementById("time-label");
   const playEl = document.getElementById("play");
   const legendEl = document.getElementById("legend");
+  // A corpus read from the database (`/graph?corpus=<tenant>`); empty for the memo files. Its edge
+  // kinds differ (`shares` instead of `pending`), so a toggle may be absent and reads as off.
+  const corpus = canvas.dataset.corpus || "";
+  const EDGE_KINDS = ["link", "supersedes", "pending", "shares"];
+  const isOn = (kind) => Boolean(toggles[kind] && toggles[kind].checked);
   // Time travel: `asOf` is a YYYY-MM-DD day, or null for today.
   let asOf = null;
   let days = [];
@@ -65,6 +71,7 @@
       link: v("--edge-link"),
       supersedes: v("--edge-supersedes"),
       pendingEdge: v("--edge-pending"),
+      shares: v("--edge-shares"),
       select: v("--signal"),
       ink: v("--ink"),
       cats: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => v("--cat-" + i)),
@@ -160,7 +167,7 @@
   // ------------------------------------------------------------ layout, in three dimensions
 
   function rebuild() {
-    const shown = new Set(["link", "supersedes", "pending"].filter((k) => toggles[k].checked));
+    const shown = new Set(EDGE_KINDS.filter(isOn));
     let pool = nodes.filter((n) => (toggles.hubs.checked || !n.hub) && (!asOf || n.born <= asOf));
     let live = new Set(pool.map((n) => n.id));
     // Claims waiting for review belong to today, so they are not drawn on a past date.
@@ -249,7 +256,7 @@
       const a = byId.get(e.source), b = byId.get(e.target);
       const x = b.x - a.x, y = b.y - a.y, z = b.z - a.z;
       const d = Math.sqrt(x * x + y * y + z * z) || 1;
-      const rest = e.kind === "supersedes" ? 30 : 70;
+      const rest = e.kind === "supersedes" ? 30 : e.kind === "shares" ? 90 : 70;
       const s = ((d - rest) / d) * (e.kind === "supersedes" ? 0.05 : 0.008) * alpha;
       a.vx += x * s; a.vy += y * s; a.vz += z * s;
       b.vx -= x * s; b.vy -= y * s; b.vz -= z * s;
@@ -353,11 +360,15 @@
       const lit = !focus || (focus.has(a.id) && focus.has(b.id));
       const depthFade = (fog(a) + fog(b)) / 2;
       ctx.beginPath();
-      ctx.setLineDash(e.kind === "pending" ? [5, 4] : []);
+      ctx.setLineDash(e.kind === "pending" ? [5, 4] : e.kind === "shares" ? [2, 3] : []);
       if (e.kind === "link") {
         ctx.strokeStyle = palette.link;
         ctx.globalAlpha = (lit ? (focus ? 0.8 : 0.24) : 0.03) * depthFade;
         ctx.lineWidth = 0.7;
+      } else if (e.kind === "shares") {
+        ctx.strokeStyle = palette.shares;
+        ctx.globalAlpha = (lit ? (focus ? 0.7 : 0.18) : 0.03) * depthFade;
+        ctx.lineWidth = 0.6;
       } else if (e.kind === "supersedes") {
         ctx.strokeStyle = palette.supersedes;
         ctx.globalAlpha = (lit ? 0.85 : 0.1) * depthFade;
@@ -371,7 +382,7 @@
       ctx.moveTo(a.sx, a.sy);
       ctx.lineTo(b.sx, b.sy);
       ctx.stroke();
-      if (e.kind !== "link" && lit) arrow(a, b);
+      if (e.kind !== "link" && e.kind !== "shares" && lit) arrow(a, b);
       // A pulse of light runs from the newer memo to the one it replaces.
       if (e.kind === "supersedes" && lit && moving()) {
         const phase = (t * 0.45 + hash(e.source + e.target)) % 1;
@@ -600,11 +611,18 @@
       parts.push(list);
     }
     const actions = el("div", "panel-actions");
-    const read = el("a", "review-link", "Read this memo →");
-    read.href = "/read?path=" + encodeURIComponent(n.id);
-    const edit = el("a", "review-link", "Edit supersession, validity, status →");
-    edit.href = "/memo?path=" + encodeURIComponent(n.id);
-    actions.append(read, edit);
+    if (corpus) {
+      // A database file has no memo on this machine: its page is View 2.
+      const open = el("a", "review-link", "Open this file's page →");
+      open.href = "/corpus/source?tenant=" + encodeURIComponent(corpus) + "&file=" + encodeURIComponent(n.id);
+      actions.append(open);
+    } else {
+      const read = el("a", "review-link", "Read this memo →");
+      read.href = "/read?path=" + encodeURIComponent(n.id);
+      const edit = el("a", "review-link", "Edit supersession, validity, status →");
+      edit.href = "/memo?path=" + encodeURIComponent(n.id);
+      actions.append(read, edit);
+    }
     if (n.claim) {
       const review = el("a", "review-link", "Review the pending claim →");
       review.href = "/review?claim=" + encodeURIComponent(n.claim);
@@ -618,6 +636,8 @@
       ["Would replace (pending)", (e) => e.kind === "pending" && e.source === n.id, "target"],
       ["Links to", (e) => e.kind === "link" && e.source === n.id, "target"],
       ["Linked from", (e) => e.kind === "link" && e.target === n.id, "source"],
+      ["Shares names with", (e) => e.kind === "shares" && e.source === n.id, "target"],
+      ["Shares names with", (e) => e.kind === "shares" && e.target === n.id, "source"],
     ];
     for (const [label, test, end] of groups) {
       const items = edges.filter(test).map((e) => byId.get(e[end])).filter(Boolean);
@@ -647,7 +667,7 @@
     const c = data.counts;
     const visible = active.length;
     const parts = [
-      ["memos shown", visible + (visible < c.memos ? " of " + c.memos : "")],
+      [(corpus ? "files" : "memos") + " shown", visible + (visible < c.memos ? " of " + c.memos : "")],
       ["connections", activeEdges.length],
       // Counted over what is on screen, at the date shown, never the totals for today.
       ["superseded", active.filter((n) => stateAt(n) === "superseded").length],
@@ -677,7 +697,7 @@
     if (ev.key === "/" && document.activeElement !== search) { ev.preventDefault(); search.focus(); }
     if (ev.key === "Escape") { select(null); search.value = ""; matches = null; updateCounts(); needsDraw = true; }
   });
-  for (const name of ["link", "supersedes", "pending", "hubs"]) toggles[name].addEventListener("change", rebuild);
+  for (const name of [...EDGE_KINDS, "hubs"]) if (toggles[name]) toggles[name].addEventListener("change", rebuild);
   toggles.motion.addEventListener("change", () => { needsDraw = true; });
   lensEl.addEventListener("change", () => { renderLegend(); updateCounts(); needsDraw = true; });
   focusEl.addEventListener("change", () => { rebuild(); if (!selected) fitDistance(); needsDraw = true; });
@@ -708,7 +728,7 @@
   window.addEventListener("resize", () => { resize(); needsDraw = true; });
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readPalette(); needsDraw = true; });
 
-  fetch("/api/graph.json", { credentials: "same-origin" })
+  fetch("/api/graph.json" + (corpus ? "?corpus=" + encodeURIComponent(corpus) : ""), { credentials: "same-origin" })
     .then((r) => { if (!r.ok) throw new Error("status " + r.status); return r.json(); })
     .then((payload) => {
       data = payload;

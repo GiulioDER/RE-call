@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 303
+Modules: 304
 Cross package edges: 310
-Source tree fingerprint: `44b050d81d0bbee58630b93a0c1bbcdaaeb81ff356cb895ffed2a3f6f12f13e8`
+Source tree fingerprint: `3d9bd3714c4cc44dcbeae9dcbdf06958fd29c1bfb5704991fc2dabd8633d010f`
 
 ## Highest fan in modules
 
@@ -27,9 +27,9 @@ Source tree fingerprint: `44b050d81d0bbee58630b93a0c1bbcdaaeb81ff356cb895ffed2a3
 | 115 | `recall.desktop.ui` |
 | 115 | `recall.wizard.headless` |
 | 115 | `recall.wizard.state` |
-| 113 | `recall.cli_commands.dashboard_cmd` |
+| 114 | `recall.cli_commands.dashboard_cmd` |
+| 113 | `recall.dashboard.server` |
 | 112 | `recall.cli_commands.doctor_cmd` |
-| 112 | `recall.dashboard.server` |
 | 111 | `recall.doctor` |
 | 108 | `recall.wizard.uninstall` |
 | 102 | `recall_mcp.reasoning_engine` |
@@ -54,8 +54,8 @@ Source tree fingerprint: `44b050d81d0bbee58630b93a0c1bbcdaaeb81ff356cb895ffed2a3
 | 86 | `recall` |
 | 86 | `recall.dashboard.edit` |
 | 86 | `recall_mcp.retrieval` |
+| 85 | `recall.dashboard.corpus` |
 | 85 | `recall.dashboard.review` |
-| 85 | `recall.eval.promotion.__main__` |
 
 ## Modules with the most direct imports
 
@@ -79,12 +79,12 @@ Source tree fingerprint: `44b050d81d0bbee58630b93a0c1bbcdaaeb81ff356cb895ffed2a3
 | 14 | `recall_mcp.provenance` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
 | 13 | `recall.cli_commands.setup_wizard` |
+| 13 | `recall.dashboard.server` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.reasoning` |
 | 13 | `recall_mcp.desktop_ingest` |
 | 13 | `recall_mcp.reasoning_api` |
 | 12 | `recall.cli_commands.extract_rewrite` |
-| 12 | `recall.dashboard.server` |
 | 12 | `recall.eval.harness` |
 | 12 | `recall.store` |
 | 12 | `recall_agent.memory` |
@@ -446,7 +446,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands._shared` | 9 | 70 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
 | `recall.cli_commands.calibration_cmd` | 5 | 93 |
-| `recall.cli_commands.dashboard_cmd` | 2 | 113 |
+| `recall.cli_commands.dashboard_cmd` | 2 | 114 |
 | `recall.cli_commands.doctor_cmd` | 1 | 112 |
 | `recall.cli_commands.extract_rewrite` | 12 | 87 |
 | `recall.cli_commands.generation_cmd` | 11 | 75 |
@@ -468,12 +468,13 @@ They are observations, not automatic failures.
 | `recall.dashboard` | 0 | 0 |
 | `recall.dashboard.activity` | 5 | 90 |
 | `recall.dashboard.config` | 2 | 72 |
+| `recall.dashboard.corpus` | 3 | 85 |
 | `recall.dashboard.db` | 2 | 84 |
 | `recall.dashboard.edit` | 7 | 86 |
 | `recall.dashboard.graph` | 5 | 88 |
 | `recall.dashboard.markdown` | 0 | 0 |
 | `recall.dashboard.review` | 8 | 85 |
-| `recall.dashboard.server` | 12 | 112 |
+| `recall.dashboard.server` | 13 | 113 |
 | `recall.dashboard.triage` | 5 | 88 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 52 |
