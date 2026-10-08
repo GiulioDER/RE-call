@@ -54,7 +54,10 @@ class RegisteredServer:
 def _run(argv: list[str], stdin: str | None = None) -> dict[str, Any]:
     try:
         done = subprocess.run(  # noqa: S603  # a fixed module, or ssh with a host the operator named
-            argv, input=stdin, capture_output=True, text=True, timeout=REPORT_TIMEOUT_SECONDS, check=False,
+            # UTF-8 both ways, never the platform codec: on Windows that decoding can return no
+            # output at all instead of raising (tests/test_wizard_stack.py pins this for every call).
+            argv, input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=REPORT_TIMEOUT_SECONDS, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ConfigUnavailable(f"{type(exc).__name__}: could not run the report") from exc

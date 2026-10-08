@@ -166,22 +166,21 @@ def main(argv: list[str] | None = None) -> int:
         'object, or {"env": {...}, "argv": [...]} to report its launch command as well',
     )
     args = parser.parse_args(argv)
+    launch: list[str] | None = None  # a registered server's command, when one is given on stdin
     if args.env_from_stdin:
         given = json.load(sys.stdin)
         if not isinstance(given, dict):
             parser.error("stdin must hold a JSON object")
-        argv: list[str] | None = None
         if isinstance(given.get("env"), dict) or isinstance(given.get("argv"), list):
-            raw_argv = given.get("argv")
-            argv = [str(a) for a in raw_argv] if isinstance(raw_argv, list) else None
+            raw_launch = given.get("argv")
+            launch = [str(a) for a in raw_launch] if isinstance(raw_launch, list) else None
             given = given.get("env") if isinstance(given.get("env"), dict) else {}
         env = {str(k): str(v) for k, v in given.items()}
         source = "given"
     else:
         env = dict(os.environ)
         source = "environment"
-        argv = None
-    report = build_report(env, source=source, argv=argv)
+    report = build_report(env, source=source, argv=launch)
     print(json.dumps(report, indent=1) if args.json else _text(report))
     return 0
 
