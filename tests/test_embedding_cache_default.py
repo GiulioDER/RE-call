@@ -544,7 +544,9 @@ def test_recall_index_hands_the_indexer_a_cache(monkeypatch, tmp_path: Path) -> 
 
             return IndexStats(files=0, chunks=0)
 
-    monkeypatch.setattr(index_search, "PgVectorStore", lambda *a, **k: _Store())
+    # `recall index` opens its store through `recall.backends.open_legacy_store` (Postgres, or a
+    # SQLite file for `sqlite:///`), so that is the seam replaced here.
+    monkeypatch.setattr(index_search, "open_legacy_store", lambda *a, **k: _Store())
     monkeypatch.setattr(index_search, "Indexer", _Indexer)
     monkeypatch.setattr(index_search, "_make_embedder", lambda name: CountingEmbedder())
     monkeypatch.setattr(index_search, "head_commit", lambda path: None)
