@@ -56,6 +56,14 @@ printed at the end of that command. Get the table or the tenant wrong and the se
 cleanly, answers, and finds nothing: there is no error to read, because an empty answer from the
 wrong table looks exactly like an empty corpus.
 
+## Without a database server
+
+`recall setup --lite --memory <folder of notes>` keeps the project's memory in one SQLite file,
+`.recall/memory.db`, indexes and calibrates it, and registers the server for that project by itself,
+so the plugin's own server is optional there. To use the plugin's server instead, run it with
+`--no-register` and paste the `sqlite:///` address it prints as the **Database DSN**; keep table
+`chunks`, tenant `default` and trust mode `strict`. Install with `pip install "recall-rag[fastembed,mcp]"`.
+
 ## What the database has to look like
 
 `recall quickstart` above starts a throwaway PostgreSQL, indexes a sample corpus, answers three

@@ -230,6 +230,29 @@ demo is intentionally separate from a real install and is not calibrated for you
 
 ## Install and integrate
 
+### Local, with no database server and no Docker
+
+For one person's memory in one project, RE-call can keep everything in a single SQLite file:
+
+```bash
+pip install "recall-rag[fastembed,mcp]"
+recall setup --lite --memory <folder of notes>
+```
+
+This creates `.recall/memory.db` in the current project, indexes the folder with a local model,
+fits a calibration to it automatically once there is enough text to test itself (about twenty
+memos), and registers the MCP server with Claude Code for this project only. Restart Claude Code in
+the project and the tools are there; `recall doctor` checks every step. Re-running it re-indexes
+what changed and refits the calibration when the memory changed. Add `.recall/` to `.gitignore`.
+
+The trust layer is the same code: superseded and expired verdicts, abstention, and strict refusal
+until the calibration certifies. Retrieval is exact cosine search plus PostgreSQL's own keyword
+ranking formula, so results track the PostgreSQL store closely but not identically. It serves one
+project and one local client: generations, multi-tenant serving, authentication and the fact ledger
+need the PostgreSQL install below. `recall dashboard` reads the same file, read-only.
+
+### With PostgreSQL
+
 For your own corpus, provide PostgreSQL with pgvector and run the guided setup wizard after
 installing `recall-rag[fastembed]`:
 

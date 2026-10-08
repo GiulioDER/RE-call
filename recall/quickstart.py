@@ -353,7 +353,7 @@ def next_steps(dsn: str, *, provisioned: bool, compose_path: Path | None) -> tup
             "",
             "Giving this to the Claude Code plugin (/plugin install recall@re-call)?",
             "It asks for four values, and NONE of them is what it fills in by default:",
-            f"  PostgreSQL DSN  {shown}",
+            f"  Database DSN    {shown}",
             f"  Table           {QUICKSTART_TABLE}",
             f"  Tenant          {QUICKSTART_TENANT}",
             "  Trust mode      development   (uncalibrated corpus; strict correctly refuses it)",
