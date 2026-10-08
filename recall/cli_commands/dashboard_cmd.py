@@ -89,8 +89,23 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
             print("recall dashboard: --reports-tenant needs a tenant name", file=sys.stderr)
             raise SystemExit(2)
     db = _database(args.db_dsn_file)
+    default_tenant = DEFAULT_TENANT
+    if db is not None and db.lite:
+        # A lite store is one local file: no tunnel, and its own tenant is the one to show.
+        from recall.dashboard.db import DatabaseUnavailable
+        from recall.dashboard.lite_db import file_tenant
+
+        if args.tunnel:
+            print("recall dashboard: --tunnel is for a remote database; a lite store is a local file", file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            default_tenant = file_tenant(db.dsn) or DEFAULT_TENANT
+        except DatabaseUnavailable as exc:
+            print(f"recall dashboard: {exc}; the database pages will say so until it exists", flush=True)
+        if args.reports_tenant is None:
+            reports_tenants = (default_tenant,)
     tunnel = _open_tunnel(args.tunnel, args.tunnel_ports) if args.tunnel else None
-    app = DashboardApp(root, port=args.port, db=db, reports_tenants=reports_tenants)
+    app = DashboardApp(root, port=args.port, db=db, reports_tenants=reports_tenants, default_tenant=default_tenant)
     try:
         server = serve(app)
     except OSError as exc:
@@ -103,7 +118,10 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
         raise SystemExit(2) from exc
     url = f"http://127.0.0.1:{args.port}/?token={app.token}"
     print(f"Reviewing {root}", flush=True)
-    print(f"Database: {'read-only, from ' + args.db_dsn_file if db else 'not configured (memo pages only)'}", flush=True)
+    if db is not None and db.lite:
+        print(f"Database: lite store {db.dsn[len('sqlite:///'):]}, read-only", flush=True)
+    else:
+        print(f"Database: {'read-only, from ' + args.db_dsn_file if db else 'not configured (memo pages only)'}", flush=True)
     print(f"Open: {url}", flush=True)
     print("This link is the session key for this run. Press Ctrl+C to stop.", flush=True)
     if not args.no_browser:
@@ -123,10 +141,19 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
 
 
 def _database(dsn_file: str) -> DashboardDB | None:
-    """The read-only database handle, or None. The DSN is read from a file so it never sits in argv."""
-    if not dsn_file:
-        return None
+    """The read-only database handle, or None. The DSN is read from a file so it never sits in argv.
+
+    Without a file, a lite store named by `RECALL_SERVING_DSN` or `RECALL_DSN` (`sqlite:///<path>`)
+    is used: it is the store the MCP server and `recall index` use, and a file path is no secret. A
+    PostgreSQL DSN in those variables is NOT used: it is the server's read-write credential, and
+    the dashboard reads through a SELECT-only role named in a file.
+    """
     from recall.dashboard.db import DashboardDB
+    from recall.lite import is_lite_dsn
+
+    if not dsn_file:
+        dsn = os.environ.get("RECALL_SERVING_DSN") or os.environ.get("RECALL_DSN") or ""
+        return DashboardDB(dsn) if is_lite_dsn(dsn) else None
 
     path = Path(dsn_file).expanduser()
     try:
