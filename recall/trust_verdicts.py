@@ -184,6 +184,11 @@ def abstain_reason(hits: list[TrustedHit]) -> str:
             f"basename that more than one document carries, so the edge cannot be resolved — "
             f"disambiguate the corpus rather than trusting either copy"
         )
+    if best.verdict == "unknown_term":
+        return (
+            f"best candidate ({file}) cannot be about the question's subject: the question names "
+            f"a term this memory has never contained (unknown term)"
+        )
     if best.verdict == "dependency_invalidated":
         reason = best.invalidation
         if reason is not None:
