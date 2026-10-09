@@ -699,6 +699,34 @@ class LiteStore:
             self._conn.execute("DELETE FROM temp.query_terms")
         return stemmed
 
+    def unknown_terms(self, tokens: Sequence[str]) -> list[str]:
+        """The tokens that occur nowhere in this store, judged by the FTS5 tokenizer's own terms.
+
+        A token the tokenizer splits ("A-320") is unknown if any of its terms is absent. Used by
+        `recall.unknown_terms`; a store without this method is reported as unable to check.
+        """
+        unknown: list[str] = []
+        with self._lock:
+            if not self._query_terms_ready:
+                self._conn.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_terms USING fts5(text, tokenize='porter unicode61')"
+                )
+                self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_vocab USING fts5vocab(temp, query_terms, 'row')")
+                self._query_terms_ready = True
+            for token in tokens:
+                self._conn.execute("DELETE FROM temp.query_terms")
+                self._conn.execute("INSERT INTO temp.query_terms(text) VALUES (?)", (token,))
+                terms = [str(row[0]) for row in self._conn.execute("SELECT term FROM temp.query_vocab")]
+                self._conn.execute("DELETE FROM temp.query_terms")
+                absent = not terms or any(
+                    self._conn.execute("SELECT 1 FROM chunks_vocab WHERE term = ? LIMIT 1", (term,)).fetchone()
+                    is None
+                    for term in terms
+                )
+                if absent:
+                    unknown.append(token)
+        return unknown
+
     def query_sparse(
         self,
         text: str,
