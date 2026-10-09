@@ -13,14 +13,16 @@ built from the corpus, never from any labelled set:
 
 * **unknown entity**: an answerable probe asked about a code the corpus never contains
   ("... in QK4817?"). The unknown-term gate (`recall.unknown_terms`) exists to reject these.
-* **in-vocabulary**: one chunk's heading words joined to another chunk's distinctive term, kept
-  only when no single chunk contains every content word. Every word is the corpus's own; no chunk
+* **in-vocabulary**: one chunk's heading (or, without a usable heading, its two most distinctive
+  terms) joined to another chunk's distinctive term, kept only when no single chunk contains every
+  content word. Every word is the corpus's own; no chunk
   is the source. Score alone rarely rejects these, and nothing else in RE-call does yet.
 
 Each probe counts as rejected when the trust gate would not give it an `ok` hit: its best cosine is
 below the threshold, or the unknown-term gate names one of its terms. The rates are stored with the
 calibration and printed with its status. A certificate whose in-vocabulary rejection is below
-`PROVISIONAL_BAR` is reported as provisional for in-vocabulary near-misses. The certified/
+`PROVISIONAL_BAR`, or for which fewer than `MIN_PROBES` such probes could be built (reported as
+unmeasured), is reported as provisional for in-vocabulary near-misses. The certified/
 uncertified decision is untouched: stores that cannot run the unknown-term gate (PostgreSQL today)
 must not lose a certification they hold because of a measurement they cannot act on.
 """
@@ -43,6 +45,8 @@ from recall.wizard.queryset import (
 )
 
 PROVISIONAL_BAR = 0.90
+#: Fewer probes than this and a class is reported as unmeasured rather than given a rate.
+MIN_PROBES = 10
 CLASSES = ("unknown_entity", "in_vocabulary")
 
 
@@ -55,6 +59,20 @@ def _invented_codes(corpus_words: set[str], rng: random.Random, count: int) -> l
         if code.lower() not in corpus_words and code not in codes:
             codes.append(code)
     return codes
+
+
+def _base_words(chunk: str, df: Any, total: int) -> str:
+    """What an in-vocabulary probe is about: the chunk's heading, or its two most distinctive terms.
+
+    The heading alone is not enough. Measured 2026-10-09: four documents without markdown headings
+    gave zero probes, so the corpus that most needed the warning got none; and a heading with one
+    prose word ("AR25: lesson 1" yields only "lesson") gave probes that all read alike.
+    """
+    heading = _heading_of(chunk)
+    if len(heading.split()) >= 2:
+        return heading
+    terms = _distinctive_terms(chunk, df, total, 2)
+    return " ".join(terms) if len(terms) == 2 else ""
 
 
 def near_miss_probes(
@@ -76,18 +94,18 @@ def near_miss_probes(
     for i in order:
         if len(in_vocab) >= per_class:
             break
-        heading = _heading_of(chunks[i])
-        if not heading:
+        about = _base_words(chunks[i], df, total)
+        if not about:
             continue
         j = rng.randrange(total)
         if j == i:
             continue
-        own = set(heading.split())
+        own = set(about.split())
         term = next((t for t in _distinctive_terms(chunks[j], df, total, 3)
                      if t not in own and t not in chunk_words[i]), None)
         if term is None:
             continue
-        subject = f"{heading} {term}"
+        subject = f"{about} {term}"
         content = {w for w in word_tokens([subject]) if w not in _STOPWORDS}
         if subject in seen or any(content <= words for words in chunk_words):
             continue
@@ -112,20 +130,31 @@ def near_miss_coverage(
             score = float(store.top_cosine(embed_query(embedder, query)))
             rejected += bool(check.unknown) or score < threshold
         n = len(queries)
-        report[name] = {"n": n, "rejected": rejected, "rate": round(rejected / n, 3) if n else None}
+        report[name] = {
+            "n": n, "rejected": rejected, "rate": round(rejected / n, 3) if n else None,
+            "state": "measured" if n >= MIN_PROBES else "unmeasured",
+        }
     report["unknown_term_gate"] = gate
-    in_vocab = report["in_vocabulary"]["rate"]
-    report["provisional_in_vocabulary"] = in_vocab is not None and in_vocab < PROVISIONAL_BAR
+    in_vocab = report["in_vocabulary"]
+    # Unmeasured counts as provisional: a class nobody could test is not a class the certificate
+    # covers, and saying nothing about it is how a 0.979 certificate went unwarned.
+    report["provisional_in_vocabulary"] = in_vocab["state"] == "unmeasured" or (
+        in_vocab["rate"] is not None and in_vocab["rate"] < PROVISIONAL_BAR
+    )
     return report
 
 
 def describe(report: dict[str, Any]) -> str:
     """One line for a status message."""
-    parts = [
-        f"{name.replace('_', '-')} {report[name]['rejected']}/{report[name]['n']} rejected"
-        for name in CLASSES if report.get(name, {}).get("n")
-    ]
-    line = "near-miss coverage: " + (", ".join(parts) or "no probes could be built")
+    parts = []
+    for name in CLASSES:
+        entry = report.get(name, {})
+        label = name.replace("_", "-")
+        if entry.get("state") == "unmeasured":
+            parts.append(f"{label} unmeasured ({entry.get('n', 0)} probe(s) could be built)")
+        else:
+            parts.append(f"{label} {entry['rejected']}/{entry['n']} rejected")
+    line = "near-miss coverage: " + ", ".join(parts)
     if report.get("provisional_in_vocabulary"):
         line += "; provisional for in-vocabulary near-misses"
     if report.get("unknown_term_gate") != "checked":
