@@ -796,6 +796,24 @@ class LiteStore:
                 [("embedder_model", model), ("embedder_dimension", str(dimension))],
             )
 
+    def save_near_miss_coverage(self, calibration_id: str, report: dict[str, Any]) -> None:
+        """Keep the near-miss coverage measured with a calibration (`recall.near_miss`), by its id."""
+        payload = json.dumps({"calibration_id": calibration_id, **report}, sort_keys=True)
+        with self._write():
+            self._conn.execute(
+                "INSERT INTO meta(key, value) VALUES ('near_miss_coverage', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (payload,),
+            )
+
+    def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
+        """The coverage stored with `calibration_id`, or None when it belongs to another fit."""
+        rows = self._metadata_values("SELECT value FROM meta WHERE key = 'near_miss_coverage'")
+        if not rows:
+            return None
+        report = json.loads(str(rows[0][0]))
+        return report if report.get("calibration_id") == calibration_id else None
+
     def _latest_calibration(self) -> tuple[int, str] | None:
         row = self._metadata_values("SELECT rowid, payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1")
         return (int(row[0][0]), str(row[0][1])) if row else None
