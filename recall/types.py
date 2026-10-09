@@ -76,6 +76,10 @@ Verdict = Literal[
     "ambiguous_supersession",
     "unverified",
     "dependency_invalidated",
+    #: the question names a term (an identifier, a code, a capitalised name) that occurs nowhere
+    #: in this memory, so no hit can be about its subject however well it scores. See
+    #: `recall.unknown_terms`.
+    "unknown_term",
 ]
 
 
@@ -270,6 +274,10 @@ class RetrievalDiagnostics:
     reranking_ran: bool = False
     stage_ms: dict[str, float] = field(default_factory=dict)
     max_dense_score: float | None = None
+    #: `checked`, `unavailable` (the store cannot answer a vocabulary question), `disabled`
+    #: (RECALL_UNKNOWN_TERM_GATE=0), or `not_run` (a path that never reached the gate).
+    unknown_term_check: str = "not_run"
+    unknown_terms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

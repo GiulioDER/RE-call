@@ -39,6 +39,8 @@ from recall.calibration_v2 import (
 from recall.eval.calibrate import measure_top_cosines
 from recall.lineage import canonical_json, canonical_sha256
 from recall.lite.store import LiteStoreError
+from recall.near_miss import describe as describe_near_miss
+from recall.near_miss import near_miss_coverage, near_miss_probes
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -162,14 +164,25 @@ def auto_calibrate(
     )
     artifact = dataclasses.replace(draft, checksum=canonical_sha256(draft.immutable_payload()))
     store.save_calibration(artifact_to_json(artifact), created_at=artifact.created_at, model=model, dimension=dimension)
+    coverage = ""
+    if runtime.threshold is not None:
+        # Report only: measured with the threshold just fitted, never fed back into the fit or the
+        # certified decision. See `recall.near_miss` for why the two are kept apart.
+        asked = [str(e["query"]) for e in labels if e.get("answerable") is True]
+        probes = near_miss_probes(texts, asked, per_class=len(asked))
+        report = near_miss_coverage(store, embedder, float(runtime.threshold), probes)
+        store.save_near_miss_coverage(artifact.calibration_id, report)
+        coverage = "; " + describe_near_miss(report)
     if certified:
         return CalibrationOutcome(
             CalibrationStatus.CERTIFIED,
             f"certified on {len(answerable)} answerable and {len(unanswerable)} unanswerable test questions "
-            f"(separability {runtime.separability:.3f})",
+            f"(separability {runtime.separability:.3f}){coverage}",
             artifact,
         )
-    return CalibrationOutcome(CalibrationStatus.UNCERTIFIED, f"calibration did not certify: {runtime.certification_reason}")
+    return CalibrationOutcome(
+        CalibrationStatus.UNCERTIFIED, f"calibration did not certify: {runtime.certification_reason}{coverage}"
+    )
 
 
 def ensure_calibrated(store: LiteStore, embedder: Embedder) -> CalibrationOutcome:
@@ -211,11 +224,17 @@ def status_report(store: LiteStore) -> dict[str, object]:
             "certified": latest.certified,
             "created_at": latest.created_at,
             "fitted_generation_id": latest.generation_id,
+            "near_miss_coverage": store.near_miss_coverage(latest.calibration_id),
             "message": (
                 "The memory changed since this calibration was fitted; recall_index or "
                 "recall_calibration_run refits it."
                 if resolution.status is CalibrationStatus.STALE
                 else str(latest.certification_reason or "")
+                + (
+                    "; " + describe_near_miss(coverage_report)
+                    if (coverage_report := store.near_miss_coverage(latest.calibration_id))
+                    else ""
+                )
             ),
         }
     )

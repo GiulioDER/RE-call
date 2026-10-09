@@ -69,6 +69,7 @@ from recall.retriever import (
 from recall.scope import Scope, coerce_scope
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates, PgVectorStore
+from recall.unknown_terms import apply_unknown_term_gate, check_unknown_terms
 from recall.trust_policy import (
     TrustFailureCode,
     TrustPolicy,
@@ -689,6 +690,10 @@ def _trusted_search(
             {hit.chunk.id: index for index, hit in enumerate(result.hits)},
             successor_expansion.ordering,
         )
+    # After every verdict `evaluate` can give and before degradation, which overwrites verdicts:
+    # a question naming a term the memory never contained cannot be answered by any hit, whatever
+    # its score. A store that cannot answer the vocabulary question is reported, not changed.
+    trusted = apply_unknown_term_gate(trusted, check_unknown_terms(store, query))
     if failure_code is not None:
         # Development degradation. Reached only when the policy explicitly allows it, since
         # strict already raised above. The result is ALWAYS marked degraded and is never
