@@ -29,10 +29,8 @@ RECALL_SEARCH_DESCRIPTION = (
     "provenance (indexed_at) and validity (superseded_by / valid_until). When `abstained` is\n"
     "true, NO valid hit survived — say you don't know instead of answering from the hits.\n"
     "`evidence` says what an answer may cite: rely only on the hits whose chunk_id is in\n"
-    "`evidence.citable`, and cite those chunk_ids. It applies `recall_evidence`'s rule to\n"
-    "these hits only: call `recall_evidence` for card warrants, a rendered answer prompt, or\n"
-    "passages beyond these hits (related items, deeper pages of a paged document), which\n"
-    "only it can cite. `advice` states what to do."
+    "`evidence.citable`, and cite those chunk_ids. It covers these hits only, not related\n"
+    "items or deeper pages of a paged document. `advice` states what to do."
 )
 
 RECALL_EVIDENCE_DESCRIPTION = (
