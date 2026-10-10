@@ -72,9 +72,16 @@ def _make_embedder(name: str) -> Embedder:
         from recall.embeddings import SentenceTransformerEmbedder
 
         return SentenceTransformerEmbedder(name[3:])
-    from recall.embeddings import FastEmbedEmbedder
+    if name == "fastembed":
+        from recall.embeddings import FastEmbedEmbedder
 
-    return FastEmbedEmbedder()
+        return FastEmbedEmbedder()
+    # Every other spelling goes to the shared resolver. This used to fall back to bge-small for
+    # anything unrecognised, so `--embedder st-prompted:<model>` (or a typo) measured bge-small
+    # and reported it under the name that was asked for.
+    from recall.embeddings import resolve_embedder
+
+    return resolve_embedder(name)
 
 
 def _files_of(result: RetrievalResult | TrustedResult) -> list[str]:
@@ -371,7 +378,7 @@ def main() -> None:
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--questions", required=True)
     ap.add_argument("--embedder", default="fastembed",
-                    help="fastembed | hashing | voyage | st:<model-or-path>")
+                    help="fastembed | hashing | voyage | st:<model-or-path> | any RECALL_EMBEDDER spelling")
     ap.add_argument("-k", type=int, default=5)
     ap.add_argument("--glob", default="**/*.md",
                     help="corpus file glob — e.g. '**/*.rst' for a PEP checkout")
