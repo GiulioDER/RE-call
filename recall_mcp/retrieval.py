@@ -455,10 +455,12 @@ REASONING_SUPERSEDED_NOTE = (
 #: fields, never corpus text. Models follow instructions in the result far more than fields alone
 #: (measured 2026-10-10: without the advice and abstention text, obedience to `unknown_term` fell
 #: to 0.00 to 0.18 across three models), so the citation rule is stated here, not only in a field.
+#: It deliberately names no other tool: a wording that pointed at `recall_evidence` made a 3B model
+#: call that tool in every conversation, after abstentions too (measured 2026-10-10, 60 of 60; with
+#: the tool name removed from the advice, the frontier and 9B models still cite `evidence.citable`).
 SEARCH_EVIDENCE_NOTE = (
     " To answer from memory, rely only on the hits listed in `evidence.citable` and cite their "
-    "chunk_id values; `recall_evidence` adds card warrants, a rendered answer prompt, and "
-    "related or paged passages these hits do not include."
+    "chunk_id values."
 )
 
 
