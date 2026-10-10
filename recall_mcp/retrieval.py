@@ -457,8 +457,8 @@ REASONING_SUPERSEDED_NOTE = (
 #: to 0.00 to 0.18 across three models), so the citation rule is stated here, not only in a field.
 SEARCH_EVIDENCE_NOTE = (
     " To answer from memory, rely only on the hits listed in `evidence.citable` and cite their "
-    "chunk_id values; `recall_evidence` is needed only for card warrants or a rendered answer "
-    "prompt."
+    "chunk_id values; `recall_evidence` adds card warrants, a rendered answer prompt, and "
+    "related or paged passages these hits do not include."
 )
 
 
@@ -471,8 +471,10 @@ def _search_evidence(result: TrustedResult, effective_k: int) -> SearchEvidence:
     """The citable part of `recall_evidence`'s bundle, from the trusted result search already has.
 
     Same projection and same cap as the evidence tool (`build_evidence_bundle`, `max_items` bounded
-    by the effective `k`), so the two tools cannot disagree about what may be cited. No cards are
-    registered here: that is a write, and search is read only.
+    by the effective `k`), so the two tools cannot disagree about the same hits. The evidence tool
+    can still cite more: it folds related items into its bundle and, with RECALL_PAGED_EVIDENCE=on
+    and no explicit `k`, retrieves deeper into paged documents. No cards are registered here:
+    that is a write, and search is read only.
     """
     bundle = build_evidence_bundle(result, EvidencePolicy(max_items=max(1, min(effective_k, MAX_SEARCH_K))))
     return SearchEvidence(decision=bundle.decision, reason_code=bundle.reason_code,

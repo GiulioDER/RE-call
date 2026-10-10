@@ -49,7 +49,7 @@ class SearchHit(BaseModel):
 
 
 class SearchEvidence(BaseModel):
-    """What may be cited from this search, decided exactly as `recall_evidence` decides it.
+    """What may be cited from this search's own hits, by the rule `recall_evidence` applies.
 
     Built from the same trusted result by `recall.evidence.build_evidence_bundle`, so it adds no
     retrieval and no write. Measured 2026-10-10: given the search result, no model asked for the
