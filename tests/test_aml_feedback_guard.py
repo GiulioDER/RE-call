@@ -4,15 +4,16 @@ The record shapes follow AgentMemoryBench's public code (``solomoon313/AgentMemo
 ``9dfda8de``: the ``result`` dict and the ``llm_judge`` tool message) and one public participant's
 flat form; every question and answer below is invented.
 
-Red proofs, run 2026-10-10 on branch ``claude/st1-feedback-guard`` (off ``225e7509``) with
-``PYTHONDONTWRITEBYTECODE=1``: each row is one plausible mutation of the named production line with
-this file unchanged, the named test run, the ``E`` line it failed with (an assertion, never an import,
-collection or fixture error), then the line restored and the whole file run green (20 passed). Node
-ids are ``tests/test_aml_feedback_guard.py::<name>``.
+Red proofs, run 2026-10-10 on branch ``claude/st1-feedback-guard`` (off ``225e7509``), after the
+asked-question gate, with ``PYTHONDONTWRITEBYTECODE=1``: each row is one plausible mutation of the
+named production line with this file unchanged, each named test run alone, the ``E`` line it failed
+with (an assertion, never an import, collection or fixture error), then the line restored and the
+whole file run green (26 passed). Node ids are ``tests/test_aml_feedback_guard.py::<name>``. The
+first version's 14 mutations (``6e1443b6``) were re-run against the gated code, with the anchors that
+moved.
 
-- ``test_a_failed_record_that_carries_the_correct_answer_is_kept``: ``verdict == ("failed", False)``
-  in ``feedback_guard.filter_feedback`` made ``verdict[0] == "failed"``. Failed: ``([], 1) ==
-  ([Message(...)], 0)``.
+- ``test_a_failed_record_that_carries_the_correct_answer_is_kept``: ``and not record.has_reference``
+  deleted from ``filter_feedback``. Failed: ``([], 1) == ([Message(...)], 0)``.
 - ``test_the_guard_drops_the_failed_record_and_stores_the_rest`` and
   ``test_an_add_of_only_failed_records_is_durable_and_empty``: ``request = request.model_copy(...)``
   in ``HostedService._add_once`` replaced by ``pass``. Failed: ``where False = all(...)`` (the record
@@ -25,21 +26,36 @@ ids are ``tests/test_aml_feedback_guard.py::<name>``.
   ``filter_feedback`` disabled (``if False and ...``). Failed: ``[Message(...)] == []``.
 - ``test_a_lone_judge_message_is_not_a_unit``: ``len(messages) > 1`` made ``>= 1``. Failed: ``[] ==
   [Message(...)]``.
-- ``test_anything_short_of_a_whole_readable_record_is_stored_unchanged``, three mutations: only the
-  first outcome key read (``verdicts = {_outcome(fields[present[0]])}``) failed ``[contradicts]``;
-  ``_LABEL_LINE`` allowed to span lines (``[^{}]``) failed ``[two-lines]``; the answer-key check made
-  ``if False:`` failed ``[no-answer]``; each ``[] == [Message(...)]``.
+- ``test_anything_short_of_a_whole_readable_record_is_stored_unchanged``, four mutations: only the
+  first outcome key read failed ``[contradicts]``; ``_LABEL_LINE`` allowed to span lines failed
+  ``[two-lines]``; the answer-key check made ``if False:`` failed ``[no-answer]``; an unreadable
+  outcome string read as ``"failed"`` failed ``[unreadable]``; each ``[] == [Message(...)]``.
 - ``test_a_record_beside_an_image_is_not_read``: ``return None`` for a non-text part in ``_text``
-  made ``continue``. Failed: ``('failed', False) is None``.
-- ``test_with_no_feedback_records_the_guard_stores_exactly_what_the_off_path_stores`` (and
-  ``[unreadable]`` above): an unreadable outcome string read as ``"failed"`` in ``_outcome``. Failed:
-  the stored rows differ (the near-record is missing under the guard).
+  made ``continue``. Failed: ``FeedbackRecord(verdict='failed', ...) is None``.
 - ``test_a_bad_value_stops_service_startup``: ``self.feedback_guard`` removed from the constructor's
   startup reads. Failed: ``DID NOT RAISE ValueError``.
 - ``test_the_benchmark_result_shape_is_read_with_its_outer_reward``: the merge of outer outcome keys
-  in ``record_verdict`` deleted. Failed: ``None == ('failed', False)``.
+  in ``record_verdict`` deleted. Failed: ``assert (None is not None)``.
 - ``test_a_flat_record_with_a_passing_score_is_kept_and_counted``: a passing record skipped
   (``continue``) after it is counted. Failed: ``([], 0, 1) == ([Message(...)], 0, 1)``.
+- ``test_a_failed_record_about_a_question_never_searched_is_stored``,
+  ``test_a_restart_forgets_what_was_asked_and_stores_everything`` and
+  ``test_with_no_feedback_records_the_guard_stores_exactly_what_the_off_path_stores``: the gate
+  bypassed in ``_add_once`` (``asked=None``). Failed: ``where False = any(...)`` twice, and the stored
+  rows differ.
+- ``test_the_guard_drops_the_failed_record_and_stores_the_rest`` and
+  ``test_a_query_that_carries_the_question_counts_as_asking_it``: ``self._asked_questions.remember``
+  in ``search`` replaced by ``pass``. Failed: ``where False = all(...)`` both.
+- ``test_searches_made_while_the_guard_is_off_are_not_remembered``: ``if self.feedback_guard:``
+  before ``remember`` made ``if True:``. Failed: ``where False = any(...)``.
+- ``test_a_query_that_carries_the_question_counts_as_asking_it``: the containment ``return any(...)``
+  in ``AskedQuestions.asked`` made ``return False``. Failed: ``where False = all(...)``.
+- ``test_short_questions_must_match_exactly``, three mutations: the ``MIN_CONTAINED_CHARS`` exact
+  rule deleted failed ``assert not True`` on ``asked('t', 'Mara now')``; tenants not separated
+  (``seen`` taken from any tenant) failed ``assert not True`` on ``asked('other', ...)``; no case
+  folding in ``normalize_question`` failed ``assert False`` on the upper-case question.
+- ``test_a_judge_unit_is_dropped_only_when_its_question_was_asked``: ``and
+  was_asked(unit_question(messages))`` deleted. Failed: ``[] == [Message(...)]``.
 """
 
 from __future__ import annotations
@@ -51,6 +67,7 @@ import pytest
 
 from recall_aml.feedback_guard import (
     FEEDBACK_GUARD_ENV,
+    AskedQuestions,
     filter_feedback,
     judge_verdict,
     message_verdict,
@@ -92,9 +109,11 @@ def test_a_flat_record_with_a_passing_score_is_kept_and_counted() -> None:
 
 def test_the_benchmark_result_shape_is_read_with_its_outer_reward() -> None:
     record = {"status": "completed", "reward": 0, "result": {"question": QUESTION, "predicted_answer": WRONG}}
-    assert message_verdict(Message(role="user", content=json.dumps(record))) == ("failed", False)
+    found = message_verdict(Message(role="user", content=json.dumps(record)))
+    assert found is not None and (found.verdict, found.has_reference, found.question) == ("failed", False, QUESTION)
     record["reward"] = 1
-    assert message_verdict(Message(role="user", content=json.dumps(record))) == ("passed", False)
+    found = message_verdict(Message(role="user", content=json.dumps(record)))
+    assert found is not None and found.verdict == "passed"
 
 
 def test_a_failed_record_that_carries_the_correct_answer_is_kept() -> None:
@@ -145,7 +164,8 @@ def test_a_record_beside_an_image_is_not_read() -> None:
         role="user",
         content=[TextContentPart(type="text", text=_record(question=QUESTION, predicted_answer=WRONG, score=0))],
     )
-    assert message_verdict(message) == ("failed", False)
+    found = message_verdict(message)
+    assert found is not None and found.verdict == "failed"
     with_image = Message.model_validate({
         "role": "user",
         "content": [
@@ -180,33 +200,95 @@ def test_the_guard_is_off_unless_set(monkeypatch) -> None:
     assert any(WRONG in text for text in _stored(repository))
 
 
+def _asked(service, user: str, query: str = QUESTION) -> None:
+    """A tenant with something in it, searched with ``query``, as the platform would before feedback."""
+    _add(service, user, [Message(role="user", content=ORDINARY)], request_id="seed")
+    _search(service, user, query)
+
+
 def test_the_guard_drops_the_failed_record_and_stores_the_rest(monkeypatch) -> None:
     monkeypatch.setenv(FEEDBACK_GUARD_ENV, "1")
     service, repository = _service()
-    _add(service, "fg-on", [Message(role="user", content=ORDINARY), _flat(0)])
+    _asked(service, "fg-on")
+    _add(service, "fg-on", [Message(role="user", content="Good news about the square."), _flat(0)])
     stored = _stored(repository)
     assert stored and all(WRONG not in text for text in stored)
-    assert any("fountain in the old square" in text for text in stored)
+    assert any("Good news about the square." in text for text in stored)
     assert all(WRONG not in _text(item) for item in _search(service, "fg-on", QUESTION).data)
 
 
 def test_an_add_of_only_failed_records_is_durable_and_empty(monkeypatch) -> None:
     monkeypatch.setenv(FEEDBACK_GUARD_ENV, "1")
     service, repository = _service()
+    _asked(service, "fg-empty")
+    before = _stored(repository)
     first = _add(service, "fg-empty", [_flat(0)])
     again = _add(service, "fg-empty", [_flat(0)])
     assert (first.raw_count, first.compiled_count) == (0, 0)
     assert again == first
-    assert _stored(repository) == []
+    assert _stored(repository) == before
+
+
+def test_a_failed_record_about_a_question_never_searched_is_stored(monkeypatch) -> None:
+    """Outside Streaming a tenant is written before it is searched, so the guard cannot act there."""
+    monkeypatch.setenv(FEEDBACK_GUARD_ENV, "1")
+    service, repository = _service()
+    _asked(service, "fg-unasked", "What did Mara order at the cafe on Friday?")
+    _add(service, "fg-unasked", [_flat(0)])
+    assert any(WRONG in text for text in _stored(repository))
+
+
+def test_a_query_that_carries_the_question_counts_as_asking_it(monkeypatch) -> None:
+    monkeypatch.setenv(FEEDBACK_GUARD_ENV, "1")
+    service, repository = _service()
+    _asked(service, "fg-options", QUESTION + "\nOptions: (a) Lisbon (b) Porto (c) Madrid")
+    _add(service, "fg-options", [_flat(0)])
+    assert all(WRONG not in text for text in _stored(repository))
+
+
+def test_a_restart_forgets_what_was_asked_and_stores_everything(monkeypatch) -> None:
+    monkeypatch.setenv(FEEDBACK_GUARD_ENV, "1")
+    service, repository = _service()
+    _asked(service, "fg-restart")
+    restarted, _ = _service(repository)
+    _add(restarted, "fg-restart", [_flat(0)])
+    assert any(WRONG in text for text in _stored(repository))
+
+
+def test_searches_made_while_the_guard_is_off_are_not_remembered(monkeypatch) -> None:
+    service, repository = _service()
+    _asked(service, "fg-late")
+    monkeypatch.setenv(FEEDBACK_GUARD_ENV, "1")
+    _add(service, "fg-late", [_flat(0)])
+    assert any(WRONG in text for text in _stored(repository))
+
+
+def test_a_judge_unit_is_dropped_only_when_its_question_was_asked() -> None:
+    unit = [
+        Message(role="user", content=f"Question: {QUESTION}\nAnswer:"),
+        Message(role="assistant", content=WRONG),
+        Message(role="tool", content='response: {"label": "WRONG"}'),
+    ]
+    assert filter_feedback(unit, asked=lambda q: q == QUESTION).kept == []
+    assert filter_feedback(unit, asked=lambda q: False).kept == unit
+
+
+def test_short_questions_must_match_exactly() -> None:
+    asked = AskedQuestions()
+    asked.remember("t", "Where is Mara now and who is she with?")
+    assert asked.asked("t", "  where is MARA now and who is she with? ")
+    assert not asked.asked("t", "Mara now")
+    assert not asked.asked("other", "Where is Mara now and who is she with?")
 
 
 def test_with_no_feedback_records_the_guard_stores_exactly_what_the_off_path_stores(monkeypatch) -> None:
-    """Near-records included: an unreadable outcome and a record inside prose are ordinary text."""
+    """Near-records included, and a real failed record about a question the tenant was never asked."""
     messages = [
         Message(role="user", content=ORDINARY),
         Message(role="assistant", content="Good to hear."),
         Message(role="user", content=json.dumps({"question": QUESTION, "predicted_answer": WRONG, "score": "n/a"})),
         Message(role="user", content="Here is my log.\n" + _record(question=QUESTION, predicted_answer=WRONG, score=0)),
+        _flat(0),
     ]
     off_service, off_repository = _service()
     off = _add(off_service, "fg-same", messages)

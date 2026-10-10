@@ -96,7 +96,7 @@ from recall_aml.temporal_render import RENDER_VERSIONS, resolve_relative_times
 from recall_aml.window_compose import ADD_DIGEST_CHARS, compose_items
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
-from recall_aml.feedback_guard import FEEDBACK_GUARD_ENV, filter_feedback
+from recall_aml.feedback_guard import FEEDBACK_GUARD_ENV, AskedQuestions, filter_feedback
 from recall_aml.forget import (
     FORGET_DETECTOR,
     FORGET_ENV,
@@ -580,6 +580,8 @@ class HostedService:
         self._local_tenant_locks: dict[str, asyncio.Lock] = local_locks
         #: Per-user mutation queues, used only when ``tenant_lock_wait_seconds`` is set.
         self._tenant_gates: dict[str, _TenantGate] = {}
+        #: ST-1a: the questions each tenant was searched with, kept while the feedback guard is on.
+        self._asked_questions = AskedQuestions()
         self._stopping = False
 
     async def _request_lock(
@@ -693,9 +695,12 @@ class HostedService:
         if receipt is not None:
             return AddResponse.model_validate_json(receipt)
         if self.feedback_guard and request.messages:
-            # ST-1a: a record of an earlier answer that reports a failure is not stored. Every other
-            # message, and the whole Add when nothing is such a record, passes through unchanged.
-            screened = filter_feedback(request.messages)
+            # ST-1a: a record of an earlier answer that reports a failure, about a question this
+            # tenant was searched with, is not stored. Every other message, and the whole Add when
+            # nothing is such a record, passes through unchanged.
+            screened = filter_feedback(
+                request.messages, asked=lambda question: self._asked_questions.asked(tenant, question)
+            )
             if screened.dropped:
                 log.info(
                     "hosted_add_feedback_dropped dropped=%d kept=%d session_digest=%s",
@@ -1226,6 +1231,8 @@ class HostedService:
     async def search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)
         query_text = content_text(request.query)
+        if self.feedback_guard:
+            self._asked_questions.remember(tenant, query_text)
         started = time.perf_counter()
         facet_fallback = False
         last_windows_added = 0

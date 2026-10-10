@@ -19,7 +19,13 @@ Two shapes are recognised, and only these:
    verdict drops every message of it.
 
 A failed record that also carries a reference answer (``gold_answer`` and the like) is kept: it holds
-the correct answer, which is evidence. Anything else, including a JSON object that lacks one of the
+the correct answer, which is evidence.
+
+**A record is dropped only if its question is one this tenant was searched with earlier** (``asked``,
+fed by ``AskedQuestions``). Feedback can only be about a question the platform already asked, and
+outside Streaming a tenant is written before it is searched, so on ordinary data the guard cannot act
+at all. The memory of asked questions lives in the process (C9 serves from one worker): a restart
+empties it, which only switches the guard off for what follows, never on. Anything else, including a JSON object that lacks one of the
 three parts, or whose outcome cannot be read or contradicts itself, is not a feedback record and is
 stored unchanged. Which format AML uses, if any, is not public and its organiser does not answer
 questions about it, so the guard is built so that a wrong guess costs nothing.
@@ -27,6 +33,8 @@ questions about it, so the guard is built so that a wrong guess costs nothing.
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 import json
 import math
@@ -54,6 +62,11 @@ _FAILED_WORDS = frozenset({"wrong", "incorrect", "false", "no", "fail", "failed"
 _LABEL_LINE = re.compile(r"[^\n{}]{1,80}:[ \t]*\n")
 #: AgentMemoryBench's ``llm_judge`` tool message: ``response: {"label": "WRONG"}\nreasoning: ...``.
 _JUDGE = re.compile(r"\s*response:\s*(\{[^{}\n]*\})")
+#: The question line of an AgentMemoryBench answer turn: ``Question: ...`` then ``Answer:``.
+_QUESTION_LINE = re.compile(r"Question:\s*(.+?)\s*(?:\nAnswer:|$)", re.DOTALL)
+#: Below this many characters a question must match a searched query exactly; above it, one may
+#: contain the other (a query can carry the options or an instruction around the question).
+MIN_CONTAINED_CHARS = 20
 
 
 @dataclass(frozen=True)
@@ -61,6 +74,49 @@ class FeedbackFilter:
     kept: list[Any]
     dropped: int
     passed: int
+
+
+@dataclass(frozen=True)
+class FeedbackRecord:
+    verdict: Verdict
+    has_reference: bool
+    question: str
+
+
+def normalize_question(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+class AskedQuestions:
+    """The questions each tenant was searched with in this process, newest kept, bounded."""
+
+    def __init__(self, *, max_tenants: int = 20_000, per_tenant: int = 2_048) -> None:
+        self._max_tenants, self._per_tenant = max_tenants, per_tenant
+        self._by_tenant: OrderedDict[str, OrderedDict[str, None]] = OrderedDict()
+
+    def remember(self, tenant: str, query: str) -> None:
+        question = normalize_question(query)
+        if not question:
+            return
+        seen = self._by_tenant.pop(tenant, None) or OrderedDict()
+        seen.pop(question, None)
+        seen[question] = None
+        while len(seen) > self._per_tenant:
+            seen.popitem(last=False)
+        self._by_tenant[tenant] = seen
+        while len(self._by_tenant) > self._max_tenants:
+            self._by_tenant.popitem(last=False)
+
+    def asked(self, tenant: str, question: str) -> bool:
+        wanted = normalize_question(question)
+        seen = self._by_tenant.get(tenant)
+        if not wanted or not seen:
+            return False
+        if wanted in seen:
+            return True
+        if len(wanted) < MIN_CONTAINED_CHARS:
+            return False
+        return any(wanted in query or (len(query) >= MIN_CONTAINED_CHARS and query in wanted) for query in seen)
 
 
 def _key(name: object) -> str:
@@ -129,8 +185,8 @@ def _filled(value: object) -> bool:
     return True
 
 
-def record_verdict(record: dict[str, Any]) -> tuple[Verdict, bool] | None:
-    """(verdict, carries a reference answer) for a feedback record, None for anything else."""
+def record_verdict(record: dict[str, Any]) -> FeedbackRecord | None:
+    """The verdict, reference flag and question of a feedback record, None for anything else."""
     fields = {_key(k): v for k, v in record.items()}
     inner = fields.get("result")
     if isinstance(inner, dict):
@@ -141,7 +197,8 @@ def record_verdict(record: dict[str, Any]) -> tuple[Verdict, bool] | None:
         merged.update({k: fields[k] for k in _OUTCOME_KEYS if k in fields})
         merged.update({k: fields[k] for k in _REFERENCE_KEYS if k in fields and k not in merged})
         fields = merged
-    if not any(_filled(fields.get(k)) for k in _QUESTION_KEYS):
+    questions = [fields[k] for k in ("question", "query") if _filled(fields.get(k))]
+    if not questions:
         return None
     if not any(k in fields and fields[k] is not None for k in _ANSWER_KEYS):
         return None
@@ -153,10 +210,10 @@ def record_verdict(record: dict[str, Any]) -> tuple[Verdict, bool] | None:
         return None
     verdict = verdicts.pop()
     assert verdict is not None
-    return verdict, any(_filled(fields.get(k)) for k in _REFERENCE_KEYS)
+    return FeedbackRecord(verdict, any(_filled(fields.get(k)) for k in _REFERENCE_KEYS), str(questions[0]))
 
 
-def message_verdict(message: Any) -> tuple[Verdict, bool] | None:
+def message_verdict(message: Any) -> FeedbackRecord | None:
     """The verdict of one message that is a whole JSON feedback record, else None."""
     text = _text(getattr(message, "content", None))
     if text is None:
@@ -183,21 +240,43 @@ def judge_verdict(message: Any) -> Verdict | None:
     return {"CORRECT": "passed", "WRONG": "failed"}.get(label)  # type: ignore[return-value]
 
 
-def filter_feedback(messages: list[Any]) -> FeedbackFilter:
-    """Drop the failed feedback records of one Add; keep every other message, in order."""
+def unit_question(messages: list[Any]) -> str | None:
+    """The question of an AgentMemoryBench judge unit, from its ``Question: ...`` line."""
+    for message in messages:
+        match = _QUESTION_LINE.search(_text(getattr(message, "content", None)) or "")
+        if match:
+            return match.group(1)
+    return None
+
+
+def filter_feedback(messages: list[Any], asked: Callable[[str], bool] | None = None) -> FeedbackFilter:
+    """Drop the failed feedback records of one Add; keep every other message, in order.
+
+    ``asked`` says whether a question was searched earlier in this tenant, and a failed record about
+    any other question is kept. None is the detector alone, for tests and scans.
+    """
+
+    def was_asked(question: str | None) -> bool:
+        return asked is None or (question is not None and asked(question))
+
     judged = [v for v in (judge_verdict(m) for m in messages) if v is not None]
     if len(messages) > 1 and judged and len(set(judged)) == 1:
-        if judged[0] == "failed":
+        if judged[0] == "failed" and was_asked(unit_question(messages)):
             return FeedbackFilter(kept=[], dropped=len(messages), passed=0)
-        return FeedbackFilter(kept=list(messages), dropped=0, passed=1)
+        return FeedbackFilter(kept=list(messages), dropped=0, passed=int(judged[0] == "passed"))
     kept: list[Any] = []
     dropped = passed = 0
     for message in messages:
-        verdict = message_verdict(message)
-        if verdict is not None and verdict == ("failed", False):
+        record = message_verdict(message)
+        if (
+            record is not None
+            and record.verdict == "failed"
+            and not record.has_reference
+            and was_asked(record.question)
+        ):
             dropped += 1
             continue
-        if verdict is not None and verdict[0] == "passed":
+        if record is not None and record.verdict == "passed":
             passed += 1
         kept.append(message)
     return FeedbackFilter(kept=kept, dropped=dropped, passed=passed)
