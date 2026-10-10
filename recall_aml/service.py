@@ -96,6 +96,7 @@ from recall_aml.temporal_render import RENDER_VERSIONS, resolve_relative_times
 from recall_aml.window_compose import ADD_DIGEST_CHARS, compose_items
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
+from recall_aml.feedback_guard import FEEDBACK_GUARD_ENV, filter_feedback
 from recall_aml.forget import (
     FORGET_DETECTOR,
     FORGET_ENV,
@@ -534,6 +535,7 @@ class HostedService:
             self.image_text_leg,
             self.image_text_shown,
             self.last_window_append,
+            self.feedback_guard,
             self.stop_on_credit_exhausted,
             self.forget_mode,
             self.forget_gate,
@@ -690,6 +692,18 @@ class HostedService:
         )
         if receipt is not None:
             return AddResponse.model_validate_json(receipt)
+        if self.feedback_guard and request.messages:
+            # ST-1a: a record of an earlier answer that reports a failure is not stored. Every other
+            # message, and the whole Add when nothing is such a record, passes through unchanged.
+            screened = filter_feedback(request.messages)
+            if screened.dropped:
+                log.info(
+                    "hosted_add_feedback_dropped dropped=%d kept=%d session_digest=%s",
+                    screened.dropped,
+                    len(screened.kept),
+                    session_digest(request.session_id)[:16],
+                )
+                request = request.model_copy(update={"messages": screened.kept})
         if not request.messages:
             # Every message was blank and was dropped at validation. There is nothing to store,
             # and refusing would fail the sample permanently, so the Add is durable and empty.
@@ -1871,6 +1885,14 @@ class HostedService:
     def last_window_append(self) -> bool:
         """``RECALL_AML_LAST_WINDOW`` (1/0) when set, else the variant's setting."""
         return _env_flag("RECALL_AML_LAST_WINDOW", self._behavior.last_window_append)
+
+    @property
+    def feedback_guard(self) -> bool:
+        """``RECALL_AML_FEEDBACK_GUARD`` (1/0): drop failed answer-feedback records at Add.
+
+        Off unless set (``recall_aml.feedback_guard``); no variant turns it on.
+        """
+        return _env_flag(FEEDBACK_GUARD_ENV, False)
 
     @property
     def forget_mode(self) -> ForgetMode:

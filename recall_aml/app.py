@@ -585,6 +585,7 @@ def create_app(
                 "multimodal_scope": service.multimodal_scope,
                 "route_gates": service.route_gates,
                 "last_window_append": service.last_window_append,
+                "feedback_guard": service.feedback_guard,
                 "forget_suppression": service.forget_suppression_profile,
                 "image_text": service.image_text_profile,
                 "anchor_prior_records": service.anchor_prior_records,
