@@ -1531,10 +1531,8 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         provenance (indexed_at) and validity (superseded_by / valid_until). When `abstained` is
         true, NO valid hit survived — say you don't know instead of answering from the hits.
         `evidence` says what an answer may cite: rely only on the hits whose chunk_id is in
-        `evidence.citable`, and cite those chunk_ids. It applies `recall_evidence`'s rule to
-        these hits only: call `recall_evidence` for card warrants, a rendered answer prompt, or
-        passages beyond these hits (related items, deeper pages of a paged document), which
-        only it can cite. `advice` states what to do.
+        `evidence.citable`, and cite those chunk_ids. It covers these hits only, not related
+        items or deeper pages of a paged document. `advice` states what to do.
 
         Args:
             query: what to recall (natural language).

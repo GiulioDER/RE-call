@@ -12,6 +12,7 @@ Invariants, each with the mutation that turns its test red (recorded in the test
   does not invite an answer.
 - S3 `RECALL_SEARCH_EVIDENCE=off` removes the field and the advice sentence.
 - S4 the citation sentence names no other tool (a named tool primes small models to call it).
+- S5 the `recall_search` description names no other tool either (EV-1c: about half the effect).
 
 The trusted search is a stand-in; `_retrieve_trusted`, `search_memory` and `evidence_memory` are the
 real ones.
@@ -136,3 +137,15 @@ def test_the_citation_advice_names_no_other_tool() -> None:
     #906 ("...; `recall_evidence` adds card warrants, a rendered answer prompt, and related or paged
     passages these hits do not include.") fails "the advice names another tool"."""
     assert "recall_" not in retrieval.SEARCH_EVIDENCE_NOTE, "the advice names another tool"
+
+
+def test_the_search_description_names_no_other_tool() -> None:
+    """S5. Measured 2026-10-10 (EV-1c): a `recall_search` description that named `recall_evidence`
+    caused about half of a 3B model's evidence calls after abstentions. The in-process copy is pinned
+    verbatim to the server docstring by tests/test_recall_agent_descriptions.py, so this reads the
+    copy. Red proof: the description merged in #906 ("It applies `recall_evidence`'s rule to these
+    hits only: call `recall_evidence` for card warrants, ...") fails "the search description names
+    recall_evidence"."""
+    from recall_agent._descriptions import RECALL_SEARCH_DESCRIPTION
+
+    assert "recall_evidence" not in RECALL_SEARCH_DESCRIPTION, "the search description names recall_evidence"
