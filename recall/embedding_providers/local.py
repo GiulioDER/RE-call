@@ -552,6 +552,13 @@ class PromptedSentenceTransformerEmbedder:
 
         source = os.environ if env is None else env
         prompts = prompts_for(model)
+        if Path(model).exists():
+            # sentence-transformers loads an existing local path in preference to the hub id, which
+            # would skip the pinned revision and, for a remote-code model, run that directory's code.
+            raise ValueError(
+                f"a local path named {model!r} exists here and would shadow the pinned hub "
+                "revision; st-prompted loads only the hub model, so move or rename that path"
+            )
         if prompts.remote_code:
             _require_remote_model_code_opt_in(source, model)
         try:

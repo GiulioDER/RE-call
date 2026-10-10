@@ -81,10 +81,10 @@ def test_st_prompted_sends_the_published_prompts_on_both_paths(stub_st, model):
     Red proof, recorded 2026-10-11 on branch claude/local-embedder-prompts, two mutations, each
     run separately against `PromptedSentenceTransformerEmbedder` in
     `recall/embedding_providers/local.py`: (1) `embed_query` encoding with
-    ``self._prompts.document`` failed all six cases at the assertion on the query element;
-    (2) `_encode` passing ``prompt=prompt or None`` failed the five models without a document
+    ``self._prompts.document`` failed all five cases at the assertion on the query element;
+    (2) `_encode` passing ``prompt=prompt or None`` failed the four models without a document
     prompt at the passage element, recording ``None`` where ``""`` was required, while
-    voyage-4-nano (which has one) passed. Restored, all six pass.
+    voyage-4-nano (which has one) passed. Restored, all five pass.
     """
     p = prompts_for(model)
     assert _prompts_on_the_index_and_search_paths(f"st-prompted:{model}", OPT_IN) == [
@@ -163,6 +163,26 @@ def test_remote_code_models_need_the_opt_in_and_load_pinned(stub_st):
     init = stub_st.inits[-1]
     assert (init["revision"], init["trust_remote_code"], init["truncate_dim"]) == (
         PUBLISHED_PROMPTS[NANO].revision, True, 1024)
+
+
+def test_a_local_path_shadowing_the_model_id_is_refused(stub_st, tmp_path, monkeypatch):
+    """A directory named like the hub id would be loaded instead of the pinned revision.
+
+    Failure mode caught: sentence-transformers prefers an existing local path to the hub, so a
+    `voyageai/voyage-4-nano` directory in the working directory would bypass the revision pin and,
+    with remote code allowed, run whatever code that directory holds.
+
+    Red proof, recorded 2026-10-11 on branch claude/local-embedder-prompts: removing the
+    ``Path(model).exists()`` check from `PromptedSentenceTransformerEmbedder.__init__` failed at
+    `pytest.raises`. Restored, passes.
+    """
+    from recall.embeddings import resolve_embedder
+
+    (tmp_path / NANO).mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="shadow the pinned hub revision"):
+        resolve_embedder(f"st-prompted:{NANO}", OPT_IN)
+    assert stub_st.inits == []
 
 
 def test_chat_template_routing_is_refused(stub_st):

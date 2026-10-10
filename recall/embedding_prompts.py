@@ -57,13 +57,12 @@ PUBLISHED_PROMPTS: dict[str, PromptSet] = {
         remote_code=True,
         dimension=1024,
     ),
-    "nomic-ai/CodeRankEmbed": PromptSet(
-        "published-v1",
-        "Represent this query for searching relevant code: ",
-        "",
-        "3c4b60807d71f79b43f3c4363786d9493691f8b1",
-        remote_code=True,
-    ),
+    # nomic-ai/CodeRankEmbed is deliberately absent. Its remote modelling code loads its config and
+    # weights with `cached_file(model_name, ...)` and no revision, so whatever the repository's
+    # `main` holds at load time is what runs, pinned revision or not, and a `.bin` checkpoint goes
+    # through `torch.load`. It can be added once its loader honours a revision, or behind a check
+    # that `main` still equals the pin. Its published query prompt, for that day:
+    # "Represent this query for searching relevant code: ".
 }
 
 
