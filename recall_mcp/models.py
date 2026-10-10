@@ -48,6 +48,32 @@ class SearchHit(BaseModel):
     )
 
 
+class SearchEvidence(BaseModel):
+    """What may be cited from this search, decided exactly as `recall_evidence` decides it.
+
+    Built from the same trusted result by `recall.evidence.build_evidence_bundle`, so it adds no
+    retrieval and no write. Measured 2026-10-10: given the search result, no model asked for the
+    separate evidence bundle before answering (0 to 10% of conversations for a frontier and a 9B
+    model, with the tool description and the routing guide in front of them), so the part of the
+    bundle a model needs to answer comes with the search. Card warrants, which `recall_evidence`
+    registers in the store, and its rendered answer prompt stay with that tool.
+    """
+
+    decision: str = Field(
+        description="answer | abstain. 'abstain' means no hit may be cited: say you don't know."
+    )
+    reason_code: str | None = Field(
+        default=None,
+        description="Why nothing is citable: corpus_gap | no_supporting_evidence | "
+        "evidence_budget_exhausted. Null when the decision is 'answer'.",
+    )
+    citable: list[str] = Field(
+        default_factory=list,
+        description="The chunk_id of every hit an answer may rely on and cite, in retrieval "
+        "order: the hits the trust layer cleared, and no others.",
+    )
+
+
 class SearchResult(BaseModel):
     query: str
     decision_state: DecisionState | None = Field(
@@ -135,6 +161,11 @@ class SearchResult(BaseModel):
         "nothing.",
     )
     hits: list[SearchHit]
+    evidence: SearchEvidence | None = Field(
+        default=None,
+        description="What an answer from this search may cite (see SearchEvidence). Null when "
+        "the server runs with RECALL_SEARCH_EVIDENCE=off.",
+    )
     explanation: dict[str, object] | None = None
     related_items: list[SearchHit] = Field(default_factory=list)
     related_diagnostics: list[str] = Field(default_factory=list)
