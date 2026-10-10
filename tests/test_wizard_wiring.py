@@ -22,9 +22,11 @@ import pytest
 
 from recall.wizard.corpora import default_plan
 from recall.wizard.wiring import (
+    SERVER_OS_ENV,
     mcp_config,
     register_local_scope,
     server_blocks,
+    server_os_env,
     write_project_files,
 )
 
@@ -149,10 +151,11 @@ def test_the_uncalibrated_tenant_is_never_put_into_production_mode(tmp_path: Pat
 def test_every_block_sets_trust_in_its_own_env_rather_than_relying_on_the_shell(
     tmp_path: Path,
 ) -> None:
-    """A stdio server launched with an explicit `env` inherits NOTHING.
+    """The client's environment is not the operator's shell.
 
     A corpus that searched correctly from the terminal answered INDEX_NOT_READY through the client
-    for exactly this reason, which is recorded in this repository's own CLAUDE.md.
+    for exactly this reason. (This said a server with an explicit `env` "inherits NOTHING"; on
+    2026-10-08 Claude Code 2.1.238 and 2.1.293 were measured to merge the block instead.)
     """
     blocks, _ = server_blocks(
         _plan(tmp_path),
@@ -432,6 +435,64 @@ def test_the_server_command_launches_the_real_module_from_the_project_root(tmp_p
     assert entry["type"] == "stdio"
     assert entry["args"] == ["-m", "recall_mcp.server"]
     assert entry["cwd"] == str(tmp_path / "project")
+
+
+def test_a_registered_server_can_start_when_its_client_replaces_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every entry written to the client carries what Python needs to start, and not PATH.
+
+    Invariant: the `env` of every server `register_local_scope` writes holds the set OS variables
+    from `SERVER_OS_ENV` and `PYTHONSAFEPATH=1`, keeps its own `RECALL_*` decisions, and omits PATH.
+    Failure mode caught: a client that REPLACES the environment with the block starts a server that
+    dies on `No module named 'anyio'` (no APPDATA) or `WinError 10106` (no SystemRoot), measured
+    2026-10-08, and the session simply has no tools. The passthrough must also stay out of
+    `ServerBlock.env`, which becomes a Linux container's environment in the Docker stack.
+
+    Red proof, 2026-10-08, each against `recall.wizard.wiring` and restored to green afterwards:
+    `mcp_config` reverted to the pre-fix `"env": dict(block.env)` failed with
+    `the default-docs entry lacks APPDATA`; "PATH" appended to `SERVER_OS_ENV` failed with
+    `a PATH frozen at install time goes stale`; `server_os_env` returning without PYTHONSAFEPATH
+    failed with `default-docs would import from the session's cwd`; `server_os_env()` merged into
+    `_base_env` instead failed with `a Windows path would reach the Linux containers`.
+    """
+    sentinels = {name: f"sentinel-{name}" for name in SERVER_OS_ENV}
+    for name, value in sentinels.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PATH", "sentinel-PATH")
+    blocks, _ = server_blocks(
+        _plan(tmp_path),
+        dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
+        promoted=frozenset({"default-docs", "default-code"}),
+        serving=frozenset({"default-docs", "default-code", "default-memory"}),
+    )
+    client = _client(tmp_path)
+
+    register_local_scope(blocks, project_root=tmp_path, config_path=client)
+
+    written = _registered(client, tmp_path)
+    assert set(written) == {"default-docs", "default-code", "default-memory"}
+    for name, entry in written.items():
+        env = entry["env"]
+        for variable in ("APPDATA", "SystemRoot"):
+            assert env.get(variable) == sentinels[variable], f"the {name} entry lacks {variable}"
+        assert {k: env.get(k) for k in SERVER_OS_ENV} == sentinels, name
+        assert env.get("PYTHONSAFEPATH") == "1", f"{name} would import from the session's cwd"
+        assert "PATH" not in env, "a PATH frozen at install time goes stale"
+        assert env["RECALL_TENANT"] == name, "the block's own decisions must survive the merge"
+    for block in blocks:
+        assert "APPDATA" not in block.env, "a Windows path would reach the Linux containers"
+
+
+def test_the_os_passthrough_takes_only_what_is_set() -> None:
+    """An unset or empty variable is omitted rather than written as an empty string.
+
+    Red proof, 2026-10-08: `server_os_env` filtering on `name in source` instead of
+    `source.get(name)` failed the equality below with `SystemRoot: ''` present. Restored, it passes.
+    """
+    env = server_os_env({"APPDATA": "a", "SystemRoot": "", "PATH": "p"})
+
+    assert env == {"APPDATA": "a", "PYTHONSAFEPATH": "1"}
 
 
 # ----------------------------------------------------------------------------------------------
