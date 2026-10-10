@@ -63,6 +63,7 @@ from recall.embedding_providers.local import (  # re-exported: this module is th
     _require_research_model_opt_in as _require_research_model_opt_in,
     _require_remote_model_code_opt_in as _require_remote_model_code_opt_in,
     SentenceTransformerEmbedder as SentenceTransformerEmbedder,
+    PromptedSentenceTransformerEmbedder as PromptedSentenceTransformerEmbedder,
     QWEN3_RETRIEVAL_INSTRUCTION_V1 as QWEN3_RETRIEVAL_INSTRUCTION_V1,
     Qwen3EmbeddingEmbedder as Qwen3EmbeddingEmbedder,
 )
@@ -94,7 +95,7 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
 
     Supported spellings:
     ``hashing``, ``fastembed``, ``fastembed:<model>``, ``st:<model>``,
-    ``sfr-code``, ``voyage``, ``voyage:<model>``, ``voyage-context``,
+    ``st-prompted:<model>`` (published prompts, see `recall.embedding_prompts`), ``sfr-code``, ``voyage``, ``voyage:<model>``, ``voyage-context``,
     ``voyage-context:<model>``, ``voyage-multimodal``, ``openai``, ``openai:<model>``,
     ``openrouter`` and ``openrouter:<model>``.
     """
@@ -132,6 +133,8 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         return FastEmbedEmbedder(env=source)
     if name.startswith("fastembed:"):
         return FastEmbedEmbedder(model_name=name[len("fastembed:"):], env=source)
+    if name.startswith("st-prompted:"):
+        return PromptedSentenceTransformerEmbedder(name[len("st-prompted:"):], env=source)
     if name.startswith("st:"):
         return SentenceTransformerEmbedder(name[3:])
     if name == "sfr-code":

@@ -530,6 +530,109 @@ class SentenceTransformerEmbedder:
         return [[float(x) for x in v] for v in vecs]
 
 
+class PromptedSentenceTransformerEmbedder:
+    """A pinned local model encoded with its published query and document prompts.
+
+    Selected with ``RECALL_EMBEDDER=st-prompted:<hf-id>`` for the models in
+    `recall.embedding_prompts.PUBLISHED_PROMPTS`. It is a separate identity from ``st:<hf-id>`` on
+    purpose, in its NAME as well as its profile: the serving gate, calibration v2, the generation
+    build check and the lite store compare the embedder's name and dimension only, so a prompted
+    encoder that kept the ``st:`` name would answer from a store built without prompts, silently.
+    The name carries the prompt set's version for the same reason.
+
+    The prompt is always passed explicitly, an empty string included, so a model config's
+    ``default_prompt_name`` can never add one nobody recorded. ``embed`` encodes passages, as the
+    Qwen3 embedder does, because indexing is the caller that reaches it.
+    """
+
+    def __init__(
+        self, model: str, *, env: Mapping[str, str] | None = None, batch_size: int = 32
+    ) -> None:
+        from recall.embedding_prompts import prompts_for
+
+        source = os.environ if env is None else env
+        prompts = prompts_for(model)
+        if prompts.remote_code:
+            _require_remote_model_code_opt_in(source, model)
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:  # pragma: no cover - exercised only without the extra
+            raise ImportError(
+                'PromptedSentenceTransformerEmbedder requires: pip install "recall-rag[rerank]"'
+            ) from exc
+        self._model = SentenceTransformer(
+            model, revision=prompts.revision, trust_remote_code=prompts.remote_code,
+            truncate_dim=prompts.dimension,
+        )
+        modality = getattr(self._model[0], "modality_config", None)
+        if modality and "message" in modality:
+            # sentence-transformers 5.4 and later route the text of a model with a chat template
+            # through that template and send the prompt as a system turn, which is not the
+            # published prompt the model was trained with.
+            raise ValueError(
+                f"st-prompted:{model} would route its text through the model's chat template under "
+                "this sentence-transformers version, so the published prompt would not be sent as "
+                "trained; install sentence-transformers<5.4"
+            )
+        self._prompts = prompts
+        self._batch_size = batch_size
+        self._name = f"st-prompted:{model}@{prompts.version}"
+        self._dim = int(
+            prompts.dimension or self._model.get_sentence_embedding_dimension()
+            or len(self._encode(["width probe"], "")[0])
+        )
+        self._profile = EmbeddingProfile(
+            profile_id=self._name,
+            model_name=model,
+            artifact_digest=f"hf-revision:{prompts.revision}",
+            dimension=self._dim,
+            query_mode="prompt:query",
+            passage_mode="prompt:document" if prompts.document else "raw",
+            instruction_version=prompts.version,
+            dependencies=(
+                ("sentence-transformers", _package_version("sentence-transformers")),
+                ("transformers", _package_version("transformers")),
+            ),
+        )
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def profile(self) -> EmbeddingProfile:
+        return self._profile
+
+    def _encode(self, texts: list[str], prompt: str) -> list[list[float]]:
+        vectors = self._model.encode(
+            texts, prompt=prompt, batch_size=self._batch_size, normalize_embeddings=False,
+            show_progress_bar=False,
+        )
+        out: list[list[float]] = []
+        for vector in vectors:
+            values = [float(x) for x in vector]
+            # Normalised here rather than by the library, so a Matryoshka-truncated vector is unit
+            # length too: the store scores with cosine, and truncation happens after the model.
+            norm = math.sqrt(sum(value * value for value in values))
+            if norm == 0.0:
+                raise RuntimeError(f"{self._name} produced a zero vector")
+            out.append([value / norm for value in values])
+        return out
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return self.embed_passages(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._encode([text], self._prompts.query)[0]
+
+    def embed_passages(self, texts: list[str]) -> list[list[float]]:
+        return self._encode(texts, self._prompts.document)
+
+
 QWEN3_RETRIEVAL_INSTRUCTION_V1 = (
     "Given a user question, retrieve passages that answer the question"
 )

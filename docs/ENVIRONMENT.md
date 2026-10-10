@@ -41,6 +41,9 @@ OPENROUTER_API_KEY=
 # RECALL_EMBEDDER=gemini-embedding-2 # OpenRouter google/gemini-embedding-2
 # RECALL_EMBEDDER=openrouter:<provider/model>  # any other OpenRouter embedding model
 # RECALL_EMBED_DIMENSIONS=1536       # optional for OpenAI-compatible embedders
+# RECALL_EMBEDDER=st-prompted:<hf-id>  # a local model with its published query/document prompts,
+#                                    # pinned in recall/embedding_prompts.py; its own name and
+#                                    # fingerprint, never the same identity as st:<hf-id>
 # RECALL_EMBEDDER=sfr-code           # Salesforce/SFR-Embedding-Code-2B_R, research/Gemma terms
 # RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1
 # RECALL_ACCEPT_REMOTE_MODEL_CODE=1  # required only for models that need trust_remote_code
