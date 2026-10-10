@@ -11,6 +11,7 @@ Invariants, each with the mutation that turns its test red (recorded in the test
 - S2 an abstaining search cites nothing, carries the evidence tool's reason code, and its advice
   does not invite an answer.
 - S3 `RECALL_SEARCH_EVIDENCE=off` removes the field and the advice sentence.
+- S4 the citation sentence names no other tool (a named tool primes small models to call it).
 
 The trusted search is a stand-in; `_retrieve_trusted`, `search_memory` and `evidence_memory` are the
 real ones.
@@ -127,3 +128,11 @@ def test_the_switch_turns_search_evidence_off() -> None:
     assert retrieval.SEARCH_EVIDENCE_NOTE not in search.advice
     on, _ = _both(["ok"])
     assert on.evidence is not None and on.evidence.citable == ["c0"]
+
+
+def test_the_citation_advice_names_no_other_tool() -> None:
+    """S4. Measured 2026-10-10: a citation sentence that named `recall_evidence` made a 3B model call
+    that tool in 60 of 60 conversations, after abstentions too. Red proof: the wording merged in
+    #906 ("...; `recall_evidence` adds card warrants, a rendered answer prompt, and related or paged
+    passages these hits do not include.") fails "the advice names another tool"."""
+    assert "recall_" not in retrieval.SEARCH_EVIDENCE_NOTE, "the advice names another tool"
