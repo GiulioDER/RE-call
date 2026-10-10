@@ -35,7 +35,7 @@ from datetime import UTC, datetime
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from recall.dashboard import db as dbq
@@ -52,6 +52,10 @@ REVIEWER_COOKIE = "recall_reviewer"
 TENANT_COOKIE = "recall_tenant"
 DEFAULT_TENANT = "memory"
 TENANT_CACHE_SECONDS = 60
+#: A corpus graph is rebuilt at most this often: building one reads every file of the corpus, about
+#: 2 s on the database host and 7 s over a tunnel for the memory tenant (measured 2026-10-08), and a
+#: corpus changes only when a new generation is promoted.
+CORPUS_GRAPH_CACHE_SECONDS = 300
 # A tenant id as RE-call writes them; anything else in a query or cookie is ignored, never echoed.
 TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 # The corpora this project serves, first in the switcher, by what they hold.
@@ -120,7 +124,7 @@ _STYLE = """
   --ink:#f4f1e8; --ink-soft:#d0d0c6; --ink-muted:#9a9c90; --line:rgba(96,108,96,.38); --line-strong:rgba(120,132,118,.7); --grid:rgba(96,108,96,.11);
   --signal:#d7a52a; --signal-soft:rgba(215,165,42,.14); --rust:#d0603f; --rust-soft:rgba(208,96,63,.14); --sage:#8fb08a;
   --node-current:#efe9d8; --node-superseded:#d0603f; --node-expired:#5d6258; --node-pending:#e3b23c;
-  --edge-link:#a9b7a1; --edge-supersedes:#d0603f; --edge-pending:#e3b23c; --mark:rgba(215,165,42,.32);
+  --edge-link:#a9b7a1; --edge-supersedes:#d0603f; --edge-pending:#e3b23c; --edge-shares:#7fa7c4; --mark:rgba(215,165,42,.32);
   --cat-1:#efe9d8; --cat-2:#e3b23c; --cat-3:#8fb08a; --cat-4:#d0603f; --cat-5:#7fa7c4; --cat-6:#c49ac0; --cat-7:#b8a37a; --cat-8:#6f7a6c;
   --age-new:#f0be4a; --age-old:#4c544b;
   --font-display:"Geist","Segoe UI Variable Display","Segoe UI",ui-sans-serif,system-ui,sans-serif;
@@ -133,7 +137,7 @@ _STYLE = """
     --ink:#151815; --ink-soft:#3a3f39; --ink-muted:#6c6f64; --line:rgba(70,80,71,.22); --line-strong:rgba(70,80,71,.45); --grid:rgba(70,80,71,.07);
     --signal:#9c720f; --signal-soft:rgba(156,114,15,.12); --rust:#b0462a; --rust-soft:rgba(176,70,42,.1); --sage:#4f7a4a;
     --node-current:#2b302a; --node-superseded:#b0462a; --node-expired:#b7b4a6; --node-pending:#c08a14;
-    --edge-link:#6f7f68; --edge-supersedes:#b0462a; --edge-pending:#c08a14; --mark:rgba(192,138,20,.28); color-scheme:light;
+    --edge-link:#6f7f68; --edge-supersedes:#b0462a; --edge-pending:#c08a14; --edge-shares:#3f6f91; --mark:rgba(192,138,20,.28); color-scheme:light;
     --cat-1:#2b302a; --cat-2:#a87a10; --cat-3:#4f7a4a; --cat-4:#b0462a; --cat-5:#3f6f91; --cat-6:#8a5a86; --cat-7:#7a6a43; --cat-8:#9a9c90;
     --age-new:#a87a10; --age-old:#c9c5b6;
   }
@@ -206,7 +210,14 @@ h2.sec { font:500 11px var(--font-mono); letter-spacing:.16em; text-transform:up
 .searchbox { position:relative; flex:1 1 280px; max-width:440px; } .searchbox kbd { position:absolute; right:10px; top:50%; transform:translateY(-50%); font:11px var(--font-mono); color:var(--ink-muted); border:1px solid var(--line-strong); border-radius:4px; padding:1px 6px; }
 .chip { display:inline-flex; align-items:center; gap:8px; font:12px var(--font-mono); color:var(--ink-soft); border:1px solid var(--line); border-radius:999px; padding:6px 11px; cursor:pointer; user-select:none; background:var(--surface-1); }
 .chip input { accent-color:var(--signal); margin:0; } .sw { width:16px; height:0; border-top:2px solid; display:inline-block; }
-.sw.link { border-color:var(--edge-link); } .sw.supersedes { border-color:var(--edge-supersedes); } .sw.pending { border-color:var(--edge-pending); border-top-style:dashed; }
+.sw.link { border-color:var(--edge-link); } .sw.supersedes { border-color:var(--edge-supersedes); } .sw.pending { border-color:var(--edge-pending); border-top-style:dashed; } .sw.shares { border-color:var(--edge-shares); border-top-style:dotted; }
+.corpus-switch { display:flex; flex-wrap:wrap; gap:.4rem .7rem; align-items:center; margin:0 0 .6rem; }
+.corpus-switch a { padding:.15rem .55rem; border:1px solid var(--line); border-radius:999px; text-decoration:none; }
+.corpus-switch a.on { border-color:var(--signal); color:var(--signal); }
+.facts { display:grid; grid-template-columns:repeat(auto-fit, minmax(10rem, 1fr)); gap:.6rem 1rem; margin:.6rem 0; }
+.facts > div { display:flex; flex-direction:column; gap:.15rem; min-width:0; overflow-wrap:anywhere; }
+ul.cols { columns:3 14rem; }
+pre.chunk { white-space:pre-wrap; overflow-wrap:anywhere; max-height:28rem; overflow:auto; }
 .legend { display:flex; flex-wrap:wrap; gap:14px; font:12px var(--font-mono); color:var(--ink-muted); }
 .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:-1px; }
 .dot.current { background:var(--node-current); } .dot.superseded { border:1.5px solid var(--node-superseded); } .dot.expired { background:var(--node-expired); } .dot.pending { background:var(--node-pending); box-shadow:0 0 0 3px color-mix(in srgb, var(--node-pending) 25%, transparent); }
@@ -403,6 +414,8 @@ class DashboardApp:
         self._request = threading.local()
         self._tenant_cache: tuple[float, list[dict[str, Any]]] | None = None
         self._tenant_lock = threading.Lock()
+        self._corpus_graphs: dict[str, tuple[float, bytes]] = {}
+        self._corpus_graph_lock = threading.Lock()
 
     # ------------------------------------------------------------------ tenants (database)
 
@@ -427,7 +440,7 @@ class DashboardApp:
         path = getattr(self._request, "path", "/overview") or "/overview"
         # A search or a memory's usage belongs to one corpus, so switching drops back to the list;
         # every other page keeps what it shows (a memo, a claim, a filter) and changes the corpus.
-        corpus_scoped = {"/retrieval/event": "/retrieval", "/control/memo": "/control"}
+        corpus_scoped = {"/retrieval/event": "/retrieval", "/control/memo": "/control", "/corpus/source": "/overview"}
         keep = {} if path in corpus_scoped else {k: v for k, v in getattr(self._request, "query", {}).items() if k not in ("tenant", "done")}
         path = corpus_scoped.get(path, path)
         try:
@@ -550,12 +563,11 @@ class DashboardApp:
         if method == "GET" and url.path == "/config":
             return self._config_page(query.get("all", "") == "1")
         if method == "GET" and url.path == "/graph":
-            return self._graph_page()
+            return self._graph_page(self._corpus_param(query))
         if method == "GET" and url.path == "/api/graph.json":
-            from recall.dashboard.graph import build_graph
-
-            payload = json.dumps(build_graph(self.root, database_reports=self._reports_source()), ensure_ascii=False).encode("utf-8")
-            return Response(HTTPStatus.OK, payload, (("Content-Type", "application/json; charset=utf-8"),))
+            return self._graph_json(self._corpus_param(query))
+        if method == "GET" and url.path == "/corpus/source":
+            return self._corpus_source_page(query.get("file", ""))
         if method == "GET" and url.path in _STATIC_FILES:
             name, kind = _STATIC_FILES[url.path]
             return Response(HTTPStatus.OK, (STATIC / name).read_bytes(), (("Content-Type", kind),))
@@ -743,7 +755,7 @@ class DashboardApp:
             f"<dt>tasks</dt><dd>succeeded {found['succeeded']} · failed {found['failed']} (only where an agent used it and said)</dd></dl>"
         )
         local = self._memo_for_source(source)
-        links = "<a href='/control'>← all memories</a>" + (
+        links = "<a href='/control'>← all memories</a> · " + self._corpus_source_link(source, "this source in the corpus") + (
             f" · <a href='/memo?{_e(urlencode({'path': local}))}'>edit this memo</a> · <a href='/graph#memo={_e(local)}'>see it in the graph</a>" if local else ""
         )
         cards = "".join(
@@ -1536,7 +1548,9 @@ class DashboardApp:
         rows = []
         for i, hit in enumerate(found["hits"], 1):
             memo = self._memo_for_source(hit["source"])
-            source = self._memo_link(memo) if memo else _e(hit["source"])
+            source = (self._memo_link(memo) if memo else _e(hit["source"])) + (
+                f" <span class='muted'>· {self._corpus_source_link(hit['source'], 'corpus page')}</span>" if hit["source"] else ""
+            )
             successor = f"<div class='muted'>superseded by {_e(hit['superseded_by'])}</div>" if hit["superseded_by"] else ""
             confidence = f"{hit['confidence']:.2f}" if isinstance(hit["confidence"], int | float) else ""
             rows.append(
@@ -1564,13 +1578,162 @@ class DashboardApp:
             body=body,
         ))
 
-    def _graph_page(self) -> Response:
+    @staticmethod
+    def _corpus_param(query: Mapping[str, str]) -> str:
+        """`?corpus=` when it names a tenant (a slug), else "" for the memo files."""
+        value = query.get("corpus", "")
+        return value if TENANT_NAME.fullmatch(value) else ""
+
+    def _graph_json(self, corpus: str) -> Response:
+        headers = (("Content-Type", "application/json; charset=utf-8"),)
+        if not corpus:
+            from recall.dashboard.graph import build_graph
+
+            payload = build_graph(self.root, database_reports=self._reports_source())
+            return Response(HTTPStatus.OK, json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers)
+        if self.db is None:
+            return Response(HTTPStatus.SERVICE_UNAVAILABLE, b'{"error": "no corpus database is configured"}', headers)
+        from recall.dashboard import corpus as corpus_db
+
+        with self._corpus_graph_lock:
+            cached = self._corpus_graphs.get(corpus)
+            if cached and time.monotonic() - cached[0] < CORPUS_GRAPH_CACHE_SECONDS:
+                return Response(HTTPStatus.OK, cached[1], headers)
+        try:
+            payload = corpus_db.corpus_graph(self.db, corpus)
+        except dbq.DatabaseUnavailable as exc:
+            return Response(HTTPStatus.SERVICE_UNAVAILABLE, json.dumps({"error": str(exc)}).encode("utf-8"), headers)
+        body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        with self._corpus_graph_lock:
+            self._corpus_graphs[corpus] = (time.monotonic(), body)
+        return Response(HTTPStatus.OK, body, headers)
+
+    def _corpus_source_link(self, file: str, label: str | None = None) -> str:
+        """A link to View 2 for `file` in the current corpus."""
+        return f"<a href='/corpus/source?{_e(urlencode({'file': file}))}'>{_e(label or file)}</a>"
+
+    def _corpus_source_page(self, file: str) -> Response:
+        """View 2: one source file of the current corpus, read from the database."""
+        from recall.dashboard import corpus as corpus_db
+
+        title = "RE-call · a source in the corpus"
+        if self.db is None:
+            return self._not_connected(title, "graph", "A source in the corpus")
+        tenant = self._current_tenant()
+        if not file:
+            return self._error(HTTPStatus.NOT_FOUND, "Which file? Open one from the corpus graph or a search.")
+        try:
+            found = corpus_db.source_detail(self.db, tenant, file)
+        except dbq.DatabaseUnavailable:
+            return self._not_connected(title, "graph", "A source in the corpus")
+        if found is None:
+            return self._error(HTTPStatus.NOT_FOUND, f"No file {file!r} in the {tenant} corpus's active generation.")
+        state = found["state"]
+        facts = "".join(
+            f"<div><span class='eyebrow'>{_e(label)}</span><b>{value}</b></div>"
+            for label, value in (
+                ("state", f"<span class='state state-{_e(state)}'>{_e(state)}</span>"),
+                ("chunks", _e(found["chunk_count"])),
+                ("type", _e(found["type"] or "none declared")),
+                ("valid", _e(" to ".join(v for v in (found["valid_from"] or "", found["valid_until"] or "") if v) or "no dates declared")),
+                ("indexed", _e(f"{found['first_indexed']} first, {found['last_indexed']} last")),
+                ("project", _e(found["project"] or "")),
+                ("commit", f"<code>{_e((found['indexed_commit'] or '')[:12])}</code>"),
+                ("generation", f"<code>{_e(found['generation'][:20])}</code>"),
+            )
+        )
+        lines: list[str] = []
+        if found["superseded_by"]:
+            lines.append(f"<p class='warn-text'>Superseded by {self._corpus_source_link(found['superseded_by'])}: search marks this file superseded.</p>")
+        if found["supersedes"]:
+            lines.append("<p>Replaces " + ", ".join(self._corpus_source_link(old) for old in found["supersedes"]) + ".</p>")
+        if found["unresolved_claims"]:
+            lines.append(
+                "<p class='warn-text'>Declares <code>supersedes</code> on names that match no file in this corpus: "
+                + ", ".join(f"<code>{_e(name)}</code>" for name in found["unresolved_claims"]) + ".</p>"
+            )
+        local = self._memo_for_source(found["source_uri"]) if tenant == DEFAULT_TENANT else None
+        links = " · ".join(
+            part for part in (
+                f"<a href='/graph?{_e(urlencode({'corpus': tenant}))}#memo={_e(found['file'])}'>see it in the corpus graph</a>",
+                f"<a href='/control/memo?{_e(urlencode({'source': found['source_uri']}))}'>how search used it</a>",
+                f"<a href='/read?{_e(urlencode({'path': local}))}'>read the memo file</a>" if local else "",
+            ) if part
+        )
+        entities = "".join(
+            f"<li><code>{_e(e['name'])}</code> <span class='muted'>{_e(e['kind'])} · {_e(e['mentions'])}</span></li>"
+            for e in found["entities"]
+        ) or "<li class='muted'>No entity was extracted from this file.</li>"
+        relations = "".join(
+            "<tr><td>"
+            + (self._corpus_source_link(r["subject"]) if r["subject_kind"] == "file" else f"<code>{_e(r['subject'])}</code>")
+            + f"</td><td><span class='chip'>{_e(r['relation'])}</span> <span class='muted'>{_e(r['status'])}</span></td><td>"
+            + (self._corpus_source_link(r["object"]) if r["object_kind"] == "file" else f"<code>{_e(r['object'])}</code>")
+            + "</td></tr>"
+            for r in found["relations"]
+        )
+        relation_html = f"<table class='grid'>{relations}</table>" if relations else "<p class='muted'>This file takes part in no authored relation.</p>"
+        for label, names in (("Imports", found["imports"]), ("Imported by", found["imported_by"])):
+            if names:
+                items = "".join(f"<li>{self._corpus_source_link(name)}</li>" for name in names[:200])
+                relation_html += f"<h3>{label} · {len(names)}</h3><ul class='plain cols'>{items}</ul>"
+        chunks = "".join(
+            "<details class='card'" + (" open" if i < 3 else "") + "><summary>"
+            f"<b>#{_e(c['ordinal'])}</b> {_e(' › '.join(c['headings']) or '(no heading)')}</summary>"
+            f"<pre class='chunk'>{_e(c['text'][:4000])}{'…' if len(c['text']) > 4000 else ''}</pre></details>"
+            for i, c in enumerate(found["chunks"])
+        )
+        more = (
+            f"<p class='muted'>Showing the first {len(found['chunks'])} of {found['chunk_count']} chunks.</p>"
+            if found["chunk_count"] > len(found["chunks"]) else ""
+        )
+        body = (
+            f"<div class='muted'>{links}</div>"
+            f"<div class='card'><div class='names big'>{_e(found['file'])}</div><div class='facts'>{facts}</div>{''.join(lines)}</div>"
+            f"<h2 class='sec'>Relations · {len(found['relations'])}</h2>{relation_html}"
+            f"<h2 class='sec'>Names it mentions · {len(found['entities'])}</h2><ul class='plain cols'>{entities}</ul>"
+            f"<h2 class='sec'>Chunks · {found['chunk_count']}</h2>{more}{chunks}"
+        )
+        return self._html(
+            self._shell(
+                title=title, active="graph", root=self.root, pending=0,
+                eyebrow=f"corpus · {tenant} · from the database", heading=PurePosixPath(found["file"]).name or found["file"],
+                lede="One file as the corpus holds it: what replaces it, what it relates to, and the chunks search reads.",
+                body=body,
+            )
+        )
+
+    def _corpus_switch(self, corpus: str) -> str:
+        """Links between the memo files' graph and each database corpus's graph."""
+        names: list[str] = []
+        if self.db is not None:
+            try:
+                names = [t["tenant"] for t in self._tenants() if t["generation"]]
+            except dbq.DatabaseUnavailable:
+                names = []
+        order = [name for name, _ in PRIMARY_TENANTS]
+        # The main corpora only, plus the one shown if it is another: a deployment can hold dozens
+        # of benchmark tenants, and any of them is still reachable as `/graph?corpus=<name>`.
+        names = sorted((n for n in names if n in order or n == corpus), key=lambda n: (order.index(n) if n in order else len(order), n))
+        labels = dict(PRIMARY_TENANTS)
+        links = [f"<a href='/graph' class='{'on' if not corpus else ''}'>memo files</a>"] + [
+            f"<a href='/graph?{_e(urlencode({'corpus': name}))}' class='{'on' if name == corpus else ''}'>{_e(labels.get(name, name))}</a>"
+            for name in names
+        ]
+        return f"<div class='corpus-switch'><span class='muted'>corpus</span> {' '.join(links)}</div>"
+
+    def _graph_page(self, corpus: str = "") -> Response:
+        if corpus and self.db is None:
+            return self._not_connected("RE-call · corpus graph", "graph", "Corpus graph")
+        kinds = [
+            ("link", "imports and links" if corpus else "links", "<span class='sw link'></span>", True),
+            ("supersedes", "supersedes", "<span class='sw supersedes'></span>", True),
+        ]
+        kinds.append(("shares", "shared names", "<span class='sw shares'></span>", True) if corpus else ("pending", "pending", "<span class='sw pending'></span>", True))
         toggles = "".join(
             f"<label class='chip'><input type='checkbox' id='show-{key}' {'checked' if on else ''}>{swatch}{label}</label>"
             for key, label, swatch, on in (
-                ("link", "links", "<span class='sw link'></span>", True),
-                ("supersedes", "supersedes", "<span class='sw supersedes'></span>", True),
-                ("pending", "pending", "<span class='sw pending'></span>", True),
+                *kinds,
                 ("hubs", "index pages", "", False),
                 ("motion", "motion", "", True),
             )
@@ -1584,7 +1747,8 @@ class DashboardApp:
             for key, label in (("state", "state"), ("type", "type"), ("folder", "folder"), ("age", "age"), ("health", "health"))
         )
         body = (
-            "<div class='toolbar'><div class='searchbox'><input type='search' id='search' placeholder='Find a memo' aria-label='Find a memo'><kbd>/</kbd></div>"
+            self._corpus_switch(corpus)
+            + "<div class='toolbar'><div class='searchbox'><input type='search' id='search' placeholder='Find a memo' aria-label='Find a memo'><kbd>/</kbd></div>"
             f"{toggles}</div>"
             "<div class='toolbar lensbar'>"
             f"<label class='select'>colour by <select id='lens'>{lenses}</select></label>"
@@ -1592,7 +1756,8 @@ class DashboardApp:
             "<option value='1'>1 hop around the selection</option><option value='2'>2 hops</option><option value='3'>3 hops</option></select></label>"
             f"<div class='legend' id='legend'>{legend}</div></div>"
             "<div id='counts' aria-live='polite'><span class='count-label'>loading the corpus…</span></div>"
-            "<div id='chart-frame'><canvas id='chart' role='img' aria-label='Memory graph: every memo and the links between them'></canvas>"
+            "<div id='chart-frame'><canvas id='chart' role='img' aria-label='Memory graph: every memo and the links between them'"
+            f" data-corpus='{_e(corpus)}'></canvas>"
             "<div id='tip' hidden></div><aside id='panel'></aside>"
             "<div class='timebar'><button type='button' id='play' aria-label='Play the memory forward'>▶</button>"
             "<input type='range' id='time' min='0' max='0' value='0' aria-label='Show the memory as of a date'>"
@@ -1600,9 +1765,16 @@ class DashboardApp:
         )
         return self._html(
             self._shell(
-                title="RE-call · memory graph", active="graph", root=self.root, pending=0,
-                eyebrow="02 · graph · every memo", heading="Memory graph",
-                lede="Each star is a memo. Lines are the links memos make to each other; rust arrows are declared supersessions, with light running from the newer memo to the one it replaces; amber dashes are claims waiting for review. Drag to orbit, scroll to zoom, click a star to read it, double-click to reset.",
+                title="RE-call · " + (f"{corpus} graph" if corpus else "memory graph"), active="graph", root=self.root, pending=0,
+                eyebrow="02 · graph · " + (f"the {corpus} corpus, from the database" if corpus else "every memo"),
+                heading="Corpus graph" if corpus else "Memory graph",
+                lede=(
+                    "Each star is a file of this corpus, read from the database. Lines are imports and authored links; rust arrows "
+                    "are declared supersessions, newer to older; faint lines join files that mention the same uncommon name. "
+                    "Click a star to open the file's page."
+                    if corpus else
+                    "Each star is a memo. Lines are the links memos make to each other; rust arrows are declared supersessions, with light running from the newer memo to the one it replaces; amber dashes are claims waiting for review. Drag to orbit, scroll to zoom, click a star to read it, double-click to reset."
+                ),
                 body=body, main_class="graph-main", scripts="<script src='/static/graph.js' defer></script>",
             )
         )
