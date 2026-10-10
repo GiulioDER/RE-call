@@ -344,6 +344,9 @@ def _shell(*, title: str, active: str, root: Path, pending: int, eyebrow: str, h
             ("/control", "control", "◉", "Control", ""),
             ("/overview", "overview", "◎", "Corpus status", ""),
         )),
+        ("System", (
+            ("/config", "config", "⚙", "Configuration", ""),
+        )),
     )
     links = "".join(
         (f"<span class='navlabel'>{_e(label)}</span>" if label else "")
@@ -378,8 +381,17 @@ class DashboardApp:
         token: str | None = None,
         db: DashboardDB | None = None,
         reports_tenants: tuple[str, ...] = (DEFAULT_TENANT,),
+        project_root: Path | None = None,
+        config_host: str = "",
+        config_command: str = "",
     ) -> None:
         self.root = root.resolve()
+        # Where the configuration page looks for registered MCP servers (the client keys them by
+        # the directory a session starts in), and the remote host whose server configuration it
+        # reports, redacted there. See `recall.dashboard.config`.
+        self.project_root = (project_root or Path.cwd()).resolve()
+        self.config_host = config_host
+        self.config_command = config_command
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
         self.db = db
@@ -535,6 +547,8 @@ class DashboardApp:
             return self._activity_page()
         if method == "GET" and url.path == "/health":
             return self._health_page(cookies)
+        if method == "GET" and url.path == "/config":
+            return self._config_page(query.get("all", "") == "1")
         if method == "GET" and url.path == "/graph":
             return self._graph_page()
         if method == "GET" and url.path == "/api/graph.json":
@@ -1285,6 +1299,80 @@ class DashboardApp:
                 title="RE-call · memory health", active="health", root=self.root, pending=counts["pending"],
                 eyebrow="04 · health · the memo files", heading="Memory health",
                 lede="Problems the memory files carry today: broken or ambiguous supersessions, cycles, prose that declares nothing, and memos nothing links to.",
+                body=body,
+            )
+        )
+
+    # ------------------------------------------------------------------ configuration
+
+    @staticmethod
+    def _config_report_html(label: str, report: Mapping[str, Any], *, show_all: bool) -> str:
+        """One redacted report as a card. Values arrive redacted; everything is still escaped."""
+        problem = report.get("problem")
+        status = (
+            f"<p class='warn-text'>The server would refuse to start: {_e(problem)}</p>"
+            if problem else "<p class='ok-text'>Valid: the server's startup checks pass.</p>"
+        )
+        argv = report.get("argv")
+        command = f"<p class='muted'>launch command</p><pre>{_e(' '.join(str(a) for a in argv))}</pre>" if argv else ""
+        unknown = report.get("unknown_recall_variables") or []
+        unknown_html = (
+            "<p class='warn-text'>Set but not in the schema, so nothing reads them (a typo?): "
+            + ", ".join(f"<code>{_e(name)}</code>" for name in unknown) + "</p>"
+        ) if unknown else ""
+        rows: list[str] = []
+        section = ""
+        for entry in report.get("entries", []):
+            if not isinstance(entry, Mapping) or (entry.get("state") != "set" and not show_all):
+                continue
+            if entry.get("section") != section:
+                section = str(entry.get("section", ""))
+                rows.append(f"<tr><th colspan='3' class='sec'>{_e(section)}</th></tr>")
+            if entry.get("state") == "set":
+                value = f"<code>{_e(entry.get('value'))}</code>"
+            else:
+                default = entry.get("default")
+                value = f"<span class='muted'>unset{' · default ' + _e(default) if default else ''}</span>"
+            rows.append(
+                f"<tr><td><code>{_e(entry.get('name'))}</code></td><td>{value}</td>"
+                f"<td class='muted'>{_e(entry.get('description'))}</td></tr>"
+            )
+        table = f"<table class='plain'>{''.join(rows)}</table>" if rows else "<p class='muted'>Nothing is set here.</p>"
+        return f"<div class='card'><h3>{_e(label)}</h3>{status}{unknown_html}{command}{table}</div>"
+
+    def _config_page(self, show_all: bool) -> Response:
+        from recall.dashboard import config
+
+        def attempt(label: str, produce: Any) -> str:
+            try:
+                return self._config_report_html(label, produce(), show_all=show_all)
+            except config.ConfigUnavailable as exc:
+                return f"<div class='card'><h3>{_e(label)}</h3><p class='warn-text'>Not available: {_e(exc)}</p></div>"
+
+        servers = config.registered_servers(self.project_root)
+        cards = [attempt("This machine: the environment the recall CLI and dashboard run in", config.local_report)]
+        cards += [
+            attempt(f"MCP server {server.name} ({server.scope} scope)", lambda server=server: config.server_report(server))
+            for server in servers
+        ]
+        if not servers:
+            cards.append(f"<div class='card muted'>No RE-call MCP server is registered for {_e(self.project_root)}.</div>")
+        if self.config_host:
+            cards.append(attempt(
+                f"Remote: {self.config_host}",
+                lambda: config.remote_report(self.config_host, self.config_command or config.DEFAULT_REMOTE_COMMAND),
+            ))
+        toggle = "<a href='/config'>show only what is set</a>" if show_all else "<a href='/config?all=1'>show every setting, with defaults</a>"
+        body = (
+            f"<p>{toggle}</p>" + "".join(cards)
+            + "<p class='muted'>Each report comes from <code>python -m recall_mcp.config_report</code>, run where the values "
+            "live, so a secret is withheld before it reaches this page. Read-only: change settings where they are set.</p>"
+        )
+        return self._html(
+            self._shell(
+                title="RE-call · configuration", active="config", root=self.root, pending=0,
+                eyebrow="system · configuration", heading="Configuration",
+                lede="What RE-call runs with here, in each registered MCP server, and on the remote host, with every secret withheld.",
                 body=body,
             )
         )

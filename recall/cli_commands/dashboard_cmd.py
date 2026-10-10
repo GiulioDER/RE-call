@@ -63,6 +63,19 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         f"(default: RECALL_DASHBOARD_TUNNEL_PORTS, else {DEFAULT_TUNNEL_PORTS})",
     )
     parser.add_argument(
+        "--config-host",
+        default=os.environ.get("RECALL_DASHBOARD_CONFIG_HOST", ""),
+        help="an ssh host whose RE-call server configuration the Configuration page also shows, "
+        "redacted on that host before it is sent (default: RECALL_DASHBOARD_CONFIG_HOST)",
+    )
+    parser.add_argument(
+        "--config-command",
+        default=os.environ.get("RECALL_DASHBOARD_CONFIG_COMMAND", ""),
+        help="the shell command run on --config-host to print the report, e.g. one that loads the "
+        "server's environment first (default: RECALL_DASHBOARD_CONFIG_COMMAND, else "
+        "'python3 -m recall_mcp.config_report --json')",
+    )
+    parser.add_argument(
         "--reports-tenant",
         action="append",
         default=None,
@@ -90,7 +103,13 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
             raise SystemExit(2)
     db = _database(args.db_dsn_file)
     tunnel = _open_tunnel(args.tunnel, args.tunnel_ports) if args.tunnel else None
-    app = DashboardApp(root, port=args.port, db=db, reports_tenants=reports_tenants)
+    if args.config_host.startswith("-") or any(c.isspace() for c in args.config_host):
+        print(f"recall dashboard: --config-host {args.config_host!r} is not a host", file=sys.stderr)
+        raise SystemExit(2)
+    app = DashboardApp(
+        root, port=args.port, db=db, reports_tenants=reports_tenants, project_root=Path.cwd(),
+        config_host=args.config_host, config_command=args.config_command,
+    )
     try:
         server = serve(app)
     except OSError as exc:
