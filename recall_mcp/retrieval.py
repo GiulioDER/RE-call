@@ -35,7 +35,14 @@ from recall.evidence import (
     build_evidence_bundle,
     render_evidence_prompt,
 )
-from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, EvidenceResult, SearchHit, SearchResult
+from recall_mcp.models import (
+    EvidenceCardModel,
+    EvidenceItemModel,
+    EvidenceResult,
+    SearchEvidence,
+    SearchHit,
+    SearchResult,
+)
 from recall_mcp.evidence_cards import register_evidence_cards
 from recall.decision_ledger import DecisionLedger
 from recall.observability import METRICS, get_logger
@@ -444,6 +451,34 @@ REASONING_SUPERSEDED_NOTE = (
     " NEXT: `recall_reasoning_query` resolves which of these versions still stands, and cites "
     "the chunk ids it used."
 )
+#: Appended when the search's own evidence says something may be cited. Library authored; it names
+#: fields, never corpus text. Models follow instructions in the result far more than fields alone
+#: (measured 2026-10-10: without the advice and abstention text, obedience to `unknown_term` fell
+#: to 0.00 to 0.18 across three models), so the citation rule is stated here, not only in a field.
+SEARCH_EVIDENCE_NOTE = (
+    " To answer from memory, rely only on the hits listed in `evidence.citable` and cite their "
+    "chunk_id values; `recall_evidence` adds card warrants, a rendered answer prompt, and "
+    "related or paged passages these hits do not include."
+)
+
+
+def search_evidence_enabled(env: Mapping[str, str]) -> bool:
+    """`RECALL_SEARCH_EVIDENCE`: on unless set to off, 0, false or no."""
+    return env.get("RECALL_SEARCH_EVIDENCE", "on").strip().lower() not in {"off", "0", "false", "no"}
+
+
+def _search_evidence(result: TrustedResult, effective_k: int) -> SearchEvidence:
+    """The citable part of `recall_evidence`'s bundle, from the trusted result search already has.
+
+    Same projection and same cap as the evidence tool (`build_evidence_bundle`, `max_items` bounded
+    by the effective `k`), so the two tools cannot disagree about the same hits. The evidence tool
+    can still cite more: it folds related items into its bundle and, with RECALL_PAGED_EVIDENCE=on
+    and no explicit `k`, retrieves deeper into paged documents. No cards are registered here:
+    that is a write, and search is read only.
+    """
+    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=max(1, min(effective_k, MAX_SEARCH_K))))
+    return SearchEvidence(decision=bundle.decision, reason_code=bundle.reason_code,
+                          citable=[item.chunk_id for item in bundle.items])
 
 
 def _search_advice(
@@ -641,6 +676,9 @@ def search_memory(
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     advice = _search_advice_fn(result, hits, reasoning_available)
+    evidence = _search_evidence(result, retrieval.effective_k) if search_evidence_enabled(values) else None
+    if evidence is not None and evidence.decision == "answer":
+        advice += SEARCH_EVIDENCE_NOTE
 
     stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
     explanation = None
@@ -692,6 +730,7 @@ def search_memory(
         latency_budget_ms=retrieval.profile.enforced_budget_ms,
         budget_exceeded=budget_exceeded,
         hits=hits,
+        evidence=evidence,
         explanation=explanation,
         related_items=related_items,
         related_diagnostics=related_diagnostics,
