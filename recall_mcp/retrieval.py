@@ -462,6 +462,28 @@ SEARCH_EVIDENCE_NOTE = (
     " To answer from memory, rely only on the hits listed in `evidence.citable` and cite their "
     "chunk_id values."
 )
+#: Appended LAST, after every rule above, when a relevant hit is `superseded` or `expired`. Those
+#: rules are about the present: "say you don't know", "rely only on the current version", "cite
+#: only `evidence.citable`". A question about an earlier time inverts them, because the replaced
+#: or lapsed memory IS the record of that time, and without this sentence the advice told a model
+#: to refuse exactly the item that answers it. Scoped to the past so it never licenses a present
+#: answer from a stale memory, and it names verdicts and fields only, never corpus text.
+HISTORICAL_RECORD_NOTE = (
+    " EXCEPTION, only for a question about an earlier time: a hit whose verdict is `superseded` "
+    "or `expired` is the record of what held before it was replaced or lapsed. If the question "
+    "asks what held then, answer from that hit, cite its chunk_id, and say it no longer holds. "
+    "For a question about the present it is not evidence."
+)
+_HISTORICAL_VERDICTS = frozenset({"superseded", "expired"})
+
+
+def _has_historical_record(result: TrustedResult) -> bool:
+    """A superseded or expired hit at or above the calibrated threshold.
+
+    The gate assigns `superseded` and `expired` before it looks at the score, so a verdict alone
+    says nothing about relevance; confidence is exactly 0.5 at the threshold.
+    """
+    return any(hit.verdict in _HISTORICAL_VERDICTS and hit.confidence >= 0.5 for hit in result.hits)
 
 
 def search_evidence_enabled(env: Mapping[str, str]) -> bool:
@@ -506,8 +528,8 @@ def _search_advice(
         advice = (
             f"{sum(1 for hit in hits if hit.verdict == 'ok')} valid memory hit(s). NOTE: "
             f"{len(superseded)} match(es) are superseded — read each hit's `superseded_by` field "
-            "and rely only on the current version. Consult before re-proposing: if a closed "
-            "decision appears here, do not re-litigate it."
+            "and rely only on the current version for the present state. Consult before "
+            "re-proposing: if a closed decision appears here, do not re-litigate it."
         )
     else:
         advice = (
@@ -681,6 +703,8 @@ def search_memory(
     evidence = _search_evidence(result, retrieval.effective_k) if search_evidence_enabled(values) else None
     if evidence is not None and evidence.decision == "answer":
         advice += SEARCH_EVIDENCE_NOTE
+    if _has_historical_record(result):
+        advice += HISTORICAL_RECORD_NOTE
 
     stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
     explanation = None

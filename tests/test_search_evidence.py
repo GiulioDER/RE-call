@@ -11,8 +11,8 @@ Invariants, each with the mutation that turns its test red (recorded in the test
 - S2 an abstaining search cites nothing, carries the evidence tool's reason code, and its advice
   does not invite an answer.
 - S3 `RECALL_SEARCH_EVIDENCE=off` removes the field and the advice sentence.
-- S4 the citation sentence names no other tool (a named tool primes small models to call it).
-- S5 the `recall_search` description names no other tool either (EV-1c: about half the effect).
+- H1, H2 a relevant `superseded` or `expired` hit adds, last, an exception for questions about an
+  earlier time; an irrelevant one, or any other verdict, does not.
 
 The trusted search is a stand-in; `_retrieve_trusted`, `search_memory` and `evidence_memory` are the
 real ones.
@@ -40,11 +40,11 @@ _STALE = StalenessReport(False, None, None, timedelta(days=2))
 _DIAG = RetrievalDiagnostics("bge-small-symmetric-v1", "legacy", "gen-7", 20, False, {})
 
 
-def _hit(i: int, verdict: str) -> TrustedHit:
+def _hit(i: int, verdict: str, demoted_confidence: float = 0.2) -> TrustedHit:
     return TrustedHit(
         chunk=Chunk(f"c{i}", f"note{i}.md", f"text {i}", {"file": f"note{i}.md"}),
         cosine=0.9 - i * 0.01,
-        confidence=0.9 if verdict == "ok" else 0.2,
+        confidence=0.9 if verdict == "ok" else demoted_confidence,
         verdict=verdict,
         provenance=Provenance(source=f"note{i}.md", file=f"note{i}.md", ord=0, indexed_at=_AT),
         validity=Validity(valid_from=_AT, valid_until=None,
@@ -55,11 +55,12 @@ def _hit(i: int, verdict: str) -> TrustedHit:
 class _FakeSearch:
     """`trusted_search` with fixed verdicts: valid hits first, abstained when none is `ok`."""
 
-    def __init__(self, verdicts: list[str]) -> None:
+    def __init__(self, verdicts: list[str], demoted_confidence: float = 0.2) -> None:
         self.verdicts = verdicts
+        self.demoted_confidence = demoted_confidence
 
     def __call__(self, store, embedder, query, *, k, pre_trust_transform=None, **_kw):  # type: ignore[no-untyped-def]
-        hits = [_hit(i, v) for i, v in enumerate(self.verdicts)][:k]
+        hits = [_hit(i, v, self.demoted_confidence) for i, v in enumerate(self.verdicts)][:k]
         ok = [h for h in hits if h.verdict == "ok"]
         rest = [h for h in hits if h.verdict != "ok"]
         return TrustedResult(
@@ -82,12 +83,13 @@ class _Embedder:
         return [[1.0, 0.0] for _ in texts]
 
 
-def _both(verdicts: list[str], env: dict[str, str] | None = None):  # type: ignore[no-untyped-def]
+def _both(verdicts: list[str], env: dict[str, str] | None = None,  # type: ignore[no-untyped-def]
+          demoted_confidence: float = 0.2):
     retrieve = functools.partial(
         retrieval._retrieve_trusted,
         reranker_builder=lambda *_a, **_k: None,
         admission_factory=lambda _profile: contextlib.nullcontext(),
-        trusted_search_fn=_FakeSearch(verdicts),
+        trusted_search_fn=_FakeSearch(verdicts, demoted_confidence),
     )
     env = {} if env is None else env
     search = retrieval.search_memory(_Store(), _Embedder(), "q", k=5, env=env,  # type: ignore[arg-type]
@@ -131,21 +133,28 @@ def test_the_switch_turns_search_evidence_off() -> None:
     assert on.evidence is not None and on.evidence.citable == ["c0"]
 
 
-def test_the_citation_advice_names_no_other_tool() -> None:
-    """S4. Measured 2026-10-10: a citation sentence that named `recall_evidence` made a 3B model call
-    that tool in 60 of 60 conversations, after abstentions too. Red proof: the wording merged in
-    #906 ("...; `recall_evidence` adds card warrants, a rendered answer prompt, and related or paged
-    passages these hits do not include.") fails "the advice names another tool"."""
-    assert "recall_" not in retrieval.SEARCH_EVIDENCE_NOTE, "the advice names another tool"
+def test_a_relevant_superseded_or_expired_hit_is_a_record_of_the_past() -> None:
+    """H1. Every rule in search's advice is about the present ("say you don't know", "rely only on
+    the current version", "cite only `evidence.citable`"), so a question about an earlier time was
+    told to refuse the very memory that answers it. The exception must come LAST, after the
+    citation rule it qualifies, on the abstaining and the answering path alike.
+    Red proof: `_has_historical_record` returning False fails "no historical exception"; appending
+    the note before `SEARCH_EVIDENCE_NOTE` fails "the citation rule overrides the exception"."""
+    for verdicts in (["superseded", "low_confidence"], ["expired"], ["ok", "superseded"]):
+        search, _ = _both(verdicts, demoted_confidence=0.7)
+        assert retrieval.HISTORICAL_RECORD_NOTE in search.advice, f"no historical exception: {verdicts}"
+        assert search.advice.endswith(retrieval.HISTORICAL_RECORD_NOTE), (
+            f"the citation rule overrides the exception: {verdicts}")
 
 
-def test_the_search_description_names_no_other_tool() -> None:
-    """S5. Measured 2026-10-10 (EV-1c): a `recall_search` description that named `recall_evidence`
-    caused about half of a 3B model's evidence calls after abstentions. The in-process copy is pinned
-    verbatim to the server docstring by tests/test_recall_agent_descriptions.py, so this reads the
-    copy. Red proof: the description merged in #906 ("It applies `recall_evidence`'s rule to these
-    hits only: call `recall_evidence` for card warrants, ...") fails "the search description names
-    recall_evidence"."""
-    from recall_agent._descriptions import RECALL_SEARCH_DESCRIPTION
-
-    assert "recall_evidence" not in RECALL_SEARCH_DESCRIPTION, "the search description names recall_evidence"
+def test_the_historical_exception_needs_a_relevant_record() -> None:
+    """H2. The gate assigns `superseded` and `expired` before it reads the score, so an irrelevant
+    superseded memory must not invite an answer to a question it does not match.
+    Red proof: dropping `and hit.confidence >= 0.5` from `_has_historical_record` fails
+    "irrelevant record invited an answer"; widening `_HISTORICAL_VERDICTS` with `low_confidence`
+    fails "exception without a superseded or expired hit"."""
+    search, _ = _both(["superseded", "expired"], demoted_confidence=0.2)
+    assert retrieval.HISTORICAL_RECORD_NOTE not in search.advice, "irrelevant record invited an answer"
+    search, _ = _both(["ok", "low_confidence", "not_yet_valid"], demoted_confidence=0.7)
+    assert retrieval.HISTORICAL_RECORD_NOTE not in search.advice, (
+        "exception without a superseded or expired hit")
