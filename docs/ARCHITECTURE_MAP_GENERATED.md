@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 305
 Cross package edges: 310
-Source tree fingerprint: `ff31fc4833cca37e3c880666b9578921fad154904e73cb109c1ee3bc00ee234a`
+Source tree fingerprint: `7a3d37b7771949d4f48f493bdbe917253002fe255491166b549fb840c4fb2a4e`
 
 ## Highest fan in modules
 
@@ -68,7 +68,7 @@ Source tree fingerprint: `ff31fc4833cca37e3c880666b9578921fad154904e73cb109c1ee3
 | 22 | `recall_mcp.retrieval` |
 | 20 | `recall` |
 | 18 | `recall.rewrite` |
-| 17 | `recall.trust` |
+| 18 | `recall.trust` |
 | 16 | `recall_mcp.semantic_graph_cache` |
 | 15 | `recall.generations` |
 | 15 | `recall.index` |
@@ -437,7 +437,7 @@ They are observations, not automatic failures.
 | `recall.build_progress` | 0 | 0 |
 | `recall.cache` | 2 | 12 |
 | `recall.calibration` | 3 | 13 |
-| `recall.calibration_v2` | 6 | 51 |
+| `recall.calibration_v2` | 7 | 51 |
 | `recall.capabilities` | 0 | 0 |
 | `recall.check` | 4 | 22 |
 | `recall.claude_code` | 5 | 72 |
@@ -634,7 +634,7 @@ They are observations, not automatic failures.
 | `recall.supersession` | 1 | 2 |
 | `recall.supersession_arbiter` | 4 | 20 |
 | `recall.timing` | 3 | 15 |
-| `recall.trust` | 17 | 69 |
+| `recall.trust` | 18 | 69 |
 | `recall.trust_gate` | 8 | 43 |
 | `recall.trust_policy` | 2 | 52 |
 | `recall.trust_verdicts` | 2 | 31 |

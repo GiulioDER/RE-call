@@ -51,6 +51,7 @@ from recall.atomic_rescue import (
 from recall.dependency_invalidation import (
     DependencyProjection,
 )
+from recall.embedding_core import profile_lineage_mismatch
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.observability import get_logger
@@ -407,28 +408,44 @@ def _trusted_search(
     # `if control_plane is not None`, and a stdio server has none; its sibling check on the
     # calibration's identity is documented in `recall_mcp/server.py` as unreachable from startup.
     # Nothing on that path compared the model at all.
+    #
+    # The PROFILE is compared too, because name and dimension cannot separate two profiles of one
+    # model: `voyage-4-v1` and `voyage-4-retrieval-v1` are both `voyage:voyage-4` at 1024, one
+    # sending Voyage an `input_type` and one not. A generation that recorded no profile (every
+    # legacy build) is compared on name and dimension only, as before.
     binding = generation_binding or {}
     expected_model = binding.get("embedder_model")
     expected_dim = binding.get("embedder_dimension")
+    profile_mismatch = profile_lineage_mismatch(
+        embedder,
+        binding.get("embedder_profile_id"),
+        binding.get("embedder_profile_fingerprint"),
+    )
     model_mismatch = (
-        expected_model is not None and str(getattr(embedder, "name", "")) != expected_model
-    ) or (expected_dim is not None and str(getattr(embedder, "dim", "")) != expected_dim)
+        (expected_model is not None and str(getattr(embedder, "name", "")) != expected_model)
+        or (expected_dim is not None and str(getattr(embedder, "dim", "")) != expected_dim)
+        or profile_mismatch is not None
+    )
     if model_mismatch:
         # `embedder.name` against the manifest's `model`, which is the SAME comparison
         # `CalibrationRepository.calibrate` makes before it will fit a threshold at all. Using
-        # `embedding_profile_id` here would be wrong: it returns a registered profile id when one
-        # exists and the bare name otherwise, so it does not spell what the manifest stores.
+        # `embedding_profile_id` against `model` would be wrong: it returns a registered profile
+        # id when one exists and the bare name otherwise, so it does not spell what the manifest
+        # stores there. Against the recorded PROFILE it is right, and `profile_lineage_mismatch`
+        # uses it, because that is the value the build records as `profile_id`.
         #
         # Deliberately NOT raising or counting here: the existing block below already does both,
         # and doing it twice would double-count `recall_degraded_searches_total` and give the
         # refusal two exit points to keep in step.
         _log.warning(
             "runtime embedder %r does not match generation %r, which was built with %r at "
-            "dimension %s; cosines from two models are not comparable and no threshold applies",
+            "dimension %s (%s); cosines from two encoders are not comparable and no threshold "
+            "applies",
             getattr(embedder, "name", "?"),
             binding.get("generation_id"),
             expected_model,
             expected_dim,
+            profile_mismatch or "model or dimension differs",
         )
         # Degraded mode still answers, but it must not APPLY a threshold fitted for another
         # model, nor name the artifact as if it had. `calibration_status` is deliberately left as
