@@ -611,6 +611,36 @@ def embedding_profile_id(embedder: Embedder) -> str:
     return name if isinstance(name, str) else type(embedder).__name__
 
 
+def profile_lineage_mismatch(
+    embedder: Embedder, profile_id: str | None, profile_fingerprint: str | None = None
+) -> str | None:
+    """Why `embedder` may not query vectors recorded under `profile_id`, or None when it may.
+
+    `name` and `dim` cannot tell two profiles of one model apart. `voyage-4-v1` and
+    `voyage-4-retrieval-v1` are both `voyage:voyage-4` at 1024 and differ only in whether Voyage
+    is sent an `input_type`, so a check on those two fields lets either serve the other's vectors.
+    The recorded profile is what separates them, compared through `embedding_profile_id` because
+    that is the value `generation_build.embedder_identity` records.
+
+    A record that names no profile, i.e. every generation a legacy embedder built, is compared on
+    nothing here and keeps serving as before. The fingerprint is compared only beside a recorded
+    id, exactly as `GenerationManager._check_build_identity` compares it at build time.
+
+    ⚠️ The fingerprint is key material for the CLIENT stack as well as the vectors: it folds in
+    the `voyageai` or `fastembed` version (and fastembed's ONNX providers), and the registry's
+    hosted dependencies since 2026-09-21. So a library upgrade on a serving host refuses every
+    generation built before it, until that generation is rebuilt.
+    """
+    if not profile_id:
+        return None
+    runtime_id = embedding_profile_id(embedder)
+    if runtime_id != profile_id:
+        return f"embedder profile {runtime_id!r} does not match recorded profile {profile_id!r}"
+    if profile_fingerprint and embedding_profile(embedder).fingerprint() != profile_fingerprint:
+        return f"embedder profile {profile_id!r} does not match the recorded profile fingerprint"
+    return None
+
+
 def resolve_registered_embedder(
     profile_id: str,
     env: Mapping[str, str] | None = None,

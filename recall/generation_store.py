@@ -368,6 +368,15 @@ class GenerationStore(PgVectorStore):
             dimension = embedder.get("dimension")
             if isinstance(dimension, int):
                 binding["embedder_dimension"] = str(dimension)
+            # The profile separates what `model` cannot: two profiles of one model (Voyage with
+            # and without `input_type`) share it. Absent on every generation a legacy embedder
+            # built, and the gate then compares model and dimension exactly as before.
+            profile_id = str(embedder.get("profile_id") or "").strip()
+            if profile_id:
+                binding["embedder_profile_id"] = profile_id
+            profile_fingerprint = str(embedder.get("profile_fingerprint") or "").strip()
+            if profile_fingerprint:
+                binding["embedder_profile_fingerprint"] = profile_fingerprint
         # Keyed on the fingerprint the ROW carries, not the pinned one: an erasure landing
         # between the snapshot and this read must not file the newer row under the older key.
         self._binding_cache = ((generation_id, binding["corpus_fingerprint"]), dict(binding))

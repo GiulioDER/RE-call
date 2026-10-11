@@ -19,6 +19,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from recall.calibration import Calibration, from_samples, separability
+from recall.embedding_core import profile_lineage_mismatch
 from recall.embeddings import Embedder
 from recall.lineage import PipelineIdentity, canonical_json, canonical_sha256
 from recall.errors import RecallError
@@ -647,6 +648,25 @@ def _id(prefix: str) -> str:
 _UNCOMPUTED_CHECKSUM = "0" * 64
 
 
+def _require_runtime_embedder(pipeline: PipelineIdentity, embedder: Embedder) -> None:
+    """Refuse to score a generation's vectors with an embedder that did not write them.
+
+    Model and dimension first, then the recorded profile, which is the only field that separates
+    two profiles of one model (Voyage with and without `input_type`). A threshold fitted on those
+    cosines would certify numbers that compare two encoders. Shared by `calibrate` and
+    `carry_forward`, the two paths that score labels with the runtime embedder.
+    """
+    if embedder.name != pipeline.embedder.model or embedder.dim != pipeline.embedder.dimension:
+        raise CalibrationBindingError(
+            "embedder implementation does not match the generation pipeline identity"
+        )
+    mismatch = profile_lineage_mismatch(
+        embedder, pipeline.embedder.profile_id, pipeline.embedder.profile_fingerprint
+    )
+    if mismatch is not None:
+        raise CalibrationBindingError(f"{mismatch} in the generation pipeline identity")
+
+
 class CalibrationRepository:
     """Tenant-scoped store of v2 calibration artifacts and their labelled query sets.
 
@@ -925,10 +945,7 @@ class CalibrationRepository:
                 conn, generation_id
             )
         pipeline = PipelineIdentity.from_dict(pipeline_raw)
-        if embedder.name != pipeline.embedder.model or embedder.dim != pipeline.embedder.dimension:
-            raise CalibrationBindingError(
-                "embedder implementation does not match the generation pipeline identity"
-            )
+        _require_runtime_embedder(pipeline, embedder)
 
         answerable, unanswerable = self.score_query_set(generation_id, embedder, labels)
         runtime = from_samples(embedder.name, answerable, unanswerable)
@@ -1123,10 +1140,7 @@ class CalibrationRepository:
             )
 
         pipeline = PipelineIdentity.from_dict(pipeline_raw)
-        if embedder.name != pipeline.embedder.model or embedder.dim != pipeline.embedder.dimension:
-            raise CalibrationBindingError(
-                "embedder implementation does not match the generation pipeline identity"
-            )
+        _require_runtime_embedder(pipeline, embedder)
 
         answerable, unanswerable = self.score_query_set(generation_id, embedder, labels)
 

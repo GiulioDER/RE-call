@@ -535,8 +535,9 @@ class PromptedSentenceTransformerEmbedder:
 
     Selected with ``RECALL_EMBEDDER=st-prompted:<hf-id>`` for the models in
     `recall.embedding_prompts.PUBLISHED_PROMPTS`. It is a separate identity from ``st:<hf-id>`` on
-    purpose, in its NAME as well as its profile: the serving gate, calibration v2, the generation
-    build check and the lite store compare the embedder's name and dimension only, so a prompted
+    purpose, in its NAME as well as its profile: the serving gate, calibration v2 and the
+    generation build check compare a profile only when the generation recorded one, an ``st:``
+    build records none, and the lite store compares name and dimension only, so a prompted
     encoder that kept the ``st:`` name would answer from a store built without prompts, silently.
     The name carries the prompt set's version for the same reason.
 
