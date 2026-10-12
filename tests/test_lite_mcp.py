@@ -6,8 +6,8 @@ content-word embedder from `test_lite_calibration`, patched in where the lifespa
 so calibration certifies offline.
 
 Invariants and the failure each one catches:
-- N1 a lite server does not offer the tools that need PostgreSQL (the fact ledger, calibration
-  publish) and offers the rest.
+- N1 a lite server does not offer calibration publish (nothing to publish on lite) and offers the
+  rest, the fact ledger tools included.
 - N2 `recall_index` calibrates a lite store, after which strict `recall_search` answers, trusted,
   from the memo that holds the answer.
 - N3 `recall_calibration_status` reports the lite calibration instead of reaching for a DSN.
@@ -15,6 +15,13 @@ Invariants and the failure each one catches:
 - N5 `recall_forget` resolves a root-relative file name, as a search hit shows it, and deletes it.
 - N6 the generation route is refused at startup, by name.
 - N7 the reasoning tools work on a lite store before any calibration exists.
+- N8 `recall_evidence` mints cards the lite file keeps, `recall_apply_fact` applies a fact cited by
+  them, and `recall_current_facts` returns it.
+- N9 a retried `recall_apply_fact` replays the first answer byte for byte; the same request id
+  with other arguments is an idempotency conflict, as on PostgreSQL.
+- N10 a newer memo naming the old one in `authored_supersedes` replaces its fact.
+- N11 a card minted before a later index (the lite generation moved) is recovered by the
+  controller's one fresh search.
 
 Red proof, 2026-10-07, each mutation alone, failing in its intended assertion (JUnit XML), then
 restored byte for byte and green:
@@ -30,6 +37,15 @@ restored byte for byte and green:
   missing generations.
 - S7 (N7) `_reasoning_generation` indexing `payload["pipeline_fingerprint"]` again: "a reasoning
   tool failed on an uncalibrated lite store" (KeyError).
+
+Red proof, 2026-10-12, for the fact tools, same method:
+- (N1) `LITE_UNSERVED_TOOLS` still naming `recall_apply_fact`: the set equality fails.
+- (N8) the LiteStore branch of `register_evidence_cards` dropped: the application is refused.
+- (N9) `LiteStore.get_operation_receipt` returning None: "a retried request did not replay the
+  first answer".
+- (N10) `LiteFactLedger.apply_assertion` never writing the `superseded` event: current shows tea
+  and coffee.
+- (N11) `fresh_search` in `apply_fact_memory` returning (): FRESH_SEARCH_INSUFFICIENT.
 """
 
 from __future__ import annotations
