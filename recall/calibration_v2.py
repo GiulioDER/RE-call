@@ -224,7 +224,7 @@ def judge_inherited_threshold(
         embedder=parent.runtime.embedder,
         threshold=parent.threshold,
         scale=parent.scale,
-        separability=separability(answerable, unanswerable),
+        separability=separability(list(answerable), list(unanswerable)),
         n_answerable=len(answerable),
         n_unanswerable=len(unanswerable),
     )
