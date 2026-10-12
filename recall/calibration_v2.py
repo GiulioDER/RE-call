@@ -193,6 +193,63 @@ def threshold_error_rates(
     }
 
 
+@dataclass(frozen=True)
+class InheritedThresholdVerdict:
+    """How an inherited threshold decides fresh scores: see `judge_inherited_threshold`."""
+
+    #: The inherited threshold and scale beside the separability of the FRESH scores.
+    runtime: Calibration
+    errors: dict[str, float]
+    certified: bool
+    reason: str
+    #: What a fresh fit on these scores would choose. Diagnostic only: it reaches nothing.
+    refit_threshold: float
+
+
+def judge_inherited_threshold(
+    parent: CalibrationArtifactV2,
+    answerable: Sequence[float],
+    unanswerable: Sequence[float],
+    *,
+    max_error: float = DEFAULT_MAX_CARRY_FORWARD_ERROR,
+) -> InheritedThresholdVerdict:
+    """Judge `parent`'s threshold, held FIXED, on scores measured against a changed corpus.
+
+    The one rule every carry-forward applies, whichever store holds the corpus: the inherited
+    threshold must clear the same certification bar a new fit would on the fresh scores, AND decide
+    each class within `max_error`. The second condition is the one that catches a shifted class;
+    see `DEFAULT_MAX_CARRY_FORWARD_ERROR` for why certification alone would pass a threshold that
+    has stopped deciding anything.
+    """
+    runtime = Calibration(
+        embedder=parent.runtime.embedder,
+        threshold=parent.threshold,
+        scale=parent.scale,
+        separability=separability(answerable, unanswerable),
+        n_answerable=len(answerable),
+        n_unanswerable=len(unanswerable),
+    )
+    if runtime.separability is None or runtime.separability_ci is None:
+        raise CalibrationBindingError("both labelled classes are required for carry-forward")
+    errors = threshold_error_rates(answerable, unanswerable, parent.threshold)
+    within_error = (
+        errors["false_abstain_rate"] <= max_error and errors["false_confirm_rate"] <= max_error
+    )
+    certified = runtime.certified is True and within_error
+    reason = runtime.certification_reason
+    if runtime.certified is True and not within_error:
+        reason = (
+            f"the inherited threshold {parent.threshold:.4f} no longer decides this corpus: "
+            f"false abstain {errors['false_abstain_rate']:.1%} of {len(answerable)} "
+            f"answerable, false confirm {errors['false_confirm_rate']:.1%} of "
+            f"{len(unanswerable)} unanswerable, against a bound of {max_error:.1%}. "
+            f"Separability is {runtime.separability:.4f}, so the classes are still ordered "
+            f"and only the boundary has moved; recalibrate to place it again."
+        )
+    refit = from_samples(parent.runtime.embedder, list(answerable), list(unanswerable))
+    return InheritedThresholdVerdict(runtime, errors, certified, reason, refit.threshold)
+
+
 def _require_carry_forward(value: Mapping[str, Any], threshold: float, scale: float) -> None:
     """Validate carry-forward provenance, including that it names the numbers it actually carried.
 
@@ -1144,37 +1201,17 @@ class CalibrationRepository:
 
         answerable, unanswerable = self.score_query_set(generation_id, embedder, labels)
 
-        # The inherited threshold and scale, judged on the CHILD's scores. `from_samples` is used
-        # only for `refit_threshold`, which is diagnostic and reaches nothing.
-        runtime = Calibration(
-            embedder=parent.runtime.embedder,
-            threshold=parent.threshold,
-            scale=parent.scale,
-            separability=separability(answerable, unanswerable),
-            n_answerable=len(answerable),
-            n_unanswerable=len(unanswerable),
+        # The inherited threshold and scale, judged on the CHILD's scores, by the rule the lite
+        # store's carry-forward shares (`judge_inherited_threshold`).
+        verdict = judge_inherited_threshold(parent, answerable, unanswerable, max_error=max_error)
+        runtime, errors, certified, reason = (
+            verdict.runtime,
+            verdict.errors,
+            verdict.certified,
+            verdict.reason,
         )
-        if runtime.separability is None or runtime.separability_ci is None:
+        if runtime.separability is None or runtime.separability_ci is None:  # narrowed for mypy
             raise CalibrationBindingError("both labelled classes are required for carry-forward")
-        errors = threshold_error_rates(answerable, unanswerable, parent.threshold)
-        # BOTH conditions, and the second is the one that catches a shifted class. See
-        # DEFAULT_MAX_CARRY_FORWARD_ERROR: certification alone would pass a threshold that has
-        # stopped deciding anything, because separability cannot see a cut it is not asked about.
-        within_error = (
-            errors["false_abstain_rate"] <= max_error and errors["false_confirm_rate"] <= max_error
-        )
-        certified = runtime.certified is True and within_error
-        reason = runtime.certification_reason
-        if runtime.certified is True and not within_error:
-            reason = (
-                f"the inherited threshold {parent.threshold:.4f} no longer decides this corpus: "
-                f"false abstain {errors['false_abstain_rate']:.1%} of {len(answerable)} "
-                f"answerable, false confirm {errors['false_confirm_rate']:.1%} of "
-                f"{len(unanswerable)} unanswerable, against a bound of {max_error:.1%}. "
-                f"Separability is {runtime.separability:.4f}, so the classes are still ordered "
-                f"and only the boundary has moved; recalibrate to place it again."
-            )
-        refit = from_samples(parent.runtime.embedder, answerable, unanswerable)
         provenance = {
             "parent_calibration_id": parent.calibration_id,
             "parent_generation_id": parent.generation_id,
@@ -1182,7 +1219,7 @@ class CalibrationRepository:
             "parent_separability": parent.separability,
             "inherited_threshold": parent.threshold,
             "inherited_scale": parent.scale,
-            "refit_threshold": refit.threshold,
+            "refit_threshold": verdict.refit_threshold,
             "max_corpus_delta": max_corpus_delta,
             "max_carry_forward_error": max_error,
             **errors,
