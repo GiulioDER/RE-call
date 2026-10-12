@@ -6,15 +6,12 @@ Moved out of `recall_mcp.service` unchanged; that module re-exports every name h
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from recall.types import DecisionState
 
-_UNKNOWN_TERM_CHECK_DESCRIPTION = (
-    "Vocabulary check: checked | unavailable | disabled | not_run. Unavailable means "
-    "the backend or constrained scope cannot safely check vocabulary, not that a term "
-    "was absent. This optional check does not replace calibration or trust state."
-)
 
 class SearchHit(BaseModel):
     chunk_id: str | None = Field(default=None, description="Stable retrieved chunk identifier.")
@@ -27,8 +24,8 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata | dependency_invalidated | unknown_term. Only 'ok' hits should be "
-        "relied on."
+        "| invalid_metadata | dependency_invalidated. Only 'ok' hits should be "
+        "relied on for the present state. Historical candidates require a validity check."
     )
     superseded_by: str | None = Field(
         default=None, description="File of the memory that replaces this one, when superseded."
@@ -54,7 +51,7 @@ class SearchHit(BaseModel):
 
 
 class SearchEvidence(BaseModel):
-    """What may be cited from this search's own hits, by the rule `recall_evidence` applies.
+    """What may be cited for the present state, by the rule `recall_evidence` applies.
 
     Built from the same trusted result by `recall.evidence.build_evidence_bundle`, so it adds no
     retrieval and no write. Measured 2026-10-10: given the search result, no model asked for the
@@ -65,7 +62,7 @@ class SearchEvidence(BaseModel):
     """
 
     decision: str = Field(
-        description="answer | abstain. 'abstain' means no hit may be cited: say you don't know."
+        description="answer | abstain. 'abstain' means no present-state citation is supported."
     )
     reason_code: str | None = Field(
         default=None,
@@ -74,9 +71,25 @@ class SearchEvidence(BaseModel):
     )
     citable: list[str] = Field(
         default_factory=list,
-        description="The chunk_id of every hit an answer may rely on and cite, in retrieval "
+        description="The chunk_id of every hit a present-state answer may rely on, in retrieval "
         "order: the hits the trust layer cleared, and no others.",
     )
+
+
+class HistoricalSearchEvidence(BaseModel):
+    """Relevant archived assertions, not an unconditional statement of what held at a time.
+
+    Only certified superseded or expired hits at or above the threshold enter. Consumers must match
+    the requested instant to the hit's validity bounds before citing it as a fact at that time.
+    Without that support, a candidate may describe an archived assertion only.
+    """
+
+    candidates: list[str] = Field(
+        description="Archived chunk identifiers eligible for a historical validity check, "
+        "in retrieval order. These do not override present-state evidence.citable.",
+    )
+    scope: Literal["historical_only"] = "historical_only"
+    requires_validity_check: Literal[True] = True
 
 
 class SearchResult(BaseModel):
@@ -84,10 +97,12 @@ class SearchResult(BaseModel):
     decision_state: DecisionState | None = Field(
         default=None,
         description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
-        "legacy payloads may omit it and yield null; do not infer support from hit count.",
+        "for the present state. Legacy payloads may omit it and yield null; do not infer "
+        "support from hit count.",
     )
     abstained: bool = Field(
-        description="True when NO valid hit survived — say you don't know instead of answering."
+        description="True when no present-state fact is supported. Historical candidates, "
+        "when present, remain conditional on a validity check.",
     )
     reason: str = Field(description="Why the search abstained; empty otherwise.")
     calibrated: bool = Field(
@@ -111,10 +126,6 @@ class SearchResult(BaseModel):
     pipeline_fingerprint: str | None = None
     corpus_fingerprint: str | None = None
     query_set_digest: str | None = None
-    unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
-    unknown_terms: list[str] = Field(
-        default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
-    )
     gap_warning: bool = Field(description="True when the memory probably lacks a relevant answer.")
     stale: bool = Field(
         description="True when the memory index is older than the freshness window."
@@ -172,8 +183,13 @@ class SearchResult(BaseModel):
     hits: list[SearchHit]
     evidence: SearchEvidence | None = Field(
         default=None,
-        description="What an answer from this search may cite (see SearchEvidence). Null when "
+        description="What a present-state answer may cite (see SearchEvidence). Null when "
         "the server runs with RECALL_SEARCH_EVIDENCE=off.",
+    )
+    historical: HistoricalSearchEvidence | None = Field(
+        default=None,
+        description="Conditional historical candidates from this search. Null without certified "
+        "relevant archived records or when RECALL_SEARCH_EVIDENCE=off. Never present-state evidence.",
     )
     explanation: dict[str, object] | None = None
     related_items: list[SearchHit] = Field(default_factory=list)
@@ -184,13 +200,6 @@ class SearchResult(BaseModel):
             "Versioned request aware route diagnostic. It names the selected physical tenant "
             "legs and their bounded limits, without comparing scores across tenants."
         ),
-    )
-    refresh_warning: str | None = Field(
-        default=None,
-        description="Lite store only: set while the automatic refresh of the memo folder is "
-        "failing (over the index budget, denied by the source policy, the embedder down). Memos "
-        "changed since the last successful refresh are not searchable until it is fixed; tell "
-        "the user, and see `recall lite refresh --check`. Null when refreshes succeed.",
     )
 
 
@@ -299,10 +308,6 @@ class EvidenceResult(BaseModel):
         default=None,
         description="Index generation identity, or null when the caller supplied no generation.",
     )
-    unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
-    unknown_terms: list[str] = Field(
-        default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
-    )
     system_prompt: str = Field(description="Fixed library-authored instruction. No corpus input.")
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")
     items: list[EvidenceItemModel]
@@ -324,13 +329,6 @@ class EvidenceResult(BaseModel):
             "Versioned request aware route diagnostic. It names the selected physical tenant "
             "legs and their bounded limits, without comparing scores across tenants."
         ),
-    )
-    refresh_warning: str | None = Field(
-        default=None,
-        description="Lite store only: set while the automatic refresh of the memo folder is "
-        "failing (over the index budget, denied by the source policy, the embedder down). Memos "
-        "changed since the last successful refresh are not searchable until it is fixed; tell "
-        "the user, and see `recall lite refresh --check`. Null when refreshes succeed.",
     )
 
 
@@ -475,13 +473,6 @@ class MemoryStatsResult(BaseModel):
         description="Process metrics since start: counters (searches, abstentions, gap warnings, "
         "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
         "operator can read them without a scrape endpoint.",
-    )
-    refresh: dict[str, object] | None = Field(
-        default=None,
-        description="Lite store only: the last refresh from the memo folder that ran, automatic "
-        "or `recall lite refresh` (outcome, reason, counts, calibration status and its reason). A "
-        "check that found nothing changed is not recorded. Null on any other store, and before "
-        "the first refresh.",
     )
 
 

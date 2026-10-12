@@ -39,6 +39,7 @@ from recall_mcp.models import (
     EvidenceCardModel,
     EvidenceItemModel,
     EvidenceResult,
+    HistoricalSearchEvidence,
     SearchEvidence,
     SearchHit,
     SearchResult,
@@ -462,28 +463,38 @@ SEARCH_EVIDENCE_NOTE = (
     " To answer from memory, rely only on the hits listed in `evidence.citable` and cite their "
     "chunk_id values."
 )
-#: Appended LAST, after every rule above, when a relevant hit is `superseded` or `expired`. Those
-#: rules are about the present: "say you don't know", "rely only on the current version", "cite
-#: only `evidence.citable`". A question about an earlier time inverts them, because the replaced
-#: or lapsed memory IS the record of that time, and without this sentence the advice told a model
-#: to refuse exactly the item that answers it. Scoped to the past so it never licenses a present
-#: answer from a stale memory, and it names verdicts and fields only, never corpus text.
+#: Appended last when certified historical candidates are explicitly projected. This qualifies
+#: the present-state rules without treating every demoted hit, or every earlier instant, as valid.
+#: It names fields only, never corpus text or identifiers in the instruction channel.
 HISTORICAL_RECORD_NOTE = (
-    " EXCEPTION, only for a question about an earlier time: a hit whose verdict is `superseded` "
-    "or `expired` is the record of what held before it was replaced or lapsed. If the question "
-    "asks what held then, answer from that hit, cite its chunk_id, and say it no longer holds. "
-    "For a question about the present it is not evidence."
+    " EXCEPTION, only for a question about an earlier time: only chunk_ids listed in "
+    "`historical.candidates` are eligible archived assertions. Before citing one as a fact "
+    "at the requested time, establish that time from the hit's `valid_from`, `valid_until`, "
+    "and text. If they establish it, answer for that time and state that the record is now "
+    "superseded or expired. Otherwise, describe only the archived assertion and do not claim "
+    "it held then. These candidates never override "
+    "`evidence.citable` for a question about the present."
 )
 _HISTORICAL_VERDICTS = frozenset({"superseded", "expired"})
 
 
-def _has_historical_record(result: TrustedResult) -> bool:
-    """A superseded or expired hit at or above the calibrated threshold.
+def _historical_evidence(
+    result: TrustedResult, effective_k: int,
+) -> HistoricalSearchEvidence | None:
+    """Project individually relevant archived assertions for a conditional historical answer.
 
-    The gate assigns `superseded` and `expired` before it looks at the score, so a verdict alone
-    says nothing about relevance; confidence is exactly 0.5 at the threshold.
+    Temporal verdicts precede relevance in the gate, so each candidate needs its own confidence
+    check. The 0.5 boundary is usable only with certified trust. No requested historical instant
+    is supplied to this API: candidates therefore require a validity check, not a blanket claim
+    that the record held throughout the past.
     """
-    return any(hit.verdict in _HISTORICAL_VERDICTS and hit.confidence >= 0.5 for hit in result.hits)
+    if not result.calibrated:
+        return None
+    candidates = [
+        hit.chunk.id for hit in result.hits
+        if hit.verdict in _HISTORICAL_VERDICTS and hit.confidence >= 0.5
+    ][:max(1, min(effective_k, MAX_SEARCH_K))]
+    return HistoricalSearchEvidence(candidates=candidates) if candidates else None
 
 
 def search_evidence_enabled(env: Mapping[str, str]) -> bool:
@@ -700,10 +711,12 @@ def search_memory(
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
     advice = _search_advice_fn(result, hits, reasoning_available)
-    evidence = _search_evidence(result, retrieval.effective_k) if search_evidence_enabled(values) else None
+    evidence_enabled = search_evidence_enabled(values)
+    evidence = _search_evidence(result, retrieval.effective_k) if evidence_enabled else None
+    historical = _historical_evidence(result, retrieval.effective_k) if evidence_enabled else None
     if evidence is not None and evidence.decision == "answer":
         advice += SEARCH_EVIDENCE_NOTE
-    if _has_historical_record(result):
+    if historical is not None:
         advice += HISTORICAL_RECORD_NOTE
 
     stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
@@ -759,6 +772,7 @@ def search_memory(
         budget_exceeded=budget_exceeded,
         hits=hits,
         evidence=evidence,
+        historical=historical,
         explanation=explanation,
         related_items=related_items,
         related_diagnostics=related_diagnostics,
