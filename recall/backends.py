@@ -12,7 +12,8 @@ Postgres, so a lite DSN on the generation route is refused before anything opens
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from contextlib import AbstractContextManager, nullcontext
+from typing import TYPE_CHECKING, Any, cast
 
 from recall.lite import LiteStore, is_lite_dsn
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
@@ -20,7 +21,7 @@ from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 if TYPE_CHECKING:
     from recall.runtime_route import RuntimeRoute
 
-__all__ = ["is_lite_dsn", "lite_route_refusal", "open_legacy_store"]
+__all__ = ["is_lite_dsn", "lite_route_refusal", "open_legacy_store", "write_session"]
 
 
 def lite_route_refusal(dsn: str | None, route: RuntimeRoute) -> str | None:
@@ -52,3 +53,17 @@ def open_legacy_store(
     return PgVectorStore(
         dsn, dim=dim, table=table, tenant=tenant, pool_size=pool_size, statement_timeout_ms=statement_timeout_ms
     )
+
+
+def write_session(store: object, purpose: str, **kwargs: Any) -> AbstractContextManager[Any]:
+    """Hold the lite store's write lane for a write operation; a no-op for any other store.
+
+    Postgres has its own guard on the same operations (`recall.index_lock.single_writer`), so the
+    lane exists only where that one cannot reach. kwargs go to `recall.lite.writer_lock.lite_lane`
+    (lane, wait_s, coalesce, on_busy).
+    """
+    if isinstance(store, LiteStore):
+        from recall.lite.writer_lock import lite_lane
+
+        return lite_lane(store.path, purpose=purpose, **kwargs)
+    return nullcontext(None)
