@@ -10,7 +10,9 @@ Invariants and the failure each one catches:
 - C1 under the floor (fewer chunks than a query set needs) nothing is stored, the store resolves
   `missing`, and strict search refuses with CALIBRATION_MISSING rather than answering.
 - C2 with enough text the store certifies by itself, and strict search answers `trusted`.
-- C3 a changed corpus resolves `stale` and strict search refuses until `ensure_calibrated` refits.
+- C3 a changed corpus whose fitted threshold no longer re-verifies resolves `stale`, and strict
+  search refuses until `ensure_calibrated` refits. (Before carry-forward, ANY change did this; a
+  change the threshold survives is now carried, see `tests/test_lite_carry_forward.py`.)
 - C4 searching with a different embedder than the one calibrated is LINEAGE_MISMATCH.
 - C5 a stored calibration whose bytes were altered fails closed (DEPENDENCY_UNAVAILABLE): the
   threshold is never read from an artifact whose checksum does not verify.
@@ -24,6 +26,9 @@ Red proof, 2026-10-07, each mutation alone against `recall/lite/calibration.py` 
 - K1 (C1) `resolve` reading an empty store as certified: `CERTIFIED is MISSING` failed.
 - K2 (C2) `auto_calibrate` never certifying: the outcome was uncertified.
 - K3 (C3) the corpus fingerprint unchecked: "a changed corpus kept its old certificate".
+  Re-proved 2026-10-12 for the carry-forward form of C3, with the mutation that lets `resolve` serve
+  `carry_forward`'s artifact on separability alone (M2 in `tests/test_lite_carry_forward.py`):
+  "a changed corpus kept its old certificate".
 - K4 (C4) `generation_binding` without the embedder: `DID NOT RAISE TrustRefusal`.
 - K5 (C5) `artifact_from_json` without `verify_checksum`: `DID NOT RAISE TrustRefusal`.
 - K6 (C6) `ensure_calibrated` refitting a certified corpus: "an unchanged corpus was calibrated twice".
@@ -36,6 +41,7 @@ Red proof, 2026-10-07, each mutation alone against `recall/lite/calibration.py` 
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import sqlite3
@@ -95,6 +101,28 @@ def _write_memos(root: Path, count: int, *, start: int = 0) -> None:
         )
 
 
+def _shift_gap_questions(store: LiteStore, root: Path, count: int) -> None:
+    """Write `count` memos that lift the fit's first `count` gap questions just over its threshold.
+
+    Each memo holds one gap question's words plus made-up filler, about 2.5 filler words per content
+    word, so its cosine with that question lands near 0.53: above the fitted threshold (about 0.45
+    with this embedder) and below every answerable score (0.62 and up). The classes stay perfectly
+    ORDERED, so separability still certifies, while the fixed threshold now confirms those gap
+    questions: the shifted class that only the per-class error check can see.
+    """
+    from recall.lite.calibration import artifact_from_json
+
+    raw = store.latest_calibration_json()
+    assert raw is not None
+    evidence = store.calibration_evidence(artifact_from_json(raw).calibration_id)
+    assert evidence is not None
+    gap = [str(q["query"]) for q in json.loads(evidence[0]) if not q["answerable"]][:count]
+    for n, question in enumerate(gap):
+        words = {w for w in _WORD.findall(question.lower()) if w not in ENGLISH_STOP_WORDS and len(w) > 2}
+        filler = " ".join(f"fill{n}x{k}" for k in range(math.ceil(2.5 * len(words))))
+        (root / f"gap-{n:03d}.md").write_text(f"{question} {filler}\n", encoding="utf-8")
+
+
 def _store(tmp_path: Path, memos: int) -> LiteStore:
     store = LiteStore(tmp_path / "memory.db", dim=DIM)
     _write_memos(tmp_path / "m", memos)
@@ -133,7 +161,7 @@ def test_enough_text_certifies_and_strict_search_answers(tmp_path: Path) -> None
 def test_a_changed_corpus_is_stale_until_refitted(tmp_path: Path) -> None:
     store = _store(tmp_path, 48)
     auto_calibrate(store, ContentWordEmbedder())
-    _write_memos(tmp_path / "m", 2, start=48)
+    _shift_gap_questions(store, tmp_path / "m", 6)
     Indexer(store, ContentWordEmbedder(), env={}).index_path(tmp_path / "m")
     assert store.resolve_calibration().status is CalibrationStatus.STALE, "a changed corpus kept its old certificate"
     with pytest.raises(TrustRefusal) as refused:

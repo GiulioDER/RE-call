@@ -241,6 +241,7 @@ class LiteStore:
         with self._lock:
             self._ensure_query_tables()
         self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
+        self._manifest_cache: tuple[int, dict[str, str]] | None = None
 
     @classmethod
     def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default", table: str = "chunks") -> LiteStore:
@@ -340,6 +341,17 @@ class LiteStore:
                     rowid INTEGER PRIMARY KEY,
                     created_at TEXT NOT NULL,
                     payload TEXT NOT NULL
+                );
+                -- What a fit was measured on, kept so a changed corpus can re-verify its threshold
+                -- without embedding anything (`recall.lite.calibration.carry_forward`): the labelled
+                -- questions, their vectors (float32, one row per question, in order) and the corpus
+                -- by source. A file written before this table existed simply has no row, and its
+                -- calibration is refitted on the next change, as it always was.
+                CREATE TABLE IF NOT EXISTS calibration_evidence (
+                    calibration_id TEXT PRIMARY KEY,
+                    queries TEXT NOT NULL,
+                    vectors BLOB NOT NULL,
+                    sources TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS audit_events (
                     event_id TEXT PRIMARY KEY,
@@ -891,18 +903,49 @@ class LiteStore:
         """A stable name for the corpus as it is now, in the place a Postgres generation id goes."""
         return "lite-" + self.corpus_fingerprint()[:16]
 
-    def save_calibration(
-        self, payload: str, *, created_at: str, model: str, dimension: int, expected_revision: int | None = None
-    ) -> None:
-        """Append a fit, keeping identity metadata aligned with the timestamp-selected row.
+    def source_manifest(self) -> dict[str, str]:
+        """`{source: digest of its chunks' ids and texts}`: the corpus by source, cached per version.
 
-        An expected revision refuses publication if any corpus write occurred during the fit.
-        The comparison and insertion share the write transaction, excluding another writer.
+        The unit a corpus delta counts (`recall.calibration_v2.corpus_delta`), so an edit to one memo
+        is one changed source however many chunks it has.
+        """
+        matrix = self._load()
+        cached = self._manifest_cache
+        if cached is None or cached[0] != matrix.version:
+            from recall.lite.calibration import source_digests
+
+            cached = (matrix.version, source_digests([(row.source, row.id, row.text) for row in matrix.rows]))
+            self._manifest_cache = cached
+        return dict(cached[1])
+
+    def save_calibration(
+        self,
+        payload: str,
+        *,
+        created_at: str,
+        model: str,
+        dimension: int,
+        expected_revision: int | None = None,
+        evidence: tuple[str, str, bytes, str] | None = None,
+    ) -> None:
+        """Append a fit and, in the same transaction, the evidence it was fitted on.
+
+        `evidence` is `(calibration_id, queries JSON, query vectors as float32 bytes, sources JSON)`;
+        together or not at all, so a calibration never names evidence that was not written. An
+        expected revision refuses publication if any corpus write occurred during the fit; the
+        comparison and insertion share the write transaction, excluding another writer. Identity
+        metadata follows the timestamp-selected row.
         """
         with self._write():
             if expected_revision is not None and self._version() != expected_revision:
                 raise CalibrationBindingError("corpus changed during calibration; retry the fit")
             inserted = self._conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)", (created_at, payload))
+            if evidence is not None:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO calibration_evidence(calibration_id, queries, vectors, sources) "
+                    "VALUES (?, ?, ?, ?)",
+                    evidence,
+                )
             selected = self._conn.execute("SELECT rowid FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
             if selected is not None and selected[0] == inserted.lastrowid:
                 self._conn.executemany(
@@ -919,6 +962,13 @@ class LiteStore:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (payload,),
             )
+
+    def calibration_evidence(self, calibration_id: str) -> tuple[str, bytes, str] | None:
+        """`(queries JSON, vectors, sources JSON)` stored with `calibration_id`, or None."""
+        rows = self._metadata_values(
+            "SELECT queries, vectors, sources FROM calibration_evidence WHERE calibration_id = ?", (calibration_id,)
+        )
+        return (str(rows[0][0]), bytes(rows[0][1]), str(rows[0][2])) if rows else None
 
     def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
         """The coverage stored with `calibration_id`, or None when it belongs to another fit."""

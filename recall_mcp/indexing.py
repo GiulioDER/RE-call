@@ -188,11 +188,13 @@ def index_memory(
     from recall.lite import LiteStore
 
     if isinstance(store, LiteStore):
-        # A local install has nobody to run a calibration by hand: fit one whenever the memory
-        # changed, as `recall index` does, so strict search starts answering on its own.
+        # A local install has nobody to run a calibration by hand: keep one in force whenever the
+        # memory changed, so strict search starts answering on its own. A changed memory carries
+        # its calibration forward when the threshold still re-verifies (milliseconds, no
+        # embedding); a refit, when one is due, runs in the background so the write returns now.
         from recall.lite.calibration import ensure_calibrated
 
-        outcome = ensure_calibrated(store, embedder)
+        outcome = ensure_calibrated(store, embedder, background=True)
         message += f" Calibration: {outcome.status.value}. {outcome.reason}"
     return IndexResult(
         files=stats.files,
