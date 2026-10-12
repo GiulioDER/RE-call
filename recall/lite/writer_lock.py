@@ -252,11 +252,21 @@ def _holder(root: Path, lane: str, live: list[Path]) -> dict[str, object] | None
 
 
 def _next_seq(root: Path, lane: str) -> int:
+    """The next ticket number. Call under the mutex.
+
+    The counter file is rewritten in place, so a process killed mid-write leaves it empty. Every
+    ticket still queued carries its number in its name, so the next number is taken past those
+    too: a reset counter can then neither reuse a live ticket's name nor sort a newcomer ahead of
+    a waiter already queued.
+    """
     path = root / f"{lane}.seq"
     try:
         current = int(path.read_text(encoding="ascii").strip() or 0)
     except (OSError, ValueError):
         current = 0
+    for ticket in (root / f"{lane}.queue").glob("*.ticket"):
+        with suppress(ValueError):
+            current = max(current, int(ticket.name.split("-", 1)[0]))
     path.write_text(str(current + 1), encoding="ascii")
     return current + 1
 
