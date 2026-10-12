@@ -4,7 +4,7 @@ Invariants and the failure each one catches:
 - F1 reads go to the file: a second handle sees an append with no reopen (the snapshot that
   `SQLiteFactLedger` takes at open would hide it).
 - F2 the ledger is append only: its triggers refuse a DELETE.
-- F3 a card id stored with other content is refused; an identical put is accepted.
+- F3 a stored card whose content no longer matches its id is refused; an identical put is accepted.
 - F4 a write waits for another connection's write transaction instead of failing.
 - F5 a file made before the fact tables existed is served: the tables appear on first use.
 - F6 a contradiction without supersession is refused, and the check inside the append
@@ -79,7 +79,11 @@ def test_f2_the_ledger_is_append_only(store: LiteStore) -> None:
 
 
 def test_f3_a_card_id_collision_is_refused(store: LiteStore) -> None:
-    """Red: `LiteEvidenceCardStore.put` without the read back comparison raises nothing."""
+    """Red: `LiteEvidenceCardStore.put` without its read back (`existing = card`) raises nothing.
+
+    A card id is a hash of the card's content, so a tampered row fails to decode before the
+    equality test is reached; the read back is what refuses it, and is what the mutation removes.
+    """
     cards = LiteEvidenceCardStore(store)
     tea = card_for(TEA)
     cards.put((tea,))
