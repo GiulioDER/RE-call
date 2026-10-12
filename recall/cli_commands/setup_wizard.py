@@ -251,9 +251,16 @@ def _setup_lite(args: argparse.Namespace) -> None:
         )
     except NotADirectoryError as exc:
         raise SystemExit(f"recall setup --lite: {exc}; pass --memory <folder of notes>") from exc
+    except ValueError as exc:
+        raise SystemExit(f"recall setup --lite: {exc}") from exc
     print(report.render())
     print()
-    print("Restart Claude Code in this project to load the server. `recall doctor` checks everything.")
+    if report.registration is not None and report.registration.recorded:
+        print("Restart Claude Code in this project to load the server.")
+    if report.followup_env:
+        print("Use the configured commands above to check the store and open its dashboard.")
+    else:
+        print("Set this store's DSN and model settings before running recall doctor or recall dashboard.")
 
 
 def _cmd_quickstart(args: argparse.Namespace) -> None:
