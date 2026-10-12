@@ -18,9 +18,14 @@ Invariants and the failure each one catches:
   calibration at once, and the refit lands afterwards.
 - F6 with `background=True` a carry that FAILED is never served while the refit runs: `stale` until
   the refit lands.
-- F7 a fit whose corpus changed while it was measured is discarded, never stored.
+- F7 a fit whose corpus changed while it was measured binds to the snapshot it measured, never to
+  the moved corpus, and the store then carries it forward to the corpus as it is now.
 - F8 a carry is refused for an embedder other than the fit's: the threshold binds to one model.
 - F9 each carry is recorded in the audit ledger, and `recall_calibration_status` reports it.
+- F10 a background refit lands while writes keep arriving during every fit. Found by the
+  pre-registered latency run (recall-lab `bc7df98`): a fit that DISCARDED itself when the corpus
+  moved never landed under a write every 0.3 s against a 6 s fit, the bridge ran out at memo 49,
+  and 36 of 60 writes left strict search refusing.
 
 Red proof, 2026-10-12: each mutation alone against the carry-forward branch, the named test run on
 the test host, failing in its intended assertion (JUnit XML), then the file restored byte for byte
@@ -39,10 +44,18 @@ the test host, failing in its intended assertion (JUnit XML), then the file rest
 - M6 (F6) the background branch returning the fit as certified when the carry failed: "a threshold
   that failed re-verification was offered while the refit ran".
 - M7 (F7) the fingerprint comparison after measuring disabled in `auto_calibrate`: the outcome was
-  `certified on 40 answerable and 40 unanswerable ...`, a fit over two corpora, stored.
+  `certified on 40 answerable and 40 unanswerable ...`, a fit over two corpora, stored. (Against
+  the first form of F7, which expected the fit discarded; F7 and M7 were replaced by the snapshot
+  fix, see M7b.)
 - M8 (F8) the embedder identity check in `carry_forward` disabled: "a threshold fitted with one
   model was carried for another".
 - M9 (F9) the `_record_carry` call removed: "a carry left no lineage in the audit ledger".
+- Baseline (F7, F10): the pre-fix `recall/lite/calibration.py` and `recall/lite/store.py` from
+  `c0e7e07d7`, which discarded a fit over a moving corpus: F7 "the memory changed while it was being
+  calibrated; the fit was discarded"; F10 "the background refit never landed while writes kept
+  arriving".
+- M7b (F7) the fit bound to the live store's fingerprint instead of its snapshot's: "a fit was bound
+  to a corpus it did not measure".
 """
 
 from __future__ import annotations
@@ -206,12 +219,46 @@ class _WritesDuringTheFit(ContentWordEmbedder):
         return super().embed(texts)
 
 
-def test_a_fit_over_a_moving_corpus_is_discarded(tmp_path: Path) -> None:
+def test_a_fit_over_a_moving_corpus_binds_to_what_it_measured(tmp_path: Path) -> None:
     """F7."""
     store = _store(tmp_path, 48)
+    measured = store.corpus_fingerprint()
     outcome = cal.auto_calibrate(store, _WritesDuringTheFit(store))
-    assert outcome.status is CalibrationStatus.STALE, outcome.reason
-    assert store.latest_calibration_json() is None, "a fit measured across two corpora was stored"
+    assert outcome.status is CalibrationStatus.CERTIFIED, outcome.reason
+    assert outcome.artifact is not None
+    assert outcome.artifact.corpus_fingerprint == measured, "a fit was bound to a corpus it did not measure"
+    assert store.corpus_fingerprint() != measured
+    resolved = store.resolve_calibration()
+    assert resolved.status is CalibrationStatus.CERTIFIED and resolved.artifact is not None
+    assert resolved.artifact.carry_forward is not None, "the write during the fit was not carried"
+
+
+class _KeepsWriting(ContentWordEmbedder):
+    """Indexes one more memo every 50 texts it embeds: a server that keeps writing during refits."""
+
+    def __init__(self, store: LiteStore) -> None:
+        super().__init__()
+        self._store = store
+        self._calls = 0
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        self._calls += 1
+        if self._calls % 50 == 1:
+            text = f"The kalomiru{self._calls} gasket is serviced by the vozapi{self._calls} team."
+            chunk = Chunk(id=f"late-{self._calls}", source=f"late-{self._calls}.md", text=text, metadata={})
+            self._store.upsert([chunk], super().embed([text]))
+        return super().embed(texts)
+
+
+def test_a_background_refit_lands_while_writes_keep_arriving(tmp_path: Path) -> None:
+    """F10."""
+    store = _fitted(tmp_path)
+    first = _fit_id(store)
+    _add(store, tmp_path, 20)
+    cal.ensure_calibrated(store, _KeepsWriting(store), background=True)
+    cal.wait_for_refit(store, timeout=120)
+    assert _fit_id(store) != first, "the background refit never landed while writes kept arriving"
+    assert store.resolve_calibration().status is CalibrationStatus.CERTIFIED
 
 
 def test_a_carry_is_refused_for_another_embedder(tmp_path: Path) -> None:

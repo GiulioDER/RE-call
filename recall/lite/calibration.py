@@ -97,7 +97,7 @@ _log = logging.getLogger(__name__)
 #: that never calls `ensure_calibrated`) keeps answering from a threshold it did not fit.
 MAX_BRIDGE_CORPUS_DELTA = 0.5
 
-#: Fits a background refit may run in a row when writes keep moving the corpus under it.
+#: Fits a background refit may run in a row while the newest fit still does not cover the corpus.
 _MAX_REFIT_ATTEMPTS = 3
 
 
@@ -385,10 +385,15 @@ def auto_calibrate(
 
     `queries` is a labelled set (`{"query", "answerable"}` entries) to fit on instead of the
     questions generated from the corpus; it is checked and canonicalised like any stored set.
+
+    The fit reads one frozen `LiteStore.calibration_snapshot()` throughout and binds to that snapshot's
+    fingerprint, so a write that lands while it runs (a background refit beside a server that keeps
+    indexing) neither mixes two corpora into one fit nor wastes it: the stored fit then reads as a
+    changed corpus, which `carry_forward` re-verifies like any other.
     """
-    fitted_on = store.corpus_fingerprint()
-    sources = store.source_manifest()
-    texts = [chunk.text for chunk in store.iter_chunks() if chunk.text.strip()]
+    snapshot = store.calibration_snapshot()
+    sources = snapshot.source_manifest()
+    texts = snapshot.texts()
     entries, why = ([dict(q) for q in queries], "") if queries else _query_set(texts)
     if entries is None:
         return CalibrationOutcome(
@@ -398,16 +403,9 @@ def auto_calibrate(
         )
     labels, query_digest = canonical_query_set(entries)
     recorder = _RecordingEmbedder(embedder)
-    # Duck-typed as everywhere else: the scorer needs only `top_cosine`, which LiteStore has.
-    answerable, unanswerable = measure_top_cosines(cast("Any", store), cast("Any", recorder), list(labels))
-    fingerprint = store.corpus_fingerprint()
-    if fingerprint != fitted_on:
-        # A write landed while this fit read the corpus (a background refit beside a server that
-        # keeps indexing), so its questions and its scores may describe two different corpora.
-        # Nothing is stored; the caller fits again on the corpus as it is now.
-        return CalibrationOutcome(
-            CalibrationStatus.STALE, "the memory changed while it was being calibrated; the fit was discarded"
-        )
+    # Duck-typed as everywhere else: the scorer needs only `top_cosine`, which the snapshot has.
+    answerable, unanswerable = measure_top_cosines(cast("Any", snapshot), cast("Any", recorder), list(labels))
+    fingerprint = snapshot.fingerprint
     runtime = from_samples(str(embedder.name), answerable, unanswerable)
     if runtime.separability is None or runtime.separability_ci is None:
         return CalibrationOutcome(CalibrationStatus.UNCERTIFIED, "both kinds of test question are needed to calibrate")
@@ -416,7 +414,7 @@ def auto_calibrate(
     draft = CalibrationArtifactV2(
         calibration_id="cal_" + uuid.uuid4().hex,
         tenant_id=store.tenant,
-        generation_id=store.lite_generation_id(),
+        generation_id=snapshot.generation_id,
         embedder_identity={"model": model, "dimension": dimension},
         pipeline_fingerprint=pipeline_fingerprint(model, dimension),
         corpus_fingerprint=fingerprint,
@@ -453,7 +451,7 @@ def auto_calibrate(
         # certified decision. See `recall.near_miss` for why the two are kept apart.
         asked = [str(e["query"]) for e in labels if e.get("answerable") is True]
         probes = near_miss_probes(texts, asked, per_class=len(asked))
-        report = near_miss_coverage(store, embedder, float(runtime.threshold), probes)
+        report = near_miss_coverage(cast("Any", snapshot), embedder, float(runtime.threshold), probes)
         store.save_near_miss_coverage(artifact.calibration_id, report)
         coverage = "; " + describe_near_miss(report)
     if certified:

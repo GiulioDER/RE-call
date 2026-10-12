@@ -148,6 +148,57 @@ class _Matrix:
     newest: str | None  # max `indexed_at`; the fixed-width UTC format sorts as text, as SQL's max does
 
 
+class CorpusSnapshot:
+    """The corpus as one read saw it: a calibration fit measures and binds to exactly this.
+
+    Holds the store's cached matrix, which is never mutated (a write replaces it), so a fit running
+    in a background thread beside a server that keeps indexing reads one corpus from its first
+    question to its last, and binds to that corpus's fingerprint. Writes that land meanwhile are a
+    corpus change like any other, which the stored fit then carries forward or refits.
+    """
+
+    def __init__(self, matrix: _Matrix, dim: int) -> None:
+        self._matrix = matrix
+        self._dim = dim
+
+    @property
+    def fingerprint(self) -> str:
+        return self._matrix.fingerprint
+
+    @property
+    def generation_id(self) -> str:
+        return "lite-" + self._matrix.fingerprint[:16]
+
+    def texts(self) -> list[str]:
+        """Non-blank chunk texts in chunk-id order, the order `LiteStore.iter_chunks` reads them."""
+        return [row.text for row in sorted(self._matrix.rows, key=lambda row: row.id) if row.text.strip()]
+
+    def source_manifest(self) -> dict[str, str]:
+        from recall.lite.calibration import source_digests
+
+        return source_digests([(row.source, row.id, row.text) for row in self._matrix.rows])
+
+    def top_cosine(self, vector: list[float]) -> float:
+        """`LiteStore.top_cosine` over this snapshot: the same arithmetic on the same rows."""
+        return _top_cosine(self._matrix, _normalised(vector, self._dim))
+
+
+def _normalised(vector: Sequence[float], dim: int) -> Any:
+    import numpy as np
+
+    if len(vector) != dim:
+        raise LiteStoreError(f"query vector is {len(vector)} wide; this store holds {dim}")
+    q: Any = np.asarray(vector, dtype=np.float32)
+    norm = float(np.linalg.norm(q))
+    return q / norm if norm else q
+
+
+def _top_cosine(matrix: _Matrix, q: Any) -> float:
+    if not matrix.rows:
+        return 0.0
+    return float((matrix.vectors @ q).max())
+
+
 def _matches(scope: Scope, row: _Row) -> bool:
     """`Scope.predicate`, evaluated in Python over one row; same arms, same rules.
 
@@ -624,13 +675,7 @@ class LiteStore:
             return self._matrix
 
     def _query_vector(self, vector: Sequence[float]) -> Any:
-        import numpy as np
-
-        if len(vector) != self._dim:
-            raise LiteStoreError(f"query vector is {len(vector)} wide; this store holds {self._dim}")
-        q: Any = np.asarray(vector, dtype=np.float32)
-        norm = float(np.linalg.norm(q))
-        return q / norm if norm else q
+        return _normalised(vector, self._dim)
 
     def _hit(self, row: _Row, score: float) -> ScoredChunk:
         return ScoredChunk(
@@ -678,10 +723,11 @@ class LiteStore:
 
     def top_cosine(self, vector: list[float]) -> float:
         """The best cosine any chunk has with `vector`, exactly; 0.0 for an empty store."""
-        matrix = self._load()
-        if not matrix.rows:
-            return 0.0
-        return float((matrix.vectors @ self._query_vector(vector)).max())
+        return _top_cosine(self._load(), self._query_vector(vector))
+
+    def calibration_snapshot(self) -> CorpusSnapshot:
+        """The corpus as it is now, frozen: see `CorpusSnapshot`."""
+        return CorpusSnapshot(self._load(), self._dim)
 
     def cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
         matrix = self._load()
