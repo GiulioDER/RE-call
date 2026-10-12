@@ -25,6 +25,7 @@ from recall.retriever import DocumentExpansionPolicy
 from recall.scope import Scope
 from recall.backends import lite_route_refusal, open_legacy_store, write_session
 from recall.lite import LiteStore, LiteWriterBusy
+from recall.lite.writer_lock import queued_notice
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
@@ -333,7 +334,7 @@ def _cmd_index(args: argparse.Namespace) -> None:
         # A lite file's write lane is held for the whole run, calibration included, so two
         # sessions indexing one file take turns (`recall.lite.writer_lock`); Postgres has its own.
         try:
-            with write_session(store, "index"):
+            with write_session(store, "index", on_queued=queued_notice("recall index")):
                 with default_cache() as cache:
                     indexer = Indexer(
                         store,

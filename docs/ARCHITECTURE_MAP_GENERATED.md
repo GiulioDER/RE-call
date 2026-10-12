@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 315
 Cross package edges: 321
-Source tree fingerprint: `8f742c9f60f853ed73e609081b937f7b522df0355ed116fa6a6bc231bdd91490`
+Source tree fingerprint: `9223575b958699ecb84b3dcbb5928c0f9169f7801d8017a2083d029015b2f01e`
 
 ## Highest fan in modules
 
@@ -63,12 +63,13 @@ Source tree fingerprint: `8f742c9f60f853ed73e609081b937f7b522df0355ed116fa6a6bc2
 |---:|---|
 | 59 | `recall_mcp.service` |
 | 52 | `recall_mcp.server` |
-| 25 | `recall.cli_commands.index_search` |
+| 26 | `recall.cli_commands.index_search` |
 | 22 | `recall_mcp.reasoning_engine` |
 | 22 | `recall_mcp.retrieval` |
 | 20 | `recall` |
 | 19 | `recall.trust` |
 | 18 | `recall.rewrite` |
+| 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall_mcp.semantic_graph_cache` |
 | 15 | `recall.generations` |
 | 15 | `recall.index` |
@@ -76,7 +77,6 @@ Source tree fingerprint: `8f742c9f60f853ed73e609081b937f7b522df0355ed116fa6a6bc2
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.indexing` |
 | 15 | `recall_mcp.query_construction_api` |
-| 14 | `recall.cli_commands.setup_wizard` |
 | 14 | `recall.dashboard.server` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall_mcp.provenance` |
@@ -464,14 +464,14 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 11 | 77 |
 | `recall.cli_commands.graph_cmd` | 1 | 52 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 26 |
-| `recall.cli_commands.index_search` | 25 | 89 |
+| `recall.cli_commands.index_search` | 26 | 89 |
 | `recall.cli_commands.lint_check` | 7 | 77 |
 | `recall.cli_commands.manifest_cmd` | 4 | 40 |
 | `recall.cli_commands.provenance_cmd` | 7 | 93 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 124 |
 | `recall.cli_commands.schema_cmd` | 2 | 73 |
 | `recall.cli_commands.secret_cmd` | 1 | 3 |
-| `recall.cli_commands.setup_wizard` | 14 | 140 |
+| `recall.cli_commands.setup_wizard` | 16 | 140 |
 | `recall.codex` | 1 | 1 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 13 |

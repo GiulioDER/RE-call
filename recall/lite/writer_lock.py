@@ -39,7 +39,7 @@ import socket
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +56,7 @@ __all__ = [
     "lanes_dir",
     "lite_lane",
     "lite_lane_status",
+    "queued_notice",
 ]
 
 _log = logging.getLogger(__name__)
@@ -290,13 +291,16 @@ def lite_lane(
     wait_s: float | None = None,
     coalesce: bool = False,
     on_busy: Literal["raise", "skip"] = "raise",
+    on_queued: Callable[[int, dict[str, object] | None], None] | None = None,
 ) -> Iterator[LaneTicket | None]:
     """Hold `lane` of the lite file at `path` for the block. See the module docstring.
 
     Yields a `LaneTicket`, or None when `on_busy="skip"` and the lane was not acquired (busy past
     `wait_s`, coalesced, or not attemptable: a malformed wait variable, an uncreatable lanes
     directory). With `on_busy="raise"` those raise `LiteWriterBusy`, `LiteWriterCoalesced`, or the
-    underlying `LiteStoreError` / `OSError`. Exceptions from the block itself always propagate. `wait_s=0` tries once; None takes the lane's default
+    underlying `LiteStoreError` / `OSError`. Exceptions from the block itself always propagate.
+    `on_queued(position, holder)` is called once, when the first attempt finds the lane taken and
+    the call is about to wait (see `queued_notice` for a command a person is watching). `wait_s=0` tries once; None takes the lane's default
     (`RECALL_LITE_WRITE_WAIT`, 300 s; `RECALL_LITE_REFIT_WAIT`, 120 s).
     """
     if lane not in LANES:
@@ -317,7 +321,7 @@ def lite_lane(
         )
     try:
         budget = _wait_default(lane) if wait_s is None else max(0.0, wait_s)
-        acquired = _acquire(root, lane, purpose, budget, coalesce)
+        acquired = _acquire(root, lane, purpose, budget, coalesce, on_queued)
     except (LiteWriterBusy, LiteWriterCoalesced) as exc:
         if on_busy == "raise":
             raise
@@ -343,7 +347,12 @@ def lite_lane(
 
 
 def _acquire(
-    root: Path, lane: str, purpose: str, budget: float, coalesce: bool
+    root: Path,
+    lane: str,
+    purpose: str,
+    budget: float,
+    coalesce: bool,
+    on_queued: Callable[[int, dict[str, object] | None], None] | None = None,
 ) -> tuple[LaneTicket, IO[bytes], IO[bytes], Path]:
     queue = root / f"{lane}.queue"
     queue.mkdir(parents=True, exist_ok=True)
@@ -374,6 +383,7 @@ def _acquire(
             mine.flush()
         lock = lane_fh = _open(root / f"{lane}.lock")
         poll = POLL_START_S
+        told = False
         while True:
             with _mutex(root, lane):
                 live = _live_tickets(root, lane, prune=True)
@@ -389,6 +399,9 @@ def _acquire(
             waited = time.monotonic() - started
             if waited >= budget:
                 raise LiteWriterBusy(lane, purpose, waited, position, holder)
+            if on_queued is not None and not told:
+                told = True
+                on_queued(position, holder)
             poll = POLL_HEAD_S if position == 1 else min(poll * 2, POLL_MAX_S)
             time.sleep(min(poll, max(0.0, budget - waited)))
     except BaseException:
@@ -448,3 +461,21 @@ def lite_lane_status(path: str | Path, lane: str = "write") -> LaneStatus:
             if record is not None:
                 waiters.append({k: record.get(k) for k in ("seq", "pid", "host", "purpose", "enqueued_at")})
     return LaneStatus(lane, holder, waiters)
+
+
+def queued_notice(command: str, lane: str = "write") -> Callable[[int, dict[str, object] | None], None]:
+    """An `on_queued` for a command a person is watching: one line on stderr, naming the holder.
+
+    A queued write can wait minutes, and a silent terminal reads as a hang.
+    """
+
+    def say(position: int, holder: dict[str, object] | None) -> None:
+        who = f"{holder.get('purpose')} (pid {holder.get('pid')})" if holder else "another writer"
+        print(
+            f"{command}: waiting for the lite store's {lane} lane, held by {who}; position {position}. "
+            f"It gives up after {WAIT_ENV.get(lane, 'the wait')} seconds.",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    return say
