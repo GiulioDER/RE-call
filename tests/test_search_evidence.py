@@ -22,7 +22,11 @@ from __future__ import annotations
 
 import contextlib
 import functools
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from recall.types import (
     Chunk,
@@ -158,3 +162,117 @@ def test_the_historical_exception_needs_a_relevant_record() -> None:
     search, _ = _both(["ok", "low_confidence", "not_yet_valid"], demoted_confidence=0.7)
     assert retrieval.HISTORICAL_RECORD_NOTE not in search.advice, (
         "exception without a superseded or expired hit")
+
+
+def _transform_fake_result(
+    monkeypatch: pytest.MonkeyPatch, transform: Callable[[TrustedResult], TrustedResult]
+) -> None:
+    original = _FakeSearch.__call__
+
+    def transformed(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return transform(original(*args, **kwargs))
+
+    monkeypatch.setattr(_FakeSearch, "__call__", transformed)
+
+
+@pytest.mark.parametrize("verdicts", [["expired"], ["ok", "superseded"]])
+def test_historical_candidates_are_separate_from_current_evidence(verdicts: list[str]) -> None:
+    """DAT-001: current abstention/citations and conditional historical eligibility must agree.
+
+    Red proof: PR HEAD 0367a335, search_memory's historical advice had no structured candidates;
+    this exact node fails the assertion 'historical guidance has no structured eligibility'.
+    """
+    search, evidence = _both(verdicts, demoted_confidence=0.7)
+    historical = search.model_dump().get("historical")
+    assert historical is not None, "historical guidance has no structured eligibility"
+    assert historical["candidates"] == ["c0" if verdicts == ["expired"] else "c1"]
+    assert historical["requires_validity_check"] is True
+    assert "historical.candidates" in search.advice
+    assert search.evidence is not None
+    assert search.evidence.citable == [item.chunk_id for item in evidence.items]
+    assert search.evidence.citable == ([] if verdicts == ["expired"] else ["c0"])
+
+
+def test_historical_candidates_exclude_a_low_confidence_neighbor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STAKES-001: one eligible record must not authorize another below the threshold.
+
+    Red proof: PR HEAD 0367a335's result-wide _has_historical_record switch omits individual
+    eligibility, failing 'one relevant record must not authorize its irrelevant neighbor'.
+    """
+    _transform_fake_result(
+        monkeypatch,
+        lambda result: replace(result, hits=[result.hits[0], replace(result.hits[1], confidence=0.2)]),
+    )
+    search, _ = _both(["superseded", "expired"], demoted_confidence=0.7)
+    historical = search.model_dump().get("historical")
+    assert historical is not None and historical["candidates"] == ["c0"], (
+        "one relevant record must not authorize its irrelevant neighbor")
+
+
+@pytest.mark.parametrize(
+    "changes", [{"calibration_id": None}, {"calibration_status": "uncertified"},
+                {"trust_state": "degraded"}],
+)
+def test_historical_eligibility_needs_certified_trust(
+    monkeypatch: pytest.MonkeyPatch, changes: dict[str, object],
+) -> None:
+    """The historical exception cannot use an uncertified confidence threshold.
+
+    Red proof: PR HEAD 0367a335's _has_historical_record ignores result.calibrated;
+    every parameter fails 'uncertified historical confidence invited an answer'.
+    """
+    _transform_fake_result(monkeypatch, lambda result: replace(result, **changes))
+    search, _ = _both(["superseded"], demoted_confidence=0.7)
+    assert search.model_dump().get("historical") is None
+    assert retrieval.HISTORICAL_RECORD_NOTE not in search.advice, (
+        "uncertified historical confidence invited an answer")
+
+
+def test_historical_candidates_require_the_requested_validity_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STAKES-002: archival eligibility is not proof of a fact at the requested past instant.
+
+    Red proof: PR HEAD 0367a335's unconditional historical note fails 'a superseded future
+    assertion was presented as an established past fact'; no date parser is claimed here.
+    """
+    _transform_fake_result(
+        monkeypatch,
+        lambda result: replace(result, hits=[replace(
+            result.hits[0], validity=Validity(
+                valid_from=datetime(2050, 1, 1, tzinfo=UTC),
+                valid_until=datetime(2100, 1, 1, tzinfo=UTC), superseded_by="note9.md"))]),
+    )
+    search, _ = _both(["superseded"], demoted_confidence=0.7)
+    historical = search.model_dump().get("historical")
+    assert historical is not None and historical["requires_validity_check"] is True, (
+        "a superseded future assertion was presented as an established past fact")
+    assert "valid_from" in search.advice and "valid_until" in search.advice
+    assert "do not claim it held then" in search.advice
+
+
+def test_disabling_search_evidence_disables_historical_eligibility() -> None:
+    """DAT-001: disabling the evidence surface must not leave historical citation advice.
+
+    Red proof: PR HEAD 0367a335 appends its historical exception despite the off switch;
+    this node fails 'historical answer guidance survived disabled evidence'.
+    """
+    search, _ = _both(["expired"], env={"RECALL_SEARCH_EVIDENCE": "off"}, demoted_confidence=0.7)
+    assert search.evidence is None and search.model_dump().get("historical") is None
+    assert retrieval.HISTORICAL_RECORD_NOTE not in search.advice, (
+        "historical answer guidance survived disabled evidence")
+
+
+def test_supported_historical_time_explicitly_permits_an_answer() -> None:
+    """FIX-003, L6 revision: temporal support must preserve the authorized historical answer.
+
+    Red proof: the first repair's HISTORICAL_RECORD_NOTE (tree 48857418) prohibited asserting
+    that a record ever held. This node fails 'supported historical time is not allowed an answer'
+    on that wording at the public search_memory boundary; the unsupported-time control above
+    still requires the prohibition when neither interval nor text establishes the requested time.
+    """
+    search, _ = _both(["expired"], demoted_confidence=0.7)
+    assert "If they establish it, answer for that time" in search.advice, (
+        "supported historical time is not allowed an answer")
