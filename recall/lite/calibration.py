@@ -261,7 +261,7 @@ def carry_forward(
         labels, digest = canonical_query_set(json.loads(stored[0]))
         if digest != fit.query_set_digest:
             return refuse("the stored test questions no longer match the calibration's digest")
-        vectors = np.frombuffer(stored[1], dtype=np.float32)
+        vectors: Any = np.frombuffer(stored[1], dtype=np.float32)
         if vectors.size != len(labels) * fit_identity[1]:
             return refuse("the stored test-question vectors do not match the questions")
         fitted_sources = json.loads(stored[2])
