@@ -13,6 +13,8 @@ as a real separate process, so the OS lock, not Python state, is what is tested)
 - W8 status reports holder and waiters and never touches a lane lock.
 - W9 the write and refit lanes are independent; write inside refit in one thread is refused.
 - P1 two spellings of one path share one lane; P2 an exception in the body releases the lane.
+- W12 a released lane passes to the next waiter within a short poll (measured 2026-10-12: a poll
+  backing off to 0.5 s left 40 writes of ~0.1 s each taking 16.7 s on Windows, ~12 s of it idle).
 
 Red proof: see the end of this docstring (filled in when run).
 """
@@ -88,8 +90,8 @@ def test_wait_zero_reports_busy_and_skip_yields_none(db: Path) -> None:
 def test_nesting_is_reentrant_and_another_thread_waits(db: Path) -> None:
     """W7."""
     with lite_lane(db, purpose="index", wait_s=0) as outer:
-        with lite_lane(db, purpose="index", wait_s=0) as inner:
-            assert inner is outer, "nesting in one thread took a second ticket"
+        with lite_lane(db, purpose="index", wait_s=0, on_busy="skip") as inner:
+            assert inner is outer, f"nesting in one thread did not reuse its ticket: {inner}"
         seen: list[str] = []
         other = threading.Thread(target=lambda: seen.append(_try(db)), daemon=True)
         other.start()
@@ -102,26 +104,26 @@ def test_lanes_are_independent_and_write_inside_refit_is_refused(db: Path) -> No
     """W9."""
     release, thread = _hold_in_thread(db, lane="write")
     try:
-        with lite_lane(db, lane="refit", purpose="calibrate", wait_s=0) as refit:
+        with lite_lane(db, lane="refit", purpose="calibrate", wait_s=0, on_busy="skip") as refit:
             assert refit is not None, "a held write lane blocked the refit lane"
-            with pytest.raises(LaneOrderError):
-                with lite_lane(db, lane="write", purpose="index", wait_s=0):
-                    pass
     finally:
         release.set()
         thread.join(5)
+    with lite_lane(db, lane="refit", purpose="calibrate", wait_s=0):
+        with pytest.raises(LaneOrderError):
+            with lite_lane(db, lane="write", purpose="index", wait_s=0):
+                pass
 
 
 def test_two_spellings_of_one_path_share_a_lane(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """P1."""
-    release, thread = _hold_in_thread(db)
-    try:
-        monkeypatch.chdir(db.parent)
-        assert _try(Path("memory.db")) == "busy", "a relative spelling got its own lane"
-        assert _try(Path(str(db).replace(os.sep, "/"))) == "busy", "a slash spelling got its own lane"
-    finally:
-        release.set()
-        thread.join(5)
+    """P1: a nested hold through another spelling of the same file is the same hold, not a
+    second waiter queued behind itself (which would deadlock, or report busy with wait_s=0)."""
+    db.parent.mkdir(parents=True)
+    monkeypatch.chdir(db.parent)
+    other = Path("..") / db.parent.name / "memory.db"
+    with lite_lane(db, purpose="index", wait_s=0) as outer:
+        with lite_lane(other, purpose="index", wait_s=0, on_busy="skip") as inner:
+            assert inner is outer, f"another spelling of the same file queued behind itself: {inner}"
 
 
 def test_an_exception_in_the_body_releases_the_lane(db: Path) -> None:
@@ -228,14 +230,14 @@ def test_a_killed_waiter_is_pruned_without_a_timeout(db: Path, tmp_path: Path) -
     _wait_for(lambda: _at(log, "a", "acquired") is not None)
     doomed = _spawn(db, log, "b", wait_s=60)
     _wait_for(lambda: _waiting(db) == 1)
-    after = _spawn(db, log, "c", wait_s=60)
+    after = _spawn(db, log, "c", wait_s=10)
     _wait_for(lambda: _waiting(db) == 2)
     doomed.kill()
     doomed.wait(10)
     release.touch()
     assert holder.wait(30) == 0 and after.wait(30) == 0
     released, got = _at(log, "a", "released"), _at(log, "c", "acquired")
-    assert released is not None and got is not None, _events(log)
+    assert released is not None and got is not None, f"the next waiter never acquired: {_events(log)}"
     assert got - released < 3.0, f"the next waiter sat behind a dead one for {got - released:.1f}s"
 
 
@@ -244,7 +246,7 @@ def test_a_killed_holder_releases_the_lane(db: Path, tmp_path: Path) -> None:
     log = tmp_path / "w4.log"
     holder = _spawn(db, log, "a", hold_s=120)
     _wait_for(lambda: _at(log, "a", "acquired") is not None)
-    waiter = _spawn(db, log, "b", wait_s=60)
+    waiter = _spawn(db, log, "b", wait_s=10)
     _wait_for(lambda: _waiting(db) == 1)
     killed_at = time.time()
     holder.kill()
@@ -279,3 +281,22 @@ def test_status_lists_holder_and_waiters(db: Path, tmp_path: Path) -> None:
     assert [w["purpose"] for w in first.waiters] == ["ingest"], first
     assert first.waiters == second.waiters, "reading the status changed the queue"
     assert holder.wait(30) == 0 and waiter.wait(30) == 0
+
+
+def test_the_lane_passes_to_the_next_waiter_promptly(db: Path, tmp_path: Path) -> None:
+    """W12: five handoffs in a row, each noticed within 0.2 s of the release."""
+    log, release = tmp_path / "w12.log", tmp_path / "w12.release"
+    holder = _spawn(db, log, "a", hold_s=60, release=release)
+    _wait_for(lambda: _at(log, "a", "acquired") is not None)
+    tags = ["b", "c", "d", "e", "f"]
+    procs = [holder]
+    for n, tag in enumerate(tags, start=1):
+        procs.append(_spawn(db, log, tag, hold_s=0.3, wait_s=60))
+        _wait_for(lambda n=n: _waiting(db) == n)  # type: ignore[misc]
+    time.sleep(2.0)  # every waiter has been polling long enough to reach its slowest interval
+    release.touch()
+    for proc in procs:
+        assert proc.wait(60) == 0
+    chain = ["a", *tags]
+    gaps = [(_at(log, nxt, "acquired") or 0.0) - (_at(log, prev, "released") or 0.0) for prev, nxt in zip(chain, chain[1:])]
+    assert max(gaps) < 0.2, f"a released lane sat idle before the next waiter took it: {[round(g, 3) for g in gaps]}"

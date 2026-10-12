@@ -64,8 +64,12 @@ Lane = Literal["write", "refit"]
 LANES: tuple[str, ...] = ("write", "refit")
 DEFAULT_WAIT_S = {"write": 300.0, "refit": 120.0}
 WAIT_ENV = {"write": "RECALL_LITE_WRITE_WAIT", "refit": "RECALL_LITE_REFIT_WAIT"}
-POLL_START_S = 0.05
-POLL_MAX_S = 0.5
+# The head of the queue polls fast: it is the only one that can take the lane, and a slow poll
+# there is idle time for every waiter behind it (measured 2026-10-12, a 0.5 s backoff left 40
+# writes of ~0.1 s each taking 16.7 s on Windows, ~12 s of it idle). The others back off a little.
+POLL_HEAD_S = 0.01
+POLL_START_S = 0.02
+POLL_MAX_S = 0.1
 MUTEX_WAIT_S = 30.0
 _WIN_LOCK_OFFSET = 1 << 30
 
@@ -354,8 +358,8 @@ def _acquire(
             waited = time.monotonic() - started
             if waited >= budget:
                 raise LiteWriterBusy(lane, purpose, waited, position, holder)
+            poll = POLL_HEAD_S if position == 1 else min(poll * 2, POLL_MAX_S)
             time.sleep(min(poll, max(0.0, budget - waited)))
-            poll = min(poll * 2, POLL_MAX_S)
     except BaseException:
         lane_fh.close()
         with suppress(OSError):
