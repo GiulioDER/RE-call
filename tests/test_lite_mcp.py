@@ -301,3 +301,21 @@ def test_a_card_from_before_a_later_index_recovers_by_fresh_search(lite_env: dic
         assert set(applied["evidence_card_ids"]).isdisjoint(ids), "the fresh search reused the stale card"
 
     _serve(lite_env, body)
+
+
+def test_keyed_mutations_replay_and_conflict_as_on_postgres(lite_env: dict[str, str], tmp_path: Path) -> None:
+    """N12 lite keeps operation receipts for every keyed mutation, not only the fact tools: the same
+    key replays the first answer, and the same key with another path is an idempotency conflict.
+    This is PostgreSQL's contract; before lite had receipts it re-ran both calls."""
+    _write_memos(tmp_path / "mem", 30)
+    _write_memos(tmp_path / "other", 2, start=30)
+
+    async def body(state: dict[str, Any], call: Callable[..., Any]) -> None:
+        first = await call("recall_index", path=str(tmp_path / "mem"), idempotency_key="nightly")
+        assert not first.startswith("RAISED"), first
+        again = await call("recall_index", path=str(tmp_path / "mem"), idempotency_key="nightly")
+        assert again == first, "a retried keyed index did not replay the first answer"
+        other = await call("recall_index", path=str(tmp_path / "other"), idempotency_key="nightly")
+        assert "idempotency_conflict" in other, other
+
+    _serve(lite_env, body)
