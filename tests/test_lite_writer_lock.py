@@ -15,6 +15,8 @@ as a real separate process, so the OS lock, not Python state, is what is tested)
 - P1 two spellings of one path share one lane; P2 an exception in the body releases the lane.
 - P3 a ticket that cannot be opened for a reason other than being gone is kept and counted live.
 - P4 a failure after the ticket is created releases it at once, even while the traceback is kept.
+- P5 a queue counter emptied by a crash mid-write neither reuses a live ticket's number nor lets a
+  new waiter sort ahead of one already queued.
 - W12 a released lane passes to the next waiter within a short poll (measured 2026-10-12: a poll
   backing off to 0.5 s left 40 writes of ~0.1 s each taking 16.7 s on Windows, ~12 s of it idle).
 
@@ -43,6 +45,9 @@ After the final review, 2026-10-12, same method:
 - M22 (W12) the 0.5 s poll restored (`POLL_HEAD_S = POLL_MAX_S = 0.5`): survived the chained-gap
   W12 (sequential spawns poll in phase order), red after the per-round offsets: "released lanes sat
   idle before the waiter took them: [0.204, 0.082, 0.462, 0.376, 0.278]".
+Deferred minors, fixed 2026-10-12, each red against the pre-fix code first:
+- P5 pre-fix `_next_seq` (counter file only): "after a counter reset the queue reads ['first']; second:
+  ['LiteStoreError: could not lock a new ticket .../000000000001-<pid>.ticket']".
 """
 from __future__ import annotations
 
@@ -58,6 +63,7 @@ from pathlib import Path
 import pytest
 
 from recall.lite import writer_lock as wl
+from recall.lite.store import LiteStoreError
 from recall.lite.writer_lock import (
     LaneOrderError,
     LiteWriterBusy,
@@ -381,3 +387,41 @@ def test_a_failure_after_the_ticket_is_made_releases_it(db: Path, monkeypatch: p
     assert failed.value is not None  # the traceback, and every frame in it, is still referenced here
     left = wl._live_tickets(wl.lanes_dir(db), "write", prune=False)
     assert not left, f"a failed acquire left a live ticket blocking the queue: {left}"
+
+
+def _wait_in_thread(db: Path, purpose: str, outcome: list[str]) -> threading.Thread:
+    """Queue for the write lane in another thread for up to 10 s; record what happened."""
+
+    def run() -> None:
+        try:
+            with lite_lane(db, purpose=purpose, wait_s=10) as ticket:
+                outcome.append("acquired" if ticket is not None else "skipped")
+        except LiteStoreError as exc:  # busy and coalesced are LiteStoreErrors too
+            outcome.append(f"{type(exc).__name__}: {exc}")
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_a_reset_counter_keeps_numbers_unique_and_order_intact(db: Path) -> None:
+    """P5: a kill inside `_next_seq`'s rewrite leaves the counter empty. The next ticket must still
+    number after every live one, so it neither collides with the holder's ticket (same process,
+    same name) nor sorts ahead of a waiter queued before the crash."""
+    release, holder = _hold_in_thread(db, purpose="index")
+    first: list[str] = []
+    second: list[str] = []
+    try:
+        early = _wait_in_thread(db, "first", first)
+        _wait_for(lambda: [w["purpose"] for w in lite_lane_status(db).waiters] == ["first"])
+        (wl.lanes_dir(db) / "write.seq").write_text("", encoding="ascii")
+        late = _wait_in_thread(db, "second", second)
+        _wait_for(lambda: len(lite_lane_status(db).waiters) == 2 or bool(second), timeout=5)
+        order = [w["purpose"] for w in lite_lane_status(db).waiters]
+        assert order == ["first", "second"], f"after a counter reset the queue reads {order}; second: {second}"
+    finally:
+        release.set()
+        holder.join(5)
+    early.join(15)
+    late.join(15)
+    assert first == ["acquired"] and second == ["acquired"], (first, second)
