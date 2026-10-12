@@ -387,6 +387,8 @@ def _cmd_forget(args: argparse.Namespace) -> None:
         else None
     )
     generation_mode = route.uses_generation
+    if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+        raise SystemExit(refusal)
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
@@ -395,7 +397,7 @@ def _cmd_forget(args: argparse.Namespace) -> None:
     forget_store: PgVectorStore = (
         gen_store
         if gen_store is not None
-        else PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
+        else open_legacy_store(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
     )
     with forget_store as store:
         store.check_schema()
