@@ -4,6 +4,8 @@
   calibration run each report busy while another process holds their lane.
 - W10b `write_session` on any store other than a LiteStore is a no-op that creates no files.
 - W11 a search runs while the write lane is held.
+- W13 a busy index, ingest or forget releases its idempotency reservation: nothing was written,
+  so a retry with the same key must run, not answer `reconciliation_required`.
 
 Red proof, 2026-10-12, each mutation alone, run on Linux, failing in the named assertion, then
 restored byte for byte and green (W2 needed equal polling first: M2 survived the original test):
@@ -15,6 +17,8 @@ restored byte for byte and green (W2 needed equal polling first: M2 survived the
 - M19 (W10b) `write_session`: takes a lane for any store with a `path`; `test_write_session_is_a_noop_for_other_stores`: "AssertionError: assert LaneTicket(lane='write', purpose='index', pid=328370, host='<host>', seq=1, acquired_at..."
 - M20 (ingest routing) ingest: `lane_purpose="ingest"` dropped from the legacy call; `test_a_legacy_server_indexes_into_the_legacy_table`: "AssertionError: an ingest took the lite write lane as a plain index, so a queued refresh cannot tell them apar..."
 - M21 (W11) `LiteStore.query_dense` made to take the write lane (control for W11); `test_index_and_forget_report_busy_while_the_lane_is_held`: "AssertionError: a search failed behind the write lane: RAISED LiteWriterBusy: the lite store's write lane is b..."
+- W13 pre-fix server (only IndexPreflightError released, and only by index): "a busy refusal kept its
+  idempotency reservation: ['k-index', 'k-ingest', 'k-forget'] (released: [])".
 """
 from __future__ import annotations
 
@@ -159,3 +163,39 @@ def test_calibration_run_reports_busy_on_the_refit_lane(
     finally:
         holder.kill()
         holder.wait(10)
+
+
+def test_a_busy_write_releases_its_idempotency_reservation(
+    lite_env: dict[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W13: the busy refusal comes before the lane is held, so before any write. A reservation kept
+    past it turns the retry the message invites into `reconciliation_required` under a limiter."""
+    import base64
+
+    _write_memos(tmp_path / "mem", 2)
+    released: list[str | None] = []
+    real = srv._release_mutation_reservation
+
+    async def record(state: dict[str, object], tenant: str, idempotency_key: str | None) -> None:
+        released.append(idempotency_key)
+        await real(state, tenant, idempotency_key)
+
+    monkeypatch.setattr(srv, "_release_mutation_reservation", record)
+    monkeypatch.setenv("RECALL_LITE_WRITE_WAIT", "0")
+    holder = _hold(_db(lite_env), tmp_path)
+    try:
+        async def body(state: dict[str, Any], call: Any) -> None:
+            note = base64.b64encode(b"# A note\n\nThe rotor is serviced by the night team.\n").decode()
+            outcomes = [
+                await call("recall_index", path=str(tmp_path / "mem"), idempotency_key="k-index"),
+                await call("recall_ingest", files=[{"name": "note.md", "content_b64": note}], idempotency_key="k-ingest"),
+                await call("recall_forget", sources=["memo-001.md"], idempotency_key="k-forget"),
+            ]
+            assert all("busy" in out for out in outcomes), outcomes
+
+        _serve(lite_env, body)
+    finally:
+        holder.kill()
+        holder.wait(10)
+    kept = [key for key in ("k-index", "k-ingest", "k-forget") if key not in released]
+    assert not kept, f"a busy refusal kept its idempotency reservation: {kept} (released: {released})"
