@@ -6,7 +6,7 @@ import argparse
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from recall.provenance_controller import (
     FactApplicationRequest,
@@ -15,6 +15,9 @@ from recall.provenance_controller import (
     source_digest,
 )
 from recall.types import AtomicFact, EvidenceCard
+
+if TYPE_CHECKING:
+    from recall.lite import LiteStore
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -68,9 +71,28 @@ def _decision_payload(decision: Any) -> dict[str, object]:
     }
 
 
+def _open_lite(args: argparse.Namespace) -> LiteStore:
+    """The lite store a `sqlite:///` DSN names, after refusing the generation route by name."""
+    from recall.backends import lite_route_refusal, open_legacy_store
+    from recall.cli_commands._shared import _make_embedder
+    from recall.runtime_route import resolve_runtime_route
+
+    route = getattr(args, "_runtime_route", None) or resolve_runtime_route()
+    if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+        raise SystemExit(refusal)
+    store = open_legacy_store(
+        args.dsn, dim=_make_embedder(args.embedder).dim, table=args.table, tenant=args.tenant
+    )
+    return cast("LiteStore", store)
+
+
 def _cmd_provenance(args: argparse.Namespace) -> None:
+    from recall.backends import is_lite_dsn
     from recall.fact_ledger import PostgresFactLedger, SQLiteFactLedger
 
+    # A `sqlite:///` DSN is a lite store: its own fact ledger and cards, the same output as
+    # PostgreSQL. `--sqlite-path` stays the separate local adapter it always was.
+    lite = not args.sqlite_path and is_lite_dsn(args.dsn)
     if args.provenance_cmd == "current":
         instant = (
             datetime.fromisoformat(args.as_of.replace("Z", "+00:00"))
@@ -80,6 +102,11 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         if args.sqlite_path:
             with SQLiteFactLedger(args.sqlite_path, tenant_id=args.tenant) as ledger:
                 events = ledger.current(tenant_id=args.tenant, now=instant)
+        elif lite:
+            from recall.lite.facts import LiteFactLedger
+
+            with _open_lite(args) as store:
+                events = LiteFactLedger(store).current(tenant_id=args.tenant, now=instant)
         else:
             events = PostgresFactLedger(args.dsn, tenant_id=args.tenant).current(
                 tenant_id=args.tenant, now=instant
@@ -145,6 +172,24 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
     from recall.store import PgVectorStore
 
     embedder = _make_embedder(args.embedder)
+    if lite:
+        with _open_lite(args) as lite_store:
+            # A lite store's generation is the digest of what it holds, so it cannot take one
+            # from the command line; a stale value would only turn every card into a mismatch.
+            if args.generation != lite_store.generation_id:
+                raise SystemExit(
+                    f"provenance apply: --generation {args.generation!r} is not this lite store's; "
+                    f"it is {lite_store.generation_id} now (it moves with every write to the store)"
+                )
+            print(json.dumps(apply_fact_memory(
+                cast("PgVectorStore", lite_store),
+                embedder,
+                claim=claim_payload,
+                evidence_card_ids=[card.card_id for card in cards],
+                request_id=args.request_id,
+                writer=args.writer,
+            ), ensure_ascii=False, indent=2, sort_keys=True))
+        return
     with PgVectorStore(
         args.dsn,
         dim=embedder.dim,
