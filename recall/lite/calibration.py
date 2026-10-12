@@ -41,6 +41,7 @@ from recall.lineage import canonical_json, canonical_sha256
 from recall.lite.store import LiteStoreError
 from recall.near_miss import describe as describe_near_miss
 from recall.near_miss import near_miss_coverage, near_miss_probes
+from recall.observability import get_logger
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -48,6 +49,8 @@ if TYPE_CHECKING:
 
 CREATED_BY = "recall-lite"
 _PLACEHOLDER_CHECKSUM = "0" * 64
+_log = get_logger("lite.calibration")
+_COVERAGE_UNAVAILABLE = "near-miss coverage unavailable; provisional for in-vocabulary near-misses"
 
 
 @dataclass(frozen=True)
@@ -174,11 +177,17 @@ def auto_calibrate(
     if runtime.threshold is not None:
         # Report only: measured with the threshold just fitted, never fed back into the fit or the
         # certified decision. See `recall.near_miss` for why the two are kept apart.
-        asked = [str(e["query"]) for e in labels if e.get("answerable") is True]
-        probes = near_miss_probes(texts, asked, per_class=len(asked))
-        report = near_miss_coverage(store, embedder, float(runtime.threshold), probes)
-        store.save_near_miss_coverage(artifact.calibration_id, report)
-        coverage = "; " + describe_near_miss(report)
+        try:
+            asked = [str(e["query"]) for e in labels if e.get("answerable") is True]
+            probes = near_miss_probes(texts, asked, per_class=len(asked))
+            report = near_miss_coverage(store, embedder, float(runtime.threshold), probes)
+            store.save_near_miss_coverage(artifact.calibration_id, report)
+            coverage = "; " + describe_near_miss(report)
+        except Exception as exc:
+            # The fit is already saved. Optional diagnostics cannot withdraw it, and
+            # provider errors may carry private input or credentials, so log only type.
+            _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
+            coverage = "; " + _COVERAGE_UNAVAILABLE
     if certified:
         return CalibrationOutcome(
             CalibrationStatus.CERTIFIED,
@@ -219,6 +228,13 @@ def status_report(store: LiteStore) -> dict[str, object]:
     if latest is None:
         report["message"] = "No calibration yet: indexing fits one once memory holds enough text to test itself."
         return report
+    try:
+        coverage_report = store.near_miss_coverage(latest.calibration_id)
+        coverage_message = describe_near_miss(coverage_report) if coverage_report else _COVERAGE_UNAVAILABLE
+    except Exception as exc:
+        _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
+        coverage_report = None
+        coverage_message = _COVERAGE_UNAVAILABLE
     report.update(
         {
             "calibration_id": latest.calibration_id,
@@ -230,17 +246,13 @@ def status_report(store: LiteStore) -> dict[str, object]:
             "certified": latest.certified,
             "created_at": latest.created_at,
             "fitted_generation_id": latest.generation_id,
-            "near_miss_coverage": store.near_miss_coverage(latest.calibration_id),
+            "near_miss_coverage": coverage_report,
             "message": (
                 "The memory changed since this calibration was fitted; recall_index or "
                 "recall_calibration_run refits it."
                 if resolution.status is CalibrationStatus.STALE
                 else str(latest.certification_reason or "")
-                + (
-                    "; " + describe_near_miss(coverage_report)
-                    if (coverage_report := store.near_miss_coverage(latest.calibration_id))
-                    else ""
-                )
+                + "; " + coverage_message
             ),
         }
     )

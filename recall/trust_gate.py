@@ -343,30 +343,7 @@ def evaluate(
     rest = [h for h in trusted if h.verdict != "ok"]
     abstained = not ok
     decision_state = decision_state_for(trusted, gap_warning=result.gap_warning)
-    # The operational questions this library exists to answer — how often does it abstain, and
-    # what is it demoting — are answerable only if they are counted where the decision is made.
-    if record_metrics:
-        METRICS.increment("recall_searches_total")
-        if abstained:
-            METRICS.increment("recall_abstentions_total")
-        if result.gap_warning:
-            METRICS.increment("recall_gap_warnings_total")
-        if result.staleness.stale:
-            METRICS.increment("recall_stale_results_total")
-        for trusted_hit in trusted:  # not `hit`: that name is bound to a ScoredChunk above
-            METRICS.increment("recall_verdicts_total", verdict=trusted_hit.verdict)
-            METRICS.increment("recall_authority_records_total", authority=trusted_hit.authority)
-            if (
-                trusted_hit.invalidation is not None
-                and trusted_hit.verdict == "dependency_invalidated"
-            ):
-                METRICS.increment(
-                    "recall_dependency_invalidations_total",
-                    cause=trusted_hit.invalidation.cause,
-                )
-                if len(trusted_hit.invalidation.path) > 2:
-                    METRICS.increment("recall_dependency_transitive_invalidations_total")
-    return TrustedResult(
+    evaluated = TrustedResult(
         query=result.query,
         hits=ok + rest,
         abstained=abstained,
@@ -387,6 +364,27 @@ def evaluate(
         corpus_fingerprint=(generation_binding or {}).get("corpus_fingerprint"),
         query_set_digest=query_set_digest,
     )
+    if record_metrics:
+        _record_metrics(evaluated)
+    return evaluated
+
+
+def _record_metrics(result: TrustedResult) -> None:
+    """Count one trust decision, after any query-level gate and before degradation."""
+    METRICS.increment("recall_searches_total")
+    if result.abstained:
+        METRICS.increment("recall_abstentions_total")
+    if result.gap_warning:
+        METRICS.increment("recall_gap_warnings_total")
+    if result.staleness.stale:
+        METRICS.increment("recall_stale_results_total")
+    for hit in result.hits:
+        METRICS.increment("recall_verdicts_total", verdict=hit.verdict)
+        METRICS.increment("recall_authority_records_total", authority=hit.authority)
+        if hit.invalidation is not None and hit.verdict == "dependency_invalidated":
+            METRICS.increment("recall_dependency_invalidations_total", cause=hit.invalidation.cause)
+            if len(hit.invalidation.path) > 2:
+                METRICS.increment("recall_dependency_transitive_invalidations_total")
 
 
 def order_promoted(

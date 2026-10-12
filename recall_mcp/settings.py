@@ -72,6 +72,11 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_MAX_PRUNE_FRACTION", "Core runtime", "maximum source prune fraction", "0.5"),
     EnvironmentSpec("RECALL_INDEX_ALLOW_CONCURRENT", "Core runtime", "disable the single writer lock"),
     EnvironmentSpec("RECALL_DEPENDENCY_INVALIDATION", "Core runtime", "dependency invalidation mode", "off"),
+    EnvironmentSpec(
+        "RECALL_UNKNOWN_TERM_GATE", "Retrieval",
+        "Lite global vocabulary gate; 0, false, no or off disables; constrained scopes and unsupported stores report unavailable",
+        "1",
+    ),
     EnvironmentSpec("RECALL_INDEX_MAX_FILES", "Core runtime", "maximum files per indexing request", "2000"),
     EnvironmentSpec("RECALL_INDEX_MAX_BYTES", "Core runtime", "maximum bytes per indexing request", "20000000"),
     EnvironmentSpec("RECALL_EMBED_DIMENSIONS", "Core runtime", "hosted embedding dimensions"),

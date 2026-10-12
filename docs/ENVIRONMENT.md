@@ -3,6 +3,25 @@
 This is the detailed environment reference. The root `.env.example` keeps the short copyable
 template, while this file records the operational rationale behind each group.
 
+## Unknown-term vocabulary gate
+
+`RECALL_UNKNOWN_TERM_GATE` defaults to `1`. Set it to `0`, `false`, `no`, or `off` to disable it;
+matching ignores case and surrounding whitespace. Other values enable it. Library callers may
+pass an explicit environment mapping, which takes precedence over the process environment.
+
+The gate checks entity-like query tokens against the entire Lite FTS5 vocabulary using its own
+tokenizer and stemming. Tokens have at least three characters and contain a letter and a digit,
+are all-capital names, or contain an inner capital. Plain words are not checked. An absent token
+demotes otherwise `ok` hits to `unknown_term` and abstains. It is a vocabulary heuristic and
+cannot establish that a passage states an answer, resolve aliases, or reject every near-miss.
+
+PostgreSQL lacks the vocabulary capability and reports `unknown_term_check="unavailable"`.
+Constrained source, folder, facet or authorization searches also report `unavailable` because
+consulting a global vocabulary could disclose excluded sources. Their verdicts stay unchanged.
+Completed, disabled and unreached checks report `checked`, `disabled` and `not_run`, respectively.
+Search and evidence responses carry these states plus `unknown_terms`; an unavailable check is
+not a claim that a term is absent. Calibration and strict trust refusal remain independent.
+
 ## Root Template Notes
 
 Copy `.env.example` to `.env` and fill it in. The `.env` file is only read by local entry points via
