@@ -159,8 +159,11 @@ class _Held:
 _local = threading.local()
 
 
-def _held() -> dict[tuple[str, str], _Held]:
-    held: dict[tuple[str, str], _Held] | None = getattr(_local, "held", None)
+_Key = tuple[tuple[int, int], str]
+
+
+def _held() -> dict[_Key, _Held]:
+    held: dict[_Key, _Held] | None = getattr(_local, "held", None)
     if held is None:
         held = {}
         _local.held = held
@@ -171,6 +174,20 @@ def lanes_dir(path: str | Path) -> Path:
     """The sidecar directory for a database file, the same for every spelling of its path."""
     resolved = Path(path).resolve()
     return resolved.with_name(resolved.name + ".lanes")
+
+
+def _identity(root: Path) -> tuple[int, int] | None:
+    """The lanes directory's (device, inode), or None while it does not exist.
+
+    Reentrancy is keyed on this rather than on the path string: `resolve()` does not fold case, so
+    on a case-insensitive filesystem two spellings of one file would otherwise be two keys, and a
+    nested call through the other spelling would queue behind its own outer hold.
+    """
+    try:
+        st = os.stat(root)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
 
 
 def _open(path: Path) -> IO[bytes]:
@@ -306,16 +323,17 @@ def lite_lane(
     if lane not in LANES:
         raise ValueError(f"unknown lane {lane!r}; expected one of {LANES}")
     root = lanes_dir(path)
-    key = (str(root), lane)
     held = _held()
-    if key in held:
-        held[key].depth += 1
+    ident = _identity(root)  # None: the directory does not exist, so nobody here can hold it yet
+    if ident is not None and (ident, lane) in held:
+        entry = held[(ident, lane)]
+        entry.depth += 1
         try:
-            yield held[key].ticket
+            yield entry.ticket
         finally:
-            held[key].depth -= 1
+            entry.depth -= 1
         return
-    if lane == "write" and (str(root), "refit") in held:
+    if lane == "write" and ident is not None and (ident, "refit") in held:
         raise LaneOrderError(
             f"this thread holds the refit lane of {root} and asked for the write lane; take write first"
         )
@@ -338,6 +356,7 @@ def lite_lane(
         yield None
         return
     ticket, ticket_fh, lane_fh, ticket_path = acquired
+    key = (_identity(root) or (-1, -1), lane)  # the directory exists now: _acquire made it
     held[key] = _Held(ticket, 1)
     try:
         yield ticket
