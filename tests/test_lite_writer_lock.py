@@ -18,6 +18,8 @@ as a real separate process, so the OS lock, not Python state, is what is tested)
 - P5 a queue counter emptied by a crash mid-write neither reuses a live ticket's number nor lets a
   new waiter sort ahead of one already queued.
 - P6 a release that cannot get the queue mutex still unlocks the lane before it raises.
+- P7 `on_busy="skip"` also skips, rather than raises, when the lane cannot even be attempted (a
+  malformed wait variable, an uncreatable lanes directory); `on_busy="raise"` still raises.
 - W12 a released lane passes to the next waiter within a short poll (measured 2026-10-12: a poll
   backing off to 0.5 s left 40 writes of ~0.1 s each taking 16.7 s on Windows, ~12 s of it idle).
 
@@ -51,6 +53,8 @@ Deferred minors, fixed 2026-10-12, each red against the pre-fix code first:
   ['LiteStoreError: could not lock a new ticket .../000000000001-<pid>.ticket']".
 - P6 pre-fix `_release` (unlock only inside the mutex): "a release that could not get the queue
   mutex left the lane locked".
+- P7 pre-fix `lite_lane` (skip caught only busy and coalesced): "a lane that could not be attempted
+  was not skipped under on_busy='skip': ['raised', 'raised', 'raised', 'raised']".
 """
 from __future__ import annotations
 
@@ -453,3 +457,29 @@ def test_a_release_without_the_mutex_still_frees_the_lane(db: Path, monkeypatch:
         wl._unlock(blocker)
         blocker.close()
     assert free, "a release that could not get the queue mutex left the lane locked"
+
+
+def test_skip_covers_a_lane_that_cannot_be_attempted(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P7: the background calibration fit relies on `on_busy="skip"` never raising into the write
+    path. A malformed wait variable and an uncreatable lanes directory are the two ways a lane
+    cannot even be attempted."""
+    monkeypatch.setenv("RECALL_LITE_REFIT_WAIT", "soon")
+    outcomes = []
+    for on_busy in ("skip", "raise"):
+        try:
+            with lite_lane(db, lane="refit", purpose="calibrate", on_busy=on_busy) as ticket:  # type: ignore[arg-type]
+                outcomes.append("skipped" if ticket is None else "acquired")
+        except LiteStoreError:
+            outcomes.append("raised")
+    monkeypatch.delenv("RECALL_LITE_REFIT_WAIT")
+    db.parent.mkdir(parents=True, exist_ok=True)
+    wl.lanes_dir(db).write_text("not a directory", encoding="utf-8")
+    for on_busy in ("skip", "raise"):
+        try:
+            with lite_lane(db, lane="refit", purpose="calibrate", on_busy=on_busy) as ticket:  # type: ignore[arg-type]
+                outcomes.append("skipped" if ticket is None else "acquired")
+        except OSError:
+            outcomes.append("raised")
+    assert outcomes == ["skipped", "raised", "skipped", "raised"], (
+        f"a lane that could not be attempted was not skipped under on_busy='skip': {outcomes}"
+    )
