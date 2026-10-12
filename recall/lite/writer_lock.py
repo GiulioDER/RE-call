@@ -294,8 +294,9 @@ def lite_lane(
     """Hold `lane` of the lite file at `path` for the block. See the module docstring.
 
     Yields a `LaneTicket`, or None when `on_busy="skip"` and the lane was not acquired (busy past
-    `wait_s`, or coalesced). With `on_busy="raise"` those raise `LiteWriterBusy` and
-    `LiteWriterCoalesced`. `wait_s=0` tries once; None takes the lane's default
+    `wait_s`, coalesced, or not attemptable: a malformed wait variable, an uncreatable lanes
+    directory). With `on_busy="raise"` those raise `LiteWriterBusy`, `LiteWriterCoalesced`, or the
+    underlying `LiteStoreError` / `OSError`. Exceptions from the block itself always propagate. `wait_s=0` tries once; None takes the lane's default
     (`RECALL_LITE_WRITE_WAIT`, 300 s; `RECALL_LITE_REFIT_WAIT`, 120 s).
     """
     if lane not in LANES:
@@ -314,14 +315,22 @@ def lite_lane(
         raise LaneOrderError(
             f"this thread holds the refit lane of {root} and asked for the write lane; take write first"
         )
-    budget = _wait_default(lane) if wait_s is None else max(0.0, wait_s)
-
     try:
+        budget = _wait_default(lane) if wait_s is None else max(0.0, wait_s)
         acquired = _acquire(root, lane, purpose, budget, coalesce)
     except (LiteWriterBusy, LiteWriterCoalesced) as exc:
         if on_busy == "raise":
             raise
         _log.info("lite %s lane not taken for %s: %s", lane, purpose, exc)
+        yield None
+        return
+    except (LiteStoreError, OSError) as exc:
+        # The lane could not even be attempted (a malformed wait variable, an uncreatable lanes
+        # directory, a mutex nobody releases). "skip" promises the caller no exception from the
+        # lane itself, which is what lets a background fit run without ever raising into a write.
+        if on_busy == "raise":
+            raise
+        _log.warning("lite %s lane could not be attempted for %s: %s", lane, purpose, exc)
         yield None
         return
     ticket, ticket_fh, lane_fh, ticket_path = acquired
