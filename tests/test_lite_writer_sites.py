@@ -6,6 +6,8 @@
 - W11 a search runs while the write lane is held.
 - W13 a busy index, ingest or forget releases its idempotency reservation: nothing was written,
   so a retry with the same key must run, not answer `reconciliation_required`.
+- W14 `recall index` says, once, that it is waiting and for what, instead of sitting silent.
+- W15 `recall setup --lite` on a busy store exits with the busy message, not a traceback.
 
 Red proof, 2026-10-12, each mutation alone, run on Linux, failing in the named assertion, then
 restored byte for byte and green (W2 needed equal polling first: M2 survived the original test):
@@ -19,6 +21,10 @@ restored byte for byte and green (W2 needed equal polling first: M2 survived the
 - M21 (W11) `LiteStore.query_dense` made to take the write lane (control for W11); `test_index_and_forget_report_busy_while_the_lane_is_held`: "AssertionError: a search failed behind the write lane: RAISED LiteWriterBusy: the lite store's write lane is b..."
 - W13 pre-fix server (only IndexPreflightError released, and only by index): "a busy refusal kept its
   idempotency reservation: ['k-index', 'k-ingest', 'k-forget'] (released: [])".
+- W14 pre-fix CLI (no on_queued): "no single waiting notice naming the holder: ''".
+- W15 pre-fix `_setup_lite` (LiteWriterBusy uncaught): "setup --lite did not exit cleanly on a busy
+  store: RAISED: LiteWriterBusy: the lite store's write lane is busy: held by refresh (pid <pid> on
+  <host>, ...)".
 """
 from __future__ import annotations
 
@@ -199,3 +205,47 @@ def test_a_busy_write_releases_its_idempotency_reservation(
         holder.wait(10)
     kept = [key for key in ("k-index", "k-ingest", "k-forget") if key not in released]
     assert not kept, f"a busy refusal kept its idempotency reservation: {kept} (released: {released})"
+
+
+def test_cli_index_says_it_is_waiting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """W14: a queued `recall index` can wait minutes; it must say so once, naming the holder."""
+    from tests.test_lite_cli import _MEMOS, _dsn, _memos, _run
+
+    for name in ("RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_SERVING_DSN", "RECALL_DSN", "RECALL_TRUST_MODE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
+    monkeypatch.setenv("RECALL_LITE_WRITE_WAIT", "1")
+    folder = _memos(tmp_path / "mem", _MEMOS)
+    holder = _hold(tmp_path / "store" / "memory.db", tmp_path)
+    try:
+        capsys.readouterr()
+        out = _run(["--embedder", "hashing", "--dsn", _dsn(tmp_path), "index", str(folder)])
+        err = capsys.readouterr().err
+    finally:
+        holder.kill()
+        holder.wait(10)
+    waiting = [line for line in err.splitlines() if "waiting" in line]
+    assert len(waiting) == 1 and "refresh" in waiting[0], f"no single waiting notice naming the holder: {err!r}"
+    assert "busy" in out, out
+
+
+def test_setup_lite_on_a_busy_store_exits_cleanly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """W15: the busy refusal is advice (who holds it, retry), so it must not arrive as a traceback."""
+    from recall.lite.setup import default_store_path
+    from tests.test_lite_cli import _run
+
+    for name in ("RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_SERVING_DSN", "RECALL_DSN", "RECALL_TRUST_MODE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
+    monkeypatch.setenv("RECALL_LITE_WRITE_WAIT", "0")
+    project = tmp_path / "proj"
+    project.mkdir()
+    _write_memos(project / "notes", 3)
+    monkeypatch.chdir(project)
+    holder = _hold(default_store_path(project.resolve()), tmp_path)
+    try:
+        out = _run(["--embedder", "hashing", "setup", "--lite", "--memory", str(project / "notes"), "--no-register"])
+    finally:
+        holder.kill()
+        holder.wait(10)
+    assert "RAISED" not in out and "EXIT" in out and "busy" in out, f"setup --lite did not exit cleanly on a busy store: {out!r}"
