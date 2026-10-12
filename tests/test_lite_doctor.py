@@ -6,7 +6,10 @@ Invariants and the failure each one catches:
 - D2 an indexed, certified lite store reports its chunks and a certified calibration, and Docker as
   not needed.
 - D3 a file holding another tenant is a blocking failure that names both tenants.
-- D4 a calibration fitted to an earlier corpus is reported stale, not certified.
+- D4 a calibration fitted to an earlier corpus whose threshold no longer re-verifies is reported
+  stale, not certified.
+- D5 a calibration carried forward to a changed corpus is reported as carried, with its delta,
+  exactly as search serves it (the doctor and search must not disagree).
 
 Red proof, 2026-10-07, each mutation alone, failing in its intended assertion (JUnit XML), then
 restored byte for byte and green:
@@ -18,6 +21,12 @@ restored byte for byte and green:
   was not refused".
 - Q3 (D4) `inspect_lite_file` ignoring the corpus fingerprint: "a stale calibration was reported as
   certified".
+
+Red proof, 2026-10-12, for the carry-forward changes (same method; JUnit XML on the test host):
+- Q4 (D4) `judge_inherited_threshold` certifying on separability alone (M2 in
+  `tests/test_lite_carry_forward.py`): "a stale calibration was reported as certified".
+- Q5 (D5) `inspect_lite_file` without its carry (the pre-change rule, any change reads stale):
+  "the doctor called a carried calibration stale".
 """
 
 from __future__ import annotations
@@ -28,7 +37,7 @@ from recall.doctor import run_checks
 from recall.index import Indexer
 from recall.lite import LiteStore
 from recall.lite.calibration import auto_calibrate
-from tests.test_lite_calibration import DIM, ContentWordEmbedder, _write_memos
+from tests.test_lite_calibration import DIM, ContentWordEmbedder, _shift_gap_questions, _write_memos
 
 
 def _checks(dsn: str, tenant: str = "default") -> dict[str, tuple[str, str]]:
@@ -74,7 +83,19 @@ def test_a_calibration_for_an_earlier_corpus_is_stale(tmp_path: Path) -> None:
     """D4."""
     db = _certified_store(tmp_path)
     with LiteStore(db, dim=DIM) as store:
-        _write_memos(tmp_path / "m", 1, start=48)
+        _shift_gap_questions(store, tmp_path / "m", 6)
         Indexer(store, ContentWordEmbedder(), env={}).index_path(tmp_path / "m")
     status, detail = _checks("sqlite:///" + db.as_posix())["calibration"]
     assert status == "warn" and "earlier version" in detail, f"a stale calibration was reported as certified: {detail}"
+
+
+def test_a_carried_calibration_is_reported_as_carried(tmp_path: Path) -> None:
+    """D5."""
+    db = _certified_store(tmp_path)
+    with LiteStore(db, dim=DIM) as store:
+        _write_memos(tmp_path / "m", 2, start=48)
+        Indexer(store, ContentWordEmbedder(), env={}).index_path(tmp_path / "m")
+        assert store.resolve_calibration().status.value == "certified"
+    status, detail = _checks("sqlite:///" + db.as_posix())["calibration"]
+    assert status == "ok", f"the doctor called a carried calibration stale: {detail}"
+    assert "carried forward" in detail and "4%" in detail, detail

@@ -148,6 +148,57 @@ class _Matrix:
     newest: str | None  # max `indexed_at`; the fixed-width UTC format sorts as text, as SQL's max does
 
 
+class CorpusSnapshot:
+    """The corpus as one read saw it: a calibration fit measures and binds to exactly this.
+
+    Holds the store's cached matrix, which is never mutated (a write replaces it), so a fit running
+    in a background thread beside a server that keeps indexing reads one corpus from its first
+    question to its last, and binds to that corpus's fingerprint. Writes that land meanwhile are a
+    corpus change like any other, which the stored fit then carries forward or refits.
+    """
+
+    def __init__(self, matrix: _Matrix, dim: int) -> None:
+        self._matrix = matrix
+        self._dim = dim
+
+    @property
+    def fingerprint(self) -> str:
+        return self._matrix.fingerprint
+
+    @property
+    def generation_id(self) -> str:
+        return "lite-" + self._matrix.fingerprint[:16]
+
+    def texts(self) -> list[str]:
+        """Non-blank chunk texts in chunk-id order, the order `LiteStore.iter_chunks` reads them."""
+        return [row.text for row in sorted(self._matrix.rows, key=lambda row: row.id) if row.text.strip()]
+
+    def source_manifest(self) -> dict[str, str]:
+        from recall.lite.calibration import source_digests
+
+        return source_digests([(row.source, row.id, row.text) for row in self._matrix.rows])
+
+    def top_cosine(self, vector: list[float]) -> float:
+        """`LiteStore.top_cosine` over this snapshot: the same arithmetic on the same rows."""
+        return _top_cosine(self._matrix, _normalised(vector, self._dim))
+
+
+def _normalised(vector: Sequence[float], dim: int) -> Any:
+    import numpy as np
+
+    if len(vector) != dim:
+        raise LiteStoreError(f"query vector is {len(vector)} wide; this store holds {dim}")
+    q: Any = np.asarray(vector, dtype=np.float32)
+    norm = float(np.linalg.norm(q))
+    return q / norm if norm else q
+
+
+def _top_cosine(matrix: _Matrix, q: Any) -> float:
+    if not matrix.rows:
+        return 0.0
+    return float((matrix.vectors @ q).max())
+
+
 def _matches(scope: Scope, row: _Row) -> bool:
     """`Scope.predicate`, evaluated in Python over one row; same arms, same rules.
 
@@ -224,6 +275,7 @@ class LiteStore:
         self._calibration_cache: tuple[tuple[int, int, str], CalibrationResolution, dict[str, str]] | None = None
         self._query_terms_ready = False
         self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
+        self._manifest_cache: tuple[int, dict[str, str]] | None = None
 
     @classmethod
     def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default") -> LiteStore:
@@ -298,6 +350,17 @@ class LiteStore:
                     rowid INTEGER PRIMARY KEY,
                     created_at TEXT NOT NULL,
                     payload TEXT NOT NULL
+                );
+                -- What a fit was measured on, kept so a changed corpus can re-verify its threshold
+                -- without embedding anything (`recall.lite.calibration.carry_forward`): the labelled
+                -- questions, their vectors (float32, one row per question, in order) and the corpus
+                -- by source. A file written before this table existed simply has no row, and its
+                -- calibration is refitted on the next change, as it always was.
+                CREATE TABLE IF NOT EXISTS calibration_evidence (
+                    calibration_id TEXT PRIMARY KEY,
+                    queries TEXT NOT NULL,
+                    vectors BLOB NOT NULL,
+                    sources TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS audit_events (
                     event_id TEXT PRIMARY KEY,
@@ -612,13 +675,7 @@ class LiteStore:
             return self._matrix
 
     def _query_vector(self, vector: Sequence[float]) -> Any:
-        import numpy as np
-
-        if len(vector) != self._dim:
-            raise LiteStoreError(f"query vector is {len(vector)} wide; this store holds {self._dim}")
-        q: Any = np.asarray(vector, dtype=np.float32)
-        norm = float(np.linalg.norm(q))
-        return q / norm if norm else q
+        return _normalised(vector, self._dim)
 
     def _hit(self, row: _Row, score: float) -> ScoredChunk:
         return ScoredChunk(
@@ -666,10 +723,11 @@ class LiteStore:
 
     def top_cosine(self, vector: list[float]) -> float:
         """The best cosine any chunk has with `vector`, exactly; 0.0 for an empty store."""
-        matrix = self._load()
-        if not matrix.rows:
-            return 0.0
-        return float((matrix.vectors @ self._query_vector(vector)).max())
+        return _top_cosine(self._load(), self._query_vector(vector))
+
+    def calibration_snapshot(self) -> CorpusSnapshot:
+        """The corpus as it is now, frozen: see `CorpusSnapshot`."""
+        return CorpusSnapshot(self._load(), self._dim)
 
     def cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
         matrix = self._load()
@@ -788,9 +846,43 @@ class LiteStore:
         """A stable name for the corpus as it is now, in the place a Postgres generation id goes."""
         return "lite-" + self.corpus_fingerprint()[:16]
 
-    def save_calibration(self, payload: str, *, created_at: str, model: str, dimension: int) -> None:
+    def source_manifest(self) -> dict[str, str]:
+        """`{source: digest of its chunks' ids and texts}`: the corpus by source, cached per version.
+
+        The unit a corpus delta counts (`recall.calibration_v2.corpus_delta`), so an edit to one memo
+        is one changed source however many chunks it has.
+        """
+        matrix = self._load()
+        cached = self._manifest_cache
+        if cached is None or cached[0] != matrix.version:
+            from recall.lite.calibration import source_digests
+
+            cached = (matrix.version, source_digests([(row.source, row.id, row.text) for row in matrix.rows]))
+            self._manifest_cache = cached
+        return dict(cached[1])
+
+    def save_calibration(
+        self,
+        payload: str,
+        *,
+        created_at: str,
+        model: str,
+        dimension: int,
+        evidence: tuple[str, str, bytes, str] | None = None,
+    ) -> None:
+        """Store a calibration and, in the same transaction, the evidence it was fitted on.
+
+        `evidence` is `(calibration_id, queries JSON, query vectors as float32 bytes, sources JSON)`;
+        together or not at all, so a calibration never names evidence that was not written.
+        """
         with self._write():
             self._conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)", (created_at, payload))
+            if evidence is not None:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO calibration_evidence(calibration_id, queries, vectors, sources) "
+                    "VALUES (?, ?, ?, ?)",
+                    evidence,
+                )
             self._conn.executemany(
                 "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 [("embedder_model", model), ("embedder_dimension", str(dimension))],
@@ -805,6 +897,13 @@ class LiteStore:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (payload,),
             )
+
+    def calibration_evidence(self, calibration_id: str) -> tuple[str, bytes, str] | None:
+        """`(queries JSON, vectors, sources JSON)` stored with `calibration_id`, or None."""
+        rows = self._metadata_values(
+            "SELECT queries, vectors, sources FROM calibration_evidence WHERE calibration_id = ?", (calibration_id,)
+        )
+        return (str(rows[0][0]), bytes(rows[0][1]), str(rows[0][2])) if rows else None
 
     def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
         """The coverage stored with `calibration_id`, or None when it belongs to another fit."""
