@@ -255,8 +255,9 @@ install below. `recall dashboard` reads the same file, read-only.
 
 Several local clients (Claude Code and Codex, say) can share the file. Writes take turns, first
 come first served: an index, ingest or forget waits for the one in progress and gives up after
-`RECALL_LITE_WRITE_WAIT` seconds (default 300), naming what holds the store; a calibration fit
-waits on its own queue (`RECALL_LITE_REFIT_WAIT`, default 120) so it never holds up a write.
+`RECALL_LITE_WRITE_WAIT` seconds (five minutes by default), naming what holds the store; a
+calibration fit waits on its own queue (`RECALL_LITE_REFIT_WAIT`, two minutes by default) so it
+never holds up a write.
 Searches never wait. The queue lives in `memory.db.lanes/` beside the file, which is safe to delete
 while nothing is using the store. Keep the file on a local disk: file locks on network shares are
 not reliable, and two machines writing one file are not supported.
