@@ -67,8 +67,38 @@ def index_memory(
     security_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
     candidate_files_fn: CandidateFiles | None = None,
+    lane_purpose: str = "index",
 ) -> IndexResult:
-    """Index a markdown file or folder into memory; return counts plus a human message."""
+    """Index a markdown file or folder into memory; return counts plus a human message.
+
+    On a lite store the whole run (read hashes, embed, write, prune, calibrate) holds the file's
+    write lane, so two servers indexing one file take turns (`recall.lite.writer_lock`).
+    """
+    from recall.backends import write_session
+
+    with write_session(store, lane_purpose):
+        return _index_memory_unlocked(
+            store, embedder, path, on_measured, shadow_store, shadow_embedder, control_plane, glob,
+            chunker, security_policy, security_context, env, candidate_files_fn,
+        )
+
+
+def _index_memory_unlocked(
+    store: PgVectorStore,
+    embedder: Embedder,
+    path: str,
+    on_measured: Callable[[int, int], None] | None = None,
+    shadow_store: PgVectorStore | None = None,
+    shadow_embedder: Embedder | None = None,
+    control_plane: ControlPlane | None = None,
+    glob: str | None = None,
+    chunker: Chunker = chunk_text,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
+    env: Mapping[str, str] | None = None,
+    candidate_files_fn: CandidateFiles | None = None,
+) -> IndexResult:
+    """`index_memory` without the lite store's write lane; call `index_memory`."""
     values = dict(os.environ if env is None else env)
     try:
         route = resolve_runtime_route(
