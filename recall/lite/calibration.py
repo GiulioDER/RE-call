@@ -25,7 +25,7 @@ gate see through `resolve`:
 |---|---|---|---|
 | any | fails, or impossible | `stale`: strict search refuses | needed now |
 | up to `DEFAULT_MAX_CORPUS_DELTA` (0.25) | passes | `certified`, carried | none |
-| above that, up to `MAX_BRIDGE_CORPUS_DELTA` (0.50) | passes | `certified`, carried | due |
+| above that, up to `MAX_BRIDGE_CORPUS_DELTA` (0.75) | passes | `certified`, carried | due |
 | above `MAX_BRIDGE_CORPUS_DELTA` | not tried | `stale`: strict search refuses | needed now |
 
 So a calibration that failed re-verification is never served, whatever the delta, and the delta
@@ -91,11 +91,18 @@ _log = logging.getLogger(__name__)
 #: carried calibration bridges the refit, so a write that crosses the refit line does not turn
 #: strict search off while the refit runs.
 #:
-#: 0.50 is a ceiling, not a measured safe distance: about half the smallest delta at which a frozen
-#: threshold was measured to exceed its error bound (0.945, `docs` corpus, 2026-08-21), on one
-#: embedder and generated queries. It bounds only how long a store with no refit running (a writer
-#: that never calls `ensure_calibrated`) keeps answering from a threshold it did not fit.
-MAX_BRIDGE_CORPUS_DELTA = 0.5
+#: 0.75 is a ceiling, not a measured safe distance. Over 57 snapshots of three real corpora
+#: (2026-08-21) a frozen threshold first exceeded its error bound at a delta of 0.945 (`docs`), and
+#: the memory corpus never crossed it across deltas up to 0.778; one embedder, generated queries.
+#: It bounds only how long a store with no refit landing (a writer that never calls
+#: `ensure_calibrated`, or writes outpacing the refit) keeps answering from a threshold it did not
+#: fit; re-verification still decides at every delta below it.
+#:
+#: Widened from 0.50 on 2026-10-12. At 0.50 the bridge from a fit at N memos closed at 2N, which on
+#: a young store is narrower than the writes a background refit takes to land: measured at one
+#: write per 0.3 s against an 8 s refit, a fit at 33 memos was due at 45 and closed at 67, and 1 to 5
+#: writes left strict search refusing before the next refit landed. At 0.75 it closes at 4N.
+MAX_BRIDGE_CORPUS_DELTA = 0.75
 
 #: Fits a background refit may run in a row while the newest fit still does not cover the corpus.
 _MAX_REFIT_ATTEMPTS = 3

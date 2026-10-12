@@ -13,7 +13,9 @@ Invariants and the failure each one catches:
   `ensure_calibrated` refits.
 - F3 past `DEFAULT_MAX_CORPUS_DELTA` the carried calibration still serves (the bridge) but a refit
   is due, and the default `ensure_calibrated` performs it inline.
-- F4 past `MAX_BRIDGE_CORPUS_DELTA` nothing is carried, however well it would re-verify.
+- F4 past `MAX_BRIDGE_CORPUS_DELTA` (0.75) nothing is carried, however well it would re-verify.
+- F4b a delta between 0.50 and 0.75 that re-verifies is still carried (the bridge was widened from
+  0.50 on 2026-10-12, see `MAX_BRIDGE_CORPUS_DELTA`).
 - F5 with `background=True` a due refit runs in a background thread: the write returns the carried
   calibration at once, and the refit lands afterwards.
 - F6 with `background=True` a carry that FAILED is never served while the refit runs: `stale` until
@@ -38,7 +40,10 @@ the test host, failing in its intended assertion (JUnit XML), then the file rest
   separability 1.000", which is the shifted class separability cannot see, in the wild.
 - M3 (F3) `refit_due=False` in `carry_forward`: "a carry past the refit line was not marked due".
 - M4 (F4) the `MAX_BRIDGE_CORPUS_DELTA` refusal disabled: "a threshold was carried across half the
-  corpus".
+  corpus"; re-proved after the cap moved to 0.75: "a threshold was carried across three quarters of
+  the corpus".
+- Baseline (F4b): the pre-change cap, `MAX_BRIDGE_CORPUS_DELTA = 0.5`: "a carry inside the bridge was
+  refused: the memory changed by 56% of its sources since the fit ... past the 50% ...".
 - M5 (F5) the background branch of `ensure_calibrated` disabled (refit inline): "the write waited
   for the refit instead of returning the carried calibration".
 - M6 (F6) the background branch returning the fit as certified when the carry failed: "a threshold
@@ -163,13 +168,23 @@ def test_past_the_refit_line_the_default_refits_inline(tmp_path: Path) -> None:
 
 
 def test_past_the_bridge_nothing_is_carried(tmp_path: Path) -> None:
-    """F4: 50 of 98 sources added is a delta of 0.51."""
+    """F4: 150 of 198 sources added is a delta of 0.76."""
     store = _fitted(tmp_path)
-    _add(store, tmp_path, 50)
+    _add(store, tmp_path, 150)
     attempt = cal.carry_forward(store)
-    assert attempt.artifact is None, "a threshold was carried across half the corpus"
+    assert attempt.artifact is None, "a threshold was carried across three quarters of the corpus"
     assert attempt.provenance["corpus_delta"] > cal.MAX_BRIDGE_CORPUS_DELTA
     assert store.resolve_calibration().status is CalibrationStatus.STALE
+
+
+def test_inside_the_widened_bridge_a_carry_still_serves(tmp_path: Path) -> None:
+    """F4b: 60 of 108 sources added is a delta of 0.56, past the old 0.50 cap."""
+    store = _fitted(tmp_path)
+    _add(store, tmp_path, 60)
+    attempt = cal.carry_forward(store)
+    assert attempt.artifact is not None, f"a carry inside the bridge was refused: {attempt.reason}"
+    assert attempt.refit_due
+    assert store.resolve_calibration().status is CalibrationStatus.CERTIFIED
 
 
 def test_a_background_refit_does_not_block_the_write(tmp_path: Path) -> None:
