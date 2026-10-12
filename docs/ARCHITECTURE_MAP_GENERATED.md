@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 315
 Cross package edges: 317
-Source tree fingerprint: `da6e0cdd73996d3e8a41eca8dd3effd70bf8f8931db63f96046a4f8a3b096baf`
+Source tree fingerprint: `3c4cf0cdf0b958fdd0035bcf59e5fdd4d7c02cf7d04aec5fdd649a6a0bfab6e8`
 
 ## Highest fan in modules
 
@@ -441,7 +441,7 @@ They are observations, not automatic failures.
 | `recall.atomic_view_store` | 1 | 1 |
 | `recall.atomic_write` | 0 | 0 |
 | `recall.atomizer` | 0 | 0 |
-| `recall.backends` | 3 | 72 |
+| `recall.backends` | 4 | 72 |
 | `recall.build_progress` | 0 | 0 |
 | `recall.cache` | 2 | 12 |
 | `recall.calibration` | 3 | 13 |
