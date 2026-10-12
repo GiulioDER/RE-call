@@ -126,7 +126,7 @@ def auto_calibrate(
     fingerprint = store.corpus_fingerprint()
     generation_id = store.lite_generation_id()
     texts = [chunk.text for chunk in store.iter_chunks() if chunk.text.strip()]
-    entries, why = ([dict(q) for q in queries], "") if queries else _query_set(texts)
+    entries, why = ([dict(q) for q in queries], "") if queries is not None else _query_set(texts)
     if entries is None:
         return CalibrationOutcome(
             CalibrationStatus.MISSING,

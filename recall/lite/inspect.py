@@ -51,6 +51,12 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         return LiteFileReport(target, exists=True, error=f"not a lite store ({type(exc).__name__}: {exc})")
     finally:
         conn.close()
+    try:
+        dim = int(meta["dim"])
+        if dim < 1:
+            raise ValueError("embedding width must be positive")
+    except (KeyError, TypeError, ValueError) as exc:
+        return LiteFileReport(target, exists=True, error=f"invalid embedding width metadata: {exc}")
     status, threshold, separability = CalibrationStatus.MISSING, None, None
     if latest is not None:
         try:
@@ -68,7 +74,7 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         target,
         exists=True,
         tenant=meta.get("tenant"),
-        dim=int(meta["dim"]) if "dim" in meta else None,
+        dim=dim,
         chunks=len(rows),
         sources=len({r[2] for r in rows}),
         calibration=status,

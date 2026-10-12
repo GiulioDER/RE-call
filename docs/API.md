@@ -138,7 +138,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_ingest` | Upload bounded source files and index them, debiting the tenant's byte quota. |
 | `recall_job_status` | Return the state of one ingest job, scoped to the caller's tenant. |
 | `recall_calibration_status` | Return the latest calibration artifact bound to the caller's generation. |
-| `recall_calibration_run` | Create a draft calibration artifact for the active generation. |
+| `recall_calibration_run` | Fit corpus calibration. PostgreSQL creates a draft for the active generation. Lite activates completed fits immediately: a certified fit governs serving, and a completed uncertified fit replaces the prior calibration and blocks strict answers. Attempts that cannot complete retain the prior artifact. Lite has no separate publish step. |
 | `recall_calibration_publish` | Publish one certified calibration artifact. Requires `recall:admin`: publication changes what the whole tenant serves. |
 | `recall_forget` | Erase indexed source material, including its staged upload files. |
 | `recall_inventory` | List every source in the caller's memory with the digest of its bytes, so a sync client can diff instead of re-uploading. Not in the `read` or `search` presets: a file listing answers no question an agent asks. |
