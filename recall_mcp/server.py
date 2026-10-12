@@ -43,7 +43,9 @@ from recall.retrieval_plan import RetrievalPlan, RetrievalPlanResolver
 from recall.federation import FederationConfig
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store
-from recall.lite import LiteWriterBusy
+from recall.lite import LiteStore, LiteWriterBusy
+from recall.lite.refresh import read_state as read_refresh_state
+from recall_mcp.lite_refresh import LiteAutoRefresher
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -1169,6 +1171,12 @@ def _make_lifespan(
                 "federation_embedders": {},
                 "federation_embedder_lock": threading.Lock(),
             }
+            # A lite store follows its memo folder on its own: a catch-up refresh now, and a
+            # debounced check before each retrieval (`recall_mcp.lite_refresh`). None otherwise.
+            lite_refresher = LiteAutoRefresher.from_env(store, embedder, runtime_env)
+            if lite_refresher is not None:
+                lite_refresher.start()
+            runtime_state["lite_refresher"] = lite_refresher
             settings_token = activate_runtime_settings(runtime_settings)
             if health is not None:
                 health.mark_started(runtime_state)
@@ -1484,6 +1492,10 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         with METRICS.timer("recall_tool_latency_ms", tool=tool):
             try:
                 def execute() -> tuple[_RetrievalResultT, dict[str, object] | None]:
+                    refresher = state.get("lite_refresher")
+                    if refresher is not None:
+                        # A memo written a moment ago is indexed first, within a bounded wait.
+                        refresher.before_retrieval()
                     execution = prepare_federated_execution(
                         retrieval_plan,
                         config=federation_config(state),
@@ -2883,7 +2895,16 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             JSON of {chunks, newest_indexed_at, stale}.
         """
         store = await _require(SCOPE_READ, ctx)
-        return await _to_thread(lambda: memory_stats(store).model_dump_json(indent=2))
+
+        def stats() -> str:
+            result = memory_stats(store)
+            if isinstance(store, LiteStore):
+                # The last automatic refresh, so an agent can see why a memo it just wrote is not
+                # found yet (busy, coalesced, failed, or a calibration still below its floor).
+                result.refresh = read_refresh_state(store.path).get("last")
+            return result.model_dump_json(indent=2)
+
+        return await _to_thread(stats)
 
 
 def build_server(settings: Settings | None = None) -> MCPServer:
