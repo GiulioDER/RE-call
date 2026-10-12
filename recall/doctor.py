@@ -934,7 +934,14 @@ def _lite_checks(dsn: str, *, tenant: str) -> Iterator[Check]:
         yield Check(
             "corpus", "ok", f"{found.chunks} chunk(s) from {found.sources} source(s), {found.dim}-wide embeddings"
         )
-    if found.calibration is CalibrationStatus.CERTIFIED:
+    if found.calibration is CalibrationStatus.CERTIFIED and found.carried_delta is not None:
+        yield Check(
+            "calibration",
+            "ok",
+            f"carried forward: the memory changed by {found.carried_delta:.0%} of its sources since the fit "
+            f"and its threshold {found.threshold:.3f} still re-verifies (separability {found.separability:.3f})",
+        )
+    elif found.calibration is CalibrationStatus.CERTIFIED:
         yield Check(
             "calibration",
             "ok",
@@ -951,7 +958,7 @@ def _lite_checks(dsn: str, *, tenant: str) -> Iterator[Check]:
         yield Check(
             "calibration",
             "warn",
-            "fitted to an earlier version of the memory",
+            "fitted to an earlier version of the memory, and its threshold no longer re-verifies on this one",
             "recall index <your memory folder>   (refits it)",
         )
     else:
