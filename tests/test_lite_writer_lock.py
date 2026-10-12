@@ -158,12 +158,13 @@ _REPO = Path(__file__).resolve().parents[1]
 
 
 def _spawn(db: Path, log: Path, tag: str, *, lane: str = "write", purpose: str = "index",
-           hold_s: float = 0.0, wait_s: float = 30.0, coalesce: bool = False) -> subprocess.Popen[bytes]:
+           hold_s: float = 0.0, wait_s: float = 30.0, coalesce: bool = False,
+           release: Path | None = None) -> subprocess.Popen[bytes]:
     """A real separate process that takes the lane and logs to `log` (see lite_lane_worker)."""
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(_REPO), os.environ.get("PYTHONPATH", "")])}
     return subprocess.Popen(
         [sys.executable, str(_REPO / "tests" / "lite_lane_worker.py"), str(db), lane, purpose,
-         str(hold_s), str(wait_s), str(log), tag, "1" if coalesce else "0"],
+         str(hold_s), str(wait_s), str(log), tag, "1" if coalesce else "0", *([str(release)] if release else [])],
         env=env,
     )
 
@@ -206,13 +207,14 @@ def test_two_processes_never_hold_the_write_lane_together(db: Path, tmp_path: Pa
 
 def test_waiters_acquire_in_arrival_order(db: Path, tmp_path: Path) -> None:
     """W2."""
-    log = tmp_path / "w2.log"
-    holder = _spawn(db, log, "a", hold_s=1.5)
+    log, release = tmp_path / "w2.log", tmp_path / "w2.release"
+    holder = _spawn(db, log, "a", hold_s=60, release=release)
     _wait_for(lambda: _at(log, "a", "acquired") is not None)
     procs = [holder]
     for n, tag in enumerate(["b", "c", "d"], start=1):
         procs.append(_spawn(db, log, tag, hold_s=0.1))
         _wait_for(lambda n=n: _waiting(db) == n)  # type: ignore[misc]
+    release.touch()
     for proc in procs:
         assert proc.wait(60) == 0
     order = sorted(["b", "c", "d"], key=lambda t: _at(log, t, "acquired") or 0.0)
@@ -221,8 +223,8 @@ def test_waiters_acquire_in_arrival_order(db: Path, tmp_path: Path) -> None:
 
 def test_a_killed_waiter_is_pruned_without_a_timeout(db: Path, tmp_path: Path) -> None:
     """W3."""
-    log = tmp_path / "w3.log"
-    holder = _spawn(db, log, "a", hold_s=1.5)
+    log, release = tmp_path / "w3.log", tmp_path / "w3.release"
+    holder = _spawn(db, log, "a", hold_s=60, release=release)
     _wait_for(lambda: _at(log, "a", "acquired") is not None)
     doomed = _spawn(db, log, "b", wait_s=60)
     _wait_for(lambda: _waiting(db) == 1)
@@ -230,6 +232,7 @@ def test_a_killed_waiter_is_pruned_without_a_timeout(db: Path, tmp_path: Path) -
     _wait_for(lambda: _waiting(db) == 2)
     doomed.kill()
     doomed.wait(10)
+    release.touch()
     assert holder.wait(30) == 0 and after.wait(30) == 0
     released, got = _at(log, "a", "released"), _at(log, "c", "acquired")
     assert released is not None and got is not None, _events(log)
