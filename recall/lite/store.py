@@ -243,10 +243,10 @@ class LiteStore:
         self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
 
     @classmethod
-    def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default") -> LiteStore:
+    def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default", table: str = "chunks") -> LiteStore:
         if not is_lite_dsn(dsn):
             raise LiteStoreError(f"not a lite store address (expected {LITE_DSN_PREFIX}<path>): {dsn!r}")
-        return cls(dsn[len(LITE_DSN_PREFIX):], dim=dim, tenant=tenant)
+        return cls(dsn[len(LITE_DSN_PREFIX):], dim=dim, tenant=tenant, table=table)
 
     # ------------------------------------------------------------------ identity
 
@@ -548,13 +548,25 @@ class LiteStore:
         """
         requested = set(identifiers)
         resolved: dict[str, list[str]] = {}
-        for row in self._load().rows:
-            file = row.metadata.get("file")
-            for ident in {file if isinstance(file, str) else None, row.source} & requested:
+        if not requested:
+            return resolved
+        # One bound JSON list avoids SQLite's variable limit without constructing SQL.
+        # Source resolution reads metadata only; deleting immediately invalidates a search matrix.
+        rows = self._metadata_values(
+            "WITH requested AS (SELECT value FROM json_each(?)) "
+            "SELECT source, json_extract(metadata, '$.file'), json_type(metadata, '$.file') FROM chunks "
+            "WHERE source IN (SELECT value FROM requested) "
+            "OR (json_type(metadata, '$.file') = 'text' "
+            "AND json_extract(metadata, '$.file') IN (SELECT value FROM requested)) "
+            "GROUP BY source, json_extract(metadata, '$.file'), json_type(metadata, '$.file') ORDER BY MIN(rowid)",
+            (json.dumps(list(dict.fromkeys(identifiers))),),
+        )
+        for source, file, file_type in rows:
+            for ident in {file if file_type == "text" else None, source} & requested:
                 assert ident is not None
                 bucket = resolved.setdefault(ident, [])
-                if row.source not in bucket:
-                    bucket.append(row.source)
+                if source not in bucket:
+                    bucket.append(source)
         return resolved
 
     def append_audit_event(
@@ -570,7 +582,7 @@ class LiteStore:
         """Append one event to this file's audit ledger, as `PgVectorStore.append_audit_event`.
 
         Append only, and idempotent per event id (a repeated id is one row): the decision ledger,
-        agent use reports and stale reports write here, and the dashboard reads them back.
+        agent use reports and stale reports persist here for local readers.
         """
         if not isinstance(event_type, str) or not event_type:
             raise ValueError("event_type must be a non-empty str")

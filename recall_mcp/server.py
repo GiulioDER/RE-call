@@ -2658,7 +2658,11 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         tenant: str | None = None,
         idempotency_key: str | None = None,
     ) -> str:
-        """Create a draft calibration artifact for the active generation."""
+        """Fit corpus calibration: PostgreSQL creates a draft; Lite activates completed fits immediately.
+
+        A completed uncertified Lite fit replaces the prior calibration and blocks strict answers.
+        Attempts that cannot complete retain the prior artifact. Lite has no separate publish step.
+        """
         state = _state(ctx)
         operation = "recall_calibration_run"
         fingerprint = _mutation_fingerprint(

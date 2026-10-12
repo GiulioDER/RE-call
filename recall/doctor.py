@@ -791,26 +791,6 @@ def run_checks(
     report.add(_embedder_check(embedder))
     from recall.lite import is_lite_dsn
 
-    if is_lite_dsn(dsn):
-        # One SQLite file: no Docker, no server, no migrations, no row-level security. The file
-        # is read read-only, so this command still writes nothing.
-        report.add(Check("docker", "skip", "not needed: the lite store is one SQLite file"))
-        for check in _lite_checks(dsn, tenant=tenant):
-            report.add(check)
-        report.add(
-            Check(
-                "trust mode",
-                "ok",
-                "strict (refuses an uncalibrated corpus)"
-                if policy.strict
-                else "development (answers an uncalibrated corpus as DEGRADED)",
-            )
-        )
-        for check in _claude_code_checks(Path(project_root or Path.cwd()).resolve()):
-            report.add(check)
-        return report
-    report.add(_docker_check())
-
     # ⚠️ **Read the server's variables, but do NOT let them steer this CLI (F02).** Defaulting
     # `--table`/`--tenant` from the environment in `recall/cli.py` was the obvious fix and is
     # dangerous: the same defaults feed `recall index`, which PRUNES, and `recall forget`, which is
@@ -832,6 +812,26 @@ def run_checks(
                 "doctor   (to diagnose the corpus the server actually opens)",
             )
         )
+
+    if is_lite_dsn(dsn):
+        # One SQLite file: no Docker, no server, no migrations, no row-level security. The file
+        # is read read-only, so this command still writes nothing.
+        report.add(Check("docker", "skip", "not needed: the lite store is one SQLite file"))
+        for check in _lite_checks(dsn, tenant=tenant, table=table):
+            report.add(check)
+        report.add(
+            Check(
+                "trust mode",
+                "ok",
+                "strict (refuses an uncalibrated corpus)"
+                if policy.strict
+                else "development (answers an uncalibrated corpus as DEGRADED)",
+            )
+        )
+        for check in _claude_code_checks(Path(project_root or Path.cwd()).resolve()):
+            report.add(check)
+        return report
+    report.add(_docker_check())
 
     # ONE connection for the server facts and the corpus counts both, opened here so an unreachable
     # database is reported once and waited for once. See `_database_checks`.
@@ -894,12 +894,19 @@ def run_checks(
     return report
 
 
-def _lite_checks(dsn: str, *, tenant: str) -> Iterator[Check]:
+def _lite_checks(dsn: str, *, tenant: str, table: str = DEFAULT_TABLE) -> Iterator[Check]:
     """The lite store's file, corpus and calibration, from a read-only look at the file."""
     from recall.calibration_v2 import CalibrationStatus
     from recall.lite import LITE_DSN_PREFIX
     from recall.lite.inspect import inspect_lite_file
 
+    if table != DEFAULT_TABLE:
+        yield Check(
+            "database", "fail", f"a lite store has one table, {DEFAULT_TABLE!r}; got {table!r}",
+            f"recall --table {DEFAULT_TABLE} --tenant {tenant} doctor",
+        )
+        yield Check("corpus", "skip", "skipped: the requested table is unsupported")
+        return
     found = inspect_lite_file(dsn[len(LITE_DSN_PREFIX):])
     if not found.exists:
         yield Check(

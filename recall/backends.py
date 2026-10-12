@@ -48,7 +48,7 @@ def open_legacy_store(
     The pool size and statement timeout apply to Postgres only; a SQLite file has neither.
     """
     if is_lite_dsn(dsn):
-        return cast("PgVectorStore", LiteStore.from_dsn(dsn, dim=dim, tenant=tenant))
+        return cast("PgVectorStore", LiteStore.from_dsn(dsn, dim=dim, tenant=tenant, table=table))
     return PgVectorStore(
         dsn, dim=dim, table=table, tenant=tenant, pool_size=pool_size, statement_timeout_ms=statement_timeout_ms
     )
