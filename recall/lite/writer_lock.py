@@ -383,28 +383,42 @@ def _acquire(
             poll = POLL_HEAD_S if position == 1 else min(poll * 2, POLL_MAX_S)
             time.sleep(min(poll, max(0.0, budget - waited)))
     except BaseException:
-        if lane_fh is not None:
-            lane_fh.close()
         if ticket_fh is not None:
-            with suppress(OSError):
-                _unlock(ticket_fh)
-            ticket_fh.close()
+            _let_go(ticket_fh, lane_fh)
+        elif lane_fh is not None:
+            lane_fh.close()
         if ticket_path is not None:
-            with _mutex(root, lane):
+            # A mutex that cannot be had must not replace the error being raised; an unlocked
+            # ticket left behind is pruned by the next queue edit.
+            with suppress(LiteStoreError), _mutex(root, lane):
                 _remove(ticket_path)
         raise
 
 
-def _release(root: Path, lane: str, ticket_fh: IO[bytes], lane_fh: IO[bytes], ticket_path: Path) -> None:
-    with _mutex(root, lane):
-        _remove(root / f"{lane}.holder")
+def _let_go(ticket_fh: IO[bytes], lane_fh: IO[bytes] | None) -> None:
+    """Unlock and close this holder's handles, whatever else has failed."""
+    if lane_fh is not None:
         with suppress(OSError):
             _unlock(lane_fh)
         lane_fh.close()
-        with suppress(OSError):
-            _unlock(ticket_fh)
-        ticket_fh.close()
-        _remove(ticket_path)
+    with suppress(OSError):
+        _unlock(ticket_fh)
+    ticket_fh.close()
+
+
+def _release(root: Path, lane: str, ticket_fh: IO[bytes], lane_fh: IO[bytes], ticket_path: Path) -> None:
+    try:
+        with _mutex(root, lane):
+            _remove(root / f"{lane}.holder")
+            _let_go(ticket_fh, lane_fh)
+            _remove(ticket_path)
+    except BaseException:
+        # No mutex (a suspended process holds it): free the lane anyway rather than when a
+        # retained traceback is collected. The holder record and ticket file stay behind, but
+        # both are ignored once the ticket's lock is gone, and the next prune removes the ticket.
+        if not ticket_fh.closed:
+            _let_go(ticket_fh, lane_fh)
+        raise
 
 
 def lite_lane_status(path: str | Path, lane: str = "write") -> LaneStatus:

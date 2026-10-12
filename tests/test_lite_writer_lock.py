@@ -17,6 +17,7 @@ as a real separate process, so the OS lock, not Python state, is what is tested)
 - P4 a failure after the ticket is created releases it at once, even while the traceback is kept.
 - P5 a queue counter emptied by a crash mid-write neither reuses a live ticket's number nor lets a
   new waiter sort ahead of one already queued.
+- P6 a release that cannot get the queue mutex still unlocks the lane before it raises.
 - W12 a released lane passes to the next waiter within a short poll (measured 2026-10-12: a poll
   backing off to 0.5 s left 40 writes of ~0.1 s each taking 16.7 s on Windows, ~12 s of it idle).
 
@@ -48,6 +49,8 @@ After the final review, 2026-10-12, same method:
 Deferred minors, fixed 2026-10-12, each red against the pre-fix code first:
 - P5 pre-fix `_next_seq` (counter file only): "after a counter reset the queue reads ['first']; second:
   ['LiteStoreError: could not lock a new ticket .../000000000001-<pid>.ticket']".
+- P6 pre-fix `_release` (unlock only inside the mutex): "a release that could not get the queue
+  mutex left the lane locked".
 """
 from __future__ import annotations
 
@@ -425,3 +428,28 @@ def test_a_reset_counter_keeps_numbers_unique_and_order_intact(db: Path) -> None
     early.join(15)
     late.join(15)
     assert first == ["acquired"] and second == ["acquired"], (first, second)
+
+
+def test_a_release_without_the_mutex_still_frees_the_lane(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P6: something holds the queue mutex past its wait while the holder releases (a suspended
+    process). The release may fail, but the lane lock must be free before the error leaves, not
+    when the retained traceback is collected."""
+    monkeypatch.setattr(wl, "MUTEX_WAIT_S", 0.2)
+    root = wl.lanes_dir(db)
+    blocker = None
+    with pytest.raises(LiteStoreError) as failed:
+        with lite_lane(db, purpose="index", wait_s=0):
+            blocker = wl._open(root / "write.mutex")
+            assert wl._try_lock(blocker)
+    assert failed.value is not None  # the traceback, and every frame in it, is still referenced here
+    probe = wl._open(root / "write.lock")
+    try:
+        free = wl._try_lock(probe)
+        if free:
+            wl._unlock(probe)
+    finally:
+        probe.close()
+        assert blocker is not None
+        wl._unlock(blocker)
+        blocker.close()
+    assert free, "a release that could not get the queue mutex left the lane locked"
