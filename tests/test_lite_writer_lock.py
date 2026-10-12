@@ -20,6 +20,8 @@ as a real separate process, so the OS lock, not Python state, is what is tested)
 - P6 a release that cannot get the queue mutex still unlocks the lane before it raises.
 - P7 `on_busy="skip"` also skips, rather than raises, when the lane cannot even be attempted (a
   malformed wait variable, an uncreatable lanes directory); `on_busy="raise"` still raises.
+- P8 on a case-insensitive filesystem, a nested hold through a spelling that differs only in case is
+  the same hold (skipped where the filesystem is case-sensitive, since there they are two files).
 - W12 a released lane passes to the next waiter within a short poll (measured 2026-10-12: a poll
   backing off to 0.5 s left 40 writes of ~0.1 s each taking 16.7 s on Windows, ~12 s of it idle).
 
@@ -55,6 +57,10 @@ Deferred minors, fixed 2026-10-12, each red against the pre-fix code first:
   mutex left the lane locked".
 - P7 pre-fix `lite_lane` (skip caught only busy and coalesced): "a lane that could not be attempted
   was not skipped under on_busy='skip': ['raised', 'raised', 'raised', 'raised']".
+- P8 pre-fix `lite_lane` (reentrancy keyed on the path string), run on Windows (the Linux run skips
+  it): "a case-only respelling of the same file queued behind itself: None". Since this fix,
+  reentrancy is keyed on the lanes directory's (device, inode), so P1 holds without `resolve()` and
+  M12 no longer turns it red; `resolve()` still gives the lanes directory one absolute path.
 """
 from __future__ import annotations
 
@@ -483,3 +489,17 @@ def test_skip_covers_a_lane_that_cannot_be_attempted(db: Path, monkeypatch: pyte
     assert outcomes == ["skipped", "raised", "skipped", "raised"], (
         f"a lane that could not be attempted was not skipped under on_busy='skip': {outcomes}"
     )
+
+
+def test_a_case_only_respelling_is_the_same_hold(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P8: `resolve()` does not fold case, so on macOS (and Windows, before the file exists) two
+    spellings of one file gave two reentrancy keys and a nested call queued behind itself."""
+    db.parent.mkdir(parents=True)
+    probe = db.parent / "case-probe"
+    probe.write_text("x", encoding="utf-8")
+    if not (db.parent / "CASE-PROBE").exists():
+        pytest.skip("case-sensitive filesystem: the two spellings name two files here")
+    other = db.with_name(db.name.upper())
+    with lite_lane(db, purpose="index", wait_s=0) as outer:
+        with lite_lane(other, purpose="index", wait_s=0, on_busy="skip") as inner:
+            assert inner is outer, f"a case-only respelling of the same file queued behind itself: {inner}"
