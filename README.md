@@ -253,6 +253,14 @@ ranking formula, so results track the PostgreSQL store closely but not identical
 project and one local client: generations, multi-tenant serving, authentication and the fact ledger
 need the PostgreSQL install below. The printed dashboard command reads the same file, read-only.
 
+Lite also checks entity-like query tokens against its global FTS vocabulary by default. An
+absent identifier demotes otherwise trusted hits to `unknown_term` and the search abstains.
+PostgreSQL and constrained searches report this optional check as `unavailable`; their verdicts
+are left unchanged. `RECALL_UNKNOWN_TERM_GATE=0` disables it. This heuristic does not establish
+that an answer is stated in the memory. Lite calibration reports its near-miss coverage separately
+and warns when that coverage is provisional or unavailable. See [the API](docs/API.md) and
+[calibration reference](docs/CALIBRATION.md) for the returned states and limits.
+
 ### With PostgreSQL
 
 For your own corpus, provide PostgreSQL with pgvector and run the guided setup wizard after

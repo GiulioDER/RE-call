@@ -12,6 +12,25 @@ The multimodal specialist follows the same rule. `re-call-multimodal` requires i
 profile identity, labelled query set, and calibration artifact. The operational MM2 result is not
 an official quality calibration and cannot certify the tenant.
 
+## Lite near-miss coverage
+
+Lite auto-calibration adds a report of unknown-entity and in-vocabulary near-miss probes. It
+stores the report with the calibration ID and exposes it through the calibration outcome and
+status. This report does not change the fitted threshold or the certified decision and does not
+claim accuracy on realistic unanswered questions.
+
+Each class includes its probe count, rejected count, display rate and `measured` or `unmeasured`
+state. Fewer than `MIN_PROBES` (10) is unmeasured. In-vocabulary coverage is reported as
+provisional when unmeasured or when the actual rejection fraction is below `PROVISIONAL_BAR`
+(0.90). Rates are rounded for display only; the warning uses the unrounded fraction. Probe
+generation also works without Markdown headings.
+
+Unknown-entity rejection includes the optional Lite vocabulary gate described in
+[API.md](API.md); unsupported or constrained stores report that capability as unavailable.
+Failure of this additional report cannot defeat a successfully saved calibration. An absent or
+unreadable report is explicitly unavailable and provisional for in-vocabulary near-misses.
+Failed fitting, stale calibration and strict trust refusal retain their existing behavior.
+
 ## Binding and lifecycle
 
 `CalibrationArtifactV2` records the tenant and generation IDs, full embedder identity, pipeline and

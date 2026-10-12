@@ -30,6 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Final
 
+from recall.scope import Scope
 from recall.trust_verdicts import decision_state_for
 from recall.types import TrustedHit, TrustedResult, Verdict
 
@@ -71,9 +72,18 @@ def gate_enabled(env: Mapping[str, str] | None = None) -> bool:
     return source.get(GATE_ENV, "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
-def check_unknown_terms(store: Any, query: str, env: Mapping[str, str] | None = None) -> UnknownTermCheck:
+def check_unknown_terms(
+    store: Any, query: str, env: Mapping[str, str] | None = None, *, scope: Scope | None = None
+) -> UnknownTermCheck:
+    """Check the global vocabulary only for an unrestricted request.
+
+    A constrained request cannot safely consult that vocabulary: even its membership bits
+    disclose denied sources. Until stores support scoped vocabulary, report unavailable.
+    """
     if not gate_enabled(env):
         return UnknownTermCheck("disabled")
+    if scope is not None and scope != Scope():
+        return UnknownTermCheck("unavailable")
     lookup = getattr(store, "unknown_terms", None)
     if not callable(lookup):
         return UnknownTermCheck("unavailable")

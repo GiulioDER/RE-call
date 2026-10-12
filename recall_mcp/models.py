@@ -10,6 +10,11 @@ from pydantic import BaseModel, Field
 
 from recall.types import DecisionState
 
+_UNKNOWN_TERM_CHECK_DESCRIPTION = (
+    "Vocabulary check: checked | unavailable | disabled | not_run. Unavailable means "
+    "the backend or constrained scope cannot safely check vocabulary, not that a term "
+    "was absent. This optional check does not replace calibration or trust state."
+)
 
 class SearchHit(BaseModel):
     chunk_id: str | None = Field(default=None, description="Stable retrieved chunk identifier.")
@@ -106,6 +111,10 @@ class SearchResult(BaseModel):
     pipeline_fingerprint: str | None = None
     corpus_fingerprint: str | None = None
     query_set_digest: str | None = None
+    unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
+    unknown_terms: list[str] = Field(
+        default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
+    )
     gap_warning: bool = Field(description="True when the memory probably lacks a relevant answer.")
     stale: bool = Field(
         description="True when the memory index is older than the freshness window."
@@ -282,6 +291,10 @@ class EvidenceResult(BaseModel):
     index_generation: str | None = Field(
         default=None,
         description="Index generation identity, or null when the caller supplied no generation.",
+    )
+    unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
+    unknown_terms: list[str] = Field(
+        default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
     )
     system_prompt: str = Field(description="Fixed library-authored instruction. No corpus input.")
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")

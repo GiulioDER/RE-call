@@ -88,6 +88,10 @@ def near_miss_probes(
     df = _document_frequency(chunks)
     total = len(chunks)
     chunk_words = [set(word_tokens([c])) for c in chunks]
+    word_chunks: dict[str, set[int]] = {}
+    for index, words in enumerate(chunk_words):
+        for word in words:
+            word_chunks.setdefault(word, set()).add(index)
     order = rng.sample(range(total), total)
     in_vocab: list[str] = []
     seen: set[str] = set()
@@ -107,12 +111,21 @@ def near_miss_probes(
             continue
         subject = f"{about} {term}"
         content = {w for w in word_tokens([subject]) if w not in _STOPWORDS}
-        if subject in seen or any(content <= words for words in chunk_words):
+        if subject in seen or _has_joint_chunk(content, word_chunks, total):
             continue
         seen.add(subject)
         template = _ANSWERABLE_TEMPLATES[len(in_vocab) % len(_ANSWERABLE_TEMPLATES)]
         in_vocab.append(template.format(terms=subject))
     return {"unknown_entity": unknown, "in_vocabulary": in_vocab}
+
+
+def _has_joint_chunk(content: set[str], word_chunks: dict[str, set[int]], total: int) -> bool:
+    """Whether one chunk contains every content word, without scanning all chunks."""
+    if not content:
+        return total > 0
+    postings = [word_chunks.get(word, set()) for word in content]
+    postings.sort(key=len)
+    return bool(postings[0].intersection(*postings[1:]))
 
 
 def near_miss_coverage(
@@ -139,7 +152,7 @@ def near_miss_coverage(
     # Unmeasured counts as provisional: a class nobody could test is not a class the certificate
     # covers, and saying nothing about it is how a 0.979 certificate went unwarned.
     report["provisional_in_vocabulary"] = in_vocab["state"] == "unmeasured" or (
-        in_vocab["rate"] is not None and in_vocab["rate"] < PROVISIONAL_BAR
+        in_vocab["n"] > 0 and in_vocab["rejected"] / in_vocab["n"] < PROVISIONAL_BAR
     )
     return report
 

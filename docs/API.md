@@ -29,6 +29,31 @@ Compatibility and upgrade rules for this surface are in [COMPATIBILITY.md](COMPA
 The expected application pattern is to call `trusted_search`, check `result.abstained`, and answer
 only from returned hits whose verdict and provenance satisfy the caller's policy.
 
+## Unknown-term vocabulary check
+
+`trusted_search` checks entity-like query tokens when the store supports a global vocabulary
+lookup. Lite supports it through FTS5; PostgreSQL does not. The heuristic selects tokens of at
+least three characters containing a letter and a digit, all-capital names, or an inner capital.
+Plain words are not checked. An absent token demotes otherwise `ok` hits to `unknown_term` and
+the result abstains. Other verdicts and raw candidate scores retain their existing meaning.
+
+Python results expose `diagnostics.unknown_term_check` and `diagnostics.unknown_terms`. Search
+and evidence JSON, including in-process agent responses, expose those two fields directly:
+
+| State | Meaning |
+|---|---|
+| `checked` | The vocabulary check completed. `unknown_terms` lists absent query tokens. |
+| `unavailable` | The store lacks this capability, or a constrained request cannot safely use its global vocabulary. No lookup of excluded sources occurs and verdicts are unchanged. |
+| `disabled` | `RECALL_UNKNOWN_TERM_GATE` disabled the optional check. |
+| `not_run` | No check was reached or an older payload omitted these additive fields. |
+
+An unavailable vocabulary check is not evidence that a term was absent. Calibration and
+`trust_state` still govern trust; this check does not replace them. Source, folder, facet and
+authorization constraints report `unavailable` until scoped vocabulary checking is supported.
+`RECALL_UNKNOWN_TERM_GATE` defaults to `1`; `0`, `false`, `no`, or `off` disables it, ignoring case
+and surrounding whitespace. An explicitly supplied `env` mapping controls the request even when
+the process environment differs. See [ENVIRONMENT.md](ENVIRONMENT.md).
+
 ## Command Line
 
 Every `recall` subcommand, in `recall --help` order. `tests/test_api_doc_drift.py` diffs this

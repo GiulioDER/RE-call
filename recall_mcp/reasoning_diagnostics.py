@@ -242,16 +242,16 @@ def _source_conditioning_shadow_payload(
     sparse = leg_audit["sparse"]
     if not isinstance(pool, list) or not isinstance(dense, list) or not isinstance(sparse, list):
         raise SourceConditioningArtifactError("shadow candidate traces must be lists")
-    base_selected = select_source_conditioned(
-        artifact,
-        pool,
-        dense,
-        sparse,
-        threshold=float(threshold),
+    # A rejected query cannot acquire an answer by boosting low-confidence candidates.
+    # Keep the raw pool and its verdicts intact for diagnostics and validate the artifact
+    # above even when this query-level gate prevents selection.
+    unknown_term_rejected = bool(baseline.diagnostics.unknown_terms)
+    base_selected = [] if unknown_term_rejected else select_source_conditioned(
+        artifact, pool, dense, sparse, threshold=float(threshold),
     )
     receipts: list[dict[str, object]] = []
     selected = base_selected
-    if policy == "guarded_spare_slot":
+    if policy == "guarded_spare_slot" and not unknown_term_rejected:
         selected, receipts = fill_source_conditioned_spare_slots(
             artifact,
             base_selected,
