@@ -221,6 +221,10 @@ def _spawn(db: Path, log: Path, tag: str, *, lane: str = "write", purpose: str =
         [sys.executable, str(_REPO / "tests" / "lite_lane_worker.py"), str(db), lane, purpose,
          str(hold_s), str(wait_s), str(log), tag, "1" if coalesce else "0", *([str(release)] if release else [])],
         env=env,
+        # From the repository root, whatever the test chdir'd into: under mutmut the worker imports
+        # instrumented code that reads setup.cfg from the working directory, and a worker started
+        # from a test's temporary project died there (CI's mutation job, 2026-10-12).
+        cwd=str(_REPO),
     )
 
 
