@@ -43,6 +43,7 @@ from recall.retrieval_plan import RetrievalPlan, RetrievalPlanResolver
 from recall.federation import FederationConfig
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store
+from recall.lite import LiteWriterBusy
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -2448,10 +2449,11 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             # Re-raises the ORIGINAL exception unchanged. `from` would overwrite its own __cause__.
             raise exc.cause  # noqa: B904
-        except IndexPreflightError:
+        except (IndexPreflightError, LiteWriterBusy):
             # The service marks path, security, filesystem, and size refusals that occur before
             # the indexer's first write. Runtime, database, and later file-read failures remain
-            # reconciliation-required because they may follow a partial commit.
+            # reconciliation-required because they may follow a partial commit. A lite store's
+            # busy write lane refuses before the lane is held, so before any write too.
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
         await _record_mutation_result(
@@ -2557,6 +2559,12 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         state, store, str(root), category, access_context=_access_context(state, store)
                     )
                 )
+        except LiteWriterBusy:
+            # Refused before the lite store's write lane was held, so nothing was indexed: drop
+            # the staged files and the reservation, so the retry the message invites can run.
+            discard_staging(root)
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
         except Exception:  # BROAD-CATCH: fail-closed
             # Legacy mode ONLY discards here: the staged tree fed an ingest that failed, and
             # partially indexed rows become prunable, consistent with "the upload failed".
@@ -2807,17 +2815,22 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             registry.get_shadow(tenant) if registry is not None and tenant is not None else None
         )
         control = registry.control_plane if registry is not None else None
-        with METRICS.timer("recall_tool_latency_ms", tool="forget"):
-            payload = await _to_thread(
-                lambda: forget_memory(
-                    store,
-                    sources,
-                    shadow,
-                    control,
-                    security_policy=state.get("source_security_policy"),
-                    security_context=_access_context(state, store),
-                ).model_dump_json(indent=2)
-            )
+        try:
+            with METRICS.timer("recall_tool_latency_ms", tool="forget"):
+                payload = await _to_thread(
+                    lambda: forget_memory(
+                        store,
+                        sources,
+                        shadow,
+                        control,
+                        security_policy=state.get("source_security_policy"),
+                        security_context=_access_context(state, store),
+                    ).model_dump_json(indent=2)
+                )
+        except LiteWriterBusy:
+            # Refused before the lite store's write lane was held, so nothing was deleted.
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
         await _record_mutation_result(
             state,
             store.tenant,

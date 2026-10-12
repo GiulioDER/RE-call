@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 315
-Cross package edges: 320
-Source tree fingerprint: `ca21532ef88481aae8f6273b7ff2c7dac03c64924275fe4488781f23e4ac1dcb`
+Cross package edges: 321
+Source tree fingerprint: `8f742c9f60f853ed73e609081b937f7b522df0355ed116fa6a6bc231bdd91490`
 
 ## Highest fan in modules
 
@@ -62,7 +62,7 @@ Source tree fingerprint: `ca21532ef88481aae8f6273b7ff2c7dac03c64924275fe4488781f
 | Direct imports | Module |
 |---:|---|
 | 59 | `recall_mcp.service` |
-| 51 | `recall_mcp.server` |
+| 52 | `recall_mcp.server` |
 | 25 | `recall.cli_commands.index_search` |
 | 22 | `recall_mcp.reasoning_engine` |
 | 22 | `recall_mcp.retrieval` |
@@ -354,6 +354,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server` | `recall.generation_store` |
 | `recall_mcp.server` | `recall.index` |
 | `recall_mcp.server` | `recall.lineage` |
+| `recall_mcp.server` | `recall.lite` |
 | `recall_mcp.server` | `recall.observability` |
 | `recall_mcp.server` | `recall.ops.health` |
 | `recall_mcp.server` | `recall.profiles` |
@@ -740,7 +741,7 @@ They are observations, not automatic failures.
 | `recall_mcp.related_api` | 8 | 89 |
 | `recall_mcp.retrieval` | 22 | 88 |
 | `recall_mcp.semantic_graph_cache` | 16 | 83 |
-| `recall_mcp.server` | 51 | 163 |
+| `recall_mcp.server` | 52 | 163 |
 | `recall_mcp.service` | 59 | 149 |
 | `recall_mcp.settings` | 7 | 76 |
 | `recall_mcp.stale_reports_api` | 3 | 87 |
