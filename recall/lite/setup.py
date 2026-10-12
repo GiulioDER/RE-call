@@ -183,6 +183,7 @@ def run_lite_setup(
     from recall.context import context_policy_for_profile
     from recall.embeddings import embedding_profile_id
     from recall.lite.calibration import ensure_calibrated
+    from recall.lite.writer_lock import lite_lane
 
     project_root = project_root.resolve()
     memory = memory.resolve()
@@ -212,13 +213,14 @@ def run_lite_setup(
             raise ValueError("this store was calibrated with another embedder; choose a different --store file")
         # Typed as the Postgres store, as everywhere the shared Indexer takes a lite one: it calls
         # only the indexing methods `LiteStore` implements (see `recall.backends`).
-        with default_cache() as cache:
-            stats = Indexer(
-                cast("PgVectorStore", store), embedder, cache=cache,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            ).index_path(memory)
-        report.files, report.chunks, report.skipped = stats.files, stats.chunks, stats.skipped
-        outcome = ensure_calibrated(store, embedder)
+        with lite_lane(store.path, purpose="setup"):
+            with default_cache() as cache:
+                stats = Indexer(
+                    cast("PgVectorStore", store), embedder, cache=cache,
+                    context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                ).index_path(memory)
+            report.files, report.chunks, report.skipped = stats.files, stats.chunks, stats.skipped
+            outcome = ensure_calibrated(store, embedder)
         report.calibration, report.calibration_reason = outcome.status.value, outcome.reason
     if register:
         from recall.wizard.wiring import ServerBlock, register_local_scope

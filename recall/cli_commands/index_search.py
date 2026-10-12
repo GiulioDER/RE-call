@@ -23,8 +23,8 @@ from recall.index import (
 from recall.index_lock import ConcurrentIndex
 from recall.retriever import DocumentExpansionPolicy
 from recall.scope import Scope
-from recall.backends import lite_route_refusal, open_legacy_store
-from recall.lite import LiteStore
+from recall.backends import lite_route_refusal, open_legacy_store, write_session
+from recall.lite import LiteStore, LiteWriterBusy
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
@@ -330,41 +330,47 @@ def _cmd_index(args: argparse.Namespace) -> None:
         # Cached by default: re-indexing a corpus is the common case, most of a corpus is
         # unchanged between runs, and an unchanged chunk has one right vector. `RECALL_EMBED_CACHE`
         # names another path or switches it off; see `recall.cache.default_cache_path`.
-        with default_cache() as cache:
-            indexer = Indexer(
-                store,
-                embedder,
-                chunker=chunker,
-                cache=cache,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-                allow_prune=args.allow_prune,
-                project=args.project,
-                indexed_commit=commit,
-                batch_chunks=args.batch_chunks,
-                security_policy=security_policy,
-                security_context=security_context,
-            )
-            try:
-                stats = indexer.index_path(args.path, glob=args.glob)
-            except PruneGuardTripped as exc:
-                # The message carries the recovery instructions; a traceback would bury them.
-                raise SystemExit(str(exc)) from exc
-            except ConcurrentIndex as exc:
-                # Same reasoning: this is an expected outcome of two sessions closing at once,
-                # not a defect, and its message names the holder and what to do about it.
-                raise SystemExit(str(exc)) from exc
-        # `files` counts what was RE-indexed, not what is in the index, so an unchanged
-        # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
-        # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
-        # reporting it only through a log record meant a deletion could happen in silence.
-        print(_index_summary(stats))
-        if isinstance(store, LiteStore):
-            # A lite install has nobody to run a calibration by hand, so indexing fits one
-            # whenever the corpus changed, and says whether strict search can now answer.
-            from recall.lite.calibration import ensure_calibrated
+        # A lite file's write lane is held for the whole run, calibration included, so two
+        # sessions indexing one file take turns (`recall.lite.writer_lock`); Postgres has its own.
+        try:
+            with write_session(store, "index"):
+                with default_cache() as cache:
+                    indexer = Indexer(
+                        store,
+                        embedder,
+                        chunker=chunker,
+                        cache=cache,
+                        context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                        allow_prune=args.allow_prune,
+                        project=args.project,
+                        indexed_commit=commit,
+                        batch_chunks=args.batch_chunks,
+                        security_policy=security_policy,
+                        security_context=security_context,
+                    )
+                    try:
+                        stats = indexer.index_path(args.path, glob=args.glob)
+                    except PruneGuardTripped as exc:
+                        # The message carries the recovery instructions; a traceback would bury them.
+                        raise SystemExit(str(exc)) from exc
+                    except ConcurrentIndex as exc:
+                        # Same reasoning: this is an expected outcome of two sessions closing at once,
+                        # not a defect, and its message names the holder and what to do about it.
+                        raise SystemExit(str(exc)) from exc
+                # `files` counts what was RE-indexed, not what is in the index, so an unchanged
+                # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
+                # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
+                # reporting it only through a log record meant a deletion could happen in silence.
+                print(_index_summary(stats))
+                if isinstance(store, LiteStore):
+                    # A lite install has nobody to run a calibration by hand, so indexing fits one
+                    # whenever the corpus changed, and says whether strict search can now answer.
+                    from recall.lite.calibration import ensure_calibrated
 
-            outcome = ensure_calibrated(store, embedder)
-            print(f"calibration: {outcome.status.value}: {outcome.reason}")
+                    outcome = ensure_calibrated(store, embedder)
+                    print(f"calibration: {outcome.status.value}: {outcome.reason}")
+        except LiteWriterBusy as exc:
+            raise SystemExit(str(exc)) from exc
 
 
 def _cmd_forget(args: argparse.Namespace) -> None:

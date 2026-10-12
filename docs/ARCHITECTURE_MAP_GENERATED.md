@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 315
-Cross package edges: 317
-Source tree fingerprint: `3c4cf0cdf0b958fdd0035bcf59e5fdd4d7c02cf7d04aec5fdd649a6a0bfab6e8`
+Cross package edges: 320
+Source tree fingerprint: `cc67fc225fe28cd5ea91113c1106ee973f040caced8340349f5d4ea893dad949`
 
 ## Highest fan in modules
 
@@ -18,7 +18,7 @@ Source tree fingerprint: `3c4cf0cdf0b958fdd0035bcf59e5fdd4d7c02cf7d04aec5fdd649a
 |---:|---|
 | 164 | `recall_mcp.codex_server` |
 | 163 | `recall_mcp.server` |
-| 148 | `recall_mcp.service` |
+| 149 | `recall_mcp.service` |
 | 140 | `recall.cli_commands.setup_wizard` |
 | 130 | `recall.desktop.main` |
 | 126 | `recall.cli_commands.dashboard_cmd` |
@@ -32,9 +32,9 @@ Source tree fingerprint: `3c4cf0cdf0b958fdd0035bcf59e5fdd4d7c02cf7d04aec5fdd649a
 | 117 | `recall.wizard.headless` |
 | 117 | `recall.wizard.state` |
 | 110 | `recall.wizard.uninstall` |
-| 107 | `recall_agent` |
-| 106 | `recall_agent._sdk` |
-| 106 | `recall_agent.memory` |
+| 108 | `recall_agent` |
+| 107 | `recall_agent._sdk` |
+| 107 | `recall_agent.memory` |
 | 104 | `recall_mcp.reasoning_engine` |
 | 102 | `recall.dashboard.activity` |
 | 102 | `recall_mcp.graph_first_api` |
@@ -74,11 +74,11 @@ Source tree fingerprint: `3c4cf0cdf0b958fdd0035bcf59e5fdd4d7c02cf7d04aec5fdd649a
 | 15 | `recall.index` |
 | 15 | `recall.wizard.headless` |
 | 15 | `recall_mcp.graph_first_api` |
+| 15 | `recall_mcp.indexing` |
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.cli_commands.setup_wizard` |
 | 14 | `recall.dashboard.server` |
 | 14 | `recall.eval.promotion.__main__` |
-| 14 | `recall_mcp.indexing` |
 | 14 | `recall_mcp.provenance` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
 | 13 | `recall.eval.labelled` |
@@ -98,9 +98,9 @@ Source tree fingerprint: `3c4cf0cdf0b958fdd0035bcf59e5fdd4d7c02cf7d04aec5fdd649a
 | 10 | `recall.integrations.langchain` |
 | 10 | `recall.integrations.llamaindex` |
 | 10 | `recall.lite.calibration` |
+| 10 | `recall.lite.setup` |
 | 10 | `recall.setup` |
 | 9 | `recall.cli_commands._shared` |
-| 9 | `recall.desktop.main` |
 
 ## Cross package edges
 
@@ -180,6 +180,7 @@ They are observations, not automatic failures.
 | `recall_mcp.generation_admin` | `recall.embeddings` |
 | `recall_mcp.generation_admin` | `recall.lite` |
 | `recall_mcp.generation_admin` | `recall.lite.calibration` |
+| `recall_mcp.generation_admin` | `recall.lite.writer_lock` |
 | `recall_mcp.generation_admin` | `recall.security_policy` |
 | `recall_mcp.generation_admin` | `recall.store` |
 | `recall_mcp.graph_expansion` | `recall.calibration` |
@@ -206,6 +207,7 @@ They are observations, not automatic failures.
 | `recall_mcp.graph_projection` | `recall.semantic_graph` |
 | `recall_mcp.graph_projection` | `recall.store` |
 | `recall_mcp.indexing` | `recall._env` |
+| `recall_mcp.indexing` | `recall.backends` |
 | `recall_mcp.indexing` | `recall.cache` |
 | `recall_mcp.indexing` | `recall.context` |
 | `recall_mcp.indexing` | `recall.control_plane` |
@@ -218,6 +220,7 @@ They are observations, not automatic failures.
 | `recall_mcp.indexing` | `recall.runtime_route` |
 | `recall_mcp.indexing` | `recall.security_policy` |
 | `recall_mcp.indexing` | `recall.store` |
+| `recall_mcp.lifecycle` | `recall.backends` |
 | `recall_mcp.lifecycle` | `recall.control_plane` |
 | `recall_mcp.lifecycle` | `recall.current_state` |
 | `recall_mcp.lifecycle` | `recall.guards` |
@@ -573,7 +576,7 @@ They are observations, not automatic failures.
 | `recall.lite` | 2 | 70 |
 | `recall.lite.calibration` | 10 | 68 |
 | `recall.lite.inspect` | 2 | 69 |
-| `recall.lite.setup` | 9 | 91 |
+| `recall.lite.setup` | 10 | 91 |
 | `recall.lite.store` | 6 | 68 |
 | `recall.lite.writer_lock` | 1 | 69 |
 | `recall.manifest` | 3 | 14 |
@@ -685,10 +688,10 @@ They are observations, not automatic failures.
 | `recall.wizard.state` | 3 | 117 |
 | `recall.wizard.uninstall` | 4 | 110 |
 | `recall.wizard.wiring` | 4 | 72 |
-| `recall_agent` | 1 | 107 |
+| `recall_agent` | 1 | 108 |
 | `recall_agent._descriptions` | 0 | 0 |
-| `recall_agent._sdk` | 2 | 106 |
-| `recall_agent.memory` | 12 | 106 |
+| `recall_agent._sdk` | 2 | 107 |
+| `recall_agent.memory` | 12 | 107 |
 | `recall_agent.rendering` | 2 | 54 |
 | `recall_consistency` | 0 | 0 |
 | `recall_consistency.__main__` | 8 | 76 |
@@ -718,12 +721,12 @@ They are observations, not automatic failures.
 | `recall_mcp.evidence_cards` | 3 | 28 |
 | `recall_mcp.factories` | 6 | 16 |
 | `recall_mcp.federation_adapter` | 9 | 90 |
-| `recall_mcp.generation_admin` | 7 | 89 |
+| `recall_mcp.generation_admin` | 8 | 89 |
 | `recall_mcp.graph_expansion` | 7 | 79 |
 | `recall_mcp.graph_first_api` | 15 | 102 |
 | `recall_mcp.graph_projection` | 6 | 34 |
-| `recall_mcp.indexing` | 14 | 73 |
-| `recall_mcp.lifecycle` | 8 | 32 |
+| `recall_mcp.indexing` | 15 | 74 |
+| `recall_mcp.lifecycle` | 9 | 76 |
 | `recall_mcp.limits` | 3 | 3 |
 | `recall_mcp.models` | 1 | 2 |
 | `recall_mcp.oidc` | 4 | 27 |
@@ -738,7 +741,7 @@ They are observations, not automatic failures.
 | `recall_mcp.retrieval` | 22 | 88 |
 | `recall_mcp.semantic_graph_cache` | 16 | 83 |
 | `recall_mcp.server` | 51 | 163 |
-| `recall_mcp.service` | 59 | 148 |
+| `recall_mcp.service` | 59 | 149 |
 | `recall_mcp.settings` | 7 | 76 |
 | `recall_mcp.stale_reports_api` | 3 | 87 |
 | `recall_mcp.status` | 5 | 71 |

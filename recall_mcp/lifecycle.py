@@ -106,7 +106,27 @@ def forget_memory(
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
 ) -> ForgetResult:
-    """Permanently delete every indexed chunk for the given sources."""
+    """Permanently delete every indexed chunk for the given sources.
+
+    On a lite store the resolve and the delete hold the file's write lane (`recall.lite.writer_lock`).
+    """
+    from recall.backends import write_session
+
+    with write_session(store, "forget"):
+        return _forget_memory_unlocked(
+            store, sources, shadow_store, control_plane, security_policy, security_context
+        )
+
+
+def _forget_memory_unlocked(
+    store: PgVectorStore,
+    sources: list[str],
+    shadow_store: PgVectorStore | None = None,
+    control_plane: ControlPlane | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
+) -> ForgetResult:
+    """`forget_memory` without the lite store's write lane; call `forget_memory`."""
     if not sources:
         raise ValueError("sources must be a non-empty list")
     if len(sources) > MAX_FORGET_SOURCES:

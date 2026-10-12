@@ -1274,6 +1274,7 @@ def ingest_into_serving_store(
             staged_root,
             chunker=chunk_code if category == "code" else chunk_text,
             env=_runtime_env_for(state),
+            lane_purpose="ingest",
         )
     return index_memory(
         store,
@@ -1283,6 +1284,7 @@ def ingest_into_serving_store(
         security_policy=security_policy,
         security_context=access_context,
         env=_runtime_env_for(state),
+        lane_purpose="ingest",
     )
 
 

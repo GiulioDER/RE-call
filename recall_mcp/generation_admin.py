@@ -57,8 +57,11 @@ def run_calibration(
 
     if isinstance(store, LiteStore):
         from recall.lite.calibration import run_report
+        from recall.lite.writer_lock import lite_lane
 
-        return run_report(store, embedder, generation_id, queries)
+        # The refit lane, not the write lane: a fit never blocks a write (see the module).
+        with lite_lane(store.path, lane="refit", purpose="calibrate"):
+            return run_report(store, embedder, generation_id, queries)
     from recall_mcp import desktop_ingest
 
     return desktop_ingest.run_calibration(store, embedder, generation_id, queries)
