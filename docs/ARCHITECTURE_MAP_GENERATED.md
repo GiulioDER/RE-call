@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 307
 Cross package edges: 317
-Source tree fingerprint: `2020303a5c9e61e5031cc512c1ca7f9f2715c1bfc4dd81839dd232dba4c78d92`
+Source tree fingerprint: `b7a3a0474270b896c802e0f2faa8583d6712f5c3573b71da2def53efe6e9d764`
 
 ## Highest fan in modules
 
@@ -85,12 +85,12 @@ Source tree fingerprint: `2020303a5c9e61e5031cc512c1ca7f9f2715c1bfc4dd81839dd232
 | 13 | `recall_mcp.desktop_ingest` |
 | 13 | `recall_mcp.reasoning_api` |
 | 12 | `recall.cli_commands.extract_rewrite` |
+| 12 | `recall.dashboard.server` |
 | 12 | `recall.eval.harness` |
 | 12 | `recall.store` |
 | 12 | `recall_agent.memory` |
 | 11 | `recall.cli_commands.generation_cmd` |
 | 11 | `recall.cli_commands.reasoning_cmd` |
-| 11 | `recall.dashboard.server` |
 | 11 | `recall.desktop.ui` |
 | 11 | `recall.doctor` |
 | 11 | `recall.generation_store` |
@@ -481,7 +481,7 @@ They are observations, not automatic failures.
 | `recall.dashboard.lite_db` | 5 | 93 |
 | `recall.dashboard.markdown` | 0 | 0 |
 | `recall.dashboard.review` | 8 | 94 |
-| `recall.dashboard.server` | 11 | 100 |
+| `recall.dashboard.server` | 12 | 100 |
 | `recall.dashboard.triage` | 5 | 96 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 52 |

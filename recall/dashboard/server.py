@@ -396,6 +396,8 @@ class DashboardApp:
         config_host: str = "",
         config_command: str = "",
         default_tenant: str = DEFAULT_TENANT,
+        recover_lite_tenant: bool = False,
+        auto_reports_tenant: bool = False,
     ) -> None:
         self.root = root.resolve()
         # Where the configuration page looks for registered MCP servers (the client keys them by
@@ -407,6 +409,8 @@ class DashboardApp:
         # The tenant a page shows when none is chosen: `memory` for the shared corpora, the file's
         # own tenant for a lite store, which holds exactly one.
         self.default_tenant = default_tenant
+        self._recover_lite_tenant = recover_lite_tenant
+        self._auto_reports_tenant = auto_reports_tenant
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
         self.db = db
@@ -422,6 +426,27 @@ class DashboardApp:
         self._corpus_graph_lock = threading.Lock()
 
     # ------------------------------------------------------------------ tenants (database)
+
+    def _resolve_pending_lite_tenant(self) -> None:
+        """Recover a file unavailable at startup without widening an explicit report scope."""
+        if not self._recover_lite_tenant or self.db is None or not self.db.lite:
+            return
+        from recall.dashboard.lite_db import file_tenant
+
+        with self._tenant_lock:
+            if not self._recover_lite_tenant:
+                return
+            try:
+                tenant = file_tenant(self.db.dsn)
+            except dbq.DatabaseUnavailable:
+                return
+            if not tenant:
+                return
+            self.default_tenant = tenant
+            if self._auto_reports_tenant:
+                self.reports_tenants = (tenant,)
+            self._tenant_cache = None
+            self._recover_lite_tenant = False
 
     def _current_tenant(self) -> str:
         return getattr(self._request, "tenant", "") or self.default_tenant
@@ -521,6 +546,7 @@ class DashboardApp:
         if not has_cookie:
             return self._error(HTTPStatus.FORBIDDEN, "Open the link `recall dashboard` printed to start a session.")
 
+        self._resolve_pending_lite_tenant()
         chosen = query.get("tenant", "")
         chosen = chosen if TENANT_NAME.fullmatch(chosen) else ""
         remembered = cookies[TENANT_COOKIE].value if TENANT_COOKIE in cookies else ""

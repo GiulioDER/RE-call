@@ -61,20 +61,37 @@ def _payload(raw: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _sources(payload: dict[str, Any], role: str) -> list[str]:
+    """Unsupported containers are not evidence of memo use, even if they are iterable."""
+    values = payload.get(role)
+    return [str(value) for value in values] if isinstance(values, list) else []
+
+
 def _tenant(c: sqlite3.Connection) -> str:
     row = c.execute("SELECT value FROM meta WHERE key = 'tenant'").fetchone()
     return str(row[0]) if row else ""
 
 
-def _events(c: sqlite3.Connection, tenant: str, types: tuple[str, ...]) -> list[tuple[Any, ...]]:
+def _events(
+    c: sqlite3.Connection, tenant: str, types: tuple[str, ...], *,
+    limit: int | None = None, event_id: str | None = None,
+) -> Iterator[tuple[Any, ...]]:
     """`(event_id, event_type, actor, generation_id, source_uri, payload, created_at)`, newest first."""
     if tenant != _tenant(c):
-        return []
-    return c.execute(
+        return
+    sql = (
         "SELECT event_id, event_type, actor, generation_id, source_uri, payload, created_at FROM audit_events "
-        "WHERE event_type IN (SELECT value FROM json_each(?)) ORDER BY created_at DESC, rowid DESC",
-        (json.dumps(list(types)),),
-    ).fetchall()
+        "WHERE event_type IN (SELECT value FROM json_each(?))"
+    )
+    args: list[Any] = [json.dumps(list(types))]
+    if event_id is not None:
+        sql += " AND event_id = ?"
+        args.append(event_id)
+    sql += " ORDER BY created_at DESC, rowid DESC"
+    if limit is not None and limit >= 0:
+        sql += " LIMIT ?"
+        args.append(limit)
+    yield from c.execute(sql, args)
 
 
 def file_tenant(dsn: str) -> str:
@@ -161,17 +178,25 @@ def _search_row(row: tuple[Any, ...]) -> dict[str, Any]:
 
 
 def searches(dsn: str, tenant: str, limit: int = 100, contains: str = "") -> list[dict[str, Any]]:
-    with connect(dsn) as c:
-        rows = _events(c, tenant, SEARCH_EVENTS)
+    if limit == 0:
+        return []
     needle = contains.casefold()
-    found = [_search_row(r) for r in rows]
-    return [s for s in found if not needle or needle in s["query"].casefold()][:limit]
+    found = []
+    with connect(dsn) as c:
+        for row in _events(c, tenant, SEARCH_EVENTS, limit=limit if not needle else None):
+            item = _search_row(row)
+            if needle and needle not in item["query"].casefold():
+                continue
+            found.append(item)
+            if limit > 0 and len(found) >= limit:
+                break
+    return found[:limit]
 
 
 def search(dsn: str, tenant: str, event_id: str) -> dict[str, Any] | None:
     with connect(dsn) as c:
-        rows = _events(c, tenant, SEARCH_EVENTS)
-    return next((_search_row(r) for r in rows if r[0] == event_id), None)
+        row = next(_events(c, tenant, SEARCH_EVENTS, limit=1, event_id=event_id), None)
+        return _search_row(row) if row is not None else None
 
 
 def control(dsn: str, tenant: str) -> dict[str, Any]:
@@ -186,8 +211,8 @@ def control(dsn: str, tenant: str) -> dict[str, Any]:
         })
 
     with connect(dsn) as c:
-        search_rows = _events(c, tenant, SEARCH_EVENTS)
-        report_rows = _events(c, tenant, (USE_REPORT_EVENT,))
+        search_rows = list(_events(c, tenant, SEARCH_EVENTS))
+        report_rows = list(_events(c, tenant, (USE_REPORT_EVENT,)))
     for _id, event_type, _a, _g, _s, raw, created in search_rows:
         if event_type != "search_decision":
             continue
@@ -199,7 +224,9 @@ def control(dsn: str, tenant: str) -> dict[str, Any]:
                 continue
             seen = best.setdefault(str(hit["source"]), {"rank": rank, "verdicts": set()})
             seen["rank"] = min(seen["rank"], rank)
-            seen["verdicts"].add(hit.get("verdict"))
+            verdict = hit.get("verdict")
+            if isinstance(verdict, str):
+                seen["verdicts"].add(verdict)
         for source, seen in best.items():
             row = memo(source)
             row["retrieved"] += 1
@@ -219,7 +246,7 @@ def control(dsn: str, tenant: str) -> dict[str, Any]:
         if succeeded is True or succeeded is False:
             summary["succeeded" if succeeded else "failed"] += 1
         for role in ("used", "wrong"):
-            for source in payload.get(role) or []:
+            for source in _sources(payload, role):
                 row = memo(str(source))
                 row[role] += 1
                 if role == "used" and effect in ("helped", "no_difference"):
@@ -236,20 +263,22 @@ def control(dsn: str, tenant: str) -> dict[str, Any]:
 
 
 def use_reports(dsn: str, tenant: str, limit: int = 50, source: str = "") -> list[dict[str, Any]]:
-    with connect(dsn) as c:
-        rows = _events(c, tenant, (USE_REPORT_EVENT,))
+    if limit == 0:
+        return []
     out = []
-    for event_id, _type, actor, _g, _s, raw, created in rows:
-        payload = _payload(raw)
-        used = [str(s) for s in payload.get("used") or []]
-        wrong = [str(s) for s in payload.get("wrong") or []]
-        if source and source not in used and source not in wrong:
-            continue
-        out.append({
-            "event_id": event_id, "actor": actor, "created_at": _when(created),
-            "task": str(payload.get("task", "")), "effect": payload.get("effect"), "used": used, "wrong": wrong,
-            "task_succeeded": payload.get("task_succeeded"), "query": payload.get("query"), "note": payload.get("note"),
-        })
+    with connect(dsn) as c:
+        for event_id, _type, actor, _g, _s, raw, created in _events(c, tenant, (USE_REPORT_EVENT,), limit=limit if not source else None):
+            payload = _payload(raw)
+            used, wrong = _sources(payload, "used"), _sources(payload, "wrong")
+            if source and source not in used and source not in wrong:
+                continue
+            out.append({
+                "event_id": event_id, "actor": actor, "created_at": _when(created),
+                "task": str(payload.get("task", "")), "effect": payload.get("effect"), "used": used, "wrong": wrong,
+                "task_succeeded": payload.get("task_succeeded"), "query": payload.get("query"), "note": payload.get("note"),
+            })
+            if limit > 0 and len(out) >= limit:
+                break
     return out[:limit]
 
 
@@ -267,5 +296,5 @@ def top_sources(dsn: str, tenant: str, generation: str, limit: int = 40) -> list
 def stale_reports(dsn: str, tenants: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
     with connect(dsn) as c:
         tenant = _tenant(c)
-        rows = _events(c, tenant, (STALE_REPORT_EVENT,)) if tenant in tenants else []
-    return [stale_row(r[0], tenant, _payload(r[5]), _when(r[6])) for r in rows[:limit]]
+        rows = _events(c, tenant, (STALE_REPORT_EVENT,), limit=limit) if tenant in tenants else []
+        return [stale_row(r[0], tenant, _payload(r[5]), _when(r[6])) for r in rows][:limit]

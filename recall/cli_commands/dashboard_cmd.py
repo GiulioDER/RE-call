@@ -2,8 +2,9 @@
 
 The memo pages are filesystem only, like `recall rewrite`: they read and write the memo files under
 `--root` and their `.recall` sidecar, and never call a model (arbiter proposals are read from its
-cache). The overview and retrieval pages read the corpus database when `--db-dsn-file` names a DSN,
-over a read-only session; `--tunnel HOST` opens an SSH forward to it for the life of the command.
+cache). The database pages read a SQLite store from `RECALL_SERVING_DSN`, then `RECALL_DSN`, or a
+DSN named by `--db-dsn-file`, over a read-only session. PostgreSQL requires the DSN file for its
+SELECT-only role; `--tunnel HOST` opens an SSH forward to it for the life of the command.
 It serves on 127.0.0.1 only, and the session starts from the one link it prints.
 """
 
@@ -48,7 +49,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "--db-dsn-file",
         default=os.environ.get("RECALL_DASHBOARD_DSN_FILE", ""),
         help="a file holding the corpus database DSN, ideally for a SELECT-only role "
-        "(default: RECALL_DASHBOARD_DSN_FILE). Without it the database pages say so.",
+        "(default: RECALL_DASHBOARD_DSN_FILE). Without it, a SQLite store in RECALL_SERVING_DSN, "
+        "then RECALL_DSN, is used; without either, only memo pages are available.",
     )
     parser.add_argument(
         "--tunnel",
@@ -81,7 +83,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         default=None,
         metavar="TENANT",
         help="a tenant whose agent stale reports belong to this folder's review queue; repeat for "
-        "more (default: memory). Reports filed in any other tenant are not shown.",
+        "more (default: the SQLite file's tenant, else memory). "
+        "Reports filed in any other tenant are not shown.",
     )
     parser.set_defaults(func=_cmd_dashboard)
 
@@ -103,6 +106,7 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
             raise SystemExit(2)
     db = _database(args.db_dsn_file)
     default_tenant = DEFAULT_TENANT
+    recover_lite_tenant = False
     if db is not None and db.lite:
         # A lite store is one local file: no tunnel, and its own tenant is the one to show.
         from recall.dashboard.db import DatabaseUnavailable
@@ -114,6 +118,7 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
         try:
             default_tenant = file_tenant(db.dsn) or DEFAULT_TENANT
         except DatabaseUnavailable as exc:
+            recover_lite_tenant = True
             print(f"recall dashboard: {exc}; the database pages will say so until it exists", flush=True)
         if args.reports_tenant is None:
             reports_tenants = (default_tenant,)
@@ -124,6 +129,7 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
     app = DashboardApp(
         root, port=args.port, db=db, reports_tenants=reports_tenants, project_root=Path.cwd(),
         config_host=args.config_host, config_command=args.config_command, default_tenant=default_tenant,
+        recover_lite_tenant=recover_lite_tenant, auto_reports_tenant=args.reports_tenant is None,
     )
     try:
         server = serve(app)
