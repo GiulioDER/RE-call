@@ -105,8 +105,8 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         elif lite:
             from recall.lite.facts import LiteFactLedger
 
-            with _open_lite(args) as store:
-                events = LiteFactLedger(store).current(tenant_id=args.tenant, now=instant)
+            with _open_lite(args) as lite_store:
+                events = LiteFactLedger(lite_store).current(tenant_id=args.tenant, now=instant)
         else:
             events = PostgresFactLedger(args.dsn, tenant_id=args.tenant).current(
                 tenant_id=args.tenant, now=instant
