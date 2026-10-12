@@ -3,6 +3,8 @@
 argv: db lane purpose hold_s wait_s log tag coalesce(0|1) [release_file]
 The holder keeps the lane for hold_s, or until release_file exists when one is given: a fresh
 process takes over a second to start on Windows, so a fixed hold can end before a waiter queues.
+LITE_LANE_START_FILE=<path> makes the worker wait for that file before asking for the lane, so
+several workers can be released at once (see W1).
 LITE_LANE_EQUAL_POLL=1 gives every waiter the same poll interval (see W2).
 Each event is one JSON line appended to `log`: start, acquired, released, busy, coalesced.
 """
@@ -32,6 +34,10 @@ def main() -> None:
             fh.write(json.dumps({"tag": tag, "event": event, "t": time.time()}) + "\n")
 
     emit("start")
+    start_file = os.environ.get("LITE_LANE_START_FILE")
+    if start_file:
+        while not Path(start_file).exists():
+            time.sleep(0.005)
     try:
         with lite_lane(db, lane=lane, purpose=purpose, wait_s=float(wait_s), coalesce=coalesce == "1"):  # type: ignore[arg-type]
             emit("acquired")
