@@ -462,6 +462,11 @@ class MemoryStatsResult(BaseModel):
         "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
         "operator can read them without a scrape endpoint.",
     )
+    refresh: dict | None = Field(
+        default=None,
+        description="Lite store only: the last automatic refresh from the memo folder (outcome, "
+        "reason, counts, calibration status and its reason). Null on any other store.",
+    )
 
 
 class CurrentStateRecordModel(BaseModel):
