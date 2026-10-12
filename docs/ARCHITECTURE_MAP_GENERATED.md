@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 315
+Modules: 317
 Cross package edges: 321
-Source tree fingerprint: `ed841a7b0153a3e988a3f4ac7e4274838b8df313e8cbfe65d4bd0442683ce42e`
+Source tree fingerprint: `35b2ddd23201dca2588bf0859f9f3c245d2a241486ca9b704a7276d6ca4a2fd3`
 
 ## Highest fan in modules
 
@@ -98,9 +98,9 @@ Source tree fingerprint: `ed841a7b0153a3e988a3f4ac7e4274838b8df313e8cbfe65d4bd04
 | 11 | `recall.wizard.pipeline` |
 | 10 | `recall.integrations.langchain` |
 | 10 | `recall.integrations.llamaindex` |
+| 10 | `recall.lite.refresh` |
 | 10 | `recall.lite.setup` |
 | 10 | `recall.setup` |
-| 9 | `recall.cli_commands._shared` |
 
 ## Cross package edges
 
@@ -466,6 +466,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.idempotency_cmd` | 2 | 26 |
 | `recall.cli_commands.index_search` | 26 | 89 |
 | `recall.cli_commands.lint_check` | 7 | 77 |
+| `recall.cli_commands.lite_cmd` | 4 | 73 |
 | `recall.cli_commands.manifest_cmd` | 4 | 40 |
 | `recall.cli_commands.provenance_cmd` | 7 | 93 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 124 |
@@ -577,6 +578,7 @@ They are observations, not automatic failures.
 | `recall.lite` | 2 | 70 |
 | `recall.lite.calibration` | 11 | 69 |
 | `recall.lite.inspect` | 2 | 70 |
+| `recall.lite.refresh` | 10 | 71 |
 | `recall.lite.setup` | 10 | 91 |
 | `recall.lite.store` | 6 | 69 |
 | `recall.lite.writer_lock` | 1 | 69 |
