@@ -211,11 +211,18 @@ def _read_json(path: Path) -> dict[str, object] | None:
 
 
 def _ticket_alive(path: Path) -> bool:
-    """A ticket is live when its creator still holds its lock. Call under the mutex."""
+    """A ticket is live when its creator still holds its lock. Call under the mutex.
+
+    Only a ticket that is GONE is dead. Any other failure to open it (out of descriptors, a
+    scanner's sharing violation on Windows) counts it live for this round: calling it dead would
+    delete a live waiter from the queue, and it would then wait out its whole budget.
+    """
     try:
         fh = open(path, "r+b")  # noqa: SIM115  # closed below on every path
-    except OSError:
+    except FileNotFoundError:
         return False
+    except OSError:
+        return True
     try:
         if _try_lock(fh):
             _unlock(fh)
@@ -323,37 +330,42 @@ def _acquire(
     queue.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
     pid, host = os.getpid(), socket.gethostname()
-    with _mutex(root, lane):
-        live = _live_tickets(root, lane, prune=True)
-        if coalesce:
-            holder = _holder(root, lane, live)
-            for path in live:
-                record = _read_json(path) or {}
-                if path.name != (holder or {}).get("ticket") and record.get("purpose") == purpose:
-                    raise LiteWriterCoalesced(lane, purpose)
-        seq = _next_seq(root, lane)
-        ticket_path = queue / f"{seq:012d}-{pid}.ticket"
-        ticket_fh = _open(ticket_path)
-        if not _try_lock(ticket_fh):  # a new file nobody else can know yet: cannot happen
-            ticket_fh.close()
-            raise LiteStoreError(f"could not lock a new ticket {ticket_path}")
-        record = {"seq": seq, "pid": pid, "host": host, "purpose": purpose, "lane": lane, "enqueued_at": time.time()}
-        ticket_fh.write(json.dumps(record).encode("utf-8"))
-        ticket_fh.flush()
-    lane_fh = _open(root / f"{lane}.lock")
-    poll = POLL_START_S
+    ticket_fh: IO[bytes] | None = None
+    lane_fh: IO[bytes] | None = None
+    ticket_path: Path | None = None
+    # Everything from the ticket's creation on sits inside this try, so a failure at any step
+    # (a full disk on the write, an unopenable lane lock) unlocks and removes the ticket before the
+    # exception leaves, rather than when a retained traceback is finally collected.
     try:
+        with _mutex(root, lane):
+            live = _live_tickets(root, lane, prune=True)
+            if coalesce:
+                holder = _holder(root, lane, live)
+                for path in live:
+                    record = _read_json(path) or {}
+                    if path.name != (holder or {}).get("ticket") and record.get("purpose") == purpose:
+                        raise LiteWriterCoalesced(lane, purpose)
+            seq = _next_seq(root, lane)
+            made = ticket_path = queue / f"{seq:012d}-{pid}.ticket"
+            mine = ticket_fh = _open(made)
+            if not _try_lock(mine):  # a new file nobody else can know yet: cannot happen
+                raise LiteStoreError(f"could not lock a new ticket {made}")
+            record = {"seq": seq, "pid": pid, "host": host, "purpose": purpose, "lane": lane, "enqueued_at": time.time()}
+            mine.write(json.dumps(record).encode("utf-8"))
+            mine.flush()
+        lock = lane_fh = _open(root / f"{lane}.lock")
+        poll = POLL_START_S
         while True:
             with _mutex(root, lane):
                 live = _live_tickets(root, lane, prune=True)
-                position = live.index(ticket_path) + 1 if ticket_path in live else len(live) + 1
-                if position == 1 and _try_lock(lane_fh):
+                position = live.index(made) + 1 if made in live else len(live) + 1
+                if position == 1 and _try_lock(lock):
                     now = time.time()
                     (root / f"{lane}.holder").write_text(
-                        json.dumps({**record, "ticket": ticket_path.name, "since": now}), encoding="utf-8"
+                        json.dumps({**record, "ticket": made.name, "since": now}), encoding="utf-8"
                     )
                     waited = time.monotonic() - started
-                    return (LaneTicket(lane, purpose, pid, host, seq, now, waited), ticket_fh, lane_fh, ticket_path)
+                    return (LaneTicket(lane, purpose, pid, host, seq, now, waited), mine, lock, made)
                 holder = _holder(root, lane, live)
             waited = time.monotonic() - started
             if waited >= budget:
@@ -361,12 +373,15 @@ def _acquire(
             poll = POLL_HEAD_S if position == 1 else min(poll * 2, POLL_MAX_S)
             time.sleep(min(poll, max(0.0, budget - waited)))
     except BaseException:
-        lane_fh.close()
-        with suppress(OSError):
-            _unlock(ticket_fh)
-        ticket_fh.close()
-        with _mutex(root, lane):
-            _remove(ticket_path)
+        if lane_fh is not None:
+            lane_fh.close()
+        if ticket_fh is not None:
+            with suppress(OSError):
+                _unlock(ticket_fh)
+            ticket_fh.close()
+        if ticket_path is not None:
+            with _mutex(root, lane):
+                _remove(ticket_path)
         raise
 
 
