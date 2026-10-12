@@ -17,7 +17,14 @@ EXIT_OK, EXIT_FAILED, EXIT_BUSY = 0, 1, 3
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    p_lite = sub.add_parser("lite", help="the one-file local store: keep it current with its memo folder")
+    p_lite = sub.add_parser(
+        "lite",
+        help="the one-file local store: keep it current with its memo folder",
+        description=(
+            "Commands for the one-file local store that `recall setup --lite` creates. `refresh` brings "
+            "it up to date with its memo folder; the MCP server does the same on its own."
+        ),
+    )
     lite_sub = p_lite.add_subparsers(dest="lite_cmd", required=True)
     p_refresh = lite_sub.add_parser(
         "refresh",
