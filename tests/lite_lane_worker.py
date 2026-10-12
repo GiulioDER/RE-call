@@ -1,6 +1,8 @@
 """Test helper, run as a separate process: take a lite lane, log what happened. Not a test.
 
-argv: db lane purpose hold_s wait_s log tag coalesce(0|1)
+argv: db lane purpose hold_s wait_s log tag coalesce(0|1) [release_file]
+The holder keeps the lane for hold_s, or until release_file exists when one is given: a fresh
+process takes over a second to start on Windows, so a fixed hold can end before a waiter queues.
 Each event is one JSON line appended to `log`: start, acquired, released, busy, coalesced.
 """
 from __future__ import annotations
@@ -8,10 +10,12 @@ from __future__ import annotations
 import json
 import sys
 import time
+from pathlib import Path
 
 
 def main() -> None:
     db, lane, purpose, hold_s, wait_s, log, tag, coalesce = sys.argv[1:9]
+    release = Path(sys.argv[9]) if len(sys.argv) > 9 else None
     from recall.lite.writer_lock import LiteWriterBusy, LiteWriterCoalesced, lite_lane
 
     def emit(event: str) -> None:
@@ -22,7 +26,9 @@ def main() -> None:
     try:
         with lite_lane(db, lane=lane, purpose=purpose, wait_s=float(wait_s), coalesce=coalesce == "1"):  # type: ignore[arg-type]
             emit("acquired")
-            time.sleep(float(hold_s))
+            deadline = time.monotonic() + float(hold_s)
+            while time.monotonic() < deadline and not (release is not None and release.exists()):
+                time.sleep(0.02)
             emit("released")
     except LiteWriterCoalesced:
         emit("coalesced")
