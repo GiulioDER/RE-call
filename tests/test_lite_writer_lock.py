@@ -22,6 +22,7 @@ as a real separate process, so the OS lock, not Python state, is what is tested)
   malformed wait variable, an uncreatable lanes directory); `on_busy="raise"` still raises.
 - P8 on a case-insensitive filesystem, a nested hold through a spelling that differs only in case is
   the same hold (skipped where the filesystem is case-sensitive, since there they are two files).
+- P9 an exception raised in a block that was skipped is not chained to the busy refusal.
 - W12 a released lane passes to the next waiter within a short poll (measured 2026-10-12: a poll
   backing off to 0.5 s left 40 writes of ~0.1 s each taking 16.7 s on Windows, ~12 s of it idle).
 
@@ -61,6 +62,8 @@ Deferred minors, fixed 2026-10-12, each red against the pre-fix code first:
   it): "a case-only respelling of the same file queued behind itself: None". Since this fix,
   reentrancy is keyed on the lanes directory's (device, inode), so P1 holds without `resolve()` and
   M12 no longer turns it red; `resolve()` still gives the lanes directory one absolute path.
+- P9 pre-fix `lite_lane` (`yield None` inside the except clause): "the caller's error was chained to
+  LiteWriterBusy: the lite store's write lane is busy: ...".
 """
 from __future__ import annotations
 
@@ -503,3 +506,19 @@ def test_a_case_only_respelling_is_the_same_hold(db: Path, monkeypatch: pytest.M
     with lite_lane(db, purpose="index", wait_s=0) as outer:
         with lite_lane(other, purpose="index", wait_s=0, on_busy="skip") as inner:
             assert inner is outer, f"a case-only respelling of the same file queued behind itself: {inner}"
+
+
+def test_an_error_in_a_skipped_block_stands_alone(db: Path) -> None:
+    """P9: the caller's own error must read as its own, not as raised "during handling of"
+    LiteWriterBusy, which sends whoever reads the traceback after the lock instead."""
+    release, thread = _hold_in_thread(db)
+    try:
+        with pytest.raises(RuntimeError) as failed:
+            with lite_lane(db, purpose="ingest", wait_s=0, on_busy="skip") as ticket:
+                assert ticket is None
+                raise RuntimeError("the caller's own failure")
+    finally:
+        release.set()
+        thread.join(5)
+    context = failed.value.__context__
+    assert context is None, f"the caller's error was chained to {type(context).__name__}: {context}"

@@ -337,6 +337,7 @@ def lite_lane(
         raise LaneOrderError(
             f"this thread holds the refit lane of {root} and asked for the write lane; take write first"
         )
+    skipped = False
     try:
         budget = _wait_default(lane) if wait_s is None else max(0.0, wait_s)
         acquired = _acquire(root, lane, purpose, budget, coalesce, on_queued)
@@ -344,8 +345,7 @@ def lite_lane(
         if on_busy == "raise":
             raise
         _log.info("lite %s lane not taken for %s: %s", lane, purpose, exc)
-        yield None
-        return
+        skipped = True
     except (LiteStoreError, OSError) as exc:
         # The lane could not even be attempted (a malformed wait variable, an uncreatable lanes
         # directory, a mutex nobody releases). "skip" promises the caller no exception from the
@@ -353,6 +353,10 @@ def lite_lane(
         if on_busy == "raise":
             raise
         _log.warning("lite %s lane could not be attempted for %s: %s", lane, purpose, exc)
+        skipped = True
+    if skipped:
+        # Yielded outside the except clauses, so an error from the caller's block is its own and
+        # not chained "during handling of" the refusal.
         yield None
         return
     ticket, ticket_fh, lane_fh, ticket_path = acquired
