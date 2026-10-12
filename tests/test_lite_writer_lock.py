@@ -16,7 +16,21 @@ as a real separate process, so the OS lock, not Python state, is what is tested)
 - W12 a released lane passes to the next waiter within a short poll (measured 2026-10-12: a poll
   backing off to 0.5 s left 40 writes of ~0.1 s each taking 16.7 s on Windows, ~12 s of it idle).
 
-Red proof: see the end of this docstring (filled in when run).
+Red proof, 2026-10-12, each mutation alone, run on Linux, failing in the named assertion, then
+restored byte for byte and green (W2 needed equal polling first: M2 survived the original test):
+- M1 (W1) `_acquire`: `position == 1 and _try_lock(lane_fh)` replaced by `True` (no head check, no lock); `test_two_processes_never_hold_the_write_lane_together`: "AssertionError: two processes held the write lane at once: [(1791813168.3088408, 1791813168.71447), (179181316..."
+- M2 (W2) `_acquire`: the head check dropped, any waiter tries the lane lock; `test_waiters_acquire_in_arrival_order`: "AssertionError: waiters were not served in arrival order: ['b', 'd', 'c', 'f', 'e']"
+- M3 (W3) `_live_tickets`: every ticket counted live, so dead ones are never pruned; `test_a_killed_waiter_is_pruned_without_a_timeout`: "AssertionError: the next waiter never acquired: [{'tag': 'a', 'event': 'start', 't': 1791813278.4855647}, {'ta..."
+- M4 (W4) `_acquire`: also requires no `<lane>.holder` file (trusting the file over the lock); `test_a_killed_holder_releases_the_lane`: "AssertionError: a dead holder kept the lane: [{'tag': 'a', 'event': 'start', 't': 1791813342.2527637}, {'tag':..."
+- M5 (W5) `_acquire`: the deadline ignored (`budget + 3600`); `test_wait_zero_reports_busy_and_skip_yields_none`: "Failed: acquired a lane another thread holds"
+- M6 (W6) coalesce: the holder no longer excluded; `test_coalesce_only_on_a_same_purpose_waiter`: "AssertionError: a same-purpose HOLDER coalesced a caller"
+- M7 (W6) coalesce: the purpose comparison dropped; `test_coalesce_only_on_a_same_purpose_waiter`: "AssertionError: another purpose coalesced"
+- M8 (W7) `lite_lane`: the reentrant branch disabled; `test_nesting_is_reentrant_and_another_thread_waits`: "AssertionError: nesting in one thread did not reuse its ticket: None"
+- M9 (W8) `lite_lane_status`: tries the lane lock before reading; `test_status_touches_no_lane_lock`: "AssertionError: status tried a lane lock: ['/tmp/pytest-of-<user>/pytest-1859/test_status_touches_no_lane_lo0/..."
+- M10 (W9) `_acquire`: every lane opens `write.lock`; `test_lanes_are_independent_and_write_inside_refit_is_refused`: "AssertionError: a held write lane blocked the refit lane"
+- M11 (W9) `lite_lane`: the `LaneOrderError` check removed; `test_lanes_are_independent_and_write_inside_refit_is_refused`: "Failed: DID NOT RAISE LaneOrderError"
+- M12 (P1) `lanes_dir`: `.resolve()` dropped; `test_two_spellings_of_one_path_share_a_lane`: "AssertionError: another spelling of the same file queued behind itself: None"
+- M13 (P2) `lite_lane`: release moved out of `finally`; `test_an_exception_in_the_body_releases_the_lane`: "AssertionError: a failed body left its ticket"
 """
 from __future__ import annotations
 
@@ -161,9 +175,11 @@ _REPO = Path(__file__).resolve().parents[1]
 
 def _spawn(db: Path, log: Path, tag: str, *, lane: str = "write", purpose: str = "index",
            hold_s: float = 0.0, wait_s: float = 30.0, coalesce: bool = False,
-           release: Path | None = None) -> subprocess.Popen[bytes]:
+           release: Path | None = None, equal_poll: bool = False) -> subprocess.Popen[bytes]:
     """A real separate process that takes the lane and logs to `log` (see lite_lane_worker)."""
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(_REPO), os.environ.get("PYTHONPATH", "")])}
+    if equal_poll:
+        env["LITE_LANE_EQUAL_POLL"] = "1"
     return subprocess.Popen(
         [sys.executable, str(_REPO / "tests" / "lite_lane_worker.py"), str(db), lane, purpose,
          str(hold_s), str(wait_s), str(log), tag, "1" if coalesce else "0", *([str(release)] if release else [])],
@@ -208,19 +224,21 @@ def test_two_processes_never_hold_the_write_lane_together(db: Path, tmp_path: Pa
 
 
 def test_waiters_acquire_in_arrival_order(db: Path, tmp_path: Path) -> None:
-    """W2."""
+    """W2: five waiters polling at one rate, so only the head check can keep arrival order
+    (by chance, 1 in 120)."""
     log, release = tmp_path / "w2.log", tmp_path / "w2.release"
     holder = _spawn(db, log, "a", hold_s=60, release=release)
     _wait_for(lambda: _at(log, "a", "acquired") is not None)
     procs = [holder]
-    for n, tag in enumerate(["b", "c", "d"], start=1):
-        procs.append(_spawn(db, log, tag, hold_s=0.1))
+    tags = ["b", "c", "d", "e", "f"]
+    for n, tag in enumerate(tags, start=1):
+        procs.append(_spawn(db, log, tag, hold_s=0.1, equal_poll=True))
         _wait_for(lambda n=n: _waiting(db) == n)  # type: ignore[misc]
     release.touch()
     for proc in procs:
         assert proc.wait(60) == 0
-    order = sorted(["b", "c", "d"], key=lambda t: _at(log, t, "acquired") or 0.0)
-    assert order == ["b", "c", "d"], f"waiters were not served in arrival order: {order}"
+    order = sorted(tags, key=lambda t: _at(log, t, "acquired") or 0.0)
+    assert order == tags, f"waiters were not served in arrival order: {order}"
 
 
 def test_a_killed_waiter_is_pruned_without_a_timeout(db: Path, tmp_path: Path) -> None:

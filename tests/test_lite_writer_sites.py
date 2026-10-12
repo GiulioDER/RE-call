@@ -5,7 +5,16 @@
 - W10b `write_session` on any store other than a LiteStore is a no-op that creates no files.
 - W11 a search runs while the write lane is held.
 
-Red proof: see the end of this docstring (filled in when run).
+Red proof, 2026-10-12, each mutation alone, run on Linux, failing in the named assertion, then
+restored byte for byte and green (W2 needed equal polling first: M2 survived the original test):
+- M14 (W10 index) `index_memory`: body called without `write_session`; `test_index_and_forget_report_busy_while_the_lane_is_held`: "AssertionError: {"
+- M15 (W10 forget) `forget_memory`: body called without `write_session`; `test_index_and_forget_report_busy_while_the_lane_is_held`: "AssertionError: {"
+- M16 (W10 CLI) CLI `recall index`: the `write_session` block replaced by `if True:`; `test_cli_index_reports_busy`: "AssertionError: indexed 2 chunks from 2 files"
+- M17 (W10 setup) `run_lite_setup`: the `lite_lane` block replaced by `if True:`; `test_setup_reports_busy`: "Failed: DID NOT RAISE LiteWriterBusy"
+- M18 (W10 calibrate) `generation_admin`: the refit-lane block replaced by `if True:`; `test_calibration_run_reports_busy_on_the_refit_lane`: "AssertionError: {"
+- M19 (W10b) `write_session`: takes a lane for any store with a `path`; `test_write_session_is_a_noop_for_other_stores`: "AssertionError: assert LaneTicket(lane='write', purpose='index', pid=328370, host='<host>', seq=1, acquired_at..."
+- M20 (ingest routing) ingest: `lane_purpose="ingest"` dropped from the legacy call; `test_a_legacy_server_indexes_into_the_legacy_table`: "AssertionError: an ingest took the lite write lane as a plain index, so a queued refresh cannot tell them apar..."
+- M21 (W11) `LiteStore.query_dense` made to take the write lane (control for W11); `test_index_and_forget_report_busy_while_the_lane_is_held`: "AssertionError: a search failed behind the write lane: RAISED LiteWriterBusy: the lite store's write lane is b..."
 """
 from __future__ import annotations
 

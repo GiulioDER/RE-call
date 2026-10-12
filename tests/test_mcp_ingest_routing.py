@@ -99,6 +99,8 @@ def test_a_legacy_server_indexes_into_the_legacy_table(recorder: _Recorder) -> N
     assert recorder.lane_purposes == ["ingest"], (
         "an ingest took the lite write lane as a plain index, so a queued refresh cannot tell them apart"
     )
+    # Red proof 2026-10-12: `lane_purpose="ingest"` dropped from the legacy call in
+    # `recall_mcp.server.ingest_into_serving_store` fails this assertion (M20 of the writer lock).
 
 
 def test_both_branches_chunk_code_as_code(recorder: _Recorder) -> None:
