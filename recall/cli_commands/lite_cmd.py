@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from recall.lite.writer_lock import DEFAULT_WAIT_S, WAIT_ENV
+
 if TYPE_CHECKING:
     from recall.index_budget import IndexBudget
     from recall.security_policy import AccessContext, SourceSecurityPolicy
@@ -38,7 +40,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "Bring a lite store up to date with its memo folder: skip at once when no memo changed, "
             "otherwise index under the store's write lane (a refresh already queued makes this one "
             "unnecessary) and recalibrate. Exit 0 refreshed, unchanged or coalesced; 1 failed; 3 busy. "
-            "With --check: write nothing, exit 0 when current and 1 when a refresh would index something."
+            "With --check: write nothing, exit 0 when current and 1 otherwise (changed, never "
+            "refreshed, or the memo folder or the store missing)."
         ),
     )
     p_refresh.set_defaults(func=_cmd_refresh)
@@ -56,7 +59,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
                            help="accept removing the rows of more than half the indexed memos when "
                                 "their files are gone (the guard refuses it otherwise); never automatic")
     p_refresh.add_argument("--wait", type=float, default=None,
-                           help="seconds to queue for the write lane (default: RECALL_LITE_WRITE_WAIT, 300)")
+                           help=f"seconds to queue for the write lane (default: {WAIT_ENV['write']}, "
+                                f"{DEFAULT_WAIT_S['write']:.0f})")
     p_refresh.add_argument("--check", action="store_true", help="report what a refresh would find; change nothing")
     p_refresh.add_argument("--json", action="store_true", help="print the report as JSON")
 
@@ -130,7 +134,9 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.lite.inspect import inspect_lite_file
     from recall.lite.refresh import policy_key
 
-    db = (args.store or Path.cwd() / ".recall" / "memory.db").resolve()
+    from recall.lite.setup import default_store_path
+
+    db = (args.store or default_store_path(Path.cwd())).resolve()
     roots = _roots(args, db)
     budget = _budget()
     if args.check:

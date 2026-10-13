@@ -27,7 +27,9 @@ then restored and green (12 passed):
 - M11 (R11) `lite_cmd`: `raise SystemExit(EXIT_BUSY)` made `pass`: exit 0, not 3
 - M12 (R12) `recall.index._DEFAULT_INDEX_EXCLUDED_SUFFIXES` without `.json`: "the store's own files moved the snapshot"
 - M13 (R13) `refresh`: the missing-folder check disabled: "a refresh of a missing folder took the write lane"
-  (it survived the first R13, which only asserted the outcome; the in-lane check of R13b caught it)
+  (it survived the first R13, which only asserted the outcome; the in-lane check of R13b caught it).
+  Superseded by the deferred pass (BUG-004): the check is now only under the lane, so R13 no longer
+  asserts that no lane is taken, and M13b covers both tests.
 - M13b (R13b) `_refresh_locked`: the in-lane missing-folder check disabled: outcome `refreshed` over 0 files
 - M14 (R14) `read_state`: `ValueError` not caught: "raised JSONDecodeError"
 
@@ -43,6 +45,21 @@ assertion, then restored and green:
 - MB6 (B6) the minimum of 1 not enforced: "a zero file budget was accepted"
 - MB7 (B7) a malformed budget stops the refresh again (SystemExit): exit -1, no warning
 - MB8 (B8) the budget line rendered only when over: "within it" missing from --check
+
+Deferred pass (CCA run 20261013T090136Z, 2026-10-13), each mutation alone on Linux, red in its own
+assertion, then restored:
+- MD1 (D1, STAKES-003) `refresh_purpose` returns the one shared purpose: "coalesced into another
+  folder's refresh"
+- MD2 (D2, BUG-004) a busy refresh written again: "a busy refresh rewrote the state file outside the lane"
+- MR4 (R4, BUG-004) a coalesced refresh written again: "a coalesced refresh, holding no lane, wrote the
+  state file"
+- MD3 (D3, PERF-005) the unchanged check hashes the corpus again: "the unchanged check loaded the
+  whole corpus"
+- MD3b (D3b, PERF-005) the counter not compared: a deleted source reads `unchanged`
+- MD4 (D4, BUG-007) the racy mark off: the success recorded clean
+- MD4b (D4b, BUG-007 as corrected at L5.5) the window without `abs`: a future-dated memo marks the
+  success racy
+- MD5 (D5, STAKES-005) setup without the context policy: "the first refresh after setup re-embedded 3 memo(s)"
 """
 from __future__ import annotations
 
@@ -137,18 +154,24 @@ def test_a_deleted_memo_is_pruned(store: LiteStore, project: Path) -> None:
 
 
 def test_a_queued_refresh_coalesces_this_one(store: LiteStore, project: Path, tmp_path: Path) -> None:
-    """R4: a real holder, a real queued refresh in another process, then this one."""
+    """R4: a real holder, a real queued refresh of the SAME folder in another process, then this one.
+
+    Changed by the deferred pass: the lane purpose names the folders (STAKES-003), and a coalesced
+    refresh writes nothing, because it holds no lane (BUG-004).
+    """
+    from recall.lite.refresh import refresh_purpose
+
     db = Path(store.path)
+    purpose = refresh_purpose([project / "memory"])
     holder, release = _holder(db, tmp_path)
-    queued = _spawn(db, tmp_path / "q.log", "queued", purpose="refresh", wait_s=60)
+    queued = _spawn(db, tmp_path / "q.log", "queued", purpose=purpose, wait_s=60)
     try:
-        _wait_for(lambda: any(w.get("purpose") == "refresh" for w in lite_lane_status(db).waiters))
+        _wait_for(lambda: any(w.get("purpose") == purpose for w in lite_lane_status(db).waiters))
         started = time.monotonic()
         report = _run(store, project, wait_s=2.0)
         assert report.outcome is Outcome.COALESCED, f"{report.outcome}: {report.reason}"
         assert time.monotonic() - started < 1.5, "a coalesced refresh waited for the lane"
-        assert read_state(db)["last"]["outcome"] == "coalesced"
-        assert read_state(db).get("last_success") is None
+        assert read_state(db) == {}, "a coalesced refresh, holding no lane, wrote the state file"
     finally:
         release.touch()
         holder.wait(30)
@@ -251,18 +274,14 @@ def test_a_folder_holding_the_store_does_not_refresh_forever(project: Path) -> N
 def test_a_missing_folder_fails_and_prunes_nothing(
     store: LiteStore, project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R13."""
+    """R13. Changed by the deferred pass (BUG-004): refused under the lane, where it is recorded."""
     _run(store, project)
     chunks = store.count()
     (project / "memory").rename(project / "memory-moved")
-
-    def no_lane(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a refresh of a missing folder took the write lane")
-
-    monkeypatch.setattr(refresh_mod, "lite_lane", no_lane)
     report = _run(store, project)
     assert report.outcome is Outcome.FAILED and "memory folder not found" in report.reason, report.to_dict()
     assert store.count() == chunks
+    assert read_state(store.path)["last"]["outcome"] == "failed"
 
 
 def test_a_corrupt_state_file_costs_one_refresh(store: LiteStore, project: Path) -> None:
@@ -555,3 +574,98 @@ def test_check_shows_the_budget_when_within_it(project: Path, capsys: pytest.Cap
     LiteStore(db, dim=64).close()
     _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"), "--check")
     assert "budget       within it: 3 of 2000 file(s)" in capsys.readouterr().out
+
+
+
+def test_a_refresh_of_other_folders_does_not_coalesce_this_one(
+    store: LiteStore, project: Path, tmp_path: Path
+) -> None:
+    """D1 (deferred STAKES-003): a queued refresh of another folder is not one that sees these changes."""
+    from recall.lite.refresh import refresh_purpose
+
+    db = Path(store.path)
+    other = tmp_path / "other"
+    other.mkdir()
+    purpose = refresh_purpose([other])
+    holder, release = _holder(db, tmp_path)
+    queued = _spawn(db, tmp_path / "q.log", "queued", purpose=purpose, wait_s=60)
+    try:
+        _wait_for(lambda: any(w.get("purpose") == purpose for w in lite_lane_status(db).waiters))
+        report = _run(store, project, wait_s=0.5)
+        assert report.outcome is Outcome.BUSY, f"coalesced into another folder's refresh: {report.outcome}"
+    finally:
+        release.touch()
+        holder.wait(30)
+        queued.wait(30)
+
+
+def test_a_busy_refresh_writes_nothing(store: LiteStore, project: Path, tmp_path: Path) -> None:
+    """D2 (deferred BUG-004): outside the lane, a busy refresh leaves the state file alone."""
+    _run(store, project)
+    before = read_state(store.path)
+    _write_memos(project / "memory", 1, start=3)
+    holder, release = _holder(Path(store.path), tmp_path)
+    try:
+        report = _run(store, project, wait_s=0)
+    finally:
+        release.touch()
+        holder.wait(30)
+    assert report.outcome is Outcome.BUSY
+    assert read_state(store.path) == before, "a busy refresh rewrote the state file outside the lane"
+
+
+def test_the_unchanged_check_does_not_load_the_corpus(
+    store: LiteStore, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D3 (deferred PERF-005): an unchanged folder is told from the store's counter, not its contents."""
+    _run(store, project)
+
+    def heavy(self: object) -> str:
+        raise AssertionError("the unchanged check loaded the whole corpus")
+
+    monkeypatch.setattr(LiteStore, "lite_generation_id", heavy)
+    assert _run(store, project).outcome is Outcome.UNCHANGED
+
+
+def test_a_write_through_another_path_is_not_missed(store: LiteStore, project: Path) -> None:
+    """D3b (deferred PERF-005): the counter still catches a write the folder does not show."""
+    _run(store, project)
+    store.delete_sources([next(iter(store.iter_chunks())).source])
+    assert _run(store, project).outcome is Outcome.REFRESHED
+
+
+def test_a_fresh_whole_second_mtime_is_never_recorded_clean(store: LiteStore, project: Path) -> None:
+    """D4 (deferred BUG-007): a coarse mtime written just now leaves the success re-checkable."""
+    memo = project / "memory" / "memo-000.md"
+    whole = (time.time_ns() // 1_000_000_000) * 1_000_000_000
+    os.utime(memo, ns=(whole, whole))
+    first = _run(store, project)
+    assert first.outcome is Outcome.REFRESHED
+    assert read_state(store.path)["last_success"]["fingerprint"].endswith(":racy")
+    assert _run(store, project).outcome is not Outcome.UNCHANGED, "a racily clean snapshot was trusted"
+
+
+def test_setup_and_refresh_index_alike(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """D5 (deferred STAKES-005): after `recall setup --lite`, the first refresh re-embeds nothing."""
+    import recall.context as context
+    from recall.context import ContextPolicy
+    from recall.lite.setup import run_lite_setup
+
+    monkeypatch.setattr(context, "context_policy_for_profile", lambda profile: ContextPolicy(mode="document"))
+    report = run_lite_setup(
+        project_root=project, memory=project / "memory", embedder=ContentWordEmbedder(),  # type: ignore[arg-type]
+        embedder_name="test", register=False,
+    )
+    with LiteStore(report.store, dim=DIM) as opened:
+        again = refresh(opened, [project / "memory"], ContentWordEmbedder())  # type: ignore[arg-type]
+    assert again.indexed_files == 0, f"the first refresh after setup re-embedded {again.indexed_files} memo(s)"
+
+
+def test_a_future_dated_memo_does_not_keep_every_snapshot_racy(store: LiteStore, project: Path) -> None:
+    """D4b (deferred BUG-007, found at L5.5): a whole-second mtime far ahead is not "just written"."""
+    memo = project / "memory" / "memo-000.md"
+    ahead = (time.time_ns() // 1_000_000_000 + 86_400) * 1_000_000_000
+    os.utime(memo, ns=(ahead, ahead))
+    assert _run(store, project).outcome is Outcome.REFRESHED
+    assert not read_state(store.path)["last_success"]["fingerprint"].endswith(":racy")
+    assert _run(store, project).outcome is Outcome.UNCHANGED, "a future-dated memo forced a refresh every time"

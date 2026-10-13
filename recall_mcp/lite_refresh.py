@@ -29,11 +29,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from recall.index_budget import IndexBudget, budget_from_env
-from recall.lite.refresh import Outcome, read_state, refresh, snapshot
+from recall.lite import LiteStore
+from recall.lite.refresh import Outcome, Snapshot, read_state, refresh, snapshot
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
-    from recall.lite.store import LiteStore
     from recall.security_policy import AccessContext, SourceSecurityPolicy
 
 __all__ = ["LiteAutoRefresher"]
@@ -47,18 +47,40 @@ DEFAULT_WAIT_S = 3.0
 MIN_BACKOFF_S = 60.0
 MAX_BACKOFF_S = 600.0
 _OFF = frozenset({"0", "false", "off", "no"})
+_ON = frozenset({"", "1", "true", "on", "yes"})
+
+
+def _enabled(env: Mapping[str, str]) -> bool:
+    """RECALL_LITE_AUTO_REFRESH: on unless switched off; an unrecognised value is off, said so.
+
+    Off rather than on for a value it cannot read (CCA ENV-003): somebody who wrote "disable"
+    meant to change the default, and the default is on.
+    """
+    raw = env.get("RECALL_LITE_AUTO_REFRESH", "").strip().lower()
+    if raw in _ON:
+        return True
+    if raw not in _OFF:
+        _log.warning("RECALL_LITE_AUTO_REFRESH=%r is not a boolean (1/0, on/off); the automatic refresh is off", raw)
+    return False
 
 
 def _seconds(env: Mapping[str, str], name: str, default: float) -> float:
+    """A number of seconds from `name`; the default for anything that is not a finite number.
+
+    Capped at `threading.TIMEOUT_MAX`: a longer wait makes `Thread.join` raise OverflowError, which
+    the fail-open check would swallow, so the search would not wait at all (CCA NUM-001).
+    """
     raw = env.get(name, "").strip()
     if not raw:
         return default
     try:
         value = float(raw)
     except ValueError:
-        _log.warning("%s=%r is not a number of seconds; using %s", name, raw, default)
+        value = math.nan
+    if not math.isfinite(value):
+        _log.warning("%s=%r is not a finite number of seconds; using %s", name, raw, default)
         return default
-    return max(0.0, value)
+    return min(max(0.0, value), threading.TIMEOUT_MAX)
 
 
 class LiteAutoRefresher:
@@ -92,6 +114,8 @@ class LiteAutoRefresher:
         self._retry_at = -math.inf
         self._backoff_s = 0.0
         self._failure: str | None = None  # why this server's last refresh failed; None once one succeeds
+        self._pending: Snapshot | None = None  # the check's snapshot, handed to the refresh it starts
+        self._stopped = False
 
     @classmethod
     def from_env(
@@ -108,11 +132,9 @@ class LiteAutoRefresher:
         `security_policy` and `security_context` are the server's source policy and the context its
         own `recall_index` uses; the refresh applies them as that tool does (CCA SEC-001).
         """
-        from recall.lite import LiteStore
-
         if not isinstance(store, LiteStore):
             return None
-        if env.get("RECALL_LITE_AUTO_REFRESH", "").strip().lower() in _OFF:
+        if not _enabled(env):
             return None
         root = env.get("RECALL_INDEX_ROOT", "").strip()
         if not root:
@@ -146,7 +168,8 @@ class LiteAutoRefresher:
                 if now - self._last_check < self._interval_s:
                     return
                 self._last_check = now
-            fingerprint = snapshot(self._roots).fingerprint
+            current = snapshot(self._roots)
+            fingerprint = current.fingerprint
             if fingerprint == self._refreshed:
                 with self._lock:
                     self._failure = None  # back to a snapshot that refreshed: nothing is missing
@@ -156,8 +179,9 @@ class LiteAutoRefresher:
             with self._lock:
                 if fingerprint == self._failed and now < self._retry_at:
                     return
+                self._pending = current  # the refresh this check starts reuses the walk (CCA PERF-004)
             thread, started = self._kick()
-            if started:
+            if thread is not None and started:
                 # Only a refresh this check started is waited for. One already running (queued
                 # behind another writer, or a long first embed) would otherwise stall a search
                 # every interval for as long as it runs (CCA PERF-001).
@@ -185,9 +209,23 @@ class LiteAutoRefresher:
             f"searchable yet: {failure} Run `recall lite refresh --check` for details."
         )
 
-    def _kick(self) -> tuple[threading.Thread, bool]:
+    def stop(self, timeout_s: float = 10.0) -> None:
+        """Start no more refreshes, and let a running one finish before the store closes.
+
+        Called by the server's lifespan before it closes the store (CCA BUG-006): a refresh cut
+        off by the close would record a closed-database FAILED as the last refresh.
+        """
+        with self._lock:
+            self._stopped = True
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout_s)
+
+    def _kick(self) -> tuple[threading.Thread | None, bool]:
         """The refresh thread, started if none is running; and whether this call started it."""
         with self._lock:
+            if self._stopped:
+                return None, False
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._run, name="recall-lite-refresh", daemon=True)
                 self._thread.start()
@@ -195,6 +233,8 @@ class LiteAutoRefresher:
             return self._thread, False
 
     def _run(self) -> None:
+        with self._lock:
+            before, self._pending = self._pending, None
         try:
             # In the background: a server is long-lived, so a refit can outlast this refresh.
             report = refresh(
@@ -205,6 +245,7 @@ class LiteAutoRefresher:
                 security_policy=self._policy,
                 security_context=self._context,
                 budget=self._budget,
+                before=before,
             )
         except Exception as exc:  # BROAD-CATCH: fail-open  # logged; the next check retries
             _log.warning("lite auto refresh failed: %s", exc)

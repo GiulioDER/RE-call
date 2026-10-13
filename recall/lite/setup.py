@@ -220,6 +220,9 @@ def run_lite_setup(
         # Typed as the Postgres store, as everywhere the shared Indexer takes a lite one: it calls
         # only the indexing methods `LiteStore` implements (see `recall.backends`).
         with lite_lane(store.path, purpose="setup", on_queued=on_queued):
+            # The context policy every other indexer of this store uses (the refresh,
+            # recall_index): with a different one the index fingerprints differ, and the first
+            # automatic refresh would re-embed every memo (CCA STAKES-005).
             with default_cache() as cache:
                 stats = Indexer(
                     cast("PgVectorStore", store), embedder, cache=cache,

@@ -28,6 +28,12 @@ Warning tests (2026-10-13), each mutation alone on Linux, red in its own asserti
 - MW4b (W4b) the warning not cleared on a return to the refreshed snapshot: "the warning outlived the
   folder's return to its last good state"
 - MW3b (W3b) the doctor ignores the current snapshot: status `warn` for a failure left behind
+
+Deferred pass (2026-10-13), each mutation alone on Linux, red in its own assertion:
+- MD6 (D6, NUM-001) only NaN rejected: an infinite wait is kept (capped, not the default)
+- MD7 (D7, ENV-003) an unrecognised switch value turns the refresh on: a refresher was built
+- MD8 (D8, PERF-004) the check's snapshot not handed over: "3 walks for one check and the refresh it started"
+- MD9 (D9, BUG-006) `stop` does not wait: "stop returned before the running refresh finished"
 """
 from __future__ import annotations
 
@@ -338,3 +344,63 @@ def test_doctor_does_not_report_a_failure_the_folder_has_left_behind(tmp_path: P
     (root / "memo-003.md").unlink()
     checks = {c.name: c for c in _lite_checks("sqlite:///" + db.as_posix(), tenant="default")}
     assert checks["refresh"].status == "ok", checks["refresh"]
+
+
+
+def test_a_non_finite_wait_falls_back_to_the_default() -> None:
+    """D6 (deferred NUM-001): an infinite wait would make the bounded join raise and be skipped."""
+    from recall_mcp.lite_refresh import DEFAULT_WAIT_S, _seconds
+
+    assert _seconds({"W": "inf"}, "W", DEFAULT_WAIT_S) == DEFAULT_WAIT_S
+    assert _seconds({"W": "1e300"}, "W", DEFAULT_WAIT_S) <= threading.TIMEOUT_MAX
+
+
+def test_an_unreadable_switch_turns_the_refresh_off(setup: tuple[LiteStore, Path, Clock]) -> None:
+    """D7 (deferred ENV-003): "disable" means off, not the default on."""
+    store, root, _clock = setup
+    env = {"RECALL_INDEX_ROOT": str(root), "RECALL_LITE_AUTO_REFRESH": "disable"}
+    assert LiteAutoRefresher.from_env(store, ContentWordEmbedder(), env) is None  # type: ignore[arg-type]
+
+
+def test_the_check_walks_the_folder_once_for_the_refresh_it_starts(
+    setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D8 (deferred PERF-004): the refresh reuses the check's snapshot; only the in-lane one is new."""
+    import recall.lite.refresh as refresh_mod
+
+    store, root, clock = setup
+    walks: list[int] = []
+    real = refresh_mod.snapshot
+
+    def counting(roots: object) -> object:
+        walks.append(1)
+        return real(roots)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(refresh_mod, "snapshot", counting)
+    monkeypatch.setattr(auto, "snapshot", counting)
+    refresher = _refresher(store, root, clock)
+    refresher.before_retrieval()
+    assert len(walks) == 2, f"{len(walks)} walks for one check and the refresh it started"
+
+
+def test_stop_waits_for_a_running_refresh_and_starts_no_more(
+    setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D9 (deferred BUG-006): the lifespan stops the refresher before it closes the store."""
+    store, root, clock = setup
+    release = threading.Event()
+    finished: list[int] = []
+
+    def slow(*args: object, **kwargs: object) -> RefreshReport:
+        release.wait(5)
+        finished.append(1)
+        return RefreshReport(Outcome.REFRESHED, "done", fingerprint="x")
+
+    monkeypatch.setattr(auto, "refresh", slow)
+    refresher = _refresher(store, root, clock)
+    refresher.start()
+    threading.Timer(0.3, release.set).start()
+    refresher.stop(timeout_s=10)
+    assert finished == [1], "stop returned before the running refresh finished"
+    thread, started = refresher._kick()
+    assert (thread, started) == (None, False), "a stopped refresher started another refresh"

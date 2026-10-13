@@ -1506,7 +1506,7 @@
       "readOnlyHint": true,
       "title": "Memory freshness & size"
     },
-    "description": "Report how much memory exists and whether it is stale (freshness check).\n\n`stale` is True when the newest indexed content is older than 2 days.\n\nReturns:\n    JSON of {chunks, newest_indexed_at, stale}.",
+    "description": "Report how much memory exists and whether it is stale (freshness check).\n\n`stale` is True when the newest indexed content is older than 2 days. On a lite store,\n`refresh` holds the last refresh of the memo folder (outcome and reason), which explains a\nmemo that is not found yet.\n\nReturns:\n    JSON of {chunks, newest_indexed_at, stale, metrics, refresh}.",
     "inputSchema": {
       "properties": {},
       "title": "recall_statsArguments",

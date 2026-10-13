@@ -2,14 +2,14 @@
 
 The production memory pipeline runs manifest, build, validate, calibrate, promote and gc on a
 schedule, short-circuits when the corpus is unchanged, reports without changing anything under
-`--check`, and leaves its outcome in a state file. A lite store has one corpus and no generations, so
+`--check`, and leaves its outcome in a state file (here: each run that held the write lane). A lite store has one corpus and no generations, so
 the same ideas map onto less machinery:
 
 | production | lite |
 |---|---|
 | manifest of the memo folders | `snapshot`: (relative path, size, mtime_ns) of every file `index_path` would read |
 | short-circuit when unchanged | the snapshot and the store's corpus equal those the last successful refresh left |
-| `embed.lock` queue | the store's write lane, `lite_lane(..., purpose="refresh", coalesce=True)` |
+| `embed.lock` queue | the store's write lane, `lite_lane(..., purpose=refresh_purpose(roots), coalesce=True)` |
 | build | `Indexer.index_path`, which already skips unchanged content and prunes vanished files |
 | calibrate | `ensure_calibrated` (carry forward, refit when needed) |
 | promote, gc | nothing: one corpus, no generations |
@@ -63,18 +63,49 @@ __all__ = [
     "read_state",
     "refresh",
     "refresh_access_context",
+    "refresh_purpose",
     "snapshot",
     "state_path",
 ]
 
 _log = logging.getLogger(__name__)
 
-#: The write lane purpose; `coalesce=True` matches waiters on it.
+#: The write lane purpose's prefix; `refresh_purpose` adds the folders, so only a refresh of the
+#: same folders coalesces.
 PURPOSE = "refresh"
 STATE_SCHEMA = 1
+#: A whole-second mtime this close to "now" may be followed, within the same tick, by an edit the
+#: stat cannot see (FAT, exFAT, HFS+, some network shares). Such a snapshot is never recorded as
+#: clean (CCA BUG-007).
+_RACY_WINDOW_NS = 2_000_000_000
+
+
+def refresh_purpose(roots: Sequence[str | Path]) -> str:
+    """The write lane purpose for refreshing exactly `roots` (CCA STAKES-003).
+
+    Coalescing matches a waiter by purpose, so a refresh of other folders must never count as one
+    that "will see these changes".
+    """
+    folders = "\x00".join(sorted(str(Path(r).resolve()) for r in roots))
+    return f"{PURPOSE}:{hashlib.sha256(folders.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _missing_reason(missing: Sequence[Path]) -> str:
+    return "memory folder not found: " + ", ".join(str(m) for m in missing)
 
 
 class Outcome(str, enum.Enum):
+    """What a refresh did.
+
+    - `refreshed`: indexed what changed and recalibrated. A cold start below the calibration
+      floor is still `refreshed`; its calibration reason says why trusted answers wait.
+    - `unchanged`: no memo changed since the last success; nothing was taken or written.
+    - `coalesced`: a refresh of the same folders is already queued and will see these changes.
+    - `busy`: the write lane stayed held past the wait.
+    - `failed`: nothing was recorded as current (missing folder, over the budget, denied by the
+      policy, an indexing or calibration error); the reason says which.
+    """
+
     REFRESHED = "refreshed"
     UNCHANGED = "unchanged"
     COALESCED = "coalesced"
@@ -90,6 +121,7 @@ class Snapshot:
     files: dict[Path, list[Path]]
     missing: list[Path]
     total_bytes: int = 0
+    racy: bool = False  # a whole-second mtime within `_RACY_WINDOW_NS` of the walk (CCA BUG-007)
 
     @property
     def count(self) -> int:
@@ -141,6 +173,8 @@ def snapshot(roots: Sequence[str | Path]) -> Snapshot:
     files: dict[Path, list[Path]] = {}
     missing: list[Path] = []
     total_bytes = 0
+    racy = False
+    now_ns = time.time_ns()
     for root in sorted({Path(r).resolve() for r in roots}):
         digest.update(b"root\x00" + str(root).encode("utf-8") + b"\x00")
         if not root.is_dir():
@@ -158,10 +192,14 @@ def snapshot(roots: Sequence[str | Path]) -> Snapshot:
                 continue  # vanished between the walk and the stat; the next snapshot sees it gone
             kept.append(path)
             total_bytes += stat.st_size
+            # Both sides: FAT rounds mtimes up, and a future-dated file must not mark every
+            # snapshot racy for as long as its date stays ahead (deferred pass, L5.5).
+            if stat.st_mtime_ns % 1_000_000_000 == 0 and abs(now_ns - stat.st_mtime_ns) < _RACY_WINDOW_NS:
+                racy = True
             rel = path.relative_to(root).as_posix()
             digest.update(f"{rel}\x00{stat.st_size}:{stat.st_mtime_ns}\x00".encode())
         files[root] = kept
-    return Snapshot(digest.hexdigest(), files, missing, total_bytes)
+    return Snapshot(digest.hexdigest(), files, missing, total_bytes, racy)
 
 
 def over_budget(snap: Snapshot, budget: IndexBudget | None) -> str | None:
@@ -210,6 +248,12 @@ def _write_state(db: Path, document: dict[str, Any]) -> None:
 
 @dataclass
 class RefreshReport:
+    """One refresh: its outcome and reason, what it indexed, and the calibration it left.
+
+    `fingerprint` is the snapshot the outcome is about; `to_dict` is what the state file's `last`
+    and `recall_stats.refresh` carry.
+    """
+
     outcome: Outcome
     reason: str
     fingerprint: str = ""
@@ -264,6 +308,7 @@ def _finish(
     report: RefreshReport,
     *,
     success_generation: str | None = None,
+    corpus_version: int | None = None,
     policy: str | None = None,
 ) -> RefreshReport:
     """Write the state file for this run. `success_generation` marks it the new last success."""
@@ -280,6 +325,7 @@ def _finish(
         document["last_success"] = {
             "fingerprint": report.fingerprint,
             "generation_id": success_generation,
+            "corpus_version": corpus_version,
             "policy": policy,
             "finished_utc": report.finished_utc,
         }
@@ -299,8 +345,12 @@ def refresh(
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
     budget: IndexBudget | None = None,
+    before: Snapshot | None = None,
 ) -> RefreshReport:
     """Bring `store` up to date with `roots`. See the module docstring; never raises on a busy lane.
+
+    `before` is a snapshot of `roots` the caller has just taken (the server's check), so the
+    folder is not walked twice for one decision (CCA PERF-004).
 
     `budget` bounds what an unattended refresh may index (`recall.index_budget`, the rule
     `recall_index` applies): a folder over it is FAILED, nothing indexed or pruned. The server
@@ -319,17 +369,20 @@ def refresh(
     db = Path(store.path).resolve()
     resolved = [Path(r).resolve() for r in roots]
     report = RefreshReport(Outcome.UNCHANGED, "", started_utc=_utc())
-    before = snapshot(resolved)
+    if before is None:
+        before = snapshot(resolved)
     report.fingerprint, report.files_seen = before.fingerprint, before.count
-    if before.missing:
-        report.outcome = Outcome.FAILED
-        report.reason = "memory folder not found: " + ", ".join(str(m) for m in before.missing)
-        return _finish(db, resolved, report)
+    # A missing folder is refused under the lane (`_refresh_locked`), where the refusal is written
+    # safely; nothing outside the lane writes the state file (CCA BUG-004).
     last = read_state(db).get("last_success") or {}
     if (
         not force
+        and not before.missing
         and last.get("fingerprint") == before.fingerprint
-        and last.get("generation_id") == store.lite_generation_id()
+        # The store's write counter, not `lite_generation_id()`: that loads every row and
+        # embedding to hash the corpus, which a scheduled check of an unchanged folder would pay
+        # on every run (CCA PERF-005).
+        and last.get("corpus_version") == store._version()
         and last.get("policy") == key
     ):
         # Nothing is written: this path holds no lane, and rewriting the file here could put back
@@ -339,7 +392,7 @@ def refresh(
         report.finished_utc = _utc()
         return report
     try:
-        with lite_lane(db, lane="write", purpose=PURPOSE, wait_s=wait_s, coalesce=True):
+        with lite_lane(db, lane="write", purpose=refresh_purpose(resolved), wait_s=wait_s, coalesce=True):
             return _refresh_locked(
                 store,
                 db,
@@ -354,11 +407,13 @@ def refresh(
             )
     except LiteWriterCoalesced:
         report.outcome = Outcome.COALESCED
-        report.reason = "a refresh is already queued for this store and will see these changes"
-        return _finish(db, resolved, report)
+        report.reason = "a refresh of these folders is already queued and will see these changes"
     except LiteWriterBusy as exc:
         report.outcome, report.reason, report.holder = Outcome.BUSY, str(exc), exc.holder
-        return _finish(db, resolved, report)
+    # Not written: this path holds no lane (CCA BUG-004). Both are transient, and the caller
+    # reports them; the next refresh records what happened.
+    report.finished_utc = _utc()
+    return report
 
 
 def _refresh_locked(
@@ -386,7 +441,7 @@ def _refresh_locked(
     if current.missing:
         # Gone while this refresh queued. Indexing an empty list would read as "every memo deleted".
         report.outcome = Outcome.FAILED
-        report.reason = "memory folder not found: " + ", ".join(str(m) for m in current.missing)
+        report.reason = _missing_reason(current.missing)
         return _finish(db, roots, report)
     if (refusal := over_budget(current, budget)) is not None:
         # Refused under the lane, never before it: the refusal is written to the state file, and
@@ -432,7 +487,7 @@ def _refresh_locked(
                 report.chunks_written += stats.chunks
                 report.skipped += stats.skipped
                 report.deleted += stats.deleted
-        outcome = _calibrate(store, embedder, background_calibration)
+        calibration = _calibrate(store, embedder, background_calibration)
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"{type(exc).__name__}: {exc}"
@@ -446,13 +501,19 @@ def _refresh_locked(
         return _finish(db, roots, report)
     report.outcome = Outcome.REFRESHED
     report.reason = f"{current.count} file(s) checked in {time.monotonic() - started:.1f}s"
-    report.calibration, report.calibration_reason = outcome.status.value, outcome.reason
+    report.calibration, report.calibration_reason = calibration.status.value, calibration.reason
     report.chunks_total = store.count()
+    if current.racy:
+        # A memo may have been edited after it was read, inside the same coarse mtime tick. Record
+        # the success under a fingerprint no snapshot produces, so the next check refreshes again;
+        # the indexer then skips unchanged files by their content hash (CCA BUG-007).
+        report.fingerprint = current.fingerprint + ":racy"
     return _finish(
         db,
         roots,
         report,
         success_generation=store.lite_generation_id(),
+        corpus_version=store._version(),
         policy=policy_key(security_policy, security_context),
     )
 
@@ -485,7 +546,7 @@ class CheckReport:
 
     def render(self) -> str:
         if self.missing:
-            state = "memory folder not found: " + ", ".join(str(m) for m in self.missing)
+            state = _missing_reason(self.missing)
         elif self.current:
             state = f"current: no memo changed since the last refresh ({self.last_success_utc})"
         elif self.last_success_utc is None:

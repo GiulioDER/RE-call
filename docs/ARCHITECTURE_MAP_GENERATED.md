@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 319
-Cross package edges: 329
-Source tree fingerprint: `81306eff4b8c0f93d987fc264a61b725fae7a76407e922d6bea81f4dbdb02174`
+Cross package edges: 328
+Source tree fingerprint: `2c1b49e7a51b8222c2ba8f7c8ea73299a43db4f2def3483801b2319f2e2c3ffe`
 
 ## Highest fan in modules
 
@@ -48,6 +48,7 @@ Source tree fingerprint: `81306eff4b8c0f93d987fc264a61b725fae7a76407e922d6bea81f
 | 97 | `recall.dashboard.db` |
 | 97 | `recall.dashboard.lite_db` |
 | 95 | `recall.cli_commands.calibration_cmd` |
+| 95 | `recall.cli_commands.lite_cmd` |
 | 93 | `recall.cli_commands.provenance_cmd` |
 | 93 | `recall.wizard.projects` |
 | 91 | `recall.lite.setup` |
@@ -55,7 +56,6 @@ Source tree fingerprint: `81306eff4b8c0f93d987fc264a61b725fae7a76407e922d6bea81f
 | 90 | `recall_mcp.federation_adapter` |
 | 90 | `recall_mcp.provenance` |
 | 89 | `recall.cli_commands.extract_rewrite` |
-| 89 | `recall.cli_commands.index_search` |
 
 ## Modules with the most direct imports
 
@@ -236,7 +236,6 @@ They are observations, not automatic failures.
 | `recall_mcp.lite_refresh` | `recall.index_budget` |
 | `recall_mcp.lite_refresh` | `recall.lite` |
 | `recall_mcp.lite_refresh` | `recall.lite.refresh` |
-| `recall_mcp.lite_refresh` | `recall.lite.store` |
 | `recall_mcp.lite_refresh` | `recall.security_policy` |
 | `recall_mcp.models` | `recall.types` |
 | `recall_mcp.oidc` | `recall._env` |
@@ -474,7 +473,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.idempotency_cmd` | 2 | 26 |
 | `recall.cli_commands.index_search` | 26 | 89 |
 | `recall.cli_commands.lint_check` | 7 | 77 |
-| `recall.cli_commands.lite_cmd` | 6 | 74 |
+| `recall.cli_commands.lite_cmd` | 8 | 95 |
 | `recall.cli_commands.manifest_cmd` | 4 | 40 |
 | `recall.cli_commands.provenance_cmd` | 7 | 93 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 124 |
@@ -740,7 +739,7 @@ They are observations, not automatic failures.
 | `recall_mcp.indexing` | 16 | 75 |
 | `recall_mcp.lifecycle` | 9 | 76 |
 | `recall_mcp.limits` | 3 | 3 |
-| `recall_mcp.lite_refresh` | 6 | 74 |
+| `recall_mcp.lite_refresh` | 5 | 74 |
 | `recall_mcp.models` | 1 | 2 |
 | `recall_mcp.oidc` | 4 | 27 |
 | `recall_mcp.provenance` | 14 | 90 |
