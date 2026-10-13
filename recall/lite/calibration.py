@@ -591,9 +591,20 @@ def _refit_wanted(store: LiteStore) -> bool:
 
 
 def _run_refit(store: LiteStore, embedder: Embedder, job: _RefitJob) -> None:
+    from recall.lite.writer_lock import lite_lane
+
     try:
         for _attempt in range(_MAX_REFIT_ATTEMPTS):
-            job.outcome = auto_calibrate(store, embedder)
+            # `_REFIT_LOCK` dedupes refits inside one process; the file's `refit` lane does it
+            # across processes (two MCP servers writing one store). It is coalescing and skips
+            # rather than raises: a refit already QUEUED will see this write when it starts, and a
+            # lane that cannot be had leaves the store carried or stale until the next write, never
+            # wrong. The re-check inside the lane is what stops a refit that waited behind another
+            # process's fit from fitting the same corpus again.
+            with lite_lane(store.path, lane="refit", purpose="calibrate", coalesce=True, on_busy="skip") as ticket:
+                if ticket is None or not _refit_wanted(store):
+                    return
+                job.outcome = auto_calibrate(store, embedder)
             with _REFIT_LOCK:
                 job.again = False
             if not _refit_wanted(store):
