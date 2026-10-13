@@ -177,8 +177,8 @@ def _cmd_calibration_lite(args: argparse.Namespace) -> None:
     """`recall calibration` on a `sqlite:///` DSN: list, show and export; the rest refused by name."""
     from recall.backends import lite_route_refusal, open_legacy_store
     from recall.calibration_v2 import CalibrationError
-    from recall.lite import LITE_DSN_PREFIX
     from recall.lite import calibration as lite_calibration
+    from recall.lite import lite_dsn_path
     from recall.runtime_route import resolve_runtime_route
 
     route = getattr(args, "_runtime_route", None) or resolve_runtime_route()
@@ -188,11 +188,12 @@ def _cmd_calibration_lite(args: argparse.Namespace) -> None:
     if command not in _LITE_CALIBRATION_COMMANDS:
         raise SystemExit(
             f"recall calibration {command}: not available on a lite store ({args.dsn}). A lite "
-            "store calibrates itself when it is indexed (`recall index`, or recall_calibration_run "
-            "over MCP); generations, carry-forward, drift and labelled query sets need the full "
+            "store calibrates itself when it is indexed (`recall index`, `recall setup --lite`, or "
+            "recall_index over MCP; recall_calibration_run refits it on demand); generations, "
+            "carry-forward, drift and labelled query sets need the full "
             "(PostgreSQL) install. `recall calibration list`, `show` and `export` work here."
         )
-    path = Path(args.dsn[len(LITE_DSN_PREFIX):])
+    path = lite_dsn_path(args.dsn)
     if not path.exists():
         # Nothing calibrated yet, as an empty PostgreSQL table reads; reading must not create it.
         if command == "list":
@@ -223,8 +224,8 @@ def _cmd_calibration_lite(args: argparse.Namespace) -> None:
                 target = lite_calibration.export_artifact(store, args.calibration_id, args.output)
                 print(target)
                 print(
-                    "the artifact alone: a lite store keeps no labelled query set, so this bundle "
-                    "cannot be imported where one is required"
+                    "the artifact alone: a lite store keeps no labelled query set, so no "
+                    "`recall calibration import` accepts this bundle"
                 )
         except CalibrationError as exc:
             raise SystemExit(str(exc)) from exc

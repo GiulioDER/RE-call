@@ -724,6 +724,17 @@ def _require_runtime_embedder(pipeline: PipelineIdentity, embedder: Embedder) ->
         raise CalibrationBindingError(f"{mismatch} in the generation pipeline identity")
 
 
+def write_calibration_bundle(payload: dict[str, Any], path: str | Path) -> Path:
+    """Seal `payload` with its `bundle_checksum` and write it as canonical JSON.
+
+    The one bundle format: `CalibrationRepository.export_bundle` and the lite store's export use it.
+    """
+    payload["bundle_checksum"] = canonical_sha256(payload)
+    target = Path(path)
+    target.write_bytes(canonical_json(payload) + b"\n")
+    return target
+
+
 class CalibrationRepository:
     """Tenant-scoped store of v2 calibration artifacts and their labelled query sets.
 
@@ -1486,11 +1497,7 @@ class CalibrationRepository:
             ).fetchone()
         if row is None:
             raise CalibrationBindingError("calibration query set is missing")
-        payload = {"artifact": artifact.to_dict(), "query_set": row[0]}
-        payload["bundle_checksum"] = canonical_sha256(payload)
-        target = Path(path)
-        target.write_bytes(canonical_json(payload) + b"\n")
-        return target
+        return write_calibration_bundle({"artifact": artifact.to_dict(), "query_set": row[0]}, path)
 
     def import_bundle(self, path: str | Path) -> str:
         raw = Path(path).read_bytes()
