@@ -7,6 +7,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from recall.provenance_controller import (
@@ -19,6 +20,7 @@ from recall.types import AtomicFact, EvidenceCard
 
 if TYPE_CHECKING:
     from recall.lite import LiteStore
+    from recall.store import PgVectorStore
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -217,7 +219,6 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         print(json.dumps(_decision_payload(decision), ensure_ascii=False, indent=2, sort_keys=True))
         return
 
-    from recall_mcp.provenance import apply_fact_memory
     from recall.cli_commands._shared import _make_embedder
     from recall.store import PgVectorStore
 
@@ -233,20 +234,14 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
             )
         with _open_lite(args, embedder.dim) as lite_store:
             # A lite store's generation is the digest of what it holds, so it cannot take one
-            # from the command line; a stale value would only turn every card into a mismatch.
+            # from the command line. `apply_fact_memory` uses the store's own generation, so
+            # without this check a stale --generation would be silently ignored.
             if args.generation != lite_store.generation_id:
                 raise SystemExit(
                     f"provenance apply: --generation {args.generation!r} is not this lite store's; "
                     f"it is {lite_store.generation_id} now (it moves with every write to the store)"
                 )
-            print(json.dumps(apply_fact_memory(
-                cast("PgVectorStore", lite_store),
-                embedder,
-                claim=claim_payload,
-                evidence_card_ids=[card.card_id for card in cards],
-                request_id=args.request_id,
-                writer=args.writer,
-            ), ensure_ascii=False, indent=2, sort_keys=True))
+            _print_applied(cast("PgVectorStore", lite_store), embedder, claim_payload, cards, args)
         return
     with PgVectorStore(
         args.dsn,
@@ -255,11 +250,24 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         tenant=args.tenant,
         generation_id=args.generation,
     ) as store:
-        print(json.dumps(apply_fact_memory(
-            store,
-            embedder,
-            claim=claim_payload,
-            evidence_card_ids=[card.card_id for card in cards],
-            request_id=args.request_id,
-            writer=args.writer,
-        ), ensure_ascii=False, indent=2, sort_keys=True))
+        _print_applied(store, embedder, claim_payload, cards, args)
+
+
+def _print_applied(
+    store: PgVectorStore,
+    embedder: Any,
+    claim_payload: Any,
+    cards: Sequence[EvidenceCard],
+    args: argparse.Namespace,
+) -> None:
+    """Apply the claim through the MCP path on `store` and print its decision, for either backend."""
+    from recall_mcp.provenance import apply_fact_memory
+
+    print(json.dumps(apply_fact_memory(
+        store,
+        embedder,
+        claim=claim_payload,
+        evidence_card_ids=[card.card_id for card in cards],
+        request_id=args.request_id,
+        writer=args.writer,
+    ), ensure_ascii=False, indent=2, sort_keys=True))

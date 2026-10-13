@@ -75,7 +75,9 @@ def test_p1_apply_then_current_on_a_lite_dsn(tmp_path: Path, monkeypatch: pytest
     lite DSN and raises from psycopg, so "apply did not run on the lite store" fails."""
     store = _calibrated_store(tmp_path)
     embedder = ContentWordEmbedder()
-    retrieval = _retrieve_trusted(store, embedder, "user drink tea", None, 5, None, None)
+    retrieval = _retrieve_trusted(
+        store, embedder, "user drink tea", source=None, k=5, calibration=None, policy=None
+    )
     cards = cards_from_trusted_result(retrieval.result)
     assert cards, "the trusted search minted no card for the fact memo"
     register_evidence_cards(cards, store=store)
@@ -110,13 +112,17 @@ def test_p2_a_foreign_generation_is_refused(tmp_path: Path, monkeypatch: pytest.
     assert LiteFactLedger(store).events == (), "the refused apply still wrote to the ledger"
 
 
-def _seed(cards_store: object, ledger: object, tenant: str) -> None:
+def _seed(
+    cards_store: PostgresEvidenceCardStore | LiteEvidenceCardStore,
+    ledger: PostgresFactLedger | LiteFactLedger,
+    tenant: str,
+) -> None:
     tea = card(tenant, TEA, "chunk-tea", "tea.md")
     coffee = card(tenant, COFFEE, "chunk-coffee", "coffee.md", links=("tea.md",))
-    cards_store.put((tea, coffee))  # type: ignore[attr-defined]
+    cards_store.put((tea, coffee))
     for fact, evidence, rid in ((TEA, tea, "r1"), (COFFEE, coffee, "r2")):
         ProvenanceController(
-            tenant_id=tenant, generation_id=GEN, cards=cards_store, ledger=ledger,  # type: ignore[arg-type]
+            tenant_id=tenant, generation_id=GEN, cards=cards_store, ledger=ledger,
             source_digest_for=lambda _c: "digest", now=lambda: NOW, writer="parity",
         ).apply_fact(FactApplicationRequest(fact, (evidence.card_id,), rid))
 
