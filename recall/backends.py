@@ -7,23 +7,86 @@ that subset raises `recall.lite.LiteUnsupported`, which names the call and says 
 install, and reads as absent to `getattr(store, name, None)` probes.
 
 Generations, manifests, the enterprise control plane and learned sparse retrieval exist only on
-Postgres, so a lite DSN on the generation route is refused before anything opens. Deletion by
-source (`recall forget`, `recall_forget`) works on the legacy route. A lite file holds one table,
-so a table other than the default is refused rather than ignored.
+Postgres, so a lite DSN on the generation route is refused before anything opens.
 """
 
 from __future__ import annotations
 
-from contextlib import AbstractContextManager, nullcontext
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
-from recall.lite import LiteStore, LiteStoreError, is_lite_dsn
+from recall.lite import LiteStore, is_lite_dsn
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 
 if TYPE_CHECKING:
+    from argparse import Namespace
+
     from recall.runtime_route import RuntimeRoute
 
-__all__ = ["is_lite_dsn", "lite_route_refusal", "open_legacy_store", "write_session"]
+__all__ = [
+    "LITE_REFUSED",
+    "LITE_SERVED",
+    "is_lite_dsn",
+    "lite_command_refusal",
+    "lite_route_refusal",
+    "open_legacy_store",
+]
+
+#: Every top-level `recall` command that works with a `sqlite:///` DSN, or never opens a store.
+#: `tests/test_lite_cli_refusals.py` fails when a command registered in `recall.cli` is in neither
+#: this set nor `LITE_REFUSED`, so a new command must be classified the day it is added: serve the
+#: lite store (and add it here), or refuse it by name (and add it there). Never neither.
+#: `forget`, `provenance`, `scopes` and `calibration` serve lite through their own pull requests
+#: (#914, #915, #917, #918); until those merge they still crash on a lite DSN.
+LITE_SERVED: frozenset[str] = frozenset(
+    {
+        "index", "search", "forget", "scopes", "doctor", "dashboard", "calibration", "provenance",
+        # Never open the store a DSN names: files, manifests, backups, secrets, client config.
+        "check", "extract", "rewrite", "manifest", "backup", "secret", "uninstall",
+        # Takes its database from its own config file, not from the global DSN.
+        "wizard",
+        # Partly served, partly refused: the refused forms are decided in `lite_command_refusal`.
+        "lint", "schema", "setup", "quickstart",
+    }
+)
+
+#: Commands a lite store cannot serve, with what to do instead. Refused by name before anything
+#: is opened, rather than reaching PostgreSQL with a `sqlite:///` string.
+LITE_REFUSED: dict[str, str] = {
+    "generation": "Generations, manifests and blue-green promotion need the full (PostgreSQL) install.",
+    "graph": "The semantic graph is built per generation and needs the full (PostgreSQL) install.",
+    "reasoning": "The reasoning projection and proposals need the full (PostgreSQL) install.",
+    "idempotency": "Reconciliation repairs the PostgreSQL receipt and Redis replay pair; a lite store keeps receipts in its own file.",
+    "calibrate": "A lite store calibrates itself when it is indexed (`recall index`).",
+    "demo": "The demo indexes into its own PostgreSQL table; try `recall setup --lite` instead.",
+    "code": "Code memory lives in its own table, which a lite file does not have; it needs the full (PostgreSQL) install.",
+}
+
+
+def lite_command_refusal(args: Namespace) -> str | None:
+    """Why the parsed command cannot run on its `sqlite:///` DSN, or None when it can."""
+    command = getattr(args, "cmd", None)
+    dsn = getattr(args, "existing_dsn", None) if command == "quickstart" else getattr(args, "dsn", None)
+    if not is_lite_dsn(dsn):
+        return None
+    if command == "schema":
+        if getattr(args, "schema_cmd", None) == "grants":
+            return None  # prints SQL for an operator to run; opens nothing
+        reason = "A lite file has no migrations; `recall doctor` reports its state."
+    elif command == "lint":
+        if not getattr(args, "semantic", False):
+            return None  # the file checks open no store
+        reason = "Semantic lint compares stored vectors and needs the full (PostgreSQL) install."
+    elif command == "setup":
+        if getattr(args, "lite", False):
+            return None
+        reason = "Run `recall setup --lite`, which builds, calibrates and registers a lite store."
+    elif command == "quickstart":
+        reason = "Quickstart provisions PostgreSQL; `recall setup --lite` is the zero-setup path."
+    elif command in LITE_REFUSED:
+        reason = LITE_REFUSED[command]
+    else:
+        return None
+    return f"recall {command}: not available on a lite store ({dsn}). {reason}"
 
 
 def lite_route_refusal(dsn: str | None, route: RuntimeRoute) -> str | None:
@@ -49,33 +112,9 @@ def open_legacy_store(
     """The legacy-route store for `dsn`: a `LiteStore` for `sqlite:///`, else a `PgVectorStore`.
 
     The pool size and statement timeout apply to Postgres only; a SQLite file has neither.
-
-    A non-default `table` is refused for a lite DSN rather than ignored: a lite file has one table,
-    and ignoring the name ran `recall --table scratch ...`, meant to keep an experiment away from
-    real memory, against the real memory.
     """
     if is_lite_dsn(dsn):
-        if table != DEFAULT_TABLE:
-            raise LiteStoreError(
-                f"a lite store ({dsn}) has one table, '{DEFAULT_TABLE}'; table {table!r} (--table or "
-                f"RECALL_TABLE) cannot be "
-                "honoured. Use another sqlite:/// file to keep an experiment apart from this memory"
-            )
         return cast("PgVectorStore", LiteStore.from_dsn(dsn, dim=dim, tenant=tenant, table=table))
     return PgVectorStore(
         dsn, dim=dim, table=table, tenant=tenant, pool_size=pool_size, statement_timeout_ms=statement_timeout_ms
     )
-
-
-def write_session(store: object, purpose: str, **kwargs: Any) -> AbstractContextManager[Any]:
-    """Hold the lite store's write lane for a write operation; a no-op for any other store.
-
-    Postgres has its own guard on the same operations (`recall.index_lock.single_writer`), so the
-    lane exists only where that one cannot reach. kwargs go to `recall.lite.writer_lock.lite_lane`
-    (lane, wait_s, coalesce, on_busy).
-    """
-    if isinstance(store, LiteStore):
-        from recall.lite.writer_lock import lite_lane
-
-        return lite_lane(store.path, purpose=purpose, **kwargs)
-    return nullcontext(None)
