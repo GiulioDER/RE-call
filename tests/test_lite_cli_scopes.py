@@ -15,6 +15,7 @@ Red proof: recorded in each test's docstring.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -85,3 +86,61 @@ def test_s3_the_generation_route_is_refused(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setenv("RECALL_INDEX_MODE", "generation")
     out = _run(["--dsn", _dsn(tmp_path / "memory.db"), "scopes"])
     assert "has no generations" in out, f"the generation route was not refused: {out}"
+
+
+def _indexed(tmp_path: Path, *flags: str) -> Path:
+    path = tmp_path / "memory.db"
+    _run(["--embedder", "hashing", "--dsn", _dsn(path), *flags, "index", str(_memos(tmp_path / "mem"))])
+    return path
+
+
+def test_s4_a_read_never_writes_a_file_that_is_not_a_lite_store(tmp_path: Path) -> None:
+    """BUG-001 (P1). Red: opening the store at `inspect_lite_file(path).dim or 1` (the code before
+    this fix) writes a lite meta (dim 1) and lite tables into an empty or foreign SQLite file, after
+    which `recall index` at the real width is refused."""
+    empty = tmp_path / "empty.db"
+    empty.write_bytes(b"")
+    foreign = tmp_path / "foreign.db"
+    conn = sqlite3.connect(foreign)
+    conn.execute("CREATE TABLE notes (x TEXT)")
+    conn.commit()
+    conn.close()
+    for path in (empty, foreign):
+        before = path.read_bytes()
+        out = _run(["--dsn", _dsn(path), "scopes"])
+        assert "EXIT" in out and "not a lite store" in out, out
+        assert path.read_bytes() == before, f"listing scopes wrote into {path.name}"
+
+
+def test_s5_a_corrupt_calibration_does_not_stop_the_listing(tmp_path: Path) -> None:
+    """BUG-002. Red: the width came from an inspect that stops at a calibration that does not
+    verify, so the code before this fix opened the store at width 1 and raised."""
+    path = _indexed(tmp_path)
+    conn = sqlite3.connect(path)
+    conn.execute("INSERT INTO calibrations(created_at, payload) VALUES ('2099-01-01', 'garbage')")
+    conn.commit()
+    conn.close()
+    out = _run(["--dsn", _dsn(path), "scopes"])
+    assert "python/tools" in out and "RAISED" not in out, f"a corrupt calibration stopped the listing: {out}"
+
+
+def test_s6_another_tenant_lists_nothing_as_on_postgres(tmp_path: Path) -> None:
+    """BUG-003. PostgreSQL lists nothing for a tenant with no rows; lite now does the same instead
+    of a `LiteStoreError` traceback (the code before this fix)."""
+    path = _indexed(tmp_path, "--tenant", "memory")
+    out = _run(["--dsn", _dsn(path), "scopes"])
+    assert out.strip() == "no folder values in this corpus", f"another tenant did not list nothing: {out}"
+
+
+def test_s7_listing_reads_metadata_not_vectors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-001 and PERF-002. Red: with `LiteStore._load` (every embedding into numpy) and
+    `inspect_lite_file` (every chunk text hashed) made to fail, the code before this fix failed."""
+    path = _indexed(tmp_path)
+
+    def _forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("scopes loaded vectors or hashed the corpus")
+
+    monkeypatch.setattr("recall.lite.store.LiteStore._load", _forbidden)
+    monkeypatch.setattr("recall.lite.inspect.inspect_lite_file", _forbidden)
+    out = _run(["--dsn", _dsn(path), "scopes"])
+    assert "python/tools" in out and "RAISED" not in out, f"scopes did more than read metadata: {out}"

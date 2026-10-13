@@ -547,19 +547,25 @@ class LiteStore:
         )
         return {name: str(digest) for name, digest in rows}
 
-    def _scope_rows(self, dimension: str) -> Iterator[tuple[str | None, _Row]]:
-        """Each row with its value on `dimension`, as `recall.scope.GROUP_SQL` computes it."""
+    def _scope_rows(self, dimension: str) -> Iterator[tuple[str | None, dict[str, Any], str]]:
+        """Each row's value on `dimension`, as `recall.scope.GROUP_SQL` computes it, with its metadata
+        and source.
+
+        Reads `source` and `metadata` only, never the embeddings: `_load()` would build the whole
+        vector matrix and hash every text, in a one-shot CLI process, only to count metadata.
+        """
         if dimension not in ("folder", "facet"):
             raise ValueError(f"unknown scope dimension {dimension!r}; expected one of ['facet', 'folder']")
         key = "file" if dimension == "folder" else FACET_METADATA_KEY
-        for row in self._load().rows:
-            text = _json_text(row.metadata, key)
+        for source, raw in self._metadata_values("SELECT source, metadata FROM chunks"):
+            metadata = json.loads(raw)
+            text = _json_text(metadata, key)
             if text is None:
-                yield None, row
+                yield None, metadata, source
             elif dimension == "folder":
-                yield (re.sub(r"/[^/]*\Z", "", text, count=1) if "/" in text else ""), row
+                yield (re.sub(r"/[^/]*\Z", "", text, count=1) if "/" in text else ""), metadata, source
             else:
-                yield text.lower(), row
+                yield text.lower(), metadata, source
 
     def scope_inventory(self, dimension: str = "folder") -> list[tuple[str, int, int]]:
         """`[(value, chunk_count, document_count)]`, largest first, as `PgVectorStore.scope_inventory`.
@@ -570,12 +576,12 @@ class LiteStore:
         """
         chunks: dict[str, int] = {}
         documents: dict[str, set[str]] = {}
-        for value, row in self._scope_rows(dimension):
+        for value, metadata, source in self._scope_rows(dimension):
             if value is None:
                 continue
             chunks[value] = chunks.get(value, 0) + 1
-            file = _json_text(row.metadata, "file")  # COALESCE(metadata->>'file', source)
-            documents.setdefault(value, set()).add(file if file is not None else row.source)
+            file = _json_text(metadata, "file")  # COALESCE(metadata->>'file', source)
+            documents.setdefault(value, set()).add(file if file is not None else source)
         return sorted(
             ((value, count, len(documents[value])) for value, count in chunks.items()),
             key=lambda item: (-item[1], item[0]),
@@ -583,7 +589,7 @@ class LiteStore:
 
     def scope_undeclared_count(self, dimension: str = "folder") -> int:
         """How many chunks have no value on `dimension`, as `PgVectorStore.scope_undeclared_count`."""
-        return sum(1 for value, _row in self._scope_rows(dimension) if value is None)
+        return sum(1 for value, _metadata, _source in self._scope_rows(dimension) if value is None)
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """`{identifier: [source, ...]}` for identifiers matching a row's `file` or its `source`.
