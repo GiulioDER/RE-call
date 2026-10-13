@@ -5,15 +5,14 @@ It answers the same calls the existing code makes on `PgVectorStore` (`recall.in
 already is, so none of that code changes:
 
 * **Dense leg.** Every embedding sits in one normalised float32 matrix, rebuilt when the corpus
-  changes, and a query is an exact cosine over all of it. At a local memory's size (thousands to
-  tens of thousands of chunks) that costs milliseconds, and an exact search can only match or
-  beat pgvector's approximate HNSW walk.
+  changes, and a query computes exact cosine scores over all of it. There is no approximate
+  nearest-neighbour index.
 * **Keyword leg.** SQLite FTS5 with the Porter stemmer. The query is the OR of its terms minus
   PostgreSQL's English stop words, the shape `PgVectorStore._query_sparse` builds with
   `to_tsvector('english', ...)`. A chunk whose `numeric_values` contain a number from the query
-  ranks first among the matches, which is what the Postgres store's 0.25 boost does in practice
-  (its `ts_rank` values sit far below 0.25). FTS5 ranks with BM25, Postgres with `ts_rank`, so this
-  leg's order can differ; that difference is measured, not assumed away.
+  ranks first among the matches. Within each numeric-priority group, matches are ordered by
+  BM25 with ties broken by chunk id. Postgres uses `ts_rank`, so keyword ordering can differ
+  between the stores.
 * **Writes.** `replace_sources` keeps `first_indexed_at` across a re-index and also deletes by
   `(project, root-relative file)`, as the Postgres store does, so a memo re-indexed from another
   root replaces its old rows instead of landing beside them.
