@@ -6,17 +6,13 @@ rule is copied rather than shared: `Scope.predicate` is SQL, so the lite store e
 scope arms in Python (`recall.lite.store._matches`), and its tests pin the copy to the original.
 """
 
-from recall.lite.store import LITE_DSN_PREFIX, LiteStore, LiteStoreError, LiteUnsupported, is_lite_dsn
-from recall.lite.writer_lock import LiteWriterBusy, LiteWriterCoalesced, lite_lane, lite_lane_status
+from recall.lite.store import (
+    LITE_DSN_PREFIX,
+    LiteStore,
+    LiteStoreError,
+    LiteUnsupported,
+    is_lite_dsn,
+    lite_dsn_path,
+)
 
-__all__ = [
-    "LITE_DSN_PREFIX",
-    "LiteStore",
-    "LiteStoreError",
-    "LiteUnsupported",
-    "LiteWriterBusy",
-    "LiteWriterCoalesced",
-    "is_lite_dsn",
-    "lite_lane",
-    "lite_lane_status",
-]
+__all__ = ["LITE_DSN_PREFIX", "LiteStore", "LiteStoreError", "LiteUnsupported", "is_lite_dsn", "lite_dsn_path"]
