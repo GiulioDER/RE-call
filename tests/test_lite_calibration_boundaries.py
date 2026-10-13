@@ -7,9 +7,11 @@ The three test_a_concurrent_write_never_relabels_a_fit nodes target auto_calibra
 binding. They were written against PR 896's refusal ("corpus changed during calibration");
 since the restack onto PR 911 a fit measures one frozen `calibration_snapshot()` and binds to
 it, because refusing starved a background refit under steady writes. The invariant is the
-same: a fit is never labelled with a corpus it did not measure. Red proof (restack): binding
-`corpus_fingerprint` to `store.corpus_fingerprint()` at save time fails "the fit claims the
-corpus written during it". Scheduling hooks call the real scorer, writer and embedder.
+same: a fit is never labelled with a corpus it did not measure. Red proof (restack, the testbench,
+2026-10-13): `fingerprint = store.corpus_fingerprint()` in place of `snapshot.fingerprint` in
+`auto_calibrate` fails the after_scores and during_embedding nodes with "the fit claims the corpus
+written during it"; the before_save node writes after that line runs, so this mutation cannot
+reach it. Scheduling hooks call the real scorer, writer and embedder.
 The two test_backdated_fit_keeps_selected_model nodes target save_calibration's
 metadata selection and fail "selected threshold accepted another model" through
 the strict consumer. Each exact node must then pass with the source repaired.
