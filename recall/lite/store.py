@@ -31,6 +31,7 @@ import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -118,6 +119,19 @@ class _Matrix:
     rows: list[_Row]
     by_id: dict[str, int]
     vectors: Any  # numpy float32 array, rows normalised
+
+
+def _normalize(vectors: Any) -> Any:
+    """Normalize finite float32 directions without float32 squared-norm loss.
+
+    Accumulate and divide in float64, then retain the store's float32 output.
+    A zero vector remains zero. The final axis supports both rows and queries.
+    """
+    import numpy as np
+
+    wide = np.asarray(vectors, dtype=np.float64)
+    norms = np.linalg.norm(wide, axis=-1, keepdims=True)
+    return (wide / np.where(norms == 0, 1.0, norms)).astype(np.float32)
 
 
 def _matches(scope: Scope, row: _Row) -> bool:
@@ -218,6 +232,24 @@ class LiteStore:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    @contextmanager
+    def _read(self) -> Iterator[None]:
+        """Keep related retrieval reads on one SQLite view under the store lock.
+
+        The first persisted version read pins the view. Reuse a surrounding
+        transaction; only the owner ends this read transaction.
+        """
+        with self._lock:
+            if self._conn.in_transaction:
+                yield
+                return
+            self._conn.execute("BEGIN")
+            try:
+                yield
+            finally:
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
 
     def _create_schema(self) -> None:
         with self._lock:
@@ -383,6 +415,8 @@ class LiteStore:
         return int(removed)
 
     def delete_sources_across(self, tables: list[str], sources: list[str]) -> int:
+        if sources and not tables:
+            raise ValueError("tables must not be empty")
         unknown = [t for t in dict.fromkeys(tables) if t != self._table]
         if unknown:
             raise LiteStoreError(f"a lite store has one table ({self._table!r}); cannot erase sources in {unknown}")
@@ -475,9 +509,7 @@ class LiteStore:
             vectors: Any = np.zeros((len(raw), self._dim), dtype=np.float32)
             for i, r in enumerate(raw):
                 vectors[i] = np.frombuffer(r[5], dtype=np.float32)
-            norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            self._matrix = _Matrix(version, rows, {row.id: i for i, row in enumerate(rows)}, vectors / norms)
+            self._matrix = _Matrix(version, rows, {row.id: i for i, row in enumerate(rows)}, _normalize(vectors))
             return self._matrix
 
     def _query_vector(self, vector: Sequence[float]) -> Any:
@@ -486,12 +518,11 @@ class LiteStore:
         if len(vector) != self._dim:
             raise LiteStoreError(f"query vector is {len(vector)} wide; this store holds {self._dim}")
         q: Any = np.asarray(vector, dtype=np.float32)
-        norm = float(np.linalg.norm(q))
-        return q / norm if norm else q
+        return _normalize(q)
 
     def _hit(self, row: _Row, score: float) -> ScoredChunk:
         return ScoredChunk(
-            chunk=Chunk(id=row.id, source=row.source, text=row.text, metadata=row.metadata),
+            chunk=Chunk(id=row.id, source=row.source, text=row.text, metadata=deepcopy(row.metadata)),
             score=float(score),
             indexed_at=_parse_time(row.indexed_at),
             first_indexed_at=_parse_time(row.first_indexed_at),
@@ -557,28 +588,28 @@ class LiteStore:
         query = _fts_query(text)
         if not query:
             return []
-        matrix = self._load()
-        effective = coerce_scope(scope, source)
-        with self._lock:
+        with self._read():
+            matrix = self._load()
+            effective = coerce_scope(scope, source)
             matched = self._conn.execute(
                 "SELECT rowid, bm25(chunks_fts) FROM chunks_fts WHERE chunks_fts MATCH ?", (query,)
             ).fetchall()
-        by_rowid = {row.rowid: row for row in matrix.rows}
-        numeric = set(_numeric_terms(text))
-        ranked: list[tuple[bool, float, str, _Row]] = []
-        for rowid, bm25 in matched:
-            row = by_rowid.get(rowid)
-            if row is None or not _matches(effective, row):
-                continue
-            values = row.metadata.get("numeric_values")
-            boosted = bool(numeric) and isinstance(values, list) and any(str(v) in numeric for v in values)
-            ranked.append((boosted, -float(bm25), row.id, row))
-        ranked.sort(key=lambda t: (not t[0], -t[1], t[2]))
-        top = ranked[:k]
-        if vec is not None:
-            cosines = self.cosines_for([t[3].id for t in top], vec)
-            return [self._hit(t[3], cosines.get(t[3].id, 0.0)) for t in top]
-        return [self._hit(t[3], t[1] + (1.0 if t[0] else 0.0)) for t in top]
+            by_rowid = {row.rowid: row for row in matrix.rows}
+            numeric = set(_numeric_terms(text))
+            ranked: list[tuple[bool, float, str, _Row]] = []
+            for rowid, bm25 in matched:
+                row = by_rowid.get(rowid)
+                if row is None or not _matches(effective, row):
+                    continue
+                values = row.metadata.get("numeric_values")
+                boosted = bool(numeric) and isinstance(values, list) and any(str(v) in numeric for v in values)
+                ranked.append((boosted, -float(bm25), row.id, row))
+            ranked.sort(key=lambda t: (not t[0], -t[1], t[2]))
+            top = ranked[:k]
+            if vec is not None:
+                q = self._query_vector(vec)
+                return [self._hit(t[3], float(matrix.vectors[matrix.by_id[t[3].id]] @ q)) for t in top]
+            return [self._hit(t[3], t[1] + (1.0 if t[0] else 0.0)) for t in top]
 
     def query_learned_sparse(self, *args: Any, **kwargs: Any) -> list[ScoredChunk]:
         raise LiteStoreError("learned sparse retrieval needs the full (Postgres) install")
