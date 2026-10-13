@@ -235,11 +235,15 @@ class LiteStore:
             self._conn.close()
 
     @contextmanager
-    def _read(self) -> Iterator[None]:
-        """Keep related retrieval reads on one SQLite view under the store lock.
+    def snapshot(self) -> Iterator[None]:
+        """Pin one SQLite read view across retrieval and trust evaluation.
 
-        The first persisted version read pins the view. Reuse a surrounding
-        transaction; only the owner ends this read transaction.
+        The lock protects the shared connection and caches. WAL permits another
+        handle to commit while this reader retains its corpus view. Nested readers
+        reuse the existing transaction; only its owner ends it. `recall.trust` enters
+        it by name around a whole trusted search; `_read` is the same view for the
+        store's own related reads (restack of PR 894's and PR 895's audit fixes, which
+        each added this transaction under a different name).
         """
         with self._lock:
             if self._conn.in_transaction:
@@ -247,10 +251,13 @@ class LiteStore:
                 return
             self._conn.execute("BEGIN")
             try:
+                self._conn.execute("SELECT value FROM meta WHERE key = 'corpus_version'").fetchone()
                 yield
             finally:
                 if self._conn.in_transaction:
                     self._conn.execute("ROLLBACK")
+
+    _read = snapshot
 
     def _create_schema(self) -> None:
         with self._lock:
@@ -469,11 +476,22 @@ class LiteStore:
         """Every chunk by id, fetched `batch_size` rows at a time, as `PgVectorStore.iter_chunks`
         streams them: no embeddings are read and the search matrix is not built.
 
-        One SELECT on a read connection of its own, so the whole iteration sees one snapshot (rows
-        written after it opened are not seen) and no lock is held between rows.
+        Inside a trust snapshot, use that pinned connection. Otherwise one SELECT
+        on an independent reader sees one snapshot without holding the store lock
+        between rows.
         """
         if not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive int")
+        with self._lock:
+            if self._conn.in_transaction:
+                cursor = self._conn.execute("SELECT id, source, text, metadata FROM chunks ORDER BY id")
+                try:
+                    while rows := cursor.fetchmany(batch_size):
+                        for cid, source, text, metadata in rows:
+                            yield Chunk(id=cid, source=source, text=text, metadata=json.loads(metadata))
+                finally:
+                    cursor.close()
+                return
         reader = sqlite3.connect(self.path, timeout=30.0)
         try:
             cursor = reader.execute("SELECT id, source, text, metadata FROM chunks ORDER BY id")
