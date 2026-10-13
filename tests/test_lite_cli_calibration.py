@@ -97,7 +97,7 @@ def test_c3_export_writes_the_artifact_alone(tmp_path: Path) -> None:
     assert str(target) in out and "query set" in out, out
     bundle = json.loads(target.read_text(encoding="utf-8"))
     assert bundle.get("artifact_only") is True and "query_set" not in bundle, f"not flagged artifact-only: {bundle}"
-    artifact = artifact_from_json(json.dumps({k: v for k, v in bundle["artifact"].items()}))
+    artifact = artifact_from_json(json.dumps(bundle["artifact"]))
     assert artifact.calibration_id == second
 
 
@@ -205,3 +205,48 @@ def test_c10_listing_reads_only_the_width_not_the_corpus(tmp_path: Path, monkeyp
     out = _list(path)
     assert out.lstrip().startswith("["), f"list did more than read the width: {out}"
     assert json.loads(out)[0]["calibration_id"] == second
+
+
+def test_c11_the_listing_puts_first_the_calibration_the_store_serves(tmp_path: Path) -> None:
+    """The calibration `list` calls in force is the one search uses, whatever the timestamps say.
+
+    The store serves by its table's order (`created_at DESC, rowid DESC`); the listing sorted the
+    artifacts by their own timestamp and id, so the two could name different calibrations.
+
+    Red, 2026-10-13, against the pre-fix `_stored_artifacts` (sorted by artifact timestamp, then
+    id): with the older calibration's row dated last, fails on "the listing's in-force calibration
+    is not the one the store serves".
+    """
+    path, (first, _second) = _twice_calibrated(tmp_path)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "UPDATE calibrations SET created_at = '9999-01-01T00:00:00.000000Z' "
+            "WHERE json_extract(payload, '$.calibration_id') = ?",
+            (first,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    with LiteStore(path, dim=DIM) as store:
+        served = artifact_from_json(str(store.latest_calibration_json())).calibration_id
+    records = json.loads(_list(path))
+    assert records[0]["calibration_id"] == served == first and records[0]["lifecycle_state"] == "published", (
+        f"the listing's in-force calibration is not the one the store serves ({served}): {records}"
+    )
+
+
+def test_c12_export_carries_the_state_list_reports(tmp_path: Path) -> None:
+    """A replaced calibration exports as `superseded`, as `list` and `show` report it.
+
+    Red, 2026-10-13, against the pre-fix `export_artifact` (wrote the stored state): fails on
+    "export said published for a replaced calibration".
+    """
+    path, (first, _second) = _twice_calibrated(tmp_path)
+    target = tmp_path / "old.json"
+    _run(["--dsn", _dsn(path), "calibration", "export", first, "--output", str(target)])
+    bundle = json.loads(target.read_text(encoding="utf-8"))
+    assert bundle["artifact"]["lifecycle_state"] == "superseded", (
+        f"export said {bundle['artifact']['lifecycle_state']} for a replaced calibration"
+    )
+    assert artifact_from_json(json.dumps(bundle["artifact"])).calibration_id == first

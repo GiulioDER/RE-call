@@ -1170,8 +1170,25 @@ class LiteStore:
         return report if report.get("calibration_id") == calibration_id else None
 
     def _latest_calibration(self) -> tuple[int, str] | None:
-        row = self._metadata_values("SELECT rowid, payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1")
-        return (int(row[0][0]), str(row[0][1])) if row else None
+        rows = self.calibration_rows(limit=1)
+        return rows[0] if rows else None
+
+    def calibration_rows(
+        self, *, calibration_id: str | None = None, limit: int | None = None
+    ) -> list[tuple[int, str]]:
+        """Stored calibrations as `(rowid, payload)`, in the order the store serves them: the first
+        row of the whole table is the one in force. `calibration_id` keeps the rows whose payload
+        names it (a payload that is not JSON names nothing)."""
+        sql = "SELECT rowid, payload FROM calibrations"
+        params: list[Any] = []
+        if calibration_id is not None:
+            sql += " WHERE json_valid(payload) AND json_extract(payload, '$.calibration_id') = ?"
+            params.append(calibration_id)
+        sql += " ORDER BY created_at DESC, rowid DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return [(int(rowid), str(payload)) for rowid, payload in self._metadata_values(sql, params)]
 
     def latest_calibration_json(self) -> str | None:
         latest = self._latest_calibration()
