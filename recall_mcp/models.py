@@ -464,8 +464,10 @@ class MemoryStatsResult(BaseModel):
     )
     refresh: dict | None = Field(
         default=None,
-        description="Lite store only: the last automatic refresh from the memo folder (outcome, "
-        "reason, counts, calibration status and its reason). Null on any other store.",
+        description="Lite store only: the last refresh from the memo folder that ran, automatic "
+        "or `recall lite refresh` (outcome, reason, counts, calibration status and its reason). A "
+        "check that found nothing changed is not recorded. Null on any other store, and before "
+        "the first refresh.",
     )
 
 

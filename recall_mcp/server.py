@@ -44,7 +44,7 @@ from recall.federation import FederationConfig
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store
 from recall.lite import LiteStore, LiteWriterBusy
-from recall.lite.refresh import read_state as read_refresh_state
+from recall.lite.refresh import read_state as read_refresh_state, refresh_access_context
 from recall_mcp.lite_refresh import LiteAutoRefresher
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
@@ -1173,7 +1173,20 @@ def _make_lifespan(
             }
             # A lite store follows its memo folder on its own: a catch-up refresh now, and a
             # debounced check before each retrieval (`recall_mcp.lite_refresh`). None otherwise.
-            lite_refresher = LiteAutoRefresher.from_env(store, embedder, runtime_env)
+            # It applies the source policy with the context `recall_index` gets on a stdio server
+            # (`_access_context` with no token), so both write the same rows (CCA SEC-001); the CLI
+            # refresh uses the same one (`refresh_access_context`).
+            lite_refresher = LiteAutoRefresher.from_env(
+                store,
+                embedder,
+                runtime_env,
+                security_policy=source_policy,
+                security_context=(
+                    None
+                    if source_policy is None
+                    else refresh_access_context(str(getattr(store, "tenant", "")))
+                ),
+            )
             if lite_refresher is not None:
                 lite_refresher.start()
             runtime_state["lite_refresher"] = lite_refresher

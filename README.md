@@ -247,6 +247,13 @@ select this SQLite file; use those commands because the CLI does not read MCP re
 Re-running it re-indexes
 what changed and refits the calibration when the memory changed. Add `.recall/` to `.gitignore`.
 
+The memory then keeps itself current. The MCP server refreshes the store when it starts, and before
+a search it checks the folder (at most every `RECALL_LITE_REFRESH_INTERVAL` seconds, 30 by
+default): when a memo changed it indexes it first, waiting up to `RECALL_LITE_REFRESH_WAIT` seconds
+(3), and refits the calibration. `RECALL_LITE_AUTO_REFRESH=0` turns this off. `recall lite refresh`
+does the same by hand or from a scheduler, and `recall lite refresh --check` reports whether the
+store is current without changing anything. `recall_stats` shows the last refresh and its reason.
+
 The trust layer is the same code: superseded and expired verdicts, abstention, and strict refusal
 until the calibration certifies. Retrieval is exact cosine search plus PostgreSQL's own keyword
 ranking formula, so results track the PostgreSQL store closely but not identically. It serves one
@@ -258,7 +265,8 @@ come first served: an index, ingest or forget waits for the one in progress and 
 `RECALL_LITE_WRITE_WAIT` seconds (five minutes by default), naming what holds the store; a
 calibration fit waits on its own queue (`RECALL_LITE_REFIT_WAIT`, two minutes by default) so it
 never holds up a write.
-Searches never wait. The queue lives in `memory.db.lanes/` beside the file, which is safe to delete
+A search never waits for that queue; it waits only for a refresh of memos it found changed, as
+above. The queue lives in `memory.db.lanes/` beside the file, which is safe to delete
 while nothing is using the store. Keep the file on a local disk: file locks on network shares are
 not reliable, and two machines writing one file are not supported.
 

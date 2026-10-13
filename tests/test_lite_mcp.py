@@ -58,6 +58,10 @@ def _env(tmp_path: Path) -> dict[str, str]:
         "RECALL_INDEX_ROOT": str(tmp_path),
         "RECALL_EMBED_CACHE": "off",
         "RECALL_TRANSPORT": "stdio",
+        # These tests drive one indexer through the tools. The server's automatic refresh
+        # (`recall_mcp.lite_refresh`) would index RECALL_INDEX_ROOT concurrently and race them;
+        # the tests about it switch it back on.
+        "RECALL_LITE_AUTO_REFRESH": "0",
     }
 
 

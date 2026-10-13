@@ -34,6 +34,7 @@ import json
 import logging
 import time
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,7 +45,9 @@ from recall.lite.writer_lock import LiteWriterBusy, LiteWriterCoalesced, lite_la
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
+    from recall.lite.calibration import CalibrationOutcome
     from recall.lite.store import LiteStore
+    from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall.store import PgVectorStore
 
 __all__ = [
@@ -54,8 +57,10 @@ __all__ = [
     "RefreshReport",
     "Snapshot",
     "check",
+    "policy_key",
     "read_state",
     "refresh",
+    "refresh_access_context",
     "snapshot",
     "state_path",
 ]
@@ -93,6 +98,29 @@ def state_path(db: str | Path) -> Path:
     return path.with_name(path.stem + ".refresh.json")
 
 
+def refresh_access_context(tenant: str) -> AccessContext:
+    """The one context a refresh applies the source policy with, whoever runs it.
+
+    It is the context the MCP server's own `recall_index` gets on a stdio server (no token: principal
+    `local`, purpose `retrieval`), because the server is what serves this store. The CLI and the
+    server share one state file, so a refresh under any other context would record a "current"
+    state the server then trusts (CCA FIX-001, architect REVISE).
+    """
+    from recall.security_policy import AccessContext
+
+    return AccessContext(principal="local", tenant=tenant)
+
+
+def policy_key(policy: SourceSecurityPolicy | None, context: AccessContext | None) -> str | None:
+    """What a refresh's policy decisions depend on: the policy digest and the deciding context."""
+    if policy is None:
+        return None
+    assert context is not None
+    material = [policy.digest, context.principal, context.tenant, context.purpose, context.clearance,
+                str(context.egress_allowed)]
+    return hashlib.sha256("\x00".join(material).encode("utf-8")).hexdigest()
+
+
 def _utc() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
@@ -117,13 +145,15 @@ def snapshot(roots: Sequence[str | Path]) -> Snapshot:
             continue
         kept: list[Path] = []
         for path in candidate_files(root):
-            resolved = path.resolve()
+            # Kept exactly as the walk names it: the indexer keys rows on this spelling, so a
+            # resolved path would file a symlinked memo under its target, beside the rows every
+            # other indexer wrote under the link (CCA BUG-001). `stat` follows the link anyway.
             try:
-                stat = resolved.stat()
+                stat = path.stat()
             except OSError:
                 continue  # vanished between the walk and the stat; the next snapshot sees it gone
-            kept.append(resolved)
-            rel = resolved.relative_to(root).as_posix()
+            kept.append(path)
+            rel = path.relative_to(root).as_posix()
             digest.update(f"{rel}\x00{stat.st_size}:{stat.st_mtime_ns}\x00".encode())
         files[root] = kept
     return Snapshot(digest.hexdigest(), files, missing)
@@ -140,8 +170,28 @@ def read_state(db: str | Path) -> dict[str, Any]:
     return document
 
 
+#: Attempts at replacing the state file. On Windows a reader without FILE_SHARE_DELETE (Python's
+#: `open`) makes the replace fail with PermissionError for as long as it holds the file open.
+_REPLACE_ATTEMPTS = 5
+
+
 def _write_state(db: Path, document: dict[str, Any]) -> None:
-    atomic_write_bytes(state_path(db), json.dumps(document, indent=2, sort_keys=True).encode("utf-8"))
+    """Replace the state file; a sharing violation that persists is logged, never raised.
+
+    The state file reports a refresh; it is not the refresh. Raising on a reader holding the file
+    would turn an index that succeeded into a traceback and a lost outcome (CCA BUG-003). Any other
+    OSError (a full disk) still raises.
+    """
+    data = json.dumps(document, indent=2, sort_keys=True).encode("utf-8")
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            atomic_write_bytes(state_path(db), data)
+            return
+        except PermissionError as exc:
+            if attempt == _REPLACE_ATTEMPTS:
+                _log.warning("lite refresh state %s not written: %s", state_path(db), exc)
+                return
+            time.sleep(0.05 * attempt)
 
 
 @dataclass
@@ -154,6 +204,7 @@ class RefreshReport:
     chunks_written: int = 0
     skipped: int = 0
     deleted: int = 0
+    denied: int = 0
     chunks_total: int = 0
     calibration: str = ""
     calibration_reason: str = ""
@@ -173,12 +224,14 @@ class RefreshReport:
                 f"indexed      {self.chunks_written} chunk(s) from {self.indexed_files} file(s); "
                 f"{self.skipped} unchanged; {self.deleted} pruned; {self.chunks_total} chunk(s) in memory"
             )
+            if self.denied:
+                lines.append(f"denied       {self.denied} file(s) refused by the source policy, not indexed")
         if self.calibration:
             lines.append(f"calibration  {self.calibration}: {self.calibration_reason}")
         return "\n".join(lines)
 
 
-def _calibrate(store: LiteStore, embedder: Embedder, background: bool) -> Any:
+def _calibrate(store: LiteStore, embedder: Embedder, background: bool) -> CalibrationOutcome:
     """`ensure_calibrated`, in the background when asked and when this version can.
 
     The `background` keyword arrives with the carry-forward change (PR 911). Asked for where it
@@ -187,11 +240,18 @@ def _calibrate(store: LiteStore, embedder: Embedder, background: bool) -> Any:
     from recall.lite.calibration import ensure_calibrated
 
     if background and "background" in inspect.signature(ensure_calibrated).parameters:
-        return cast(Any, ensure_calibrated)(store, embedder, background=True)
+        return cast("CalibrationOutcome", cast(Any, ensure_calibrated)(store, embedder, background=True))
     return ensure_calibrated(store, embedder)
 
 
-def _finish(db: Path, roots: list[Path], report: RefreshReport, *, success_generation: str | None = None) -> RefreshReport:
+def _finish(
+    db: Path,
+    roots: list[Path],
+    report: RefreshReport,
+    *,
+    success_generation: str | None = None,
+    policy: str | None = None,
+) -> RefreshReport:
     """Write the state file for this run. `success_generation` marks it the new last success."""
     report.finished_utc = _utc()
     document: dict[str, Any] = {
@@ -206,6 +266,7 @@ def _finish(db: Path, roots: list[Path], report: RefreshReport, *, success_gener
         document["last_success"] = {
             "fingerprint": report.fingerprint,
             "generation_id": success_generation,
+            "policy": policy,
             "finished_utc": report.finished_utc,
         }
     _write_state(db, document)
@@ -220,8 +281,22 @@ def refresh(
     force: bool = False,
     wait_s: float | None = None,
     background_calibration: bool = False,
+    allow_prune: bool = False,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
 ) -> RefreshReport:
-    """Bring `store` up to date with `roots`. See the module docstring; never raises on a busy lane."""
+    """Bring `store` up to date with `roots`. See the module docstring; never raises on a busy lane.
+
+    `security_policy` and `security_context` are the operator's source policy, applied exactly as
+    `recall_index` applies it: a file the policy denies is not indexed (and counted in `denied`),
+    and the indexer redacts the rest before storing. Without them a refresh would store what the
+    policy refuses, and rewrite rows indexed under it without their policy digest, so search would
+    stop returning them (CCA SEC-001). `allow_prune` is for a person who has confirmed a large
+    deletion (`recall lite refresh --allow-prune`); the server never passes it.
+    """
+    if security_policy is not None and security_context is None:
+        raise ValueError("security_context is required when security_policy is configured")
+    key = policy_key(security_policy, security_context)
     db = Path(store.path).resolve()
     resolved = [Path(r).resolve() for r in roots]
     report = RefreshReport(Outcome.UNCHANGED, "", started_utc=_utc())
@@ -236,6 +311,7 @@ def refresh(
         not force
         and last.get("fingerprint") == before.fingerprint
         and last.get("generation_id") == store.lite_generation_id()
+        and last.get("policy") == key
     ):
         # Nothing is written: this path holds no lane, and rewriting the file here could put back
         # a `last_success` that a concurrent refresh has just replaced.
@@ -245,7 +321,17 @@ def refresh(
         return report
     try:
         with lite_lane(db, lane="write", purpose=PURPOSE, wait_s=wait_s, coalesce=True):
-            return _refresh_locked(store, db, resolved, embedder, report, background_calibration)
+            return _refresh_locked(
+                store,
+                db,
+                resolved,
+                embedder,
+                report,
+                background_calibration=background_calibration,
+                allow_prune=allow_prune,
+                security_policy=security_policy,
+                security_context=security_context,
+            )
     except LiteWriterCoalesced:
         report.outcome = Outcome.COALESCED
         report.reason = "a refresh is already queued for this store and will see these changes"
@@ -261,12 +347,16 @@ def _refresh_locked(
     roots: list[Path],
     embedder: Embedder,
     report: RefreshReport,
+    *,
     background_calibration: bool,
+    allow_prune: bool,
+    security_policy: SourceSecurityPolicy | None,
+    security_context: AccessContext | None,
 ) -> RefreshReport:
     from recall.cache import default_cache
     from recall.context import context_policy_for_profile
     from recall.embeddings import embedding_profile_id
-    from recall.index import Indexer, chunk_text
+    from recall.index import Indexer, PruneGuardTripped, chunk_text
 
     # Taken again inside the lane: whatever changed while this refresh queued is indexed now, and
     # whatever changes while it indexes moves the next snapshot, so it is refreshed next time.
@@ -277,6 +367,25 @@ def _refresh_locked(
         report.outcome = Outcome.FAILED
         report.reason = "memory folder not found: " + ", ".join(str(m) for m in current.missing)
         return _finish(db, roots, report)
+    allowed = current.files
+    if security_policy is not None:
+        assert security_context is not None  # checked by `refresh`
+        allowed = {
+            root: [
+                f for f in found
+                if security_policy.decide(f.relative_to(root).as_posix(), security_context).allowed
+            ]
+            for root, found in current.files.items()
+        }
+        report.denied = current.count - sum(len(found) for found in allowed.values())
+        if current.count and report.denied == current.count:
+            # A refresh that indexes nothing must not mark the folder's changes as consumed.
+            report.outcome = Outcome.FAILED
+            report.reason = (
+                f"the source policy denies all {current.count} memo file(s) to principal "
+                f"{security_context.principal!r}, purpose {security_context.purpose!r}; nothing was indexed"
+            )
+            return _finish(db, roots, report)
     started = time.monotonic()
     try:
         with default_cache() as cache:
@@ -287,9 +396,12 @@ def _refresh_locked(
                 chunker=chunk_text,
                 cache=cache,
                 context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                allow_prune=allow_prune,
+                security_policy=security_policy,
+                security_context=security_context,
             )
             for root in roots:
-                stats = indexer.index_path(root, files=current.files[root])
+                stats = indexer.index_path(root, files=allowed[root])
                 report.indexed_files += stats.files
                 report.chunks_written += stats.chunks
                 report.skipped += stats.skipped
@@ -298,13 +410,25 @@ def _refresh_locked(
     except Exception as exc:  # BROAD-CATCH: fail-open  # recorded in the state file and returned
         _log.warning("lite refresh of %s failed: %s", db, exc)
         report.outcome, report.reason = Outcome.FAILED, f"{type(exc).__name__}: {exc}"
-        report.chunks_total = store.count()
+        if isinstance(exc, PruneGuardTripped):
+            # The guard's own advice names `recall index`; a lite user runs this command.
+            report.reason += " To accept the deletions, run `recall lite refresh --allow-prune`."
+        # The failure may be the store's own (closed, corrupt, locked): counting it must not stop
+        # the failure from being recorded (CCA BUG-002).
+        with suppress(Exception):
+            report.chunks_total = store.count()
         return _finish(db, roots, report)
     report.outcome = Outcome.REFRESHED
     report.reason = f"{current.count} file(s) checked in {time.monotonic() - started:.1f}s"
     report.calibration, report.calibration_reason = outcome.status.value, outcome.reason
     report.chunks_total = store.count()
-    return _finish(db, roots, report, success_generation=store.lite_generation_id())
+    return _finish(
+        db,
+        roots,
+        report,
+        success_generation=store.lite_generation_id(),
+        policy=policy_key(security_policy, security_context),
+    )
 
 
 @dataclass
@@ -358,8 +482,12 @@ class CheckReport:
         return "\n".join(lines)
 
 
-def check(db: str | Path, roots: Sequence[str | Path]) -> CheckReport:
-    """Report what `refresh` would find. Opens the store read-only and writes nothing anywhere."""
+def check(db: str | Path, roots: Sequence[str | Path], *, policy: str | None = None) -> CheckReport:
+    """Report what `refresh` would find. Opens the store read-only and writes nothing anywhere.
+
+    `policy` is the `policy_key` a refresh would apply (None for no policy): a refresh under a
+    different policy or context is not current.
+    """
     from recall.lite.inspect import inspect_lite_file
 
     target = Path(db).resolve()
@@ -373,6 +501,7 @@ def check(db: str | Path, roots: Sequence[str | Path]) -> CheckReport:
         and info.exists
         and last_success.get("fingerprint") == snap.fingerprint
         and last_success.get("generation_id") == info.generation_id
+        and last_success.get("policy") == policy
     )
     lane = lite_lane_status(target, "write")
     last = state.get("last")

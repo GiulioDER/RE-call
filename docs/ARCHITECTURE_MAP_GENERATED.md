@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 318
-Cross package edges: 326
-Source tree fingerprint: `2788450bd2f856b3f74c28a6ffbe1f218b78bc1607f5c6d3926e4b4f2d18c042`
+Cross package edges: 327
+Source tree fingerprint: `3bb696ad1f81d488b4697d79f1f27d1e320e2c8967cd8d2b76b8a24c5024e16b`
 
 ## Highest fan in modules
 
@@ -95,10 +95,10 @@ Source tree fingerprint: `2788450bd2f856b3f74c28a6ffbe1f218b78bc1607f5c6d3926e4b
 | 11 | `recall.doctor` |
 | 11 | `recall.generation_store` |
 | 11 | `recall.lite.calibration` |
+| 11 | `recall.lite.refresh` |
 | 11 | `recall.wizard.pipeline` |
 | 10 | `recall.integrations.langchain` |
 | 10 | `recall.integrations.llamaindex` |
-| 10 | `recall.lite.refresh` |
 | 10 | `recall.lite.setup` |
 | 10 | `recall.setup` |
 
@@ -235,6 +235,7 @@ They are observations, not automatic failures.
 | `recall_mcp.lite_refresh` | `recall.lite` |
 | `recall_mcp.lite_refresh` | `recall.lite.refresh` |
 | `recall_mcp.lite_refresh` | `recall.lite.store` |
+| `recall_mcp.lite_refresh` | `recall.security_policy` |
 | `recall_mcp.models` | `recall.types` |
 | `recall_mcp.oidc` | `recall._env` |
 | `recall_mcp.oidc` | `recall.errors` |
@@ -471,7 +472,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.idempotency_cmd` | 2 | 26 |
 | `recall.cli_commands.index_search` | 26 | 89 |
 | `recall.cli_commands.lint_check` | 7 | 77 |
-| `recall.cli_commands.lite_cmd` | 4 | 73 |
+| `recall.cli_commands.lite_cmd` | 5 | 73 |
 | `recall.cli_commands.manifest_cmd` | 4 | 40 |
 | `recall.cli_commands.provenance_cmd` | 7 | 93 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 124 |
@@ -583,7 +584,7 @@ They are observations, not automatic failures.
 | `recall.lite` | 2 | 70 |
 | `recall.lite.calibration` | 11 | 69 |
 | `recall.lite.inspect` | 2 | 70 |
-| `recall.lite.refresh` | 10 | 71 |
+| `recall.lite.refresh` | 11 | 71 |
 | `recall.lite.setup` | 10 | 91 |
 | `recall.lite.store` | 6 | 69 |
 | `recall.lite.writer_lock` | 1 | 69 |
@@ -736,7 +737,7 @@ They are observations, not automatic failures.
 | `recall_mcp.indexing` | 15 | 74 |
 | `recall_mcp.lifecycle` | 9 | 76 |
 | `recall_mcp.limits` | 3 | 3 |
-| `recall_mcp.lite_refresh` | 4 | 73 |
+| `recall_mcp.lite_refresh` | 5 | 73 |
 | `recall_mcp.models` | 1 | 2 |
 | `recall_mcp.oidc` | 4 | 27 |
 | `recall_mcp.provenance` | 14 | 90 |

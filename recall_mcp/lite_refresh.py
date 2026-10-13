@@ -33,6 +33,7 @@ from recall.lite.refresh import Outcome, refresh, snapshot
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
     from recall.lite.store import LiteStore
+    from recall.security_policy import AccessContext, SourceSecurityPolicy
 
 __all__ = ["LiteAutoRefresher"]
 
@@ -40,6 +41,10 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_S = 30.0
 DEFAULT_WAIT_S = 3.0
+#: The retry backoff after a failed refresh of an unchanged folder: from twice the interval (at
+#: least this) doubling to `MAX_BACKOFF_S`. A changed folder is retried at once.
+MIN_BACKOFF_S = 60.0
+MAX_BACKOFF_S = 600.0
 _OFF = frozenset({"0", "false", "off", "no"})
 
 
@@ -66,18 +71,39 @@ class LiteAutoRefresher:
         *,
         interval_s: float = DEFAULT_INTERVAL_S,
         wait_s: float = DEFAULT_WAIT_S,
+        security_policy: SourceSecurityPolicy | None = None,
+        security_context: AccessContext | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._store, self._embedder, self._roots = store, embedder, roots
         self._interval_s, self._wait_s, self._clock = interval_s, wait_s, clock
+        self._policy, self._context = security_policy, security_context
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._last_check = -math.inf
         self._refreshed: str | None = None  # the snapshot fingerprint this server last saw current
+        # The snapshot whose refresh last FAILED, and when it may be tried again. A failure that
+        # repeats (embedder down, prune guard tripped) is retried after a doubling backoff, not
+        # on every interval, each time stalling a search (CCA PERF-002).
+        self._failed: str | None = None
+        self._retry_at = -math.inf
+        self._backoff_s = 0.0
 
     @classmethod
-    def from_env(cls, store: object, embedder: Embedder, env: Mapping[str, str]) -> LiteAutoRefresher | None:
-        """A refresher for a lite store with `RECALL_INDEX_ROOT` set, unless switched off; else None."""
+    def from_env(
+        cls,
+        store: object,
+        embedder: Embedder,
+        env: Mapping[str, str],
+        *,
+        security_policy: SourceSecurityPolicy | None = None,
+        security_context: AccessContext | None = None,
+    ) -> LiteAutoRefresher | None:
+        """A refresher for a lite store with `RECALL_INDEX_ROOT` set, unless switched off; else None.
+
+        `security_policy` and `security_context` are the server's source policy and the context its
+        own `recall_index` uses; the refresh applies them as that tool does (CCA SEC-001).
+        """
         from recall.lite import LiteStore
 
         if not isinstance(store, LiteStore):
@@ -93,6 +119,8 @@ class LiteAutoRefresher:
             [Path(root)],
             interval_s=_seconds(env, "RECALL_LITE_REFRESH_INTERVAL", DEFAULT_INTERVAL_S),
             wait_s=_seconds(env, "RECALL_LITE_REFRESH_WAIT", DEFAULT_WAIT_S),
+            security_policy=security_policy,
+            security_context=security_context,
         )
 
     def start(self) -> None:
@@ -107,26 +135,52 @@ class LiteAutoRefresher:
                 if now - self._last_check < self._interval_s:
                     return
                 self._last_check = now
-            if snapshot(self._roots).fingerprint == self._refreshed:
+            fingerprint = snapshot(self._roots).fingerprint
+            if fingerprint == self._refreshed:
                 return
-            self._kick().join(self._wait_s)
+            with self._lock:
+                if fingerprint == self._failed and now < self._retry_at:
+                    return
+            thread, started = self._kick()
+            if started:
+                # Only a refresh this check started is waited for. One already running (queued
+                # behind another writer, or a long first embed) would otherwise stall a search
+                # every interval for as long as it runs (CCA PERF-001).
+                thread.join(self._wait_s)
         except Exception as exc:  # BROAD-CATCH: fail-open  # a refresh problem must never fail a search
             _log.warning("lite auto refresh check failed: %s", exc)
 
-    def _kick(self) -> threading.Thread:
+    def _kick(self) -> tuple[threading.Thread, bool]:
+        """The refresh thread, started if none is running; and whether this call started it."""
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._run, name="recall-lite-refresh", daemon=True)
                 self._thread.start()
-            return self._thread
+                return self._thread, True
+            return self._thread, False
 
     def _run(self) -> None:
         try:
             # In the background: a server is long-lived, so a refit can outlast this refresh.
-            report = refresh(self._store, self._roots, self._embedder, background_calibration=True)
+            report = refresh(
+                self._store,
+                self._roots,
+                self._embedder,
+                background_calibration=True,
+                security_policy=self._policy,
+                security_context=self._context,
+            )
         except Exception as exc:  # BROAD-CATCH: fail-open  # logged; the next check retries
             _log.warning("lite auto refresh failed: %s", exc)
             return
         _log.info("lite auto refresh: %s (%s)", report.outcome.value, report.reason)
-        if report.outcome in (Outcome.REFRESHED, Outcome.UNCHANGED):
-            self._refreshed = report.fingerprint
+        with self._lock:
+            if report.outcome in (Outcome.REFRESHED, Outcome.UNCHANGED):
+                self._refreshed, self._failed, self._backoff_s = report.fingerprint, None, 0.0
+            elif report.outcome is Outcome.FAILED:
+                repeated = report.fingerprint == self._failed
+                self._backoff_s = (
+                    min(self._backoff_s * 2, MAX_BACKOFF_S) if repeated else max(2 * self._interval_s, MIN_BACKOFF_S)
+                )
+                self._failed = report.fingerprint
+                self._retry_at = self._clock() + self._backoff_s
