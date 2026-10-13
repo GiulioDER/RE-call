@@ -525,3 +525,57 @@ def test_sqlite_card_store_survives_reopen_and_remains_immutable(tmp_path):
         assert reopened.resolve(evidence.card_id) == evidence
         with SQLiteEvidenceCardStore(path, tenant_id="tenant-b") as other_tenant:
             assert other_tenant.resolve(evidence.card_id) is None
+
+
+@pytest.fixture(params=["memory", "sqlite"])
+def any_local_ledger(request, tmp_path):
+    if request.param == "memory":
+        yield InMemoryFactLedger()
+        return
+    with SQLiteFactLedger(str(tmp_path / "facts.sqlite"), tenant_id="tenant-a") as ledger:
+        yield ledger
+
+
+def test_a_fact_applied_under_two_requests_is_listed_once(any_local_ledger):
+    """The current projection lists a fact once, however many requests applied it.
+
+    Red proof (2026-10-13): baseline `asserts_fact` in recall/provenance_controller.py reduced to
+    `event.event_type == "asserted"`, which is the projection filter on origin/master 86219d6d2.
+    Both parametrisations failed the `[(... "r1", APPLIED)]` assertion, listing
+    `("r1", APPLIED), ("r2", DUPLICATE)`. Restored, both pass.
+    """
+    claim = fact("team:platform")
+    evidence = card(claim)
+    ctl = controller([evidence], any_local_ledger)
+
+    assert ctl.apply_fact(FactApplicationRequest(claim, (evidence.card_id,), "r1")).code == DecisionCode.APPLIED
+    assert ctl.apply_fact(FactApplicationRequest(claim, (evidence.card_id,), "r2")).code == DecisionCode.DUPLICATE
+
+    current = any_local_ledger.current(tenant_id="tenant-a", now=NOW)
+    assert [(event.request_id, event.decision_code) for event in current] == [("r1", DecisionCode.APPLIED)]
+
+
+def test_superseding_a_fact_applied_under_two_requests_is_not_refused():
+    """A fact applied twice is still one conflict, so one authored link supersedes it.
+
+    The controller refuses when the conflicts it reads from `current()` outnumber the facts the
+    replacement supersedes. With the DUPLICATE event projected, the same fact counted twice.
+    Red proof (2026-10-13): the same baseline as the test above; the replacement was refused
+    with CONTRADICTION_WITHOUT_SUPERSESSION and the `allowed` assertion failed. Restored, passes.
+    """
+    old = fact("team:platform")
+    new = fact("team:security")
+    first_card = card(old, source="old-a.md")
+    second_card = card(old, source="old-b.md")
+    ledger = InMemoryFactLedger()
+    ctl = controller([first_card, second_card], ledger)
+    assert ctl.apply_fact(FactApplicationRequest(old, (first_card.card_id,), "r1")).code == DecisionCode.APPLIED
+    assert ctl.apply_fact(FactApplicationRequest(old, (second_card.card_id,), "r2")).code == DecisionCode.DUPLICATE
+
+    replacing_card = card(new, source="new.md", supersession_links=(first_card.card_id,))
+    replaced = controller([replacing_card], ledger).apply_fact(
+        FactApplicationRequest(new, (replacing_card.card_id,), "r3")
+    )
+
+    assert replaced.allowed and replaced.code == DecisionCode.APPLIED
+    assert [event.fact.object for event in ledger.current(tenant_id="tenant-a", now=NOW)] == ["team:security"]
