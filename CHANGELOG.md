@@ -48,6 +48,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **A fact applied under several requests is listed once.** Applying a fact that is already in
+  force records a DUPLICATE event, and `recall_current_facts`, `recall provenance current` and the
+  controller's conflict check listed that event beside the original, so the fact appeared once per
+  request. Worse, a replacement that linked the original's evidence was then refused with
+  `CONTRADICTION_WITHOUT_SUPERSESSION`, because the one fact counted as two conflicts. The current
+  and candidate projections now skip DUPLICATE events on every ledger (PostgreSQL, SQLite and in
+  memory); the events stay in the ledger.
+
 * **ATM-Bench Recall@10 is 90.0995, not 92.8924.** The figure published in `docs/ATM_BENCH.md`,
   `docs/EVIDENCE.md`, the site and the board submission is Hit@10, the share of questions with at
   least one gold item in the top 10, because `benchmarks/atm_bench.py::metrics_for` stores that
