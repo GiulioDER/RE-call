@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -71,18 +72,57 @@ def _decision_payload(decision: Any) -> dict[str, object]:
     }
 
 
-def _open_lite(args: argparse.Namespace) -> LiteStore:
-    """The lite store a `sqlite:///` DSN names, after refusing the generation route by name."""
-    from recall.backends import lite_route_refusal, open_legacy_store
-    from recall.cli_commands._shared import _make_embedder
+def _lite_file(path: Path) -> tuple[dict[str, str] | None, set[str]]:
+    """A lite file's `meta` table (None when it has none) and its table names, read-only."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None, set()
+    try:
+        tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "meta" not in tables:
+            return None, tables
+        return {str(key): str(value) for key, value in conn.execute("SELECT key, value FROM meta").fetchall()}, tables
+    except sqlite3.Error:
+        return None, set()
+    finally:
+        conn.close()
+
+
+def _lite_target(args: argparse.Namespace) -> tuple[Path, dict[str, str], set[str]]:
+    """The lite file a `sqlite:///` DSN names, checked without writing to it.
+
+    The generation route is refused by name; a file that does not exist, or is not a lite store,
+    is refused untouched. Opening a `LiteStore` on either would create it, or stamp it with a
+    tenant and a width, which a later `recall index` at the real width then refuses.
+    """
+    from recall.backends import lite_route_refusal
+    from recall.lite import LITE_DSN_PREFIX
     from recall.runtime_route import resolve_runtime_route
 
     route = getattr(args, "_runtime_route", None) or resolve_runtime_route()
     if (refusal := lite_route_refusal(args.dsn, route)) is not None:
         raise SystemExit(refusal)
-    store = open_legacy_store(
-        args.dsn, dim=_make_embedder(args.embedder).dim, table=args.table, tenant=args.tenant
-    )
+    path = Path(args.dsn[len(LITE_DSN_PREFIX):])
+    if not path.exists():
+        raise SystemExit(f"{path} does not exist; nothing was read or created (build it with `recall setup --lite`)")
+    meta, tables = _lite_file(path)
+    if meta is None or "dim" not in meta:
+        raise SystemExit(f"{path} is not a lite store (it has no RE-call meta table); nothing was read or written")
+    return path, meta, tables
+
+
+def _open_lite(args: argparse.Namespace, dim: int) -> LiteStore:
+    """The lite store at the width `dim`, a mismatch refused by name instead of a traceback."""
+    from recall.backends import open_legacy_store
+    from recall.lite import LiteStoreError
+
+    try:
+        store = open_legacy_store(args.dsn, dim=dim, table=args.table, tenant=args.tenant)
+    except LiteStoreError as exc:
+        raise SystemExit(f"provenance: {exc}") from exc
     return cast("LiteStore", store)
 
 
@@ -103,10 +143,20 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
             with SQLiteFactLedger(args.sqlite_path, tenant_id=args.tenant) as ledger:
                 events = ledger.current(tenant_id=args.tenant, now=instant)
         elif lite:
+            from recall.fact_ledger import FACT_LEDGER_TABLE
             from recall.lite.facts import LiteFactLedger
 
-            with _open_lite(args) as lite_store:
-                events = LiteFactLedger(lite_store).current(tenant_id=args.tenant, now=instant)
+            # A read needs no embedder: the width is the one the file records.
+            path, meta, tables = _lite_target(args)
+            if meta.get("tenant") != args.tenant:
+                # As on PostgreSQL, a tenant with no rows reads no facts; a lite file holds one.
+                print(f"{path} holds tenant {meta.get('tenant')!r}; pass --tenant {meta.get('tenant')} to read it", file=sys.stderr)
+                events = ()
+            elif FACT_LEDGER_TABLE not in tables:
+                events = ()  # no fact was ever applied; opening the ledger would create its tables
+            else:
+                with _open_lite(args, int(meta["dim"])) as lite_store:
+                    events = LiteFactLedger(lite_store).current(tenant_id=args.tenant, now=instant)
         else:
             events = PostgresFactLedger(args.dsn, tenant_id=args.tenant).current(
                 tenant_id=args.tenant, now=instant
@@ -173,7 +223,15 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
 
     embedder = _make_embedder(args.embedder)
     if lite:
-        with _open_lite(args) as lite_store:
+        path, meta, _tables = _lite_target(args)
+        if meta.get("tenant") != args.tenant:
+            raise SystemExit(f"provenance apply: {path} holds tenant {meta.get('tenant')!r}; pass --tenant {meta.get('tenant')}")
+        if int(meta["dim"]) != embedder.dim:
+            raise SystemExit(
+                f"provenance apply: {path} was built at width {meta['dim']}, but the embedder "
+                f"({args.embedder}) has width {embedder.dim}; use the embedder the store was built with"
+            )
+        with _open_lite(args, embedder.dim) as lite_store:
             # A lite store's generation is the digest of what it holds, so it cannot take one
             # from the command line; a stale value would only turn every card into a mismatch.
             if args.generation != lite_store.generation_id:
