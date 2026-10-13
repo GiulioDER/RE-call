@@ -31,6 +31,7 @@ from recall.provenance_controller import (
     FactApplicationPermit,
     _consume_permit,
     _as_utc,
+    asserts_fact,
     canonical_json,
     evidence_card_from_payload,
     fact_conflict_key,
@@ -595,7 +596,7 @@ class PostgresFactLedger:
         instant = _as_utc(now)
         return tuple(
             event for event in events
-            if event.event_type == "asserted"
+            if asserts_fact(event)
             and event.fact_id not in superseded
             and event.fact is not None
             and (event.fact.valid_from is None or instant >= _as_utc(event.fact.valid_from))
@@ -626,7 +627,7 @@ class PostgresFactLedger:
         return tuple(
             event
             for event in events
-            if event.event_type == "asserted"
+            if asserts_fact(event)
             and event.fact_id not in superseded
             and event.fact is not None
         )
