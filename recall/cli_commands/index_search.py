@@ -23,9 +23,8 @@ from recall.index import (
 from recall.index_lock import ConcurrentIndex
 from recall.retriever import DocumentExpansionPolicy
 from recall.scope import Scope
-from recall.backends import lite_route_refusal, open_legacy_store, write_session
-from recall.lite import LiteStore, LiteWriterBusy
-from recall.lite.writer_lock import queued_notice
+from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store
+from recall.lite import LiteStore
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
@@ -331,47 +330,65 @@ def _cmd_index(args: argparse.Namespace) -> None:
         # Cached by default: re-indexing a corpus is the common case, most of a corpus is
         # unchanged between runs, and an unchanged chunk has one right vector. `RECALL_EMBED_CACHE`
         # names another path or switches it off; see `recall.cache.default_cache_path`.
-        # A lite file's write lane is held for the whole run, calibration included, so two
-        # sessions indexing one file take turns (`recall.lite.writer_lock`); Postgres has its own.
-        try:
-            with write_session(store, "index", on_queued=queued_notice("recall index")):
-                with default_cache() as cache:
-                    indexer = Indexer(
-                        store,
-                        embedder,
-                        chunker=chunker,
-                        cache=cache,
-                        context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-                        allow_prune=args.allow_prune,
-                        project=args.project,
-                        indexed_commit=commit,
-                        batch_chunks=args.batch_chunks,
-                        security_policy=security_policy,
-                        security_context=security_context,
-                    )
-                    try:
-                        stats = indexer.index_path(args.path, glob=args.glob)
-                    except PruneGuardTripped as exc:
-                        # The message carries the recovery instructions; a traceback would bury them.
-                        raise SystemExit(str(exc)) from exc
-                    except ConcurrentIndex as exc:
-                        # Same reasoning: this is an expected outcome of two sessions closing at once,
-                        # not a defect, and its message names the holder and what to do about it.
-                        raise SystemExit(str(exc)) from exc
-                # `files` counts what was RE-indexed, not what is in the index, so an unchanged
-                # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
-                # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
-                # reporting it only through a log record meant a deletion could happen in silence.
-                print(_index_summary(stats))
-                if isinstance(store, LiteStore):
-                    # A lite install has nobody to run a calibration by hand, so indexing fits one
-                    # whenever the corpus changed, and says whether strict search can now answer.
-                    from recall.lite.calibration import ensure_calibrated
+        with default_cache() as cache:
+            indexer = Indexer(
+                store,
+                embedder,
+                chunker=chunker,
+                cache=cache,
+                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                allow_prune=args.allow_prune,
+                project=args.project,
+                indexed_commit=commit,
+                batch_chunks=args.batch_chunks,
+                security_policy=security_policy,
+                security_context=security_context,
+            )
+            try:
+                stats = indexer.index_path(args.path, glob=args.glob)
+            except PruneGuardTripped as exc:
+                # The message carries the recovery instructions; a traceback would bury them.
+                raise SystemExit(str(exc)) from exc
+            except ConcurrentIndex as exc:
+                # Same reasoning: this is an expected outcome of two sessions closing at once,
+                # not a defect, and its message names the holder and what to do about it.
+                raise SystemExit(str(exc)) from exc
+        # `files` counts what was RE-indexed, not what is in the index, so an unchanged
+        # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
+        # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
+        # reporting it only through a log record meant a deletion could happen in silence.
+        print(_index_summary(stats))
+        if isinstance(store, LiteStore):
+            # A lite install has nobody to run a calibration by hand, so indexing fits one
+            # whenever the corpus changed, and says whether strict search can now answer.
+            from recall.lite.calibration import ensure_calibrated
 
-                    outcome = ensure_calibrated(store, embedder)
-                    print(f"calibration: {outcome.status.value}: {outcome.reason}")
-        except LiteWriterBusy as exc:
-            raise SystemExit(str(exc)) from exc
+            outcome = ensure_calibrated(store, embedder)
+            print(f"calibration: {outcome.status.value}: {outcome.reason}")
+
+
+def _check_lite_forget_target(dsn: str, tenant: str) -> None:
+    """Refuse a lite file forget must not open, checked without writing to it.
+
+    Opening a `LiteStore` creates the file, its directories and its schema, and stamps a tenant and
+    a width into it, so a dry run on a mistyped path built a store there and called the source a
+    typo. A missing file, a file that is not a lite store, or another tenant's file is refused
+    untouched instead.
+    """
+    from recall.lite import LITE_DSN_PREFIX
+    from recall.lite.inspect import lite_file_meta
+
+    path = Path(dsn[len(LITE_DSN_PREFIX):])
+    if not path.exists():
+        raise SystemExit(f"forget: {path} does not exist; nothing deleted or created")
+    meta = lite_file_meta(path)
+    if meta is None or "dim" not in meta:
+        raise SystemExit(f"forget: {path} is not a lite store (it has no RE-call meta table); nothing deleted or written")
+    if meta.get("tenant") != tenant:
+        raise SystemExit(
+            f"forget: {path} holds tenant {meta.get('tenant')!r}, not {tenant!r}; pass --tenant "
+            f"{meta.get('tenant')}; nothing deleted"
+        )
 
 
 def _cmd_forget(args: argparse.Namespace) -> None:
@@ -389,6 +406,8 @@ def _cmd_forget(args: argparse.Namespace) -> None:
     generation_mode = route.uses_generation
     if (refusal := lite_route_refusal(args.dsn, route)) is not None:
         raise SystemExit(refusal)
+    if is_lite_dsn(args.dsn):
+        _check_lite_forget_target(args.dsn, args.tenant)
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
