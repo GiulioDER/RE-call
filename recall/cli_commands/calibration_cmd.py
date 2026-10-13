@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 # Eager, NOT to defer a cost: `recall.store` is imported at module level elsewhere in the CLI
 # and already pulls in psycopg and pgvector, so nothing would be saved by a function-local
@@ -19,6 +20,9 @@ from recall.drift import DRIFT_SCREEN_DELTA
 from recall.setup import CalibrationResult
 
 from recall.cli_commands._shared import _make_embedder
+
+if TYPE_CHECKING:
+    from recall.lite import LiteStore
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -148,13 +152,68 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_cal_import.add_argument("path")
 
 
+#: The `recall calibration` subcommands a lite store serves. The rest are bound to PostgreSQL
+#: generations and labelled query sets, which a lite file does not have.
+_LITE_CALIBRATION_COMMANDS = frozenset({"list", "show", "export"})
+
+
+def _cmd_calibration_lite(args: argparse.Namespace) -> None:
+    """`recall calibration` on a `sqlite:///` DSN: list, show and export; the rest refused by name."""
+    from recall.backends import lite_route_refusal, open_legacy_store
+    from recall.calibration_v2 import CalibrationError
+    from recall.lite import LITE_DSN_PREFIX
+    from recall.lite import calibration as lite_calibration
+    from recall.lite.inspect import inspect_lite_file
+    from recall.runtime_route import resolve_runtime_route
+
+    route = getattr(args, "_runtime_route", None) or resolve_runtime_route()
+    if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+        raise SystemExit(refusal)
+    command = args.calibration_cmd
+    if command not in _LITE_CALIBRATION_COMMANDS:
+        raise SystemExit(
+            f"recall calibration {command}: not available on a lite store ({args.dsn}). A lite "
+            "store calibrates itself when it is indexed (`recall index`, or recall_calibration_run "
+            "over MCP); generations, carry-forward, drift and labelled query sets need the full "
+            "(PostgreSQL) install. `recall calibration list`, `show` and `export` work here."
+        )
+    path = Path(args.dsn[len(LITE_DSN_PREFIX):])
+    if not path.exists():
+        # Nothing calibrated yet, as an empty PostgreSQL table reads; reading must not create it.
+        if command == "list":
+            print(json.dumps([], indent=2))
+            return
+        raise SystemExit(f"calibration {args.calibration_id} not found: {path} does not exist")
+    width = inspect_lite_file(path).dim or 1
+    with open_legacy_store(args.dsn, dim=width, table=args.table, tenant=args.tenant) as opened:
+        store = cast("LiteStore", opened)
+        try:
+            if command == "list":
+                print(json.dumps(lite_calibration.list_records(store), indent=2, default=str))
+            elif command == "show":
+                print(json.dumps(lite_calibration.show_record(store, args.calibration_id), indent=2, default=str))
+            else:
+                target = lite_calibration.export_artifact(store, args.calibration_id, args.output)
+                print(target)
+                print(
+                    "the artifact alone: a lite store keeps no labelled query set, so this bundle "
+                    "cannot be imported where one is required"
+                )
+        except CalibrationError as exc:
+            raise SystemExit(str(exc)) from exc
+
+
 def _cmd_calibration(args: argparse.Namespace) -> None:
+    from recall.backends import is_lite_dsn
     from recall.calibration_v2 import (
         CalibrationError,
         CalibrationRepository,
         load_query_set,
     )
 
+    if is_lite_dsn(args.dsn):
+        _cmd_calibration_lite(args)
+        return
     repository = CalibrationRepository(args.dsn, args.tenant)
     try:
         if args.calibration_cmd == "list":

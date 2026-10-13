@@ -56,6 +56,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from recall.calibration import from_samples
@@ -749,3 +750,88 @@ def corpus_digest(rows: list[tuple[str, str, bytes]]) -> str:
         outer.update(hashlib.sha256(text.encode("utf-8")).digest())
         outer.update(hashlib.sha256(embedding).digest())
     return outer.hexdigest()
+
+
+# ---------------------------------------------------------------------- the `recall calibration` CLI
+
+
+def _stored_artifacts(store: LiteStore) -> list[CalibrationArtifactV2]:
+    """Every stored calibration, newest first (`created_at`, then id, as PostgreSQL lists them)."""
+    rows = store._metadata_values("SELECT payload FROM calibrations")
+    artifacts = [artifact_from_json(str(row[0])) for row in rows]
+    # PostgreSQL orders `created_at DESC, calibration_id`: newest first, ties by id ascending.
+    by_id = sorted(artifacts, key=lambda a: a.calibration_id)
+    return sorted(by_id, key=lambda a: a.created_at, reverse=True)
+
+
+def _lifecycle_states(artifacts: Sequence[CalibrationArtifactV2]) -> dict[str, str]:
+    """The state each calibration is in now: a lite store serves only its newest one.
+
+    The stored artifact says `published` for every calibration a lite store ever saved, because it
+    was in force when it was saved. A later one replaced it, so it is reported `superseded`, which
+    is what PostgreSQL's `recall_calibrations.lifecycle_state` says of a replaced calibration.
+    """
+    states: dict[str, str] = {}
+    for index, artifact in enumerate(artifacts):
+        state = artifact.lifecycle_state
+        states[artifact.calibration_id] = "superseded" if index > 0 and state == "published" else state
+    return states
+
+
+def list_records(store: LiteStore) -> list[dict[str, Any]]:
+    """`recall calibration list` on a lite store, with `CalibrationRepository.list_records`' keys."""
+    artifacts = _stored_artifacts(store)
+    states = _lifecycle_states(artifacts)
+    records: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        carry = artifact.carry_forward if isinstance(artifact.carry_forward, Mapping) else None
+        records.append(
+            {
+                "calibration_id": artifact.calibration_id,
+                "generation_id": artifact.generation_id,
+                "lifecycle_state": states[artifact.calibration_id],
+                "certified": bool(artifact.certified),
+                "pipeline_fingerprint": artifact.pipeline_fingerprint,
+                "corpus_fingerprint": artifact.corpus_fingerprint,
+                "query_set_digest": artifact.query_set_digest,
+                "created_at": artifact.created_at,
+                "threshold_was_measured_here": carry is None,
+                "carried_forward_from": carry.get("parent_calibration_id") if carry else None,
+                "corpus_delta": carry.get("corpus_delta") if carry else None,
+            }
+        )
+    return records
+
+
+def show_record(store: LiteStore, calibration_id: str) -> dict[str, Any]:
+    """`recall calibration show` on a lite store: the stored artifact, with its state now.
+
+    PostgreSQL prints its `recall_calibrations` row; a lite store has no such table, so this is the
+    artifact itself (the same facts, in the artifact's own field names).
+    """
+    from recall.calibration_v2 import CalibrationNotFound
+
+    artifacts = _stored_artifacts(store)
+    for artifact in artifacts:
+        if artifact.calibration_id == calibration_id:
+            return {**artifact.to_dict(), "lifecycle_state": _lifecycle_states(artifacts)[calibration_id]}
+    raise CalibrationNotFound(calibration_id)
+
+
+def export_artifact(store: LiteStore, calibration_id: str, path: str | Path) -> Path:
+    """`recall calibration export` on a lite store: the artifact alone, flagged as such.
+
+    A PostgreSQL bundle carries the labelled query set; a lite store never kept one (it fits on
+    questions it generates and keeps only their digest), so the bundle says `artifact_only` rather
+    than shipping a `query_set` it does not have.
+    """
+    from recall.calibration_v2 import CalibrationNotFound
+
+    for artifact in _stored_artifacts(store):
+        if artifact.calibration_id == calibration_id:
+            payload: dict[str, Any] = {"artifact": artifact.to_dict(), "artifact_only": True}
+            payload["bundle_checksum"] = canonical_sha256(payload)
+            target = Path(path)
+            target.write_bytes(canonical_json(payload) + b"\n")
+            return target
+    raise CalibrationNotFound(calibration_id)
