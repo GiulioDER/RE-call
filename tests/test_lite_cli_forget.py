@@ -30,18 +30,21 @@ import pytest
 
 from recall.lite import LiteStore
 from tests.conftest import TEST_DSN, requires_db
-from tests.test_lite_cli import _MEMOS, _dsn, _memos, _run
+from tests.lite_cli_support import _offline, run_cli  # noqa: F401  # _offline: autouse fixture
+from tests.test_lite_cli import _MEMOS, _dsn, _memos
+
+_run = run_cli
+#: The width `--embedder hashing` indexes at, so a test can open the store the CLI built.
+HASHING_DIM = 64
 
 
-@pytest.fixture(autouse=True)
-def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_SERVING_DSN", "RECALL_DSN", "RECALL_TRUST_MODE"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
+def _store_path(tmp_path: Path) -> Path:
+    """The file `_dsn(tmp_path)` names."""
+    return tmp_path / "store" / "memory.db"
 
 
 def _sources(tmp_path: Path) -> set[str]:
-    with LiteStore(tmp_path / "store" / "memory.db", dim=64) as store:
+    with LiteStore(_store_path(tmp_path), dim=HASHING_DIM) as store:
         return set(store.source_content_hashes())
 
 
@@ -70,7 +73,7 @@ def test_k2_the_generation_route_is_refused(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setenv("RECALL_INDEX_MODE", "generation")
     out = _run(["--embedder", "hashing", "--dsn", _dsn(tmp_path), "forget", "x.md", "--yes"])
     assert "has no generations" in out, f"the generation route was not refused for forget: {out}"
-    assert not (tmp_path / "store" / "memory.db").exists(), "the refused command still created the store"
+    assert not _store_path(tmp_path).exists(), "the refused command still created the store"
 
 
 def test_k3_a_scratch_table_is_refused_on_a_lite_dsn(tmp_path: Path) -> None:
@@ -147,3 +150,19 @@ def test_k4_forget_prints_the_same_on_postgres_and_lite(tmp_path: Path, cli_tabl
     for (step, want), (_, got) in zip(transcripts["postgres"], transcripts["lite"], strict=True):
         assert got == want, f"step {step}: postgres {want!r} != lite {got!r}"
     assert "forgot 1 chunk(s) from 1 source(s)" in dict(transcripts["lite"])["delete"]
+
+
+def test_k8_a_refused_forget_builds_no_embedder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Erasure embeds nothing, so a forget refused on a lite DSN loads no model and sends no
+    billed probe.
+
+    Red, 2026-10-13, against the pre-fix `_cmd_forget` (the embedder was built before the lite
+    refusals): fails on "a refused forget built an embedder".
+    """
+    from recall.cli_commands import index_search
+
+    built: list[str] = []
+    monkeypatch.setattr(index_search, "_make_embedder", lambda name: built.append(name))
+    out = _run(["--embedder", "hashing", "--dsn", "sqlite:///" + (tmp_path / "missing.db").as_posix(), "forget", "x.md"])
+    assert "does not exist" in out, out
+    assert built == [], f"a refused forget built an embedder: {built}"

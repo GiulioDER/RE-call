@@ -396,7 +396,6 @@ def _cmd_forget(args: argparse.Namespace) -> None:
     from recall.generations import NoActiveGeneration
 
     route = _runtime_route(args)
-    embedder = _make_embedder(args.embedder)
     security_policy = load_source_policy()
     security_context = (
         access_context_from_environment(args.tenant, purpose="erasure")
@@ -408,6 +407,9 @@ def _cmd_forget(args: argparse.Namespace) -> None:
         raise SystemExit(refusal)
     if is_lite_dsn(args.dsn):
         _check_lite_forget_target(args.dsn, args.tenant)
+    # After the refusals: building an embedder loads a model or sends a billed probe, and erasure
+    # embeds nothing; a refused command must not pay for it.
+    embedder = _make_embedder(args.embedder)
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
@@ -467,8 +469,10 @@ def _cmd_forget(args: argparse.Namespace) -> None:
             # tenant owns and an absent source really is a typo. Computed here rather than
             # above because the generation branch never reads it, and on a GenerationStore
             # it costs an active-generation lookup plus a DISTINCT scan.
+            present = getattr(store, "sources_present", None)
             try:
-                visible_now = set(store.source_content_hashes())
+                # A lite store answers from its source index; PostgreSQL lists its sources.
+                visible_now = present(requested) if present is not None else set(store.source_content_hashes())
             except NoActiveGeneration:
                 visible_now = set()
             targets = [s for s in requested if s in visible_now]

@@ -7,7 +7,9 @@ that subset raises `recall.lite.LiteUnsupported`, which names the call and says 
 install, and reads as absent to `getattr(store, name, None)` probes.
 
 Generations, manifests, the enterprise control plane and learned sparse retrieval exist only on
-Postgres, so a lite DSN on the generation route is refused before anything opens.
+Postgres, so a lite DSN on the generation route is refused before anything opens. Deletion by
+source (`recall forget`, `recall_forget`) works on the legacy route. A lite file holds one table,
+so a table other than the default is refused rather than ignored.
 """
 
 from __future__ import annotations
@@ -55,7 +57,8 @@ def open_legacy_store(
     if is_lite_dsn(dsn):
         if table != DEFAULT_TABLE:
             raise LiteStoreError(
-                f"a lite store ({dsn}) has one table, '{DEFAULT_TABLE}'; --table {table!r} cannot be "
+                f"a lite store ({dsn}) has one table, '{DEFAULT_TABLE}'; table {table!r} (--table or "
+                f"RECALL_TABLE) cannot be "
                 "honoured. Use another sqlite:/// file to keep an experiment apart from this memory"
             )
         return cast("PgVectorStore", LiteStore.from_dsn(dsn, dim=dim, tenant=tenant, table=table))
