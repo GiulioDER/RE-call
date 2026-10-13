@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from recall.atomic_write import atomic_write_bytes
+from recall.index_budget import IndexBudget, budget_refusal
 from recall.lite.writer_lock import LiteWriterBusy, LiteWriterCoalesced, lite_lane, lite_lane_status
 
 if TYPE_CHECKING:
@@ -57,6 +58,7 @@ __all__ = [
     "RefreshReport",
     "Snapshot",
     "check",
+    "over_budget",
     "policy_key",
     "read_state",
     "refresh",
@@ -87,6 +89,7 @@ class Snapshot:
     fingerprint: str
     files: dict[Path, list[Path]]
     missing: list[Path]
+    total_bytes: int = 0
 
     @property
     def count(self) -> int:
@@ -137,6 +140,7 @@ def snapshot(roots: Sequence[str | Path]) -> Snapshot:
     digest = hashlib.sha256()
     files: dict[Path, list[Path]] = {}
     missing: list[Path] = []
+    total_bytes = 0
     for root in sorted({Path(r).resolve() for r in roots}):
         digest.update(b"root\x00" + str(root).encode("utf-8") + b"\x00")
         if not root.is_dir():
@@ -153,10 +157,20 @@ def snapshot(roots: Sequence[str | Path]) -> Snapshot:
             except OSError:
                 continue  # vanished between the walk and the stat; the next snapshot sees it gone
             kept.append(path)
+            total_bytes += stat.st_size
             rel = path.relative_to(root).as_posix()
             digest.update(f"{rel}\x00{stat.st_size}:{stat.st_mtime_ns}\x00".encode())
         files[root] = kept
-    return Snapshot(digest.hexdigest(), files, missing)
+    return Snapshot(digest.hexdigest(), files, missing, total_bytes)
+
+
+def over_budget(snap: Snapshot, budget: IndexBudget | None) -> str | None:
+    """Why `snap` is more than `budget` allows an unattended refresh to index, or None."""
+    if budget is None:
+        return None
+    folders = ", ".join(str(root) for root in snap.files)
+    refusal = budget_refusal(f"the memory folder {folders}", snap.count, snap.total_bytes, budget)
+    return None if refusal is None else refusal + " Nothing was indexed."
 
 
 def read_state(db: str | Path) -> dict[str, Any]:
@@ -284,8 +298,13 @@ def refresh(
     allow_prune: bool = False,
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
+    budget: IndexBudget | None = None,
 ) -> RefreshReport:
     """Bring `store` up to date with `roots`. See the module docstring; never raises on a busy lane.
+
+    `budget` bounds what an unattended refresh may index (`recall.index_budget`, the rule
+    `recall_index` applies): a folder over it is FAILED, nothing indexed or pruned. The server
+    passes it; a person running `recall lite refresh` is not bound by it (CCA SEC-002).
 
     `security_policy` and `security_context` are the operator's source policy, applied exactly as
     `recall_index` applies it: a file the policy denies is not indexed (and counted in `denied`),
@@ -331,6 +350,7 @@ def refresh(
                 allow_prune=allow_prune,
                 security_policy=security_policy,
                 security_context=security_context,
+                budget=budget,
             )
     except LiteWriterCoalesced:
         report.outcome = Outcome.COALESCED
@@ -352,6 +372,7 @@ def _refresh_locked(
     allow_prune: bool,
     security_policy: SourceSecurityPolicy | None,
     security_context: AccessContext | None,
+    budget: IndexBudget | None,
 ) -> RefreshReport:
     from recall.cache import default_cache
     from recall.context import context_policy_for_profile
@@ -366,6 +387,11 @@ def _refresh_locked(
         # Gone while this refresh queued. Indexing an empty list would read as "every memo deleted".
         report.outcome = Outcome.FAILED
         report.reason = "memory folder not found: " + ", ".join(str(m) for m in current.missing)
+        return _finish(db, roots, report)
+    if (refusal := over_budget(current, budget)) is not None:
+        # Refused under the lane, never before it: the refusal is written to the state file, and
+        # a write outside the lane could put back a `last_success` a concurrent refresh replaced.
+        report.outcome, report.reason = Outcome.FAILED, refusal
         return _finish(db, roots, report)
     allowed = current.files
     if security_policy is not None:
@@ -439,6 +465,8 @@ class CheckReport:
     roots: list[Path]
     current: bool
     files_seen: int
+    bytes_seen: int = 0
+    budget: str | None = None
     missing: list[Path] = field(default_factory=list)
     last: dict[str, Any] | None = None
     last_success_utc: str | None = None
@@ -467,7 +495,7 @@ class CheckReport:
         lines = [
             f"store        {self.store}",
             f"memory       {', '.join(str(r) for r in self.roots)}",
-            f"files        {self.files_seen}",
+            f"files        {self.files_seen} ({self.bytes_seen} bytes)",
             f"memos        {state}",
         ]
         if self.last:
@@ -476,13 +504,21 @@ class CheckReport:
             lines.append(f"writer       held by {self.holder.get('purpose')} (pid {self.holder.get('pid')}); {len(self.waiters)} waiting")
         else:
             lines.append(f"writer       free; {len(self.waiters)} waiting")
+        if self.budget:
+            lines.append(f"budget       {self.budget}")
         lines.append(f"chunks       {self.chunks}")
         reason = f": {self.calibration_reason}" if self.calibration_reason else ""
         lines.append(f"calibration  {self.calibration}{reason}")
         return "\n".join(lines)
 
 
-def check(db: str | Path, roots: Sequence[str | Path], *, policy: str | None = None) -> CheckReport:
+def check(
+    db: str | Path,
+    roots: Sequence[str | Path],
+    *,
+    policy: str | None = None,
+    budget: IndexBudget | None = None,
+) -> CheckReport:
     """Report what `refresh` would find. Opens the store read-only and writes nothing anywhere.
 
     `policy` is the `policy_key` a refresh would apply (None for no policy): a refresh under a
@@ -516,6 +552,12 @@ def check(db: str | Path, roots: Sequence[str | Path], *, policy: str | None = N
         roots=resolved,
         current=bool(current),
         files_seen=snap.count,
+        bytes_seen=snap.total_bytes,
+        budget=None if budget is None else (
+            over_budget(snap, budget)
+            or f"within it: {snap.count} of {budget.max_files} file(s), {snap.total_bytes} of "
+            f"{budget.max_bytes} byte(s) (RECALL_INDEX_MAX_FILES, RECALL_INDEX_MAX_BYTES)"
+        ),
         missing=snap.missing,
         last=last if isinstance(last, dict) else None,
         last_success_utc=last_success.get("finished_utc"),

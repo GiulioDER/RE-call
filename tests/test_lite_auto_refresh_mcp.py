@@ -5,6 +5,8 @@
 - R9b a failing check never fails the retrieval that asked for it.
 - R10 the real lifespan runs a catch-up refresh at start, a search refreshes first, and
   `recall_stats` reports the last refresh.
+- W1 to W3 a failing refresh is told: a warning on search answers (W2b) and refusals (W2), until a
+  refresh succeeds (W1), and a `refresh` check in `recall doctor` (W3).
 
 Red proof, 2026-10-12, on Linux: each mutation alone, the named test failing in its own assertion,
 then restored and green (3 passed):
@@ -15,6 +17,17 @@ then restored and green (3 passed):
 - M10a (R10) lifespan: `lite_refresher.start()` made `pass`: "no catch-up refresh at start"
 - M10b (R10) `_run_retrieval_tool.execute`: `before_retrieval()` made `pass`: "the search did not refresh first"
 - M10c (R10) `recall_stats`: the `refresh` field not filled: "recall_stats has no refresh"
+
+Warning tests (2026-10-13), each mutation alone on Linux, red in its own assertion, then restored:
+- MW1 (W1) the failure not cleared on success: "the warning outlived a successful refresh"
+- MW2 (W2) the refusal built without the warning: the ToolError payload has no refresh_warning
+- MW2b (W2b) the result not given the warning: no refresh_warning in an answered search
+- MW3 (W3) the doctor's refresh check not yielded: "no failed-refresh warning"
+- MW4 (W4) `_refreshed_elsewhere` never adopts a person's success: "the warning outlived a person's
+  successful refresh"
+- MW4b (W4b) the warning not cleared on a return to the refreshed snapshot: "the warning outlived the
+  folder's return to its last good state"
+- MW3b (W3b) the doctor ignores the current snapshot: status `warn` for a failure left behind
 """
 from __future__ import annotations
 
@@ -196,3 +209,132 @@ def test_a_failing_refresh_backs_off(setup: tuple[LiteStore, Path, Clock], monke
         refresher.before_retrieval()
         clock.now += 31
     assert len(calls) == 2, f"an unchanged failing folder was retried {len(calls)} times in 4 intervals"
+
+
+def test_a_failing_refresh_warns_until_one_succeeds(
+    setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W1: the refresher reports why refreshing fails, and stops once a refresh succeeds."""
+    store, root, clock = setup
+    outcomes = [Outcome.FAILED, Outcome.REFRESHED]
+
+    def scripted(store_: object, roots: list[Path], *args: object, **kwargs: object) -> RefreshReport:
+        return RefreshReport(outcomes.pop(0), "over the index budget", fingerprint=auto.snapshot(roots).fingerprint + "x")
+
+    monkeypatch.setattr(auto, "refresh", scripted)
+    refresher = LiteAutoRefresher(store, ContentWordEmbedder(), [root], interval_s=0, wait_s=5, clock=clock)  # type: ignore[arg-type]
+    refresher._kick()[0].join(30)
+    warning = refresher.warning()
+    assert warning is not None and "over the index budget" in warning, warning
+    refresher._kick()[0].join(30)
+    assert refresher.warning() is None, "the warning outlived a successful refresh"
+
+
+def test_the_agent_is_told_when_the_refresh_is_refused(lite_env: dict[str, str]) -> None:  # noqa: F811
+    """W2: over the budget, the search answer (or its refusal) carries the reason to the agent."""
+    root = Path(lite_env["RECALL_INDEX_ROOT"])
+    _write_memos(root, 3)
+    env = {**lite_env, "RECALL_LITE_AUTO_REFRESH": "1", "RECALL_INDEX_MAX_FILES": "1"}
+
+    async def body(state: dict[str, Any], call: Any) -> None:
+        refresher = state["lite_refresher"]
+        if refresher._thread is not None:
+            refresher._thread.join(30)
+        answer = await call("recall_search", query="serviced every spring")
+        assert "refresh_warning" in answer and "RECALL_INDEX_MAX_FILES" in answer, answer
+
+    _serve(env, body)
+
+
+def test_doctor_reports_a_failed_refresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """W3: `recall doctor` on a lite store shows the last refresh's failure and how to look at it."""
+    from recall.doctor import _lite_checks
+    from recall.index_budget import IndexBudget
+    from recall.lite.refresh import refresh
+
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
+    _write_memos(tmp_path / "memory", 3)
+    db = tmp_path / ".recall" / "memory.db"
+    with LiteStore(db, dim=DIM) as store:
+        refresh(store, [tmp_path / "memory"], ContentWordEmbedder(), budget=IndexBudget(max_files=1))  # type: ignore[arg-type]
+    checks = {c.name: c for c in _lite_checks("sqlite:///" + db.as_posix(), tenant="default")}
+    found = checks.get("refresh")
+    assert found is not None and found.status == "warn", f"no failed-refresh warning: {sorted(checks)}"
+    assert "RECALL_INDEX_MAX_FILES" in found.detail and found.fix and "recall lite refresh --check" in found.fix
+
+
+def test_an_answered_search_carries_the_refresh_warning(lite_env: dict[str, str]) -> None:  # noqa: F811
+    """W2b: when search answers (relaxed trust here), the warning is a field of the result."""
+    root = Path(lite_env["RECALL_INDEX_ROOT"])
+    _write_memos(root, 3)
+    env = {**lite_env, "RECALL_LITE_AUTO_REFRESH": "1", "RECALL_INDEX_MAX_FILES": "1", "RECALL_TRUST_MODE": "development"}
+
+    async def body(state: dict[str, Any], call: Any) -> None:
+        refresher = state["lite_refresher"]
+        if refresher._thread is not None:
+            refresher._thread.join(30)
+        answer = await call("recall_search", query="serviced every spring")
+        assert not answer.startswith("RAISED"), answer
+        assert "RECALL_INDEX_MAX_FILES" in (json.loads(answer).get("refresh_warning") or ""), answer
+
+    _serve(env, body)
+
+
+def test_the_warning_clears_when_a_person_refreshes_the_folder(setup: tuple[LiteStore, Path, Clock]) -> None:
+    """W4 (review BUG-002): a failing server refresh, then a person's successful one: the warning goes."""
+    from recall.index_budget import IndexBudget
+    from recall.lite.refresh import refresh
+
+    store, root, clock = setup
+    refresher = LiteAutoRefresher(  # type: ignore[arg-type]
+        store, ContentWordEmbedder(), [root], interval_s=30, wait_s=30, budget=IndexBudget(max_files=1), clock=clock
+    )
+    refresher.start()
+    refresher._kick()[0].join(30)
+    assert refresher.warning() is not None
+    refresh(store, [root], ContentWordEmbedder())  # type: ignore[arg-type]  # a person, unbounded
+    clock.now += 31
+    refresher.before_retrieval()
+    assert refresher.warning() is None, "the warning outlived a person's successful refresh"
+
+
+def test_the_warning_clears_when_the_folder_returns_to_its_last_good_state(
+    setup: tuple[LiteStore, Path, Clock],
+) -> None:
+    """W4b (review BUG-002): a memo that pushed the folder over budget is removed: the warning goes."""
+    from recall.index_budget import IndexBudget
+
+    store, root, clock = setup
+    refresher = LiteAutoRefresher(  # type: ignore[arg-type]
+        store, ContentWordEmbedder(), [root], interval_s=30, wait_s=30, budget=IndexBudget(max_files=3), clock=clock
+    )
+    refresher.start()
+    refresher._kick()[0].join(30)
+    assert refresher.warning() is None
+    _write_memos(root, 1, start=3)
+    clock.now += 31
+    refresher.before_retrieval()
+    assert refresher.warning() is not None, "a fourth memo over a three-file budget did not warn"
+    (root / "memo-003.md").unlink()
+    clock.now += 31
+    refresher.before_retrieval()
+    assert refresher.warning() is None, "the warning outlived the folder's return to its last good state"
+
+
+def test_doctor_does_not_report_a_failure_the_folder_has_left_behind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """W3b (review BUG-003): refreshed, then over budget and refused, then reverted: doctor is ok."""
+    from recall.doctor import _lite_checks
+    from recall.index_budget import IndexBudget
+    from recall.lite.refresh import refresh
+
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
+    root = tmp_path / "memory"
+    _write_memos(root, 3)
+    db = tmp_path / ".recall" / "memory.db"
+    with LiteStore(db, dim=DIM) as store:
+        refresh(store, [root], ContentWordEmbedder())  # type: ignore[arg-type]
+        _write_memos(root, 1, start=3)
+        refresh(store, [root], ContentWordEmbedder(), budget=IndexBudget(max_files=3))  # type: ignore[arg-type]
+    (root / "memo-003.md").unlink()
+    checks = {c.name: c for c in _lite_checks("sqlite:///" + db.as_posix(), tenant="default")}
+    assert checks["refresh"].status == "ok", checks["refresh"]

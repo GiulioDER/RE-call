@@ -248,11 +248,17 @@ Re-running it re-indexes
 what changed and refits the calibration when the memory changed. Add `.recall/` to `.gitignore`.
 
 The memory then keeps itself current. The MCP server refreshes the store when it starts, and before
-a search it checks the folder (at most every `RECALL_LITE_REFRESH_INTERVAL` seconds, 30 by
+a search it checks the folder (at most every `RECALL_LITE_REFRESH_INTERVAL` seconds, thirty by
 default): when a memo changed it indexes it first, waiting up to `RECALL_LITE_REFRESH_WAIT` seconds
-(3), and refits the calibration. `RECALL_LITE_AUTO_REFRESH=0` turns this off. `recall lite refresh`
-does the same by hand or from a scheduler, and `recall lite refresh --check` reports whether the
-store is current without changing anything. `recall_stats` shows the last refresh and its reason.
+(three), and refits the calibration. `RECALL_LITE_AUTO_REFRESH=0` turns this off. `recall lite
+refresh` does the same by hand or from a scheduler, and `recall lite refresh --check` reports whether
+the store is current without changing anything.
+
+Like `recall_index`, the automatic refresh refuses a folder larger than `RECALL_INDEX_MAX_FILES` (two
+thousand files by default) or `RECALL_INDEX_MAX_BYTES` (twenty megabytes), and indexes nothing;
+`recall lite refresh` run by hand indexes it anyway, with a warning. While refreshing fails, every
+search answer carries a `refresh_warning` naming the cause, `recall doctor` reports it, and
+`recall_stats` shows the last refresh and its reason.
 
 The trust layer is the same code: superseded and expired verdicts, abstention, and strict refusal
 until the calibration certifies. Retrieval is exact cosine search plus PostgreSQL's own keyword

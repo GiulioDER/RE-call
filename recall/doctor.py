@@ -975,6 +975,34 @@ def _lite_checks(dsn: str, *, tenant: str, table: str = DEFAULT_TABLE) -> Iterat
             "fitted to this corpus and did not certify, so strict search refuses",
             "add more memos and re-index; or RECALL_TRUST_MODE=development to inspect results as DEGRADED",
         )
+    yield _lite_refresh_check(found.path)
+
+
+def _lite_refresh_check(path: Path) -> Check:
+    """The last refresh of the memo folder (automatic or `recall lite refresh`), from its state file."""
+    from recall.lite.refresh import read_state, snapshot
+
+    state = read_state(path)
+    last, success, roots = state.get("last"), state.get("last_success"), state.get("roots")
+    if not isinstance(last, dict):
+        return Check("refresh", "skip", "no refresh of the memo folder recorded yet")
+    when, reason = last.get("finished_utc"), last.get("reason")
+    # A failure is over once the folder is back to what the last success indexed (a revert, or a
+    # person's refresh): a refresh that finds nothing changed writes nothing to say so.
+    superseded = (
+        isinstance(success, dict)
+        and isinstance(roots, list)
+        and all(isinstance(r, str) for r in roots)
+        and snapshot(roots).fingerprint == success.get("fingerprint")
+    )
+    if last.get("outcome") == "failed" and not superseded:
+        return Check(
+            "refresh",
+            "warn",
+            f"the last refresh failed at {when}, so newer memos are not searchable: {reason}",
+            "recall lite refresh --check   (then fix the cause, or run `recall lite refresh` by hand)",
+        )
+    return Check("refresh", "ok", f"last refresh {last.get('outcome')} at {when}: {reason}")
 
 
 def _migration_check_for(conn: Any, dsn: str, *, table: str) -> Check:

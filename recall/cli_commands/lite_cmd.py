@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from recall.index_budget import IndexBudget
     from recall.security_policy import AccessContext, SourceSecurityPolicy
 
 #: Exit codes. 3 is the embedding queue's "busy", so a script can treat both alike.
@@ -92,6 +93,37 @@ def _policy(tenant: str) -> tuple[SourceSecurityPolicy | None, AccessContext | N
     return policy, refresh_access_context(tenant)
 
 
+def _budget() -> IndexBudget | None:
+    """The configured budget, or None (with a warning) when it is malformed: it never stops a refresh."""
+    import sys
+
+    from recall.index_budget import budget_from_env
+
+    try:
+        return budget_from_env(os.environ)
+    except ValueError as exc:
+        print(f"warning: {exc}; the budget is not checked", file=sys.stderr)
+        return None
+
+
+def _warn_if_over_budget(roots: list[Path], budget: IndexBudget | None) -> None:
+    """A person may index past the budget; the server will not, so say so (CCA SEC-002)."""
+    import sys
+
+    from recall.lite.refresh import over_budget, snapshot
+
+    if budget is None:
+        return
+    refusal = over_budget(snapshot(roots), budget)
+    if refusal is not None:
+        print(
+            f"warning: {refusal.removesuffix(' Nothing was indexed.')} This refresh ran anyway, "
+            "because a person asked for it; the MCP server refuses to refresh a folder this large "
+            "on its own.",
+            file=sys.stderr,
+        )
+
+
 def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.lite.refresh import Outcome, check, refresh
 
@@ -100,9 +132,10 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
 
     db = (args.store or Path.cwd() / ".recall" / "memory.db").resolve()
     roots = _roots(args, db)
+    budget = _budget()
     if args.check:
         policy, context = _policy(inspect_lite_file(db).tenant or "default")
-        report = check(db, roots, policy=policy_key(policy, context))
+        report = check(db, roots, policy=policy_key(policy, context), budget=budget)
         print(json.dumps(report.to_dict(), indent=2, default=str) if args.json else report.render())
         raise SystemExit(EXIT_OK if report.current else EXIT_FAILED)
     if not db.exists():
@@ -132,6 +165,7 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
             security_context=context,
         )
     print(json.dumps(result.to_dict(), indent=2, default=str) if args.json else result.render())
+    _warn_if_over_budget(roots, budget)
     if result.outcome is Outcome.FAILED:
         raise SystemExit(EXIT_FAILED)
     if result.outcome is Outcome.BUSY:

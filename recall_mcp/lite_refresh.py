@@ -28,7 +28,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from recall.lite.refresh import Outcome, refresh, snapshot
+from recall.index_budget import IndexBudget, budget_from_env
+from recall.lite.refresh import Outcome, read_state, refresh, snapshot
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -73,11 +74,13 @@ class LiteAutoRefresher:
         wait_s: float = DEFAULT_WAIT_S,
         security_policy: SourceSecurityPolicy | None = None,
         security_context: AccessContext | None = None,
+        budget: IndexBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._store, self._embedder, self._roots = store, embedder, roots
         self._interval_s, self._wait_s, self._clock = interval_s, wait_s, clock
         self._policy, self._context = security_policy, security_context
+        self._budget = budget
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._last_check = -math.inf
@@ -88,6 +91,7 @@ class LiteAutoRefresher:
         self._failed: str | None = None
         self._retry_at = -math.inf
         self._backoff_s = 0.0
+        self._failure: str | None = None  # why this server's last refresh failed; None once one succeeds
 
     @classmethod
     def from_env(
@@ -113,6 +117,12 @@ class LiteAutoRefresher:
         root = env.get("RECALL_INDEX_ROOT", "").strip()
         if not root:
             return None
+        try:
+            budget = budget_from_env(env)
+        except ValueError as exc:
+            # Unattended: a bad limit falls back to the defaults rather than to no limit at all.
+            _log.warning("%s; the automatic refresh uses the default index budget", exc)
+            budget = IndexBudget()
         return cls(
             store,
             embedder,
@@ -121,6 +131,7 @@ class LiteAutoRefresher:
             wait_s=_seconds(env, "RECALL_LITE_REFRESH_WAIT", DEFAULT_WAIT_S),
             security_policy=security_policy,
             security_context=security_context,
+            budget=budget,
         )
 
     def start(self) -> None:
@@ -137,6 +148,10 @@ class LiteAutoRefresher:
                 self._last_check = now
             fingerprint = snapshot(self._roots).fingerprint
             if fingerprint == self._refreshed:
+                with self._lock:
+                    self._failure = None  # back to a snapshot that refreshed: nothing is missing
+                return
+            if fingerprint == self._failed and self._refreshed_elsewhere(fingerprint):
                 return
             with self._lock:
                 if fingerprint == self._failed and now < self._retry_at:
@@ -149,6 +164,26 @@ class LiteAutoRefresher:
                 thread.join(self._wait_s)
         except Exception as exc:  # BROAD-CATCH: fail-open  # a refresh problem must never fail a search
             _log.warning("lite auto refresh check failed: %s", exc)
+
+    def _refreshed_elsewhere(self, fingerprint: str) -> bool:
+        """Did another refresher (a person's CLI run) bring this failing snapshot current? Then adopt it."""
+        last = read_state(self._store.path).get("last_success") or {}
+        if last.get("fingerprint") != fingerprint:
+            return False
+        with self._lock:
+            self._refreshed, self._failed, self._failure, self._backoff_s = fingerprint, None, None, 0.0
+        return True
+
+    def warning(self) -> str | None:
+        """What a retrieval should tell the agent while refreshing fails, or None."""
+        with self._lock:
+            failure = self._failure
+        if failure is None:
+            return None
+        return (
+            "Memory refresh is failing, so memos changed since the last successful refresh are not "
+            f"searchable yet: {failure} Run `recall lite refresh --check` for details."
+        )
 
     def _kick(self) -> tuple[threading.Thread, bool]:
         """The refresh thread, started if none is running; and whether this call started it."""
@@ -169,15 +204,20 @@ class LiteAutoRefresher:
                 background_calibration=True,
                 security_policy=self._policy,
                 security_context=self._context,
+                budget=self._budget,
             )
         except Exception as exc:  # BROAD-CATCH: fail-open  # logged; the next check retries
             _log.warning("lite auto refresh failed: %s", exc)
+            with self._lock:
+                self._failure = f"{type(exc).__name__}: {exc}"
             return
         _log.info("lite auto refresh: %s (%s)", report.outcome.value, report.reason)
         with self._lock:
             if report.outcome in (Outcome.REFRESHED, Outcome.UNCHANGED):
                 self._refreshed, self._failed, self._backoff_s = report.fingerprint, None, 0.0
+                self._failure = None
             elif report.outcome is Outcome.FAILED:
+                self._failure = report.reason
                 repeated = report.fingerprint == self._failed
                 self._backoff_s = (
                     min(self._backoff_s * 2, MAX_BACKOFF_S) if repeated else max(2 * self._interval_s, MIN_BACKOFF_S)

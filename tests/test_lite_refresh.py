@@ -30,6 +30,19 @@ then restored and green (12 passed):
   (it survived the first R13, which only asserted the outcome; the in-lane check of R13b caught it)
 - M13b (R13b) `_refresh_locked`: the in-lane missing-folder check disabled: outcome `refreshed` over 0 files
 - M14 (R14) `read_state`: `ValueError` not caught: "raised JSONDecodeError"
+
+Budget tests B1 to B5 (CCA SEC-002, 2026-10-13), each mutation alone on Linux, red in its own
+assertion, then restored and green:
+- MB1 (B1, B1b) the budget check under the lane off: outcome `refreshed` (B1b: over 4 files). An
+  earlier version also refused before the lane; review BUG-001 removed it (a state write outside
+  the lane can undo a concurrent success).
+- MB2 (B2) `budget_refusal` made `>=`: a folder exactly at the budget was refused
+- MB3 (B3) the snapshot counts 0 bytes: "3 file(s) checked", not refused
+- MB4 (B4) the server refresher passes `budget=None`: "the server indexed a folder over its budget"
+- MB5 (B5) the CLI warning dropped: no "warning:" on stderr
+- MB6 (B6) the minimum of 1 not enforced: "a zero file budget was accepted"
+- MB7 (B7) a malformed budget stops the refresh again (SystemExit): exit -1, no warning
+- MB8 (B8) the budget line rendered only when over: "within it" missing from --check
 """
 from __future__ import annotations
 
@@ -426,3 +439,119 @@ def test_a_refresh_the_policy_denies_entirely_is_a_failure(
     assert report.outcome is Outcome.FAILED, f"{report.outcome}: {report.reason}"
     assert "denies all 3" in report.reason, report.reason
     assert read_state(store.path).get("last_success") is None
+
+
+def test_an_over_budget_folder_is_refused_and_nothing_is_indexed(
+    store: LiteStore, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1 (CCA SEC-002): three memos against a two-file budget: FAILED, no row written.
+
+    Refused under the lane, not before it, so the refusal is written safely (review BUG-001).
+    """
+    from recall.index_budget import IndexBudget
+
+    report = _run(store, project, budget=IndexBudget(max_files=2))
+    assert report.outcome is Outcome.FAILED, f"{report.outcome}: {report.reason}"
+    assert "RECALL_INDEX_MAX_FILES" in report.reason and "3 candidate file(s) > limit 2" in report.reason, report.reason
+    assert store.count() == 0, "an over-budget folder was indexed"
+    assert read_state(store.path).get("last_success") is None
+
+
+def test_a_folder_exactly_at_the_budget_is_refreshed(store: LiteStore, project: Path) -> None:
+    """B2 (CCA SEC-002): the limit is inclusive, as `recall_index`'s is."""
+    from recall.index_budget import IndexBudget
+
+    report = _run(store, project, budget=IndexBudget(max_files=3))
+    assert report.outcome is Outcome.REFRESHED, f"{report.outcome}: {report.reason}"
+
+
+def test_the_byte_budget_counts_the_folder(store: LiteStore, project: Path) -> None:
+    """B3 (CCA SEC-002): the bytes the snapshot stats are what the byte budget sees."""
+    from recall.index_budget import IndexBudget
+
+    report = _run(store, project, budget=IndexBudget(max_bytes=10))
+    assert report.outcome is Outcome.FAILED and "RECALL_INDEX_MAX_BYTES" in report.reason, report.reason
+    assert store.count() == 0
+
+
+def test_the_server_refresh_takes_the_budget_from_its_environment(store: LiteStore, project: Path) -> None:
+    """B4 (CCA SEC-002): `from_env` reads RECALL_INDEX_MAX_FILES, so an unattended refresh is bounded."""
+    from recall_mcp.lite_refresh import LiteAutoRefresher
+
+    refresher = LiteAutoRefresher.from_env(
+        store, ContentWordEmbedder(), {"RECALL_INDEX_ROOT": str(project / "memory"), "RECALL_INDEX_MAX_FILES": "2"}  # type: ignore[arg-type]
+    )
+    assert refresher is not None
+    refresher.start()
+    refresher._kick()[0].join(30)
+    assert store.count() == 0, "the server indexed a folder over its budget"
+    assert "RECALL_INDEX_MAX_FILES" in read_state(store.path)["last"]["reason"]
+
+
+def test_a_person_may_refresh_past_the_budget_with_a_warning(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """B5 (CCA SEC-002): the CLI indexes an over-budget folder, warns on stderr, and --check says so."""
+    monkeypatch.setenv("RECALL_INDEX_MAX_FILES", "2")
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64).close()
+    base = ["lite", "refresh", "--store", str(db), "--memory", str(project / "memory"), "--embedder", "hashing"]
+    assert _cli(*base) == 0
+    captured = capsys.readouterr()
+    assert "warning:" in captured.err and "RECALL_INDEX_MAX_FILES" in captured.err, captured.err
+    assert read_state(db)["last"]["outcome"] == "refreshed"
+    _cli(*base, "--check")
+    assert "budget       the memory folder" in capsys.readouterr().out
+
+
+def test_a_folder_grown_past_the_budget_while_queued_is_refused(
+    store: LiteStore, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1b (CCA SEC-002): within budget at the first snapshot, over it inside the lane: refused."""
+    from recall.index_budget import IndexBudget
+
+    real = refresh_mod.snapshot
+    calls: list[int] = []
+
+    def growing(roots: object) -> refresh_mod.Snapshot:
+        calls.append(1)
+        if len(calls) == 2:
+            _write_memos(project / "memory", 1, start=3)
+        return real(roots)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(refresh_mod, "snapshot", growing)
+    report = _run(store, project, budget=IndexBudget(max_files=3))
+    assert report.outcome is Outcome.FAILED and "4 candidate file(s) > limit 3" in report.reason, report.to_dict()
+    assert store.count() == 0
+
+
+def test_a_budget_below_one_is_refused() -> None:
+    """B6 (review BUG-004): as the server's settings refuse it, so does the budget."""
+    from recall.index_budget import budget_from_env
+
+    try:
+        budget_from_env({"RECALL_INDEX_MAX_FILES": "0"})
+        raised = ""
+    except ValueError as exc:
+        raised = str(exc)
+    assert "at least 1" in raised, f"a zero file budget was accepted: {raised!r}"
+
+
+def test_a_malformed_budget_never_stops_a_persons_refresh(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """B7 (review BUG-005): the manual refresh warns about the setting and refreshes anyway."""
+    monkeypatch.setenv("RECALL_INDEX_MAX_FILES", "lots")
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64).close()
+    code = _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"), "--embedder", "hashing")
+    captured = capsys.readouterr()
+    assert code == 0 and "RECALL_INDEX_MAX_FILES" in captured.err, (code, captured.err)
+
+
+def test_check_shows_the_budget_when_within_it(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """B8 (review BUG-005): --check always states the limits, not only when over them."""
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64).close()
+    _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"), "--check")
+    assert "budget       within it: 3 of 2000 file(s)" in capsys.readouterr().out
