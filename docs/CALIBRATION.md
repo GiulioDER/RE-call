@@ -235,6 +235,13 @@ whole bundle. Import verifies both checksums, the tenant, generation lineage, em
 query-set digest. An imported v2 artifact returns to `draft` or `rejected`; import never publishes
 it automatically.
 
+On a lite store (a `sqlite:///` DSN), `list`, `show` and `export` work and the rest are refused by
+name: a lite store calibrates itself when it is indexed, on questions it generates and keeps only
+the digest of. Its export is therefore the artifact alone, flagged `artifact_only`, with no labels,
+and no `import` accepts it. `list` reports every calibration but the newest as `superseded`,
+because a lite store serves only its newest one. A stored calibration that does not verify is
+skipped and reported, and when it is the one the store serves, none is reported in force.
+
 An old `calibration.json` can be imported for audit continuity. It is stored as `legacy_unbound`
 because it cannot prove tenant, generation, pipeline, corpus, or query-set identity. Library, CLI,
 and MCP search paths never select that file automatically.
