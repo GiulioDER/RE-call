@@ -11,6 +11,11 @@ from recall._env import strict_bool
 from recall.cache import default_cache
 from recall.context import context_policy_for_profile
 from recall.embeddings import Embedder, embedding_profile_id
+# The budget lives in `recall.index_budget`, shared with the lite store's automatic refresh; the
+# constants stay importable from here (and from `recall_mcp.service`) for existing callers.
+from recall.index_budget import DEFAULT_MAX_INDEX_BYTES as DEFAULT_MAX_INDEX_BYTES
+from recall.index_budget import DEFAULT_MAX_INDEX_FILES as DEFAULT_MAX_INDEX_FILES
+from recall.index_budget import budget_from_env, budget_refusal
 from recall.errors import RecallError
 from recall.index import Chunker, Indexer, ShadowIndexTarget, candidate_files, chunk_text
 from recall.observability import get_logger
@@ -36,8 +41,6 @@ def _scrub_paths(message: str, *paths: Path) -> str:
     return message
 
 
-DEFAULT_MAX_INDEX_FILES = 2000
-DEFAULT_MAX_INDEX_BYTES = 20_000_000
 CandidateFiles = Callable[..., list[Path]]
 CandidateFilesProvider = Callable[[], CandidateFiles]
 _candidate_files_provider: CandidateFilesProvider | None = None
@@ -131,8 +134,10 @@ def _index_memory_unlocked(
     if not target.exists():
         raise IndexPreflightError(f"path not found: {path!r}")
 
-    max_files = int(values.get("RECALL_INDEX_MAX_FILES", str(DEFAULT_MAX_INDEX_FILES)))
-    max_bytes = int(values.get("RECALL_INDEX_MAX_BYTES", str(DEFAULT_MAX_INDEX_BYTES)))
+    try:
+        budget = budget_from_env(values)
+    except ValueError as exc:
+        raise IndexPreflightError(str(exc)) from exc
     if candidate_files_fn is not None:
         files_fn = candidate_files_fn
     elif _candidate_files_provider is not None:
@@ -143,11 +148,9 @@ def _index_memory_unlocked(
         files = files_fn(target, glob) if glob is not None else files_fn(target)
     except (OSError, PermissionError) as exc:
         raise IndexPreflightError(str(exc)) from exc
-    if len(files) > max_files:
-        raise IndexPreflightError(
-            f"index request for {path!r} exceeds the file-count budget: {len(files)} candidate "
-            f"file(s) > limit {max_files}; set RECALL_INDEX_MAX_FILES to raise it."
-        )
+    subject = f"index request for {path!r}"
+    if (refusal := budget_refusal(subject, len(files), 0, budget)) is not None:
+        raise IndexPreflightError(refusal)
     total_bytes = 0
     try:
         for file in files:
@@ -157,11 +160,8 @@ def _index_memory_unlocked(
                 continue
     except (OSError, PermissionError) as exc:
         raise IndexPreflightError(str(exc)) from exc
-    if total_bytes > max_bytes:
-        raise IndexPreflightError(
-            f"index request for {path!r} exceeds the byte budget: {total_bytes} candidate "
-            f"byte(s) > limit {max_bytes}; set RECALL_INDEX_MAX_BYTES to raise it."
-        )
+    if (refusal := budget_refusal(subject, len(files), total_bytes, budget)) is not None:
+        raise IndexPreflightError(refusal)
     if security_policy is not None:
         if security_context is None:
             raise IndexPreflightError(

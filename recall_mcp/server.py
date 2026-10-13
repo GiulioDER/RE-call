@@ -1414,9 +1414,16 @@ def _federation_config_for(state: Mapping[str, object]) -> FederationConfig:
     return FederationConfig.from_env(_runtime_env_for(state))
 
 
-def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
-    """Keep the stable trust refusal payload visible through MCP's error channel."""
-    return ToolError(json.dumps({"error": "trust_refusal", **refusal.to_dict()}, sort_keys=True))
+def _tool_error_for_trust_refusal(refusal: TrustRefusal, *, refresh_warning: str | None = None) -> ToolError:
+    """Keep the stable trust refusal payload visible through MCP's error channel.
+
+    `refresh_warning` rides along when the lite store's refresh is failing: an empty or
+    uncalibrated store is the usual reason for the refusal then, and the warning is the cause.
+    """
+    payload: dict[str, object] = {"error": "trust_refusal", **refusal.to_dict()}
+    if refresh_warning is not None:
+        payload["refresh_warning"] = refresh_warning
+    return ToolError(json.dumps(payload, sort_keys=True))
 
 
 def _retrieval_plan_for(
@@ -1528,9 +1535,16 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 plan_payload = retrieval_plan.as_dict()
                 if federation is not None:
                     plan_payload["federation"] = federation
-                result = result.model_copy(update={"retrieval_plan": plan_payload})
+                update: dict[str, object] = {"retrieval_plan": plan_payload}
+                refresher = state.get("lite_refresher")
+                if refresher is not None and (warning := refresher.warning()) is not None:
+                    # A failing refresh is otherwise silent: the agent would answer from stale memory.
+                    update["refresh_warning"] = warning
+                result = result.model_copy(update=update)
             except TrustRefusal as exc:
-                raise _tool_error_for_trust_refusal(exc) from exc
+                refresher = state.get("lite_refresher")
+                warning = refresher.warning() if refresher is not None else None
+                raise _tool_error_for_trust_refusal(exc, refresh_warning=warning) from exc
             if locale is None:
                 return _serving_json(result)
             return await _translation_to_thread(
