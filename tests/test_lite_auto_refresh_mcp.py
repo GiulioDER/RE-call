@@ -34,6 +34,15 @@ Deferred pass (2026-10-13), each mutation alone on Linux, red in its own asserti
 - MD7 (D7, ENV-003) an unrecognised switch value turns the refresh on: a refresher was built
 - MD8 (D8, PERF-004) the check's snapshot not handed over: "3 walks for one check and the refresh it started"
 - MD9 (D9, BUG-006) `stop` does not wait: "stop returned before the running refresh finished"
+- MD10 (D10, BUG-006 wiring) the lifespan's `stop` call removed: "the server closed the store without
+  stopping its refresher"
+
+File names (owner decision 2026-10-13), each mutation alone on Linux:
+- MK1 (K1, and N5 in tests/test_lite_mcp.py) `recall_index` keys to the indexed folder again: "one file,
+  two names" / "forget by file name deleted nothing"
+- MK2 (K2) every store keyed to RECALL_INDEX_ROOT: "a non-lite store was keyed to RECALL_INDEX_ROOT"
+- MR21 (R2-1, review BUG-001) the pre-check decides on folder-relative names again: "source 'memo-000.md'
+  denied"
 """
 from __future__ import annotations
 
@@ -404,3 +413,85 @@ def test_stop_waits_for_a_running_refresh_and_starts_no_more(
     assert finished == [1], "stop returned before the running refresh finished"
     thread, started = refresher._kick()
     assert (thread, started) == (None, False), "a stopped refresher started another refresh"
+
+
+
+def test_the_server_stops_its_refresher_before_closing_the_store(
+    lite_env: dict[str, str], monkeypatch: pytest.MonkeyPatch  # noqa: F811
+) -> None:
+    """D10 (BUG-006 wiring, architect advisory 1): the lifespan's finally calls `stop`."""
+    _write_memos(Path(lite_env["RECALL_INDEX_ROOT"]), 3)
+    stopped: list[int] = []
+    real = LiteAutoRefresher.stop
+
+    def recording(self: LiteAutoRefresher, timeout_s: float = 10.0) -> None:
+        stopped.append(1)
+        real(self, timeout_s)
+
+    monkeypatch.setattr(LiteAutoRefresher, "stop", recording)
+
+    async def body(state: dict[str, Any], call: Any) -> None:
+        assert state["lite_refresher"] is not None
+
+    _serve({**lite_env, "RECALL_LITE_AUTO_REFRESH": "1"}, body)
+    assert stopped == [1], "the server closed the store without stopping its refresher"
+
+
+
+def test_both_indexers_give_a_file_one_name(lite_env: dict[str, str]) -> None:  # noqa: F811
+    """K1 (owner decision 2026-10-13): `recall_index` on `mem/` files the memo first, a refresh of
+    RECALL_INDEX_ROOT follows (it skips the unchanged file), and the RECALL_INDEX_ROOT-relative name
+    forgets it. Before the decision the first indexer's name (`memo-003.md`) stuck."""
+    from recall.lite.refresh import refresh
+
+    root = Path(lite_env["RECALL_INDEX_ROOT"])
+    _write_memos(root / "mem", 4)
+
+    async def body(state: dict[str, Any], call: Any) -> None:
+        await call("recall_index", path=str(root / "mem"))
+        refresh(state["store"], [root], state["embedder"])
+        forgot = json.loads(await call("recall_forget", sources=["mem/memo-003.md"]))
+        assert forgot["chunks_removed"] == 1, f"one file, two names: {forgot}"
+
+    _serve(lite_env, body)
+
+
+def test_a_postgres_server_keeps_the_indexed_folders_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """K2 (owner decision 2026-10-13): only a lite store keys to RECALL_INDEX_ROOT."""
+    import recall_mcp.indexing as indexing
+    from recall.index import IndexStats
+
+    _write_memos(tmp_path / "mem", 2)
+    seen: dict[str, object] = {}
+
+    class Recorder:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def index_path(self, path: object, files: object = None, key_root: object = "unset") -> IndexStats:
+            seen["key_root"] = key_root
+            return IndexStats(files=0, chunks=0)
+
+    monkeypatch.setattr(indexing, "Indexer", Recorder)
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
+    indexing.index_memory(object(), ContentWordEmbedder(), str(tmp_path / "mem"),  # type: ignore[arg-type]
+                          env={"RECALL_INDEX_ROOT": str(tmp_path)})
+    assert seen == {"key_root": None}, f"a non-lite store was keyed to RECALL_INDEX_ROOT: {seen}"
+
+
+
+def test_recall_index_checks_the_policy_on_the_names_it_stores(lite_env: dict[str, str], tmp_path: Path) -> None:  # noqa: F811
+    """R2-1 (review BUG-001): a policy allowing `mem` admits `recall_index` of `mem/` on a lite server,
+    whose names are RECALL_INDEX_ROOT-relative; the pre-check used to decide on `memo-000.md` and refuse."""
+    root = Path(lite_env["RECALL_INDEX_ROOT"])
+    _write_memos(root / "mem", 2)
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"rules": [{"prefix": "mem", "principals": [], "purposes": ["retrieval"], "redactions": []}]}),
+                      encoding="utf-8")
+    env = {**lite_env, "RECALL_SOURCE_POLICY_FILE": str(policy)}
+
+    async def body(state: dict[str, Any], call: Any) -> None:
+        answer = await call("recall_index", path=str(root / "mem"))
+        assert "denied" not in answer and "RAISED" not in answer, answer
+
+    _serve(env, body)

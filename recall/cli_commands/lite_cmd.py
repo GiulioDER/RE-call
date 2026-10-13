@@ -82,6 +82,18 @@ def _roots(args: argparse.Namespace, db: Path) -> list[Path]:
     return [Path(os.environ.get("RECALL_INDEX_ROOT", "").strip() or Path.cwd())]
 
 
+def _key_root(db: Path) -> Path | None:
+    """The folder stored names are relative to: the server's (recorded in the state file), else
+    RECALL_INDEX_ROOT, else none (each memo folder names its own files)."""
+    from recall.lite.refresh import read_state
+
+    recorded = read_state(db).get("key_root")
+    if isinstance(recorded, str) and recorded:
+        return Path(recorded)
+    configured = os.environ.get("RECALL_INDEX_ROOT", "").strip()
+    return Path(configured) if configured else None
+
+
 def _policy(tenant: str) -> tuple[SourceSecurityPolicy | None, AccessContext | None]:
     """The operator's source policy and the refresh context, or (None, None).
 
@@ -169,6 +181,7 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
             allow_prune=args.allow_prune,
             security_policy=policy,
             security_context=context,
+            key_root=_key_root(db),
         )
     print(json.dumps(result.to_dict(), indent=2, default=str) if args.json else result.render())
     _warn_if_over_budget(roots, budget)

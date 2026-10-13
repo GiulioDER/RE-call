@@ -56,6 +56,12 @@ class IndexPreflightError(ValueError, RecallError):
     """Index request was refused before the indexer could write corpus state."""
 
 
+def _is_lite(store: object) -> bool:
+    from recall.lite import LiteStore
+
+    return isinstance(store, LiteStore)
+
+
 def index_memory(
     store: PgVectorStore,
     embedder: Embedder,
@@ -167,8 +173,13 @@ def _index_memory_unlocked(
             raise IndexPreflightError(
                 "security_context is required when security_policy is configured"
             )
+        # The names the indexer will store and decide on: RECALL_INDEX_ROOT-relative on a lite
+        # store (`key_root` below), else relative to the indexed path. Deciding on other names
+        # here would let a request pass this check, be charged, and be denied in the indexer.
         relative_paths = (
-            [file.relative_to(target).as_posix() for file in files]
+            [file.relative_to(root).as_posix() for file in files]
+            if _is_lite(store)
+            else [file.relative_to(target).as_posix() for file in files]
             if target.is_dir()
             else [file.name for file in files]
         )
@@ -205,7 +216,14 @@ def _index_memory_unlocked(
                 security_policy=security_policy,
                 security_context=security_context,
                 env=values,
-            ).index_path(target, files=files)
+            ).index_path(
+                target,
+                files=files,
+                # A lite server names every file relative to RECALL_INDEX_ROOT, as its automatic
+                # refresh does, so the name does not depend on which of the two indexed it first
+                # (owner decision, 2026-10-13). Postgres servers keep the indexed path's names.
+                key_root=root if _is_lite(store) else None,
+            )
     except (RuntimeError, OSError, ValueError) as exc:
         _log.warning("index of %r failed: %s", path, exc)
         scrubbed = _scrub_paths(str(exc), target, root)

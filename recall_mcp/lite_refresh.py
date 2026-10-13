@@ -246,6 +246,7 @@ class LiteAutoRefresher:
                 security_context=self._context,
                 budget=self._budget,
                 before=before,
+                key_root=self._roots[0],  # RECALL_INDEX_ROOT: the server's single root names files
             )
         except Exception as exc:  # BROAD-CATCH: fail-open  # logged; the next check retries
             _log.warning("lite auto refresh failed: %s", exc)

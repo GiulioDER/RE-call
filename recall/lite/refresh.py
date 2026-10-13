@@ -163,11 +163,11 @@ def _utc() -> str:
 def snapshot(roots: Sequence[str | Path]) -> Snapshot:
     """Fingerprint the files `Indexer.index_path` would read under each root.
 
-    The walk is `recall.index.candidate_files`, the indexer's own, so the snapshot can never name a
-    different set from the one indexed. Size and `st_mtime_ns` stand in for content: a false change
+    The walk is `recall.index.candidate_files_with_stats`, the indexer's own walk with the stat it
+    already takes, so the snapshot can never name a different set from the one indexed. Size and `st_mtime_ns` stand in for content: a false change
     costs one pass in which the indexer skips each unchanged file by its content hash.
     """
-    from recall.index import candidate_files
+    from recall.index import candidate_files_with_stats
 
     digest = hashlib.sha256()
     files: dict[Path, list[Path]] = {}
@@ -182,14 +182,12 @@ def snapshot(roots: Sequence[str | Path]) -> Snapshot:
             files[root] = []
             continue
         kept: list[Path] = []
-        for path in candidate_files(root):
+        for path, stat in candidate_files_with_stats(root):
             # Kept exactly as the walk names it: the indexer keys rows on this spelling, so a
             # resolved path would file a symlinked memo under its target, beside the rows every
-            # other indexer wrote under the link (CCA BUG-001). `stat` follows the link anyway.
-            try:
-                stat = path.stat()
-            except OSError:
-                continue  # vanished between the walk and the stat; the next snapshot sees it gone
+            # other indexer wrote under the link (CCA BUG-001). The stat is the one the walk took
+            # to check the file is regular (it follows the link), so nothing is stat'ed twice
+            # (CCA PERF-003).
             kept.append(path)
             total_bytes += stat.st_size
             # Both sides: FAT rounds mtimes up, and a future-dated file must not mark every
@@ -310,6 +308,7 @@ def _finish(
     success_generation: str | None = None,
     corpus_version: int | None = None,
     policy: str | None = None,
+    key_root: Path | None = None,
 ) -> RefreshReport:
     """Write the state file for this run. `success_generation` marks it the new last success."""
     report.finished_utc = _utc()
@@ -317,6 +316,7 @@ def _finish(
         "schema": STATE_SCHEMA,
         "store": str(db),
         "roots": [str(r) for r in roots],
+        "key_root": str(key_root) if key_root is not None else read_state(db).get("key_root"),
         "last_check_utc": report.finished_utc,
         "last": report.to_dict(),
         "last_success": read_state(db).get("last_success"),
@@ -346,11 +346,17 @@ def refresh(
     security_context: AccessContext | None = None,
     budget: IndexBudget | None = None,
     before: Snapshot | None = None,
+    key_root: str | Path | None = None,
 ) -> RefreshReport:
     """Bring `store` up to date with `roots`. See the module docstring; never raises on a busy lane.
 
     `before` is a snapshot of `roots` the caller has just taken (the server's check), so the
     folder is not walked twice for one decision (CCA PERF-004).
+
+    `key_root` is the folder stored file names are relative to (RECALL_INDEX_ROOT on a lite
+    server, owner decision 2026-10-13). It applies to each root it contains; it is recorded in
+    the state file, where `recall lite refresh` reads it back, so a person refreshing a subfolder
+    files names exactly as the server does.
 
     `budget` bounds what an unattended refresh may index (`recall.index_budget`, the rule
     `recall_index` applies): a folder over it is FAILED, nothing indexed or pruned. The server
@@ -404,6 +410,7 @@ def refresh(
                 security_policy=security_policy,
                 security_context=security_context,
                 budget=budget,
+                key_root=None if key_root is None else Path(key_root).resolve(),
             )
     except LiteWriterCoalesced:
         report.outcome = Outcome.COALESCED
@@ -428,6 +435,7 @@ def _refresh_locked(
     security_policy: SourceSecurityPolicy | None,
     security_context: AccessContext | None,
     budget: IndexBudget | None,
+    key_root: Path | None = None,
 ) -> RefreshReport:
     from recall.cache import default_cache
     from recall.context import context_policy_for_profile
@@ -482,7 +490,8 @@ def _refresh_locked(
                 security_context=security_context,
             )
             for root in roots:
-                stats = indexer.index_path(root, files=allowed[root])
+                keys = key_root if key_root is not None and root.is_relative_to(key_root) else None
+                stats = indexer.index_path(root, files=allowed[root], key_root=keys)
                 report.indexed_files += stats.files
                 report.chunks_written += stats.chunks
                 report.skipped += stats.skipped
@@ -498,7 +507,7 @@ def _refresh_locked(
         # the failure from being recorded (CCA BUG-002).
         with suppress(Exception):
             report.chunks_total = store.count()
-        return _finish(db, roots, report)
+        return _finish(db, roots, report, key_root=key_root)
     report.outcome = Outcome.REFRESHED
     report.reason = f"{current.count} file(s) checked in {time.monotonic() - started:.1f}s"
     report.calibration, report.calibration_reason = calibration.status.value, calibration.reason
@@ -515,6 +524,7 @@ def _refresh_locked(
         success_generation=store.lite_generation_id(),
         corpus_version=store._version(),
         policy=policy_key(security_policy, security_context),
+        key_root=key_root,
     )
 
 

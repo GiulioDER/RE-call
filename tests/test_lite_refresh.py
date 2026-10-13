@@ -60,6 +60,13 @@ assertion, then restored:
 - MD4b (D4b, BUG-007 as corrected at L5.5) the window without `abs`: a future-dated memo marks the
   success racy
 - MD5 (D5, STAKES-005) setup without the context policy: "the first refresh after setup re-embedded 3 memo(s)"
+
+PERF-003, finished after the deferred pass (2026-10-13), each mutation alone on Linux:
+- MP1 (P1) the snapshot stats each file again: "the snapshot stats each memo 3 time(s), the walk 2"
+- MP2 (P2) the walk pairs a file with the wrong stat: the size and mtime check fails
+- MP2b (P2) the safe-default filter dropped from the shared walk: `notes.json` listed
+- MR22 (R2-2, review BUG-002) every stat error read as "not a file": the unreadable memo dropped
+- MR23 (R2-3, review BUG-003) the CLI passes no key root: names relative to the subfolder (`memo-007.md`)
 """
 from __future__ import annotations
 
@@ -634,8 +641,15 @@ def test_a_write_through_another_path_is_not_missed(store: LiteStore, project: P
     assert _run(store, project).outcome is Outcome.REFRESHED
 
 
-def test_a_fresh_whole_second_mtime_is_never_recorded_clean(store: LiteStore, project: Path) -> None:
-    """D4 (deferred BUG-007): a coarse mtime written just now leaves the success re-checkable."""
+def test_a_fresh_whole_second_mtime_is_never_recorded_clean(
+    store: LiteStore, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D4 (deferred BUG-007): a coarse mtime written just now leaves the success re-checkable.
+
+    The window is widened to a minute here, so a slow runner cannot age the mtime out of it
+    between `os.utime` and the snapshot (architect advisory 2).
+    """
+    monkeypatch.setattr(refresh_mod, "_RACY_WINDOW_NS", 60_000_000_000)
     memo = project / "memory" / "memo-000.md"
     whole = (time.time_ns() // 1_000_000_000) * 1_000_000_000
     os.utime(memo, ns=(whole, whole))
@@ -669,3 +683,92 @@ def test_a_future_dated_memo_does_not_keep_every_snapshot_racy(store: LiteStore,
     assert _run(store, project).outcome is Outcome.REFRESHED
     assert not read_state(store.path)["last_success"]["fingerprint"].endswith(":racy")
     assert _run(store, project).outcome is Outcome.UNCHANGED, "a future-dated memo forced a refresh every time"
+
+
+
+def _stat_calls(monkeypatch: pytest.MonkeyPatch, call: object) -> int:
+    calls: list[int] = []
+    real = Path.stat
+
+    def counting(self: Path, *args: object, **kwargs: object) -> object:
+        calls.append(1)
+        return real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Path, "stat", counting)
+        call()  # type: ignore[operator]
+    return len(calls)
+
+
+def test_the_snapshot_stats_nothing_the_walk_did_not(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P1 (PERF-003): per memo, the snapshot costs exactly the stats of the indexer's own walk.
+
+    Measured as a difference over three added memos, against `candidate_files` itself, because how
+    many stats the walk takes depends on the interpreter (`Path.resolve` stats on 3.12).
+    """
+    from recall.index import candidate_files
+
+    root = project / "memory"
+    snap3 = _stat_calls(monkeypatch, lambda: refresh_mod.snapshot([root]))
+    walk3 = _stat_calls(monkeypatch, lambda: candidate_files(root))
+    _write_memos(root, 3, start=3)
+    snap6 = _stat_calls(monkeypatch, lambda: refresh_mod.snapshot([root]))
+    walk6 = _stat_calls(monkeypatch, lambda: candidate_files(root))
+    assert snap6 - snap3 == walk6 - walk3, (
+        f"the snapshot stats each memo {(snap6 - snap3) / 3:.0f} time(s), the walk {(walk6 - walk3) / 3:.0f}"
+    )
+
+
+def test_the_walk_with_stats_names_the_same_files(project: Path) -> None:
+    """P2 (PERF-003): `candidate_files_with_stats` is `candidate_files` with stats, in the same order."""
+    from recall.index import candidate_files, candidate_files_with_stats
+
+    root = project / "memory"
+    (root / ".hidden").mkdir()
+    (root / ".hidden" / "x.md").write_text("hidden", encoding="utf-8")
+    (root / "notes.json").write_text("{}", encoding="utf-8")
+    (root / "sub").mkdir()
+    (root / "sub" / "b.md").write_text("# B\n", encoding="utf-8")
+    pairs = candidate_files_with_stats(root)
+    names = [p.relative_to(root.resolve()).as_posix() for p, _ in pairs]
+    assert names == ["memo-000.md", "memo-001.md", "memo-002.md", "sub/b.md"], names
+    assert [p for p, _ in pairs] == candidate_files(root)
+    assert all((found.st_size, found.st_mtime_ns) == (p.stat().st_size, p.stat().st_mtime_ns) for p, found in pairs)
+
+
+
+def test_a_memo_the_walk_cannot_stat_still_raises(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """R2-2 (review BUG-002): a permission error on a memo raises, as `is_file` did; it is not dropped."""
+    import errno
+
+    from recall.index import candidate_files
+
+    blocked = (project / "memory" / "memo-001.md").resolve()
+    real = Path.stat
+
+    def refusing(self: Path, *args: object, **kwargs: object) -> object:
+        if self == blocked:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", refusing)
+    try:
+        listed: object = candidate_files(project / "memory")
+    except PermissionError as exc:
+        listed = f"raised {exc}"
+    assert isinstance(listed, str) and listed.startswith("raised"), f"an unreadable memo was dropped: {listed}"
+
+
+def test_a_person_refreshing_a_subfolder_files_names_as_the_server_does(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2-3 (review BUG-003): with RECALL_INDEX_ROOT above the folder, names are relative to it."""
+    sub = project / "memory" / "sub"
+    _write_memos(sub, 1, start=7)
+    monkeypatch.setenv("RECALL_INDEX_ROOT", str(project / "memory"))
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64).close()
+    assert _cli("lite", "refresh", "--store", str(db), "--memory", str(sub), "--embedder", "hashing") == 0
+    with LiteStore(db, dim=64) as opened:
+        files = {c.metadata.get("file") for c in opened.iter_chunks()}
+    assert files == {"sub/memo-007.md"}, f"names not relative to RECALL_INDEX_ROOT: {files}"
