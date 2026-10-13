@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from recall.calibration_v2 import CalibrationResolution
+from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
 from recall.errors import RecallError
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope
 from recall.supersession import EdgeCandidates, chunk_supersedes_targets, resolve_supersession_candidates
@@ -538,7 +538,7 @@ class LiteStore:
                 vectors[i] = np.frombuffer(r[5], dtype=np.float32)
             from recall.lite.calibration import corpus_digest
 
-            fingerprint = corpus_digest([(row.id, row.text) for row in rows])
+            fingerprint = corpus_digest([(r[1], r[3], r[5]) for r in raw])
             self._matrix = _Matrix(
                 version, rows, {row.id: i for i, row in enumerate(rows)}, _normalize(vectors), fingerprint
             )
@@ -649,20 +649,35 @@ class LiteStore:
     # ------------------------------------------------------------------ calibration and lineage
 
     def corpus_fingerprint(self) -> str:
-        """A digest of every chunk's id and text: changes exactly when what search sees changes."""
+        """A digest of chunk ids, text and stored vectors, including vector-only replacements."""
         return self._load().fingerprint
+
+    def corpus_revision(self) -> int:
+        """The persisted write revision used to guard calibration publication."""
+        return self._version()
 
     def lite_generation_id(self) -> str:
         """A stable name for the corpus as it is now, in the place a Postgres generation id goes."""
         return "lite-" + self.corpus_fingerprint()[:16]
 
-    def save_calibration(self, payload: str, *, created_at: str, model: str, dimension: int) -> None:
+    def save_calibration(
+        self, payload: str, *, created_at: str, model: str, dimension: int, expected_revision: int | None = None
+    ) -> None:
+        """Append a fit, keeping identity metadata aligned with the timestamp-selected row.
+
+        An expected revision refuses publication if any corpus write occurred during the fit.
+        The comparison and insertion share the write transaction, excluding another writer.
+        """
         with self._write():
-            self._conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)", (created_at, payload))
-            self._conn.executemany(
-                "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [("embedder_model", model), ("embedder_dimension", str(dimension))],
-            )
+            if expected_revision is not None and self._version() != expected_revision:
+                raise CalibrationBindingError("corpus changed during calibration; retry the fit")
+            inserted = self._conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)", (created_at, payload))
+            selected = self._conn.execute("SELECT rowid FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
+            if selected is not None and selected[0] == inserted.lastrowid:
+                self._conn.executemany(
+                    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [("embedder_model", model), ("embedder_dimension", str(dimension))],
+                )
 
     def latest_calibration_json(self) -> str | None:
         row = self._metadata_values("SELECT payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1")
