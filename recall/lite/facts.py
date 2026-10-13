@@ -12,22 +12,30 @@ the backends apart. Table names and columns are those of the SQLite adapters.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 from recall.fact_ledger import (
     FACT_LEDGER_TABLE,
     LEDGER_COLUMNS,
+    SQLITE_FACT_LEDGER_DDL,
     assertion_event_id,
+    assertion_is_duplicate,
     decision_event_id,
     decision_event_type,
     decode_ledger_row,
     project_candidates,
     project_current,
+    supersession_ids,
 )
 from recall.lite.store import LiteStore
-from recall.provenance_cards import EVIDENCE_CARD_TABLE
+from recall.provenance_cards import (
+    EVIDENCE_CARD_TABLE,
+    SQLITE_EVIDENCE_CARD_DDL,
+    _sqlite_put_cards,
+    _sqlite_resolved_card,
+)
 from recall.provenance_controller import (
     CONTROLLER_POLICY_VERSION,
     CONTROLLER_SCHEMA_VERSION,
@@ -37,52 +45,11 @@ from recall.provenance_controller import (
     LedgerApplyResult,
     _as_utc,
     _consume_permit,
-    evidence_card_from_payload,
     fact_identity,
-    facts_conflict,
 )
 from recall.types import AtomicFact, EvidenceCard
 
-_SCHEMA = f"""
-CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
-    event_id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL,
-    generation_id TEXT NOT NULL,
-    event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained')),
-    fact_id TEXT,
-    fact TEXT,
-    evidence_cards TEXT NOT NULL,
-    supersedes_fact_ids TEXT NOT NULL,
-    request_id TEXT NOT NULL,
-    writer TEXT NOT NULL,
-    decision_code TEXT NOT NULL,
-    policy_version TEXT NOT NULL,
-    controller_version INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE (tenant_id, request_id)
-);
-CREATE INDEX IF NOT EXISTS recall_fact_ledger_current_idx
-    ON {FACT_LEDGER_TABLE} (tenant_id, fact_id, created_at);
-CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_update BEFORE UPDATE ON {FACT_LEDGER_TABLE}
-BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_delete BEFORE DELETE ON {FACT_LEDGER_TABLE}
-BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
-CREATE TABLE IF NOT EXISTS {EVIDENCE_CARD_TABLE} (
-    card_id TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL,
-    generation_id TEXT NOT NULL,
-    chunk_id TEXT NOT NULL,
-    source_digest TEXT NOT NULL,
-    card TEXT NOT NULL,
-    indexed_at TEXT
-);
-CREATE INDEX IF NOT EXISTS {EVIDENCE_CARD_TABLE}_lookup_idx
-    ON {EVIDENCE_CARD_TABLE} (tenant_id, generation_id, chunk_id);
-CREATE TRIGGER IF NOT EXISTS {EVIDENCE_CARD_TABLE}_no_update BEFORE UPDATE ON {EVIDENCE_CARD_TABLE}
-BEGIN SELECT RAISE(ABORT, 'recall evidence cards are immutable'); END;
-CREATE TRIGGER IF NOT EXISTS {EVIDENCE_CARD_TABLE}_no_delete BEFORE DELETE ON {EVIDENCE_CARD_TABLE}
-BEGIN SELECT RAISE(ABORT, 'recall evidence cards are immutable'); END;
-"""
+_SCHEMA = SQLITE_FACT_LEDGER_DDL + SQLITE_EVIDENCE_CARD_DDL
 
 
 def _json(value: Any) -> str:
@@ -212,29 +179,25 @@ class LiteFactLedger:
             if prior:
                 return LedgerApplyResult(prior[0], duplicate=True)
             candidates = project_candidates(self._events())
-            if any(event.fact_id == fact_identity(fact) for event in candidates):
+            if assertion_is_duplicate(candidates, fact, supersedes_fact_ids):
                 event = self._insert(
                     event_id=event_id, event_type="asserted", generation_id=generation_id,
                     fact=fact, cards=cards, supersedes_fact_ids=(), request_id=request_id,
                     writer=writer, decision_code=DecisionCode.DUPLICATE, now=moment,
                 )
                 return LedgerApplyResult(event, duplicate=True)
-            conflicts = tuple(
-                event for event in candidates if event.fact and facts_conflict(event.fact, fact)
-            )
-            if {event.fact_id for event in conflicts} - set(supersedes_fact_ids):
-                raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
             event = self._insert(
                 event_id=event_id, event_type="asserted", generation_id=generation_id, fact=fact,
                 cards=cards, supersedes_fact_ids=supersedes_fact_ids, request_id=request_id,
                 writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
             )
             if supersedes_fact_ids:
+                sup_event_id, sup_request_id = supersession_ids(event_id, request_id)
                 self._insert(
-                    event_id=event_id + "_sup", event_type="superseded",
+                    event_id=sup_event_id, event_type="superseded",
                     generation_id=generation_id, fact=None, cards=cards,
                     supersedes_fact_ids=supersedes_fact_ids,
-                    request_id=request_id + ":supersession", writer=writer,
+                    request_id=sup_request_id, writer=writer,
                     decision_code=DecisionCode.APPLIED, now=moment,
                 )
             return LedgerApplyResult(event)
@@ -282,23 +245,7 @@ class LiteEvidenceCardStore:
         if not materialized:
             return
         with self._store._write():
-            for card in materialized:
-                self._store._conn.execute(
-                    f"INSERT OR IGNORE INTO {EVIDENCE_CARD_TABLE} "
-                    "(card_id, tenant_id, generation_id, chunk_id, source_digest, card, indexed_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        card.card_id, self.tenant_id, card.generation_id, card.chunk_id,
-                        card.source_digest, _json(card.to_payload()),
-                        card.indexed_at.isoformat() if card.indexed_at else None,
-                    ),
-                )
-                row = self._store._conn.execute(
-                    f"SELECT card FROM {EVIDENCE_CARD_TABLE} WHERE card_id = ?", (card.card_id,)
-                ).fetchone()
-                existing = evidence_card_from_payload(json.loads(row[0])) if row is not None else None
-                if existing != card:
-                    raise ValueError(f"evidence card identity collision for {card.card_id}")
+            _sqlite_put_cards(self._store._conn, self.tenant_id, materialized)
 
     def resolve(self, card_id: str) -> EvidenceCard | None:
         """Resolve and revalidate one card from the file."""
@@ -309,19 +256,7 @@ class LiteEvidenceCardStore:
         )
         if not rows:
             return None
-        generation_id, chunk_id, digest, indexed_at, encoded = rows[0]
-        payload = json.loads(encoded)
-        if not isinstance(payload, Mapping):
-            raise ValueError("durable evidence card payload is not an object")
-        card = evidence_card_from_payload(payload)
-        if card.card_id != card_id or card.tenant_id != self.tenant_id:
-            raise ValueError("durable evidence card identity mismatch")
-        stored_indexed_at = card.indexed_at.isoformat() if card.indexed_at else None
-        if (card.generation_id, card.chunk_id, card.source_digest, stored_indexed_at) != (
-            generation_id, chunk_id, digest, indexed_at,
-        ):
-            raise ValueError("durable evidence card projection mismatch")
-        return card
+        return _sqlite_resolved_card(card_id, self.tenant_id, tuple(rows[0]))
 
 
 __all__ = ["LiteEvidenceCardStore", "LiteFactLedger", "ensure_fact_tables"]

@@ -45,6 +45,33 @@ from recall.types import AtomicFact, EvidenceCard
 
 FACT_LEDGER_TABLE = "recall_fact_ledger_events"
 
+# The SQLite ledger table: `SQLiteFactLedger` and the lite store's `recall.lite.facts` both run it.
+SQLITE_FACT_LEDGER_DDL = f"""
+CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
+    event_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained')),
+    fact_id TEXT,
+    fact TEXT,
+    evidence_cards TEXT NOT NULL,
+    supersedes_fact_ids TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    writer TEXT NOT NULL,
+    decision_code TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    controller_version INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (tenant_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS recall_fact_ledger_current_idx
+    ON {FACT_LEDGER_TABLE} (tenant_id, fact_id, created_at);
+CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_update BEFORE UPDATE ON {FACT_LEDGER_TABLE}
+BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_delete BEFORE DELETE ON {FACT_LEDGER_TABLE}
+BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
+"""
+
 
 def _parse_time(value: object) -> datetime | None:
     if value is None:
@@ -184,6 +211,28 @@ def assertion_event_id(tenant_id: str, fact: AtomicFact, request_id: str) -> str
     ).hexdigest()[:32]
 
 
+def assertion_is_duplicate(
+    candidates: Sequence[FactEvent], fact: AtomicFact, supersedes_fact_ids: Sequence[str]
+) -> bool:
+    """Whether `fact` repeats a current candidate; refuses one it contradicts without superseding.
+
+    The decision every ledger makes before it appends an `asserted` event, so that PostgreSQL and
+    a lite store decide the same application the same way.
+    """
+    identity = fact_identity(fact)
+    if any(event.fact_id == identity for event in candidates):
+        return True
+    conflicts = tuple(event for event in candidates if event.fact and facts_conflict(event.fact, fact))
+    if {event.fact_id for event in conflicts} - set(supersedes_fact_ids):
+        raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
+    return False
+
+
+def supersession_ids(event_id: str, request_id: str) -> tuple[str, str]:
+    """The event id and request id of the `superseded` event that follows an applied assertion."""
+    return event_id + "_sup", request_id + ":supersession"
+
+
 def decision_event_type(decision_code: str) -> str:
     """A refusal is `abstained` when fresh evidence was insufficient, `rejected` otherwise."""
     return "abstained" if decision_code == DecisionCode.FRESH_SEARCH_INSUFFICIENT else "rejected"
@@ -207,37 +256,7 @@ class SQLiteFactLedger(InMemoryFactLedger):
         self.tenant_id = tenant_id
         self._sqlite_lock = threading.RLock()
         self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS recall_fact_ledger_events (
-                event_id TEXT PRIMARY KEY,
-                tenant_id TEXT NOT NULL,
-                generation_id TEXT NOT NULL,
-                event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained')),
-                fact_id TEXT,
-                fact TEXT,
-                evidence_cards TEXT NOT NULL,
-                supersedes_fact_ids TEXT NOT NULL,
-                request_id TEXT NOT NULL,
-                writer TEXT NOT NULL,
-                decision_code TEXT NOT NULL,
-                policy_version TEXT NOT NULL,
-                controller_version INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE (tenant_id, request_id)
-            )"""
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS recall_fact_ledger_current_idx "
-            "ON recall_fact_ledger_events (tenant_id, fact_id, created_at)"
-        )
-        self._conn.executescript(
-            """CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_update
-               BEFORE UPDATE ON recall_fact_ledger_events
-               BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
-               CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_delete
-               BEFORE DELETE ON recall_fact_ledger_events
-               BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;"""
-        )
+        self._conn.executescript(SQLITE_FACT_LEDGER_DDL)
         rows = self._conn.execute(
             "SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
             "supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
@@ -751,7 +770,7 @@ class PostgresFactLedger:
                 return LedgerApplyResult(prior[0], duplicate=True)
             history = self._events(conn)
             candidates = self._project_candidates(history)
-            if any(event.fact_id == fact_identity(fact) for event in candidates):
+            if assertion_is_duplicate(candidates, fact, supersedes_fact_ids):
                 event = self._insert(
                     conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
                     fact=fact, cards=cards, supersedes_fact_ids=(), request_id=request_id,
@@ -760,19 +779,17 @@ class PostgresFactLedger:
                 if materialization_outbox is not None:
                     self._enqueue_materialization(conn, materialization_outbox, event)
                 return LedgerApplyResult(event, duplicate=True)
-            conflicts = tuple(event for event in candidates if event.fact and facts_conflict(event.fact, fact))
-            if {event.fact_id for event in conflicts} - set(supersedes_fact_ids):
-                raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
             event = self._insert(
                 conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
                 fact=fact, cards=cards, supersedes_fact_ids=supersedes_fact_ids,
                 request_id=request_id, writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
             )
             if supersedes_fact_ids:
+                sup_event_id, sup_request_id = supersession_ids(event_id, request_id)
                 self._insert(
-                    conn, event_id=event_id + "_sup", event_type="superseded",
+                    conn, event_id=sup_event_id, event_type="superseded",
                     generation_id=generation_id, fact=None, cards=cards,
-                    supersedes_fact_ids=supersedes_fact_ids, request_id=request_id + ":supersession",
+                    supersedes_fact_ids=supersedes_fact_ids, request_id=sup_request_id,
                     writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
                 )
             if materialization_outbox is not None:
