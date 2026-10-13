@@ -258,7 +258,9 @@ Like `recall_index`, the automatic refresh refuses a folder larger than `RECALL_
 thousand files by default) or `RECALL_INDEX_MAX_BYTES` (twenty megabytes), and indexes nothing;
 `recall lite refresh` run by hand indexes it anyway, with a warning. While refreshing fails, every
 search answer carries a `refresh_warning` naming the cause, `recall doctor` reports it, and
-`recall_stats` shows the last refresh and its reason.
+`recall_stats` shows the last refresh and its reason. Every memo is filed under its path relative to
+`RECALL_INDEX_ROOT`, whether the refresh or `recall_index` indexed it, and `recall_forget` takes that
+name.
 
 The trust layer is the same code: superseded and expired verdicts, abstention, and strict refusal
 until the calibration certifies. Retrieval is exact cosine search plus PostgreSQL's own keyword

@@ -59,8 +59,9 @@ def _env(tmp_path: Path) -> dict[str, str]:
         "RECALL_EMBED_CACHE": "off",
         "RECALL_TRANSPORT": "stdio",
         # These tests drive one indexer through the tools. The server's automatic refresh
-        # (`recall_mcp.lite_refresh`) would index RECALL_INDEX_ROOT concurrently and race them;
-        # the tests about it switch it back on.
+        # (`recall_mcp.lite_refresh`) would index RECALL_INDEX_ROOT concurrently beside them; the
+        # tests about it switch it back on. (It once also raced the stored file names: both
+        # indexers now key to RECALL_INDEX_ROOT, so a name no longer depends on which ran first.)
         "RECALL_LITE_AUTO_REFRESH": "0",
     }
 
@@ -152,12 +153,14 @@ def test_the_report_tools_write_the_lite_ledger(lite_env: dict[str, str], tmp_pa
 
 
 def test_forget_by_file_name(lite_env: dict[str, str], tmp_path: Path) -> None:
-    """N5."""
+    """N5. Changed 2026-10-13 by the owner's decision: on a lite server every stored file name is
+    relative to RECALL_INDEX_ROOT (here `tmp_path`), not to the folder `recall_index` was given, so
+    the memo is `mem/memo-003.md` whichever indexer filed it first."""
     _write_memos(tmp_path / "mem", 4)
 
     async def body(state: dict[str, Any], call: Callable[..., Any]) -> None:
         await call("recall_index", path=str(tmp_path / "mem"))
-        forgot = json.loads(await call("recall_forget", sources=["memo-003.md"]))
+        forgot = json.loads(await call("recall_forget", sources=["mem/memo-003.md"]))
         assert forgot["chunks_removed"] == 1, f"forget by file name deleted nothing: {forgot}"
         assert state["store"].count() == 3
 

@@ -633,9 +633,17 @@ def test_the_scan_actually_found_citations(live: list) -> None:
     If a glob or a regex breaks, `collect` returns [] and this whole file goes green while
     checking nothing at all. The floors are deliberately far below the real counts (150 citations,
     86 of them OK at the time of writing) so ordinary editing never trips them.
+
+    Lowered 2026-10-13 from > 50 to > 25 OK, owner decision: most OK citations sit in FROZEN
+    pre-registrations that cite `recall/index.py` by line, so any edit above those lines lowers the
+    count without anything being wrong (57 OK at master's lite stack, 50 after the lite refresh
+    branch moved seven of them). The floor exists to catch an empty scan, which 25 still does.
+    Re-measure: `python scripts/check_citation_anchors.py`, or count `vc.OK` in `collect(ROOT)`.
+    Red proof of the lowered floor (2026-10-13, Linux): `collect` mutated to verdict every OK
+    citation STALE fails here with `assert 0 > 25`; `collect` returning [] fails with `0 > 100`.
     """
     assert len(live) > 100
-    assert sum(1 for r in live if r.status == vc.OK) > 50
+    assert sum(1 for r in live if r.status == vc.OK) > 25
 
 
 def test_planting_a_stale_citation_in_a_real_document_is_detected(live: list) -> None:
