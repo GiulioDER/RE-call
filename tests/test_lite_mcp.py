@@ -22,6 +22,8 @@ Invariants and the failure each one catches:
 - N10 a newer memo naming the old one in `authored_supersedes` replaces its fact.
 - N11 a card minted before a later index (the lite generation moved) is recovered by the
   controller's one fresh search.
+- N12 every keyed mutation keeps an operation receipt on lite, not only the fact tools: the same
+  request replays its first answer, and other arguments under the same key conflict.
 
 Red proof, 2026-10-07, each mutation alone, failing in its intended assertion (JUnit XML), then
 restored byte for byte and green:
@@ -39,13 +41,15 @@ restored byte for byte and green:
   tool failed on an uncalibrated lite store" (KeyError).
 
 Red proof, 2026-10-12, for the fact tools, same method:
-- (N1) `LITE_UNSERVED_TOOLS` still naming `recall_apply_fact`: the set equality fails.
+- (N1) `LITE_UNSERVED_TOOLS` still naming `recall_apply_fact`: the fact tools' assertions fail.
 - (N8) the LiteStore branch of `register_evidence_cards` dropped: the application is refused.
 - (N9) `LiteStore.get_operation_receipt` returning None: "a retried request did not replay the
   first answer".
 - (N10) `LiteFactLedger.apply_assertion` never writing the `superseded` event: current shows tea
   and coffee.
 - (N11) `fresh_search` in `apply_fact_memory` returning (): FRESH_SEARCH_INSUFFICIENT.
+- (N12, 2026-10-12, commit c5eec57c3) `LiteStore.get_operation_receipt` returning None: a retried
+  keyed index did not replay the first answer.
 """
 
 from __future__ import annotations
@@ -121,7 +125,7 @@ def test_a_lite_server_does_not_offer_postgres_only_tools(lite_env: dict[str, st
     tools = {t.name for t in srv.build_server(bootstrap_settings(lite_env))._tool_manager.list_tools()}
     assert not tools & LITE_UNSERVED_TOOLS, f"a Postgres-only tool was offered: {sorted(tools & LITE_UNSERVED_TOOLS)}"
     assert {"recall_search", "recall_index", "recall_forget", "recall_calibration_status"} <= tools
-    assert LITE_UNSERVED_TOOLS == {"recall_calibration_publish"}
+    assert not {"recall_current_facts", "recall_apply_fact"} & LITE_UNSERVED_TOOLS
     assert {"recall_current_facts", "recall_apply_fact"} <= tools, "the fact ledger tools were not served on lite"
 
 

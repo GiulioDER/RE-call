@@ -728,6 +728,16 @@ class LiteStore:
         )
         return [Chunk(id=cid, source=src, text=text, metadata=json.loads(metadata)) for cid, src, text, metadata in rows]
 
+    def ensure_schema(self, script: str) -> None:
+        """Run `IF NOT EXISTS` DDL for a table another `recall.lite` module owns (facts, receipts).
+
+        Outside `_write()` on purpose: `executescript` commits any open transaction first. The
+        other package-internal seams those modules use are `_write()` (one BEGIN IMMEDIATE
+        transaction), `_conn` inside it, and `_metadata_values` for reads.
+        """
+        with self._lock:
+            self._conn.executescript(script)
+
     def chunk_by_id(self, chunk_id: str) -> Chunk | None:
         """One chunk by id without its embedding, as `PgVectorStore.chunk_by_id`; None when absent."""
         if not isinstance(chunk_id, str) or not chunk_id:

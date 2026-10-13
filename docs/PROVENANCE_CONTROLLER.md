@@ -75,7 +75,10 @@ projection over the event stream, so generation garbage collection cannot remove
 an applied fact.
 
 PostgreSQL is the production adapter. `SQLiteFactLedger` is the durable local adapter and
-`SQLiteEvidenceCardStore` provides the matching durable local card projection. `InMemoryFactLedger`
+`SQLiteEvidenceCardStore` provides the matching durable local card projection. On a lite
+`sqlite:///` store the MCP service uses `LiteFactLedger` and `LiteEvidenceCardStore`
+(`recall.lite.facts`), which keep the same tables in the store's own file and mint PostgreSQL's
+event ids. `InMemoryFactLedger`
 and `EvidenceCardStore` are deterministic test adapters. Evidence cards are persisted in
 `recall_evidence_cards`; applied facts retain card snapshots in
 `recall_fact_ledger_events`. Database application serializes on the canonical conflict key and
