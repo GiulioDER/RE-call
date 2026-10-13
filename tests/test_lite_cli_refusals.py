@@ -108,3 +108,58 @@ def test_r3_the_cli_refuses_before_opening_anything(tmp_path: Path, argv: list[s
     out = _run(["--dsn", "sqlite:///" + path.as_posix(), *argv])
     assert "EXIT" in out and f"recall {argv[0]}" in out and "lite store" in out, out
     assert not path.exists(), "a refused command created the lite file"
+
+
+PG = "postgresql://u:p@db/recall"
+
+
+def _parsed(argv: list[str]) -> argparse.Namespace:
+    """`argv` through the real parser, so a renamed argument cannot hide behind a hand-built Namespace."""
+    return cli.build_parser().parse_args(argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--dsn", LITE, "lint", ".", "--semantic"],
+        ["quickstart", "--existing-dsn", LITE],
+    ],
+    ids=["lint-semantic", "quickstart-existing-dsn"],
+)
+def test_r4_refused_forms_through_the_real_parser(argv: list[str]) -> None:
+    """CODE-002. Red: `lint`'s `--semantic` stored under another dest (`dest="semantic_lint"` in
+    `recall/cli_commands/lint_check.py`): the hand-built R2 case stays green, this one goes red,
+    because `lite_command_refusal` reads `semantic` and finds nothing."""
+    refusal = lite_command_refusal(_parsed(argv))
+    assert refusal is not None and "lite store" in refusal, refusal
+
+
+def test_r5_schema_is_judged_on_the_dsn_it_opens() -> None:
+    """BUG-001. `schema status|plan` open `--migration-dsn` when given, else the serving DSN;
+    `schema apply` opens only `--migration-dsn`. Red: judging `args.dsn` for schema (the code before
+    this fix) refuses the first case, which opens PostgreSQL, and lets the third through."""
+    assert lite_command_refusal(_parsed(["--dsn", LITE, "--migration-dsn", PG, "schema", "status"])) is None
+    refused = lite_command_refusal(_parsed(["--dsn", LITE, "schema", "plan"]))
+    assert refused is not None and LITE in refused, refused
+    applied = lite_command_refusal(_parsed(["--dsn", PG, "--migration-dsn", LITE, "schema", "apply"]))
+    assert applied is not None and LITE in applied, f"a lite migration DSN was not refused: {applied}"
+
+
+def test_r6_a_postgres_run_does_not_import_the_lite_store() -> None:
+    """PERF-001. The classification costs a non-lite run nothing: `recall.lite.store` (and through
+    it calibration, embeddings and sqlite3) is imported only when a DSN the run judges is
+    `sqlite:`. Red: the unconditional `from recall.backends import lite_command_refusal` in
+    `recall.cli._main` imports it on `recall schema grants`, which opens nothing."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, contextlib, io\n"
+        "from recall import cli\n"
+        "with contextlib.redirect_stdout(io.StringIO()):\n"
+        f"    cli.main(['--dsn', {PG!r}, 'schema', 'grants', '--role', 'recall_reader'])\n"
+        "print('recall.lite.store' in sys.modules)\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert done.stdout.strip().splitlines()[-1] == "False", "a PostgreSQL run imported the lite store"

@@ -55,7 +55,7 @@ LITE_REFUSED: dict[str, str] = {
     "generation": "Generations, manifests and blue-green promotion need the full (PostgreSQL) install.",
     "graph": "The semantic graph is built per generation and needs the full (PostgreSQL) install.",
     "reasoning": "The reasoning projection and proposals need the full (PostgreSQL) install.",
-    "idempotency": "Reconciliation repairs the PostgreSQL receipt and Redis replay pair; a lite store keeps receipts in its own file.",
+    "idempotency": "Reconciliation repairs the PostgreSQL receipt and Redis replay pair, which a lite store does not have; it needs the full (PostgreSQL) install.",
     "calibrate": "A lite store calibrates itself when it is indexed (`recall index`).",
     "demo": "The demo indexes into its own PostgreSQL table; try `recall setup --lite` instead.",
     "code": "Code memory lives in its own table, which a lite file does not have; it needs the full (PostgreSQL) install.",
@@ -65,7 +65,17 @@ LITE_REFUSED: dict[str, str] = {
 def lite_command_refusal(args: Namespace) -> str | None:
     """Why the parsed command cannot run on its `sqlite:///` DSN, or None when it can."""
     command = getattr(args, "cmd", None)
-    dsn = getattr(args, "existing_dsn", None) if command == "quickstart" else getattr(args, "dsn", None)
+    # Judge the DSN the command will open, not merely the serving DSN.
+    if command == "quickstart":
+        dsn = getattr(args, "existing_dsn", None)
+    elif command == "schema":
+        # `apply` opens only the migration DSN; `status` and `plan` open it when given, else the
+        # serving DSN (`recall.cli_commands.schema_cmd`).
+        migration = getattr(args, "migration_dsn", None)
+        serving = getattr(args, "dsn", None)
+        dsn = migration if getattr(args, "schema_cmd", None) == "apply" else (migration or serving)
+    else:
+        dsn = getattr(args, "dsn", None)
     if not is_lite_dsn(dsn):
         return None
     if command == "schema":
