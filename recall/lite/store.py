@@ -14,7 +14,8 @@ already is, so none of that code changes:
   With every lexeme at the default weight D (0.1) and no length normalisation, which is how the
   Postgres store calls it, `ts_rank` over an OR query is the mean over the query's terms of
   ``0.1 * (1 + 1/4 + ... + 1/tf**2) / 1.64493406685`` (tsrank.c `calc_rank_or`, occurrences capped at
-  256 as a tsvector caps positions), plus the store's 0.25 boost for a matching number. The counts
+  255 as a tsvector caps retained positions, with positions at or beyond 16383 collapsed to one),
+  plus the store's 0.25 boost for a matching number. The counts
   come from FTS5's own index (`fts5vocab`), so stemming is the tokenizer's on both sides. Measured
   2026-10-07 on the memory corpus: BM25 agreed with Postgres on 0.40 of the keyword top 10 and
   0.62 of the fused top 5 (recall-lab `d2980fe`), which is why this leg copies the formula.
@@ -72,10 +73,11 @@ _DELETE_PROJECT_FILES = (
     "DELETE FROM chunks WHERE json_extract(metadata, '$.project') = ? "
     "AND json_extract(metadata, '$.file') IN (SELECT value FROM json_each(?))"
 )
-#: `ts_rank` pieces: pi**2/6 normalises the occurrence series, and a tsvector keeps at most 256
-#: positions per lexeme, so later occurrences add nothing.
+#: `ts_rank` pieces: pi**2/6 normalises the occurrence series, and a tsvector keeps at most 255
+#: distinct positions per lexeme, clamping positions at 16383, so later occurrences add nothing.
 _ZETA_TWO = 1.64493406685
-_MAX_POSITIONS = 256
+_MAX_POSITIONS = 255
+_MAX_POSITION = 16383
 _OCCURRENCE_WEIGHT = [0.0]
 for _n in range(1, _MAX_POSITIONS + 1):
     _OCCURRENCE_WEIGHT.append(_OCCURRENCE_WEIGHT[-1] + 1.0 / (_n * _n))
@@ -226,7 +228,7 @@ class LiteStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._create_schema()
         self._matrix: _Matrix | None = None
-        self._calibration_cache: tuple[tuple[int, int, str], CalibrationResolution, dict[str, str]] | None = None
+        self._calibration_cache: tuple[tuple[int, int, str, str | None, str | None], CalibrationResolution, dict[str, str]] | None = None
         self._query_terms_ready = False
         self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
 
@@ -684,7 +686,8 @@ class LiteStore:
             with self._lock:
                 for term in terms:
                     for rowid, occurrences in self._conn.execute(
-                        "SELECT doc, count(*) FROM chunks_vocab WHERE term = ? GROUP BY doc", (term,)
+                        "SELECT doc, count(DISTINCT min(offset + 1, ?)) FROM chunks_vocab WHERE term = ? GROUP BY doc",
+                        (_MAX_POSITION, term),
                     ):
                         weight[int(rowid)] = weight.get(int(rowid), 0.0) + _OCCURRENCE_WEIGHT[min(int(occurrences), _MAX_POSITIONS)]
             numeric = set(_numeric_terms(text))
@@ -753,22 +756,28 @@ class LiteStore:
         return latest[1] if latest else None
 
     def _calibration_state(self) -> tuple[CalibrationResolution, dict[str, str]]:
-        """Resolution and binding, recomputed only when the calibration or the corpus changed.
+        """Resolution and binding, cached against calibration, corpus and embedder identity.
 
         Every search asks for both. Parsing the artifact and verifying its checksum on each call
         cost more than the search itself, so the result is kept against the exact stored bytes and
-        the corpus version: an edit to the stored calibration, a new one, or any corpus write
-        recomputes it, and nothing else does.
+        the corpus version and persisted embedder identity: an edit to the stored calibration,
+        a new one, any corpus write or a metadata identity change recomputes it.
         """
         from recall.lite.calibration import pipeline_fingerprint, resolve
 
         latest = self._latest_calibration()
-        key = (latest[0], self._load().version, latest[1]) if latest else (0, self._load().version, "")
+        meta = dict(self._metadata_values("SELECT key, value FROM meta"))
+        key = (
+            latest[0] if latest else 0,
+            self._load().version,
+            latest[1] if latest else "",
+            meta.get("embedder_model"),
+            meta.get("embedder_dimension"),
+        )
         cached = self._calibration_cache
         if cached is not None and cached[0] == key:
             return cached[1], cached[2]
         resolution = resolve(self)
-        meta = dict(self._metadata_values("SELECT key, value FROM meta"))
         binding = {
             "tenant_id": self._tenant,
             "generation_id": self.lite_generation_id(),
