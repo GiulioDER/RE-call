@@ -17,8 +17,10 @@ Red proof: recorded in each test's docstring.
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -141,3 +143,71 @@ def test_p4_the_generation_route_is_refused(tmp_path: Path, monkeypatch: pytest.
     out = _run(["--embedder", "hashing", "--dsn", _dsn(tmp_path / "x.db"), "provenance", "current"])
     assert "has no generations" in out, f"the generation route was not refused: {out}"
     assert not (tmp_path / "x.db").exists(), "the refused command still created the store"
+
+
+def _tables(path: Path) -> set[str]:
+    conn = sqlite3.connect(path)
+    try:
+        return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        conn.close()
+
+
+def test_p5_current_never_writes_a_store(tmp_path: Path) -> None:
+    """BUG-001 (P1). Red: `provenance current` before this fix opened a `LiteStore` and a
+    `LiteFactLedger`, which created a missing file and wrote the lite schema and the fact tables
+    into an empty or foreign SQLite file (pinning a tenant and a width), then exited 0."""
+    missing = tmp_path / "absent" / "new.db"
+    out = _run(["--embedder", "hashing", "--dsn", _dsn(missing), "provenance", "current"])
+    assert "EXIT" in out and "does not exist" in out, out
+    assert not missing.exists(), "provenance current created a store"
+    empty = tmp_path / "empty.db"
+    empty.write_bytes(b"")
+    foreign = tmp_path / "foreign.db"
+    conn = sqlite3.connect(foreign)
+    conn.execute("CREATE TABLE notes (x TEXT)")
+    conn.commit()
+    conn.close()
+    for path in (empty, foreign):
+        before = path.read_bytes()
+        out = _run(["--embedder", "hashing", "--dsn", _dsn(path), "provenance", "current"])
+        assert "EXIT" in out and "not a lite store" in out, out
+        assert path.read_bytes() == before, f"provenance current wrote into {path.name}"
+    plain = tmp_path / "plain.db"
+    LiteStore(plain, dim=7).close()
+    listed = json.loads(_run(["--embedder", "hashing", "--dsn", _dsn(plain), "provenance", "current"]))
+    assert listed["facts"] == [], listed
+    assert "recall_fact_ledger_events" not in _tables(plain), "a read created the fact tables"
+
+
+def test_p6_the_width_comes_from_the_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """BUG-002, PERF-001 and PERF-002. Red: the code before this fix built the embedder for the
+    width, so `current` on a store of another width died with a `LiteStoreError` traceback (and
+    paid for a model load or a billed probe), and `apply` built the embedder twice."""
+    store = _calibrated_store(tmp_path)
+    store.close()
+    built: list[str] = []
+
+    def _counting(*_a: object, **_k: object) -> ContentWordEmbedder:
+        built.append("embedder")
+        return ContentWordEmbedder()
+
+    monkeypatch.setattr("recall.cli_commands._shared._make_embedder", _counting)
+    base = ["--dsn", _dsn(tmp_path / "memory.db")]
+    out = _run([*base, "provenance", "current"])
+    assert out.lstrip().startswith("{") and json.loads(out)["facts"] == [], out
+    assert built == [], f"provenance current built an embedder {len(built)} time(s)"
+    other = _run([*base, "--tenant", "other", "provenance", "current"])
+    assert other.lstrip().startswith("{") and json.loads(other)["facts"] == [], f"another tenant was not an empty listing: {other}"
+    (tmp_path / "claim.json").write_text(json.dumps(TEA_CLAIM), encoding="utf-8")
+    one_card = card("default", TEA, "chunk-tea", "user-drink.md").to_payload()
+    (tmp_path / "cards.json").write_text(json.dumps([one_card]), encoding="utf-8")
+    applied = _run([*base, "provenance", "apply", "--claim", str(tmp_path / "claim.json"),
+                    "--cards", str(tmp_path / "cards.json"), "--request-id", "r9",
+                    "--generation", "lite-0000000000000000"])
+    assert "EXIT" in applied, applied
+    assert built == ["embedder"], f"provenance apply built the embedder {len(built)} time(s)"
+    monkeypatch.setattr("recall.cli_commands._shared._make_embedder", lambda *_a, **_k: SimpleNamespace(dim=7))
+    narrow = _run([*base, "provenance", "apply", "--claim", str(tmp_path / "claim.json"),
+                   "--cards", str(tmp_path / "cards.json"), "--request-id", "r9", "--generation", "g"])
+    assert "EXIT" in narrow and "width" in narrow and "RAISED" not in narrow, f"a width mismatch was not refused by name: {narrow}"
