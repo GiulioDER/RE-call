@@ -145,7 +145,10 @@ def build_parser(command: str | None = None) -> argparse.ArgumentParser:
     parser.add_argument(
         "--table",
         default="chunks",
-        help="table to read/write (default: chunks). Use a throwaway name to keep an experiment out of your real memory index.",
+        help=(
+            "table to read/write (default: chunks). Use a throwaway name to keep an experiment out of "
+            "your real memory index. A sqlite:/// store has one table: use another sqlite:/// file instead."
+        ),
     )
     parser.add_argument(
         "--tenant",
@@ -335,6 +338,14 @@ def main(argv: list[str] | None = None) -> None:
         _main(argv)
     except SchemaError as exc:
         raise SystemExit(schema_error_message(exc)) from exc
+    except ValueError as exc:
+        # A lite store's refusal (another tenant or width, a scratch --table) is a message for the
+        # user, as a SchemaError is. Looked up rather than imported: a run that never opened a lite
+        # store has not loaded the module, and cannot have raised its error.
+        lite = sys.modules.get("recall.lite.store")
+        if lite is not None and isinstance(exc, lite.LiteStoreError):
+            raise SystemExit(f"recall: {exc}") from exc
+        raise
 
 
 if __name__ == "__main__":

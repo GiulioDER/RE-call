@@ -11,12 +11,19 @@ Invariants and the failure each one catches:
   anyway would run the command against real memory (`recall --table scratch forget X --yes`
   erasing a real memo).
 - K4 the same forget sequence prints the same lines on PostgreSQL and on lite.
+- K5 forget on a missing lite path creates nothing (no directory, no file) and says so; it used
+  to build a store there and report the source as a typo.
+- K6 forget on a SQLite file that is not a lite store leaves it untouched (no tables, no meta,
+  no WAL) and says so.
+- K7 forget on a lite file that holds another tenant is refused by name, as a clean exit rather
+  than a traceback, and deletes nothing.
 
 Red proof: recorded in each test's docstring.
 """
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -75,7 +82,48 @@ def test_k3_a_scratch_table_is_refused_on_a_lite_dsn(tmp_path: Path) -> None:
     rate = str((folder / "rate.md").resolve())
     out = _run(["--embedder", "hashing", "--dsn", _dsn(tmp_path), "--table", "scratch", "forget", rate, "--yes"])
     assert "one table" in out and "scratch" in out, f"a scratch table was not refused on lite: {out}"
+    assert "EXIT:" in out and "RAISED" not in out, f"the refusal reached the user as a traceback: {out}"
     assert rate in _sources(tmp_path), "a --table scratch forget erased a real memo"
+
+
+def test_k5_a_missing_lite_path_is_not_created(tmp_path: Path) -> None:
+    """Red, 2026-10-13, against the pre-fix `_cmd_forget` (no read-only check before
+    `open_legacy_store`): the dry run builds a store there, failing "a dry run created the store"."""
+    target = tmp_path / "typo" / "dir" / "memory.db"
+    out = _run(["--embedder", "hashing", "--dsn", "sqlite:///" + target.as_posix(), "forget", "x.md"])
+    assert not target.parent.exists(), f"a dry run created the store: {out}"
+    assert "does not exist" in out and "EXIT:" in out, f"the missing file was not named: {out}"
+
+
+def test_k6_a_foreign_sqlite_file_is_left_untouched(tmp_path: Path) -> None:
+    """Red, 2026-10-13, against the pre-fix `_cmd_forget`: the dry run writes the lite schema and
+    a meta row into the file, failing "a dry run wrote into a foreign file"."""
+    target = tmp_path / "people.db"
+    with sqlite3.connect(target) as conn:
+        conn.execute("CREATE TABLE people (name TEXT)")
+    conn.close()
+    out = _run(["--embedder", "hashing", "--dsn", "sqlite:///" + target.as_posix(), "forget", "x.md"])
+    conn = sqlite3.connect(target)
+    try:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        journal = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        conn.close()
+    assert tables == {"people"} and journal == "delete", f"a dry run wrote into a foreign file: {tables} {journal} {out}"
+    assert "not a lite store" in out and "EXIT:" in out, f"the foreign file was not named: {out}"
+
+
+def test_k7_another_tenant_is_refused_cleanly(tmp_path: Path) -> None:
+    """Red, 2026-10-13, against the pre-fix code: `LiteStore` raises `LiteStoreError` for the
+    tenant, which `recall.cli.main` let through as a traceback, failing "a traceback"."""
+    folder = _memos(tmp_path / "mem", _MEMOS)
+    base = ["--embedder", "hashing", "--dsn", _dsn(tmp_path)]
+    _run([*base, "index", str(folder)])
+    rate = str((folder / "rate.md").resolve())
+    out = _run([*base, "--tenant", "other", "forget", rate, "--yes"])
+    assert "EXIT:" in out and "RAISED" not in out, f"another tenant was refused with a traceback: {out}"
+    assert "tenant" in out and "other" in out, out
+    assert rate in _sources(tmp_path), "a forget for another tenant erased a memo"
 
 
 @requires_db
