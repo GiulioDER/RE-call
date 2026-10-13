@@ -25,16 +25,9 @@ import pytest
 
 from recall import cli
 from recall.backends import LITE_REFUSED, LITE_SERVED, lite_command_refusal
-from tests.test_lite_cli import _run
+from tests.lite_cli_support import _offline, run_cli  # noqa: F401  # _offline: autouse fixture
 
 LITE = "sqlite:///tmp/memory.db"
-
-
-@pytest.fixture(autouse=True)
-def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_SERVING_DSN", "RECALL_DSN", "RECALL_TRUST_MODE"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
 
 
 def test_r1_every_command_is_classified_for_lite() -> None:
@@ -105,7 +98,7 @@ def test_r3_the_cli_refuses_before_opening_anything(tmp_path: Path, argv: list[s
     """Red: the `lite_command_refusal` call removed from `recall.cli._main`: the command reaches
     its handler (psycopg, or the setup wizard) instead of exiting by name."""
     path = tmp_path / "memory.db"
-    out = _run(["--dsn", "sqlite:///" + path.as_posix(), *argv])
+    out = run_cli(["--dsn", "sqlite:///" + path.as_posix(), *argv])
     assert "EXIT" in out and f"recall {argv[0]}" in out and "lite store" in out, out
     assert not path.exists(), "a refused command created the lite file"
 
@@ -163,3 +156,24 @@ def test_r6_a_postgres_run_does_not_import_the_lite_store() -> None:
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
     assert done.returncode == 0, done.stderr[-2000:]
     assert done.stdout.strip().splitlines()[-1] == "False", "a PostgreSQL run imported the lite store"
+
+
+def test_r7_a_refusal_names_where_the_lite_dsn_came_from() -> None:
+    """A user moving to PostgreSQL with a lite DSN still exported is told the variables and the flag
+    that chose the lite store, not only "run `recall setup --lite`".
+
+    Red, 2026-10-13, against the pre-fix `lite_command_refusal` (the message ended at the reason):
+    fails on "the refusal did not say where the lite DSN came from".
+    """
+    refusal = lite_command_refusal(argparse.Namespace(cmd="setup", dsn=LITE, lite=False))
+    assert refusal is not None
+    assert "RECALL_SERVING_DSN" in refusal and "RECALL_DSN" in refusal and "--serving-dsn" in refusal, (
+        f"the refusal did not say where the lite DSN came from: {refusal}"
+    )
+    # `schema apply` opens the migration DSN, so that is the one to name.
+    refusal = lite_command_refusal(
+        argparse.Namespace(cmd="schema", schema_cmd="apply", migration_dsn=LITE, dsn="postgresql://x/y")
+    )
+    assert refusal is not None and "--migration-dsn" in refusal and "--serving-dsn" not in refusal, (
+        f"the schema refusal named the wrong DSN: {refusal}"
+    )
