@@ -875,6 +875,7 @@ def _make_lifespan(
         runtime_route = resolve_runtime_route(enterprise=enterprise)
         source_policy = load_source_policy(runtime_env)
         settings_token = None
+        lite_refresher: LiteAutoRefresher | None = None
         pool_size = runtime_settings.pool_size
         connection_budget = runtime_settings.connection_budget
         max_tenants = runtime_settings.max_tenants
@@ -1195,6 +1196,10 @@ def _make_lifespan(
                 health.mark_started(runtime_state)
             yield runtime_state
         finally:
+            if lite_refresher is not None:
+                # Before the store closes: a refresh cut off by the close would record a
+                # closed-database failure as the last refresh (CCA BUG-006).
+                await _to_thread(lite_refresher.stop)
             if limiter is not None:
                 await limiter.close()
             if store is not None:
@@ -1514,7 +1519,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 def execute() -> tuple[_RetrievalResultT, dict[str, object] | None]:
                     refresher = state.get("lite_refresher")
                     if refresher is not None:
-                        # A memo written a moment ago is indexed first, within a bounded wait.
+                        # At most once per RECALL_LITE_REFRESH_INTERVAL, a changed memo folder is
+                        # refreshed first, waiting up to RECALL_LITE_REFRESH_WAIT; past that the
+                        # search answers from the corpus as it is.
                         refresher.before_retrieval()
                     execution = prepare_federated_execution(
                         retrieval_plan,
@@ -2916,10 +2923,12 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     async def recall_stats(ctx: Context[dict, object]) -> str:
         """Report how much memory exists and whether it is stale (freshness check).
 
-        `stale` is True when the newest indexed content is older than 2 days.
+        `stale` is True when the newest indexed content is older than 2 days. On a lite store,
+        `refresh` holds the last refresh of the memo folder (outcome and reason), which explains a
+        memo that is not found yet.
 
         Returns:
-            JSON of {chunks, newest_indexed_at, stale}.
+            JSON of {chunks, newest_indexed_at, stale, metrics, refresh}.
         """
         store = await _require(SCOPE_READ, ctx)
 
@@ -2927,7 +2936,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             result = memory_stats(store)
             if isinstance(store, LiteStore):
                 # The last automatic refresh, so an agent can see why a memo it just wrote is not
-                # found yet (busy, coalesced, failed, or a calibration still below its floor).
+                # found yet (failed, over the budget, or a calibration still below its floor).
                 result.refresh = read_refresh_state(store.path).get("last")
             return result.model_dump_json(indent=2)
 

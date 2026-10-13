@@ -476,7 +476,7 @@ class MemoryStatsResult(BaseModel):
         "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
         "operator can read them without a scrape endpoint.",
     )
-    refresh: dict | None = Field(
+    refresh: dict[str, object] | None = Field(
         default=None,
         description="Lite store only: the last refresh from the memo folder that ran, automatic "
         "or `recall lite refresh` (outcome, reason, counts, calibration status and its reason). A "
