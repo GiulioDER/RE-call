@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
     policy_version TEXT NOT NULL,
     controller_version INTEGER NOT NULL,
     created_at TEXT NOT NULL,
-    UNIQUE (tenant_id, request_id)
+    UNIQUE (tenant_id, request_id),
+    -- PostgreSQL's recall_fact_ledger_fact_shape (migration 0018); a table made before it lacks it.
+    CHECK ((event_type IN ('asserted', 'rejected') AND fact IS NOT NULL) OR event_type IN ('superseded', 'abstained'))
 );
 CREATE INDEX IF NOT EXISTS recall_fact_ledger_current_idx
     ON {FACT_LEDGER_TABLE} (tenant_id, fact_id, created_at);
@@ -258,18 +260,11 @@ class SQLiteFactLedger(InMemoryFactLedger):
         self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._conn.executescript(SQLITE_FACT_LEDGER_DDL)
         rows = self._conn.execute(
-            "SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
-            "supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
-            "controller_version, created_at FROM recall_fact_ledger_events "
-            "WHERE tenant_id = ? ORDER BY created_at, event_id",
+            f"SELECT {LEDGER_COLUMNS} FROM {FACT_LEDGER_TABLE} WHERE tenant_id = ? ORDER BY created_at, event_id",
             (tenant_id,),
         ).fetchall()
         for row in rows:
-            values = list(row)
-            values[4] = json.loads(values[4]) if values[4] else None
-            values[5] = json.loads(values[5])
-            values[6] = json.loads(values[6])
-            event = _event_from_row(tuple(values))
+            event = decode_ledger_row(row)
             self._events.append(event)
             self._by_request[event.request_id] = event
 
@@ -294,20 +289,13 @@ class SQLiteFactLedger(InMemoryFactLedger):
 
     def _reload_from_db(self) -> None:
         rows = self._conn.execute(
-            "SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
-            "supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
-            "controller_version, created_at FROM recall_fact_ledger_events "
-            "WHERE tenant_id = ? ORDER BY created_at, event_id",
+            f"SELECT {LEDGER_COLUMNS} FROM {FACT_LEDGER_TABLE} WHERE tenant_id = ? ORDER BY created_at, event_id",
             (self.tenant_id,),
         ).fetchall()
         events: list[FactEvent] = []
         requests: dict[str, FactEvent] = {}
         for row in rows:
-            values = list(row)
-            values[4] = json.loads(values[4]) if values[4] else None
-            values[5] = json.loads(values[5])
-            values[6] = json.loads(values[6])
-            event = _event_from_row(tuple(values))
+            event = decode_ledger_row(row)
             events.append(event)
             requests[event.request_id] = event
         self._events[:] = events
@@ -361,19 +349,12 @@ class SQLiteFactLedger(InMemoryFactLedger):
             raise ValueError("ledger tenant mismatch")
         with self._sqlite_lock:
             row = self._conn.execute(
-                "SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
-                "supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
-                "controller_version, created_at FROM recall_fact_ledger_events "
-                "WHERE tenant_id = ? AND request_id = ?",
+                f"SELECT {LEDGER_COLUMNS} FROM {FACT_LEDGER_TABLE} WHERE tenant_id = ? AND request_id = ?",
                 (tenant_id, request_id),
             ).fetchone()
             if row is None:
                 return None
-            values = list(row)
-            values[4] = json.loads(values[4]) if values[4] else None
-            values[5] = json.loads(values[5])
-            values[6] = json.loads(values[6])
-            return _event_from_row(tuple(values))
+            return decode_ledger_row(row)
 
     def close(self) -> None:
         with self._sqlite_lock:
@@ -672,10 +653,6 @@ class PostgresFactLedger:
         rows = conn.execute(self._select_sql() + suffix + " ORDER BY created_at, event_id", params).fetchall()
         return [_event_from_row(row) for row in rows]
 
-    @staticmethod
-    def _project_current(events: list[FactEvent], now: datetime) -> tuple[FactEvent, ...]:
-        return project_current(events, now)
-
     @property
     def events(self) -> tuple[FactEvent, ...]:
         """Read the tenant's immutable event stream for recovery reconciliation."""
@@ -687,11 +664,7 @@ class PostgresFactLedger:
             raise ValueError("ledger tenant mismatch")
         with self._connect() as conn:
             events = self._events(conn)
-        return self._project_current(events, now)
-
-    @staticmethod
-    def _project_candidates(events: list[FactEvent]) -> tuple[FactEvent, ...]:
-        return project_candidates(events)
+        return project_current(events, now)
 
     def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None:
         if tenant_id != self.tenant_id:
@@ -769,7 +742,7 @@ class PostgresFactLedger:
                     self._enqueue_materialization(conn, materialization_outbox, prior[0])
                 return LedgerApplyResult(prior[0], duplicate=True)
             history = self._events(conn)
-            candidates = self._project_candidates(history)
+            candidates = project_candidates(history)
             if assertion_is_duplicate(candidates, fact, supersedes_fact_ids):
                 event = self._insert(
                     conn, event_id=event_id, event_type="asserted", generation_id=generation_id,

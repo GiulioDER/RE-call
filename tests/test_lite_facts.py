@@ -28,20 +28,10 @@ from recall.lite import LiteStore
 from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
 from recall.provenance_controller import DecisionCode, FactApplicationRequest, ProvenanceController
 from recall.types import AtomicFact, EvidenceCard
-
-NOW = datetime(2026, 10, 12, 12, tzinfo=UTC)
-TEA = AtomicFact(namespace="memory", subject="user", predicate="drink", object="tea")
-COFFEE = AtomicFact(namespace="memory", subject="user", predicate="drink", object="coffee")
-
+from tests.fact_fixtures import COFFEE, NOW, TEA, evidence_card
 
 def card_for(fact: AtomicFact, *, chunk: str = "c1", source: str = "memo.md") -> EvidenceCard:
-    return EvidenceCard(
-        card_id="", chunk_id=chunk, source=source, source_digest="digest", valid_from=None,
-        valid_until=None, first_indexed_at=NOW - timedelta(days=1), indexed_at=NOW,
-        tenant_id="default", generation_id="g1", pipeline_fingerprint="p" * 64,
-        corpus_fingerprint="c" * 64, calibration_id="cal", calibration_status="certified",
-        trust_state="trusted", verdict="ok", confidence=0.99, rank=1, structured_facts=(fact,),
-    )
+    return evidence_card(fact, tenant="default", generation="g1", chunk=chunk, source=source)
 
 
 def controller(store: LiteStore, cards: LiteEvidenceCardStore) -> ProvenanceController:
@@ -94,9 +84,14 @@ def test_f3_a_card_id_collision_is_refused(store: LiteStore) -> None:
         "UPDATE recall_evidence_cards SET card = replace(card, 'memo.md', 'other.md') WHERE card_id = ?",
         (tea.card_id,),
     )
-    with pytest.raises(ValueError, match="collision|canonical content"):
+    # The tampered row no longer hashes to its id, so the read back refuses it on decoding.
+    with pytest.raises(ValueError, match="does not match its canonical content"):
         cards.put((tea,))
-    assert cards.resolve("missing") is None
+
+
+def test_f3b_an_unknown_card_id_resolves_to_nothing(store: LiteStore) -> None:
+    """A card id the file never stored resolves to None, not to an error."""
+    assert LiteEvidenceCardStore(store).resolve("missing") is None
 
 
 def test_f4_a_write_waits_for_another_writer(store: LiteStore, tmp_path: Path) -> None:
@@ -151,3 +146,43 @@ def test_f7_a_fact_applied_under_two_requests_is_listed_once(store: LiteStore) -
 
     current = LiteFactLedger(store).current(tenant_id=store.tenant, now=NOW)
     assert [(event.request_id, event.decision_code) for event in current] == [("r1", DecisionCode.APPLIED)]
+
+
+def test_f9_events_are_ordered_by_instant_whatever_the_clock_offset(store: LiteStore) -> None:
+    """An event stamped with a `+02:00` clock sorts by its instant, as PostgreSQL's timestamptz does.
+
+    Red, 2026-10-13, against the pre-fix `_stamp` (kept the offset): fails on "events were ordered
+    by their local clock".
+    """
+    from datetime import timezone
+
+    ledger = LiteFactLedger(store)
+    later = datetime(2026, 1, 1, 0, 30, tzinfo=UTC)
+    earlier = datetime(2026, 1, 1, 1, 0, tzinfo=timezone(timedelta(hours=2)))  # 2025-12-31 23:00 UTC
+    for request, moment in (("late", later), ("early", earlier)):
+        ledger.record_decision(
+            tenant_id=store.tenant, generation_id="g1", request_id=request, writer="lite-test",
+            decision_code="UNSUPPORTED_CLAIM", fact=TEA, now=moment,
+        )
+    order = [event.request_id for event in ledger.events]
+    assert order == ["early", "late"], f"events were ordered by their local clock: {order}"
+    assert all(event.created_at.utcoffset() == timedelta(0) for event in ledger.events)
+
+
+def test_f10_a_refusal_without_its_fact_is_refused(store: LiteStore) -> None:
+    """A `rejected` event must carry the refused fact, as PostgreSQL's fact_shape CHECK requires.
+
+    Red, 2026-10-13, against the pre-fix SQLite DDL (no such CHECK): fails on "a rejected event with
+    no fact was stored".
+    """
+    import sqlite3
+
+    ledger = LiteFactLedger(store)
+    try:
+        ledger.record_decision(
+            tenant_id=store.tenant, generation_id="g1", request_id="r1", writer="lite-test",
+            decision_code="UNSUPPORTED_CLAIM", fact=None, now=NOW,
+        )
+    except sqlite3.IntegrityError:
+        pass
+    assert ledger.events == (), "a rejected event with no fact was stored"

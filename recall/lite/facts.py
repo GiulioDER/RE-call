@@ -1,8 +1,8 @@
 """The fact ledger and evidence cards on a lite store: `PostgresFactLedger`'s rules on one SQLite file.
 
 `SQLiteFactLedger` and `SQLiteEvidenceCardStore` (behind `recall provenance --sqlite-path`) open a
-connection of their own, read a snapshot taken at open, and follow the in-memory ledger's event
-ids. These adapters live on the `LiteStore`'s connection instead: they read the file on every call,
+connection of their own, serve `current` and `events` from a snapshot taken at open (their writes
+reload it), and follow the in-memory ledger's event ids. These adapters live on the `LiteStore`'s connection instead: they read the file on every call,
 write in one `LiteStore._write()` transaction each, and mint the same event ids and the same
 projection as PostgreSQL, so a client of `recall_apply_fact` and `recall_current_facts` cannot tell
 the backends apart. Table names and columns are those of the SQLite adapters.
@@ -56,9 +56,16 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+def _utc(moment: datetime) -> datetime:
+    """`moment` in UTC: a naive one read as UTC, an aware one converted, as PostgreSQL's
+    `timestamptz` stores every instant."""
+    return _as_utc(moment).astimezone(UTC)
+
+
 def _stamp(moment: datetime) -> str:
-    """Fixed width, so text order is time order (plain `isoformat()` drops zero microseconds)."""
-    return _as_utc(moment).isoformat(timespec="microseconds")
+    """Fixed width and always UTC, so text order is time order (plain `isoformat()` drops zero
+    microseconds, and a `+02:00` stamp sorts by its local clock, not its instant)."""
+    return _utc(moment).isoformat(timespec="microseconds")
 
 
 def ensure_fact_tables(store: LiteStore) -> None:
@@ -67,8 +74,7 @@ def ensure_fact_tables(store: LiteStore) -> None:
     Outside `_write()` on purpose: `executescript` commits any open transaction first, and every
     statement is `IF NOT EXISTS`, so running it on each adapter construction costs a catalog read.
     """
-    with store._lock:
-        store._conn.executescript(_SCHEMA)
+    store.ensure_schema(_SCHEMA)
 
 
 class LiteFactLedger:
@@ -146,7 +152,7 @@ class LiteFactLedger:
             generation_id=generation_id, fact=fact, fact_id=fact_id, evidence_cards=cards,
             supersedes_fact_ids=supersedes_fact_ids, request_id=request_id, writer=writer,
             decision_code=str(decision_code), policy_version=CONTROLLER_POLICY_VERSION,
-            controller_version=CONTROLLER_SCHEMA_VERSION, created_at=_as_utc(now),
+            controller_version=CONTROLLER_SCHEMA_VERSION, created_at=_utc(now),
         )
 
     def apply_assertion(
@@ -169,7 +175,8 @@ class LiteFactLedger:
         moment = _as_utc(now or datetime.now(UTC))
         event_id = assertion_event_id(self.tenant_id, fact, request_id)
         # One BEGIN IMMEDIATE transaction holds the request check, the history read and the
-        # insert: what the per-fact advisory lock gives `PostgresFactLedger.apply_assertion`.
+        # insert: what the per-conflict-key advisory lock gives `PostgresFactLedger.apply_assertion`
+        # (here it serializes every writer of the file, a superset of that).
         with self._store._write():
             _consume_permit(
                 permit, tenant_id=tenant_id, generation_id=generation_id,

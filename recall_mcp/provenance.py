@@ -26,6 +26,7 @@ from recall.types import AtomicFact, EvidenceCard
 from recall_mcp.settings import runtime_environment
 
 if TYPE_CHECKING:
+    from recall.lite import LiteStore
     from recall.embeddings import Embedder
     from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall.store import PgVectorStore
@@ -39,7 +40,7 @@ def _fact_write_dsn(store: PgVectorStore) -> str:
     return configured.strip() if configured and configured.strip() else store.dsn
 
 
-def _fact_backends(store: PgVectorStore) -> tuple[FactLedger, EvidenceCardResolver]:
+def _fact_backends(store: PgVectorStore | LiteStore) -> tuple[FactLedger, EvidenceCardResolver]:
     """The ledger and card store for `store`: the lite file's own, or the PostgreSQL ones.
 
     A lite file serves one local client, so `RECALL_FACT_WRITE_DSN` (a separate controller role

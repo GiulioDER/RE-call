@@ -1,8 +1,9 @@
 """The fact ledger's projection and identity rules, shared by the PostgreSQL and lite ledgers.
 
 Invariants and the failure each catches:
-- event ids are a pure function of (tenant, fact, request), so both backends mint the same id for
-  the same application; a backend that hashed anything else would hand a client a different id.
+- assertion ids are a pure function of (tenant, fact, request) and refusal ids of (tenant, request,
+  event type), so both backends mint the same id for the same application; a backend that hashed
+  anything else would hand a client a different id.
 - the current projection drops superseded, expired and not yet valid facts; the candidate
   projection (what a new claim may conflict with) keeps expired and future ones.
 
@@ -12,7 +13,7 @@ Red proof: recorded in each test's docstring.
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from recall.fact_ledger import (
     assertion_event_id,
@@ -23,10 +24,8 @@ from recall.fact_ledger import (
 )
 from recall.provenance_controller import DecisionCode, FactEvent, fact_identity
 from recall.types import AtomicFact
+from tests.fact_fixtures import COFFEE, NOW, TEA
 
-NOW = datetime(2026, 10, 12, 12, tzinfo=UTC)
-TEA = AtomicFact(namespace="memory", subject="user", predicate="drink", object="tea")
-COFFEE = AtomicFact(namespace="memory", subject="user", predicate="drink", object="coffee")
 
 
 def _event(

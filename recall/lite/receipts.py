@@ -38,9 +38,7 @@ def _stamp(moment: datetime) -> str:
 
 
 def _ensure(store: LiteStore) -> None:
-    # Outside `_write()`: `executescript` commits any open transaction first.
-    with store._lock:
-        store._conn.executescript(_SCHEMA)
+    store.ensure_schema(_SCHEMA)
 
 
 def get_receipt(
