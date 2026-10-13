@@ -95,7 +95,7 @@ def test_c3_export_writes_the_artifact_alone(tmp_path: Path) -> None:
     out = _run(["--dsn", _dsn(path), "calibration", "export", second, "--output", str(target)])
     assert str(target) in out and "query set" in out, out
     bundle = json.loads(target.read_text(encoding="utf-8"))
-    assert bundle["artifact_only"] is True and "query_set" not in bundle, bundle
+    assert bundle.get("artifact_only") is True and "query_set" not in bundle, f"not flagged artifact-only: {bundle}"
     artifact = artifact_from_json(json.dumps({k: v for k, v in bundle["artifact"].items()}))
     assert artifact.calibration_id == second
 
