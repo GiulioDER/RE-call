@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
@@ -536,17 +537,24 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
     if is_lite_dsn(args.dsn):
         if (refusal := lite_route_refusal(args.dsn, _runtime_route(args))) is not None:
             raise SystemExit(refusal)
-        from recall.lite.inspect import inspect_lite_file
+        from recall.lite.inspect import lite_file_meta
 
         path = Path(args.dsn[len(LITE_DSN_PREFIX):])
         if not path.exists():
             # An empty corpus, as an empty PostgreSQL table reads; listing must not create the file.
             _print_scopes(args.dimension, [], 0)
             return
-        # A lite file is opened at the width it was built with, which the file records, so this
-        # stays as embedder-free as the PostgreSQL branch below.
-        width = inspect_lite_file(path).dim or metadata_dimension
-        with open_legacy_store(args.dsn, dim=width, table=args.table, tenant=args.tenant) as store:
+        # The width and tenant the file records, read without writing: opening a store at a guessed
+        # width stamped a file that is not a lite store with one, and broke every later index run.
+        meta = lite_file_meta(path)
+        if meta is None or "dim" not in meta:
+            raise SystemExit(f"{path} is not a lite store (it has no RE-call meta table); nothing was read or written")
+        if meta.get("tenant") != args.tenant:
+            # As on PostgreSQL, a tenant with no rows lists nothing; a lite file holds one tenant.
+            print(f"{path} holds tenant {meta.get('tenant')!r}; pass --tenant {meta.get('tenant')} to list it", file=sys.stderr)
+            _print_scopes(args.dimension, [], 0)
+            return
+        with open_legacy_store(args.dsn, dim=int(meta["dim"]), table=args.table, tenant=args.tenant) as store:
             rows = store.scope_inventory(args.dimension)
             undeclared = store.scope_undeclared_count(args.dimension)
         _print_scopes(args.dimension, rows, undeclared)
