@@ -177,11 +177,27 @@ class _StoredQueryEmbedder:
 
 
 def source_digests(rows: Sequence[tuple[str, str, str]]) -> dict[str, str]:
-    """`{source: corpus_digest of its (chunk id, text)}` from `(source, id, text)` rows."""
+    """`{source: digest of its (chunk id, text)}` from `(source, id, text)` rows.
+
+    Ids and texts only, unlike `corpus_digest`, which since PR 896's audit also hashes the stored
+    vectors: a source digest is the unit `corpus_delta` counts (which memos changed), and every fit
+    stores the manifest it was measured on, so this must stay the function those manifests were
+    written with. (Restack fix: the two PRs met here, and the pair rows would not unpack as triples.)
+    """
     grouped: dict[str, list[tuple[str, str]]] = {}
     for source, cid, text in rows:
         grouped.setdefault(source, []).append((cid, text))
-    return {source: corpus_digest(chunks) for source, chunks in grouped.items()}
+    return {source: _text_digest(chunks) for source, chunks in grouped.items()}
+
+
+def _text_digest(rows: list[tuple[str, str]]) -> str:
+    """sha256 over ids and text hashes, sorted by id: `corpus_digest` before vectors joined it."""
+    outer = hashlib.sha256()
+    for cid, text in sorted(rows):
+        outer.update(cid.encode("utf-8"))
+        outer.update(b"\x00")
+        outer.update(hashlib.sha256(text.encode("utf-8")).digest())
+    return outer.hexdigest()
 
 
 def _query_set(texts: list[str]) -> tuple[list[dict[str, Any]] | None, str]:

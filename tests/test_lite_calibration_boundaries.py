@@ -3,9 +3,13 @@
 Baseline: PR896 original head fc9c6617e11c66718d5b33ccef3404e5ae11f799.
 The four test_replaced_vectors_require_a_refit nodes target _load's fingerprint
 and fail "changed vectors kept the measured identity" before the repair.
-The three test_calibration_rejects_a_concurrent_write nodes target auto_calibrate
-and save_calibration's publication boundary and fail "corpus write was accepted
-during calibration". Scheduling hooks call the real scorer, writer and embedder.
+The three test_a_concurrent_write_never_relabels_a_fit nodes target auto_calibrate's
+binding. They were written against PR 896's refusal ("corpus changed during calibration");
+since the restack onto PR 911 a fit measures one frozen `calibration_snapshot()` and binds to
+it, because refusing starved a background refit under steady writes. The invariant is the
+same: a fit is never labelled with a corpus it did not measure. Red proof (restack): binding
+`corpus_fingerprint` to `store.corpus_fingerprint()` at save time fails "the fit claims the
+corpus written during it". Scheduling hooks call the real scorer, writer and embedder.
 The two test_backdated_fit_keeps_selected_model nodes target save_calibration's
 metadata selection and fail "selected threshold accepted another model" through
 the strict consumer. Each exact node must then pass with the source repaired.
@@ -19,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from recall.calibration_v2 import CalibrationBindingError, CalibrationStatus
+from recall.calibration_v2 import CalibrationStatus
 from recall.lite import LiteStore
 from recall.lite import calibration as cal
 from recall.trust_policy import TrustFailureCode, TrustRefusal
@@ -53,9 +57,10 @@ def test_replaced_vectors_require_a_refit(tmp_path: Path, method: str, other_wri
 
 
 @pytest.mark.parametrize("stage", ["after_scores", "before_save", "during_embedding"])
-def test_calibration_rejects_a_concurrent_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str) -> None:
+def test_a_concurrent_write_never_relabels_a_fit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str) -> None:
     with closing(_store(tmp_path, 48)) as store, closing(LiteStore(store.path, dim=DIM)) as writer:
         embedder = ContentWordEmbedder()
+        measured = store.corpus_fingerprint()
         written = False
 
         def change() -> None:
@@ -90,16 +95,16 @@ def test_calibration_rejects_a_concurrent_write(tmp_path: Path, monkeypatch: pyt
                 return vectors
 
             monkeypatch.setattr(embedder, "embed", embed)
-        try:
-            cal.auto_calibrate(store, embedder)
-        except CalibrationBindingError as exc:
-            assert "corpus changed during calibration" in str(exc)
-        else:
-            pytest.fail("corpus write was accepted during calibration")
+        cal.auto_calibrate(store, embedder)
         assert written
-        assert store.latest_calibration_json() is None
-        assert store.resolve_calibration().status is CalibrationStatus.MISSING
-        assert "embedder_model" not in store.generation_binding()
+        stored = store.latest_calibration_json()
+        assert stored is not None, "a fit measured on one corpus was discarded"
+        fitted = cal.artifact_from_json(stored)
+        assert fitted.corpus_fingerprint == measured, "the fit claims the corpus written during it"
+        assert store.corpus_fingerprint() != measured
+        # The write lands after the fit's corpus: it resolves as a changed corpus (carried or stale),
+        # never as the corpus the fit measured.
+        assert store.resolve_calibration().status is not CalibrationStatus.MISSING
 
 
 @pytest.mark.parametrize("other_writer", [False, True])
