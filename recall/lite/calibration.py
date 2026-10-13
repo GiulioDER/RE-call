@@ -755,33 +755,61 @@ def corpus_digest(rows: list[tuple[str, str, bytes]]) -> str:
 # ---------------------------------------------------------------------- the `recall calibration` CLI
 
 
-def _stored_artifacts(store: LiteStore) -> list[CalibrationArtifactV2]:
-    """Every stored calibration, newest first (`created_at`, then id, as PostgreSQL lists them)."""
-    rows = store._metadata_values("SELECT payload FROM calibrations")
-    artifacts = [artifact_from_json(str(row[0])) for row in rows]
+def _stored_artifacts(
+    store: LiteStore, problems: list[str] | None = None
+) -> tuple[list[CalibrationArtifactV2], bool]:
+    """Every stored calibration that verifies, newest first (`created_at`, then id, as PostgreSQL),
+    and whether the row the store serves is among them.
+
+    A row that does not parse or verify is left out and described in `problems`, so one bad old
+    row cannot hide the others. When the bad row is the one the store serves (its newest, by
+    `LiteStore._latest_calibration`'s order), search refuses until the store is recalibrated, and
+    the caller must not report any other calibration as in force.
+    """
+    from recall.calibration_v2 import CalibrationError
+
+    served = store._metadata_values("SELECT rowid FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1")
+    served_rowid = served[0][0] if served else None
+    served_verifies = True
+    artifacts: list[CalibrationArtifactV2] = []
+    for rowid, payload in store._metadata_values("SELECT rowid, payload FROM calibrations"):
+        try:
+            artifacts.append(artifact_from_json(str(payload)))
+        except (CalibrationError, ValueError, KeyError, TypeError) as exc:
+            if rowid == served_rowid:
+                served_verifies = False
+            if problems is not None:
+                what = "the calibration this store serves" if rowid == served_rowid else "an older calibration"
+                problems.append(
+                    f"calibration row {rowid} ({what}) does not verify and was skipped: {type(exc).__name__}: {exc}"
+                    + ("; searches refuse until the store is recalibrated (recall index)" if rowid == served_rowid else "")
+                )
     # PostgreSQL orders `created_at DESC, calibration_id`: newest first, ties by id ascending.
     by_id = sorted(artifacts, key=lambda a: a.calibration_id)
-    return sorted(by_id, key=lambda a: a.created_at, reverse=True)
+    return sorted(by_id, key=lambda a: a.created_at, reverse=True), served_verifies
 
 
-def _lifecycle_states(artifacts: Sequence[CalibrationArtifactV2]) -> dict[str, str]:
+def _lifecycle_states(artifacts: Sequence[CalibrationArtifactV2], served_verifies: bool = True) -> dict[str, str]:
     """The state each calibration is in now: a lite store serves only its newest one.
 
-    The stored artifact says `published` for every calibration a lite store ever saved, because it
-    was in force when it was saved. A later one replaced it, so it is reported `superseded`, which
-    is what PostgreSQL's `recall_calibrations.lifecycle_state` says of a replaced calibration.
+    The stored artifact says `published` for every certified calibration a lite store saved (and
+    `rejected` for one that did not certify), because it was in force when it was saved. A later
+    one replaced it, so it is reported `superseded`, which is what PostgreSQL's
+    `recall_calibrations.lifecycle_state` says of a replaced calibration. When the row the store
+    serves does not verify, none of these is in force, so none is reported `published`.
     """
     states: dict[str, str] = {}
     for index, artifact in enumerate(artifacts):
         state = artifact.lifecycle_state
-        states[artifact.calibration_id] = "superseded" if index > 0 and state == "published" else state
+        replaced = index > 0 or not served_verifies
+        states[artifact.calibration_id] = "superseded" if replaced and state == "published" else state
     return states
 
 
-def list_records(store: LiteStore) -> list[dict[str, Any]]:
+def list_records(store: LiteStore, problems: list[str] | None = None) -> list[dict[str, Any]]:
     """`recall calibration list` on a lite store, with `CalibrationRepository.list_records`' keys."""
-    artifacts = _stored_artifacts(store)
-    states = _lifecycle_states(artifacts)
+    artifacts, served_verifies = _stored_artifacts(store, problems)
+    states = _lifecycle_states(artifacts, served_verifies)
     records: list[dict[str, Any]] = []
     for artifact in artifacts:
         carry = artifact.carry_forward if isinstance(artifact.carry_forward, Mapping) else None
@@ -809,13 +837,13 @@ def show_record(store: LiteStore, calibration_id: str) -> dict[str, Any]:
     PostgreSQL prints its `recall_calibrations` row; a lite store has no such table, so this is the
     artifact itself (the same facts, in the artifact's own field names).
     """
-    from recall.calibration_v2 import CalibrationNotFound
-
-    artifacts = _stored_artifacts(store)
+    problems: list[str] = []
+    artifacts, served_verifies = _stored_artifacts(store, problems)
     for artifact in artifacts:
         if artifact.calibration_id == calibration_id:
-            return {**artifact.to_dict(), "lifecycle_state": _lifecycle_states(artifacts)[calibration_id]}
-    raise CalibrationNotFound(calibration_id)
+            state = _lifecycle_states(artifacts, served_verifies)[calibration_id]
+            return {**artifact.to_dict(), "lifecycle_state": state}
+    raise _not_found(calibration_id, problems)
 
 
 def export_artifact(store: LiteStore, calibration_id: str, path: str | Path) -> Path:
@@ -825,13 +853,24 @@ def export_artifact(store: LiteStore, calibration_id: str, path: str | Path) -> 
     questions it generates and keeps only their digest), so the bundle says `artifact_only` rather
     than shipping a `query_set` it does not have.
     """
-    from recall.calibration_v2 import CalibrationNotFound
-
-    for artifact in _stored_artifacts(store):
+    problems: list[str] = []
+    for artifact in _stored_artifacts(store, problems)[0]:
         if artifact.calibration_id == calibration_id:
             payload: dict[str, Any] = {"artifact": artifact.to_dict(), "artifact_only": True}
             payload["bundle_checksum"] = canonical_sha256(payload)
             target = Path(path)
             target.write_bytes(canonical_json(payload) + b"\n")
             return target
-    raise CalibrationNotFound(calibration_id)
+    raise _not_found(calibration_id, problems)
+
+
+def _not_found(calibration_id: str, problems: Sequence[str]) -> Exception:
+    """`CalibrationNotFound`, saying when stored rows that do not verify may hold the id."""
+    from recall.calibration_v2 import CalibrationNotFound
+
+    if not problems:
+        return CalibrationNotFound(calibration_id)
+    return CalibrationNotFound(
+        f"calibration {calibration_id} is not among the calibrations that verify; "
+        f"{len(problems)} stored row(s) do not verify: " + "; ".join(problems)
+    )

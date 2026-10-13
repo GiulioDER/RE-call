@@ -22,6 +22,7 @@ Red proof: recorded in each test's docstring.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -130,3 +131,77 @@ def test_c6_the_generation_route_is_refused(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setenv("RECALL_INDEX_MODE", "generation")
     out = _run(["--dsn", _dsn(tmp_path / "memory.db"), "calibration", "list"])
     assert "has no generations" in out, out
+
+
+def _list(path: Path, *flags: str) -> str:
+    return _run(["--dsn", _dsn(path), *flags, "calibration", "list"])
+
+
+def _corrupt(path: Path, calibration_id: str) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "UPDATE calibrations SET payload = '{\"x\": 1}' WHERE json_extract(payload, '$.calibration_id') = ?",
+            (calibration_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_c7_a_read_never_writes_a_file_that_is_not_a_lite_store(tmp_path: Path) -> None:
+    """BUG-001 (P1). Red: the read path opening the store at `inspect_lite_file(path).dim or 1`
+    (the code before this fix) stamps a 0-byte or foreign SQLite file with a lite `meta` table
+    (dim 1) and lite tables, so `recall index` at the real width is refused afterwards."""
+    empty = tmp_path / "empty.db"
+    empty.write_bytes(b"")
+    foreign = tmp_path / "foreign.db"
+    conn = sqlite3.connect(foreign)
+    conn.execute("CREATE TABLE notes (x TEXT)")
+    conn.commit()
+    conn.close()
+    for path in (empty, foreign):
+        before = path.read_bytes()
+        out = _list(path)
+        assert "EXIT" in out and "not a lite store" in out, out
+        assert path.read_bytes() == before, f"a read wrote into {path.name}"
+
+
+def test_c8_a_corrupt_calibration_is_reported_and_the_rest_still_list(tmp_path: Path) -> None:
+    """BUG-002 and BUG-003. Red: with the newest calibration corrupt, the code before this fix
+    died with "holds dim=..., not 1" (the width came from an inspect that stops at the bad
+    calibration); with an older one corrupt, `list` died for every row."""
+    path, (first, second) = _twice_calibrated(tmp_path)
+    _corrupt(path, second)
+    out = _list(path)
+    assert out.lstrip().startswith("["), f"list failed on a corrupt newest calibration: {out}"
+    listed = json.loads(out)
+    assert [r["calibration_id"] for r in listed] == [first], listed
+    # The store still serves the corrupt newest row, so nothing listed is in force.
+    assert listed[0]["lifecycle_state"] == "superseded", f"an unserved calibration was reported in force: {listed}"
+    _corrupt(path, first)
+    assert json.loads(_list(path)) == [], "the listing did not survive two corrupt rows"
+    shown = _run(["--dsn", _dsn(path), "calibration", "show", second])
+    assert "EXIT" in shown and second in shown and "do not verify" in shown, shown
+
+
+def test_c9_another_tenant_is_refused_by_name(tmp_path: Path) -> None:
+    """BUG-006. Red: the code before this fix let `LiteStore` raise `LiteStoreError` out of the
+    command, a traceback that never names `--tenant`."""
+    path, _ids = _twice_calibrated(tmp_path)
+    out = _list(path, "--tenant", "other")
+    assert "EXIT" in out and "--tenant default" in out, out
+
+
+def test_c10_listing_reads_only_the_width_not_the_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """PERF-001. Red: the code before this fix called `inspect_lite_file`, which reads and hashes
+    every chunk only to learn the width; with it made to fail, `list` failed."""
+    path, (_first, second) = _twice_calibrated(tmp_path)
+
+    def _no_corpus_scan(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("calibration list scanned the corpus")
+
+    monkeypatch.setattr("recall.lite.inspect.inspect_lite_file", _no_corpus_scan)
+    out = _list(path)
+    assert out.lstrip().startswith("["), f"list did more than read the width: {out}"
+    assert json.loads(out)[0]["calibration_id"] == second

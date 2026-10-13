@@ -157,13 +157,28 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 _LITE_CALIBRATION_COMMANDS = frozenset({"list", "show", "export"})
 
 
+def _lite_meta(path: Path) -> dict[str, str] | None:
+    """A lite file's `meta` table, read over a read-only connection; None when it has none."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        return {str(key): str(value) for key, value in conn.execute("SELECT key, value FROM meta").fetchall()}
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
 def _cmd_calibration_lite(args: argparse.Namespace) -> None:
     """`recall calibration` on a `sqlite:///` DSN: list, show and export; the rest refused by name."""
     from recall.backends import lite_route_refusal, open_legacy_store
     from recall.calibration_v2 import CalibrationError
     from recall.lite import LITE_DSN_PREFIX
     from recall.lite import calibration as lite_calibration
-    from recall.lite.inspect import inspect_lite_file
     from recall.runtime_route import resolve_runtime_route
 
     route = getattr(args, "_runtime_route", None) or resolve_runtime_route()
@@ -184,12 +199,24 @@ def _cmd_calibration_lite(args: argparse.Namespace) -> None:
             print(json.dumps([], indent=2))
             return
         raise SystemExit(f"calibration {args.calibration_id} not found: {path} does not exist")
-    width = inspect_lite_file(path).dim or 1
-    with open_legacy_store(args.dsn, dim=width, table=args.table, tenant=args.tenant) as opened:
+    # The width and tenant the file records, read without writing: opening a store at a guessed
+    # width stamped a file that is not a lite store with one, and broke every later `recall index`.
+    meta = _lite_meta(path)
+    if meta is None or "dim" not in meta:
+        raise SystemExit(f"{path} is not a lite store (it has no RE-call meta table); nothing was read or written")
+    if meta.get("tenant") != args.tenant:
+        raise SystemExit(
+            f"{path} holds tenant {meta.get('tenant')!r}, not {args.tenant!r}; "
+            f"pass --tenant {meta.get('tenant')} to read it"
+        )
+    with open_legacy_store(args.dsn, dim=int(meta["dim"]), table=args.table, tenant=args.tenant) as opened:
         store = cast("LiteStore", opened)
         try:
             if command == "list":
-                print(json.dumps(lite_calibration.list_records(store), indent=2, default=str))
+                problems: list[str] = []
+                print(json.dumps(lite_calibration.list_records(store, problems=problems), indent=2, default=str))
+                for problem in problems:
+                    print(problem, file=sys.stderr)
             elif command == "show":
                 print(json.dumps(lite_calibration.show_record(store, args.calibration_id), indent=2, default=str))
             else:
