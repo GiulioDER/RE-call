@@ -19,6 +19,8 @@ then restored and green (3 passed):
 from __future__ import annotations
 
 import json
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ import pytest
 
 import recall_mcp.lite_refresh as auto
 from recall.lite import LiteStore
+from recall.lite.refresh import Outcome, RefreshReport
 from recall_mcp.lite_refresh import LiteAutoRefresher
 from tests.test_lite_calibration import DIM, ContentWordEmbedder, _write_memos
 from tests.test_lite_mcp import _serve, lite_env  # noqa: F401  # the fixture is used by name
@@ -64,7 +67,7 @@ def test_a_new_memo_is_indexed_before_the_retrieval_and_checks_are_debounced(
     store, root, clock = setup
     refresher = _refresher(store, root, clock)
     refresher.start()
-    refresher._kick().join(30)
+    refresher._kick()[0].join(30)
     assert "memo-002.md" in _sources(store)
 
     _write_memos(root, 1, start=3)
@@ -106,7 +109,7 @@ def test_the_server_refreshes_at_start_and_before_a_search(lite_env: dict[str, s
     """R10: RECALL_INDEX_ROOT is the folder; the store sits in a subfolder of it."""
     root = Path(lite_env["RECALL_INDEX_ROOT"])
     _write_memos(root, 3)
-    env = {**lite_env, "RECALL_LITE_REFRESH_INTERVAL": "0", "RECALL_LITE_REFRESH_WAIT": "30"}
+    env = {**lite_env, "RECALL_LITE_AUTO_REFRESH": "1", "RECALL_LITE_REFRESH_INTERVAL": "0", "RECALL_LITE_REFRESH_WAIT": "30"}
 
     async def body(state: dict[str, Any], call: Any) -> None:
         refresher = state["lite_refresher"]
@@ -123,3 +126,73 @@ def test_the_server_refreshes_at_start_and_before_a_search(lite_env: dict[str, s
         assert stats["refresh"]["indexed_files"] == 1, f"the search did not refresh first: {stats['refresh']}"
 
     _serve(env, body)
+
+
+def test_the_server_refresh_applies_the_source_policy(lite_env: dict[str, str], tmp_path: Path) -> None:  # noqa: F811
+    """F1 (CCA SEC-001, P1): with RECALL_SOURCE_POLICY_FILE set, the automatic refresh refuses a
+    denied memo and redacts an allowed one, as the server's own `recall_index` does.
+
+    Red proof is at the consumer boundary (the real lifespan), because before the fix `refresh` had
+    no policy parameter: the pre-fix server stored `closed/b.md` and the address unredacted.
+    """
+    root = Path(lite_env["RECALL_INDEX_ROOT"])
+    (root / "open").mkdir()
+    (root / "closed").mkdir()
+    (root / "open" / "a.md").write_text("# Pump\n\nWrite to jo.pump@example.com about the pump.\n", encoding="utf-8")
+    (root / "closed" / "b.md").write_text("# Valve\n\nThe valve plan is private.\n", encoding="utf-8")
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"rules": [{"prefix": "open", "principals": [], "purposes": ["retrieval"], "redactions": ["email"]}]}), encoding="utf-8")
+    env = {**lite_env, "RECALL_LITE_AUTO_REFRESH": "1", "RECALL_SOURCE_POLICY_FILE": str(policy)}
+
+    async def body(state: dict[str, Any], call: Any) -> None:
+        refresher = state["lite_refresher"]
+        if refresher._thread is not None:
+            refresher._thread.join(30)
+        chunks = list(state["store"].iter_chunks())
+        names = {Path(c.source).name for c in chunks}
+        assert "b.md" not in names, f"a memo the policy denies was indexed: {sorted(names)}"
+        text = " ".join(c.text for c in chunks if Path(c.source).name == "a.md")
+        assert "jo.pump@example.com" not in text, f"the address was stored unredacted: {text!r}"
+        assert "[REDACTED:email]" in text, f"the allowed memo was not indexed with redaction: {text!r}"
+
+    _serve(env, body)
+
+
+def test_a_running_refresh_is_not_waited_for_again(
+    setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2 (CCA PERF-001): a check that finds a refresh already running does not join it."""
+    store, root, clock = setup
+    release = threading.Event()
+
+    def slow_refresh(*args: object, **kwargs: object) -> object:
+        release.wait(30)
+        raise RuntimeError("released")
+
+    monkeypatch.setattr(auto, "refresh", slow_refresh)
+    refresher = LiteAutoRefresher(store, ContentWordEmbedder(), [root], interval_s=30, wait_s=5, clock=clock)  # type: ignore[arg-type]
+    try:
+        refresher.start()
+        started = time.monotonic()
+        refresher.before_retrieval()
+        waited = time.monotonic() - started
+    finally:
+        release.set()
+    assert waited < 2.0, f"the check waited {waited:.1f}s on a refresh it did not start"
+
+
+def test_a_failing_refresh_backs_off(setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch) -> None:
+    """F3 (CCA PERF-002): the same folder failing again is not retried on every interval."""
+    store, root, clock = setup
+    calls: list[int] = []
+
+    def failing(store_: object, roots: list[Path], *args: object, **kwargs: object) -> RefreshReport:
+        calls.append(1)
+        return RefreshReport(Outcome.FAILED, "the embedder is down", fingerprint=auto.snapshot(roots).fingerprint)
+
+    monkeypatch.setattr(auto, "refresh", failing)
+    refresher = LiteAutoRefresher(store, ContentWordEmbedder(), [root], interval_s=30, wait_s=5, clock=clock)  # type: ignore[arg-type]
+    for _ in range(4):
+        refresher.before_retrieval()
+        clock.now += 31
+    assert len(calls) == 2, f"an unchanged failing folder was retried {len(calls)} times in 4 intervals"

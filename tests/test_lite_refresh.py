@@ -285,3 +285,144 @@ def test_a_folder_gone_while_queued_fails_and_prunes_nothing(
     report = _run(store, project)
     assert report.outcome is Outcome.FAILED and "memory folder not found" in report.reason, report.to_dict()
     assert store.count() == chunks
+
+
+def test_a_symlinked_memo_keeps_the_key_every_indexer_uses(store: LiteStore, project: Path) -> None:
+    """F4 (CCA BUG-001): a memo that is a symlink is refreshed under the link's own path."""
+    root = project / "memory"
+    # Inside the root (confinement keeps it) but in a hidden folder the walk skips, so the link is
+    # the only spelling the walk produces.
+    (root / ".attic").mkdir()
+    target = root / ".attic" / "elsewhere.md"
+    target.write_text("# Boiler\n\nThe boiler is drained every winter by the north crew.\n", encoding="utf-8")
+    link = root / "boiler.md"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("this filesystem cannot create a symlink")
+    _run(store, project)
+    target.write_text("# Boiler\n\nThe boiler is now drained every autumn by the south crew.\n", encoding="utf-8")
+    _run(store, project)
+    texts = {c.source: c.text for c in store.iter_chunks() if Path(c.source).name in {"boiler.md", "elsewhere.md"}}
+    assert set(map(lambda s: Path(s).name, texts)) == {"boiler.md"}, f"rows keyed by the link's target: {sorted(texts)}"
+    assert all("autumn" in t for t in texts.values()), f"the link's rows were not refreshed: {texts}"
+
+
+def test_a_failure_while_counting_is_still_recorded(
+    store: LiteStore, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F5 (CCA BUG-002): the store failing again inside the failure handler does not lose FAILED."""
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("database disk image is malformed")
+
+    monkeypatch.setattr("recall.index.Indexer.index_path", broken)
+    monkeypatch.setattr(LiteStore, "count", broken)
+    try:
+        outcome: object = _run(store, project).outcome
+    except RuntimeError as exc:  # asserted below, so a raise reads as this test's failure
+        outcome = f"raised {exc}"
+    assert outcome is Outcome.FAILED, outcome
+    assert read_state(store.path)["last"]["outcome"] == "failed"
+
+
+def test_a_locked_state_file_does_not_lose_a_refresh(
+    store: LiteStore, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F6 (CCA BUG-003): a replace refused twice (a reader holding the file on Windows) is retried."""
+    real = refresh_mod.atomic_write_bytes
+    refusals: list[int] = []
+
+    def flaky(path: Path, data: bytes) -> None:
+        if len(refusals) < 2:
+            refusals.append(1)
+            raise PermissionError(13, "The process cannot access the file")
+        real(path, data)
+
+    monkeypatch.setattr(refresh_mod, "atomic_write_bytes", flaky)
+    try:
+        outcome: object = _run(store, project).outcome
+    except PermissionError as exc:  # asserted below
+        outcome = f"raised {exc}"
+    assert outcome is Outcome.REFRESHED, outcome
+    assert read_state(store.path).get("last_success"), "the success was not recorded after the retries"
+
+
+def _cli(*argv: str) -> int:
+    try:
+        cli_main(list(argv))
+    except SystemExit as exc:
+        return int(exc.code or 0) if not isinstance(exc.code, str) else -1
+    return 0
+
+
+def test_allow_prune_clears_a_tripped_guard(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """F7 (CCA STAKES-002): a deletion the guard refuses names the flag, and the flag accepts it."""
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64).close()
+    _write_memos(project / "memory", 4, start=3)  # 7 memos: the guard needs at least 5 sources
+    base = ["lite", "refresh", "--store", str(db), "--memory", str(project / "memory"), "--embedder", "hashing"]
+    assert _cli(*base) == 0, capsys.readouterr()
+    for i in range(5):
+        (project / "memory" / f"memo-{i:03d}.md").unlink()
+    assert _cli(*base) == 1
+    assert "recall lite refresh --allow-prune" in capsys.readouterr().out
+    assert _cli(*base, "--allow-prune") == 0, capsys.readouterr()
+    assert read_state(db)["last"]["deleted"] == 5
+
+
+def test_the_cli_follows_the_folder_the_store_was_refreshed_from(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F8 (CCA ENV-002): with no --memory and no RECALL_INDEX_ROOT, the recorded folder is used."""
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64).close()
+    assert _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"), "--embedder", "hashing") == 0
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv("RECALL_INDEX_ROOT", raising=False)
+    capsys.readouterr()
+    assert _cli("lite", "refresh", "--store", str(db), "--embedder", "hashing") == 0, capsys.readouterr()
+    assert "unchanged" in capsys.readouterr().out
+
+
+def _policy_file(tmp_path: Path, prefix: str) -> Path:
+    path = tmp_path / "policy.json"
+    path.write_text(
+        json.dumps({"rules": [{"prefix": prefix, "principals": [], "purposes": ["retrieval"], "redactions": []}]}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_the_cli_refresh_decides_the_policy_as_the_server_does(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """F9 (CCA FIX-001, architect REVISE): under a policy whose rule allows the usual `retrieval`
+    purpose, a CLI refresh indexes the allowed memo. Red against the first FIX-001, whose CLI used
+    `recall index`'s context (purpose `indexing`) and so denied every memo."""
+    _write_memos(project / "memory" / "notes", 1)
+    monkeypatch.setenv("RECALL_SOURCE_POLICY_FILE", str(_policy_file(tmp_path, "notes")))
+    db = project / ".recall" / "memory.db"
+    LiteStore(db, dim=64).close()
+    assert _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"), "--embedder", "hashing") == 0, capsys.readouterr()
+    last = read_state(db)["last"]
+    assert last.get("denied", 0) == 3, f"the three memos outside `notes` must be denied: {last}"
+    with LiteStore(db, dim=64) as opened:
+        sources = {c.source for c in opened.iter_chunks()}
+    assert sources and all("notes" in Path(s).parts for s in sources), f"not the allowed memo alone: {sorted(sources)}"
+
+
+def test_a_refresh_the_policy_denies_entirely_is_a_failure(
+    store: LiteStore, project: Path, tmp_path: Path
+) -> None:
+    """F10 (CCA FIX-001, architect REVISE): nothing indexed is never a success that consumes changes."""
+    from recall.lite.refresh import refresh_access_context
+    from recall.security_policy import load_source_policy
+
+    policy = load_source_policy({"RECALL_SOURCE_POLICY_FILE": str(_policy_file(tmp_path, "nowhere"))})
+    report = _run(store, project, security_policy=policy, security_context=refresh_access_context(store.tenant))
+    assert report.outcome is Outcome.FAILED, f"{report.outcome}: {report.reason}"
+    assert "denies all 3" in report.reason, report.reason
+    assert read_state(store.path).get("last_success") is None
