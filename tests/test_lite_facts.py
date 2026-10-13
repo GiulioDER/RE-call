@@ -9,6 +9,7 @@ Invariants and the failure each one catches:
 - F5 a file made before the fact tables existed is served: the tables appear on first use.
 - F6 a contradiction without supersession is refused, and the check inside the append
   transaction holds on its own.
+- F7 a fact applied under two requests is listed once by `current`, as on PostgreSQL.
 
 Red proof: recorded in each test's docstring.
 """
@@ -135,3 +136,18 @@ def test_f6_contradiction_without_supersession_is_refused(store: LiteStore) -> N
     assert first.allowed, first
     refused = controller(store, cards).apply_fact(FactApplicationRequest(COFFEE, (coffee.card_id,), "r2"))
     assert refused.code == DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION, refused
+
+
+def test_f7_a_fact_applied_under_two_requests_is_listed_once(store: LiteStore) -> None:
+    """Red (2026-10-13): `asserts_fact` in recall/provenance_controller.py reduced to
+    `event.event_type == "asserted"` (the filter `project_current` used before the fix) fails the
+    listing assertion with `("r2", DUPLICATE)` listed BEFORE `("r1", APPLIED)` (equal timestamps
+    order by event id). Restored, passes."""
+    cards = LiteEvidenceCardStore(store)
+    tea = card_for(TEA)
+    cards.put((tea,))
+    assert controller(store, cards).apply_fact(FactApplicationRequest(TEA, (tea.card_id,), "r1")).code == DecisionCode.APPLIED
+    assert controller(store, cards).apply_fact(FactApplicationRequest(TEA, (tea.card_id,), "r2")).code == DecisionCode.DUPLICATE
+
+    current = LiteFactLedger(store).current(tenant_id=store.tenant, now=NOW)
+    assert [(event.request_id, event.decision_code) for event in current] == [("r1", DecisionCode.APPLIED)]
