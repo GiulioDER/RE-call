@@ -10,7 +10,7 @@ the result is the same `CalibrationArtifactV2`, checksummed, so `trusted_search`
 unchanged through `LiteStore.resolve_calibration`.
 
 What differs is only where it lives: one SQLite table instead of `recall_calibrations`, and the
-corpus fingerprint is a digest of the stored chunks (ids and text) rather than a generation's.
+corpus fingerprint is a digest of the stored chunks (ids, text and vectors) rather than a generation's.
 A calibration fitted to one corpus reads `stale` as soon as the corpus changes; `ensure_calibrated`
 then fits a new one.
 
@@ -108,7 +108,10 @@ def resolve(store: LiteStore) -> CalibrationResolution:
 
 
 def auto_calibrate(store: LiteStore, embedder: Embedder, *, now: datetime | None = None) -> CalibrationOutcome:
-    """Fit a calibration to the corpus as it is now and store it, certified or not."""
+    """Fit and store a calibration, refusing publication if the corpus changes during the fit."""
+    revision = store.corpus_revision()
+    fingerprint = store.corpus_fingerprint()
+    generation_id = store.lite_generation_id()
     texts = [chunk.text for chunk in store.iter_chunks() if chunk.text.strip()]
     entries, why = _query_set(texts)
     if entries is None:
@@ -124,12 +127,11 @@ def auto_calibrate(store: LiteStore, embedder: Embedder, *, now: datetime | None
     if runtime.separability is None or runtime.separability_ci is None:
         return CalibrationOutcome(CalibrationStatus.UNCERTIFIED, "both kinds of test question are needed to calibrate")
     certified = runtime.certified is True
-    fingerprint = store.corpus_fingerprint()
     model, dimension = str(embedder.name), int(embedder.dim)
     draft = CalibrationArtifactV2(
         calibration_id="cal_" + uuid.uuid4().hex,
         tenant_id=store.tenant,
-        generation_id=store.lite_generation_id(),
+        generation_id=generation_id,
         embedder_identity={"model": model, "dimension": dimension},
         pipeline_fingerprint=pipeline_fingerprint(model, dimension),
         corpus_fingerprint=fingerprint,
@@ -149,7 +151,10 @@ def auto_calibrate(store: LiteStore, embedder: Embedder, *, now: datetime | None
         checksum=_PLACEHOLDER_CHECKSUM,
     )
     artifact = dataclasses.replace(draft, checksum=canonical_sha256(draft.immutable_payload()))
-    store.save_calibration(artifact_to_json(artifact), created_at=artifact.created_at, model=model, dimension=dimension)
+    store.save_calibration(
+        artifact_to_json(artifact), created_at=artifact.created_at, model=model, dimension=dimension,
+        expected_revision=revision,
+    )
     if certified:
         return CalibrationOutcome(
             CalibrationStatus.CERTIFIED,
@@ -174,11 +179,12 @@ def ensure_calibrated(store: LiteStore, embedder: Embedder) -> CalibrationOutcom
     return auto_calibrate(store, embedder)
 
 
-def corpus_digest(rows: list[tuple[str, str]]) -> str:
-    """sha256 over (chunk id, sha256 of text), sorted by id: the corpus as search sees it."""
+def corpus_digest(rows: list[tuple[str, str, bytes]]) -> str:
+    """sha256 over ids, text hashes and stored vector hashes, sorted by id."""
     outer = hashlib.sha256()
-    for cid, text in sorted(rows):
+    for cid, text, embedding in sorted(rows):
         outer.update(cid.encode("utf-8"))
         outer.update(b"\x00")
         outer.update(hashlib.sha256(text.encode("utf-8")).digest())
+        outer.update(hashlib.sha256(embedding).digest())
     return outer.hexdigest()
