@@ -7,6 +7,7 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import cast
 
 from recall.cache import default_cache
 from recall.context import context_policy_for_profile
@@ -25,8 +26,8 @@ from recall.index_lock import ConcurrentIndex
 from recall.retriever import DocumentExpansionPolicy
 from recall.scope import Scope
 from recall.backends import lite_route_refusal, open_legacy_store
-from recall.lite import LITE_DSN_PREFIX, LiteStore, is_lite_dsn
-from recall.store import PgVectorStore
+from recall.lite import LiteStore, is_lite_dsn, lite_dsn_path
+from recall.store import DEFAULT_TABLE, PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
 from recall.types import TrustedResult
@@ -200,8 +201,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="list the folders or facets you can filter a search by",
         description=(
             "Print what --folder and --facet can be given for this corpus, with the number of "
-            "chunks and documents behind each. Read-only and cheap: no embedder, no query, no "
-            "vectors. Run it before guessing a scope, because a scope that does not exist "
+            "chunks and documents behind each. Cheap and changes no memory: no embedder, no "
+            "query, no vectors (opening a lite file still sets its journal mode and records its "
+            "identity, as every lite command does). Run it before guessing a scope, because a scope that does not exist "
             "returns an empty result and an empty result is also what a corpus with no answer "
             "returns."
         ),
@@ -535,11 +537,24 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
     # schema compatibility is checked by embedding commands that actually consume vectors.
     metadata_dimension = 1
     if is_lite_dsn(args.dsn):
-        if (refusal := lite_route_refusal(args.dsn, _runtime_route(args))) is not None:
-            raise SystemExit(refusal)
         from recall.lite.inspect import lite_file_meta
+        from recall.runtime_route import RouteConfigurationError
 
-        path = Path(args.dsn[len(LITE_DSN_PREFIX):])
+        try:
+            route = _runtime_route(args)
+        except RouteConfigurationError as exc:
+            raise SystemExit(f"recall scopes: {exc}") from exc
+        if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+            raise SystemExit(refusal)
+        if args.table != DEFAULT_TABLE:
+            # A lite file has one table: listing the real one for `--table scratch` would describe
+            # memory the user asked to keep out of view.
+            raise SystemExit(
+                f"recall scopes: a lite store ({args.dsn}) has one table, '{DEFAULT_TABLE}'; --table "
+                f"{args.table!r} cannot be honoured. Use another sqlite:/// file instead"
+            )
+
+        path = lite_dsn_path(args.dsn)
         if not path.exists():
             # An empty corpus, as an empty PostgreSQL table reads; listing must not create the file.
             _print_scopes(args.dimension, [], 0)
@@ -551,12 +566,12 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
             raise SystemExit(f"{path} is not a lite store (it has no RE-call meta table); nothing was read or written")
         if meta.get("tenant") != args.tenant:
             # As on PostgreSQL, a tenant with no rows lists nothing; a lite file holds one tenant.
-            print(f"{path} holds tenant {meta.get('tenant')!r}; pass --tenant {meta.get('tenant')} to list it", file=sys.stderr)
+            held = terminal_safe(meta.get("tenant"))
+            print(f"{path} holds tenant {held!r}; pass --tenant {held} to list it", file=sys.stderr)
             _print_scopes(args.dimension, [], 0)
             return
         with open_legacy_store(args.dsn, dim=int(meta["dim"]), table=args.table, tenant=args.tenant) as store:
-            rows = store.scope_inventory(args.dimension)
-            undeclared = store.scope_undeclared_count(args.dimension)
+            rows, undeclared = cast("LiteStore", store).scope_summary(args.dimension)
         _print_scopes(args.dimension, rows, undeclared)
         return
     if env_is_production():
@@ -580,12 +595,13 @@ def _print_scopes(dimension: str, rows: list[tuple[str, int, int]], undeclared: 
     if not rows:
         print(f"no {label} values in this corpus")
     else:
-        width = max(len(value) if value else len("(root)") for value, _c, _d in rows)
+        # Values come from indexed metadata, so a file name or facet can carry terminal escapes:
+        # printed as text, never interpreted. The root folder's value is the empty string, which
+        # prints as nothing and reads as a rendering bug, so it is named.
+        shown_rows = [(terminal_safe(value) if value else "(root)", chunks, documents) for value, chunks, documents in rows]
+        width = max(len(shown) for shown, _c, _d in shown_rows)
         print(f"{label:<{width}}  {'chunks':>7}  {'docs':>5}")
-        for value, chunks, documents in rows:
-            # The root folder's value is the empty string, which prints as nothing and reads as a
-            # rendering bug. Named, so the listing shows every value it counted.
-            shown = value if value else "(root)"
+        for shown, chunks, documents in shown_rows:
             print(f"{shown:<{width}}  {chunks:>7}  {documents:>5}")
     if undeclared:
         # Stated as its own line, never as a row: "no facet" is not a facet, and a corpus indexed

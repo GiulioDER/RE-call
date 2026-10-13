@@ -144,3 +144,57 @@ def test_s7_listing_reads_metadata_not_vectors(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr("recall.lite.inspect.inspect_lite_file", _forbidden)
     out = _run(["--dsn", _dsn(path), "scopes"])
     assert "python/tools" in out and "RAISED" not in out, f"scopes did more than read metadata: {out}"
+
+
+def test_s8_a_listed_value_cannot_drive_the_terminal(tmp_path: Path) -> None:
+    """A facet or file name carrying an ANSI escape is printed as text, never interpreted.
+
+    Red, 2026-10-13, against the pre-fix `_print_scopes` (printed the value raw): fails on "an
+    escape sequence reached the terminal".
+    """
+    path = _indexed(tmp_path)
+    conn = sqlite3.connect(path)
+    conn.execute("UPDATE chunks SET metadata = json_set(metadata, '$.type', ?) WHERE rowid = 1", ("evil\x1b[2K",))
+    conn.commit()
+    conn.close()
+    out = _run(["--dsn", _dsn(path), "scopes", "--dimension", "facet"])
+    assert "evil" in out and "\x1b" not in out, f"an escape sequence reached the terminal: {out!r}"
+
+
+def test_s9_a_bad_route_setting_exits_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An invalid RECALL_INDEX_MODE stops `scopes` with a message, not a traceback.
+
+    Red, 2026-10-13, against the pre-fix `_cmd_scopes` (RouteConfigurationError uncaught): fails on
+    "a bad route setting raised".
+    """
+    path = _indexed(tmp_path)
+    monkeypatch.setenv("RECALL_INDEX_MODE", "bogus")
+    out = _run(["--dsn", _dsn(path), "scopes"])
+    assert "EXIT" in out and "RAISED" not in out, f"a bad route setting raised: {out}"
+
+
+def test_s10_a_non_string_file_lists_and_filters_alike() -> None:
+    """A `file` that is not a string reads as its JSON text, as PostgreSQL's `metadata->>'file'`,
+    in the listing and in a scoped search alike, and that text is `jsonb`'s.
+
+    Red, 2026-10-13, against the pre-fix `_matches` (a non-string file read as absent) and
+    `_json_text` (`json.dumps`: escaped, keys in insertion order): fails on "a root file the listing
+    shows did not match --folder /".
+    """
+    from recall.lite.store import _json_text, _matches, _Row
+    from recall.scope import Scope
+
+    row = _Row(rowid=1, id="c", source="/abs/x", text="t", metadata={"file": 123}, indexed_at="", first_indexed_at="")
+    assert _matches(Scope(folder="/"), row), "a root file the listing shows did not match --folder /"
+    assert _json_text({"f": {"bb": 1, "a": 2, "x": ["é"]}}, "f") == '{"a": 2, "x": ["é"], "bb": 1}'
+
+
+def test_s11_a_scratch_table_is_refused_on_a_lite_dsn(tmp_path: Path) -> None:
+    """`--table scratch` on a lite DSN is refused by name, not answered from the one real table.
+
+    Red, 2026-10-13, against the pre-fix `_cmd_scopes` (the table was dropped): fails on "a scratch
+    table listed the real memory".
+    """
+    path = _indexed(tmp_path)
+    out = _run(["--dsn", _dsn(path), "--table", "scratch", "scopes"])
+    assert "python/tools" not in out and "EXIT" in out and "one table" in out, f"a scratch table listed the real memory: {out}"
