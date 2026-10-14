@@ -170,6 +170,15 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_inventory` | List every source in the caller's memory with the digest of its bytes, so a sync client can diff instead of re-uploading. Not in the `read` or `search` presets: a file listing answers no question an agent asks. |
 | `recall_stats` | Report counters and operational state. |
 
+Search's `abstained`, `decision_state`, and `evidence.citable` describe present-state support.
+For a question about an earlier time, the optional `historical` field lists individually relevant,
+certified superseded or expired chunk identifiers in `historical.candidates`. Its scope is
+`historical_only`, and `requires_validity_check` is always true. Before citing a candidate as a
+fact at the requested time, match that time to the hit's `valid_from` and `valid_until` and its
+text. If they do not establish that time, describe only the archived assertion, without claiming
+it held then. These candidates never expand present-state citations. Disabling
+`RECALL_SEARCH_EVIDENCE` removes both evidence surfaces and their citation advice.
+
 `recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation
 localization. When supplied, the response gains an additive `localized` object containing display
 text keyed by `chunk_id`. Canonical hit text, provenance, evidence items, `system_prompt`, and
