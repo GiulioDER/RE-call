@@ -15,7 +15,9 @@ from recall.generations import NoActiveGeneration
 from recall.provenance_cards import PostgresEvidenceCardStore
 from recall_mcp.evidence_cards import register_evidence_cards  # re-exported
 from recall.provenance_controller import (
+    EvidenceCardResolver,
     FactApplicationRequest,
+    FactLedger,
     ProvenanceController,
     source_digest,
 )
@@ -24,6 +26,7 @@ from recall.types import AtomicFact, EvidenceCard
 from recall_mcp.settings import runtime_environment
 
 if TYPE_CHECKING:
+    from recall.lite import LiteStore
     from recall.embeddings import Embedder
     from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall.store import PgVectorStore
@@ -35,6 +38,24 @@ def _fact_write_dsn(store: PgVectorStore) -> str:
     """Resolve the isolated controller DSN, falling back for legacy single-role installs."""
     configured = runtime_environment().get(FACT_WRITE_DSN_ENV)
     return configured.strip() if configured and configured.strip() else store.dsn
+
+
+def _fact_backends(store: PgVectorStore | LiteStore) -> tuple[FactLedger, EvidenceCardResolver]:
+    """The ledger and card store for `store`: the lite file's own, or the PostgreSQL ones.
+
+    A lite file serves one local client, so `RECALL_FACT_WRITE_DSN` (a separate controller role
+    on PostgreSQL) has nothing to name there and is not read.
+    """
+    from recall.lite import LiteStore
+
+    if isinstance(store, LiteStore):
+        from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
+
+        return LiteFactLedger(store), LiteEvidenceCardStore(store)
+    return (
+        PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant),
+        PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant),
+    )
 
 
 def apply_fact_memory(
@@ -52,7 +73,7 @@ def apply_fact_memory(
     """Apply one structured fact through the external provenance controller."""
     fact = AtomicFact.from_payload(dict(claim))
     request = FactApplicationRequest(fact, tuple(evidence_card_ids), request_id)
-    ledger = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant)
+    ledger, card_store = _fact_backends(store)
 
     def revalidate_card(card: EvidenceCard) -> EvidenceCard | None:
         chunk = store.chunk_by_id(card.chunk_id)
@@ -139,7 +160,6 @@ def apply_fact_memory(
         register_evidence_cards(cards, store=store)
         return tuple(card.card_id for card in cards)
 
-    card_store = PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant)
     controller = ProvenanceController(
         tenant_id=store.tenant,
         generation_id=store.generation_id,
@@ -168,9 +188,7 @@ def current_facts_memory(
 ) -> dict[str, object]:
     """Return the ledger's deterministic current fact projection for this tenant."""
     instant = as_of or datetime.now(UTC)
-    events = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant).current(
-        tenant_id=store.tenant, now=instant
-    )
+    events = _fact_backends(store)[0].current(tenant_id=store.tenant, now=instant)
     try:
         generation_id: str | None = store.generation_id
     except NoActiveGeneration:

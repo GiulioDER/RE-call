@@ -435,3 +435,24 @@ def test_wizard_configures_the_strict_fact_boundary_for_distinct_roles():
                 ).fetchone():
                     admin.execute(sql.SQL("DROP OWNED BY {} ").format(sql.Identifier(role)))
                     admin.execute(sql.SQL("DROP ROLE IF EXISTS {} ").format(sql.Identifier(role)))
+
+
+def test_postgres_a_fact_applied_under_two_requests_is_listed_once():
+    """PostgreSQL's current projection lists a fact once, however many requests applied it.
+
+    Red proof (2026-10-13): baseline `asserts_fact` in recall/provenance_controller.py reduced to
+    `event.event_type == "asserted"` (the filter `PostgresFactLedger._project_current` used on
+    origin/master 86219d6d2); the final assertion failed with the r2 DUPLICATE event listed too.
+    Restored, passes.
+    """
+    tenant, generation, claim, card = _fixture()
+    first, first_request = _controller(tenant, generation, claim, card, f"r1-{uuid4().hex}")
+    second, second_request = _controller(tenant, generation, claim, card, f"r2-{uuid4().hex}")
+
+    assert first.apply_fact(first_request).code == DecisionCode.APPLIED
+    assert second.apply_fact(second_request).code == DecisionCode.DUPLICATE
+
+    current = PostgresFactLedger(TEST_DSN, tenant_id=tenant).current(tenant_id=tenant, now=NOW)
+    assert [(event.request_id, event.decision_code) for event in current] == [
+        (first_request.request_id, DecisionCode.APPLIED)
+    ]

@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, cast
 
+from recall.frontmatter import supersedes_key
 from recall.types import AtomicFact, EvidenceCard, Verdict
 
 
@@ -84,6 +85,16 @@ def canonical_json(value: object) -> str:
 def fact_identity(fact: AtomicFact) -> str:
     digest = hashlib.sha256(canonical_json(fact.to_payload()).encode("utf-8")).hexdigest()
     return f"fact_{digest[:32]}"
+
+
+def asserts_fact(event: FactEvent) -> bool:
+    """Whether an event is the one application a fact's projection lists.
+
+    A fact applied again under a new request records a second `asserted` event coded DUPLICATE,
+    which is only ever written while the APPLIED event for the same fact is still a candidate.
+    Projections skip it, so a fact is listed once however many requests applied it.
+    """
+    return event.event_type == "asserted" and event.decision_code != DecisionCode.DUPLICATE
 
 
 def fact_conflict_key(fact: AtomicFact) -> str:
@@ -486,7 +497,7 @@ class InMemoryFactLedger:
             result: list[FactEvent] = []
             instant = _as_utc(now)
             for event in self._events:
-                if event.tenant_id != tenant_id or event.event_type != "asserted":
+                if event.tenant_id != tenant_id or not asserts_fact(event):
                     continue
                 if event.fact_id in superseded or event.fact is None:
                     continue
@@ -513,7 +524,7 @@ class InMemoryFactLedger:
             event
             for event in self._events
             if event.tenant_id == tenant_id
-            and event.event_type == "asserted"
+            and asserts_fact(event)
             and event.fact_id not in superseded
             and event.fact is not None
         )
@@ -744,8 +755,15 @@ class ProvenanceController:
                 for card in event.evidence_cards
                 for value in (card.card_id, card.chunk_id, card.source)
             }
+            # A memo names what it supersedes by file name, resolved to a stem exactly as the
+            # store resolves `supersedes:` (`recall.frontmatter.supersedes_key`), so a link
+            # `user-drink.md` designates a memo stored as `mem/user-drink.md`. Without this a
+            # lite store, which names memos relative to RECALL_INDEX_ROOT, never matched one.
+            old_stems = {supersedes_key(card.source) for card in event.evidence_cards if card.source}
             allowed = any(
-                event.fact_id in card.supersession_links or old_source_ids.intersection(card.supersession_links)
+                event.fact_id in card.supersession_links
+                or old_source_ids.intersection(card.supersession_links)
+                or old_stems.intersection(supersedes_key(link) for link in card.supersession_links)
                 for card in cards
             )
             if allowed and event.fact_id is not None:

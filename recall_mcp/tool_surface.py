@@ -82,13 +82,11 @@ TOOL_PRESETS: Mapping[str, frozenset[str]] = {
     ),
 }
 
-#: Tools a lite server (one SQLite file, `sqlite:///`) does not register, because each needs a
-#: PostgreSQL feature the file does not have: the two fact-ledger tools write `recall_fact_*`
-#: tables, and a lite calibration that certifies is in force at once, so there is nothing to
-#: publish. Leaving them unregistered keeps a client from offering calls that can only fail.
-LITE_UNSERVED_TOOLS: frozenset[str] = frozenset(
-    {"recall_current_facts", "recall_apply_fact", "recall_calibration_publish"}
-)
+#: Tools a lite server (one SQLite file, `sqlite:///`) does not register. A lite calibration that
+#: certifies is in force the moment it is saved, so there is nothing to publish; leaving the tool
+#: unregistered keeps a client from offering a call that can only fail. The fact-ledger tools are
+#: served: `recall.lite.facts` keeps the ledger and the evidence cards in the same file.
+LITE_UNSERVED_TOOLS: frozenset[str] = frozenset({"recall_calibration_publish"})
 
 #: The variable a deployment sets. Unset means every tool, so this cannot change an existing
 #: install's behaviour by being introduced.
