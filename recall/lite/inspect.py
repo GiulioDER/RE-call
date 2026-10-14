@@ -45,7 +45,7 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         return LiteFileReport(target, exists=True, error=f"{type(exc).__name__}: {exc}")
     try:
         meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
-        rows = conn.execute("SELECT id, text, source FROM chunks").fetchall()
+        rows = conn.execute("SELECT id, text, source, embedding FROM chunks").fetchall()
         latest = conn.execute("SELECT payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
     except sqlite3.Error as exc:
         return LiteFileReport(target, exists=True, error=f"not a lite store ({type(exc).__name__}: {exc})")
@@ -64,7 +64,9 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         except Exception as exc:  # BROAD-CATCH: fail-open  # a tampered artifact is reported, not raised
             return LiteFileReport(target, exists=True, error=f"the stored calibration does not verify: {exc}")
         threshold, separability = artifact.threshold, artifact.separability
-        if artifact.corpus_fingerprint != corpus_digest([(str(r[0]), str(r[1])) for r in rows]):
+        # The store's identity since PR 896's audit: ids, texts AND stored vectors (restack fix; a
+        # pair digest raised on unpacking, and would never equal `LiteStore.corpus_fingerprint`).
+        if artifact.corpus_fingerprint != corpus_digest([(str(r[0]), str(r[1]), bytes(r[3])) for r in rows]):
             status = CalibrationStatus.STALE
         elif not artifact.certified:
             status = CalibrationStatus.UNCERTIFIED
