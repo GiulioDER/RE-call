@@ -351,3 +351,72 @@ def test_an_unreadable_memo_does_not_cost_the_others(hook_env, monkeypatch):
 
     assert "embedding-runs-on-vps2" not in stems
     assert "pyarrow-blocked-by-application-control" in stems
+
+
+# --------------------------------------------------------------------------------------
+# Provenance: every injected record carries the dates it states about itself, none inferred
+# --------------------------------------------------------------------------------------
+
+
+def write_memo(store: Path, stem: str, frontmatter: str, body: str) -> Path:
+    store.mkdir(parents=True, exist_ok=True)
+    path = store / f"{stem}.md"
+    path.write_text(f"---\n{frontmatter}\n---\n\n{body}\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def test_provenance_labels_each_date_by_the_field_it_came_from(hook_env):
+    """Event time and record time stay apart, and the latest dated correction is reported.
+
+    Red proof: replacing `max(corrections)` with `corrections[0]` in `prompt_time.provenance`
+    reports `last 2026-08-20` and fails the equality below.
+    """
+
+    path = write_memo(
+        hook_env / "store",
+        "2026-08-18-a-dated-memo",
+        "name: x\ndescription: y\nmetadata:\n  valid_from: 2026-08-10\n"
+        "  modified: 2026-08-19T10:00:00Z\n  originSessionId: deadbeef-0001",
+        "Body.\n\n\U0001f501 Corrected 2026-08-20.\n\n\U0001f501 **Corrected 2026-09-02**: later.",
+    )
+
+    assert prompt_time.provenance(path) == (
+        "[written 2026-08-18; valid from 2026-08-10; modified 2026-08-19; "
+        "corrected 2x, last 2026-09-02; session deadbeef]"
+    )
+
+
+def test_a_date_in_the_body_is_never_taken_as_the_memos_own(hook_env):
+    """A memo that states no date of its own is `[undated]`, whatever dates its prose quotes.
+
+    Red proof: searching the whole file instead of the frontmatter (`VALID_FROM_RE.search(raw)`
+    in `prompt_time.provenance`) returns `[valid from 2026-01-01]` and fails the equality below.
+    """
+
+    path = write_memo(
+        hook_env / "store",
+        "an-undated-memo",
+        "name: an-undated-memo\ndescription: quotes a date",
+        "valid_from: 2026-01-01 is what the old run was measured against.",
+    )
+
+    assert prompt_time.provenance(path) == "[undated]"
+
+
+def test_the_rendered_block_leads_each_hit_with_its_stamp_and_states_today(hook_env):
+    """A date is only useful beside the date it is compared with, so `today` is in the block.
+
+    Red proof: rendering each hit as `- {stem} (score ...)` without `provenance(path)` in
+    `prompt_time.render` fails the first assertion.
+    """
+
+    from datetime import date
+
+    store = hook_env / "store"
+    write_memo(store, "2026-09-24-dated", "name: d\ndescription: d", "Body.")
+    text = prompt_time.render(
+        [("2026-09-24-dated", "summary", 3.0)], store, today=date(2026, 10, 14)
+    )
+
+    assert "- [written 2026-09-24] 2026-09-24-dated (score 3.0)" in text
+    assert "Today is 2026-10-14." in text
