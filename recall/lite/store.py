@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
+from recall.db_constants import DEFAULT_TABLE
 from recall.errors import RecallError
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope, group_expression
 from recall.supersession import EdgeCandidates, chunk_supersedes_targets, resolve_supersession_candidates
@@ -169,6 +170,56 @@ def _normalize(vectors: Any) -> Any:
     return (wide / np.where(norms == 0, 1.0, norms)).astype(np.float32)
 
 
+class CorpusSnapshot:
+    """The corpus as one read saw it: a calibration fit measures and binds to exactly this.
+
+    Holds the store's cached matrix, which is never mutated (a write replaces it), so a fit running
+    in a background thread beside a server that keeps indexing reads one corpus from its first
+    question to its last, and binds to that corpus's fingerprint. Writes that land meanwhile are a
+    corpus change like any other, which the stored fit then carries forward or refits.
+    """
+
+    def __init__(self, matrix: _Matrix, dim: int) -> None:
+        self._matrix = matrix
+        self._dim = dim
+
+    @property
+    def fingerprint(self) -> str:
+        return self._matrix.fingerprint
+
+    @property
+    def generation_id(self) -> str:
+        return "lite-" + self._matrix.fingerprint[:16]
+
+    def texts(self) -> list[str]:
+        """Non-blank chunk texts in chunk-id order, the order `LiteStore.iter_chunks` reads them."""
+        return [row.text for row in sorted(self._matrix.rows, key=lambda row: row.id) if row.text.strip()]
+
+    def source_manifest(self) -> dict[str, str]:
+        from recall.lite.calibration import source_digests
+
+        return source_digests([(row.source, row.id, row.text) for row in self._matrix.rows])
+
+    def top_cosine(self, vector: list[float]) -> float:
+        """`LiteStore.top_cosine` over this snapshot: the same arithmetic on the same rows."""
+        return _top_cosine(self._matrix, _normalised(vector, self._dim))
+
+
+def _normalised(vector: Sequence[float], dim: int) -> Any:
+    import numpy as np
+
+    if len(vector) != dim:
+        raise LiteStoreError(f"query vector is {len(vector)} wide; this store holds {dim}")
+    q: Any = np.asarray(vector, dtype=np.float32)
+    return _normalize(q)  # PR 894's float64 normalisation, for snapshots and live queries alike
+
+
+def _top_cosine(matrix: _Matrix, q: Any) -> float:
+    if not matrix.rows:
+        return 0.0
+    return float((matrix.vectors @ q).max())
+
+
 def _matches(scope: Scope, row: _Row) -> bool:
     """`Scope.predicate`, evaluated in Python over one row; same arms, same rules.
 
@@ -252,8 +303,8 @@ class LiteStore:
     def __init__(self, path: str | Path, *, dim: int, tenant: str = "default", table: str = "chunks") -> None:
         if dim < 1:
             raise LiteStoreError(f"embedding width must be positive, got {dim}")
-        if table != "chunks":
-            raise LiteStoreError(f"a lite store has one table, 'chunks'; got {table!r}")
+        if table != DEFAULT_TABLE:
+            raise LiteStoreError(f"a lite store has one table, '{DEFAULT_TABLE}'; got {table!r}")
         self.path = Path(path)
         self._dim = dim
         self._tenant = tenant
@@ -269,6 +320,7 @@ class LiteStore:
         with self._lock:
             self._ensure_query_tables()
         self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
+        self._manifest_cache: tuple[int, dict[str, str]] | None = None
 
     @classmethod
     def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default", table: str = "chunks") -> LiteStore:
@@ -368,6 +420,17 @@ class LiteStore:
                     rowid INTEGER PRIMARY KEY,
                     created_at TEXT NOT NULL,
                     payload TEXT NOT NULL
+                );
+                -- What a fit was measured on, kept so a changed corpus can re-verify its threshold
+                -- without embedding anything (`recall.lite.calibration.carry_forward`): the labelled
+                -- questions, their vectors (float32, one row per question, in order) and the corpus
+                -- by source. A file written before this table existed simply has no row, and its
+                -- calibration is refitted on the next change, as it always was.
+                CREATE TABLE IF NOT EXISTS calibration_evidence (
+                    calibration_id TEXT PRIMARY KEY,
+                    queries TEXT NOT NULL,
+                    vectors BLOB NOT NULL,
+                    sources TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS audit_events (
                     event_id TEXT PRIMARY KEY,
@@ -567,6 +630,16 @@ class LiteStore:
         )
         return {name: str(digest) for name, digest in rows}
 
+    def sources_present(self, sources: Sequence[str]) -> set[str]:
+        """Which of `sources` the store holds, by the `source` index: no metadata or vectors read."""
+        if not sources:
+            return set()
+        rows = self._metadata_values(
+            "SELECT DISTINCT source FROM chunks WHERE source IN (SELECT value FROM json_each(?))",
+            (json.dumps(list(sources)),),
+        )
+        return {str(row[0]) for row in rows}
+
     def _scope_rows(self, dimension: str) -> Iterator[tuple[str | None, dict[str, Any], str]]:
         """Each row's value on `dimension`, as `recall.scope.GROUP_SQL` computes it, with its metadata
         and source.
@@ -747,6 +820,59 @@ class LiteStore:
         )
         return [Chunk(id=cid, source=src, text=text, metadata=json.loads(metadata)) for cid, src, text, metadata in rows]
 
+    def ensure_schema(self, script: str) -> None:
+        """Run `IF NOT EXISTS` DDL for a table another `recall.lite` module owns (facts, receipts).
+
+        Outside `_write()` on purpose: `executescript` commits any open transaction first. The
+        other package-internal seams those modules use are `_write()` (one BEGIN IMMEDIATE
+        transaction), `_conn` inside it, and `_metadata_values` for reads.
+        """
+        with self._lock:
+            self._conn.executescript(script)
+
+    def chunk_by_id(self, chunk_id: str) -> Chunk | None:
+        """One chunk by id without its embedding, as `PgVectorStore.chunk_by_id`; None when absent."""
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise ValueError("chunk_id must be a non-empty string")
+        rows = self._metadata_values("SELECT id, source, text, metadata FROM chunks WHERE id = ?", (chunk_id,))
+        if not rows:
+            return None
+        cid, source, text, metadata = rows[0]
+        return Chunk(id=cid, source=source, text=text, metadata=json.loads(metadata) or {})
+
+    # ------------------------------------------------------------------ idempotency receipts
+
+    def get_operation_receipt(
+        self,
+        idempotency_key: str,
+        *,
+        operation: str = "legacy",
+        request_fingerprint: str | None = None,
+        now: datetime | None = None,
+    ) -> str | None:
+        """The stored response of a completed mutation, as `PgVectorStore.get_operation_receipt`."""
+        from recall.lite.receipts import get_receipt
+
+        return get_receipt(
+            self, idempotency_key, operation=operation, request_fingerprint=request_fingerprint, now=now
+        )
+
+    def record_operation_receipt(
+        self,
+        idempotency_key: str,
+        result: str,
+        *,
+        operation: str = "legacy",
+        request_fingerprint: str | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """Keep a completed mutation's response, as `PgVectorStore.record_operation_receipt`."""
+        from recall.lite.receipts import record_receipt
+
+        record_receipt(
+            self, idempotency_key, result, operation=operation, request_fingerprint=request_fingerprint, now=now
+        )
+
     # ------------------------------------------------------------------ retrieval
 
     def _version(self) -> int:
@@ -781,12 +907,7 @@ class LiteStore:
             return self._matrix
 
     def _query_vector(self, vector: Sequence[float]) -> Any:
-        import numpy as np
-
-        if len(vector) != self._dim:
-            raise LiteStoreError(f"query vector is {len(vector)} wide; this store holds {self._dim}")
-        q: Any = np.asarray(vector, dtype=np.float32)
-        return _normalize(q)
+        return _normalised(vector, self._dim)
 
     def _hit(self, row: _Row, score: float) -> ScoredChunk:
         return ScoredChunk(
@@ -834,10 +955,11 @@ class LiteStore:
 
     def top_cosine(self, vector: list[float]) -> float:
         """The best cosine any chunk has with `vector`, exactly; 0.0 for an empty store."""
-        matrix = self._load()
-        if not matrix.rows:
-            return 0.0
-        return float((matrix.vectors @ self._query_vector(vector)).max())
+        return _top_cosine(self._load(), self._query_vector(vector))
+
+    def calibration_snapshot(self) -> CorpusSnapshot:
+        """The corpus as it is now, frozen: see `CorpusSnapshot`."""
+        return CorpusSnapshot(self._load(), self._dim)
 
     def cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
         matrix = self._load()
@@ -879,6 +1001,29 @@ class LiteStore:
             "CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_terms USING fts5(text, tokenize='porter unicode61')"
         )
         self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_vocab USING fts5vocab(temp, query_terms, 'row')")
+
+    def unknown_terms(self, tokens: Sequence[str]) -> list[str]:
+        """The tokens that occur nowhere in this store, judged by the FTS5 tokenizer's own terms.
+
+        A token the tokenizer splits ("A-320") is unknown if any of its terms is absent. Used by
+        `recall.unknown_terms`; a store without this method is reported as unable to check.
+        """
+        unknown: list[str] = []
+        with self._lock:
+            self._ensure_query_tables()
+            for token in tokens:
+                self._conn.execute("DELETE FROM temp.query_terms")
+                self._conn.execute("INSERT INTO temp.query_terms(text) VALUES (?)", (token,))
+                terms = [str(row[0]) for row in self._conn.execute("SELECT term FROM temp.query_vocab")]
+                self._conn.execute("DELETE FROM temp.query_terms")
+                absent = not terms or any(
+                    self._conn.execute("SELECT 1 FROM chunks_vocab WHERE term = ? LIMIT 1", (term,)).fetchone()
+                    is None
+                    for term in terms
+                )
+                if absent:
+                    unknown.append(token)
+        return unknown
 
     def query_sparse(
         self,
@@ -949,24 +1094,80 @@ class LiteStore:
         """A stable name for the corpus as it is now, in the place a Postgres generation id goes."""
         return "lite-" + self.corpus_fingerprint()[:16]
 
-    def save_calibration(
-        self, payload: str, *, created_at: str, model: str, dimension: int, expected_revision: int | None = None
-    ) -> None:
-        """Append a fit, keeping identity metadata aligned with the timestamp-selected row.
+    def source_manifest(self) -> dict[str, str]:
+        """`{source: digest of its chunks' ids and texts}`: the corpus by source, cached per version.
 
-        An expected revision refuses publication if any corpus write occurred during the fit.
-        The comparison and insertion share the write transaction, excluding another writer.
+        The unit a corpus delta counts (`recall.calibration_v2.corpus_delta`), so an edit to one memo
+        is one changed source however many chunks it has.
+        """
+        matrix = self._load()
+        cached = self._manifest_cache
+        if cached is None or cached[0] != matrix.version:
+            from recall.lite.calibration import source_digests
+
+            cached = (matrix.version, source_digests([(row.source, row.id, row.text) for row in matrix.rows]))
+            self._manifest_cache = cached
+        return dict(cached[1])
+
+    def save_calibration(
+        self,
+        payload: str,
+        *,
+        created_at: str,
+        model: str,
+        dimension: int,
+        expected_revision: int | None = None,
+        evidence: tuple[str, str, bytes, str] | None = None,
+    ) -> None:
+        """Append a fit and, in the same transaction, the evidence it was fitted on.
+
+        `evidence` is `(calibration_id, queries JSON, query vectors as float32 bytes, sources JSON)`;
+        together or not at all, so a calibration never names evidence that was not written. An
+        expected revision refuses publication if any corpus write occurred during the fit; the
+        comparison and insertion share the write transaction, excluding another writer. Identity
+        metadata follows the timestamp-selected row.
         """
         with self._write():
             if expected_revision is not None and self._version() != expected_revision:
                 raise CalibrationBindingError("corpus changed during calibration; retry the fit")
             inserted = self._conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)", (created_at, payload))
+            if evidence is not None:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO calibration_evidence(calibration_id, queries, vectors, sources) "
+                    "VALUES (?, ?, ?, ?)",
+                    evidence,
+                )
             selected = self._conn.execute("SELECT rowid FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
             if selected is not None and selected[0] == inserted.lastrowid:
                 self._conn.executemany(
                     "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     [("embedder_model", model), ("embedder_dimension", str(dimension))],
                 )
+
+    def save_near_miss_coverage(self, calibration_id: str, report: dict[str, Any]) -> None:
+        """Keep the near-miss coverage measured with a calibration (`recall.near_miss`), by its id."""
+        payload = json.dumps({"calibration_id": calibration_id, **report}, sort_keys=True)
+        with self._write():
+            self._conn.execute(
+                "INSERT INTO meta(key, value) VALUES ('near_miss_coverage', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (payload,),
+            )
+
+    def calibration_evidence(self, calibration_id: str) -> tuple[str, bytes, str] | None:
+        """`(queries JSON, vectors, sources JSON)` stored with `calibration_id`, or None."""
+        rows = self._metadata_values(
+            "SELECT queries, vectors, sources FROM calibration_evidence WHERE calibration_id = ?", (calibration_id,)
+        )
+        return (str(rows[0][0]), bytes(rows[0][1]), str(rows[0][2])) if rows else None
+
+    def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
+        """The coverage stored with `calibration_id`, or None when it belongs to another fit."""
+        rows = self._metadata_values("SELECT value FROM meta WHERE key = 'near_miss_coverage'")
+        if not rows:
+            return None
+        report = json.loads(str(rows[0][0]))
+        return report if report.get("calibration_id") == calibration_id else None
 
     def _latest_calibration(self) -> tuple[int, str] | None:
         row = self._metadata_values("SELECT rowid, payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1")
