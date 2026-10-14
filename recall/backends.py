@@ -7,7 +7,9 @@ that subset raises `recall.lite.LiteUnsupported`, which names the call and says 
 install, and reads as absent to `getattr(store, name, None)` probes.
 
 Generations, manifests, the enterprise control plane and learned sparse retrieval exist only on
-Postgres, so a lite DSN on the generation route is refused before anything opens.
+Postgres, so a lite DSN on the generation route is refused before anything opens. Deletion by
+source (`recall forget`, `recall_forget`) works on the legacy route. A lite file holds one table,
+so a table other than the default is refused rather than ignored.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING, Any, cast
 
-from recall.lite import LiteStore, is_lite_dsn
+from recall.lite import LiteStore, LiteStoreError, is_lite_dsn
 from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
 
 if TYPE_CHECKING:
@@ -47,8 +49,18 @@ def open_legacy_store(
     """The legacy-route store for `dsn`: a `LiteStore` for `sqlite:///`, else a `PgVectorStore`.
 
     The pool size and statement timeout apply to Postgres only; a SQLite file has neither.
+
+    A non-default `table` is refused for a lite DSN rather than ignored: a lite file has one table,
+    and ignoring the name ran `recall --table scratch ...`, meant to keep an experiment away from
+    real memory, against the real memory.
     """
     if is_lite_dsn(dsn):
+        if table != DEFAULT_TABLE:
+            raise LiteStoreError(
+                f"a lite store ({dsn}) has one table, '{DEFAULT_TABLE}'; table {table!r} (--table or "
+                f"RECALL_TABLE) cannot be "
+                "honoured. Use another sqlite:/// file to keep an experiment apart from this memory"
+            )
         return cast("PgVectorStore", LiteStore.from_dsn(dsn, dim=dim, tenant=tenant, table=table))
     return PgVectorStore(
         dsn, dim=dim, table=table, tenant=tenant, pool_size=pool_size, statement_timeout_ms=statement_timeout_ms

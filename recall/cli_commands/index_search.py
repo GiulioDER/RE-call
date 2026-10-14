@@ -23,7 +23,7 @@ from recall.index import (
 from recall.index_lock import ConcurrentIndex
 from recall.retriever import DocumentExpansionPolicy
 from recall.scope import Scope
-from recall.backends import lite_route_refusal, open_legacy_store, write_session
+from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store, write_session
 from recall.lite import LiteStore, LiteWriterBusy
 from recall.lite.writer_lock import queued_notice
 from recall.store import PgVectorStore
@@ -374,12 +374,35 @@ def _cmd_index(args: argparse.Namespace) -> None:
             raise SystemExit(str(exc)) from exc
 
 
+def _check_lite_forget_target(dsn: str, tenant: str) -> None:
+    """Refuse a lite file forget must not open, checked without writing to it.
+
+    Opening a `LiteStore` creates the file, its directories and its schema, and stamps a tenant and
+    a width into it, so a dry run on a mistyped path built a store there and called the source a
+    typo. A missing file, a file that is not a lite store, or another tenant's file is refused
+    untouched instead.
+    """
+    from recall.lite import LITE_DSN_PREFIX
+    from recall.lite.inspect import lite_file_meta
+
+    path = Path(dsn[len(LITE_DSN_PREFIX):])
+    if not path.exists():
+        raise SystemExit(f"forget: {path} does not exist; nothing deleted or created")
+    meta = lite_file_meta(path)
+    if meta is None or "dim" not in meta:
+        raise SystemExit(f"forget: {path} is not a lite store (it has no RE-call meta table); nothing deleted or written")
+    if meta.get("tenant") != tenant:
+        raise SystemExit(
+            f"forget: {path} holds tenant {meta.get('tenant')!r}, not {tenant!r}; pass --tenant "
+            f"{meta.get('tenant')}; nothing deleted"
+        )
+
+
 def _cmd_forget(args: argparse.Namespace) -> None:
     from recall.generation_store import GenerationStore
     from recall.generations import NoActiveGeneration
 
     route = _runtime_route(args)
-    embedder = _make_embedder(args.embedder)
     security_policy = load_source_policy()
     security_context = (
         access_context_from_environment(args.tenant, purpose="erasure")
@@ -387,6 +410,13 @@ def _cmd_forget(args: argparse.Namespace) -> None:
         else None
     )
     generation_mode = route.uses_generation
+    if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+        raise SystemExit(refusal)
+    if is_lite_dsn(args.dsn):
+        _check_lite_forget_target(args.dsn, args.tenant)
+    # After the refusals: building an embedder loads a model or sends a billed probe, and erasure
+    # embeds nothing; a refused command must not pay for it.
+    embedder = _make_embedder(args.embedder)
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
@@ -395,7 +425,7 @@ def _cmd_forget(args: argparse.Namespace) -> None:
     forget_store: PgVectorStore = (
         gen_store
         if gen_store is not None
-        else PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
+        else open_legacy_store(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
     )
     with forget_store as store:
         store.check_schema()
@@ -446,8 +476,10 @@ def _cmd_forget(args: argparse.Namespace) -> None:
             # tenant owns and an absent source really is a typo. Computed here rather than
             # above because the generation branch never reads it, and on a GenerationStore
             # it costs an active-generation lookup plus a DISTINCT scan.
+            present = getattr(store, "sources_present", None)
             try:
-                visible_now = set(store.source_content_hashes())
+                # A lite store answers from its source index; PostgreSQL lists its sources.
+                visible_now = present(requested) if present is not None else set(store.source_content_hashes())
             except NoActiveGeneration:
                 visible_now = set()
             targets = [s for s in requested if s in visible_now]

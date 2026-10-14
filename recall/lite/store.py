@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
+from recall.db_constants import DEFAULT_TABLE
 from recall.errors import RecallError
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope
 from recall.supersession import EdgeCandidates, chunk_supersedes_targets, resolve_supersession_candidates
@@ -274,8 +275,8 @@ class LiteStore:
     def __init__(self, path: str | Path, *, dim: int, tenant: str = "default", table: str = "chunks") -> None:
         if dim < 1:
             raise LiteStoreError(f"embedding width must be positive, got {dim}")
-        if table != "chunks":
-            raise LiteStoreError(f"a lite store has one table, 'chunks'; got {table!r}")
+        if table != DEFAULT_TABLE:
+            raise LiteStoreError(f"a lite store has one table, '{DEFAULT_TABLE}'; got {table!r}")
         self.path = Path(path)
         self._dim = dim
         self._tenant = tenant
@@ -600,6 +601,16 @@ class LiteStore:
             (project,),
         )
         return {name: str(digest) for name, digest in rows}
+
+    def sources_present(self, sources: Sequence[str]) -> set[str]:
+        """Which of `sources` the store holds, by the `source` index: no metadata or vectors read."""
+        if not sources:
+            return set()
+        rows = self._metadata_values(
+            "SELECT DISTINCT source FROM chunks WHERE source IN (SELECT value FROM json_each(?))",
+            (json.dumps(list(sources)),),
+        )
+        return {str(row[0]) for row in rows}
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """`{identifier: [source, ...]}` for identifiers matching a row's `file` or its `source`.

@@ -85,18 +85,38 @@ class _ReadOnlyCorpus:
         vectors: Any = np.zeros((len(blobs), self._dim), dtype=np.float32)
         for i, (blob,) in enumerate(blobs):
             vectors[i] = np.frombuffer(blob, dtype=np.float32)
-        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        return vectors / norms
+        from recall.lite.store import _normalize
+
+        return _normalize(vectors)  # the store's own float64 normalisation, so doctor and store agree
 
     def top_cosine(self, vector: list[float]) -> float:
         import numpy as np
 
         if not len(self._vectors):
             return 0.0
+        from recall.lite.store import _normalize
+
         q: Any = np.asarray(vector, dtype=np.float32)
-        norm = float(np.linalg.norm(q))
-        return float((self._vectors @ (q / norm if norm else q)).max())
+        return float((self._vectors @ _normalize(q)).max())
+
+
+def lite_file_meta(path: str | Path) -> dict[str, str] | None:
+    """A lite file's `meta` table, read over a read-only connection; None when it has none.
+
+    For a command that needs only the width or the tenant: `inspect_lite_file` also reads and
+    hashes every chunk and verifies the latest calibration, and opening a `LiteStore` would write
+    a lite schema into a file that is not one.
+    """
+    try:
+        conn = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        return {str(key): str(value) for key, value in conn.execute("SELECT key, value FROM meta").fetchall()}
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
 
 
 def inspect_lite_file(path: str | Path) -> LiteFileReport:
