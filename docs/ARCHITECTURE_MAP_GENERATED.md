@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 321
 Cross package edges: 332
-Source tree fingerprint: `d85415292b0eff2af003b43cf585c61f594695fef913527c5e641076e7d9f8ed`
+Source tree fingerprint: `ceff7ad88178c450a0b369939361fe6a92f43c1a1a4cbea1ec266e9f69779fe3`
 
 ## Highest fan in modules
 
@@ -569,7 +569,7 @@ They are observations, not automatic failures.
 | `recall.evidence` | 2 | 3 |
 | `recall.explanations` | 1 | 2 |
 | `recall.extraction` | 1 | 1 |
-| `recall.fact_ledger` | 3 | 7 |
+| `recall.fact_ledger` | 3 | 8 |
 | `recall.federation` | 4 | 71 |
 | `recall.fix` | 6 | 21 |
 | `recall.frontmatter` | 1 | 1 |
@@ -621,7 +621,7 @@ They are observations, not automatic failures.
 | `recall.proof_provider` | 3 | 7 |
 | `recall.provenance_card_hash` | 0 | 0 |
 | `recall.provenance_cards` | 3 | 27 |
-| `recall.provenance_controller` | 1 | 2 |
+| `recall.provenance_controller` | 2 | 4 |
 | `recall.provider_metadata` | 0 | 0 |
 | `recall.query_anchor_admission` | 0 | 0 |
 | `recall.query_class` | 0 | 0 |

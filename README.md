@@ -247,12 +247,45 @@ select this SQLite file; use those commands because the CLI does not read MCP re
 Re-running it re-indexes
 what changed and refits the calibration when the memory changed. Add `.recall/` to `.gitignore`.
 
+The memory then keeps itself current. The MCP server refreshes the store when it starts, and before
+a search it checks the folder (at most every `RECALL_LITE_REFRESH_INTERVAL` seconds, thirty by
+default): when a memo changed it indexes it first, waiting up to `RECALL_LITE_REFRESH_WAIT` seconds
+(three), and refits the calibration. `RECALL_LITE_AUTO_REFRESH=0` turns this off. `recall lite
+refresh` does the same by hand or from a scheduler, and `recall lite refresh --check` reports whether
+the store is current without changing anything.
+
+Like `recall_index`, the automatic refresh refuses a folder larger than `RECALL_INDEX_MAX_FILES` (two
+thousand files by default) or `RECALL_INDEX_MAX_BYTES` (twenty megabytes), and indexes nothing;
+`recall lite refresh` run by hand indexes it anyway, with a warning. While refreshing fails, every
+search answer carries a `refresh_warning` naming the cause, `recall doctor` reports it, and
+`recall_stats` shows the last refresh and its reason. Every memo is filed under its path relative to
+`RECALL_INDEX_ROOT`, whether the refresh or `recall_index` indexed it, and `recall_forget` takes that
+name.
+
 The trust layer is the same code: superseded and expired verdicts, abstention, and strict refusal
 until the calibration certifies. Retrieval is exact cosine search plus PostgreSQL's own keyword
 ranking formula, so results track the PostgreSQL store closely but not identically. It serves one
-project and one local client: generations, multi-tenant serving and authentication need the
-PostgreSQL install below. The fact tools keep their ledger in the same file. The printed dashboard
-command reads the same file, read-only.
+project: generations, multi-tenant serving and authentication need the PostgreSQL install below.
+The fact tools keep their ledger in the same file. The printed dashboard command reads the same
+file, read-only.
+
+Several local clients (Claude Code and Codex, say) can share the file. Writes take turns, first
+come first served: an index, ingest or forget waits for the one in progress and gives up after
+`RECALL_LITE_WRITE_WAIT` seconds (five minutes by default), naming what holds the store; a
+calibration fit waits on its own queue (`RECALL_LITE_REFIT_WAIT`, two minutes by default) so it
+never holds up a write.
+A search never waits for that queue; it waits only for a refresh of memos it found changed, as
+above. The queue lives in `memory.db.lanes/` beside the file, which is safe to delete
+while nothing is using the store. Keep the file on a local disk: file locks on network shares are
+not reliable, and two machines writing one file are not supported.
+
+Lite also checks entity-like query tokens against its global FTS vocabulary by default. An
+absent identifier demotes otherwise trusted hits to `unknown_term` and the search abstains.
+PostgreSQL and constrained searches report this optional check as `unavailable`; their verdicts
+are left unchanged. `RECALL_UNKNOWN_TERM_GATE=0` disables it. This heuristic does not establish
+that an answer is stated in the memory. Lite calibration reports its near-miss coverage separately
+and warns when that coverage is provisional or unavailable. See [the API](docs/API.md) and
+[calibration reference](docs/CALIBRATION.md) for the returned states and limits.
 
 ### With PostgreSQL
 
