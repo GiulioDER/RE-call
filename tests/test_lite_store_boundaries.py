@@ -98,19 +98,26 @@ def test_sparse_keyword_membership_uses_one_view(
 
 
 def test_sparse_score_uses_the_selected_matrix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """FIX002: a second writer before scoring cannot replace the selected vector."""
+    """FIX002: a second writer before scoring cannot replace the selected vector.
+
+    The writer is injected through `_numeric_terms`, which the keyword leg calls after loading the
+    matrix on every search. (Restack: it was injected through `_matches`, which PR 897's perf change
+    skips for an unscoped search, so the write never happened.) Red proof (restack, the testbench,
+    2026-10-13): the pre-FIX002 leg (no read view, scores re-read through `cosines_for`) fails
+    "sparse score used a later embedding revision". Removing only the read view stays green, since
+    the hits are scored from the matrix already in hand: two layers, and this test needs both gone."""
     with closing(LiteStore(tmp_path / "m.db", dim=8)) as store, closing(LiteStore(store.path, dim=8)) as writer:
         store.upsert([_chunk()], [VECTOR])
-        original = lite_module._matches
+        original = lite_module._numeric_terms
 
-        def match(scope: Scope, row: Any) -> bool:
+        def numeric(text: str) -> Any:
             writer.upsert([_chunk()], [OTHER])
-            return original(scope, row)
+            return original(text)
 
-        monkeypatch.setattr(lite_module, "_matches", match)
+        monkeypatch.setattr(lite_module, "_numeric_terms", numeric)
         hits = store.query_sparse("alpha", 1, vec=VECTOR)
         assert hits[0].score == pytest.approx(1.0), "sparse score used a later embedding revision"
-        monkeypatch.setattr(lite_module, "_matches", original)
+        monkeypatch.setattr(lite_module, "_numeric_terms", original)
         assert store.cosines_for(["a"], VECTOR) == {"a": pytest.approx(0.0)}
 
 
