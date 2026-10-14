@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 315
 Cross package edges: 321
-Source tree fingerprint: `5f3d47fb085bebaf0a347c10bd39ed4fbc31c4a170a3c9ab02f2fd838a24eac2`
+Source tree fingerprint: `c814656ed25685ea5a2b2d27f5a2875101b2043af7a622c1f4b2e218beb04c91`
 
 ## Highest fan in modules
 
@@ -94,10 +94,10 @@ Source tree fingerprint: `5f3d47fb085bebaf0a347c10bd39ed4fbc31c4a170a3c9ab02f2fd
 | 11 | `recall.desktop.ui` |
 | 11 | `recall.doctor` |
 | 11 | `recall.generation_store` |
+| 11 | `recall.lite.calibration` |
 | 11 | `recall.wizard.pipeline` |
 | 10 | `recall.integrations.langchain` |
 | 10 | `recall.integrations.llamaindex` |
-| 10 | `recall.lite.calibration` |
 | 10 | `recall.lite.setup` |
 | 10 | `recall.setup` |
 | 9 | `recall.cli_commands._shared` |
@@ -575,10 +575,10 @@ They are observations, not automatic failures.
 | `recall.lineage` | 2 | 12 |
 | `recall.lint` | 4 | 19 |
 | `recall.lite` | 2 | 70 |
-| `recall.lite.calibration` | 10 | 68 |
-| `recall.lite.inspect` | 2 | 69 |
+| `recall.lite.calibration` | 11 | 69 |
+| `recall.lite.inspect` | 2 | 70 |
 | `recall.lite.setup` | 10 | 91 |
-| `recall.lite.store` | 6 | 68 |
+| `recall.lite.store` | 6 | 69 |
 | `recall.lite.writer_lock` | 1 | 69 |
 | `recall.manifest` | 3 | 14 |
 | `recall.memory_index` | 6 | 37 |
