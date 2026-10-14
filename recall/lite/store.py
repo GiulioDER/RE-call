@@ -587,13 +587,36 @@ class LiteStore:
         if not isinstance(event_type, str) or not event_type:
             raise ValueError("event_type must be a non-empty str")
         event_id = event_id or f"evt_{uuid.uuid4().hex}"
+        row = (event_id, event_type, actor, generation_id, source_uri, json.dumps(dict(payload), default=str), _now())
+        insert = (
+            "INSERT OR IGNORE INTO audit_events "
+            "(event_id, event_type, actor, generation_id, source_uri, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        with self._lock:
+            pinned = self._conn.in_transaction
+        if pinned:
+            # A read snapshot is open on this connection (`snapshot()`: the decision ledger records
+            # a search from inside the trusted search it witnesses). `BEGIN IMMEDIATE` cannot nest
+            # in it, and a write folded into it would be rolled back with the read view. An audit
+            # row is append-only and independent of that view, so it is written on a connection of
+            # its own; WAL lets it commit while this reader keeps its snapshot. (Restack fix: the
+            # ledger swallows write errors, so every lite search went unrecorded, silently.)
+            conn = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    conn.execute(insert, row)
+                    conn.execute("COMMIT")
+                except BaseException:
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK")
+                    raise
+            finally:
+                conn.close()
+            return event_id
         with self._write():
-            self._conn.execute(
-                "INSERT OR IGNORE INTO audit_events "
-                "(event_id, event_type, actor, generation_id, source_uri, payload, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (event_id, event_type, actor, generation_id, source_uri, json.dumps(dict(payload), default=str), _now()),
-            )
+            self._conn.execute(insert, row)
         return event_id
 
     def count(self) -> int:
