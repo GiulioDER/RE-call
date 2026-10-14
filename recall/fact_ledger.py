@@ -32,6 +32,8 @@ from recall.provenance_controller import (
     FactApplicationPermit,
     _consume_permit,
     _as_utc,
+    ServedSources,
+    absent_fact_ids,
     asserts_fact,
     retracted_keys,
     retraction_key,
@@ -172,8 +174,13 @@ def decode_ledger_row(row: Sequence[Any]) -> FactEvent:
     return _event_from_row(tuple(values))
 
 
-def project_current(events: Sequence[FactEvent], now: datetime) -> tuple[FactEvent, ...]:
-    """The facts in force at `now`: asserted, not superseded or retracted, inside their validity."""
+def project_current(
+    events: Sequence[FactEvent], now: datetime, served: ServedSources | None = None
+) -> tuple[FactEvent, ...]:
+    """The facts in force at `now`: asserted, not superseded or retracted, inside their validity.
+
+    With `served`, a fact none of whose memos the store serves now is left out (`absent_fact_ids`).
+    """
     superseded = {
         fact_id
         for event in events
@@ -181,6 +188,7 @@ def project_current(events: Sequence[FactEvent], now: datetime) -> tuple[FactEve
         for fact_id in event.supersedes_fact_ids
     }
     retracted = retracted_keys(events)
+    absent = absent_fact_ids(events, served)
     instant = _as_utc(now)
     return tuple(
         event for event in events
@@ -188,6 +196,7 @@ def project_current(events: Sequence[FactEvent], now: datetime) -> tuple[FactEve
         and event.fact_id not in superseded
         and event.fact is not None
         and retraction_key(event) not in retracted
+        and event.fact_id not in absent
         and (event.fact.valid_from is None or instant >= _as_utc(event.fact.valid_from))
         and (event.fact.valid_until is None or instant < _as_utc(event.fact.valid_until))
     )
@@ -272,17 +281,25 @@ def assertion_event_id(tenant_id: str, fact: AtomicFact, request_id: str) -> str
 
 
 def assertion_is_duplicate(
-    candidates: Sequence[FactEvent], fact: AtomicFact, supersedes_fact_ids: Sequence[str]
+    candidates: Sequence[FactEvent],
+    fact: AtomicFact,
+    supersedes_fact_ids: Sequence[str],
+    absent: frozenset[str] = frozenset(),
 ) -> bool:
     """Whether `fact` repeats a current candidate; refuses one it contradicts without superseding.
 
     The decision every ledger makes before it appends an `asserted` event, so that PostgreSQL and
-    a lite store decide the same application the same way.
+    a lite store decide the same application the same way. A fact in `absent` (its memos are
+    not served now) still makes a re-application a DUPLICATE, so it is never listed twice when its
+    memo returns, but it is never a conflict: a deleted memo cannot block a new value.
     """
     identity = fact_identity(fact)
     if any(event.fact_id == identity for event in candidates):
         return True
-    conflicts = tuple(event for event in candidates if event.fact and facts_conflict(event.fact, fact))
+    conflicts = tuple(
+        event for event in candidates
+        if event.fact and event.fact_id not in absent and facts_conflict(event.fact, fact)
+    )
     if {event.fact_id for event in conflicts} - set(supersedes_fact_ids):
         raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
     return False
@@ -717,12 +734,14 @@ class PostgresFactLedger:
         with self._connect() as conn:
             return tuple(self._events(conn))
 
-    def current(self, *, tenant_id: str, now: datetime) -> tuple[FactEvent, ...]:
+    def current(
+        self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
+    ) -> tuple[FactEvent, ...]:
         if tenant_id != self.tenant_id:
             raise ValueError("ledger tenant mismatch")
         with self._connect() as conn:
             events = self._events(conn)
-        return project_current(events, now)
+        return project_current(events, now, served)
 
     def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None:
         if tenant_id != self.tenant_id:
@@ -775,6 +794,7 @@ class PostgresFactLedger:
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
         materialization_outbox: Any | None = None,
+        served: ServedSources | None = None,
     ) -> LedgerApplyResult:
         del policy_version, controller_version
         if tenant_id != self.tenant_id:
@@ -801,7 +821,8 @@ class PostgresFactLedger:
                 return LedgerApplyResult(prior[0], duplicate=True)
             history = self._events(conn)
             candidates = project_candidates(history)
-            if assertion_is_duplicate(candidates, fact, supersedes_fact_ids):
+            absent = absent_fact_ids(history, served)
+            if assertion_is_duplicate(candidates, fact, supersedes_fact_ids, absent):
                 event = self._insert(
                     conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
                     fact=fact, cards=cards, supersedes_fact_ids=(), request_id=request_id,

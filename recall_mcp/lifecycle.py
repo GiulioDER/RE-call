@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, project_current_state
+from recall.fact_retraction import fact_ledger_for, prepare_retraction
 from recall.guards import staleness
 from recall.observability import METRICS, get_logger
 from recall.uploads import delete_staged_sources
@@ -28,7 +26,6 @@ if TYPE_CHECKING:
     from recall.control_plane import ControlPlane
     from recall.current_state import CurrentStateProjection
     from recall.store import PgVectorStore
-    from recall.types import EvidenceCard
 
 _log = get_logger("mcp.service")
 MAX_FORGET_SOURCES = 1000
@@ -104,15 +101,13 @@ def current_state_memory(
 
 
 def _fact_ledger_for(store: object) -> Any | None:
-    """The fact ledger `recall_apply_fact` writes for `store`, or None for a store that has none."""
-    from recall.lite import LiteStore
-    from recall.store import PgVectorStore
+    """The fact ledger `recall_apply_fact` writes for `store`, or None for a store that has none.
 
-    if not isinstance(store, (LiteStore, PgVectorStore)):
-        return None
-    from recall_mcp.provenance import _fact_backends
+    Resolved with the server's environment (`RECALL_FACT_WRITE_DSN`), as `recall_apply_fact` is.
+    """
+    from recall_mcp.settings import runtime_environment
 
-    return _fact_backends(store)[0]
+    return fact_ledger_for(store, runtime_environment())
 
 
 def _forget_retractions(
@@ -123,69 +118,13 @@ def _forget_retractions(
 ) -> Callable[[], int] | None:
     """Prepare, before any chunk is deleted, the retraction this forget owes the fact ledger.
 
-    Returns a callable that appends it and answers how many facts it retracted, or None for a
-    store with no ledger. A card names its memo by the root-relative file a search hit shows,
-    while deletion keys on the absolute source, so every card's name is resolved here, while its
-    rows still exist. A card is GONE when its name resolves to nothing outside what this call
-    erases (nothing at all when an earlier forget took it), and TOUCHED when this call names or
-    erases its memo, so a forget re-run after a failed retraction, which deletes nothing,
-    completes it. A card whose name was not known here (applied while this forget ran) counts as
-    surviving: a forget may fail to retract, never retract a fact that still has evidence.
+    None for a store with no ledger; otherwise `recall.fact_retraction.prepare_retraction`, which
+    states the rule.
     """
     ledger = _fact_ledger_for(store)
     if ledger is None:
         return None
-    named, erased = requested, to_delete
-    names = sorted({
-        card.source
-        for event in ledger.events
-        if event.event_type == "asserted"
-        for card in event.evidence_cards
-    })
-    resolved: dict[str, list[str]] = dict(store.sources_for_identifiers(names)) if names else {}
-    if shadow_store is not None and names:
-        for name, values in shadow_store.sources_for_identifiers(names).items():
-            bucket = resolved.setdefault(name, [])
-            bucket.extend(value for value in values if value not in bucket)
-    known = set(names)
-    gone_sources = set(erased)
-    touched_names = set(named) | gone_sources
-    touched_names.update(name for name, values in resolved.items() if set(values) & gone_sources)
-    for target in (store, shadow_store):
-        recover = getattr(target, "forgotten_source_aliases", None)
-        if callable(recover):
-            touched_names.update(recover(sorted(named)))
-    # Keep only source names, never memo text. The mapping must commit before the chunks vanish,
-    # so a failed append can be retried with the original absolute source.
-    append = getattr(store, "append_audit_event", None)
-    if callable(append):
-        for source in sorted(gone_sources):
-            aliases = sorted(name for name, values in resolved.items() if source in values)
-            if aliases:
-                identity = json.dumps([store.tenant, source, aliases], ensure_ascii=False)
-                append(
-                    "forget_source_aliases", {"aliases": aliases}, source_uri=source,
-                    event_id="forget_alias_" + hashlib.sha256(identity.encode()).hexdigest(),
-                )
-
-    def touched(card: EvidenceCard) -> bool:
-        return card.source in touched_names
-
-    def retract() -> int:
-        # Look again after deletion. Concurrent forgets may each have observed the other's memo
-        # before either deletion; the last committer must see that both are now gone.
-        remaining = dict(store.sources_for_identifiers(names)) if names else {}
-        if shadow_store is not None and names:
-            for name, values in shadow_store.sources_for_identifiers(names).items():
-                remaining.setdefault(name, []).extend(values)
-
-        def gone(card: EvidenceCard) -> bool:
-            return card.source in known and not remaining.get(card.source)
-
-        written = ledger.retract_forgotten(tenant_id=store.tenant, touched=touched, gone=gone)
-        return len({fact_id for event in written for fact_id in event.supersedes_fact_ids})
-
-    return retract
+    return prepare_retraction(ledger, store, shadow_store, named=requested, erased=to_delete)
 
 
 def forget_memory(

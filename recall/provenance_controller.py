@@ -15,7 +15,7 @@ import json
 import math
 import threading
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -118,6 +118,40 @@ def retracted_keys(events: Iterable[FactEvent]) -> frozenset[RetractionKey]:
         for event in events
         if event.event_type == "retracted"
         for fact_id in event.supersedes_fact_ids
+    )
+
+
+#: Given memo names (an evidence card's `source`), the ones the store serves now.
+ServedSources = Callable[[frozenset[str]], Collection[str]]
+
+
+def absent_fact_ids(events: Sequence[FactEvent], served: ServedSources | None) -> frozenset[str]:
+    """Facts none of whose evidence the store serves now: every card names a memo it lacks.
+
+    A memo deleted from disk, pruned, or left out of the promoted generation is a STATE, not a
+    decision: a rollback, a restored file or a repaired sync brings it back. So a fact whose every
+    card, across all its live applications (DUPLICATE ones included), names a memo the store does
+    not serve is hidden at read time and reappears when the memo does, with nothing written.
+    `recall_forget` is the decision, and writes a `retracted` event instead. `served` None checks
+    nothing (every fact counts as present), which is how a caller without a store reads the
+    ledger.
+    """
+    if served is None:
+        return frozenset()
+    retracted = retracted_keys(events)
+    cards: dict[str, list[EvidenceCard]] = {}
+    for event in events:
+        if (
+            event.event_type == "asserted"
+            and event.fact_id is not None
+            and retraction_key(event) not in retracted
+        ):
+            cards.setdefault(event.fact_id, []).extend(event.evidence_cards)
+    names = frozenset(card.source for group in cards.values() for card in group)
+    present = set(served(names)) if names else set()
+    return frozenset(
+        fact_id for fact_id, group in cards.items()
+        if group and not any(card.source in present for card in group)
     )
 
 
@@ -338,7 +372,9 @@ class FactLedger(Protocol):
     @property
     def events(self) -> tuple[FactEvent, ...]: ...
 
-    def current(self, *, tenant_id: str, now: datetime) -> tuple[FactEvent, ...]: ...
+    def current(
+        self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
+    ) -> tuple[FactEvent, ...]: ...
 
     def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None: ...
 
@@ -356,6 +392,7 @@ class FactLedger(Protocol):
         policy_version: str = CONTROLLER_POLICY_VERSION,
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
+        served: ServedSources | None = None,
     ) -> LedgerApplyResult: ...
 
     def record_decision(
@@ -512,13 +549,16 @@ class InMemoryFactLedger:
             created_at=moment,
         )
 
-    def current(self, *, tenant_id: str, now: datetime) -> tuple[FactEvent, ...]:
+    def current(
+        self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
+    ) -> tuple[FactEvent, ...]:
         with self._lock:
             superseded: set[str] = set()
             for event in self._events:
                 if event.tenant_id == tenant_id and event.event_type == "superseded":
                     superseded.update(event.supersedes_fact_ids)
             retracted = retracted_keys(event for event in self._events if event.tenant_id == tenant_id)
+            absent = absent_fact_ids([e for e in self._events if e.tenant_id == tenant_id], served)
             result: list[FactEvent] = []
             instant = _as_utc(now)
             for event in self._events:
@@ -526,7 +566,7 @@ class InMemoryFactLedger:
                     continue
                 if event.fact_id in superseded or event.fact is None:
                     continue
-                if retraction_key(event) in retracted:
+                if retraction_key(event) in retracted or event.fact_id in absent:
                     continue
                 if event.fact.valid_until and instant >= _as_utc(event.fact.valid_until):
                     continue
@@ -572,6 +612,7 @@ class InMemoryFactLedger:
         policy_version: str = CONTROLLER_POLICY_VERSION,
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
+        served: ServedSources | None = None,
     ) -> LedgerApplyResult:
         del policy_version, controller_version
         with self._lock:
@@ -603,10 +644,15 @@ class InMemoryFactLedger:
                 self._events.append(event)
                 self._by_request[request_id] = event
                 return LedgerApplyResult(event, duplicate=True)
+            # A fact whose memos the store no longer serves is a DUPLICATE above (a re-application
+            # must not list it twice) but never a conflict: a deleted memo cannot block a new value.
+            absent = absent_fact_ids([e for e in self._events if e.tenant_id == tenant_id], served)
             conflicts = tuple(
                 event
                 for event in candidates
-                if event.fact is not None and facts_conflict(event.fact, fact)
+                if event.fact is not None
+                and event.fact_id not in absent
+                and facts_conflict(event.fact, fact)
             )
             conflict_ids = {event.fact_id for event in conflicts}
             if conflict_ids - set(supersedes_fact_ids):
@@ -709,6 +755,7 @@ class ProvenanceController:
         fresh_search: Callable[[AtomicFact, FactApplicationRequest], Sequence[str]] | None = None,
         now: Callable[[], datetime] | None = None,
         writer: str = "unknown",
+        served_sources: ServedSources | None = None,
     ) -> None:
         if not tenant_id or not generation_id:
             raise ValueError("tenant_id and generation_id must be non-empty")
@@ -725,6 +772,9 @@ class ProvenanceController:
         self.fresh_search = fresh_search
         self.now = now or (lambda: datetime.now(UTC))
         self.writer = writer
+        #: The memo names the store serves now; facts whose every memo it lacks are neither
+        #: current nor a conflict (`absent_fact_ids`). None checks nothing.
+        self.served_sources = served_sources
 
     def _resolve(self, request: FactApplicationRequest) -> tuple[EvidenceCard, ...] | DecisionCode:
         resolved: list[EvidenceCard] = []
@@ -874,7 +924,13 @@ class ProvenanceController:
                 return self._record_refusal(request, code, (), retried=True)
         cards = tuple(resolved)
         try:
-            current = self.ledger.current(tenant_id=self.tenant_id, now=self.now())
+            current = (
+                self.ledger.current(tenant_id=self.tenant_id, now=self.now())
+                if self.served_sources is None
+                else self.ledger.current(
+                    tenant_id=self.tenant_id, now=self.now(), served=self.served_sources
+                )
+            )
         except Exception as exc:  # BROAD-CATCH: fail-closed
             # The read that establishes the conflict set is part of authorization.  Treating a
             # failed read as an empty set would turn an outage into an authorization bypass, so
@@ -912,23 +968,15 @@ class ProvenanceController:
                 "supersedes_fact_ids": supersedes,
                 "now": self.now(),
             }
+            if self.served_sources is not None:
+                assertion_kwargs["served"] = self.served_sources
             atomic_apply = getattr(self.ledger, "apply_assertion_with_outbox", None)
             if self.materialization_outbox is not None and callable(atomic_apply):
                 result = atomic_apply(
                     materialization_outbox=self.materialization_outbox, **assertion_kwargs
                 )
             else:
-                result = self.ledger.apply_assertion(
-                    tenant_id=self.tenant_id,
-                    generation_id=self.generation_id,
-                    fact=request.claim,
-                    cards=cards,
-                    request_id=request.request_id,
-                    writer=self.writer,
-                    permit=permit,
-                    supersedes_fact_ids=supersedes,
-                    now=self.now(),
-                )
+                result = self.ledger.apply_assertion(**assertion_kwargs)  # type: ignore[arg-type]
         except ValueError as exc:
             try:
                 code = DecisionCode(str(exc))

@@ -48,8 +48,10 @@ from recall.provenance_controller import (
     FactApplicationPermit,
     FactEvent,
     LedgerApplyResult,
+    ServedSources,
     _as_utc,
     _consume_permit,
+    absent_fact_ids,
     fact_identity,
 )
 from recall.types import AtomicFact, EvidenceCard
@@ -162,9 +164,11 @@ class LiteFactLedger:
         """The tenant's immutable event stream, read from the file."""
         return tuple(self._events())
 
-    def current(self, *, tenant_id: str, now: datetime) -> tuple[FactEvent, ...]:
+    def current(
+        self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
+    ) -> tuple[FactEvent, ...]:
         self._check(tenant_id)
-        return project_current(self._events(), now)
+        return project_current(self._events(), now, served)
 
     def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None:
         self._check(tenant_id)
@@ -228,6 +232,7 @@ class LiteFactLedger:
         policy_version: str = CONTROLLER_POLICY_VERSION,
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
+        served: ServedSources | None = None,
     ) -> LedgerApplyResult:
         del policy_version, controller_version
         self._check(tenant_id)
@@ -244,8 +249,11 @@ class LiteFactLedger:
             prior = self._events(request_id=request_id)
             if prior:
                 return LedgerApplyResult(prior[0], duplicate=True)
-            candidates = project_candidates(self._events())
-            if assertion_is_duplicate(candidates, fact, supersedes_fact_ids):
+            history = self._events()
+            candidates = project_candidates(history)
+            if assertion_is_duplicate(
+                candidates, fact, supersedes_fact_ids, absent_fact_ids(history, served)
+            ):
                 event = self._insert(
                     event_id=event_id, event_type="asserted", generation_id=generation_id,
                     fact=fact, cards=cards, supersedes_fact_ids=(), request_id=request_id,
