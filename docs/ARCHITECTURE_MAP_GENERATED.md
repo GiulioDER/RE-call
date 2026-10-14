@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 321
 Cross package edges: 332
-Source tree fingerprint: `de3471bac16cd33c7b5ca83deb779c6fdeb24b4c2ea081a7c9c223c4ba85d2c2`
+Source tree fingerprint: `80be8e4e4ef92e3eccc8bb0e715ab7cccef6384d4d64af3ad358d915dc3bc82c`
 
 ## Highest fan in modules
 
@@ -38,7 +38,7 @@ Source tree fingerprint: `de3471bac16cd33c7b5ca83deb779c6fdeb24b4c2ea081a7c9c223
 | 111 | `recall_agent._sdk` |
 | 111 | `recall_agent.memory` |
 | 110 | `recall.wizard.uninstall` |
-| 104 | `recall.cli_commands.provenance_cmd` |
+| 106 | `recall.cli_commands.provenance_cmd` |
 | 103 | `recall.dashboard.activity` |
 | 102 | `recall_mcp.federation_adapter` |
 | 101 | `recall.dashboard.graph` |
@@ -92,6 +92,7 @@ Source tree fingerprint: `de3471bac16cd33c7b5ca83deb779c6fdeb24b4c2ea081a7c9c223
 | 12 | `recall.store` |
 | 12 | `recall_agent.memory` |
 | 11 | `recall.cli_commands.generation_cmd` |
+| 11 | `recall.cli_commands.provenance_cmd` |
 | 11 | `recall.cli_commands.reasoning_cmd` |
 | 11 | `recall.desktop.ui` |
 | 11 | `recall.generation_store` |
@@ -100,7 +101,6 @@ Source tree fingerprint: `de3471bac16cd33c7b5ca83deb779c6fdeb24b4c2ea081a7c9c223
 | 10 | `recall.integrations.langchain` |
 | 10 | `recall.integrations.llamaindex` |
 | 10 | `recall.lite.setup` |
-| 10 | `recall.setup` |
 
 ## Cross package edges
 
@@ -479,7 +479,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.lint_check` | 7 | 77 |
 | `recall.cli_commands.lite_cmd` | 8 | 96 |
 | `recall.cli_commands.manifest_cmd` | 4 | 40 |
-| `recall.cli_commands.provenance_cmd` | 7 | 104 |
+| `recall.cli_commands.provenance_cmd` | 11 | 106 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 136 |
 | `recall.cli_commands.schema_cmd` | 2 | 73 |
 | `recall.cli_commands.secret_cmd` | 1 | 3 |
