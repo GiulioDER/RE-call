@@ -250,8 +250,17 @@ what changed and refits the calibration when the memory changed. Add `.recall/` 
 The trust layer is the same code: superseded and expired verdicts, abstention, and strict refusal
 until the calibration certifies. Retrieval is exact cosine search plus PostgreSQL's own keyword
 ranking formula, so results track the PostgreSQL store closely but not identically. It serves one
-project and one local client: generations, multi-tenant serving, authentication and the fact ledger
-need the PostgreSQL install below. The printed dashboard command reads the same file, read-only.
+project: generations, multi-tenant serving, authentication and the fact ledger need the PostgreSQL
+install below. `recall dashboard` reads the same file, read-only.
+
+Several local clients (Claude Code and Codex, say) can share the file. Writes take turns, first
+come first served: an index, ingest or forget waits for the one in progress and gives up after
+`RECALL_LITE_WRITE_WAIT` seconds (five minutes by default), naming what holds the store; a
+calibration fit waits on its own queue (`RECALL_LITE_REFIT_WAIT`, two minutes by default) so it
+never holds up a write.
+Searches never wait. The queue lives in `memory.db.lanes/` beside the file, which is safe to delete
+while nothing is using the store. Keep the file on a local disk: file locks on network shares are
+not reliable, and two machines writing one file are not supported.
 
 Lite also checks entity-like query tokens against its global FTS vocabulary by default. An
 absent identifier demotes otherwise trusted hits to `unknown_term` and the search abstains.

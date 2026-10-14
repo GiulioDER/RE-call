@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -176,13 +177,19 @@ def run_lite_setup(
     register: bool = True,
     config_path: Path | None = None,
     interpreter: str | None = None,
+    on_queued: Callable[[int, dict[str, object] | None], None] | None = None,
 ) -> LiteSetupReport:
-    """Build, calibrate and register a lite store for `project_root`. See the module docstring."""
+    """Build, calibrate and register a lite store for `project_root`. See the module docstring.
+
+    `on_queued` is passed to the store's write lane (`recall.lite.writer_lock.lite_lane`): it is
+    called once if another writer holds the store and this setup has to wait.
+    """
     from recall.index import Indexer
     from recall.cache import default_cache
     from recall.context import context_policy_for_profile
     from recall.embeddings import embedding_profile_id
     from recall.lite.calibration import ensure_calibrated
+    from recall.lite.writer_lock import lite_lane
 
     project_root = project_root.resolve()
     memory = memory.resolve()
@@ -212,13 +219,14 @@ def run_lite_setup(
             raise ValueError("this store was calibrated with another embedder; choose a different --store file")
         # Typed as the Postgres store, as everywhere the shared Indexer takes a lite one: it calls
         # only the indexing methods `LiteStore` implements (see `recall.backends`).
-        with default_cache() as cache:
-            stats = Indexer(
-                cast("PgVectorStore", store), embedder, cache=cache,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-            ).index_path(memory)
-        report.files, report.chunks, report.skipped = stats.files, stats.chunks, stats.skipped
-        outcome = ensure_calibrated(store, embedder)
+        with lite_lane(store.path, purpose="setup", on_queued=on_queued):
+            with default_cache() as cache:
+                stats = Indexer(
+                    cast("PgVectorStore", store), embedder, cache=cache,
+                    context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                ).index_path(memory)
+            report.files, report.chunks, report.skipped = stats.files, stats.chunks, stats.skipped
+            outcome = ensure_calibrated(store, embedder)
         report.calibration, report.calibration_reason = outcome.status.value, outcome.reason
     if register:
         from recall.wizard.wiring import ServerBlock, register_local_scope
