@@ -12,6 +12,11 @@ from pydantic import BaseModel, Field
 
 from recall.types import DecisionState
 
+_UNKNOWN_TERM_CHECK_DESCRIPTION = (
+    "Vocabulary check: checked | unavailable | disabled | not_run. Unavailable means "
+    "the backend or constrained scope cannot safely check vocabulary, not that a term "
+    "was absent. This optional check does not replace calibration or trust state."
+)
 
 class SearchHit(BaseModel):
     chunk_id: str | None = Field(default=None, description="Stable retrieved chunk identifier.")
@@ -24,7 +29,7 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata | dependency_invalidated. Only 'ok' hits should be "
+        "| invalid_metadata | dependency_invalidated | unknown_term. Only 'ok' hits should be "
         "relied on for the present state. Historical candidates require a validity check."
     )
     superseded_by: str | None = Field(
@@ -126,6 +131,10 @@ class SearchResult(BaseModel):
     pipeline_fingerprint: str | None = None
     corpus_fingerprint: str | None = None
     query_set_digest: str | None = None
+    unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
+    unknown_terms: list[str] = Field(
+        default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
+    )
     gap_warning: bool = Field(description="True when the memory probably lacks a relevant answer.")
     stale: bool = Field(
         description="True when the memory index is older than the freshness window."
@@ -200,6 +209,13 @@ class SearchResult(BaseModel):
             "Versioned request aware route diagnostic. It names the selected physical tenant "
             "legs and their bounded limits, without comparing scores across tenants."
         ),
+    )
+    refresh_warning: str | None = Field(
+        default=None,
+        description="Lite store only: set while the automatic refresh of the memo folder is "
+        "failing (over the index budget, denied by the source policy, the embedder down). Memos "
+        "changed since the last successful refresh are not searchable until it is fixed; tell "
+        "the user, and see `recall lite refresh --check`. Null when refreshes succeed.",
     )
 
 
@@ -308,6 +324,10 @@ class EvidenceResult(BaseModel):
         default=None,
         description="Index generation identity, or null when the caller supplied no generation.",
     )
+    unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
+    unknown_terms: list[str] = Field(
+        default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
+    )
     system_prompt: str = Field(description="Fixed library-authored instruction. No corpus input.")
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")
     items: list[EvidenceItemModel]
@@ -329,6 +349,13 @@ class EvidenceResult(BaseModel):
             "Versioned request aware route diagnostic. It names the selected physical tenant "
             "legs and their bounded limits, without comparing scores across tenants."
         ),
+    )
+    refresh_warning: str | None = Field(
+        default=None,
+        description="Lite store only: set while the automatic refresh of the memo folder is "
+        "failing (over the index budget, denied by the source policy, the embedder down). Memos "
+        "changed since the last successful refresh are not searchable until it is fixed; tell "
+        "the user, and see `recall lite refresh --check`. Null when refreshes succeed.",
     )
 
 
@@ -473,6 +500,13 @@ class MemoryStatsResult(BaseModel):
         description="Process metrics since start: counters (searches, abstentions, gap warnings, "
         "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
         "operator can read them without a scrape endpoint.",
+    )
+    refresh: dict[str, object] | None = Field(
+        default=None,
+        description="Lite store only: the last refresh from the memo folder that ran, automatic "
+        "or `recall lite refresh` (outcome, reason, counts, calibration status and its reason). A "
+        "check that found nothing changed is not recorded. Null on any other store, and before "
+        "the first refresh.",
     )
 
 

@@ -42,6 +42,10 @@ from recall.runtime_route import RuntimeRoute, resolve_runtime_route
 from recall.retrieval_plan import RetrievalPlan, RetrievalPlanResolver
 from recall.federation import FederationConfig
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
+from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store
+from recall.lite import LiteStore, LiteWriterBusy
+from recall.lite.refresh import read_state as read_refresh_state, refresh_access_context
+from recall_mcp.lite_refresh import LiteAutoRefresher
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -114,7 +118,7 @@ from recall_mcp.federation_adapter import federation_diagnostics, prepare_federa
 from recall_mcp.reasoning_api import reasoning_audit, reasoning_query
 from recall.profiles import RetrievalProfile
 from recall_mcp.stores import StoreRegistry
-from recall_mcp.tool_surface import FilteredToolRegistrar, resolve_tool_surface
+from recall_mcp.tool_surface import LITE_UNSERVED_TOOLS, FilteredToolRegistrar, resolve_tool_surface
 from recall_mcp.translation import (
     provider_from_env,
     render_evidence_response,
@@ -871,6 +875,7 @@ def _make_lifespan(
         runtime_route = resolve_runtime_route(enterprise=enterprise)
         source_policy = load_source_policy(runtime_env)
         settings_token = None
+        lite_refresher: LiteAutoRefresher | None = None
         pool_size = runtime_settings.pool_size
         connection_budget = runtime_settings.connection_budget
         max_tenants = runtime_settings.max_tenants
@@ -936,6 +941,19 @@ def _make_lifespan(
             )
             if refusal:
                 raise RuntimeError(refusal)
+            # One SQLite file serves one local client on the legacy route. Everything below
+            # that needs PostgreSQL (migrations, row-level security, generations, the control
+            # plane, a tenant registry) is either skipped for it or refused here, by name.
+            lite = is_lite_dsn(serving_dsn)
+            if lite:
+                lite_refusal = lite_route_refusal(serving_dsn, runtime_route)
+                if lite_refusal is None and (token_registry is not None or enterprise):
+                    lite_refusal = (
+                        "the lite store (one SQLite file) serves one local client over stdio; "
+                        "authentication and the enterprise control plane need the full install"
+                    )
+                if lite_refusal is not None:
+                    raise RuntimeError(lite_refusal)
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
@@ -943,8 +961,8 @@ def _make_lifespan(
             from recall.schema import SchemaTooOld, schema_status
 
             probe_table = DEFAULT_TABLE if (generation_mode or token_registry is not None) else table
-            schema = schema_status(serving_dsn, table=probe_table, dim=embedder.dim)
-            if not schema.compatible:
+            schema = None if lite else schema_status(serving_dsn, table=probe_table, dim=embedder.dim)
+            if schema is not None and not schema.compatible:
                 pending = [m.version for m in schema.pending]
                 raise SchemaTooOld(
                     f"database migrations pending: {pending}; run `recall schema apply`"
@@ -965,7 +983,7 @@ def _make_lifespan(
                         statement_timeout_ms=statement_timeout_ms,
                     )
                 else:
-                    store = PgVectorStore(
+                    store = open_legacy_store(
                         serving_dsn,
                         dim=embedder.dim,
                         table=table,
@@ -1045,7 +1063,8 @@ def _make_lifespan(
             raise
 
         try:
-            rls_warning = require_effective_rls(
+            # A SQLite file has no roles and holds one tenant, so there is no policy to check.
+            rls_warning = None if lite else require_effective_rls(
                 rls_effective=probe.check_rls_effective(), multi_tenant=registry is not None
             )
         except RuntimeError:
@@ -1153,11 +1172,34 @@ def _make_lifespan(
                 "federation_embedders": {},
                 "federation_embedder_lock": threading.Lock(),
             }
+            # A lite store follows its memo folder on its own: a catch-up refresh now, and a
+            # debounced check before each retrieval (`recall_mcp.lite_refresh`). None otherwise.
+            # It applies the source policy with the context `recall_index` gets on a stdio server
+            # (`_access_context` with no token), so both write the same rows (CCA SEC-001); the CLI
+            # refresh uses the same one (`refresh_access_context`).
+            lite_refresher = LiteAutoRefresher.from_env(
+                store,
+                embedder,
+                runtime_env,
+                security_policy=source_policy,
+                security_context=(
+                    None
+                    if source_policy is None
+                    else refresh_access_context(str(getattr(store, "tenant", "")))
+                ),
+            )
+            if lite_refresher is not None:
+                lite_refresher.start()
+            runtime_state["lite_refresher"] = lite_refresher
             settings_token = activate_runtime_settings(runtime_settings)
             if health is not None:
                 health.mark_started(runtime_state)
             yield runtime_state
         finally:
+            if lite_refresher is not None:
+                # Before the store closes: a refresh cut off by the close would record a
+                # closed-database failure as the last refresh (CCA BUG-006).
+                await _to_thread(lite_refresher.stop)
             if limiter is not None:
                 await limiter.close()
             if store is not None:
@@ -1259,6 +1301,7 @@ def ingest_into_serving_store(
             staged_root,
             chunker=chunk_code if category == "code" else chunk_text,
             env=_runtime_env_for(state),
+            lane_purpose="ingest",
         )
     return index_memory(
         store,
@@ -1268,6 +1311,7 @@ def ingest_into_serving_store(
         security_policy=security_policy,
         security_context=access_context,
         env=_runtime_env_for(state),
+        lane_purpose="ingest",
     )
 
 
@@ -1375,9 +1419,16 @@ def _federation_config_for(state: Mapping[str, object]) -> FederationConfig:
     return FederationConfig.from_env(_runtime_env_for(state))
 
 
-def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
-    """Keep the stable trust refusal payload visible through MCP's error channel."""
-    return ToolError(json.dumps({"error": "trust_refusal", **refusal.to_dict()}, sort_keys=True))
+def _tool_error_for_trust_refusal(refusal: TrustRefusal, *, refresh_warning: str | None = None) -> ToolError:
+    """Keep the stable trust refusal payload visible through MCP's error channel.
+
+    `refresh_warning` rides along when the lite store's refresh is failing: an empty or
+    uncalibrated store is the usual reason for the refusal then, and the warning is the cause.
+    """
+    payload: dict[str, object] = {"error": "trust_refusal", **refusal.to_dict()}
+    if refresh_warning is not None:
+        payload["refresh_warning"] = refresh_warning
+    return ToolError(json.dumps(payload, sort_keys=True))
 
 
 def _retrieval_plan_for(
@@ -1466,6 +1517,12 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         with METRICS.timer("recall_tool_latency_ms", tool=tool):
             try:
                 def execute() -> tuple[_RetrievalResultT, dict[str, object] | None]:
+                    refresher = state.get("lite_refresher")
+                    if refresher is not None:
+                        # At most once per RECALL_LITE_REFRESH_INTERVAL, a changed memo folder is
+                        # refreshed first, waiting up to RECALL_LITE_REFRESH_WAIT; past that the
+                        # search answers from the corpus as it is.
+                        refresher.before_retrieval()
                     execution = prepare_federated_execution(
                         retrieval_plan,
                         config=federation_config(state),
@@ -1485,9 +1542,16 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 plan_payload = retrieval_plan.as_dict()
                 if federation is not None:
                     plan_payload["federation"] = federation
-                result = result.model_copy(update={"retrieval_plan": plan_payload})
+                update: dict[str, object] = {"retrieval_plan": plan_payload}
+                refresher = state.get("lite_refresher")
+                if refresher is not None and (warning := refresher.warning()) is not None:
+                    # A failing refresh is otherwise silent: the agent would answer from stale memory.
+                    update["refresh_warning"] = warning
+                result = result.model_copy(update=update)
             except TrustRefusal as exc:
-                raise _tool_error_for_trust_refusal(exc) from exc
+                refresher = state.get("lite_refresher")
+                warning = refresher.warning() if refresher is not None else None
+                raise _tool_error_for_trust_refusal(exc, refresh_warning=warning) from exc
             if locale is None:
                 return _serving_json(result)
             return await _translation_to_thread(
@@ -1530,11 +1594,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         carries a trust verdict (only `ok` hits support the present state), a calibrated confidence,
         provenance (indexed_at) and validity (superseded_by / valid_until). When `abstained` is
         true, no present-state answer is supported: say you don't know about the present.
-        `evidence` says what a present-state answer may cite: rely on hits whose chunk_id is in
-        `evidence.citable`, and cite those chunk_ids. It applies `recall_evidence`'s rule to
-        these hits only: call `recall_evidence` for card warrants, a rendered answer prompt, or
-        passages beyond these hits (related items, deeper pages of a paged document), which
-        only it can cite. `advice` states what to do.
+        `evidence` says what a present-state answer may cite: rely only on the hits whose chunk_id is
+        in `evidence.citable`, and cite those chunk_ids. It covers these hits only, not related
+        items or deeper pages of a paged document. `advice` states what to do.
 
         For earlier-time questions, `historical.candidates`, when present, lists relevant archived
         assertions. Before citing one as a fact at that time, match the requested time against its
@@ -2437,10 +2499,11 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             # Re-raises the ORIGINAL exception unchanged. `from` would overwrite its own __cause__.
             raise exc.cause  # noqa: B904
-        except IndexPreflightError:
+        except (IndexPreflightError, LiteWriterBusy):
             # The service marks path, security, filesystem, and size refusals that occur before
             # the indexer's first write. Runtime, database, and later file-read failures remain
-            # reconciliation-required because they may follow a partial commit.
+            # reconciliation-required because they may follow a partial commit. A lite store's
+            # busy write lane refuses before the lane is held, so before any write too.
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
         await _record_mutation_result(
@@ -2546,6 +2609,12 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         state, store, str(root), category, access_context=_access_context(state, store)
                     )
                 )
+        except LiteWriterBusy:
+            # Refused before the lite store's write lane was held, so nothing was indexed: drop
+            # the staged files and the reservation, so the retry the message invites can run.
+            discard_staging(root)
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
         except Exception:  # BROAD-CATCH: fail-closed
             # Legacy mode ONLY discards here: the staged tree fed an ingest that failed, and
             # partially indexed rows become prunable, consistent with "the upload failed".
@@ -2649,7 +2718,11 @@ def _register_calibration_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         tenant: str | None = None,
         idempotency_key: str | None = None,
     ) -> str:
-        """Create a draft calibration artifact for the active generation."""
+        """Fit corpus calibration: PostgreSQL creates a draft; Lite activates completed fits immediately.
+
+        A completed uncertified Lite fit replaces the prior calibration and blocks strict answers.
+        Attempts that cannot complete retain the prior artifact. Lite has no separate publish step.
+        """
         state = _state(ctx)
         operation = "recall_calibration_run"
         fingerprint = _mutation_fingerprint(
@@ -2792,17 +2865,22 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             registry.get_shadow(tenant) if registry is not None and tenant is not None else None
         )
         control = registry.control_plane if registry is not None else None
-        with METRICS.timer("recall_tool_latency_ms", tool="forget"):
-            payload = await _to_thread(
-                lambda: forget_memory(
-                    store,
-                    sources,
-                    shadow,
-                    control,
-                    security_policy=state.get("source_security_policy"),
-                    security_context=_access_context(state, store),
-                ).model_dump_json(indent=2)
-            )
+        try:
+            with METRICS.timer("recall_tool_latency_ms", tool="forget"):
+                payload = await _to_thread(
+                    lambda: forget_memory(
+                        store,
+                        sources,
+                        shadow,
+                        control,
+                        security_policy=state.get("source_security_policy"),
+                        security_context=_access_context(state, store),
+                    ).model_dump_json(indent=2)
+                )
+        except LiteWriterBusy:
+            # Refused before the lite store's write lane was held, so nothing was deleted.
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
         await _record_mutation_result(
             state,
             store.tenant,
@@ -2849,13 +2927,24 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     async def recall_stats(ctx: Context[dict, object]) -> str:
         """Report how much memory exists and whether it is stale (freshness check).
 
-        `stale` is True when the newest indexed content is older than 2 days.
+        `stale` is True when the newest indexed content is older than 2 days. On a lite store,
+        `refresh` holds the last refresh of the memo folder (outcome and reason), which explains a
+        memo that is not found yet.
 
         Returns:
-            JSON of {chunks, newest_indexed_at, stale}.
+            JSON of {chunks, newest_indexed_at, stale, metrics, refresh}.
         """
         store = await _require(SCOPE_READ, ctx)
-        return await _to_thread(lambda: memory_stats(store).model_dump_json(indent=2))
+
+        def stats() -> str:
+            result = memory_stats(store)
+            if isinstance(store, LiteStore):
+                # The last automatic refresh, so an agent can see why a memo it just wrote is not
+                # found yet (failed, over the budget, or a calibration still below its floor).
+                result.refresh = read_refresh_state(store.path).get("last")
+            return result.model_dump_json(indent=2)
+
+        return await _to_thread(stats)
 
 
 def build_server(settings: Settings | None = None) -> MCPServer:
@@ -3087,7 +3176,10 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         access_context=_access_context,
         answer_backend_configured=_answer_backend_configured(runtime_env),
     )
-    registrar = cast(MCPServer, FilteredToolRegistrar(mcp, resolve_tool_surface(runtime_env)))
+    surface = resolve_tool_surface(runtime_env)
+    if is_lite_dsn(runtime_settings.serving_dsn):
+        surface = surface - LITE_UNSERVED_TOOLS
+    registrar = cast(MCPServer, FilteredToolRegistrar(mcp, surface))
     _register_search_tools(registrar, deps)
     _register_fact_tools(registrar, deps)
     _register_reasoning_tools(registrar, deps)

@@ -11,6 +11,8 @@ Invariants, each with the mutation that turns its test red (recorded in the test
 - S2 an abstaining search cites nothing, carries the evidence tool's reason code, and its advice
   does not invite an answer.
 - S3 `RECALL_SEARCH_EVIDENCE=off` removes the field and the advice sentence.
+- S4 the citation sentence names no other tool (a named tool primes small models to call it).
+- S5 the `recall_search` description names no other tool either (EV-1c: about half the effect).
 - H1, H2 a relevant `superseded` or `expired` hit adds, last, an exception for questions about an
   earlier time; an irrelevant one, or any other verdict, does not.
 
@@ -135,6 +137,26 @@ def test_the_switch_turns_search_evidence_off() -> None:
     assert retrieval.SEARCH_EVIDENCE_NOTE not in search.advice
     on, _ = _both(["ok"])
     assert on.evidence is not None and on.evidence.citable == ["c0"]
+
+
+def test_the_citation_advice_names_no_other_tool() -> None:
+    """S4. Measured 2026-10-10: a citation sentence that named `recall_evidence` made a 3B model call
+    that tool in 60 of 60 conversations, after abstentions too. Red proof: the wording merged in
+    #906 ("...; `recall_evidence` adds card warrants, a rendered answer prompt, and related or paged
+    passages these hits do not include.") fails "the advice names another tool"."""
+    assert "recall_" not in retrieval.SEARCH_EVIDENCE_NOTE, "the advice names another tool"
+
+
+def test_the_search_description_names_no_other_tool() -> None:
+    """S5. Measured 2026-10-10 (EV-1c): a `recall_search` description that named `recall_evidence`
+    caused about half of a 3B model's evidence calls after abstentions. The in-process copy is pinned
+    verbatim to the server docstring by tests/test_recall_agent_descriptions.py, so this reads the
+    copy. Red proof: the description merged in #906 ("It applies `recall_evidence`'s rule to these
+    hits only: call `recall_evidence` for card warrants, ...") fails "the search description names
+    recall_evidence"."""
+    from recall_agent._descriptions import RECALL_SEARCH_DESCRIPTION
+
+    assert "recall_evidence" not in RECALL_SEARCH_DESCRIPTION, "the search description names recall_evidence"
 
 
 def test_a_relevant_superseded_or_expired_hit_is_a_record_of_the_past() -> None:
