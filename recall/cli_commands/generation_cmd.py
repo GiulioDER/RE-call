@@ -249,6 +249,11 @@ def _cmd_generation(args: argparse.Namespace) -> None:
             retain_previous=args.retain_previous,
         )
         print(f"collected {len(collected)} generation(s): {', '.join(collected) or '(none)'}")
+        retracted = getattr(manager, "last_gc_facts_retracted", 0)
+        if retracted > 0:
+            print(f"retracted {retracted} fact(s) whose memos no generation holds any more")
+        elif retracted < 0:
+            print("WARNING: retracting the facts of the collected generations failed; the next gc retries it")
         return
     if args.generation_cmd == "validate":
         generation_validation = manager.validate(args.generation_id)
