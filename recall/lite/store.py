@@ -721,8 +721,10 @@ class LiteStore:
             ranked.sort(key=lambda item: (-item[0], item[1]))
             top = ranked[:k]
             if vec is not None:
-                cosines = self.cosines_for([item[2].id for item in top], vec)
-                return [self._hit(item[2], cosines.get(item[2].id, 0.0)) for item in top]
+                # From the matrix these hits were selected from, inside the same read view: a
+                # writer between selection and scoring cannot swap the vector (PR 894's FIX002).
+                q = self._query_vector(vec)
+                return [self._hit(item[2], float(matrix.vectors[matrix.by_id[item[2].id]] @ q)) for item in top]
             return [self._hit(item[2], item[0]) for item in top]
 
     def query_learned_sparse(self, *args: Any, **kwargs: Any) -> list[ScoredChunk]:
