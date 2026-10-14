@@ -17,14 +17,12 @@ Red proof, 2026-10-07, each failing in its intended assertion (JUnit XML), then 
 
 from __future__ import annotations
 
-import contextlib
-import io
 from pathlib import Path
 
 import pytest
 
-from recall.cli import main
 from recall.lite import LiteStore
+from tests.lite_cli_support import _offline, run_cli  # noqa: F401  # _offline: autouse fixture
 from tests.test_lite_calibration import _write_memos
 
 _MEMOS = {
@@ -33,24 +31,8 @@ _MEMOS = {
 }
 
 
-@pytest.fixture(autouse=True)
-def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_SERVING_DSN", "RECALL_DSN", "RECALL_TRUST_MODE"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
-
-
-def _run(argv: list[str]) -> str:
-    """The command's stdout, or the exit message it stopped with: either way something to assert."""
-    out = io.StringIO()
-    try:
-        with contextlib.redirect_stdout(out):
-            main(argv)
-    except SystemExit as exc:
-        return out.getvalue() + f"\nEXIT: {exc.code}"
-    except Exception as exc:  # noqa: BLE001  # the pre-wiring failure is an arbitrary driver error
-        return out.getvalue() + f"\nRAISED: {type(exc).__name__}: {exc}"
-    return out.getvalue()
+# `_run` stays importable under its old name: sibling test modules on other branches use it.
+_run = run_cli
 
 
 def _memos(root: Path, memos: dict[str, str]) -> Path:
