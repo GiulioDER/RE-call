@@ -101,6 +101,7 @@ _COMMAND_REGISTRATIONS: tuple[tuple[frozenset[str], str, str], ...] = (
     (frozenset({"secret"}), "recall.cli_commands.secret_cmd", "register"),
     (frozenset({"idempotency"}), "recall.cli_commands.idempotency_cmd", "register"),
     (frozenset({"dashboard"}), "recall.cli_commands.dashboard_cmd", "register"),
+    (frozenset({"lite"}), "recall.cli_commands.lite_cmd", "register"),
 )
 
 

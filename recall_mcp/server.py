@@ -43,7 +43,9 @@ from recall.retrieval_plan import RetrievalPlan, RetrievalPlanResolver
 from recall.federation import FederationConfig
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
 from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store
-from recall.lite import LiteWriterBusy
+from recall.lite import LiteStore, LiteWriterBusy
+from recall.lite.refresh import read_state as read_refresh_state, refresh_access_context
+from recall_mcp.lite_refresh import LiteAutoRefresher
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -873,6 +875,7 @@ def _make_lifespan(
         runtime_route = resolve_runtime_route(enterprise=enterprise)
         source_policy = load_source_policy(runtime_env)
         settings_token = None
+        lite_refresher: LiteAutoRefresher | None = None
         pool_size = runtime_settings.pool_size
         connection_budget = runtime_settings.connection_budget
         max_tenants = runtime_settings.max_tenants
@@ -1169,11 +1172,34 @@ def _make_lifespan(
                 "federation_embedders": {},
                 "federation_embedder_lock": threading.Lock(),
             }
+            # A lite store follows its memo folder on its own: a catch-up refresh now, and a
+            # debounced check before each retrieval (`recall_mcp.lite_refresh`). None otherwise.
+            # It applies the source policy with the context `recall_index` gets on a stdio server
+            # (`_access_context` with no token), so both write the same rows (CCA SEC-001); the CLI
+            # refresh uses the same one (`refresh_access_context`).
+            lite_refresher = LiteAutoRefresher.from_env(
+                store,
+                embedder,
+                runtime_env,
+                security_policy=source_policy,
+                security_context=(
+                    None
+                    if source_policy is None
+                    else refresh_access_context(str(getattr(store, "tenant", "")))
+                ),
+            )
+            if lite_refresher is not None:
+                lite_refresher.start()
+            runtime_state["lite_refresher"] = lite_refresher
             settings_token = activate_runtime_settings(runtime_settings)
             if health is not None:
                 health.mark_started(runtime_state)
             yield runtime_state
         finally:
+            if lite_refresher is not None:
+                # Before the store closes: a refresh cut off by the close would record a
+                # closed-database failure as the last refresh (CCA BUG-006).
+                await _to_thread(lite_refresher.stop)
             if limiter is not None:
                 await limiter.close()
             if store is not None:
@@ -1393,9 +1419,16 @@ def _federation_config_for(state: Mapping[str, object]) -> FederationConfig:
     return FederationConfig.from_env(_runtime_env_for(state))
 
 
-def _tool_error_for_trust_refusal(refusal: TrustRefusal) -> ToolError:
-    """Keep the stable trust refusal payload visible through MCP's error channel."""
-    return ToolError(json.dumps({"error": "trust_refusal", **refusal.to_dict()}, sort_keys=True))
+def _tool_error_for_trust_refusal(refusal: TrustRefusal, *, refresh_warning: str | None = None) -> ToolError:
+    """Keep the stable trust refusal payload visible through MCP's error channel.
+
+    `refresh_warning` rides along when the lite store's refresh is failing: an empty or
+    uncalibrated store is the usual reason for the refusal then, and the warning is the cause.
+    """
+    payload: dict[str, object] = {"error": "trust_refusal", **refusal.to_dict()}
+    if refresh_warning is not None:
+        payload["refresh_warning"] = refresh_warning
+    return ToolError(json.dumps(payload, sort_keys=True))
 
 
 def _retrieval_plan_for(
@@ -1484,6 +1517,12 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         with METRICS.timer("recall_tool_latency_ms", tool=tool):
             try:
                 def execute() -> tuple[_RetrievalResultT, dict[str, object] | None]:
+                    refresher = state.get("lite_refresher")
+                    if refresher is not None:
+                        # At most once per RECALL_LITE_REFRESH_INTERVAL, a changed memo folder is
+                        # refreshed first, waiting up to RECALL_LITE_REFRESH_WAIT; past that the
+                        # search answers from the corpus as it is.
+                        refresher.before_retrieval()
                     execution = prepare_federated_execution(
                         retrieval_plan,
                         config=federation_config(state),
@@ -1503,9 +1542,16 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 plan_payload = retrieval_plan.as_dict()
                 if federation is not None:
                     plan_payload["federation"] = federation
-                result = result.model_copy(update={"retrieval_plan": plan_payload})
+                update: dict[str, object] = {"retrieval_plan": plan_payload}
+                refresher = state.get("lite_refresher")
+                if refresher is not None and (warning := refresher.warning()) is not None:
+                    # A failing refresh is otherwise silent: the agent would answer from stale memory.
+                    update["refresh_warning"] = warning
+                result = result.model_copy(update=update)
             except TrustRefusal as exc:
-                raise _tool_error_for_trust_refusal(exc) from exc
+                refresher = state.get("lite_refresher")
+                warning = refresher.warning() if refresher is not None else None
+                raise _tool_error_for_trust_refusal(exc, refresh_warning=warning) from exc
             if locale is None:
                 return _serving_json(result)
             return await _translation_to_thread(
@@ -2877,13 +2923,24 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     async def recall_stats(ctx: Context[dict, object]) -> str:
         """Report how much memory exists and whether it is stale (freshness check).
 
-        `stale` is True when the newest indexed content is older than 2 days.
+        `stale` is True when the newest indexed content is older than 2 days. On a lite store,
+        `refresh` holds the last refresh of the memo folder (outcome and reason), which explains a
+        memo that is not found yet.
 
         Returns:
-            JSON of {chunks, newest_indexed_at, stale}.
+            JSON of {chunks, newest_indexed_at, stale, metrics, refresh}.
         """
         store = await _require(SCOPE_READ, ctx)
-        return await _to_thread(lambda: memory_stats(store).model_dump_json(indent=2))
+
+        def stats() -> str:
+            result = memory_stats(store)
+            if isinstance(store, LiteStore):
+                # The last automatic refresh, so an agent can see why a memo it just wrote is not
+                # found yet (failed, over the budget, or a calibration still below its floor).
+                result.refresh = read_refresh_state(store.path).get("last")
+            return result.model_dump_json(indent=2)
+
+        return await _to_thread(stats)
 
 
 def build_server(settings: Settings | None = None) -> MCPServer:

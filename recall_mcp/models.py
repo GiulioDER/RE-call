@@ -185,6 +185,13 @@ class SearchResult(BaseModel):
             "legs and their bounded limits, without comparing scores across tenants."
         ),
     )
+    refresh_warning: str | None = Field(
+        default=None,
+        description="Lite store only: set while the automatic refresh of the memo folder is "
+        "failing (over the index budget, denied by the source policy, the embedder down). Memos "
+        "changed since the last successful refresh are not searchable until it is fixed; tell "
+        "the user, and see `recall lite refresh --check`. Null when refreshes succeed.",
+    )
 
 
 class EvidenceItemModel(BaseModel):
@@ -317,6 +324,13 @@ class EvidenceResult(BaseModel):
             "Versioned request aware route diagnostic. It names the selected physical tenant "
             "legs and their bounded limits, without comparing scores across tenants."
         ),
+    )
+    refresh_warning: str | None = Field(
+        default=None,
+        description="Lite store only: set while the automatic refresh of the memo folder is "
+        "failing (over the index budget, denied by the source policy, the embedder down). Memos "
+        "changed since the last successful refresh are not searchable until it is fixed; tell "
+        "the user, and see `recall lite refresh --check`. Null when refreshes succeed.",
     )
 
 
@@ -461,6 +475,13 @@ class MemoryStatsResult(BaseModel):
         description="Process metrics since start: counters (searches, abstentions, gap warnings, "
         "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
         "operator can read them without a scrape endpoint.",
+    )
+    refresh: dict[str, object] | None = Field(
+        default=None,
+        description="Lite store only: the last refresh from the memo folder that ran, automatic "
+        "or `recall lite refresh` (outcome, reason, counts, calibration status and its reason). A "
+        "check that found nothing changed is not recorded. Null on any other store, and before "
+        "the first refresh.",
     )
 
 

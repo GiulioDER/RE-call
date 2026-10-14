@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Added
+
+* **The lite store keeps itself current with its memo folder.** The MCP server refreshes a
+  `recall setup --lite` store when it starts and, before a search, when the folder changed (at most
+  every `RECALL_LITE_REFRESH_INTERVAL` seconds, thirty by default, waiting up to
+  `RECALL_LITE_REFRESH_WAIT`, three): it indexes what changed under the store's write lane and
+  refits the calibration. Like `recall_index`, it applies the source policy and refuses a folder
+  over `RECALL_INDEX_MAX_FILES` or `RECALL_INDEX_MAX_BYTES`. While refreshing fails, search answers
+  carry a `refresh_warning` and `recall doctor` reports it. `recall lite refresh [--check]` does the
+  same by hand; `RECALL_LITE_AUTO_REFRESH=0` turns the automatic refresh off. On a lite server,
+  `recall_index` now files every memo under its path relative to `RECALL_INDEX_ROOT`, as the refresh
+  does, so `recall_forget` takes that name whichever indexed the memo first.
+
 ### Changed
 
 * **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases

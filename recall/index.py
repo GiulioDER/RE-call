@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import stat as stat_module
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
@@ -380,14 +382,40 @@ def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
     layout choice, not an attack in progress, and a single stray link should not make the whole
     corpus unindexable.
     """
-    kept: list[Path] = []
+    return [p for p, _stat in _confined_with_stats(root, paths)]
+
+
+#: The stat failures `Path.is_file` reads as "not a file" (pathlib's own list, Python 3.11 to 3.13);
+#: any other error (permission, I/O) raised from it and must still raise here.
+_NOT_A_FILE_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+_NOT_A_FILE_WINERRORS = frozenset({21, 123, 1921})  # not ready, invalid name, link loop
+
+
+def _confined_with_stats(root: Path, paths: Iterable[Path]) -> list[tuple[Path, os.stat_result]]:
+    """`_confined_to`, keeping the stat each regular-file check already took.
+
+    `is_file()` stats the file and discards the answer; a caller that needs size and mtime would
+    then stat it again. Same filter, same order, same errors: a missing or looping file is "not a
+    file", and a permission or I/O error raises, exactly as `is_file` behaves.
+    """
+    kept: list[tuple[Path, os.stat_result]] = []
     for p in paths:
         try:
             resolved = p.resolve()
         except OSError:  # pragma: no cover - broken symlink / permission
             continue
-        if resolved.is_relative_to(root) and resolved.is_file():
-            kept.append(p)
+        if not resolved.is_relative_to(root):
+            continue
+        try:
+            found = resolved.stat()
+        except ValueError:  # an embedded NUL; `is_file` reads it as "not a file"
+            continue
+        except OSError as exc:
+            if exc.errno in _NOT_A_FILE_ERRNOS or getattr(exc, "winerror", None) in _NOT_A_FILE_WINERRORS:
+                continue
+            raise
+        if stat_module.S_ISREG(found.st_mode):
+            kept.append((p, found))
     return kept
 
 
@@ -428,6 +456,31 @@ def _safe_default_file(root: Path, path: Path, glob: str) -> bool:
     )
 
 
+def _directory_candidates(root: Path, glob: str) -> list[tuple[Path, os.stat_result]]:
+    """The directory branch of `candidate_files`, each path with the stat its check took."""
+    paths = _default_walk(root) if glob == DEFAULT_INDEX_GLOB else root.glob(glob)
+    return sorted(
+        (
+            (p, found) for p, found in _confined_with_stats(root, paths)
+            if (glob != DEFAULT_INDEX_GLOB or p.suffix.lower() in DOCUMENT_EXTENSIONS)
+            and _safe_default_file(root, p, glob)
+        ),
+        key=lambda pair: pair[0],
+    )
+
+
+def candidate_files_with_stats(root: str | Path, glob: str = DEFAULT_INDEX_GLOB) -> list[tuple[Path, os.stat_result]]:
+    """`candidate_files` for a directory, each file with its stat: the same list, walked once.
+
+    For a caller that measures the tree (the lite refresh's snapshot) and would otherwise stat
+    every file a second time. A directory only: a single-file root goes through `candidate_files`.
+    """
+    resolved = Path(root).resolve()
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"{str(resolved)!r} is not a directory")
+    return _directory_candidates(resolved, glob)
+
+
 def candidate_files(path: str | Path, glob: str = DEFAULT_INDEX_GLOB) -> list[Path]:
     """Return the confined, sorted supported file list that `index_path(path, glob)` indexes.
 
@@ -451,12 +504,7 @@ def candidate_files(path: str | Path, glob: str = DEFAULT_INDEX_GLOB) -> list[Pa
     """
     root = Path(path).resolve()
     if root.is_dir():
-        paths = _default_walk(root) if glob == DEFAULT_INDEX_GLOB else root.glob(glob)
-        return sorted(
-            p for p in _confined_to(root, paths)
-            if (glob != DEFAULT_INDEX_GLOB or p.suffix.lower() in DOCUMENT_EXTENSIONS)
-            and _safe_default_file(root, p, glob)
-        )
+        return [p for p, _stat in _directory_candidates(root, glob)]
     if not _matches_glob(root, glob):
         raise ValueError(
             f"{str(root)!r} does not match the glob {glob!r}, so it is not part of this corpus. "
@@ -729,9 +777,18 @@ class Indexer:
         return {**meta, **self.provenance}
 
     def index_path(
-        self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
+        self,
+        path: str | Path,
+        glob: str | None = None,
+        files: list[Path] | None = None,
+        key_root: str | Path | None = None,
     ) -> IndexStats:
         """Index `path` while holding this corpus's single-writer lock. See `_index_path`.
+
+        `key_root` names the folder the stored file names are relative to, when it is not `path`
+        itself: a lite server keys every file to RECALL_INDEX_ROOT, so `recall_index` on a subfolder
+        and the automatic refresh of the whole folder store one name for one file, whichever ran
+        first (owner decision, 2026-10-13). It must contain `path`.
 
         The lock is taken HERE rather than at each entry point, because the callers that most
         need it are the ones nobody is watching: the `SessionEnd` hook
@@ -744,10 +801,14 @@ class Indexer:
         host-level lock instead.
         """
         with single_writer(self._store, env=self._env):
-            return self._index_path(path, glob=glob, files=files)
+            return self._index_path(path, glob=glob, files=files, key_root=key_root)
 
     def _index_path(
-        self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
+        self,
+        path: str | Path,
+        glob: str | None = None,
+        files: list[Path] | None = None,
+        key_root: str | Path | None = None,
     ) -> IndexStats:
         """Index one supported source, or a directory of supported sources, into the vector store.
 
@@ -811,7 +872,14 @@ class Indexer:
         # loop-invariant answer, and a root vanishing mid-comprehension could split one corpus
         # across both keying schemes — the exact collision this comment exists to prevent.
         root_is_dir = root.is_dir()
-        rel = {f: (f.relative_to(root).as_posix() if root_is_dir else f.name) for f in files}
+        if key_root is not None:
+            keys = Path(key_root).resolve()
+            if not root.is_relative_to(keys):
+                raise ValueError(f"key_root {str(keys)!r} does not contain {str(root)!r}")
+            # `root` is resolved and every file was walked from it, so each is under `keys` too.
+            rel = {f: f.relative_to(keys).as_posix() for f in files}
+        else:
+            rel = {f: (f.relative_to(root).as_posix() if root_is_dir else f.name) for f in files}
 
         if self._security_policy is not None:
             assert self._security_context is not None
