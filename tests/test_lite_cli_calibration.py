@@ -29,7 +29,7 @@ import pytest
 
 from recall.index import Indexer
 from recall.lite import LiteStore
-from recall.lite.calibration import artifact_from_json, ensure_calibrated
+from recall.lite.calibration import artifact_from_json, auto_calibrate, ensure_calibrated
 from tests.test_lite_calibration import DIM, ContentWordEmbedder, _write_memos
 from tests.test_lite_cli import _run
 
@@ -53,14 +53,20 @@ def _dsn(path: Path) -> str:
 
 
 def _twice_calibrated(tmp_path: Path) -> tuple[Path, list[str]]:
-    """A lite file holding two calibrations: one fitted, then one refitted after more memos."""
+    """A lite file holding two calibrations: one fitted, then one refitted after more memos.
+
+    The second fit is an explicit refit (`auto_calibrate`, as `recall_calibration_run` performs).
+    Since the restack onto PR 911, `ensure_calibrated` after eight more memos (corpus delta about
+    0.17) carries the first threshold forward instead of refitting, and a carried calibration is
+    recomputed, never stored, so the file would hold one calibration, not two.
+    """
     path, folder, embedder = tmp_path / "memory.db", tmp_path / "mem", ContentWordEmbedder()
     ids = []
     with LiteStore(path, dim=DIM) as store:
         for start, count in ((0, 40), (40, 8)):
             _write_memos(folder, count, start=start)
             Indexer(store, embedder, env={}).index_path(folder)
-            outcome = ensure_calibrated(store, embedder)
+            outcome = ensure_calibrated(store, embedder) if start == 0 else auto_calibrate(store, embedder)
             assert outcome.artifact is not None, outcome
             ids.append(outcome.artifact.calibration_id)
     return path, ids

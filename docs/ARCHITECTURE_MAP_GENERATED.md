@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 321
 Cross package edges: 332
-Source tree fingerprint: `80e7bf540911b7e71104c4f3b8dca3341d0a87d5637c953f36c222ade26fd146`
+Source tree fingerprint: `93602fef99dc80b542e39305cbee455dc74060213419d7b64d4b4c5eb574f054`
 
 ## Highest fan in modules
 
@@ -38,6 +38,7 @@ Source tree fingerprint: `80e7bf540911b7e71104c4f3b8dca3341d0a87d5637c953f36c222
 | 111 | `recall_agent._sdk` |
 | 111 | `recall_agent.memory` |
 | 110 | `recall.wizard.uninstall` |
+| 106 | `recall.cli_commands.calibration_cmd` |
 | 106 | `recall.cli_commands.provenance_cmd` |
 | 103 | `recall.dashboard.activity` |
 | 102 | `recall_mcp.federation_adapter` |
@@ -53,7 +54,6 @@ Source tree fingerprint: `80e7bf540911b7e71104c4f3b8dca3341d0a87d5637c953f36c222
 | 98 | `recall.dashboard.lite_db` |
 | 98 | `recall_mcp.reasoning_admin` |
 | 96 | `recall.cli_commands.lite_cmd` |
-| 95 | `recall.cli_commands.calibration_cmd` |
 | 93 | `recall.wizard.projects` |
 | 92 | `recall.lite.setup` |
 
@@ -468,7 +468,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._shared` | 9 | 72 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
-| `recall.cli_commands.calibration_cmd` | 5 | 95 |
+| `recall.cli_commands.calibration_cmd` | 9 | 106 |
 | `recall.cli_commands.dashboard_cmd` | 4 | 127 |
 | `recall.cli_commands.doctor_cmd` | 1 | 126 |
 | `recall.cli_commands.extract_rewrite` | 12 | 89 |
