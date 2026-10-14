@@ -175,7 +175,7 @@
       "readOnlyHint": false,
       "title": "Run corpus calibration"
     },
-    "description": "Create a draft calibration artifact for the active generation.",
+    "description": "Fit corpus calibration: PostgreSQL creates a draft; Lite activates completed fits immediately.\n\nA completed uncertified Lite fit replaces the prior calibration and blocks strict answers.\nAttempts that cannot complete retain the prior artifact. Lite has no separate publish step.",
     "inputSchema": {
       "properties": {
         "generation_id": {
