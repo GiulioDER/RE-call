@@ -2837,14 +2837,18 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         no longer be recalled (e.g. it indexed something it should not have retained). Deletion
         is scoped to this server's own tenant and cannot reach another tenant's memory. A source
         that does not exist is reported in `sources_not_found` rather than silently counted as
-        "removed" — check that list before assuming a name was actually forgotten.
+        "removed" — check that list before assuming a name was actually forgotten. A fact
+        applied with `recall_apply_fact` whose only evidence was in these sources is retracted
+        with them, so `recall_current_facts` stops listing it; a fact with evidence in a memo
+        that survives stays.
 
         Args:
             sources: one or more source values to forget, exactly as they appear in
                 `recall_search` hits (the `source` field).
 
         Returns:
-            JSON of {chunks_removed, sources_removed, sources_not_found, message}.
+            JSON of {chunks_removed, sources_removed, sources_not_found, message,
+            facts_retracted}.
         """
         state = _state(ctx)
         operation = "recall_forget"

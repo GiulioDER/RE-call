@@ -485,6 +485,13 @@ class ForgetResult(BaseModel):
         description="Staged upload files removed from the tenant upload tree after erasure. "
         "-1 means cleanup failed and must be retried before re-indexing.",
     )
+    facts_retracted: int = Field(
+        default=0,
+        description="Facts in the fact ledger retracted because every piece of their evidence "
+        "was in these (or earlier forgotten) sources; recall_current_facts no longer lists them. "
+        "A fact with evidence in a memo that survives stays. -1 means the retraction FAILED and "
+        "this forget must be re-run with the same source names.",
+    )
 
 
 class MemoryStatsResult(BaseModel):

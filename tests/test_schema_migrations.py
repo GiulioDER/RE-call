@@ -62,7 +62,7 @@ def _target(prefix: str = "mig_"):
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 26)]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 27)]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
@@ -78,6 +78,7 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[21].transactional  # 0022_provenance_protected_append
     assert migrations[22].transactional  # 0023_provenance_deterministic_hardening
     assert migrations[24].transactional  # 0025_allow_supersedes_graph_relations
+    assert migrations[25].transactional  # 0026_fact_ledger_retraction
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -498,8 +499,8 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
 
     v0.13 shipped migrations 0001 through 0024. Building that exact checkpoint with the package
     loader temporarily limited to those immutable migration objects is safer than duplicating
-    twenty-four SQL files in a test. The current package then applies 0025, preserving an existing
-    authored relation while allowing the newly supported ``supersedes`` relation.
+    twenty-four SQL files in a test. The current package then applies 0025 and 0026, preserving an
+    existing authored relation while allowing the newly supported ``supersedes`` relation.
     """
     import recall.schema as schema_module
 
@@ -539,7 +540,7 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
             )
 
         applied = apply_migrations(dsn, table="chunks", dim=DIM)
-        assert [migration.version for migration in applied] == ["0025"]
+        assert [migration.version for migration in applied] == ["0025", "0026"]
 
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(

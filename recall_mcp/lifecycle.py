@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, project_current_state
 from recall.guards import staleness
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
     from recall.control_plane import ControlPlane
     from recall.current_state import CurrentStateProjection
     from recall.store import PgVectorStore
+    from recall.types import EvidenceCard
 
 _log = get_logger("mcp.service")
 MAX_FORGET_SOURCES = 1000
@@ -98,6 +100,66 @@ def current_state_memory(
     )
 
 
+def _fact_ledger_for(store: object) -> Any | None:
+    """The fact ledger `recall_apply_fact` writes for `store`, or None for a store that has none."""
+    from recall.lite import LiteStore
+    from recall.store import PgVectorStore
+
+    if not isinstance(store, (LiteStore, PgVectorStore)):
+        return None
+    from recall_mcp.provenance import _fact_backends
+
+    return _fact_backends(store)[0]
+
+
+def _forget_retractions(
+    store: PgVectorStore,
+    shadow_store: PgVectorStore | None,
+    requested: list[str],
+    to_delete: list[str],
+) -> Callable[[], int] | None:
+    """Prepare, before any chunk is deleted, the retraction this forget owes the fact ledger.
+
+    Returns a callable that appends it and answers how many facts it retracted, or None for a
+    store with no ledger. A card names its memo by the root-relative file a search hit shows,
+    while deletion keys on the absolute source, so every card's name is resolved here, while its
+    rows still exist. A card is GONE when its name resolves to nothing outside what this call
+    erases (nothing at all when an earlier forget took it), and TOUCHED when this call names or
+    erases its memo, so a forget re-run after a failed retraction, which deletes nothing,
+    completes it. A card whose name was not known here (applied while this forget ran) counts as
+    surviving: a forget may fail to retract, never retract a fact that still has evidence.
+    """
+    ledger = _fact_ledger_for(store)
+    if ledger is None:
+        return None
+    names = sorted({
+        card.source
+        for event in ledger.events
+        if event.event_type == "asserted"
+        for card in event.evidence_cards
+    })
+    resolved: dict[str, list[str]] = dict(store.sources_for_identifiers(names)) if names else {}
+    if shadow_store is not None and names:
+        for name, values in shadow_store.sources_for_identifiers(names).items():
+            bucket = resolved.setdefault(name, [])
+            bucket.extend(value for value in values if value not in bucket)
+    known = set(names)
+    erased = set(to_delete)
+    named = set(requested) | erased
+
+    def gone(card: EvidenceCard) -> bool:
+        return card.source in known and set(resolved.get(card.source, ())) <= erased
+
+    def touched(card: EvidenceCard) -> bool:
+        return card.source in named or (bool(resolved.get(card.source)) and gone(card))
+
+    def retract() -> int:
+        written = ledger.retract_forgotten(tenant_id=store.tenant, touched=touched, gone=gone)
+        return len({fact_id for event in written for fact_id in event.supersedes_fact_ids})
+
+    return retract
+
+
 def forget_memory(
     store: PgVectorStore,
     sources: list[str],
@@ -107,6 +169,11 @@ def forget_memory(
     security_context: AccessContext | None = None,
 ) -> ForgetResult:
     """Permanently delete every indexed chunk for the given sources.
+
+    Every fact the fact ledger holds whose evidence was only in these sources is retracted with
+    them (`recall.fact_ledger.plan_retractions`), so `recall_current_facts` stops listing it. The
+    ledger is append-only: the retraction hides the fact, and the fact's own event stays in the
+    audit trail.
 
     On a lite store the resolve and the delete hold the file's write lane (`recall.lite.writer_lock`).
     """
@@ -152,6 +219,16 @@ def _forget_memory_unlocked(
     found = [source for source in requested if source in resolved]
     not_found = [source for source in requested if source not in resolved]
     to_delete = sorted({source for identifier in found for source in resolved[identifier]})
+    facts_retracted = 0
+    retract: Callable[[], int] | None = None
+    try:
+        retract = _forget_retractions(store, shadow_store, requested, to_delete)
+    except Exception:  # BROAD-CATCH: error-translation
+        _log.exception(
+            "fact retraction plan failed before chunk deletion for tenant %r",
+            getattr(store, "tenant", None),
+        )
+        facts_retracted = -1
     if to_delete and shadow_store is not None:
         chunks_removed = store.delete_sources_across([store.table, shadow_store.table], to_delete)
     else:
@@ -165,6 +242,14 @@ def _forget_memory_unlocked(
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception("outbox scrub failed after chunk deletion for tenant %r", store.tenant)
             outbox_events_scrubbed = -1
+    if retract is not None:
+        try:
+            facts_retracted = retract()
+        except Exception:  # BROAD-CATCH: error-translation
+            _log.exception(
+                "fact retraction failed after chunk deletion for tenant %r", store.tenant
+            )
+            facts_retracted = -1
     staged_files_removed = 0
     try:
         staged_files_removed = delete_staged_sources(store.tenant, to_delete)
@@ -189,6 +274,13 @@ def _forget_memory_unlocked(
         )
     elif outbox_events_scrubbed:
         message += f" Scrubbed {outbox_events_scrubbed} pending replay record(s)."
+    if facts_retracted < 0:
+        message += (
+            " WARNING: retracting the facts these sources supported failed; re-run this forget "
+            "with the same source names, or recall_current_facts keeps listing them."
+        )
+    elif facts_retracted:
+        message += f" Retracted {facts_retracted} fact(s) that had no other evidence."
     if staged_files_removed < 0:
         message += (
             " WARNING: the chunk deletion succeeded but staged upload cleanup failed; "
@@ -203,6 +295,7 @@ def _forget_memory_unlocked(
         message=message,
         outbox_events_scrubbed=outbox_events_scrubbed,
         staged_files_removed=staged_files_removed,
+        facts_retracted=facts_retracted,
     )
 
 
