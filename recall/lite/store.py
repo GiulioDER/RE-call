@@ -229,7 +229,8 @@ class LiteStore:
         self._create_schema()
         self._matrix: _Matrix | None = None
         self._calibration_cache: tuple[tuple[int, int, str, str | None, str | None], CalibrationResolution, dict[str, str]] | None = None
-        self._query_terms_ready = False
+        with self._lock:
+            self._ensure_query_tables()
         self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
 
     @classmethod
@@ -649,17 +650,30 @@ class LiteStore:
         if not terms:
             return []
         with self._lock:
-            if not self._query_terms_ready:
-                self._conn.execute(
-                    "CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_terms USING fts5(text, tokenize='porter unicode61')"
-                )
-                self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_vocab USING fts5vocab(temp, query_terms, 'row')")
-                self._query_terms_ready = True
+            self._ensure_query_tables()
             self._conn.execute("DELETE FROM temp.query_terms")
             self._conn.execute("INSERT INTO temp.query_terms(text) VALUES (?)", (" ".join(terms),))
             stemmed = [str(row[0]) for row in self._conn.execute("SELECT term FROM temp.query_vocab ORDER BY term")]
             self._conn.execute("DELETE FROM temp.query_terms")
         return stemmed
+
+    def _ensure_query_tables(self) -> None:
+        """The connection's temp FTS tables that stem a query as the index stems text.
+
+        Created when the store opens, outside any transaction, and re-created here if missing. A
+        CREATE issued inside a read snapshot (`snapshot()`, PR 895/896) is undone by that
+        snapshot's ROLLBACK, so a once-set "ready" flag cannot be trusted: the restack found
+        `no such table: temp.query_terms` in eleven tests until the check moved to the catalog.
+        """
+        present = self._conn.execute(
+            "SELECT count(*) FROM temp.sqlite_master WHERE name IN ('query_terms', 'query_vocab')"
+        ).fetchone()[0]
+        if present == 2:
+            return
+        self._conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_terms USING fts5(text, tokenize='porter unicode61')"
+        )
+        self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp.query_vocab USING fts5vocab(temp, query_terms, 'row')")
 
     def query_sparse(
         self,
