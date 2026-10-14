@@ -20,6 +20,7 @@ from typing import Any
 from recall.fact_ledger import (
     FACT_LEDGER_TABLE,
     LEDGER_COLUMNS,
+    RETRACTION_CODES,
     RETRACTION_WRITER,
     SQLITE_FACT_LEDGER_DDL,
     assertion_event_id,
@@ -284,9 +285,12 @@ class LiteFactLedger:
         gone: Callable[[EvidenceCard], bool],
         writer: str = RETRACTION_WRITER,
         now: datetime | None = None,
+        decision_code: str = DecisionCode.SOURCE_FORGOTTEN,
     ) -> tuple[FactEvent, ...]:
         """`PostgresFactLedger.retract_forgotten` on the file: plan and append in one transaction."""
         self._check(tenant_id)
+        if decision_code not in RETRACTION_CODES:
+            raise ValueError(f"{decision_code!r} is not a retraction code")
         moment = _as_utc(now or datetime.now(UTC))
         written: list[FactEvent] = []
         with self._store._write():
@@ -296,7 +300,7 @@ class LiteFactLedger:
                     event_id=event_id, event_type="retracted", generation_id=assertion.generation_id,
                     fact=None, cards=assertion.evidence_cards,
                     supersedes_fact_ids=(str(assertion.fact_id),), request_id=request_id,
-                    writer=writer, decision_code=DecisionCode.SOURCE_FORGOTTEN, now=moment,
+                    writer=writer, decision_code=decision_code, now=moment,
                 ))
         return tuple(written)
 
