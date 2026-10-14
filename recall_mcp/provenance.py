@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from recall.evidence import cards_from_trusted_result
 from recall.fact_ledger import PostgresFactLedger
+from recall.fact_retraction import served_sources
 from recall.frontmatter import validity_bounds
 from recall.generations import NoActiveGeneration
 from recall.provenance_cards import PostgresEvidenceCardStore
@@ -169,6 +170,7 @@ def apply_fact_memory(
         card_revalidator=revalidate_card,
         fresh_search=fresh_search,
         writer=writer,
+        served_sources=served_sources(store),
     )
     decision = controller.apply_fact(request)
     return {
@@ -186,9 +188,20 @@ def apply_fact_memory(
 def current_facts_memory(
     store: PgVectorStore, *, as_of: datetime | None = None
 ) -> dict[str, object]:
-    """Return the ledger's deterministic current fact projection for this tenant."""
+    """Return the ledger's deterministic current fact projection for this tenant.
+
+    A fact none of whose memos the store serves now (deleted, pruned, or left out of the active
+    generation) is not listed, and is listed again when a memo returns
+    (`recall.fact_retraction`).
+    """
     instant = as_of or datetime.now(UTC)
-    events = _fact_backends(store)[0].current(tenant_id=store.tenant, now=instant)
+    served = served_sources(store)
+    ledger = _fact_backends(store)[0]
+    events = (
+        ledger.current(tenant_id=store.tenant, now=instant)
+        if served is None
+        else ledger.current(tenant_id=store.tenant, now=instant, served=served)
+    )
     try:
         generation_id: str | None = store.generation_id
     except NoActiveGeneration:
