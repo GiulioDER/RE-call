@@ -419,7 +419,7 @@ def auto_calibrate(
     snapshot = store.calibration_snapshot()
     sources = snapshot.source_manifest()
     texts = snapshot.texts()
-    entries, why = ([dict(q) for q in queries], "") if queries else _query_set(texts)
+    entries, why = ([dict(q) for q in queries], "") if queries is not None else _query_set(texts)
     if entries is None:
         return CalibrationOutcome(
             CalibrationStatus.MISSING,
