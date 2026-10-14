@@ -56,6 +56,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from recall.calibration import from_samples
@@ -69,6 +70,7 @@ from recall.calibration_v2 import (
     canonical_query_set,
     corpus_delta,
     judge_inherited_threshold,
+    write_calibration_bundle,
 )
 from recall.embedding_core import embed_query
 from recall.eval.calibrate import measure_top_cosines
@@ -749,3 +751,142 @@ def corpus_digest(rows: list[tuple[str, str, bytes]]) -> str:
         outer.update(hashlib.sha256(text.encode("utf-8")).digest())
         outer.update(hashlib.sha256(embedding).digest())
     return outer.hexdigest()
+
+
+# ---------------------------------------------------------------------- the `recall calibration` CLI
+
+
+def _stored_artifacts(
+    store: LiteStore, problems: list[str] | None = None
+) -> tuple[list[CalibrationArtifactV2], bool]:
+    """Every stored calibration that verifies, in the order the store serves them, and whether the
+    row the store serves is among them.
+
+    The order is `LiteStore.calibration_rows`', so the first calibration listed is the one search
+    uses, even when two share a `created_at`. A row that does not parse or verify is left out and
+    described in `problems`, so one bad old row cannot hide the others. When the bad row is the one
+    the store serves, search refuses until the store is recalibrated, and the caller must not
+    report any other calibration as in force.
+    """
+    from recall.calibration_v2 import CalibrationError
+
+    rows = store.calibration_rows()
+    served_rowid = rows[0][0] if rows else None
+    served_verifies = True
+    artifacts: list[CalibrationArtifactV2] = []
+    for rowid, payload in rows:
+        try:
+            artifacts.append(artifact_from_json(str(payload)))
+        except (CalibrationError, ValueError, KeyError, TypeError) as exc:
+            if rowid == served_rowid:
+                served_verifies = False
+            if problems is not None:
+                what = "the calibration this store serves" if rowid == served_rowid else "an older calibration"
+                problems.append(
+                    f"calibration row {rowid} ({what}) does not verify and was skipped: {type(exc).__name__}: {exc}"
+                    + ("; searches refuse until the store is recalibrated (recall index)" if rowid == served_rowid else "")
+                )
+    return artifacts, served_verifies
+
+
+def _one_artifact(store: LiteStore, calibration_id: str) -> tuple[CalibrationArtifactV2, str]:
+    """The stored calibration `calibration_id` and its state now, without parsing the others.
+
+    It is in force when it is the row the store serves; a `published` one that is not has been
+    replaced, so it reads `superseded`, as in the listing.
+    """
+    from recall.calibration_v2 import CalibrationError
+
+    served = store.calibration_rows(limit=1)
+    for rowid, payload in store.calibration_rows(calibration_id=calibration_id):
+        try:
+            artifact = artifact_from_json(payload)
+        except (CalibrationError, ValueError, KeyError, TypeError):
+            continue
+        if artifact.calibration_id != calibration_id:
+            continue
+        in_force = bool(served) and served[0][0] == rowid
+        state = artifact.lifecycle_state
+        return artifact, "superseded" if state == "published" and not in_force else state
+    problems: list[str] = []
+    _stored_artifacts(store, problems)  # only to say which rows did not verify
+    raise _not_found(calibration_id, problems)
+
+
+def _lifecycle_states(artifacts: Sequence[CalibrationArtifactV2], served_verifies: bool = True) -> dict[str, str]:
+    """The state each calibration is in now: a lite store serves only its newest one.
+
+    The stored artifact says `published` for every certified calibration a lite store saved (and
+    `rejected` for one that did not certify), because it was in force when it was saved. A later
+    one replaced it, so it is reported `superseded`, which is what PostgreSQL's
+    `recall_calibrations.lifecycle_state` says of a replaced calibration. When the row the store
+    serves does not verify, none of these is in force, so none is reported `published`.
+    """
+    states: dict[str, str] = {}
+    for index, artifact in enumerate(artifacts):
+        state = artifact.lifecycle_state
+        replaced = index > 0 or not served_verifies
+        states[artifact.calibration_id] = "superseded" if replaced and state == "published" else state
+    return states
+
+
+def list_records(store: LiteStore, problems: list[str] | None = None) -> list[dict[str, Any]]:
+    """`recall calibration list` on a lite store, with `CalibrationRepository.list_records`' keys."""
+    artifacts, served_verifies = _stored_artifacts(store, problems)
+    states = _lifecycle_states(artifacts, served_verifies)
+    records: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        carry = artifact.carry_forward if isinstance(artifact.carry_forward, Mapping) else None
+        records.append(
+            {
+                "calibration_id": artifact.calibration_id,
+                "generation_id": artifact.generation_id,
+                "lifecycle_state": states[artifact.calibration_id],
+                "certified": bool(artifact.certified),
+                "pipeline_fingerprint": artifact.pipeline_fingerprint,
+                "corpus_fingerprint": artifact.corpus_fingerprint,
+                "query_set_digest": artifact.query_set_digest,
+                "created_at": artifact.created_at,
+                "threshold_was_measured_here": carry is None,
+                "carried_forward_from": carry.get("parent_calibration_id") if carry else None,
+                "corpus_delta": carry.get("corpus_delta") if carry else None,
+            }
+        )
+    return records
+
+
+def show_record(store: LiteStore, calibration_id: str) -> dict[str, Any]:
+    """`recall calibration show` on a lite store: the stored artifact, with its state now.
+
+    PostgreSQL prints its `recall_calibrations` row; a lite store has no such table, so this is the
+    artifact itself (the same facts, in the artifact's own field names).
+    """
+    artifact, state = _one_artifact(store, calibration_id)
+    return {**artifact.to_dict(), "lifecycle_state": state}
+
+
+def export_artifact(store: LiteStore, calibration_id: str, path: str | Path) -> Path:
+    """`recall calibration export` on a lite store: the artifact alone, flagged as such.
+
+    A PostgreSQL bundle carries the labelled query set; a lite store never kept one (it fits on
+    questions it generates and keeps only their digest), so the bundle says `artifact_only` rather
+    than shipping a `query_set` it does not have. The artifact carries its state now, as
+    PostgreSQL's export does: a replaced calibration exports `superseded`, not the `published` it
+    was saved with (the state is outside the artifact's checksum).
+    """
+    artifact, state = _one_artifact(store, calibration_id)
+    return write_calibration_bundle(
+        {"artifact": {**artifact.to_dict(), "lifecycle_state": state}, "artifact_only": True}, path
+    )
+
+
+def _not_found(calibration_id: str, problems: Sequence[str]) -> Exception:
+    """`CalibrationNotFound`, saying when stored rows that do not verify may hold the id."""
+    from recall.calibration_v2 import CalibrationNotFound
+
+    if not problems:
+        return CalibrationNotFound(calibration_id)
+    return CalibrationNotFound(
+        f"calibration {calibration_id} is not among the calibrations that verify; "
+        f"{len(problems)} stored row(s) do not verify: " + "; ".join(problems)
+    )
