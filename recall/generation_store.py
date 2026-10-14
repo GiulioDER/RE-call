@@ -1300,6 +1300,28 @@ class GenerationStore(PgVectorStore):
         }
         return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
 
+    def served_identifiers(self, identifiers: list[str]) -> set[str]:
+        """The identifiers (`file` or `source_uri`) the pinned generation serves.
+
+        Not `sources_for_identifiers`, which spans every generation on purpose (erasure must reach
+        them all): a memo the promoted generation left out is not served even while a retired
+        generation still holds its rows, and is served again after a rollback to one that does.
+        """
+        wanted = list(dict.fromkeys(identifiers))
+        if not wanted:
+            return set()
+        generation_id = self._generation_id()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s "
+                "AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
+                (self._tenant, generation_id, wanted, wanted),
+            ).fetchall()
+        )
+        requested = set(wanted)
+        return {str(value) for row in rows for value in row if value is not None and str(value) in requested}
+
     def chunk_by_id(self, chunk_id: str) -> Chunk | None:
         """Compatibility wrapper over the generation scoped batch accessor."""
         return self.chunks_by_ids((chunk_id,)).get(chunk_id)

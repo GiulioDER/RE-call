@@ -723,6 +723,10 @@ class LiteStore:
                     bucket.append(source)
         return resolved
 
+    def served_identifiers(self, identifiers: list[str]) -> set[str]:
+        """The identifiers this file serves now: every row is served, as `PgVectorStore`'s."""
+        return set(self.sources_for_identifiers(list(identifiers)))
+
     def append_audit_event(
         self,
         event_type: str,

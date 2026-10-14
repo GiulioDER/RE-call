@@ -249,7 +249,7 @@ def _run_outage_cases() -> list[dict[str, Any]]:
     evidence = _card(claim)
 
     class BrokenLedger(InMemoryFactLedger):
-        def current(self, *, tenant_id: str, now: datetime) -> tuple[Any, ...]:
+        def current(self, *, tenant_id: str, now: datetime, served: Any = None) -> tuple[Any, ...]:
             raise OSError("ledger unavailable")
 
     ledger = BrokenLedger()

@@ -3008,6 +3008,15 @@ class PgVectorStore:
                     bucket.append(source)
         return resolved
 
+    def served_identifiers(self, identifiers: list[str]) -> set[str]:
+        """The identifiers (a row's `file` or its `source`) this store serves now.
+
+        What `recall_current_facts` asks to hide a fact whose every memo is gone
+        (`recall.provenance_controller.absent_fact_ids`). Here every row is served, so it is the
+        keys of `sources_for_identifiers`; `GenerationStore` narrows it to its pinned generation.
+        """
+        return set(self.sources_for_identifiers(list(identifiers)))
+
     def project_file_hashes(self, project: str) -> dict[str, str]:
         """`{root-relative file: content hash}` for one declared project.
 
