@@ -6,7 +6,7 @@ import hashlib
 import os
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -59,7 +59,7 @@ from recall.manifest import ManifestObjectV1, ObjectReader, VerifiedObject
 from recall.observability import METRICS, get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
-from recall.types import Chunk
+from recall.types import Chunk, EvidenceCard
 
 Chunker = Callable[[str], list[str]]
 
@@ -371,6 +371,8 @@ class GenerationManager:
         self._dsn = dsn
         self.tenant_id = tenant_id
         self.actor = actor
+        #: Facts the last `gc` retracted for good; -1 when its retraction failed (the next gc retries).
+        self.last_gc_facts_retracted = 0
         self.environment = (environment or os.environ.get("RECALL_ENV", "development")).lower()
         if self.environment not in {"development", "test", "production"}:
             raise ValueError("environment must be development, test, or production")
@@ -2012,4 +2014,78 @@ class GenerationManager:
                 )
                 self._scrub_sparse_rows(conn, [str(row[0]) for row in chunk_rows])
                 self._audit(conn, "generation_gc", payload={"generation_ids": delete})
-            return tuple(delete)
+        # After the commit: the deletion is what makes a memo unrecoverable, and the retraction is
+        # best effort. Every gc runs it, deleting or not, so one that failed is completed by the
+        # next (it reads the collected generations from the audit trail, not from this call).
+        try:
+            self.last_gc_facts_retracted = self.retract_collected_facts()
+        except Exception:  # BROAD-CATCH: error-translation  # counted, retried by the next gc
+            _log.exception("retracting the facts of collected generations failed for %r", self.tenant_id)
+            self.last_gc_facts_retracted = -1
+        return tuple(delete)
+
+    def retract_collected_facts(
+        self, *, env: Mapping[str, str] | None = None, collected: Collection[str] | None = None
+    ) -> int:
+        """Retract, for good, the facts whose memos gc has removed from every generation.
+
+        A memo a promoted generation left out stays recoverable while any generation holds it (a
+        rollback re-activates it), so until then its facts are only hidden at read time
+        (`recall.provenance_controller.absent_fact_ids`). Once gc deletes the last generation
+        holding it, nothing can bring it back, and this appends a permanent `retracted` event
+        (SOURCE_REMOVED, writer `recall_generation_gc`) for every live application of each fact
+        that has a card from a collected generation and whose every card names a memo no
+        remaining generation holds. A card whose name was not known when this started (applied
+        meanwhile) counts as held. Returns the number of facts retracted.
+
+        `collected` defaults to every generation any gc of this tenant deleted, read from the
+        audit trail, which is what lets a later gc finish a retraction an earlier one failed.
+        """
+        from recall.fact_ledger import GC_RETRACTION_WRITER, PostgresFactLedger
+        from recall.fact_retraction import FACT_WRITE_DSN_ENV
+        from recall.provenance_controller import DecisionCode
+
+        environment = os.environ if env is None else env
+        dsn = environment.get(FACT_WRITE_DSN_ENV, "").strip() or self._dsn
+        ledger = PostgresFactLedger(dsn, tenant_id=self.tenant_id)
+        names = sorted({
+            card.source
+            for event in ledger.events
+            if event.event_type == "asserted"
+            for card in event.evidence_cards
+        })
+        if not names:
+            return 0
+        with self._connect() as conn:
+            if collected is None:
+                collected = {
+                    str(generation_id)
+                    for (payload,) in conn.execute(
+                        "SELECT payload FROM recall_audit_events "
+                        "WHERE tenant_id = %s AND event_type = 'generation_gc'",
+                        (self.tenant_id,),
+                    ).fetchall()
+                    for generation_id in (payload or {}).get("generation_ids", ())
+                }
+            if not collected:
+                return 0
+            rows = conn.execute(
+                "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
+                (self.tenant_id, names, names),
+            ).fetchall()
+        held = {str(value) for row in rows for value in row if value is not None}
+        known = set(names)
+        removed = set(collected)
+
+        def gone(card: EvidenceCard) -> bool:
+            return card.source in known and card.source not in held
+
+        def touched(card: EvidenceCard) -> bool:
+            return card.generation_id in removed
+
+        written = ledger.retract_forgotten(
+            tenant_id=self.tenant_id, touched=touched, gone=gone,
+            writer=GC_RETRACTION_WRITER, decision_code=DecisionCode.SOURCE_REMOVED,
+        )
+        return len({fact_id for event in written for fact_id in event.supersedes_fact_ids})

@@ -223,6 +223,11 @@ def project_candidates(events: Sequence[FactEvent]) -> tuple[FactEvent, ...]:
 
 #: The writer `recall_forget` records on the retractions it appends.
 RETRACTION_WRITER = "recall_forget"
+#: The writer `generation gc` records when it retracts the facts of a memo no generation holds.
+GC_RETRACTION_WRITER = "recall_generation_gc"
+#: The decision codes a `retracted` event may carry (migration 0027 enforces the same pairing):
+#: SOURCE_FORGOTTEN for `recall_forget`, SOURCE_REMOVED for a memo gc removed from every generation.
+RETRACTION_CODES = frozenset({DecisionCode.SOURCE_FORGOTTEN, DecisionCode.SOURCE_REMOVED})
 
 
 def plan_retractions(
@@ -867,9 +872,11 @@ class PostgresFactLedger:
     def retract_forgotten(
         self, *, tenant_id: str, touched: Callable[[EvidenceCard], bool],
         gone: Callable[[EvidenceCard], bool], writer: str = RETRACTION_WRITER,
-        now: datetime | None = None,
+        now: datetime | None = None, decision_code: str = DecisionCode.SOURCE_FORGOTTEN,
     ) -> tuple[FactEvent, ...]:
         """Append a `retracted` event for each assertion `plan_retractions` selects; return them.
+
+        `decision_code` is one of `RETRACTION_CODES`: why the evidence is gone for good.
 
         The plan is made twice: once to learn which facts to lock, and again under the same
         per-fact advisory locks `apply_assertion` takes, so an application that lands between the
@@ -877,6 +884,8 @@ class PostgresFactLedger:
         """
         if tenant_id != self.tenant_id:
             raise ValueError("ledger tenant mismatch")
+        if decision_code not in RETRACTION_CODES:
+            raise ValueError(f"{decision_code!r} is not a retraction code")
         moment = _as_utc(now or datetime.now(UTC))
         with self._connect() as conn, conn.transaction():
             first = plan_retractions(self._events(conn), touched=touched, gone=gone)
@@ -893,7 +902,7 @@ class PostgresFactLedger:
                     generation_id=assertion.generation_id, fact=None,
                     cards=assertion.evidence_cards, supersedes_fact_ids=(str(assertion.fact_id),),
                     request_id=request_id, writer=writer,
-                    decision_code=DecisionCode.SOURCE_FORGOTTEN, now=moment,
+                    decision_code=decision_code, now=moment,
                 ))
             return tuple(written)
 
