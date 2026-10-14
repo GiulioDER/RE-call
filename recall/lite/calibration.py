@@ -183,7 +183,7 @@ def auto_calibrate(
             report = near_miss_coverage(store, embedder, float(runtime.threshold), probes)
             store.save_near_miss_coverage(artifact.calibration_id, report)
             coverage = "; " + describe_near_miss(report)
-        except Exception as exc:
+        except Exception as exc:  # BROAD-CATCH: fail-open
             # The fit is already saved. Optional diagnostics cannot withdraw it, and
             # provider errors may carry private input or credentials, so log only type.
             _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
@@ -231,7 +231,7 @@ def status_report(store: LiteStore) -> dict[str, object]:
     try:
         coverage_report = store.near_miss_coverage(latest.calibration_id)
         coverage_message = describe_near_miss(coverage_report) if coverage_report else _COVERAGE_UNAVAILABLE
-    except Exception as exc:
+    except Exception as exc:  # BROAD-CATCH: fail-open  # optional report, never a reason to fail status
         _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
         coverage_report = None
         coverage_message = _COVERAGE_UNAVAILABLE
