@@ -299,7 +299,7 @@
       "readOnlyHint": true,
       "title": "Read current structured facts"
     },
-    "description": "Return the tenant scoped current projection of the append only fact ledger.",
+    "description": "Return the tenant scoped current projection of the append only fact ledger.\n\nFacts a memo states in its `recall_graph` frontmatter appear here, with the memo in\n`sources`, once the store has recorded them; a lite store does so whenever it indexes.\nValues that disagree with no supersession between their memos are listed under\n`contested`, not `facts`: memory holds both and says neither is current.",
     "inputSchema": {
       "properties": {
         "as_of": {

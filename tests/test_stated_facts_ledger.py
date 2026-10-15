@@ -17,6 +17,7 @@ Red proof: recorded per test below.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,7 @@ from recall.provenance_controller import (
     ServedState,
     card_liveness,
     fact_identity,
+    split_contested,
 )
 from recall.types import AtomicFact, EvidenceCard
 from tests.fact_fixtures import COFFEE, NOW, TEA, evidence_card
@@ -218,3 +220,20 @@ def test_lv2_a_superseded_memo_retires_every_card_naming_it() -> None:
     applied = evidence_card(TEA, tenant="t", generation="g1", chunk="c", source="a.md")
     assert not live(applied), "a card of a superseded memo is still live"
     assert not live(_stated_card(TEA, tenant="t", source="a.md"))
+
+
+def test_lv3_values_in_separate_windows_are_history_not_a_dispute(store: LiteStore) -> None:
+    """Node tests/test_stated_facts_ledger.py::test_lv3_values_in_separate_windows_are_history_not_a_dispute.
+
+    Red, mutation of `split_contested`: drop the `facts_conflict(...)` test and contest every pair
+    on one key. Fails on "values in separate windows were contested".
+    """
+    controller = _controller(store)
+    old = AtomicFact(namespace="memory", subject="user", predicate="drink", object="tea", valid_until=NOW - timedelta(days=1))
+    new = AtomicFact(namespace="memory", subject="user", predicate="drink", object="coffee", valid_from=NOW - timedelta(days=1))
+    controller.apply_stated(old, _stated_card(old, tenant=store.tenant, source="a.md"), "s1")
+    controller.apply_stated(new, _stated_card(new, tenant=store.tenant, source="b.md"), "s2")
+    events = [e for e in LiteFactLedger(store).events if e.event_type == "asserted"]
+    listed_events, contested = split_contested(events)
+    assert contested == (), "values in separate windows were contested"
+    assert len(listed_events) == 2
