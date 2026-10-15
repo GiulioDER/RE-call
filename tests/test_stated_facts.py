@@ -93,14 +93,57 @@ def test_s3a_an_upload_never_states(root: Path, store: LiteStore) -> None:
 
     Spec test 3 and review focus 5: an upload staged under RECALL_INDEX_ROOT/uploads is inside the
     refreshed folder and still does not state. Red, mutation of `StatingRule.admits`
-    (recall/stated_facts.py): delete its `if self.uploads is not None ...: return False` lines.
-    Fails on "an upload stated a fact".
+    (recall/stated_facts.py): delete BOTH upload checks (`upload_name` and `uploads`). Fails on
+    "an upload stated a fact". Deleting either one alone stays green here, since the other still
+    holds; S3d and S3e each red-prove one alone.
     """
     memo(root / "memory", "door.md", facts=[DOOR])
     memo(root / "uploads" / store.tenant / "job1", "upload.md", facts=[{**DOOR, "object": "6666"}])
     refreshed(store, root, key_root=root)
     reconcile(store, root)
     assert listed(store) == ["4512"], f"an upload stated a fact: {listed(store)}"
+
+
+def test_s3d_an_upload_stays_out_when_the_refresh_runs_without_the_server_env(
+    root: Path, store: LiteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_s3d_an_upload_stays_out_when_the_refresh_runs_without_the_server_env.
+
+    Security review finding (authorization bypass), 2026-10-15: the uploads root came from the
+    PROCESS's RECALL_INDEX_ROOT, so a `recall lite refresh` run by a person without the server's
+    environment did not recognise `uploads/` and stated an upload's facts. The store's own names
+    are key-rooted, so `uploads/<tenant>/` is an upload whatever the environment says. Red against
+    89af30d8b: fails on "an upload stated a fact without the server env: ['4512', '6666']". Red,
+    mutation of `StatingRule.admits`: delete the `upload_name` check: the same failure.
+    """
+    memo(root / "memory", "door.md", facts=[DOOR])
+    memo(root / "uploads" / store.tenant / "job1", "upload.md", facts=[{**DOOR, "object": "6666"}])
+    monkeypatch.delenv("RECALL_INDEX_ROOT")
+    refreshed(store, root, key_root=root)
+    reconcile(store, root)
+    assert listed(store) == ["4512"], f"an upload stated a fact without the server env: {listed(store)}"
+
+
+def test_s3e_the_env_a_caller_passes_also_names_the_uploads(
+    root: Path, store: LiteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_s3e_the_env_a_caller_passes_also_names_the_uploads.
+
+    Security review finding (parser differential), 2026-10-15: `stating_rule` read the prefixes
+    from the `env` a caller passes (`recall_index` passes its runtime env) but the uploads root
+    from the process environment. Here the uploads folder is refreshed as a root of its own, so
+    its names carry no `uploads/` prefix and only the absolute path can tell. Red against
+    89af30d8b: fails on "an upload stated a fact under the caller's env". Red, mutation of
+    `stating_rule`: build `uploads` from the process environment only: the same failure.
+    """
+    from recall.stated_facts import reconcile_stated_facts
+
+    upload = root / "uploads" / store.tenant / "job1"
+    memo(upload, "upload.md", facts=[{**DOOR, "object": "6666"}])
+    monkeypatch.delenv("RECALL_INDEX_ROOT")
+    refreshed(store, upload)
+    reconcile_stated_facts(store, roots=[upload], env={"RECALL_INDEX_ROOT": str(root)})
+    assert listed(store) == [], f"an upload stated a fact under the caller's env: {listed(store)}"
 
 
 def test_s3b_a_memo_outside_the_refreshed_folders_does_not_state(root: Path, store: LiteStore) -> None:
