@@ -221,6 +221,56 @@ def absent_fact_ids(events: Sequence[FactEvent], served: ServedSources | None) -
     )
 
 
+def live_sources(events: Sequence[FactEvent], served: ServedSources | None) -> dict[str, tuple[str, ...]]:
+    """Per fact id, the sorted memo names of its live cards, across its live applications.
+
+    What `recall_current_facts` shows as a fact's `sources`, so an answer can cite the memo. A
+    DUPLICATE application counts, since a second memo stating a fact is a second source. `served`
+    None counts every card.
+    """
+    retracted = retracted_keys(events)
+    cards: dict[str, list[EvidenceCard]] = {}
+    for event in events:
+        if event.event_type == "asserted" and event.fact_id is not None and retraction_key(event) not in retracted:
+            cards.setdefault(event.fact_id, []).extend(event.evidence_cards)
+    if served is None:
+        return {fact_id: tuple(sorted({card.source for card in group})) for fact_id, group in cards.items()}
+    live = card_liveness(served, frozenset(card.source for group in cards.values() for card in group))
+    return {
+        fact_id: tuple(sorted({card.source for card in group if live(card)}))
+        for fact_id, group in cards.items()
+    }
+
+
+def split_contested(
+    current: Sequence[FactEvent],
+) -> tuple[tuple[FactEvent, ...], tuple[tuple[FactEvent, ...], ...]]:
+    """`current` split into the facts that stand alone and the groups that disagree.
+
+    Two current facts that conflict (`facts_conflict`: same key, another value, overlapping
+    windows) are both contested: memos that state different values with no supersession between
+    them leave the question open, and neither is listed as the answer. Values in separate windows
+    are history, not a dispute. A group is the contested facts of one conflict key, in order.
+    """
+    by_key: dict[str, list[FactEvent]] = {}
+    for event in current:
+        if event.fact is not None:
+            by_key.setdefault(fact_conflict_key(event.fact), []).append(event)
+    contested: set[str] = set()
+    for group in by_key.values():
+        for index, left in enumerate(group):
+            for right in group[index + 1:]:
+                if left.fact and right.fact and facts_conflict(left.fact, right.fact):
+                    contested.update((left.event_id, right.event_id))
+    standing = tuple(event for event in current if event.event_id not in contested)
+    groups = tuple(
+        tuple(event for event in group if event.event_id in contested)
+        for group in by_key.values()
+        if any(event.event_id in contested for event in group)
+    )
+    return standing, groups
+
+
 def fact_conflict_key(fact: AtomicFact) -> str:
     """Identity used to serialize all competing values of one predicate context."""
     payload = {

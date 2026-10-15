@@ -332,3 +332,62 @@ def test_s5_a_superseded_memo_states_nothing_until_its_successor_goes(store: Lit
     forget_memory(store, ["note-b.md"])  # type: ignore[arg-type]
     successor.unlink()
     assert listed(store) == ["4512"], f"forgetting the successor did not restore the fact: {listed(store)}"
+
+
+def test_s1_a_stated_fact_is_listed_with_its_memo(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s1_a_stated_fact_is_listed_with_its_memo.
+
+    Spec test 1 (sources half). Red, mutation of `current_facts_memory` (recall_mcp/provenance.py):
+    emit `"sources": []`. Fails on "the fact does not name its memo: []".
+    """
+    memo(folder, "door.md", facts=[DOOR])
+    refreshed(store, folder)
+    reconcile(store, folder)
+    (item,) = current_facts_memory(store)["facts"]  # type: ignore[misc]
+    assert item["sources"] == ["door.md"], f"the fact does not name its memo: {item['sources']}"
+
+
+def test_s6_two_memos_that_disagree_are_contested(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s6_two_memos_that_disagree_are_contested.
+
+    Spec test 6. Red, mutation of `split_contested` (recall/provenance_controller.py): return
+    `(tuple(current), ())`. Fails on "two disagreeing memos were listed as current".
+    """
+    memo(folder, "door-a.md", facts=[DOOR])
+    memo(folder, "door-b.md", facts=[{**DOOR, "object": "9001"}])
+    refreshed(store, folder)
+    reconcile(store, folder)
+    out = current_facts_memory(store)
+    assert listed(store) == [], f"two disagreeing memos were listed as current: {listed(store)}"
+    (group,) = out["contested"]  # type: ignore[misc]
+    assert (group["subject"], group["predicate"]) == ("user", "door_code")
+    assert sorted((v["fact"]["object"], tuple(v["sources"])) for v in group["values"]) == [
+        ("4512", ("door-a.md",)), ("9001", ("door-b.md",)),
+    ]
+
+    # Spec test 6, second half: a model's application of a third value still has to supersede
+    # every contested one. It cites a plain memo the store serves, so its card stays live.
+    from recall.fact_retraction import served_sources
+    from recall.lite.facts import LiteEvidenceCardStore
+    from recall.provenance_controller import DecisionCode, FactApplicationRequest, ProvenanceController
+    from recall.types import AtomicFact
+    from tests.fact_fixtures import evidence_card
+
+    memo(folder, "door-c.md", body="The front door code is now 7777.")
+    refreshed(store, folder)
+    third = AtomicFact(namespace="memory", subject="user", predicate="door_code", object="7777")
+    cards = LiteEvidenceCardStore(store)
+
+    def apply(request_id: str, links: tuple[str, ...]) -> DecisionCode:
+        card = evidence_card(third, tenant=store.tenant, generation="g1", chunk=f"c-{request_id}",
+                             source="door-c.md", links=links)
+        cards.put((card,))
+        return ProvenanceController(
+            tenant_id=store.tenant, generation_id="g1", cards=cards, ledger=LiteFactLedger(store),
+            source_digest_for=lambda _card: "digest", writer="model",
+            served_sources=served_sources(store),
+        ).apply_fact(FactApplicationRequest(third, (card.card_id,), request_id)).code
+
+    assert apply("m1", ()) == DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION
+    assert apply("m2", ("door-a.md", "door-b.md")) == DecisionCode.APPLIED
+    assert listed(store) == ["7777"], f"superseding both contested values did not settle it: {listed(store)}"
