@@ -394,6 +394,7 @@ class FactLedger(Protocol):
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
         served: ServedSources | None = None,
+        stated: bool = False,
     ) -> LedgerApplyResult: ...
 
     def record_decision(
@@ -528,6 +529,7 @@ class InMemoryFactLedger:
         cards: tuple[EvidenceCard, ...],
         supersedes_fact_ids: tuple[str, ...] = (),
         now: datetime | None = None,
+        policy_version: str = CONTROLLER_POLICY_VERSION,
     ) -> FactEvent:
         moment = _as_utc(now or datetime.now(UTC))
         event_id = "evt_" + hashlib.sha256(
@@ -545,7 +547,7 @@ class InMemoryFactLedger:
             request_id=request_id,
             writer=writer,
             decision_code=decision_code,
-            policy_version=CONTROLLER_POLICY_VERSION,
+            policy_version=policy_version,
             controller_version=CONTROLLER_SCHEMA_VERSION,
             created_at=moment,
         )
@@ -614,8 +616,9 @@ class InMemoryFactLedger:
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
         served: ServedSources | None = None,
+        stated: bool = False,
     ) -> LedgerApplyResult:
-        del policy_version, controller_version
+        del controller_version
         with self._lock:
             _consume_permit(
                 permit,
@@ -641,6 +644,7 @@ class InMemoryFactLedger:
                     fact=fact,
                     cards=cards,
                     now=now,
+                    policy_version=policy_version,
                 )
                 self._events.append(event)
                 self._by_request[request_id] = event
@@ -656,10 +660,12 @@ class InMemoryFactLedger:
                 and facts_conflict(event.fact, fact)
             )
             conflict_ids = {event.fact_id for event in conflicts}
-            if conflict_ids - set(supersedes_fact_ids):
-                raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
-            if supersedes_fact_ids and not conflict_ids.issubset(set(supersedes_fact_ids)):
-                raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
+            if not stated:
+                # A stated fact that disagrees is recorded, not refused (`assertion_is_duplicate`).
+                if conflict_ids - set(supersedes_fact_ids):
+                    raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
+                if supersedes_fact_ids and not conflict_ids.issubset(set(supersedes_fact_ids)):
+                    raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
             event = self._event(
                 event_type="asserted",
                 tenant_id=tenant_id,
@@ -671,6 +677,7 @@ class InMemoryFactLedger:
                 cards=cards,
                 supersedes_fact_ids=supersedes_fact_ids,
                 now=now,
+                policy_version=policy_version,
             )
             self._events.append(event)
             self._by_request[request_id] = event
@@ -686,6 +693,7 @@ class InMemoryFactLedger:
                     cards=cards,
                     supersedes_fact_ids=tuple(supersedes_fact_ids),
                     now=now,
+                    policy_version=policy_version,
                 )
                 self._events.append(replacement)
             return LedgerApplyResult(event)

@@ -189,6 +189,7 @@ class LiteFactLedger:
         writer: str,
         decision_code: str,
         now: datetime,
+        policy_version: str = CONTROLLER_POLICY_VERSION,
     ) -> FactEvent:
         fact_id = fact_identity(fact) if fact else None
         self._store._conn.execute(
@@ -205,7 +206,7 @@ class LiteFactLedger:
                 request_id,
                 writer,
                 str(decision_code),
-                CONTROLLER_POLICY_VERSION,
+                policy_version,
                 CONTROLLER_SCHEMA_VERSION,
                 _stamp(now),
                 fact_id,
@@ -215,7 +216,7 @@ class LiteFactLedger:
             event_id=event_id, event_type=event_type, tenant_id=self.tenant_id,
             generation_id=generation_id, fact=fact, fact_id=fact_id, evidence_cards=cards,
             supersedes_fact_ids=supersedes_fact_ids, request_id=request_id, writer=writer,
-            decision_code=str(decision_code), policy_version=CONTROLLER_POLICY_VERSION,
+            decision_code=str(decision_code), policy_version=policy_version,
             controller_version=CONTROLLER_SCHEMA_VERSION, created_at=_utc(now),
         )
 
@@ -234,8 +235,9 @@ class LiteFactLedger:
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
         served: ServedSources | None = None,
+        stated: bool = False,
     ) -> LedgerApplyResult:
-        del policy_version, controller_version
+        del controller_version
         self._check(tenant_id)
         moment = _as_utc(now or datetime.now(UTC))
         event_id = assertion_event_id(self.tenant_id, fact, request_id)
@@ -253,18 +255,21 @@ class LiteFactLedger:
             history = self._events()
             candidates = project_candidates(history)
             if assertion_is_duplicate(
-                candidates, fact, supersedes_fact_ids, absent_fact_ids(history, served)
+                candidates, fact, supersedes_fact_ids, absent_fact_ids(history, served),
+                stated=stated,
             ):
                 event = self._insert(
                     event_id=event_id, event_type="asserted", generation_id=generation_id,
                     fact=fact, cards=cards, supersedes_fact_ids=(), request_id=request_id,
                     writer=writer, decision_code=DecisionCode.DUPLICATE, now=moment,
+                    policy_version=policy_version,
                 )
                 return LedgerApplyResult(event, duplicate=True)
             event = self._insert(
                 event_id=event_id, event_type="asserted", generation_id=generation_id, fact=fact,
                 cards=cards, supersedes_fact_ids=supersedes_fact_ids, request_id=request_id,
                 writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
+                policy_version=policy_version,
             )
             if supersedes_fact_ids:
                 sup_event_id, sup_request_id = supersession_ids(event_id, request_id)
@@ -274,6 +279,7 @@ class LiteFactLedger:
                     supersedes_fact_ids=supersedes_fact_ids,
                     request_id=sup_request_id, writer=writer,
                     decision_code=DecisionCode.APPLIED, now=moment,
+                    policy_version=policy_version,
                 )
             return LedgerApplyResult(event)
 
