@@ -27,6 +27,13 @@ from recall.types import AtomicFact, EvidenceCard, Verdict
 
 CONTROLLER_SCHEMA_VERSION = 1
 CONTROLLER_POLICY_VERSION = "provenance-controller-v1"
+#: The trust state of a card the server builds from a memo that states its own facts
+#: (`recall.stated_facts`). No search produced it, so `trusted_for_application` refuses it and it
+#: authorizes `ProvenanceController.apply_stated` only.
+STATED_TRUST_STATE = "stated"
+#: The writer and policy version of the events the stated path appends.
+STATED_WRITER = "recall_stated"
+STATED_POLICY_VERSION = "stated-facts-v1"
 _PERMIT_SENTINEL = object()
 MAX_PROVENANCE_CARD_IDS = 64
 MAX_PROVENANCE_IDENTIFIER_CHARS = 256
@@ -1050,6 +1057,68 @@ class ProvenanceController:
             DecisionCode.DUPLICATE if result.duplicate else DecisionCode.APPLIED,
             cards=cards,
             retried=retried,
+            event=result.event,
+        )
+
+    def apply_stated(
+        self, fact: AtomicFact, card: EvidenceCard, request_id: str
+    ) -> ControllerDecision:
+        """Record `fact`, which the memo behind `card` states, with that card as its evidence.
+
+        The path of `recall.stated_facts`: no search ran, so `apply_fact`'s search-trust gates do
+        not apply, and the caller has already decided that the memo may state facts. What is
+        checked here is that the card is a stated card of this tenant and generation that carries
+        exactly this fact. A disagreement with a current fact is appended, never refused: the
+        projection lists both as contested. A refusal writes nothing, because a card failing these
+        checks is the caller's defect, not a decision about the fact.
+        """
+        request = FactApplicationRequest(fact, (card.card_id,), request_id)
+        if (
+            card.trust_state != STATED_TRUST_STATE
+            or card.tenant_id != self.tenant_id
+            or card.generation_id != self.generation_id
+            or not self._supported(fact, (card,))
+        ):
+            return self._decision(request, DecisionCode.UNSUPPORTED_CLAIM, cards=(card,))
+        permit = FactApplicationPermit(
+            tenant_id=self.tenant_id,
+            generation_id=self.generation_id,
+            request_id=request_id,
+            fact_id=fact_identity(fact),
+            card_ids=(card.card_id,),
+            _token=_PERMIT_SENTINEL,
+        )
+        assertion: dict[str, Any] = {
+            "tenant_id": self.tenant_id,
+            "generation_id": self.generation_id,
+            "fact": fact,
+            "cards": (card,),
+            "request_id": request_id,
+            "writer": self.writer,
+            "permit": permit,
+            "policy_version": STATED_POLICY_VERSION,
+            "now": self.now(),
+            "stated": True,
+        }
+        if self.served_sources is not None:
+            assertion["served"] = self.served_sources
+        try:
+            result = self.ledger.apply_assertion(**assertion)
+        except ValueError as exc:
+            # A ledger refuses with the decision code as the message, as `apply_fact` reads it.
+            try:
+                code = DecisionCode(str(exc))
+            except ValueError:
+                code = DecisionCode.LEDGER_UNAVAILABLE
+            return self._decision(request, code, cards=(card,), detail=str(exc))
+        except Exception as exc:  # BROAD-CATCH: fail-closed
+            return self._decision(
+                request, DecisionCode.LEDGER_UNAVAILABLE, cards=(card,), detail=type(exc).__name__
+            )
+        return self._decision(
+            request,
+            DecisionCode.DUPLICATE if result.duplicate else DecisionCode.APPLIED,
+            cards=(card,),
             event=result.event,
         )
 
