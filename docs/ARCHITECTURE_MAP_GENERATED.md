@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 323
+Modules: 324
 Cross package edges: 334
-Source tree fingerprint: `72b0ddd6ff98d7055ad95cc4b90c8ed87348bac75a005aa6972603a8dcb63d4c`
+Source tree fingerprint: `889e7968ac018330c0eeb00128a56c87de77f225ec8926f716eb5b347ab74624`
 
 ## Highest fan in modules
 
@@ -670,6 +670,7 @@ They are observations, not automatic failures.
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |
 | `recall.stale_reports` | 3 | 101 |
+| `recall.stated_facts` | 10 | 83 |
 | `recall.store` | 12 | 26 |
 | `recall.supersession` | 1 | 2 |
 | `recall.supersession_arbiter` | 4 | 20 |
