@@ -243,3 +243,49 @@ def test_rf3_a_fact_window_against_the_memo_window_is_malformed(store: LiteStore
     refreshed(store, folder)
     report = reconcile(store, folder)
     assert report.facts_malformed == 1, "a fact ending before its memo starts was not counted malformed"
+
+
+def test_s4_an_edit_hides_what_the_old_text_stated_and_a_revert_restores_it(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s4_an_edit_hides_what_the_old_text_stated_and_a_revert_restores_it.
+
+    Spec test 4. Red against `ad9554273` plus Tasks 1 to 3 without this task: fails on "the edited
+    memo still lists its old value". Red, mutation of `served_sources`
+    (recall/fact_retraction.py): return the plain `served` callable for a lite store too: the same
+    failure. The listed values in the message differ between the two runs (both values before
+    Task 5, none once Task 5 contests them); the assertion line is what is recorded.
+    """
+    original = memo(folder, "door.md", facts=[DOOR])
+    text = original.read_bytes()
+    refreshed(store, folder)
+    reconcile(store, folder)
+    memo(folder, "door.md", facts=[{**DOOR, "object": "9001"}])
+    refreshed(store, folder)
+    reconcile(store, folder)
+    assert listed(store) == ["9001"], f"the edited memo still lists its old value: {listed(store)}"
+    before = len(LiteFactLedger(store).events)
+    original.write_bytes(text)
+    refreshed(store, folder)  # once Task 6 lands, this refresh reconciles too
+    reconcile(store, folder)
+    assert len(LiteFactLedger(store).events) == before, "the revert appended an event its request id already held"
+    assert listed(store) == ["4512"], f"the revert did not restore the old value: {listed(store)}"
+
+
+def test_s5_a_superseded_memo_states_nothing_until_its_successor_goes(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s5_a_superseded_memo_states_nothing_until_its_successor_goes.
+
+    Spec test 5: memo-level, so a successor stating no fact retires the old memo's fact too, and
+    forgetting the successor brings it back. Red, mutation of `served_sources`: pass
+    `superseded=None` for a lite store. Fails on "a superseded memo's fact is still listed".
+    """
+    from recall_mcp.lifecycle import forget_memory
+
+    memo(folder, "door-a.md", facts=[DOOR])
+    refreshed(store, folder)
+    reconcile(store, folder)
+    successor = memo(folder, "note-b.md", body="The front door was rekeyed.", supersedes="door-a.md")
+    refreshed(store, folder)
+    reconcile(store, folder)
+    assert listed(store) == [], f"a superseded memo's fact is still listed: {listed(store)}"
+    forget_memory(store, ["note-b.md"])  # type: ignore[arg-type]
+    successor.unlink()
+    assert listed(store) == ["4512"], f"forgetting the successor did not restore the fact: {listed(store)}"

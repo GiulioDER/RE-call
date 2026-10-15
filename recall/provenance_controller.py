@@ -133,6 +133,62 @@ def retracted_keys(events: Iterable[FactEvent]) -> frozenset[RetractionKey]:
 ServedSources = Callable[[frozenset[str]], Collection[str]]
 
 
+class ServedState:
+    """What a store serves now, per memo name, as the projections ask for it.
+
+    Called like a `ServedSources` (names in, the served ones out). A store that can say more
+    answers two further questions: the content hashes it serves each name with
+    (`content_hashes`; None when the lookup failed, and then no stated card is checked against
+    content) and the names its supersession graph retires (`superseded`: superseded or ambiguous,
+    as search's verdicts see them).
+    """
+
+    def __init__(
+        self,
+        served: Callable[[frozenset[str]], Collection[str]],
+        *,
+        content_hashes: Callable[[frozenset[str]], Mapping[str, frozenset[str]] | None] | None = None,
+        superseded: Callable[[frozenset[str]], frozenset[str]] | None = None,
+    ) -> None:
+        self._served = served
+        self._content_hashes = content_hashes
+        self._superseded = superseded
+
+    def __call__(self, names: frozenset[str]) -> Collection[str]:
+        return self._served(names)
+
+    def content_hashes(self, names: frozenset[str]) -> Mapping[str, frozenset[str]] | None:
+        return None if self._content_hashes is None else self._content_hashes(names)
+
+    def superseded(self, names: frozenset[str]) -> frozenset[str]:
+        return frozenset() if self._superseded is None else self._superseded(names)
+
+
+def card_liveness(served: ServedSources, names: frozenset[str]) -> Callable[[EvidenceCard], bool]:
+    """Whether the memo behind a card still stands behind it, asked once for `names`.
+
+    An applied card lives while its memo's name is served (#932). A stated card lives while its
+    memo is served with the content hash the card recorded, so an edit retires what the old text
+    stated and a revert restores it. Neither lives while the store's supersession graph retires
+    its memo: memo-level, the graph search's `superseded` verdict comes from.
+    """
+    present = set(served(names)) if names else set()
+    hashes: Mapping[str, frozenset[str]] | None = None
+    retired: frozenset[str] = frozenset()
+    if isinstance(served, ServedState) and names:
+        hashes = served.content_hashes(names)
+        retired = served.superseded(names)
+
+    def live(card: EvidenceCard) -> bool:
+        if card.source not in present or card.source in retired:
+            return False
+        if card.trust_state == STATED_TRUST_STATE and hashes is not None:
+            return card.source_digest in hashes.get(card.source, frozenset())
+        return True
+
+    return live
+
+
 def absent_fact_ids(events: Sequence[FactEvent], served: ServedSources | None) -> frozenset[str]:
     """Facts none of whose evidence the store serves now: every card names a memo it lacks.
 
@@ -140,6 +196,8 @@ def absent_fact_ids(events: Sequence[FactEvent], served: ServedSources | None) -
     decision: a rollback, a restored file or a repaired sync brings it back. So a fact whose every
     card, across all its live applications (DUPLICATE ones included), names a memo the store does
     not serve is hidden at read time and reappears when the memo does, with nothing written.
+    A stated card also needs its memo served with the content it recorded, and no card counts
+    while the store's supersession graph retires its memo (`card_liveness`).
     `recall_forget` is the decision, and writes a `retracted` event instead. `served` None checks
     nothing (every fact counts as present), which is how a caller without a store reads the
     ledger.
@@ -156,10 +214,10 @@ def absent_fact_ids(events: Sequence[FactEvent], served: ServedSources | None) -
         ):
             cards.setdefault(event.fact_id, []).extend(event.evidence_cards)
     names = frozenset(card.source for group in cards.values() for card in group)
-    present = set(served(names)) if names else set()
+    live = card_liveness(served, names)
     return frozenset(
         fact_id for fact_id, group in cards.items()
-        if group and not any(card.source in present for card in group)
+        if group and not any(live(card) for card in group)
     )
 
 

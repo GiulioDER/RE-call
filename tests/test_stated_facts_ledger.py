@@ -30,6 +30,8 @@ from recall.provenance_controller import (
     FactApplicationRequest,
     InMemoryFactLedger,
     ProvenanceController,
+    ServedState,
+    card_liveness,
     fact_identity,
 )
 from recall.types import AtomicFact, EvidenceCard
@@ -186,3 +188,33 @@ def test_l7_a_stated_card_cannot_authorize_apply_fact(store: LiteStore) -> None:
         now=lambda: NOW, writer="model",
     ).apply_fact(FactApplicationRequest(TEA, (card.card_id,), "m1"))
     assert decision.code == DecisionCode.TRUST_UNAVAILABLE, f"a model applied a fact on a stated card: {decision.code}"
+
+
+def test_lv1_a_stated_card_lives_with_its_content_an_applied_card_with_its_name() -> None:
+    """Node tests/test_stated_facts_ledger.py::test_lv1_a_stated_card_lives_with_its_content_an_applied_card_with_its_name.
+
+    Red, mutation of `card_liveness` (recall/provenance_controller.py): delete the
+    `if card.trust_state == STATED_TRUST_STATE and hashes is not None:` branch. Fails on "a stated
+    card outlived its memo's edit".
+    """
+    stated = _stated_card(TEA, tenant="t", source="a.md", digest="h1")
+    applied = evidence_card(TEA, tenant="t", generation="g1", chunk="c", source="a.md")
+    served = ServedState(lambda names: names, content_hashes=lambda names: {"a.md": frozenset({"h2"})})
+    live = card_liveness(served, frozenset({"a.md"}))
+    assert not live(stated), "a stated card outlived its memo's edit"
+    assert live(applied), "an applied card must follow its memo's name only"
+    revert = ServedState(lambda names: names, content_hashes=lambda names: {"a.md": frozenset({"h1"})})
+    assert card_liveness(revert, frozenset({"a.md"}))(stated)
+
+
+def test_lv2_a_superseded_memo_retires_every_card_naming_it() -> None:
+    """Node tests/test_stated_facts_ledger.py::test_lv2_a_superseded_memo_retires_every_card_naming_it.
+
+    Red, mutation of `card_liveness`: remove `or card.source in retired`. Fails on "a card of a
+    superseded memo is still live".
+    """
+    served = ServedState(lambda names: names, superseded=lambda names: frozenset({"a.md"}))
+    live = card_liveness(served, frozenset({"a.md"}))
+    applied = evidence_card(TEA, tenant="t", generation="g1", chunk="c", source="a.md")
+    assert not live(applied), "a card of a superseded memo is still live"
+    assert not live(_stated_card(TEA, tenant="t", source="a.md"))

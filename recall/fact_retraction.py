@@ -9,7 +9,9 @@ from. Two things take a memo away, and they are treated differently on purpose:
 - A memo deleted from disk, pruned by the indexer, or left out of a promoted generation is a
   STATE. A rollback, a restored file or a repaired sync brings it back, so nothing is written: the
   projections hide a fact none of whose memos the store serves now (`served_sources`, rule in
-  `recall.provenance_controller.absent_fact_ids`), and show it again when a memo returns.
+  `recall.provenance_controller.absent_fact_ids`), and show it again when a memo returns. A lite
+  store also answers with which content each memo is served and which memos its supersession
+  graph retires (`recall.provenance_controller.ServedState`).
 """
 from __future__ import annotations
 
@@ -103,10 +105,11 @@ def prepare_retraction(
 
 
 def served_sources(store: object) -> ServedSources | None:
-    """The memo names `store` serves now, as the projections ask for them; None without a lookup.
+    """The memo names `store` serves now, with their content and supersession on a lite store;
+    None without a lookup.
 
-    Fails open: when the lookup errors every name counts as served, so an outage shows facts as
-    the ledger alone would rather than hiding all of them.
+    Fails open: when a lookup errors every name counts as served, unedited and unsuperseded, so an
+    outage shows facts as the ledger alone would rather than hiding all of them.
     """
     lookup = getattr(store, "served_identifiers", None)
     if not callable(lookup):
@@ -119,7 +122,33 @@ def served_sources(store: object) -> ServedSources | None:
             _log.exception("serving lookup for %d memo name(s) failed; hiding no fact", len(names))
             return names
 
-    return served
+    from recall.lite import LiteStore
+
+    if not isinstance(store, LiteStore):
+        return served
+    from recall.provenance_controller import ServedState
+
+    def content_hashes(names: frozenset[str]) -> dict[str, frozenset[str]] | None:
+        try:
+            resolved = store.sources_for_identifiers(sorted(names))
+            raw = store.source_raw_hashes()
+        except Exception:  # BROAD-CATCH: fail-open  # no stated card is checked against content
+            _log.exception("content lookup for %d memo name(s) failed; checking no stated card", len(names))
+            return None
+        return {
+            name: frozenset(raw[source] for source in sources if raw.get(source))
+            for name, sources in resolved.items()
+        }
+
+    def superseded(names: frozenset[str]) -> frozenset[str]:
+        try:
+            edges, unresolved, _candidates = store.supersession_all()
+        except Exception:  # BROAD-CATCH: fail-open  # no memo's facts are retired
+            _log.exception("supersession lookup failed; retiring no memo's facts")
+            return frozenset()
+        return frozenset(name for name in names if name in edges or name in unresolved)
+
+    return ServedState(served, content_hashes=content_hashes, superseded=superseded)
 
 
 __all__ = ["FACT_WRITE_DSN_ENV", "fact_ledger_for", "prepare_retraction", "served_sources"]
