@@ -244,6 +244,11 @@ def _index_memory_unlocked(
 
         outcome = ensure_calibrated(store, embedder, background=True)
         message += f" Calibration: {outcome.status.value}. {outcome.reason}"
+        from recall.stated_facts import reconcile_stated_facts
+
+        stated = reconcile_stated_facts(store, env=values)
+        if stated.enabled:
+            message += f" Stated facts: {stated.summary()}."
     return IndexResult(
         files=stats.files,
         chunks=stats.chunks,

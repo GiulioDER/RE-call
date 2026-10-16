@@ -22,6 +22,7 @@ import pytest
 from recall.lite import LiteStore
 from recall.lite.facts import LiteFactLedger
 from recall.lite.refresh import Outcome, RefreshReport, refresh
+from recall_mcp.lifecycle import forget_memory
 from recall_mcp.provenance import current_facts_memory
 from tests.test_lite_calibration import DIM, ContentWordEmbedder, _write_memos
 
@@ -93,15 +94,30 @@ def test_s3a_an_upload_never_states(root: Path, store: LiteStore) -> None:
 
     Spec test 3 and review focus 5: an upload staged under RECALL_INDEX_ROOT/uploads is inside the
     refreshed folder and still does not state. Red, mutation of `StatingRule.admits`
-    (recall/stated_facts.py): delete BOTH upload checks (`upload_name` and `uploads`). Fails on
-    "an upload stated a fact". Deleting either one alone stays green here, since the other still
-    holds; S3d and S3e each red-prove one alone.
+    (recall/stated_facts.py): delete its `_runs_through_uploads` check. Fails on "an upload
+    stated a fact".
+    """
+    memo(root / "memory", "door.md", facts=[DOOR])
+    memo(root / "uploads" / store.tenant / "job1", "upload.md", facts=[{**DOOR, "predicate": "wifi_password", "object": "6666"}])
+    refreshed(store, root, key_root=root)
+    reconcile(store, root)
+    assert listed(store) == ["4512"], f"an upload stated a fact: {listed(store)}"
+
+
+def test_s3f_an_upload_cannot_contest_a_real_fact(root: Path, store: LiteStore) -> None:
+    """Node tests/test_stated_facts.py::test_s3f_an_upload_cannot_contest_a_real_fact.
+
+    Security review follow-up, 2026-10-15: an upload stating ANOTHER value for a real fact's key
+    would not show up as a new fact at all, it would move the real one to `contested` and so
+    erase the answer. Red, mutation of `StatingRule.admits` (recall/stated_facts.py): delete its
+    `_runs_through_uploads` check. Fails on "an upload contested a real fact".
     """
     memo(root / "memory", "door.md", facts=[DOOR])
     memo(root / "uploads" / store.tenant / "job1", "upload.md", facts=[{**DOOR, "object": "6666"}])
     refreshed(store, root, key_root=root)
     reconcile(store, root)
-    assert listed(store) == ["4512"], f"an upload stated a fact: {listed(store)}"
+    out = current_facts_memory(store)
+    assert listed(store) == ["4512"] and out["contested"] == [], f"an upload contested a real fact: {out['contested']}"
 
 
 def test_s3d_an_upload_stays_out_when_the_refresh_runs_without_the_server_env(
@@ -114,10 +130,10 @@ def test_s3d_an_upload_stays_out_when_the_refresh_runs_without_the_server_env(
     environment did not recognise `uploads/` and stated an upload's facts. The store's own names
     are key-rooted, so `uploads/<tenant>/` is an upload whatever the environment says. Red against
     89af30d8b: fails on "an upload stated a fact without the server env: ['4512', '6666']". Red,
-    mutation of `StatingRule.admits`: delete the `upload_name` check: the same failure.
+    mutation of `StatingRule.admits`: delete its `_runs_through_uploads` check: the same failure.
     """
     memo(root / "memory", "door.md", facts=[DOOR])
-    memo(root / "uploads" / store.tenant / "job1", "upload.md", facts=[{**DOOR, "object": "6666"}])
+    memo(root / "uploads" / store.tenant / "job1", "upload.md", facts=[{**DOOR, "predicate": "wifi_password", "object": "6666"}])
     monkeypatch.delenv("RECALL_INDEX_ROOT")
     refreshed(store, root, key_root=root)
     reconcile(store, root)
@@ -132,9 +148,12 @@ def test_s3e_the_env_a_caller_passes_also_names_the_uploads(
     Security review finding (parser differential), 2026-10-15: `stating_rule` read the prefixes
     from the `env` a caller passes (`recall_index` passes its runtime env) but the uploads root
     from the process environment. Here the uploads folder is refreshed as a root of its own, so
-    its names carry no `uploads/` prefix and only the absolute path can tell. Red against
-    89af30d8b: fails on "an upload stated a fact under the caller's env". Red, mutation of
-    `stating_rule`: build `uploads` from the process environment only: the same failure.
+    its names carry no `uploads/` prefix and only the absolute path can tell, and since the lite
+    refresh records facts itself (Task 6) that refresh reconciles with no RECALL_INDEX_ROOT at all:
+    an env-derived uploads folder cannot exist there, which is why the check is structural. Red
+    against 89af30d8b: fails on "an upload stated a fact under the caller's env". Red, mutation of
+    `StatingRule.admits`: test only the stored name with `_runs_through_uploads`, not the source:
+    the same failure.
     """
     from recall.stated_facts import reconcile_stated_facts
 
@@ -391,3 +410,142 @@ def test_s6_two_memos_that_disagree_are_contested(store: LiteStore, folder: Path
     assert apply("m1", ()) == DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION
     assert apply("m2", ("door-a.md", "door-b.md")) == DecisionCode.APPLIED
     assert listed(store) == ["7777"], f"superseding both contested values did not settle it: {listed(store)}"
+
+
+def test_s1b_a_refresh_alone_lists_the_stated_fact(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s1b_a_refresh_alone_lists_the_stated_fact.
+
+    Spec test 1: no model call and no explicit reconcile, only the refresh a lite server runs. Red
+    against `ad9554273`: fails on "a refreshed memo's fact is not listed: []". Red, mutation of
+    `_refresh_locked` (recall/lite/refresh.py): delete the `reconcile_stated_facts(...)` call: the
+    same failure.
+    """
+    memo(folder, "door.md", facts=[DOOR])
+    report = refreshed(store, folder)
+    assert listed(store) == ["4512"], f"a refreshed memo's fact is not listed: {listed(store)}"
+    assert getattr(report, "facts_stated", None) == 1
+
+
+def test_s7_forget_retracts_and_a_prune_hides_a_stated_fact(store: LiteStore, folder: Path, tmp_path: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s7_forget_retracts_and_a_prune_hides_a_stated_fact.
+
+    Spec test 7 (the lite half; gc is PostgreSQL's, PR B). Red, mutation of `card_liveness`
+    (recall/provenance_controller.py): make `live` return True first. Fails on "a pruned memo's
+    stated fact is still listed".
+    """
+    memo(folder, "door.md", facts=[DOOR])
+    gate = memo(folder, "gate.md", facts=[{**DOOR, "predicate": "gate_code", "object": "5150"}])
+    refreshed(store, folder)
+    forget_memory(store, ["door.md"])  # type: ignore[arg-type]
+    (folder / "door.md").unlink()
+    kept = tmp_path / "gate.md.kept"
+    gate.rename(kept)
+    refreshed(store, folder)
+    assert listed(store) == [], f"a pruned memo's stated fact is still listed: {listed(store)}"
+    kept.rename(gate)
+    refreshed(store, folder)
+    assert listed(store) == ["5150"], "restoring the pruned memo did not bring its fact back"
+
+
+def test_rf4_a_fact_two_memos_state_survives_forgetting_one(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_stated_facts.py::test_rf4_a_fact_two_memos_state_survives_forgetting_one.
+
+    Review focus 4. Red, mutation of `live_sources` (recall/provenance_controller.py): read only
+    APPLIED events (`asserts_fact(event)` for `event.event_type == "asserted"`). Fails on "the
+    surviving memo is not named: []".
+    """
+    memo(folder, "door-a.md", facts=[DOOR])
+    memo(folder, "door-b.md", facts=[DOOR])
+    refreshed(store, folder)
+    forget_memory(store, ["door-a.md"])  # type: ignore[arg-type]
+    (folder / "door-a.md").unlink()
+    (item,) = current_facts_memory(store)["facts"]  # type: ignore[misc]
+    assert item["sources"] == ["door-b.md"], f"the surviving memo is not named: {item['sources']}"
+    forget_memory(store, ["door-b.md"])  # type: ignore[arg-type]
+    (folder / "door-b.md").unlink()
+    assert listed(store) == []
+
+
+def test_s1c_recall_index_and_recall_index_cli_record_stated_facts(
+    store: LiteStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_s1c_recall_index_and_recall_index_cli_record_stated_facts.
+
+    Red, mutation of `_index_memory_unlocked` (recall_mcp/indexing.py): delete the
+    `reconcile_stated_facts` lines. Fails on "recall_index did not record the stated fact".
+    """
+    from recall_mcp.indexing import index_memory
+
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
+    _write_memos(root / "memory", 4)
+    memo(root / "memory", "door.md", facts=[DOOR])
+    env = {"RECALL_INDEX_ROOT": str(root), "RECALL_STATED_FACT_SOURCES": "memory"}
+    result = index_memory(store, ContentWordEmbedder(), str(root / "memory"), env=env)  # type: ignore[arg-type]
+    assert listed(store) == ["4512"], "recall_index did not record the stated fact"
+    assert "Stated facts: 1 new" in result.message, result.message
+
+
+def test_s1d_recall_index_on_a_lite_dsn_prints_the_stated_facts_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_s1d_recall_index_on_a_lite_dsn_prints_the_stated_facts_line.
+
+    Red, mutation of the `recall index` lite branch (recall/cli_commands/index_search.py): delete
+    the `print(reconcile_stated_facts(...).render())` line. Fails on "recall index did not report
+    stated facts".
+    """
+    from tests.test_lite_cli import _dsn, _run
+
+    folder = tmp_path / "mem"
+    _write_memos(folder, 4)
+    memo(folder, "door.md", facts=[DOOR])
+    monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "door.md")
+    out = _run(["--embedder", "hashing", "--dsn", _dsn(tmp_path), "index", str(folder)])
+    assert "stated facts 1 new" in out, f"recall index did not report stated facts: {out}"
+
+
+def test_s11a_a_failed_append_is_reported_and_the_refresh_still_succeeds(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_s11a_a_failed_append_is_reported_and_the_refresh_still_succeeds.
+
+    Spec 4.6, the lite half of spec test 11. Red, mutation of `_reconcile`
+    (recall/stated_facts.py): replace the body of its final `else:` with `continue`. Fails on "a
+    failed append was not reported: 0".
+    """
+    from recall.lite import facts as lite_facts
+
+    def down(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr(lite_facts.LiteFactLedger, "apply_assertion", down)
+    memo(folder, "door.md", facts=[DOOR])
+    report = refreshed(store, folder)
+    assert report.facts_stated == -1, f"a failed append was not reported: {report.facts_stated}"
+    assert "LEDGER_UNAVAILABLE" in report.stated, report.stated
+
+
+def test_s11b_an_unexpected_error_never_escapes_the_refresh(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_s11b_an_unexpected_error_never_escapes_the_refresh.
+
+    Spec 4.6: the reconcile never raises into the write that called it. Red, mutation of
+    `reconcile_stated_facts` (recall/stated_facts.py): delete its `try:` and `except` lines,
+    keeping the body. Fails on "the reconcile's error escaped the refresh".
+    """
+    from recall import stated_facts
+
+    def broken(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("cannot read the store")
+
+    monkeypatch.setattr(stated_facts, "_admitted_memos", broken)
+    memo(folder, "door.md", facts=[DOOR])
+    try:
+        report = refresh(store, [folder], ContentWordEmbedder(), force=True)  # type: ignore[arg-type]
+    except RuntimeError as exc:
+        pytest.fail(f"the reconcile's error escaped the refresh: {exc}")
+    assert report.outcome is Outcome.REFRESHED and report.facts_stated == -1, report.to_dict()
