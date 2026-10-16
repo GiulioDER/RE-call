@@ -140,15 +140,39 @@ def served_sources(store: object) -> ServedSources | None:
             for name, sources in resolved.items()
         }
 
-    def superseded(names: frozenset[str]) -> frozenset[str]:
+    def stated_admitted(names: frozenset[str]) -> frozenset[str]:
+        """The names whose memos the operator's rule lets state facts now. Fails CLOSED: a rule
+        that cannot be computed admits nothing, so no memo states facts on an error."""
+        from recall.stated_facts import stating_rule
+
         try:
-            edges, unresolved, _candidates = store.supersession_all()
+            rule = stating_rule(store)
+            if isinstance(rule, str) or not names:
+                return frozenset()
+            resolved = store.sources_for_identifiers(sorted(names))
+        except Exception:  # BROAD-CATCH: fail-closed  # no stated fact is current on an error
+            _log.exception("stating rule lookup failed; listing no stated fact")
+            return frozenset()
+        return frozenset(
+            name for name, sources in resolved.items() if any(rule.admits(name, s) for s in sources)
+        )
+
+    def superseded(names: frozenset[str]) -> frozenset[str]:
+        """Names a served memo the operator admits supersedes. A memo that may not state facts
+        (an upload, a file outside the prefixes) cannot retire another memo's facts either, and an
+        ambiguous reference retires nothing; search's own verdicts are not changed by either."""
+        try:
+            edges, _unresolved, _candidates = store.supersession_all()
+            targets = {name: edges[name] for name in names if name in edges}
+            claimants = stated_admitted(frozenset(targets.values()))
         except Exception:  # BROAD-CATCH: fail-open  # no memo's facts are retired
             _log.exception("supersession lookup failed; retiring no memo's facts")
             return frozenset()
-        return frozenset(name for name in names if name in edges or name in unresolved)
+        return frozenset(name for name, claimant in targets.items() if claimant in claimants)
 
-    return ServedState(served, content_hashes=content_hashes, superseded=superseded)
+    return ServedState(
+        served, content_hashes=content_hashes, superseded=superseded, stated_admitted=stated_admitted
+    )
 
 
 __all__ = ["FACT_WRITE_DSN_ENV", "fact_ledger_for", "prepare_retraction", "served_sources"]

@@ -292,6 +292,18 @@ class RefreshReport:
         return "\n".join(lines)
 
 
+def _stated_marker(store: LiteStore, roots: Sequence[Path]) -> str | None:
+    """`recall.stated_facts.stated_marker` for these roots; None when it cannot be computed, so a
+    marker problem forces a refresh rather than hiding one."""
+    from recall.stated_facts import stated_marker
+
+    try:
+        return stated_marker(store, roots=roots)
+    except Exception:  # BROAD-CATCH: fail-open  # a refresh runs; nothing is skipped on its account
+        _log.warning("stated facts marker for %s could not be computed", store.path, exc_info=True)
+        return None
+
+
 def _calibrate(store: LiteStore, embedder: Embedder, background: bool) -> CalibrationOutcome:
     """`ensure_calibrated`, in the background when asked and when this version can.
 
@@ -314,8 +326,12 @@ def _finish(
     corpus_version: int | None = None,
     policy: str | None = None,
     key_root: Path | None = None,
+    stated: str | None = None,
 ) -> RefreshReport:
-    """Write the state file for this run. `success_generation` marks it the new last success."""
+    """Write the state file for this run. `success_generation` marks it the new last success.
+
+    `stated` is the stating rule the run's reconcile used (`recall.stated_facts.stated_marker`).
+    """
     report.finished_utc = _utc()
     document: dict[str, Any] = {
         "schema": STATE_SCHEMA,
@@ -332,6 +348,7 @@ def _finish(
             "generation_id": success_generation,
             "corpus_version": corpus_version,
             "policy": policy,
+            "stated": stated,
             "finished_utc": report.finished_utc,
         }
     _write_state(db, document)
@@ -395,6 +412,10 @@ def refresh(
         # on every run (CCA PERF-005).
         and last.get("corpus_version") == store._version()
         and last.get("policy") == key
+        # A store upgraded with its memos in place, or a stating rule changed, has facts to record
+        # although no memo changed (`recall.stated_facts.stated_marker`).
+        and (marker := _stated_marker(store, resolved)) is not None
+        and last.get("stated") == marker
     ):
         # Nothing is written: this path holds no lane, and rewriting the file here could put back
         # a `last_success` that a concurrent refresh has just replaced.
@@ -538,6 +559,7 @@ def _refresh_locked(
         corpus_version=store._version(),
         policy=policy_key(security_policy, security_context),
         key_root=key_root,
+        stated=_stated_marker(store, roots),
     )
 
 

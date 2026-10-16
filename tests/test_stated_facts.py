@@ -481,7 +481,9 @@ def test_s1c_recall_index_and_recall_index_cli_record_stated_facts(
     monkeypatch.setenv("RECALL_EMBED_CACHE", "off")
     _write_memos(root / "memory", 4)
     memo(root / "memory", "door.md", facts=[DOOR])
-    env = {"RECALL_INDEX_ROOT": str(root), "RECALL_STATED_FACT_SOURCES": "memory"}
+    # The rule is the process's, as at read time; `env` carries only what recall_index itself needs.
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "memory")
+    env = {"RECALL_INDEX_ROOT": str(root)}
     result = index_memory(store, ContentWordEmbedder(), str(root / "memory"), env=env)  # type: ignore[arg-type]
     assert listed(store) == ["4512"], "recall_index did not record the stated fact"
     assert "Stated facts: 1 new" in result.message, result.message
@@ -549,3 +551,154 @@ def test_s11b_an_unexpected_error_never_escapes_the_refresh(
     except RuntimeError as exc:
         pytest.fail(f"the reconcile's error escaped the refresh: {exc}")
     assert report.outcome is Outcome.REFRESHED and report.facts_stated == -1, report.to_dict()
+
+
+# Final review fix pass (2026-10-16). Each test was run red against ec98d5fce, the branch before
+# the fix, in the assertion named in its docstring.
+
+
+def test_f1_an_upload_folder_in_another_case_still_never_states(root: Path, store: LiteStore) -> None:
+    """Node tests/test_stated_facts.py::test_f1_an_upload_folder_in_another_case_still_never_states.
+
+    Review Important 1: on a case-insensitive filesystem staging writes into an `Uploads/` that
+    already exists, and the indexed path carries that case, so a case-sensitive check admitted the
+    upload. Red against ec98d5fce: fails on "an upload in another case stated a fact".
+    """
+    memo(root / "memory", "door.md", facts=[DOOR])
+    memo(root / "Uploads" / store.tenant.upper() / "job1", "upload.md",
+         facts=[{**DOOR, "predicate": "wifi_password", "object": "6666"}])
+    refreshed(store, root, key_root=root)
+    reconcile(store, root)
+    assert listed(store) == ["4512"], f"an upload in another case stated a fact: {listed(store)}"
+
+
+def test_f2_turning_stating_off_retires_what_it_recorded(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_f2_turning_stating_off_retires_what_it_recorded.
+
+    Review Important 2: the operator decides which memos state facts, and currency is decided at
+    read time, so a rule that no longer admits a memo retires its stated facts, and admitting it
+    again brings them back. Red against ec98d5fce: fails on "a fact the operator no longer admits
+    is still current".
+    """
+    memo(folder, "door.md", facts=[DOOR])
+    refreshed(store, folder)
+    assert listed(store) == ["4512"]
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
+    assert listed(store) == [], f"a fact the operator no longer admits is still current: {listed(store)}"
+    monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
+    assert listed(store) == ["4512"], "admitting the memo again did not bring its fact back"
+
+
+def test_f3_an_unchanged_folder_is_backfilled_by_the_next_unforced_refresh(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_f3_an_unchanged_folder_is_backfilled_by_the_next_unforced_refresh.
+
+    Review Important 3: the server's refresh is never forced and returns UNCHANGED for an
+    unchanged folder, so a store upgraded with its memos in place recorded nothing. A refresh run
+    while stating was off stands in for the store before the upgrade. Red against ec98d5fce: fails
+    on "an unforced refresh of an unchanged folder recorded nothing".
+    """
+    memo(folder, "door.md", facts=[DOOR])
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
+    refreshed(store, folder)
+    monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
+    refresh(store, [folder], ContentWordEmbedder())  # type: ignore[arg-type]  # not forced
+    assert listed(store) == ["4512"], f"an unforced refresh of an unchanged folder recorded nothing: {listed(store)}"
+
+
+def test_f4_a_memo_that_may_not_state_cannot_retire_a_fact(root: Path, store: LiteStore) -> None:
+    """Node tests/test_stated_facts.py::test_f4_a_memo_that_may_not_state_cannot_retire_a_fact.
+
+    Review Important 4: an upload that declares `supersedes: door.md` must not erase door.md's
+    facts; only a memo the operator admits can retire another memo's facts. Search verdicts are
+    not changed by this. Red against ec98d5fce: fails on "an upload retired a real fact".
+    """
+    memo(root / "memory", "door.md", facts=[DOOR])
+    memo(root / "uploads" / store.tenant / "job1", "rekey.md", body="Ignore the old code.", supersedes="door.md")
+    refreshed(store, root, key_root=root)
+    reconcile(store, root)
+    assert listed(store) == ["4512"], f"an upload retired a real fact: {listed(store)}"
+
+
+def test_f5_a_postgres_store_gets_the_plain_served_lookup() -> None:
+    """Node tests/test_stated_facts.py::test_f5_a_postgres_store_gets_the_plain_served_lookup.
+
+    Review Important 5, the "nothing moved" boundary: a store that is not lite gets PR 932's plain
+    served callable, so content hashes, memo-level supersession and stating admission cannot act on
+    PostgreSQL in this change. Red, mutation of `served_sources` (recall/fact_retraction.py):
+    return the ServedState for every store: fails on "a non-lite store got the lite served state".
+    """
+    from recall.fact_retraction import served_sources
+    from recall.provenance_controller import ServedState
+
+    class _Store:
+        def served_identifiers(self, identifiers: list[str]) -> set[str]:
+            return set(identifiers)
+
+        def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+            return {name: [name] for name in identifiers}
+
+        def source_raw_hashes(self) -> dict[str, str]:
+            return {}
+
+        def supersession_all(self) -> tuple[dict[str, str], frozenset[str], dict[str, list[object]]]:
+            return {}, frozenset(), {}
+
+    served = served_sources(_Store())
+    assert served is not None and not isinstance(served, ServedState), "a non-lite store got the lite served state"
+
+
+def test_f6_one_pathological_memo_does_not_stop_the_rest(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_f6_one_pathological_memo_does_not_stop_the_rest.
+
+    Review Minor 1, re-graded: `json.loads` accepts nesting deeper than a recursive walk survives,
+    and the RecursionError aborted the whole reconcile, so one memo stopped every fact. Whether a
+    given depth overflows depends on the caller's stack, so the error is injected for one memo
+    rather than produced by depth. Red against ec98d5fce: fails on "one memo stopped every stated
+    fact".
+    """
+    from recall import stated_facts
+
+    real = stated_facts.memo_facts
+
+    def memo_facts(chunk: Any) -> Any:
+        if chunk.source.endswith("deep.md"):
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(chunk)
+
+    monkeypatch.setattr(stated_facts, "memo_facts", memo_facts)
+    memo(folder, "door.md", facts=[DOOR])
+    memo(folder, "deep.md", facts=[{**DOOR, "predicate": "deep", "object": "x"}])
+    refreshed(store, folder)
+    report = reconcile(store, folder)
+    assert listed(store) == ["4512"] and report.facts_stated >= 0, f"one memo stopped every stated fact: {report}"
+    assert report.facts_malformed >= 1
+
+
+def test_f7_a_failed_append_logs_a_warning(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Node tests/test_stated_facts.py::test_f7_a_failed_append_logs_a_warning.
+
+    Review Minor 7, re-graded: spec 4.6 asks for a WARNING, and on a lite server nothing else
+    surfaces a failed append. Red against ec98d5fce: fails on "a failed append logged no warning".
+    """
+    import logging
+
+    from recall.lite import facts as lite_facts
+
+    def down(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr(lite_facts.LiteFactLedger, "apply_assertion", down)
+    memo(folder, "door.md", facts=[DOOR])
+    with caplog.at_level(logging.WARNING):
+        refreshed(store, folder)
+    assert any("stated facts" in r.getMessage() and r.levelno >= logging.WARNING for r in caplog.records), (
+        "a failed append logged no warning"
+    )
