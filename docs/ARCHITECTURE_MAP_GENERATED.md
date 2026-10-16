@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 323
 Cross package edges: 335
-Source tree fingerprint: `d0b0d9a0f28d566913cd6602b4bd8a0a0cea8a9367d24e77e5bc1644d0ea0b2b`
+Source tree fingerprint: `f764022d4d330eafed1ab624dcaf117b8d881e883f7f942aa4f30b53501c2ea6`
 
 ## Highest fan in modules
 
@@ -67,8 +67,8 @@ Source tree fingerprint: `d0b0d9a0f28d566913cd6602b4bd8a0a0cea8a9367d24e77e5bc16
 | 22 | `recall_mcp.reasoning_engine` |
 | 22 | `recall_mcp.retrieval` |
 | 20 | `recall` |
+| 20 | `recall.generations` |
 | 19 | `recall.trust` |
-| 18 | `recall.generations` |
 | 18 | `recall.rewrite` |
 | 17 | `recall_mcp.indexing` |
 | 17 | `recall_mcp.provenance` |
@@ -97,10 +97,10 @@ Source tree fingerprint: `d0b0d9a0f28d566913cd6602b4bd8a0a0cea8a9367d24e77e5bc16
 | 11 | `recall.desktop.ui` |
 | 11 | `recall.generation_store` |
 | 11 | `recall.lite.calibration` |
+| 11 | `recall.stated_facts` |
 | 11 | `recall.wizard.pipeline` |
 | 11 | `recall_mcp.lifecycle` |
 | 10 | `recall.integrations.langchain` |
-| 10 | `recall.integrations.llamaindex` |
 
 ## Cross package edges
 
@@ -580,7 +580,7 @@ They are observations, not automatic failures.
 | `recall.generation_build` | 8 | 82 |
 | `recall.generation_store` | 11 | 81 |
 | `recall.generation_types` | 2 | 13 |
-| `recall.generations` | 18 | 81 |
+| `recall.generations` | 20 | 81 |
 | `recall.graph_first` | 2 | 24 |
 | `recall.guards` | 1 | 2 |
 | `recall.index` | 15 | 36 |
@@ -670,7 +670,7 @@ They are observations, not automatic failures.
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |
 | `recall.stale_reports` | 3 | 105 |
-| `recall.stated_facts` | 9 | 81 |
+| `recall.stated_facts` | 11 | 81 |
 | `recall.store` | 12 | 25 |
 | `recall.supersession` | 1 | 2 |
 | `recall.supersession_arbiter` | 4 | 20 |
