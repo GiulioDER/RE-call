@@ -18,9 +18,12 @@ from recall_mcp.evidence_cards import register_evidence_cards  # re-exported
 from recall.provenance_controller import (
     EvidenceCardResolver,
     FactApplicationRequest,
+    FactEvent,
     FactLedger,
     ProvenanceController,
+    live_sources,
     source_digest,
+    split_contested,
 )
 from recall.trust_policy import TrustPolicy
 from recall.types import AtomicFact, EvidenceCard
@@ -192,7 +195,9 @@ def current_facts_memory(
 
     A fact none of whose memos the store serves now (deleted, pruned, or left out of the active
     generation) is not listed, and is listed again when a memo returns
-    (`recall.fact_retraction`).
+    (`recall.fact_retraction`). A fact lists its memos in `sources`. Facts that conflict, with no
+    supersession between their memos, are listed under `contested` and not under `facts`
+    (`recall.provenance_controller.split_contested`).
     """
     instant = as_of or datetime.now(UTC)
     served = served_sources(store)
@@ -202,12 +207,22 @@ def current_facts_memory(
         if served is None
         else ledger.current(tenant_id=store.tenant, now=instant, served=served)
     )
+    # A fact's memos come from every live application of it, DUPLICATE ones included, so from the
+    # whole stream; it is read only when something is listed, and a ledger offering `current` alone
+    # names the memos of the applications it lists.
+    history = getattr(ledger, "events", None) if events else None
+    sources = live_sources(history if history is not None else events, served)
+    standing, contested = split_contested(events)
     try:
         generation_id: str | None = store.generation_id
     except NoActiveGeneration:
         # The ledger is tenant scoped and answers before any generation is promoted; say there
         # is no serving generation rather than raise or name a generation that does not exist.
         generation_id = None
+
+    def names(event: FactEvent) -> list[str]:
+        return list(sources.get(event.fact_id or "", ()))
+
     return {
         "tenant_id": store.tenant,
         "generation_id": generation_id,
@@ -221,7 +236,26 @@ def current_facts_memory(
                 "generation_id": event.generation_id,
                 "writer": event.writer,
                 "asserted_at": event.created_at.isoformat(),
+                "sources": names(event),
             }
-            for event in events
+            for event in standing
+        ],
+        "contested": [
+            {
+                "namespace": group[0].fact.namespace if group[0].fact else None,
+                "subject": group[0].fact.subject if group[0].fact else None,
+                "predicate": group[0].fact.predicate if group[0].fact else None,
+                "context": group[0].fact.context if group[0].fact else {},
+                "values": [
+                    {
+                        "fact": event.fact.to_payload() if event.fact else None,
+                        "fact_id": event.fact_id,
+                        "sources": names(event),
+                        "evidence_card_ids": [card.card_id for card in event.evidence_cards],
+                    }
+                    for event in group
+                ],
+            }
+            for group in contested
         ],
     }
