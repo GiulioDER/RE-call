@@ -169,6 +169,8 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_forget` | Erase indexed source material, including its staged upload files, and retract the facts whose only evidence it was. |
 | `recall_inventory` | List every source in the caller's memory with the digest of its bytes, so a sync client can diff instead of re-uploading. Not in the `read` or `search` presets: a file listing answers no question an agent asks. |
 | `recall_stats` | Report counters and operational state. |
+| `recall_remember` | Assistant surface, lite only (`RECALL_ASSISTANT_MEMOS` names a memo folder inside `RECALL_INDEX_ROOT`): write ONE fact as one memo, with `valid_from`, `valid_until`, `supersedes` (only a memo the assistant wrote) and an optional structured `fact`, and index it before returning `{memo_id}`. With the surface on, `recall_search`, `recall_evidence`, `recall_current_facts` and `recall_apply_fact` answer in a compact view naming each hit by its memo id; the `assistant` preset serves exactly these six tools. Unset, none of this is registered. |
+| `recall_forget_memo` | Assistant surface, lite only: forget one memo of the memo folder by its id, retracting the facts whose only evidence it was, then delete its file. `{deleted: 0}` for an id that names no memo there. |
 
 Search's `abstained`, `decision_state`, and `evidence.citable` describe present-state support.
 For a question about an earlier time, the optional `historical` field lists individually relevant,
