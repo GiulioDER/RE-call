@@ -70,7 +70,7 @@ removal.
 | `recall schema` | Apply, inspect, and plan PostgreSQL schema migrations (`status`, `plan`, `apply`, `grants`). |
 | `recall manifest` | Build and verify index manifests (`create`, `inventory`, `verify`). |
 | `recall lite` | The one-file local store (`recall setup --lite`). `refresh` indexes what changed in the memo folder under the store's write lane and recalibrates; `--check` reports what a refresh would find and writes nothing. The MCP server runs the same refresh on its own when `RECALL_INDEX_ROOT` names the folder: at start, and before a search at most every `RECALL_LITE_REFRESH_INTERVAL` seconds (30), waiting up to `RECALL_LITE_REFRESH_WAIT` (3); `RECALL_LITE_AUTO_REFRESH=0` turns it off. |
-| `recall generation` | Immutable generation lifecycle (`build`, `validate`, `promote`, `abandon`, `rollback`, `list`, `gc`). |
+| `recall generation` | Immutable generation lifecycle (`build`, `validate`, `promote`, `abandon`, `rollback`, `list`, `gc`, `stated-facts`: record the facts a generation's memos state, the active one by default). |
 | `recall graph` | Inspect or rebuild the deterministic Evidence Graph V1 (`rebuild`) without changing chunks or generation identity. |
 | `recall index` | Index a folder of supported documents or code. |
 | `recall forget` | Permanently erase indexed sources; the right-to-erasure path. |
