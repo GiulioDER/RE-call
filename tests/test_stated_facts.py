@@ -702,3 +702,20 @@ def test_f7_a_failed_append_logs_a_warning(
     assert any("stated facts" in r.getMessage() and r.levelno >= logging.WARNING for r in caplog.records), (
         "a failed append logged no warning"
     )
+
+
+def test_f8_an_upload_cannot_cancel_an_admitted_supersession(root: Path, store: LiteStore) -> None:
+    """Node tests/test_stated_facts.py::test_f8_an_upload_cannot_cancel_an_admitted_supersession.
+
+    Security review of the fix pass, 2026-10-16: `supersession_all()`'s edge map keeps the LAST
+    claimant of a target, so an upload that also declares `supersedes: door.md`, and sorts after
+    the admitted memo, displaced the admitted claim and kept door.md's old value current. Every
+    claimant counts now, and any admitted one retires the target. Red against a545989d3: fails on
+    "an upload cancelled an admitted supersession".
+    """
+    memo(root / "memory", "door.md", facts=[DOOR])
+    memo(root / "memory", "rekey.md", body="The front door was rekeyed.", supersedes="door.md")
+    memo(root / "uploads" / store.tenant / "job1", "zz.md", body="Keep the old code.", supersedes="door.md")
+    refreshed(store, root, key_root=root)
+    reconcile(store, root)
+    assert listed(store) == [], f"an upload cancelled an admitted supersession: {listed(store)}"
