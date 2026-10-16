@@ -8,16 +8,16 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 325
-Cross package edges: 342
-Source tree fingerprint: `d29665d7327a63ef4b5167c340c1f435c1436725fff7d07cc344884ab2de80dd`
+Modules: 326
+Cross package edges: 340
+Source tree fingerprint: `e17ba4c63bd3a0f2ea5f5555dd1bdb91e620245305ccb6d4c7a7b83834369cff`
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
-| 174 | `recall_mcp.codex_server` |
-| 173 | `recall_mcp.server` |
+| 175 | `recall_mcp.codex_server` |
+| 174 | `recall_mcp.server` |
 | 157 | `recall_mcp.service` |
 | 148 | `recall.cli_commands.setup_wizard` |
 | 143 | `recall.desktop.main` |
@@ -148,13 +148,11 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | `recall.index` |
 | `recall_interop.memory_benchmarks` | `recall.retriever` |
 | `recall_interop.memory_benchmarks` | `recall.store` |
-| `recall_mcp.assistant` | `recall.atomic_write` |
 | `recall_mcp.assistant` | `recall.backends` |
 | `recall_mcp.assistant` | `recall.embeddings` |
 | `recall_mcp.assistant` | `recall.errors` |
 | `recall_mcp.assistant` | `recall.lite` |
-| `recall_mcp.assistant` | `recall.lite.refresh` |
-| `recall_mcp.assistant` | `recall.types` |
+| `recall_mcp.assistant` | `recall.lite.assistant_memos` |
 | `recall_mcp.auth` | `recall.errors` |
 | `recall_mcp.auth` | `recall.observability` |
 | `recall_mcp.auth` | `recall.store` |
@@ -600,6 +598,7 @@ They are observations, not automatic failures.
 | `recall.lineage` | 2 | 12 |
 | `recall.lint` | 4 | 19 |
 | `recall.lite` | 2 | 82 |
+| `recall.lite.assistant_memos` | 5 | 83 |
 | `recall.lite.calibration` | 11 | 82 |
 | `recall.lite.facts` | 6 | 82 |
 | `recall.lite.inspect` | 3 | 82 |
@@ -743,9 +742,9 @@ They are observations, not automatic failures.
 | `recall_interop` | 1 | 94 |
 | `recall_interop.memory_benchmarks` | 7 | 93 |
 | `recall_mcp` | 0 | 0 |
-| `recall_mcp.assistant` | 8 | 103 |
+| `recall_mcp.assistant` | 6 | 104 |
 | `recall_mcp.auth` | 3 | 27 |
-| `recall_mcp.codex_server` | 1 | 174 |
+| `recall_mcp.codex_server` | 1 | 175 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.config_report` | 1 | 98 |
 | `recall_mcp.desktop_ingest` | 13 | 100 |
@@ -772,7 +771,7 @@ They are observations, not automatic failures.
 | `recall_mcp.related_api` | 8 | 107 |
 | `recall_mcp.retrieval` | 22 | 106 |
 | `recall_mcp.semantic_graph_cache` | 16 | 103 |
-| `recall_mcp.server` | 55 | 173 |
+| `recall_mcp.server` | 55 | 174 |
 | `recall_mcp.service` | 59 | 157 |
 | `recall_mcp.settings` | 7 | 97 |
 | `recall_mcp.stale_reports_api` | 3 | 108 |
