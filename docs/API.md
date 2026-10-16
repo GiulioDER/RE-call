@@ -172,6 +172,12 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_remember` | Assistant surface, lite only (`RECALL_ASSISTANT_MEMOS` names a memo folder inside `RECALL_INDEX_ROOT`): write ONE fact as one memo, with `valid_from`, `valid_until`, `supersedes` (only a memo the assistant wrote) and an optional structured `fact`, and index it before returning `{memo_id}`. With the surface on, `recall_search`, `recall_evidence`, `recall_current_facts` and `recall_apply_fact` answer in a compact view naming each hit by its memo id; the `assistant` preset serves exactly these six tools. Unset, none of this is registered. |
 | `recall_forget_memo` | Assistant surface, lite only: forget one memo of the memo folder by its id, retracting the facts whose only evidence it was, then delete its file. `{deleted: 0}` for an id that names no memo there. |
 
+For an evaluation that replays simulated days, `RECALL_EVAL_CLOCK=<file>` (lite only) makes the
+server read "now" from that file, one ISO 8601 time with an offset, re-read on every call: search
+verdicts, row write times, fact application and the current facts follow it, while a caller that
+passes its own time keeps it. A missing or offset-less time fails the call rather than falling back
+to the wall clock (`recall.eval_clock`).
+
 Search's `abstained`, `decision_state`, and `evidence.citable` describe present-state support.
 For a question about an earlier time, the optional `historical` field lists individually relevant,
 certified superseded or expired chunk identifiers in `historical.candidates`. Its scope is

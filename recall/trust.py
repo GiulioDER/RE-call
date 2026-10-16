@@ -22,6 +22,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from recall import eval_clock
 from recall.observability import METRICS
 from recall.trust_verdicts import (  # noqa: F401  # re-exported: public names of this module
     _ANSI_SEQUENCE,
@@ -817,6 +818,11 @@ def trusted_search(
     the search. Everything it records is what this function was about to return anyway; the only
     thing enabling it changes is that the record now outlives the stack frame.
     """
+    # Under an evaluation clock (`recall.eval_clock`) the search runs at the evaluation time, as
+    # valid time and as known-as-of time both; a caller that passes either keeps its own.
+    if (clock := eval_clock.now() if now is None or known_as_of is None else None) is not None:
+        now = now or clock
+        known_as_of = known_as_of or clock
     # ONE argument list, built once. Two verbatim copies of a 17-argument pass-through (plus the
     # two signatures) meant a new parameter needed four synchronized edits with nothing checking
     # they agree; a parameter silently dropped from one copy would surface only as the ledger

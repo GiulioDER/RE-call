@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from recall import eval_clock
 from recall.evidence import cards_from_trusted_result
 from recall.fact_ledger import PostgresFactLedger, project_current
 from recall.fact_retraction import served_sources
@@ -204,7 +205,7 @@ def current_facts_memory(
     if security_policy is not None:
         if access_context is None or access_context.tenant != store.tenant:
             raise PermissionError("a matching source access context is required for current facts")
-    instant = as_of or datetime.now(UTC)
+    instant = as_of or eval_clock.now() or datetime.now(UTC)
     served = served_sources(store)
     ledger = _fact_backends(store)[0]
     # One history snapshot serves both the projection and its supporting source names.
