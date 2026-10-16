@@ -373,6 +373,10 @@ class GenerationManager:
         self.actor = actor
         #: Facts the last `gc` retracted for good; -1 when its retraction failed (the next gc retries).
         self.last_gc_facts_retracted = 0
+        #: Facts the last promote or rollback recorded from what the activated generation's memos
+        #: state (`recall.stated_facts`); 0 when stating is off; -1 when recording failed (the next
+        #: activation retries, since nothing was appended for the facts it missed).
+        self.last_stated_facts = 0
         self.environment = (environment or os.environ.get("RECALL_ENV", "development")).lower()
         if self.environment not in {"development", "test", "production"}:
             raise ValueError("environment must be development, test, or production")
@@ -1712,6 +1716,9 @@ class GenerationManager:
                 generation_id=generation_id,
                 payload={"previous_generation_id": active},
             )
+        # After the commit, best effort, as `gc` retracts: the activation is what serves the memos,
+        # and recording what they state must never undo or fail it.
+        self.last_stated_facts = self._record_stated_facts_after_activation(generation_id)
 
     def rollback(self, *, provisional_reason: str | None = None) -> str:
         with self._connect() as conn, conn.transaction():
@@ -1762,7 +1769,35 @@ class GenerationManager:
                     ),
                 },
             )
-            return previous
+        # After the commit, as promote does: the rolled back generation's memos may state facts no
+        # event records yet (it was built before stating was on, or under another rule).
+        self.last_stated_facts = self._record_stated_facts_after_activation(previous)
+        return previous
+
+    def record_stated_facts(self, generation_id: str, *, env: Mapping[str, str] | None = None) -> int:
+        """Record the facts the memos of `generation_id` state (`recall.stated_facts`).
+
+        Reads that generation's chunks through a `GenerationStore` fixed to it, opened with the
+        metadata-only sentinel dimension `recall scopes` uses: no vector is read. Returns the facts
+        newly recorded; 0 when stating is off for this tenant; -1 when recording failed.
+        """
+        from recall.generation_store import GenerationStore
+        from recall.stated_facts import reconcile_stated_facts
+
+        # Kept in its own name rather than `with ... as`: the inherited `__enter__` answers a plain
+        # PgVectorStore, which has no `set_fixed_generation`.
+        store = GenerationStore(self._dsn, 1, tenant=self.tenant_id)
+        with store:
+            store.set_fixed_generation(generation_id)
+            report = reconcile_stated_facts(store, env=env)
+        return report.facts_stated if report.enabled else 0
+
+    def _record_stated_facts_after_activation(self, generation_id: str) -> int:
+        try:
+            return self.record_stated_facts(generation_id)
+        except Exception:  # BROAD-CATCH: error-translation  # counted, retried by the next activation
+            _log.exception("recording the stated facts of %r failed for %r", generation_id, self.tenant_id)
+            return -1
 
     def active_generation_id(self) -> str:
         with self._connect() as conn:

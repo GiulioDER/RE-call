@@ -777,6 +777,7 @@ class PostgresFactLedger:
         writer: str,
         decision_code: str,
         now: datetime,
+        policy_version: str = CONTROLLER_POLICY_VERSION,
     ) -> FactEvent:
         conn.execute(
             f"SELECT {FACT_LEDGER_APPEND_FUNCTION}(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
@@ -786,7 +787,7 @@ class PostgresFactLedger:
                 Jsonb(fact.to_payload()) if fact else None,
                 Jsonb([card.to_payload() for card in cards]),
                 Jsonb(list(supersedes_fact_ids)), request_id, writer, decision_code,
-                CONTROLLER_POLICY_VERSION, CONTROLLER_SCHEMA_VERSION, _as_utc(now),
+                policy_version, CONTROLLER_SCHEMA_VERSION, _as_utc(now),
             ),
         )
         return FactEvent(
@@ -794,7 +795,7 @@ class PostgresFactLedger:
             generation_id=generation_id, fact=fact, fact_id=fact_identity(fact) if fact else None,
             evidence_cards=cards, supersedes_fact_ids=supersedes_fact_ids,
             request_id=request_id, writer=writer, decision_code=decision_code,
-            policy_version=CONTROLLER_POLICY_VERSION, controller_version=CONTROLLER_SCHEMA_VERSION,
+            policy_version=policy_version, controller_version=CONTROLLER_SCHEMA_VERSION,
             created_at=_as_utc(now),
         )
 
@@ -810,7 +811,7 @@ class PostgresFactLedger:
         served: ServedSources | None = None,
         stated: bool = False,
     ) -> LedgerApplyResult:
-        del policy_version, controller_version
+        del controller_version
         if tenant_id != self.tenant_id:
             raise ValueError("ledger tenant mismatch")
         moment = _as_utc(now or datetime.now(UTC))
@@ -841,6 +842,7 @@ class PostgresFactLedger:
                     conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
                     fact=fact, cards=cards, supersedes_fact_ids=(), request_id=request_id,
                     writer=writer, decision_code=DecisionCode.DUPLICATE, now=moment,
+                    policy_version=policy_version,
                 )
                 if materialization_outbox is not None:
                     self._enqueue_materialization(conn, materialization_outbox, event)
@@ -849,6 +851,7 @@ class PostgresFactLedger:
                 conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
                 fact=fact, cards=cards, supersedes_fact_ids=supersedes_fact_ids,
                 request_id=request_id, writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
+                policy_version=policy_version,
             )
             if supersedes_fact_ids:
                 sup_event_id, sup_request_id = supersession_ids(event_id, request_id)
@@ -857,6 +860,7 @@ class PostgresFactLedger:
                     generation_id=generation_id, fact=None, cards=cards,
                     supersedes_fact_ids=supersedes_fact_ids, request_id=sup_request_id,
                     writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
+                    policy_version=policy_version,
                 )
             if materialization_outbox is not None:
                 self._enqueue_materialization(conn, materialization_outbox, event)

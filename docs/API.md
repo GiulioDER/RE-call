@@ -70,7 +70,7 @@ removal.
 | `recall schema` | Apply, inspect, and plan PostgreSQL schema migrations (`status`, `plan`, `apply`, `grants`). |
 | `recall manifest` | Build and verify index manifests (`create`, `inventory`, `verify`). |
 | `recall lite` | The one-file local store (`recall setup --lite`). `refresh` indexes what changed in the memo folder under the store's write lane and recalibrates; `--check` reports what a refresh would find and writes nothing. The MCP server runs the same refresh on its own when `RECALL_INDEX_ROOT` names the folder: at start, and before a search at most every `RECALL_LITE_REFRESH_INTERVAL` seconds (30), waiting up to `RECALL_LITE_REFRESH_WAIT` (3); `RECALL_LITE_AUTO_REFRESH=0` turns it off. |
-| `recall generation` | Immutable generation lifecycle (`build`, `validate`, `promote`, `abandon`, `rollback`, `list`, `gc`). |
+| `recall generation` | Immutable generation lifecycle (`build`, `validate`, `promote`, `abandon`, `rollback`, `list`, `gc`, `stated-facts`: record the facts a generation's memos state, the active one by default). |
 | `recall graph` | Inspect or rebuild the deterministic Evidence Graph V1 (`rebuild`) without changing chunks or generation identity. |
 | `recall index` | Index a folder of supported documents or code. |
 | `recall forget` | Permanently erase indexed sources; the right-to-erasure path. |
@@ -147,7 +147,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 |---|---|
 | `recall_search` | Search trusted memory. |
 | `recall_evidence` | Return evidence for a query. |
-| `recall_current_facts` | Read the current structured fact projection. Each fact names its memos in `sources`; values that disagree with no supersession between their memos are listed under `contested`. A lite store records the facts its memos state in `recall_graph` frontmatter whenever it indexes them, from the folders it refreshes, or the prefixes `RECALL_STATED_FACT_SOURCES` names (`none` turns it off); uploads never state. |
+| `recall_current_facts` | Read the current structured fact projection. Each fact names its memos in `sources`; values that disagree with no supersession between their memos are listed under `contested`. A lite store records the facts its memos state in `recall_graph` frontmatter whenever it indexes them, from the folders it refreshes, or the prefixes `RECALL_STATED_FACT_SOURCES` names (`none` turns it off). A PostgreSQL tenant records them only where that variable names places (a URI such as `s3://bucket/corpus/memory`, an absolute path, or a path under `RECALL_INDEX_ROOT`, matched against each memo's source), when a generation is promoted or rolled back, when the legacy table is indexed, and on `recall generation stated-facts`. Set the variable in the process that promotes and in the one that serves, since the rule is applied again when facts are read; with it on, a memo it admits that supersedes another memo also retires that memo's applied facts. Uploads never state. |
 | `recall_apply_fact` | Apply a reviewed structured fact through the provenance controller. |
 | `recall_related` | Retrieve independently trusted structural related evidence. |
 | `recall_current_state` | Inspect a deterministic authored current state projection. |
