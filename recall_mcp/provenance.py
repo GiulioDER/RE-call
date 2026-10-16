@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from recall import eval_clock
 from recall.evidence import cards_from_trusted_result
 from recall.fact_ledger import PostgresFactLedger
 from recall.frontmatter import validity_bounds
@@ -187,7 +188,7 @@ def current_facts_memory(
     store: PgVectorStore, *, as_of: datetime | None = None
 ) -> dict[str, object]:
     """Return the ledger's deterministic current fact projection for this tenant."""
-    instant = as_of or datetime.now(UTC)
+    instant = as_of or eval_clock.now() or datetime.now(UTC)
     events = _fact_backends(store)[0].current(tenant_id=store.tenant, now=instant)
     try:
         generation_id: str | None = store.generation_id

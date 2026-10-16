@@ -25,6 +25,7 @@ from pydantic.json_schema import WithJsonSchema
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from recall import eval_clock
 from recall.calibration import load_for as calibration_load_for
 from recall.answer_provider import resolve_answer_profile, resolve_answer_provider
 from recall.proof_obligations import ProofProvider, ProofRun, RepairRequest, run_proof_obligations
@@ -887,6 +888,7 @@ def _make_lifespan(
         source_policy = load_source_policy(runtime_env)
         settings_token = None
         lite_refresher: LiteAutoRefresher | None = None
+        clock_installed = False
         pool_size = runtime_settings.pool_size
         connection_budget = runtime_settings.connection_budget
         max_tenants = runtime_settings.max_tenants
@@ -965,6 +967,12 @@ def _make_lifespan(
                     )
                 if lite_refusal is not None:
                     raise RuntimeError(lite_refusal)
+            # An evaluation clock (`recall.eval_clock`): lite only, read before anything is
+            # written, so no row of this run carries the wall clock's time.
+            clock = eval_clock.from_env(runtime_env, lite=lite)
+            if clock is not None:
+                eval_clock.install(clock)
+                clock_installed = True
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
@@ -1219,6 +1227,9 @@ def _make_lifespan(
                 registry.close()
             if health is not None:
                 health.mark_stopped()
+            if clock_installed:
+                # Last: a refresh finishing during shutdown still writes the evaluation time.
+                eval_clock.uninstall()
             if settings_token is not None:
                 reset_runtime_settings(settings_token)
 
