@@ -169,6 +169,13 @@ def served_sources(store: object) -> ServedSources | None:
         sorting after an admitted claimant would displace it and keep the old value current.
         """
         try:
+            from recall.stated_facts import stating_rule
+
+            # Only admitted memos can retire facts, so with stating off nothing can be retired, and
+            # the store's supersession graph is not asked at all: that lookup would otherwise run on
+            # every read of every PostgreSQL deployment that never turned stating on.
+            if isinstance(stating_rule(store), str):
+                return frozenset()
             edges, _unresolved, candidates = store.supersession_all()
             claims = {
                 name: {claimant for claimant, _when in candidates.get(name, ())} | {edges[name]}

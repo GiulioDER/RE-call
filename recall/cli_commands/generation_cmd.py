@@ -155,6 +155,12 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_gc = generation_sub.add_parser("gc", help="collect expired retired generations")
     p_gc.add_argument("--retention-days", type=int, default=7)
     p_gc.add_argument("--retain-previous", type=int, default=2)
+    p_stated = generation_sub.add_parser(
+        "stated-facts",
+        help="record the facts a generation's memos state (RECALL_STATED_FACT_SOURCES); "
+        "the active generation by default",
+    )
+    p_stated.add_argument("generation_id", nargs="?", default=None)
 
 
 def _report_drift_after_build(args: argparse.Namespace, generation_id: str) -> None:
@@ -228,6 +234,17 @@ def _report_drift_after_build(args: argparse.Namespace, generation_id: str) -> N
     print(f"auto-calibrate: {outcome.action} ({outcome.reason})")
 
 
+def _report_stated_facts(count: int) -> None:
+    """What an activation recorded from the facts its memos state, the way `gc` reports retractions."""
+    if count > 0:
+        print(f"stated facts: {count} recorded")
+    elif count < 0:
+        print(
+            "WARNING: recording the facts the memos state failed; "
+            "`recall generation stated-facts` retries it"
+        )
+
+
 def _cmd_generation(args: argparse.Namespace) -> None:
     from recall.generations import GenerationManager
 
@@ -242,6 +259,16 @@ def _cmd_generation(args: argparse.Namespace) -> None:
         return
     if args.generation_cmd == "rollback":
         print(f"active generation: {manager.rollback()}")
+        _report_stated_facts(manager.last_stated_facts)
+        return
+    if args.generation_cmd == "stated-facts":
+        # A promote records them on its own; this is for a corpus promoted before stating was
+        # turned on, or whose recording failed, which an unchanged corpus never re-promotes.
+        generation_id = getattr(args, "generation_id", None) or manager.active_generation_id()
+        count = manager.record_stated_facts(generation_id)
+        print(f"stated facts: {max(count, 0)} recorded for {generation_id}")
+        if count < 0:
+            raise SystemExit("recording the stated facts failed; see the warning above")
         return
     if args.generation_cmd == "gc":
         collected = manager.gc(
@@ -269,6 +296,7 @@ def _cmd_generation(args: argparse.Namespace) -> None:
             unsafe_development=args.unsafe_development_promotion,
         )
         print(f"active generation: {args.generation_id}")
+        _report_stated_facts(manager.last_stated_facts)
         return
     if args.generation_cmd == "abandon":
         manager.abandon(args.generation_id, args.reason)
