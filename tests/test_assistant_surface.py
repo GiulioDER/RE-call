@@ -27,7 +27,8 @@ Invariants and the failure each one catches:
 
 Red proof, 2026-10-16, on a Linux test host: each mutation applied alone to the commit's tree, its
 test run alone, failing in the intended assertion, then restored byte for byte (sha256 checked) and
-the whole file green.
+the whole file green. M5, M6, M9 and M10 were run again on 2026-10-16 after the file writes moved
+from `recall_mcp.assistant` to `recall.lite.assistant_memos` (`MemoFolder`), at their new lines.
 - M1 (A1) `REMEMBER_DESCRIPTION` "Store ONE fact" reworded to "Store one fact": "tool
   recall_remember no longer matches the assistant contract".
 - M2b (A2) `build_server` no longer subtracts `ASSISTANT_TOOLS` and `_register_assistant_tools` no
@@ -48,7 +49,7 @@ the whole file green.
   slips past while the frontmatter parser still reads the block: the `bom` assertion fails
   (`{'memo_id': 'note-0003'}`), the plain forged block is still refused. Run 2026-10-16, after
   a security review found the bypass in the first form of the refusal.
-- M6 (A6) `path.unlink()` dropped from `AssistantMemos.forget`: "the forgotten memo's file is still
+- M6 (A6) `path.unlink()` dropped from `MemoFolder.delete` (`recall.lite.assistant_memos`): "the forgotten memo's file is still
   on disk".
 - M7 (A7) the RECALL_INDEX_ROOT containment check disabled: "DID NOT RAISE AssistantSurfaceError".
 """
