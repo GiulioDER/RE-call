@@ -207,7 +207,11 @@ def current_facts_memory(
         if served is None
         else ledger.current(tenant_id=store.tenant, now=instant, served=served)
     )
-    sources = live_sources(ledger.events, served)
+    # A fact's memos come from every live application of it, DUPLICATE ones included, so from the
+    # whole stream; it is read only when something is listed, and a ledger offering `current` alone
+    # names the memos of the applications it lists.
+    history = getattr(ledger, "events", None) if events else None
+    sources = live_sources(history if history is not None else events, served)
     standing, contested = split_contested(events)
     try:
         generation_id: str | None = store.generation_id
