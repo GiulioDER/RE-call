@@ -181,18 +181,26 @@ def card_liveness(served: ServedSources, names: frozenset[str]) -> Callable[[Evi
     verdict comes from, counting only memos the operator lets state facts (`ServedState`).
     """
     present = set(served(names)) if names else set()
-    hashes: Mapping[str, frozenset[str]] | None = None
     retired: frozenset[str] = frozenset()
-    admitted: frozenset[str] | None = None
     if isinstance(served, ServedState) and names:
-        hashes = served.content_hashes(names)
         retired = served.superseded(names)
-        admitted = served.stated_admitted(names)
+    # Asked only once a stated card needs them: on a PostgreSQL tenant holding applied facts
+    # alone, the content lookup is a scan of the served generation that nothing would use.
+    stated: list[tuple[Mapping[str, frozenset[str]] | None, frozenset[str] | None]] = []
+
+    def stated_view() -> tuple[Mapping[str, frozenset[str]] | None, frozenset[str] | None]:
+        if not stated:
+            if isinstance(served, ServedState) and names:
+                stated.append((served.content_hashes(names), served.stated_admitted(names)))
+            else:
+                stated.append((None, None))
+        return stated[0]
 
     def live(card: EvidenceCard) -> bool:
         if card.source not in present or card.source in retired:
             return False
         if card.trust_state == STATED_TRUST_STATE:
+            hashes, admitted = stated_view()
             if admitted is not None and card.source not in admitted:
                 return False
             if hashes is not None:

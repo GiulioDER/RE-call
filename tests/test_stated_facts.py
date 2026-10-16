@@ -626,10 +626,12 @@ def test_f4_a_memo_that_may_not_state_cannot_retire_a_fact(root: Path, store: Li
 def test_f5_a_postgres_store_gets_the_plain_served_lookup() -> None:
     """Node tests/test_stated_facts.py::test_f5_a_postgres_store_gets_the_plain_served_lookup.
 
-    Review Important 5, the "nothing moved" boundary: a store that is not lite gets PR 932's plain
-    served callable, so content hashes, memo-level supersession and stating admission cannot act on
-    PostgreSQL in this change. Red, mutation of `served_sources` (recall/fact_retraction.py):
-    return the ServedState for every store: fails on "a non-lite store got the lite served state".
+    Review Important 5, the boundary: a store that is neither lite nor PostgreSQL (a client's own
+    store) gets PR 932's plain served callable, so content hashes, memo-level supersession and
+    stating admission act only where a stating rule exists. (PR 934 drew this line at "not lite";
+    the PostgreSQL change moved it, and `tests/test_stated_facts_postgres.py` covers that side.)
+    Red, mutation of `served_sources` (recall/fact_retraction.py): return the ServedState for
+    every store: fails on "a non-lite store got the lite served state".
     """
     from recall.fact_retraction import served_sources
     from recall.provenance_controller import ServedState

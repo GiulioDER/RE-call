@@ -153,8 +153,9 @@ def served_sources(store: object) -> ServedSources | None:
             return names
 
     from recall.lite import LiteStore
+    from recall.store import PgVectorStore
 
-    if not isinstance(store, LiteStore):
+    if not isinstance(store, (LiteStore, PgVectorStore)):
         return served
     from recall.provenance_controller import ServedState
 

@@ -115,11 +115,17 @@ def stating_rule(
     roots: Sequence[Path] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> StatingRule | str:
-    """The rule for `store`, or the reason none of its memos states facts."""
-    from recall.lite import LiteStore
+    """The rule for `store`, or the reason none of its memos states facts.
 
-    if not isinstance(store, LiteStore):
-        return "stated facts are recorded on a lite store only, so far"
+    A lite store states, by default, from the folders its refresh follows. A PostgreSQL store
+    (generation or legacy) states only from the prefixes the operator names: a tenant there can
+    hold documents, so nothing states until somebody says which memos may.
+    """
+    from recall.lite import LiteStore
+    from recall.store import PgVectorStore
+
+    if not isinstance(store, (LiteStore, PgVectorStore)):
+        return "stated facts are recorded on a lite or PostgreSQL store only"
     values = os.environ if env is None else env
     raw = values.get(STATED_FACT_SOURCES_ENV, "").strip()
     if raw.lower() == "none":
@@ -132,6 +138,8 @@ def stating_rule(
         ))
         if prefixes:
             return StatingRule(prefixes=prefixes, tenant=store.tenant)
+    if not isinstance(store, LiteStore):
+        return f"{STATED_FACT_SOURCES_ENV} is unset, and a PostgreSQL tenant states nothing by default"
     if roots is None:
         from recall.lite.refresh import read_state
 
@@ -315,9 +323,24 @@ def reconcile_stated_facts(
         return StatedFactsReport(True, f"{type(exc).__name__}: {exc}", facts_stated=-1)
 
 
+def _fact_stores(store: Any) -> tuple[Any, Any]:
+    """The ledger and card store `recall_apply_fact` uses for `store`: a lite file's own, or
+    PostgreSQL's, whose ledger is written through the controller role (`fact_ledger_for`)."""
+    from recall.lite import LiteStore
+
+    if isinstance(store, LiteStore):
+        from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
+
+        return LiteFactLedger(store), LiteEvidenceCardStore(store)
+    from recall.fact_retraction import fact_ledger_for
+    from recall.provenance_cards import PostgresEvidenceCardStore
+
+    return fact_ledger_for(store), PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant)
+
+
 def _reconcile(store: Any, rule: StatingRule) -> StatedFactsReport:
-    from recall.fact_retraction import served_sources
-    from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
+    from recall.fact_retraction import FACT_WRITE_DSN_ENV, served_sources
+    from recall.lite import LiteStore
 
     report = StatedFactsReport(True, "")
     memos = _admitted_memos(store, rule)
@@ -351,13 +374,12 @@ def _reconcile(store: Any, rule: StatingRule) -> StatedFactsReport:
             continue
         cards.append(card)
         pending.extend(requests)
-    ledger = LiteFactLedger(store)
+    ledger, card_store = _fact_stores(store)
     known = {event.request_id for event in ledger.events}
     todo = [item for item in pending if item[2] not in known]
     if not todo:
         report.reason = "every stated fact is already recorded"
         return report
-    card_store = LiteEvidenceCardStore(store)
     card_store.put(cards)
     controller = ProvenanceController(
         tenant_id=store.tenant,
@@ -376,9 +398,13 @@ def _reconcile(store: Any, rule: StatingRule) -> StatedFactsReport:
         else:
             report.facts_stated = -1
             report.reason = f"{decision.code} {decision.detail}".strip()
+            hint = "" if isinstance(store, LiteStore) else (
+                f"; on PostgreSQL the ledger is appended through the controller role, so set "
+                f"{FACT_WRITE_DSN_ENV} to its DSN"
+            )
             _log.warning(
-                "recording stated facts for tenant %r failed: %s; nothing more was recorded",
-                store.tenant, report.reason,
+                "recording stated facts for tenant %r failed: %s; nothing more was recorded%s",
+                store.tenant, report.reason, hint,
             )
             return report
     report.reason = f"recorded {len(todo)} statement(s)"
