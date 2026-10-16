@@ -63,6 +63,10 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_forget",
         "recall_inventory",
         "recall_stats",
+        # The assistant surface (`recall_mcp.assistant`): registered only on a lite server whose
+        # RECALL_ASSISTANT_MEMOS names a memo folder, so `all` adds nothing anywhere else.
+        "recall_remember",
+        "recall_forget_memo",
     }
 )
 
@@ -78,6 +82,18 @@ TOOL_PRESETS: Mapping[str, frozenset[str]] = {
             "recall_related",
             "recall_current_state",
             "recall_stats",
+        }
+    ),
+    # Exactly the tools an assistant on the assistant surface uses, and no others. Its two write
+    # tools need RECALL_ASSISTANT_MEMOS; without it this serves the four read and fact tools.
+    "assistant": frozenset(
+        {
+            "recall_search",
+            "recall_evidence",
+            "recall_apply_fact",
+            "recall_current_facts",
+            "recall_remember",
+            "recall_forget_memo",
         }
     ),
 }
