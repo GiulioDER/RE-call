@@ -187,15 +187,23 @@ def served_sources(store: object) -> ServedSources | None:
     def superseded(names: frozenset[str]) -> frozenset[str]:
         """Names a served memo the operator admits supersedes. A memo that may not state facts
         (an upload, a file outside the prefixes) cannot retire another memo's facts either, and an
-        ambiguous reference retires nothing; search's own verdicts are not changed by either."""
+        ambiguous reference retires nothing; search's own verdicts are not changed by either.
+
+        Every claimant of a target counts, not the edge map's last-row winner: otherwise an upload
+        sorting after an admitted claimant would displace it and keep the old value current.
+        """
         try:
-            edges, _unresolved, _candidates = store.supersession_all()
-            targets = {name: edges[name] for name in names if name in edges}
-            claimants = stated_admitted(frozenset(targets.values()))
+            edges, _unresolved, candidates = store.supersession_all()
+            claims = {
+                name: {claimant for claimant, _when in candidates.get(name, ())} | {edges[name]}
+                for name in names
+                if name in edges
+            }
+            admitted = stated_admitted(frozenset(c for group in claims.values() for c in group))
         except Exception:  # BROAD-CATCH: fail-open  # no memo's facts are retired
             _log.exception("supersession lookup failed; retiring no memo's facts")
             return frozenset()
-        return frozenset(name for name, claimant in targets.items() if claimant in claimants)
+        return frozenset(name for name, group in claims.items() if group & admitted)
 
     return ServedState(
         served, content_hashes=content_hashes, superseded=superseded, stated_admitted=stated_admitted
