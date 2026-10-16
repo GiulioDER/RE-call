@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 
 from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
 from recall.db_constants import DEFAULT_TABLE
+from recall import eval_clock
 from recall.errors import RecallError
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope, group_expression
 from recall.supersession import EdgeCandidates, chunk_supersedes_targets, resolve_supersession_candidates
@@ -108,7 +109,8 @@ def lite_dsn_path(dsn: str) -> Path:
 
 
 def _now() -> str:
-    return datetime.now(UTC).strftime(_TIME_FORMAT)
+    # The evaluation clock (`recall.eval_clock`), when a lite server runs under one; else the wall.
+    return (eval_clock.now() or datetime.now(UTC)).strftime(_TIME_FORMAT)
 
 
 def _parse_time(value: str | None) -> datetime | None:

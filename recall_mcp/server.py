@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Literal, Protocol, TypeVar, cast
+from typing import Annotated, Any, Literal, Protocol, TypeVar, cast
 from urllib.parse import urlsplit
 
 import anyio.to_thread
@@ -21,9 +21,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pydantic import AnyHttpUrl
+from pydantic.json_schema import WithJsonSchema
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from recall import eval_clock
 from recall.calibration import load_for as calibration_load_for
 from recall.answer_provider import resolve_answer_profile, resolve_answer_provider
 from recall.proof_obligations import ProofProvider, ProofRun, RepairRequest, run_proof_obligations
@@ -46,6 +48,16 @@ from recall.backends import is_lite_dsn, lite_route_refusal, open_legacy_store
 from recall.lite import LiteStore, LiteWriterBusy
 from recall.lite.refresh import read_state as read_refresh_state, refresh_access_context
 from recall_mcp.lite_refresh import LiteAutoRefresher
+from recall_mcp.assistant import (
+    ASSISTANT_TOOLS,
+    FORGET_DESCRIPTION,
+    REMEMBER_DESCRIPTION,
+    STATED_FACT_SCHEMA,
+    AssistantMemos,
+    assistant_memos_from_env,
+    dumps as assistant_dumps,
+    memo_ref,
+)
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
@@ -876,6 +888,7 @@ def _make_lifespan(
         source_policy = load_source_policy(runtime_env)
         settings_token = None
         lite_refresher: LiteAutoRefresher | None = None
+        clock_installed = False
         pool_size = runtime_settings.pool_size
         connection_budget = runtime_settings.connection_budget
         max_tenants = runtime_settings.max_tenants
@@ -954,6 +967,12 @@ def _make_lifespan(
                     )
                 if lite_refusal is not None:
                     raise RuntimeError(lite_refusal)
+            # An evaluation clock (`recall.eval_clock`): lite only, read before anything is
+            # written, so no row of this run carries the wall clock's time.
+            clock = eval_clock.from_env(runtime_env, lite=lite)
+            if clock is not None:
+                eval_clock.install(clock)
+                clock_installed = True
             # Inspect migration state before PgVectorStore prepares a pgvector codec. On a fresh
             # database the extension deliberately does not exist yet; reporting "migrations
             # pending" is more useful than leaking the driver's missing-type error. This path is
@@ -1208,6 +1227,9 @@ def _make_lifespan(
                 registry.close()
             if health is not None:
                 health.mark_stopped()
+            if clock_installed:
+                # Last: a refresh finishing during shutdown still writes the evaluation time.
+                eval_clock.uninstall()
             if settings_token is not None:
                 reset_runtime_settings(settings_token)
 
@@ -1371,6 +1393,8 @@ class _ToolDeps:
     current_tenant: Callable[[dict], str | None]
     access_context: Callable[..., AccessContext | None]
     answer_backend_configured: bool
+    #: The assistant surface (`recall_mcp.assistant`), when RECALL_ASSISTANT_MEMOS turns it on.
+    assistant: AssistantMemos | None = None
 
 
 def _answer_backend_configured(env: Mapping[str, str] | None = None) -> bool:
@@ -2951,6 +2975,212 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         return await _to_thread(stats)
 
 
+#: The tools the assistant surface serves in their compact form (`recall_mcp.assistant`).
+_ASSISTANT_VIEWS: frozenset[str] = frozenset(
+    {"recall_search", "recall_evidence", "recall_current_facts", "recall_apply_fact"}
+)
+
+
+class _HeldTools:
+    """Holds the named `@mcp.tool(...)` declarations back instead of registering them.
+
+    The assistant surface serves four existing tools in another form. Holding their declarations
+    keeps the registration functions untouched (a held tool's body stays callable, and what is not
+    held passes straight through), and `register` publishes the replacement under the held
+    declaration's annotations and description, so only the parameters and the answer change.
+    """
+
+    def __init__(self, mcp: MCPServer, names: frozenset[str]) -> None:
+        self._mcp = mcp
+        self._names = names
+        self.held: dict[str, tuple[dict[str, Any], Callable[..., Any]]] = {}
+
+    def tool(self, *args: Any, **kwargs: Any) -> Callable[[Any], Any]:
+        name = kwargs.get("name")
+        if name not in self._names:
+            return self._mcp.tool(*args, **kwargs)
+
+        def hold(fn: Any) -> Any:
+            self.held[name] = (kwargs, fn)
+            return fn
+
+        return hold
+
+    def register(self, name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+        kwargs, declared = self.held[name]
+        description = kwargs.get("description") or declared.__doc__
+        return self._mcp.tool(**{**kwargs, "description": description})(fn)
+
+    def __getattr__(self, item: str) -> Any:
+        if item == "_mcp":
+            raise AttributeError("_HeldTools._mcp is unset; __init__ did not complete")
+        return getattr(self._mcp, item)
+
+
+def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools) -> None:
+    """The assistant surface: `recall_remember`, `recall_forget_memo`, and the compact forms.
+
+    Registered only when RECALL_ASSISTANT_MEMOS names a memo folder on a lite store
+    (`recall_mcp.assistant`). The compact `recall_search` and `recall_evidence` offer only the
+    parameters an assistant uses; `recall_current_facts` and `recall_apply_fact` keep theirs. All
+    six answer in `assistant_dumps` form, and their descriptions are the held declarations'.
+    """
+    assistant = deps.assistant
+    if assistant is None:
+        return
+    _require = deps.require
+    _state = deps.state
+    _access_context = deps.access_context
+
+    def _policy(state: dict, store: PgVectorStore) -> dict[str, Any]:
+        # The source policy, with the context the server's own refresh uses (CCA SEC-001).
+        policy = state.get("source_security_policy")
+        context = None if policy is None else refresh_access_context(str(getattr(store, "tenant", "")))
+        return {"security_policy": policy, "security_context": context}
+
+    @mcp.tool(
+        name="recall_remember",
+        description=REMEMBER_DESCRIPTION,
+        annotations=ToolAnnotations(
+            title="Remember one fact",
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_remember(
+        text: str,
+        ctx: Context[dict, object],
+        kind: str = "note",
+        valid_from: str = "",
+        valid_until: str = "",
+        supersedes: str = "",
+        fact: Annotated[dict[str, Any] | None, WithJsonSchema(STATED_FACT_SCHEMA)] = None,
+    ) -> str:
+        state = _state(ctx)
+        store = await _require(SCOPE_WRITE, ctx)
+        with METRICS.timer("recall_tool_latency_ms", tool="remember"):
+            result = await _to_thread(
+                lambda: assistant.remember(
+                    cast(LiteStore, store),
+                    state["embedder"],
+                    text,
+                    kind or "note",
+                    valid_from or None,
+                    valid_until or None,
+                    memo_ref(supersedes),
+                    fact or None,
+                    **_policy(state, store),
+                )
+            )
+        return assistant_dumps(result)
+
+    @mcp.tool(
+        name="recall_forget_memo",
+        description=FORGET_DESCRIPTION,
+        annotations=ToolAnnotations(
+            title="Forget one memo",
+            read_only_hint=False,
+            destructive_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_forget_memo(memo_id: str, ctx: Context[dict, object]) -> str:
+        # `_require`, not `_require_mutation`: the difference is idempotency keys, which a lite
+        # server (one local client over stdio) never receives, and the tool offers none.
+        state = _state(ctx)
+        store = await _require(SCOPE_FORGET, ctx)
+        refresh = _policy(state, store)
+        with METRICS.timer("recall_tool_latency_ms", tool="forget_memo"):
+            result = await _to_thread(
+                lambda: assistant.forget(
+                    cast(LiteStore, store),
+                    state["embedder"],
+                    memo_ref(memo_id) or "",
+                    security_policy=refresh["security_policy"],
+                    # The caller's context for the erasure, as `recall_forget` passes it.
+                    security_context=_access_context(state, store),
+                    refresh_context=refresh["security_context"],
+                )
+            )
+        return assistant_dumps(result)
+
+    _register_assistant_views(held, deps, assistant)
+
+
+def _register_assistant_views(held: _HeldTools, deps: _ToolDeps, assistant: AssistantMemos) -> None:
+    """The four existing tools in compact form, each a projection of the held tool's own answer."""
+    _require = deps.require
+
+    if "recall_search" in held.held:
+        full_search = held.held["recall_search"][1]
+
+        async def recall_search(query: str, ctx: Context[dict, object], k: int = 5) -> str:
+            full = await full_search(query, ctx, k=k)
+            return assistant_dumps(assistant.render_search(json.loads(full)))
+
+        held.register("recall_search", recall_search)
+
+    if "recall_evidence" in held.held:
+        full_evidence = held.held["recall_evidence"][1]
+
+        async def recall_evidence(
+            query: str,
+            ctx: Context[dict, object],
+            k: int | None = None,
+            max_items: int | None = None,
+        ) -> str:
+            full = await full_evidence(query, ctx, k=k, max_items=max_items)
+            return assistant_dumps(assistant.render_evidence(json.loads(full)))
+
+        held.register("recall_evidence", recall_evidence)
+
+    if "recall_current_facts" in held.held:
+
+        async def recall_current_facts(ctx: Context[dict, object], as_of: str | None = None) -> str:
+            # From the library, not the held tool's text: that one sorts every key, nested facts
+            # included, and the compact form keeps the order the ledger writes.
+            store = await _require(SCOPE_READ, ctx)
+            instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
+            result = await _to_thread(lambda: current_facts_memory(store, as_of=instant))
+            return assistant_dumps(assistant.render_current_facts(result))
+
+        held.register("recall_current_facts", recall_current_facts)
+
+    if "recall_apply_fact" in held.held:
+        full_apply = held.held["recall_apply_fact"][1]
+
+        async def recall_apply_fact(
+            namespace: str,
+            subject: str,
+            predicate: str,
+            object: object,
+            evidence_card_ids: list[str],
+            request_id: str,
+            ctx: Context[dict, object],
+            context: dict[str, object] | None = None,
+            valid_from: str | None = None,
+            valid_until: str | None = None,
+        ) -> str:
+            full = await full_apply(
+                namespace=namespace,
+                subject=subject,
+                predicate=predicate,
+                object=object,
+                evidence_card_ids=evidence_card_ids,
+                request_id=request_id,
+                ctx=ctx,
+                context=context,
+                valid_from=valid_from,
+                valid_until=valid_until,
+            )
+            return assistant_dumps(assistant.render_apply_fact(json.loads(full)))
+
+        held.register("recall_apply_fact", recall_apply_fact)
+
+
 def build_server(settings: Settings | None = None) -> MCPServer:
     """Construct the recall_mcp MCP server with its tools registered."""
     runtime_settings = settings if settings is not None else bootstrap_settings()
@@ -2960,6 +3190,8 @@ def build_server(settings: Settings | None = None) -> MCPServer:
             "Uncalibrated and unbound corpora will be served instead of refused. Local work only."
         )
     runtime_env = dict(runtime_settings.env)
+    # Before anything is built: a half-configured assistant surface refuses to start.
+    assistant = assistant_memos_from_env(runtime_env, lite=is_lite_dsn(runtime_settings.serving_dsn))
     verifier, auth_settings, token_registry = build_auth(
         runtime_settings.transport, env=runtime_env
     )
@@ -3179,17 +3411,25 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         current_tenant=_current_tenant,
         access_context=_access_context,
         answer_backend_configured=_answer_backend_configured(runtime_env),
+        assistant=assistant,
     )
     surface = resolve_tool_surface(runtime_env)
     if is_lite_dsn(runtime_settings.serving_dsn):
         surface = surface - LITE_UNSERVED_TOOLS
+    if assistant is None:
+        surface = surface - ASSISTANT_TOOLS
     registrar = cast(MCPServer, FilteredToolRegistrar(mcp, surface))
-    _register_search_tools(registrar, deps)
-    _register_fact_tools(registrar, deps)
-    _register_reasoning_tools(registrar, deps)
-    _register_ingest_tools(registrar, deps)
-    _register_calibration_tools(registrar, deps)
-    _register_memory_admin_tools(registrar, deps)
+    # With the assistant surface on, four tools are registered in their compact form by
+    # `_register_assistant_tools`, which reuses the held declarations' annotations and descriptions.
+    held = _HeldTools(registrar, _ASSISTANT_VIEWS if assistant is not None else frozenset())
+    tools = cast(MCPServer, held)
+    _register_search_tools(tools, deps)
+    _register_fact_tools(tools, deps)
+    _register_reasoning_tools(tools, deps)
+    _register_ingest_tools(tools, deps)
+    _register_calibration_tools(tools, deps)
+    _register_memory_admin_tools(tools, deps)
+    _register_assistant_tools(registrar, deps, held)
     return mcp
 
 

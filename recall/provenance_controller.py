@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, cast
 
+from recall import eval_clock
 from recall.frontmatter import supersedes_key
 from recall.types import AtomicFact, EvidenceCard, Verdict
 
@@ -723,7 +724,8 @@ class ProvenanceController:
             raise ValueError("materialization_outbox requires a materializer")
         self.materialization_outbox = materialization_outbox
         self.fresh_search = fresh_search
-        self.now = now or (lambda: datetime.now(UTC))
+        # The evaluation clock (`recall.eval_clock`) when one is installed, else the wall clock.
+        self.now = now or (lambda: eval_clock.now() or datetime.now(UTC))
         self.writer = writer
 
     def _resolve(self, request: FactApplicationRequest) -> tuple[EvidenceCard, ...] | DecisionCode:
