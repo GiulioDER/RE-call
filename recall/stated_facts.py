@@ -61,6 +61,12 @@ def _under(path: Path, root: Path) -> bool:
     return path == root or path.is_relative_to(root)
 
 
+def _runs_through_uploads(parts: Sequence[str], tenant: str) -> bool:
+    """Whether a path passes through `uploads/<tenant>/`, where every `recall_ingest` upload is
+    staged below an index root (`recall.uploads._tenant_uploads_root`)."""
+    return any(parts[i] == "uploads" and parts[i + 1] == tenant for i in range(len(parts) - 1))
+
+
 @dataclass(frozen=True)
 class StatingRule:
     """Which memos may state facts: the operator's prefixes, else the folders a refresh follows.
@@ -69,24 +75,24 @@ class StatingRule:
     `memos` admits `memos/x.md` and not `memos2/x.md`. `roots` match its absolute source. An upload
     staged by `recall_ingest` never states, whatever either says: its text came from outside.
 
-    Uploads are recognised two ways, because neither alone survives every caller. `upload_name`
-    is the name an upload is stored under in a store keyed to RECALL_INDEX_ROOT
-    (`uploads/<tenant>/...`), which holds whatever environment the reconciling process has (a
-    person's `recall lite refresh` may have none). `uploads` are the absolute upload folders under
-    every RECALL_INDEX_ROOT in sight, the caller's and the process's, for names that are not
-    key-rooted.
+    An upload is recognised by where it is staged, structurally: a memo whose stored name or
+    absolute source runs through `uploads/<tenant>/` is one. The test needs no environment on
+    purpose. The first version derived the uploads folder from RECALL_INDEX_ROOT, and a refresh run
+    without the server's environment, or a caller passing an env of its own, did not recognise it,
+    so an upload's facts became current (security review, 2026-10-15). A memo folder a person
+    happens to keep at `uploads/<tenant>/` is treated as uploads too: it fails closed.
     """
 
     prefixes: tuple[str, ...] = ()
     roots: tuple[Path, ...] = ()
-    uploads: tuple[Path, ...] = ()
-    upload_name: str | None = None
+    tenant: str | None = None
 
     def admits(self, name: str, source: str) -> bool:
         path = Path(source)
-        if self.upload_name is not None and name.startswith(self.upload_name):
-            return False
-        if any(_under(path, folder) for folder in self.uploads):
+        if self.tenant is not None and (
+            _runs_through_uploads(Path(name).parts, self.tenant)
+            or _runs_through_uploads(path.parts, self.tenant)
+        ):
             return False
         if self.prefixes:
             return any(name == prefix or name.startswith(prefix + "/") for prefix in self.prefixes)
@@ -101,7 +107,6 @@ def stating_rule(
 ) -> StatingRule | str:
     """The rule for `store`, or the reason none of its memos states facts."""
     from recall.lite import LiteStore
-    from recall.uploads import _tenant_uploads_root
 
     if not isinstance(store, LiteStore):
         return "stated facts are recorded on a lite store only, so far"
@@ -109,14 +114,6 @@ def stating_rule(
     raw = values.get(STATED_FACT_SOURCES_ENV, "").strip()
     if raw.lower() == "none":
         return f"{STATED_FACT_SOURCES_ENV}=none"
-    # The caller's RECALL_INDEX_ROOT and the process's: `recall_index` passes a runtime env the
-    # process may not share, and reading only one of them let an upload state facts.
-    index_roots = (values.get("RECALL_INDEX_ROOT", "").strip(), os.environ.get("RECALL_INDEX_ROOT", "").strip())
-    uploads = tuple(dict.fromkeys(
-        [*(Path(value).resolve() / "uploads" / store.tenant for value in index_roots if value),
-         _tenant_uploads_root(store.tenant)]
-    ))
-    upload_name = f"uploads/{store.tenant}/"
     if raw:
         prefixes = tuple(dict.fromkeys(
             part.replace("\\", "/").strip("/")
@@ -124,16 +121,14 @@ def stating_rule(
             if part.replace("\\", "/").strip("/")
         ))
         if prefixes:
-            return StatingRule(prefixes=prefixes, uploads=uploads, upload_name=upload_name)
+            return StatingRule(prefixes=prefixes, tenant=store.tenant)
     if roots is None:
         from recall.lite.refresh import read_state
 
         roots = [Path(str(root)) for root in read_state(store.path).get("roots") or ()]
     if not roots:
         return f"no memo folder is refreshed and {STATED_FACT_SOURCES_ENV} is unset"
-    return StatingRule(
-        roots=tuple(Path(root).resolve() for root in roots), uploads=uploads, upload_name=upload_name
-    )
+    return StatingRule(roots=tuple(Path(root).resolve() for root in roots), tenant=store.tenant)
 
 
 def memo_facts(chunk: Chunk) -> tuple[tuple[AtomicFact, ...], int]:

@@ -264,6 +264,9 @@ class RefreshReport:
     chunks_total: int = 0
     calibration: str = ""
     calibration_reason: str = ""
+    facts_stated: int = 0
+    facts_malformed: int = 0
+    stated: str = ""
     holder: dict[str, object] | None = None
     started_utc: str = ""
     finished_utc: str = ""
@@ -284,6 +287,8 @@ class RefreshReport:
                 lines.append(f"denied       {self.denied} file(s) refused by the source policy, not indexed")
         if self.calibration:
             lines.append(f"calibration  {self.calibration}: {self.calibration_reason}")
+        if self.stated:
+            lines.append(self.stated)
         return "\n".join(lines)
 
 
@@ -508,6 +513,14 @@ def _refresh_locked(
         with suppress(Exception):
             report.chunks_total = store.count()
         return _finish(db, roots, report, key_root=key_root)
+    # The facts the refreshed memos state about themselves, recorded once each; never raises
+    # (`recall.stated_facts`). Ledger writes do not move `_version()`, so this cannot re-trigger a
+    # refresh.
+    from recall.stated_facts import reconcile_stated_facts
+
+    stated = reconcile_stated_facts(store, roots=roots)
+    report.facts_stated, report.facts_malformed = stated.facts_stated, stated.facts_malformed
+    report.stated = stated.render()
     report.outcome = Outcome.REFRESHED
     report.reason = f"{current.count} file(s) checked in {time.monotonic() - started:.1f}s"
     report.calibration, report.calibration_reason = calibration.status.value, calibration.reason
