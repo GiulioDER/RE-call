@@ -3019,6 +3019,7 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
         return
     _require = deps.require
     _state = deps.state
+    _access_context = deps.access_context
 
     def _policy(state: dict, store: PgVectorStore) -> dict[str, Any]:
         # The source policy, with the context the server's own refresh uses (CCA SEC-001).
@@ -3076,12 +3077,21 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
         ),
     )
     async def recall_forget_memo(memo_id: str, ctx: Context[dict, object]) -> str:
+        # `_require`, not `_require_mutation`: the difference is idempotency keys, which a lite
+        # server (one local client over stdio) never receives, and the tool offers none.
         state = _state(ctx)
         store = await _require(SCOPE_FORGET, ctx)
+        refresh = _policy(state, store)
         with METRICS.timer("recall_tool_latency_ms", tool="forget_memo"):
             result = await _to_thread(
                 lambda: assistant.forget(
-                    cast(LiteStore, store), state["embedder"], memo_ref(memo_id) or "", **_policy(state, store)
+                    cast(LiteStore, store),
+                    state["embedder"],
+                    memo_ref(memo_id) or "",
+                    security_policy=refresh["security_policy"],
+                    # The caller's context for the erasure, as `recall_forget` passes it.
+                    security_context=_access_context(state, store),
+                    refresh_context=refresh["security_context"],
                 )
             )
         return assistant_dumps(result)
