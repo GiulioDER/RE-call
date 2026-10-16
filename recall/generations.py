@@ -1784,7 +1784,10 @@ class GenerationManager:
         from recall.generation_store import GenerationStore
         from recall.stated_facts import reconcile_stated_facts
 
-        with GenerationStore(self._dsn, 1, tenant=self.tenant_id) as store:
+        # Kept in its own name rather than `with ... as`: the inherited `__enter__` answers a plain
+        # PgVectorStore, which has no `set_fixed_generation`.
+        store = GenerationStore(self._dsn, 1, tenant=self.tenant_id)
+        with store:
             store.set_fixed_generation(generation_id)
             report = reconcile_stated_facts(store, env=env)
         return report.facts_stated if report.enabled else 0
