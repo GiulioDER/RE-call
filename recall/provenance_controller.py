@@ -1229,8 +1229,8 @@ class ProvenanceController:
             "now": self.now(),
             "stated": True,
         }
-        if self.served_sources is not None:
-            assertion["served"] = self.served_sources
+        # No served lookup: a stated assertion ignores the absence set it would feed, and on
+        # PostgreSQL that lookup is a scan of the served generation per fact.
         try:
             result = self.ledger.apply_assertion(**assertion)
         except ValueError as exc:

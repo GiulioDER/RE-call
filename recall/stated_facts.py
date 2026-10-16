@@ -13,8 +13,9 @@ an absence and a disagreement are states that reverse with the store's content; 
 gc retract.
 
 Who may state facts is the operator's decision, by location, never the memo's (`StatingRule`):
-the memo is written by whoever's trust is in question. Lite stores only, so far; PostgreSQL
-follows in a later change. Design: recall-lab
+the memo is written by whoever's trust is in question. On PostgreSQL stating is opt-in: a
+promote, a rollback and an index of the legacy table record facts only where the operator names
+places (`GenerationManager.record_stated_facts`). Design: recall-lab
 `research/designs/2026-10-15-stated-facts-reach-the-ledger.md`.
 """
 
@@ -26,6 +27,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from recall.evidence import _evidence_links
 from recall.frontmatter import GRAPH_KEY, validity_bounds
@@ -54,13 +56,27 @@ __all__ = [
 
 _log = get_logger("stated_facts")
 
-#: Root-relative prefixes whose memos may state facts, comma or space separated; `none` turns
-#: stating off. Unset, a lite store states from the folders its refresh follows.
+#: Where memos may state facts, comma or space separated; `none` turns stating off. On a lite store
+#: a prefix names a stored, root-relative name; on PostgreSQL it names a place: a URI, an absolute
+#: path, or a path under RECALL_INDEX_ROOT. Unset, a lite store states from the folders its
+#: refresh follows and PostgreSQL states nothing.
 STATED_FACT_SOURCES_ENV = "RECALL_STATED_FACT_SOURCES"
 
 
 def _under(path: Path, root: Path) -> bool:
     return path == root or path.is_relative_to(root)
+
+
+def _location(source: str) -> str:
+    """Where a source is, as one comparable string: a file's absolute POSIX path (a `file://` URI
+    unquoted to its path), any other URI as `scheme://netloc/path` with its path unquoted."""
+    if "://" not in source:
+        return Path(source).as_posix()
+    parts = urlsplit(source)
+    path = unquote(parts.path)
+    if parts.scheme == "file":
+        return path
+    return f"{parts.scheme}://{parts.netloc}{path}"
 
 
 def _runs_through_uploads(parts: Sequence[str], tenant: str) -> bool:
@@ -81,12 +97,16 @@ def _runs_through_uploads(parts: Sequence[str], tenant: str) -> bool:
 class StatingRule:
     """Which memos may state facts: the operator's prefixes, else the folders a refresh follows.
 
-    `prefixes` match a memo's stored name (`metadata.file`, root-relative) on a path boundary, so
-    `memos` admits `memos/x.md` and not `memos2/x.md`. `roots` match its absolute source. An upload
-    staged by `recall_ingest` never states, whatever either says: its text came from outside.
+    On a lite store `prefixes` match a memo's stored name (`metadata.file`, relative to the store's
+    key root) on a path boundary, so `memos` admits `memos/x.md` and not `memos2/x.md`. On
+    PostgreSQL (`by_source`) they match the memo's SOURCE, its absolute location: a stored name
+    there is relative to whatever path a caller indexed, or to a manifest's common directory, so
+    the same prefix would admit different folders depending on how a memo arrived (review of PR B,
+    2026-10-16). `roots` match the absolute source too. An upload staged by `recall_ingest` never
+    states, whatever any of them says: its text came from outside.
 
     An upload is recognised by where it is staged, structurally: a memo whose stored name or
-    absolute source runs through `uploads/<tenant>/` is one. The test needs no environment on
+    unquoted source runs through `uploads/<tenant>/` is one. The test needs no environment on
     purpose. The first version derived the uploads folder from RECALL_INDEX_ROOT, and a refresh run
     without the server's environment, or a caller passing an env of its own, did not recognise it,
     so an upload's facts became current (security review, 2026-10-15). A memo folder a person
@@ -96,17 +116,35 @@ class StatingRule:
     prefixes: tuple[str, ...] = ()
     roots: tuple[Path, ...] = ()
     tenant: str | None = None
+    by_source: bool = False
 
     def admits(self, name: str, source: str) -> bool:
-        path = Path(source)
+        location = _location(source)
         if self.tenant is not None and (
             _runs_through_uploads(Path(name).parts, self.tenant)
-            or _runs_through_uploads(path.parts, self.tenant)
+            or _runs_through_uploads(Path(location).parts, self.tenant)
         ):
             return False
+        if self.by_source:
+            return any(location == prefix or location.startswith(prefix + "/") for prefix in self.prefixes)
         if self.prefixes:
             return any(name == prefix or name.startswith(prefix + "/") for prefix in self.prefixes)
-        return any(_under(path, root) for root in self.roots)
+        return any(_under(Path(location), root) for root in self.roots)
+
+
+def _source_prefixes(parts: Sequence[str], values: Mapping[str, str]) -> tuple[str, ...]:
+    """PostgreSQL prefixes as locations. A relative one is resolved under RECALL_INDEX_ROOT and
+    dropped when that is unset: a relative place with no root names nothing, so it admits nothing."""
+    index_root = values.get("RECALL_INDEX_ROOT", "").strip()
+    resolved: list[str] = []
+    for part in parts:
+        if "://" in part:
+            resolved.append(_location(part).rstrip("/"))
+        elif Path(part).is_absolute():
+            resolved.append(Path(part).resolve().as_posix().rstrip("/"))
+        elif index_root:
+            resolved.append((Path(index_root).resolve() / part.replace("\\", "/").strip("/")).as_posix())
+    return tuple(dict.fromkeys(prefix for prefix in resolved if prefix))
 
 
 def stating_rule(
@@ -118,7 +156,7 @@ def stating_rule(
     """The rule for `store`, or the reason none of its memos states facts.
 
     A lite store states, by default, from the folders its refresh follows. A PostgreSQL store
-    (generation or legacy) states only from the prefixes the operator names: a tenant there can
+    (generation or legacy) states only from the places the operator names: a tenant there can
     hold documents, so nothing states until somebody says which memos may.
     """
     from recall.lite import LiteStore
@@ -130,16 +168,23 @@ def stating_rule(
     raw = values.get(STATED_FACT_SOURCES_ENV, "").strip()
     if raw.lower() == "none":
         return f"{STATED_FACT_SOURCES_ENV}=none"
-    if raw:
+    parts = [part for part in raw.replace(",", " ").split() if part.strip("/\\")]
+    if not isinstance(store, LiteStore):
+        if not parts:
+            return f"{STATED_FACT_SOURCES_ENV} is unset, and a PostgreSQL tenant states nothing by default"
+        located = _source_prefixes(parts, values)
+        if not located:
+            return (
+                f"{STATED_FACT_SOURCES_ENV} names no place on PostgreSQL: give URIs, absolute paths, "
+                "or paths under RECALL_INDEX_ROOT"
+            )
+        return StatingRule(prefixes=located, tenant=store.tenant, by_source=True)
+    if parts:
         prefixes = tuple(dict.fromkeys(
-            part.replace("\\", "/").strip("/")
-            for part in raw.replace(",", " ").split()
-            if part.replace("\\", "/").strip("/")
+            part.replace("\\", "/").strip("/") for part in parts if part.replace("\\", "/").strip("/")
         ))
         if prefixes:
             return StatingRule(prefixes=prefixes, tenant=store.tenant)
-    if not isinstance(store, LiteStore):
-        return f"{STATED_FACT_SOURCES_ENV} is unset, and a PostgreSQL tenant states nothing by default"
     if roots is None:
         from recall.lite.refresh import read_state
 
@@ -308,14 +353,21 @@ def reconcile_stated_facts(
     *,
     roots: Sequence[Path] | None = None,
     env: Mapping[str, str] | None = None,
+    write_env: Mapping[str, str] | None = None,
 ) -> StatedFactsReport:
     """Record, once, every fact an admitted memo of `store` states. Never raises: the write that
-    called it has already succeeded, and a failure is reported in the result instead."""
+    called it has already succeeded, and a failure is reported in the result instead.
+
+    `env` is where the stating rule is read, and it should be the process environment, because the
+    same rule is applied again whenever facts are read. `write_env` is where the controller role's
+    RECALL_FACT_WRITE_DSN is read, which an MCP entry point passes as its runtime environment
+    (secrets included), the way `recall_apply_fact` and forget resolve it.
+    """
     try:
         rule = stating_rule(store, roots=roots, env=env)
         if isinstance(rule, str):
             return StatedFactsReport(False, rule)
-        return _reconcile(store, rule)
+        return _reconcile(store, rule, write_env)
     except Exception as exc:  # BROAD-CATCH: fail-open  # the index that called this succeeded
         _log.warning(
             "recording stated facts for tenant %r failed: %s", getattr(store, "tenant", "?"), exc
@@ -323,7 +375,7 @@ def reconcile_stated_facts(
         return StatedFactsReport(True, f"{type(exc).__name__}: {exc}", facts_stated=-1)
 
 
-def _fact_stores(store: Any) -> tuple[Any, Any]:
+def _fact_stores(store: Any, write_env: Mapping[str, str] | None = None) -> tuple[Any, Any]:
     """The ledger and card store `recall_apply_fact` uses for `store`: a lite file's own, or
     PostgreSQL's, whose ledger is written through the controller role (`fact_ledger_for`)."""
     from recall.lite import LiteStore
@@ -335,11 +387,43 @@ def _fact_stores(store: Any) -> tuple[Any, Any]:
     from recall.fact_retraction import fact_ledger_for
     from recall.provenance_cards import PostgresEvidenceCardStore
 
-    return fact_ledger_for(store), PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant)
+    return fact_ledger_for(store, write_env), PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant)
 
 
-def _reconcile(store: Any, rule: StatingRule) -> StatedFactsReport:
-    from recall.fact_retraction import FACT_WRITE_DSN_ENV, served_sources
+def _current_request_ids(events: Sequence[Any]) -> tuple[set[str], set[str]]:
+    """`(known, removed)`: the request ids the ledger holds, and those whose assertion gc retracted.
+
+    gc retracts, for good, a fact whose memos no generation holds (SOURCE_REMOVED, PR 933). The
+    same memo coming back byte for byte computes the same request id, which then counted as known,
+    so its facts never returned. A request whose assertion gc retracted is recorded again under a
+    derived id (`_next_request_id`). Forget's retraction (SOURCE_FORGOTTEN) stays final.
+    """
+    retraction_prefix = "retraction:"
+    removed_events = {
+        event.request_id[len(retraction_prefix):]
+        for event in events
+        if event.event_type == "retracted"
+        and event.decision_code == DecisionCode.SOURCE_REMOVED
+        and event.request_id.startswith(retraction_prefix)
+    }
+    known = {event.request_id for event in events}
+    removed = {
+        event.request_id for event in events
+        if event.event_type == "asserted" and event.event_id in removed_events
+    }
+    return known, removed
+
+
+def _next_request_id(request_id: str, removed: set[str]) -> str:
+    """The request id a statement records under now: its own, or, after each gc retraction, the
+    next derived one. Deterministic, so a re-run after a return records nothing twice."""
+    while request_id in removed:
+        request_id = "stated:" + hashlib.sha256(f"{request_id}\0again".encode()).hexdigest()[:32]
+    return request_id
+
+
+def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | None = None) -> StatedFactsReport:
+    from recall.fact_retraction import FACT_WRITE_DSN_ENV
     from recall.lite import LiteStore
 
     report = StatedFactsReport(True, "")
@@ -374,20 +458,26 @@ def _reconcile(store: Any, rule: StatingRule) -> StatedFactsReport:
             continue
         cards.append(card)
         pending.extend(requests)
-    ledger, card_store = _fact_stores(store)
-    known = {event.request_id for event in ledger.events}
-    todo = [item for item in pending if item[2] not in known]
+    ledger, card_store = _fact_stores(store, write_env)
+    known, removed = _current_request_ids(ledger.events)
+    todo = [
+        (fact, card, rid)
+        for fact, card, request_id in pending
+        if (rid := _next_request_id(request_id, removed)) not in known
+    ]
     if not todo:
         report.reason = "every stated fact is already recorded"
         return report
-    card_store.put(cards)
+    # Only the cards a new statement cites: a card's id includes its generation, so putting every
+    # admitted memo's card on each activation filled an append-only table with cards nothing cites.
+    cited = {card.card_id for _fact, card, _rid in todo}
+    card_store.put(card for card in cards if card.card_id in cited)
     controller = ProvenanceController(
         tenant_id=store.tenant,
         generation_id=generation_id,
         cards=card_store,
         ledger=ledger,
         writer=STATED_WRITER,
-        served_sources=served_sources(store),
     )
     for fact, card, request_id in todo:
         decision = controller.apply_stated(fact, card, request_id)
