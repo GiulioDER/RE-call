@@ -96,6 +96,18 @@ APPLY_FACT_FIELDS = (
 )
 
 
+def _opens_a_fence(text: str) -> bool:
+    """Whether the memo body written for `text` would open with a frontmatter fence.
+
+    It is the opening test of `recall.frontmatter.frontmatter_span` (any number of leading BOMs
+    removed, then whitespace, and the line must be exactly `---`), run on the first line exactly as
+    `write` puts it in the file. A lighter check such as `text.lstrip().startswith("---")` misses a
+    BOM before the fence, which the parser forgives and `str.strip` keeps.
+    """
+    first = text.strip().split("\n", 1)[0]
+    return first.lstrip("\ufeff").strip() == "---"
+
+
 class AssistantSurfaceError(ValueError, RecallError):
     """The assistant surface is configured in a way it cannot serve."""
 
@@ -183,7 +195,7 @@ class AssistantMemos:
         lane around this and the refresh after it (`remember` does), so two writers cannot take
         one id.
         """
-        if text.lstrip().startswith("---"):
+        if _opens_a_fence(text):
             # A memo written without frontmatter of its own would otherwise begin with the
             # caller's block, read as frontmatter: a `supersedes` the author check never saw, or a
             # `recall_graph` fact that was never validated.
@@ -278,10 +290,20 @@ class AssistantMemos:
         *,
         security_policy: Any = None,
         security_context: Any = None,
+        refresh_context: Any = None,
         **refresh_kwargs: Any,
     ) -> dict[str, Any]:
         """Forget one memo of the folder: its rows and facts first, then its file. {deleted: 0} for
         an id that names no memo here.
+
+        Any memo of the folder may be forgotten, not only one the assistant wrote: a person asking
+        their assistant to forget something they put there is the ordinary case, and the tool
+        reaches nothing outside the folder. Whether a forget SHOULD have happened (the person
+        asked, or a mail did) is the caller's judgement, as with `recall_forget`, whose scope this
+        tool needs.
+
+        `security_context` is the caller's, for `forget_memory`, as `recall_forget` passes it;
+        `refresh_context` is the one the follow-up refresh indexes under (defaults to the same).
 
         A forget that found no rows, or whose fact retraction failed, raises rather than delete
         the file: the value would stay served while the caller reads the memo as gone.
@@ -289,9 +311,12 @@ class AssistantMemos:
         from recall_mcp.lifecycle import forget_memory
 
         path = self.folder / f"{memo_id}.md"
-        if not MEMO_ID.match(memo_id) or not path.exists():
+        if not MEMO_ID.match(memo_id):
             return {"deleted": 0}
         with write_session(store, "forget"):
+            # Under the lane, so a concurrent forget of the same memo cannot pass the check too.
+            if not path.exists():
+                return {"deleted": 0}
             result = forget_memory(
                 store,  # type: ignore[arg-type]  # the shared lifecycle types the Postgres store
                 [str(path)],
@@ -302,7 +327,11 @@ class AssistantMemos:
                 raise RuntimeError(f"forget of {memo_id} incomplete: {result.message}")
             path.unlink()
             self.refresh(
-                store, embedder, security_policy=security_policy, security_context=security_context, **refresh_kwargs
+                store,
+                embedder,
+                security_policy=security_policy,
+                security_context=refresh_context if refresh_context is not None else security_context,
+                **refresh_kwargs,
             )
         return {"deleted": 1, "memo_id": memo_id, "facts_retracted": result.facts_retracted}
 
