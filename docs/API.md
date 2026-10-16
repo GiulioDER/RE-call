@@ -147,7 +147,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 |---|---|
 | `recall_search` | Search trusted memory. |
 | `recall_evidence` | Return evidence for a query. |
-| `recall_current_facts` | Read the current structured fact projection. Each fact names its memos in `sources`; values that disagree with no supersession between their memos are listed under `contested`. A lite store records the facts its memos state in `recall_graph` frontmatter whenever it indexes them, from the folders it refreshes, or the prefixes `RECALL_STATED_FACT_SOURCES` names (`none` turns it off); uploads never state. |
+| `recall_current_facts` | Read the current structured fact projection. Each fact names its memos in `sources`; values that disagree with no supersession between their memos are listed under `contested`. A lite store records the facts its memos state in `recall_graph` frontmatter whenever it indexes them, from the folders it refreshes, or the prefixes `RECALL_STATED_FACT_SOURCES` names (`none` turns it off). A PostgreSQL tenant records them only for the prefixes that variable names, when a generation is promoted or rolled back and when the legacy table is indexed. Uploads never state. |
 | `recall_apply_fact` | Apply a reviewed structured fact through the provenance controller. |
 | `recall_related` | Retrieve independently trusted structural related evidence. |
 | `recall_current_state` | Inspect a deterministic authored current state projection. |

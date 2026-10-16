@@ -10,7 +10,7 @@ from. Two things take a memo away, and they are treated differently on purpose:
   STATE. A rollback, a restored file or a repaired sync brings it back, so nothing is written: the
   projections hide a fact none of whose memos the store serves now (`served_sources`, rule in
   `recall.provenance_controller.absent_fact_ids`), and show it again when a memo returns. A lite
-  store also answers with which content each memo is served and which memos its supersession
+  or PostgreSQL store also answers with which content each memo is served and which memos its supersession
   graph retires (`recall.provenance_controller.ServedState`).
 """
 from __future__ import annotations
@@ -105,8 +105,10 @@ def prepare_retraction(
 
 
 def served_sources(store: object) -> ServedSources | None:
-    """The memo names `store` serves now, with their content and supersession on a lite store;
-    None without a lookup.
+    """The memo names `store` serves now, with their content, supersession and stating rule on a
+    lite or PostgreSQL store; None without a lookup. On a generation store the content is the
+    SERVED generation's: `sources_for_identifiers` spans every generation, `source_raw_hashes` the
+    served one, so a stated card lives only while that generation holds the content it recorded.
 
     Fails open: when a lookup errors every name counts as served, unedited and unsuperseded, so an
     outage shows facts as the ledger alone would rather than hiding all of them.
@@ -123,8 +125,9 @@ def served_sources(store: object) -> ServedSources | None:
             return names
 
     from recall.lite import LiteStore
+    from recall.store import PgVectorStore
 
-    if not isinstance(store, LiteStore):
+    if not isinstance(store, (LiteStore, PgVectorStore)):
         return served
     from recall.provenance_controller import ServedState
 
