@@ -31,6 +31,7 @@ from recall.evidence import _evidence_links
 from recall.frontmatter import GRAPH_KEY, validity_bounds
 from recall.observability import get_logger
 from recall.provenance_controller import (
+    STATED_POLICY_VERSION,
     STATED_TRUST_STATE,
     STATED_WRITER,
     DecisionCode,
@@ -46,6 +47,7 @@ __all__ = [
     "memo_facts",
     "reconcile_stated_facts",
     "stated_card",
+    "stated_marker",
     "stated_request_id",
     "stating_rule",
 ]
@@ -63,8 +65,16 @@ def _under(path: Path, root: Path) -> bool:
 
 def _runs_through_uploads(parts: Sequence[str], tenant: str) -> bool:
     """Whether a path passes through `uploads/<tenant>/`, where every `recall_ingest` upload is
-    staged below an index root (`recall.uploads._tenant_uploads_root`)."""
-    return any(parts[i] == "uploads" and parts[i + 1] == tenant for i in range(len(parts) - 1))
+    staged below an index root (`recall.uploads._tenant_uploads_root`).
+
+    Compared without case: on a case-insensitive filesystem staging writes into an `Uploads/`
+    that already exists, and the indexed path carries that case. It only ever fails closed.
+    """
+    folded = tenant.casefold()
+    return any(
+        parts[i].casefold() == "uploads" and parts[i + 1].casefold() == folded
+        for i in range(len(parts) - 1)
+    )
 
 
 @dataclass(frozen=True)
@@ -208,6 +218,23 @@ def stated_card(
     )
 
 
+def stated_marker(
+    store: object,
+    *,
+    roots: Sequence[Path] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """What a refresh records about the rule its reconcile ran under.
+
+    The lite refresh skips an unchanged folder without running anything, so without this a store
+    upgraded with its memos in place, or a rule widened, would record nothing until some memo
+    changed. A refresh that finds a different marker treats the folder as changed.
+    """
+    rule = stating_rule(store, roots=roots, env=env)
+    digest = hashlib.sha256(repr(rule).encode("utf-8")).hexdigest()[:16]
+    return f"{STATED_POLICY_VERSION}:{digest}"
+
+
 def stated_request_id(tenant: str, name: str, content_hash: str, fact: AtomicFact) -> str:
     """One request per (memo, content, fact), ever: the generation is left out on purpose, so a
     re-run, an unchanged re-index and a new generation of the same content append nothing."""
@@ -299,22 +326,31 @@ def _reconcile(store: Any, rule: StatingRule) -> StatedFactsReport:
     cards: list[EvidenceCard] = []
     pending: list[tuple[AtomicFact, EvidenceCard, str]] = []
     for name, chunk in memos:
-        facts, malformed = memo_facts(chunk)
-        report.facts_malformed += malformed
-        if not facts:
-            continue
+        # One memo's failure is that memo's, never the store's: an error nobody anticipated (a
+        # RecursionError from JSON nested deeper than a recursive walk survives) counts it
+        # malformed and the rest are still recorded.
         try:
-            card = stated_card(store.tenant, generation_id, chunk, name, facts)
-        except ValueError:
-            card = None
-        if card is None:
-            report.facts_malformed += len(facts)
+            facts, malformed = memo_facts(chunk)
+            report.facts_malformed += malformed
+            if not facts:
+                continue
+            try:
+                card = stated_card(store.tenant, generation_id, chunk, name, facts)
+            except ValueError:
+                card = None
+            if card is None:
+                report.facts_malformed += len(facts)
+                continue
+            requests = [
+                (fact, card, stated_request_id(store.tenant, name, card.source_digest, fact))
+                for fact in facts
+            ]
+        except Exception as exc:  # BROAD-CATCH: fail-open  # this memo is skipped and counted
+            _log.warning("skipping the facts memo %r states: %s: %s", name, type(exc).__name__, exc)
+            report.facts_malformed += 1
             continue
         cards.append(card)
-        pending.extend(
-            (fact, card, stated_request_id(store.tenant, name, card.source_digest, fact))
-            for fact in facts
-        )
+        pending.extend(requests)
     ledger = LiteFactLedger(store)
     known = {event.request_id for event in ledger.events}
     todo = [item for item in pending if item[2] not in known]
@@ -340,6 +376,10 @@ def _reconcile(store: Any, rule: StatingRule) -> StatedFactsReport:
         else:
             report.facts_stated = -1
             report.reason = f"{decision.code} {decision.detail}".strip()
+            _log.warning(
+                "recording stated facts for tenant %r failed: %s; nothing more was recorded",
+                store.tenant, report.reason,
+            )
             return report
     report.reason = f"recorded {len(todo)} statement(s)"
     return report

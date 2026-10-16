@@ -246,7 +246,9 @@ def _index_memory_unlocked(
         message += f" Calibration: {outcome.status.value}. {outcome.reason}"
         from recall.stated_facts import reconcile_stated_facts
 
-        stated = reconcile_stated_facts(store, env=values)
+        # The process environment, not `values`: the rule is applied again whenever facts are
+        # read, there, and a private env here would let recording and reading disagree.
+        stated = reconcile_stated_facts(store)
         if stated.enabled:
             message += f" Stated facts: {stated.summary()}."
     return IndexResult(

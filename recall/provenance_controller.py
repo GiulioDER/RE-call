@@ -137,10 +137,11 @@ class ServedState:
     """What a store serves now, per memo name, as the projections ask for it.
 
     Called like a `ServedSources` (names in, the served ones out). A store that can say more
-    answers two further questions: the content hashes it serves each name with
+    answers three further questions: the content hashes it serves each name with
     (`content_hashes`; None when the lookup failed, and then no stated card is checked against
-    content) and the names its supersession graph retires (`superseded`: superseded or ambiguous,
-    as search's verdicts see them).
+    content), the names its supersession graph retires (`superseded`), and the names whose memos
+    the operator's rule lets state facts now (`stated_admitted`; None means it was not asked, and
+    then no stated card is checked against the rule).
     """
 
     def __init__(
@@ -149,10 +150,12 @@ class ServedState:
         *,
         content_hashes: Callable[[frozenset[str]], Mapping[str, frozenset[str]] | None] | None = None,
         superseded: Callable[[frozenset[str]], frozenset[str]] | None = None,
+        stated_admitted: Callable[[frozenset[str]], frozenset[str]] | None = None,
     ) -> None:
         self._served = served
         self._content_hashes = content_hashes
         self._superseded = superseded
+        self._stated_admitted = stated_admitted
 
     def __call__(self, names: frozenset[str]) -> Collection[str]:
         return self._served(names)
@@ -163,27 +166,37 @@ class ServedState:
     def superseded(self, names: frozenset[str]) -> frozenset[str]:
         return frozenset() if self._superseded is None else self._superseded(names)
 
+    def stated_admitted(self, names: frozenset[str]) -> frozenset[str] | None:
+        return None if self._stated_admitted is None else self._stated_admitted(names)
+
 
 def card_liveness(served: ServedSources, names: frozenset[str]) -> Callable[[EvidenceCard], bool]:
     """Whether the memo behind a card still stands behind it, asked once for `names`.
 
     An applied card lives while its memo's name is served (#932). A stated card lives while its
     memo is served with the content hash the card recorded, so an edit retires what the old text
-    stated and a revert restores it. Neither lives while the store's supersession graph retires
-    its memo: memo-level, the graph search's `superseded` verdict comes from.
+    stated and a revert restores it, and while the operator's rule still lets that memo state
+    facts, so narrowing the rule or turning it off retires what it recorded. Neither lives while
+    the store's supersession graph retires its memo: memo-level, the graph search's `superseded`
+    verdict comes from, counting only memos the operator lets state facts (`ServedState`).
     """
     present = set(served(names)) if names else set()
     hashes: Mapping[str, frozenset[str]] | None = None
     retired: frozenset[str] = frozenset()
+    admitted: frozenset[str] | None = None
     if isinstance(served, ServedState) and names:
         hashes = served.content_hashes(names)
         retired = served.superseded(names)
+        admitted = served.stated_admitted(names)
 
     def live(card: EvidenceCard) -> bool:
         if card.source not in present or card.source in retired:
             return False
-        if card.trust_state == STATED_TRUST_STATE and hashes is not None:
-            return card.source_digest in hashes.get(card.source, frozenset())
+        if card.trust_state == STATED_TRUST_STATE:
+            if admitted is not None and card.source not in admitted:
+                return False
+            if hashes is not None:
+                return card.source_digest in hashes.get(card.source, frozenset())
         return True
 
     return live
