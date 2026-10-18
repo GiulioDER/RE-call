@@ -1591,12 +1591,18 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
         Call this before proposing an idea, forming a hypothesis, or repeating past work:
         if a closed decision or falsified hypothesis surfaces, do not re-litigate it. Every hit
-        carries a trust verdict (only `ok` hits should be relied on), a calibrated confidence,
+        carries a trust verdict (only `ok` hits support the present state), a calibrated confidence,
         provenance (indexed_at) and validity (superseded_by / valid_until). When `abstained` is
-        true, NO valid hit survived — say you don't know instead of answering from the hits.
-        `evidence` says what an answer may cite: rely only on the hits whose chunk_id is in
-        `evidence.citable`, and cite those chunk_ids. It covers these hits only, not related
+        true, no present-state answer is supported: say you don't know about the present.
+        `evidence` says what a present-state answer may cite: rely only on the hits whose chunk_id is
+        in `evidence.citable`, and cite those chunk_ids. It covers these hits only, not related
         items or deeper pages of a paged document. `advice` states what to do.
+
+        For earlier-time questions, `historical.candidates`, when present, lists relevant archived
+        assertions. Before citing one as a fact at that time, match the requested time against its
+        `valid_from` and `valid_until`. If its interval or text does not establish that time, report
+        only the archived assertion, not that it held then. Historical candidates never support
+        a present-state answer and do not expand `evidence.citable`.
 
         Args:
             query: what to recall (natural language).
