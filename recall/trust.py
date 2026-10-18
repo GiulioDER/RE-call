@@ -70,6 +70,7 @@ from recall.retriever import (
 from recall.scope import Scope, coerce_scope
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates, PgVectorStore
+from recall.unknown_terms import apply_unknown_term_gate, check_unknown_terms
 from recall.trust_policy import (
     TrustFailureCode,
     TrustPolicy,
@@ -79,6 +80,7 @@ from recall.trust_policy import (
 )
 from recall.trust_gate import (  # noqa: F401  # re-exported: tests and benchmarks import _verdict here
     _UNCALIBRATED,
+    _record_metrics,
     _verdict,
     evaluate,
     order_promoted,
@@ -696,6 +698,7 @@ def _trusted_search(
         query_set_digest,
         dependency_projection=dependency_projection,
         dependency_mode=configured_dependency_mode,
+        record_metrics=False,
     )
     trusted = _with_stage_ms(trusted, "trust_evaluation", trust_started)
     if successor_expansion is not None and successor_expansion.ordering != "pool":
@@ -706,6 +709,14 @@ def _trusted_search(
             {hit.chunk.id: index for index, hit in enumerate(result.hits)},
             successor_expansion.ordering,
         )
+    # After every verdict `evaluate` can give and before degradation, which overwrites verdicts:
+    # a question naming a term the memory never contained cannot be answered by any hit, whatever
+    # its score. A store that cannot answer the vocabulary question is reported, not changed.
+    unknown_term_check = check_unknown_terms(store, query, environment_source, scope=coerce_scope(scope, source))
+    trusted = apply_unknown_term_gate(trusted, unknown_term_check)
+    # Preserve evaluate's counting semantics, but count the vocabulary-adjusted decision
+    # once. The existing development degradation below remains outside those counters.
+    _record_metrics(trusted)
     if failure_code is not None:
         # Development degradation. Reached only when the policy explicitly allows it, since
         # strict already raised above. The result is ALWAYS marked degraded and is never
@@ -745,6 +756,7 @@ def _trusted_search(
             dependency_mode=configured_dependency_mode,
             record_metrics=False,
         )
+        candidate_trusted = apply_unknown_term_gate(candidate_trusted, unknown_term_check)
         if failure_code is not None:
             candidate_trusted = _degraded(
                 candidate_trusted, failure_code, calibration_missing=calibration is None
