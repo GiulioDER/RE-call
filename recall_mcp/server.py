@@ -3154,7 +3154,11 @@ def _register_assistant_views(held: _HeldTools, deps: _ToolDeps, assistant: Assi
             # included, and the compact form keeps the order the ledger writes.
             store = await _require(SCOPE_READ, ctx)
             instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
-            result = await _to_thread(lambda: current_facts_memory(store, as_of=instant))
+            state = deps.state(ctx)
+            result = await _to_thread(lambda: current_facts_memory(
+                store, as_of=instant, security_policy=state.get("source_security_policy"),
+                access_context=deps.access_context(state, store),
+            ))
             return assistant_dumps(assistant.render_current_facts(result))
 
         held.register("recall_current_facts", recall_current_facts)

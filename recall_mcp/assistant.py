@@ -287,7 +287,9 @@ class AssistantMemos(MemoFolder):
                     "fact": f["fact"],
                     "evidence_card_ids": f["evidence_card_ids"],
                     "asserted_at": f["asserted_at"],
+                    "sources": f.get("sources", []),
                 }
                 for f in payload["facts"]
             ],
+            "contested": payload.get("contested", []),
         }

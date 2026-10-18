@@ -47,7 +47,7 @@ def _opens_a_fence(text: str) -> bool:
     `write` puts it in the file. A lighter check such as `text.lstrip().startswith("---")` misses a
     BOM before the fence, which the parser forgives and `str.strip` keeps.
     """
-    first = text.strip().split("\n", 1)[0]
+    first = text.replace("\r\n", "\n").replace("\r", "\n").strip().split("\n", 1)[0]
     return first.lstrip("\ufeff").strip() == "---"
 
 
@@ -96,6 +96,7 @@ class MemoFolder:
         lane around this and the refresh after it (`remember` does), so two writers cannot take
         one id.
         """
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
         if _opens_a_fence(text):
             # A memo written without frontmatter of its own would otherwise begin with the
             # caller's block, read as frontmatter: a `supersedes` the author check never saw, or a
