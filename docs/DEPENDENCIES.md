@@ -40,7 +40,7 @@ instead of presenting all three as an opaque embedder traceback.
 
 ## MCP Extra
 
-`mcp` is **pinned exactly at 2.1.0**, not ranged. RE-call uses the MCP 2 server import path,
+`mcp` is **pinned exactly at 2.2.0**, not ranged. RE-call uses the MCP 2 server import path,
 context injection, and snake_case tool annotation fields. The boundaries below are why the floor
 sits where it does; they are kept as a record of what each version added, and as the map for a
 future bump:
@@ -51,7 +51,7 @@ future bump:
 | `>=1.27.2` | Adds `AccessToken.subject` and `.claims`, used to carry tenant identity. |
 | `>=2.0.0` | Provides `MCPServer`, typed request `Context` injection, and snake_case `ToolAnnotations` fields used by `recall_mcp.server`. |
 | `<3` | Next major is reserved as a port until its server, auth, and context APIs are tested here. |
-| `==2.1.0` | The pin itself. See below. |
+| `==2.2.0` | The pin itself. See below. |
 
 ### Why this one is pinned rather than ranged
 

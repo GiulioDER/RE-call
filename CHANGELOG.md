@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+### Security
+
+* **`mcp` is pinned at 2.2.0, up from 2.1.0** (GHSA-84m7-p3x7-pcfv, CVE-2026-59951). In 2.1.0 a
+  stateful Streamable HTTP server never reclaimed session state, so a client able to reach the
+  endpoint could grow its memory without bound. RE-call's HTTP server runs stateless by default
+  and is exposed only when `RECALL_MCP_STATELESS=0` is set; the stdio servers are not affected.
+
 ### Changed
 
 * **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
