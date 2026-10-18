@@ -86,6 +86,16 @@ def fact_identity(fact: AtomicFact) -> str:
     return f"fact_{digest[:32]}"
 
 
+def asserts_fact(event: FactEvent) -> bool:
+    """Whether an event is the one application a fact's projection lists.
+
+    A fact applied again under a new request records a second `asserted` event coded DUPLICATE,
+    which is only ever written while the APPLIED event for the same fact is still a candidate.
+    Projections skip it, so a fact is listed once however many requests applied it.
+    """
+    return event.event_type == "asserted" and event.decision_code != DecisionCode.DUPLICATE
+
+
 def fact_conflict_key(fact: AtomicFact) -> str:
     """Identity used to serialize all competing values of one predicate context."""
     payload = {
@@ -486,7 +496,7 @@ class InMemoryFactLedger:
             result: list[FactEvent] = []
             instant = _as_utc(now)
             for event in self._events:
-                if event.tenant_id != tenant_id or event.event_type != "asserted":
+                if event.tenant_id != tenant_id or not asserts_fact(event):
                     continue
                 if event.fact_id in superseded or event.fact is None:
                     continue
@@ -513,7 +523,7 @@ class InMemoryFactLedger:
             event
             for event in self._events
             if event.tenant_id == tenant_id
-            and event.event_type == "asserted"
+            and asserts_fact(event)
             and event.fact_id not in superseded
             and event.fact is not None
         )
