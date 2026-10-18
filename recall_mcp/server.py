@@ -2874,7 +2874,9 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         "removed" — check that list before assuming a name was actually forgotten. A fact
         applied with `recall_apply_fact` whose only evidence was in these sources is retracted
         with them, so `recall_current_facts` stops listing it; a fact with evidence in a memo
-        that survives stays.
+        that survives stays. Retraction is not erasure: a retracted fact's value, and the
+        evidence cards that cited these sources, stay in the append-only fact ledger as its
+        audit trail. Only the chunks (and staged upload files) are deleted.
 
         Args:
             sources: one or more source values to forget, exactly as they appear in

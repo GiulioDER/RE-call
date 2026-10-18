@@ -133,12 +133,17 @@ def prepare_retraction(
 
 def served_sources(store: object) -> ServedSources | None:
     """The memo names `store` serves now, with their content, supersession and stating rule on a
-    lite or PostgreSQL store; None without a lookup. On a generation store the content is the
-    SERVED generation's: `sources_for_identifiers` spans every generation, `source_raw_hashes` the
-    served one, so a stated card lives only while that generation holds the content it recorded.
+    lite or PostgreSQL store; None without a lookup. On a generation store every answer is the
+    SERVED generation's: names resolve through `served_sources_for_identifiers` (the pinned
+    generation), not `sources_for_identifiers`, which spans every generation for erasure, and
+    `source_raw_hashes` reads the served one, so a stated card lives only while that generation
+    holds the content it recorded.
 
-    Fails open: when a lookup errors every name counts as served, unedited and unsuperseded, so an
-    outage shows facts as the ledger alone would rather than hiding all of them.
+    Presence and supersession fail open: when those lookups error every name counts as served and
+    unsuperseded, so an outage shows applied facts as the ledger alone would rather than hiding
+    all of them. A stated card's two checks, admission and content, fail CLOSED: stated facts are
+    recorded with no review, so one whose content cannot be checked is not shown (review of PR 935,
+    where a timed-out hash lookup brought an edited memo's old value back beside its new one).
     """
     lookup = getattr(store, "served_identifiers", None)
     if not callable(lookup):
@@ -159,9 +164,13 @@ def served_sources(store: object) -> ServedSources | None:
         return served
     from recall.provenance_controller import ServedState
 
+    # The served generation only on a generation store; a lite file or the legacy table has one
+    # set of rows, so its erasure resolver already answers for what it serves.
+    resolve = getattr(store, "served_sources_for_identifiers", None) or store.sources_for_identifiers
+
     @cache
     def resolved_names(names: frozenset[str]) -> dict[str, list[str]]:
-        return store.sources_for_identifiers(sorted(names))
+        return resolve(sorted(names))
 
     @cache
     def raw_hashes() -> dict[str, str]:
@@ -177,9 +186,12 @@ def served_sources(store: object) -> ServedSources | None:
                 return {}
             resolved = resolved_names(names)
             raw = raw_hashes()
-        except Exception:  # BROAD-CATCH: fail-open  # no stated card is checked against content
-            _log.exception("content lookup for %d memo name(s) failed; checking no stated card", len(names))
-            return None
+        except Exception:  # BROAD-CATCH: fail-closed  # no stated fact is current on an error
+            # Not None, which `card_liveness` reads as "no content check": that brought an edited
+            # memo's old value back as current whenever this lookup timed out while admission,
+            # computed from the same cached names, still passed.
+            _log.exception("content lookup for %d memo name(s) failed; listing no stated fact", len(names))
+            return {}
         return {
             # Admission and content must come from the same absolute source. A relative
             # alias can also resolve to an excluded namesake with a different hash.

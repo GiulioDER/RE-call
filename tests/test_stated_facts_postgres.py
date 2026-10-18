@@ -434,6 +434,61 @@ def test_p13_a_failure_opening_the_generation_leaves_the_promote_standing(
     assert manager.last_stated_facts == -1
 
 
+def test_p14_a_failed_content_lookup_shows_no_stated_value(manager: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Node tests/test_stated_facts_postgres.py::test_p14_a_failed_content_lookup_shows_no_stated_value.
+
+    Review of PR 935, finding 2: when the served generation's hash lookup failed, `content_hashes`
+    answered None, which `card_liveness` reads as "no content check", while admission, computed
+    from the same cached names, still passed. So a timed-out lookup brought an edited memo's old
+    value back beside its new one. A stated card whose content cannot be checked is now not live,
+    as admission already failed closed. Red against b7f5d9c03 (master after PR 935), the unchanged
+    `content_hashes` in `served_sources` (recall/fact_retraction.py): fails on "a stated value was
+    shown with its content unchecked: ['4512', '9001']" (both values contested).
+    """
+    from recall.generation_store import GenerationStore
+
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", uri(manager, "memory"))
+    promote(manager, MEMOS, "corpus-v1")
+    promote(manager, {**MEMOS, "memory/door.md": body([{**DOOR, "object": "9001"}])}, "corpus-v2")
+
+    def timed_out(self: object) -> dict[str, str]:
+        raise TimeoutError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(GenerationStore, "source_raw_hashes", timed_out)
+    with served(manager) as store:
+        shown = sorted(
+            [value for value, _sources in listed(store)]
+            + [value for group in contested(store) for value, _sources in group]
+        )
+    assert "4512" not in shown, f"a stated value was shown with its content unchecked: {shown}"
+
+
+def test_p15_a_namesake_in_a_retained_generation_does_not_block_a_supersession(
+    manager: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts_postgres.py::test_p15_a_namesake_in_a_retained_generation_does_not_block_a_supersession.
+
+    Review of PR 935, finding 3: the read-time checks resolved memo names with
+    `sources_for_identifiers`, the erasure resolver, which spans every generation. A generation
+    names its memos relative to its manifest's common directory, so G0, built from `docs/` alone,
+    names `docs/new.md` plain `new.md`, the name the served generation gives `memory/new.md`.
+    Supersession counts a claimant only if every source its name resolves to is admitted, so G0's
+    retained rows kept `new.md` from retiring `old.md`. Red against b7f5d9c03, the unchanged
+    `resolved_names` in `served_sources` (recall/fact_retraction.py): fails on "a namesake in a
+    retained generation kept a superseded value current: [('4512', ('old.md',))]".
+    """
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", uri(manager, "memory"))
+    promote(manager, {"docs/new.md": body(text="A docs note that happens to share a name.")}, "corpus-v0")
+    promote(
+        manager,
+        {"memory/old.md": body([DOOR]), "memory/new.md": body(text="The door code changed.", supersedes="old.md")},
+        "corpus-v1",
+    )
+    with served(manager) as store:
+        got = listed(store)
+    assert got == [], f"a namesake in a retained generation kept a superseded value current: {got}"
+
+
 @pytest.fixture(autouse=True)
 def _no_cache(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("RECALL_EMBED_CACHE", "off")

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import posixpath
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -68,15 +69,32 @@ def _under(path: Path, root: Path) -> bool:
 
 
 def _location(source: str) -> str:
-    """Where a source is, as one comparable string: a file's absolute POSIX path (a `file://` URI
-    unquoted to its path), any other URI as `scheme://netloc/path` with its path unquoted."""
+    """Where a source is, as one comparable string, with `.` and `..` segments folded.
+
+    A `file://` URI becomes the local path it names through `recall.manifest.local_path_for`, the
+    one decoder for that question. It keeps a Windows drive letter (`file:///C:/x` is `C:/x`;
+    `urlsplit` gave `/C:/x`, so no path prefix ever matched the `as_uri()` sources desktop ingest
+    and manifests store) and a UNC host (`file://nas1/share/x` is `//nas1/share/x`, not a local
+    `/share/x`). A file URI it refuses stays as written, which matches no path prefix. Any other
+    URI is `scheme://netloc/path` with its path unquoted (review of PR 935, 2026-10-18).
+    """
     if "://" not in source:
-        return Path(source).as_posix()
+        return _fold(Path(source).as_posix())
     parts = urlsplit(source)
-    path = unquote(parts.path)
     if parts.scheme == "file":
-        return path
-    return f"{parts.scheme}://{parts.netloc}{path}"
+        from recall.manifest import ObjectNotAllowed, local_path_for
+
+        try:
+            return _fold(local_path_for(source).as_posix())
+        except ObjectNotAllowed:
+            return source
+    return f"{parts.scheme}://{parts.netloc}{_fold(unquote(parts.path))}"
+
+
+def _fold(path: str) -> str:
+    """`path` with `.` and `..` folded, so a source cannot sit under an admitted prefix by spelling
+    alone: `/root/memory/../docs/x.md` is `/root/docs/x.md`."""
+    return posixpath.normpath(path) if path else path
 
 
 def _runs_through_uploads(parts: Sequence[str], tenant: str) -> bool:
@@ -139,11 +157,16 @@ def _source_prefixes(parts: Sequence[str], values: Mapping[str, str]) -> tuple[s
     resolved: list[str] = []
     for part in parts:
         if "://" in part:
-            resolved.append(_location(part).rstrip("/"))
+            location = _location(part)
+            if "://" not in location:
+                # A file URI names a local path: resolved like an absolute path, so the URI and
+                # the path spelling of one folder admit the same memos.
+                location = Path(location).resolve().as_posix()
+            resolved.append(location.rstrip("/"))
         elif Path(part).is_absolute():
             resolved.append(Path(part).resolve().as_posix().rstrip("/"))
         elif index_root:
-            resolved.append((Path(index_root).resolve() / part.replace("\\", "/").strip("/")).as_posix())
+            resolved.append(_fold((Path(index_root).resolve() / part.replace("\\", "/").strip("/")).as_posix()))
     return tuple(dict.fromkeys(prefix for prefix in resolved if prefix))
 
 

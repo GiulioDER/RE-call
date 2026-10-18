@@ -1322,6 +1322,37 @@ class GenerationStore(PgVectorStore):
         requested = set(wanted)
         return {str(value) for row in rows for value in row if value is not None and str(value) in requested}
 
+    def served_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """Resolve identifiers (`file` or `source_uri`) to source URIs in the pinned generation only.
+
+        `sources_for_identifiers` spans every generation, the adopted legacy table and the manifest
+        on purpose, because erasure must reach them all. A question about what is SERVED must not:
+        a generation names its memos relative to its manifest's common directory, so one name can
+        mean different files in different generations, and a retired generation's namesake then
+        decided whether a served memo could state or supersede facts (review of PR 935). This is
+        the resolver the read-time fact checks use (`recall.fact_retraction.served_sources`).
+        """
+        wanted = list(dict.fromkeys(identifiers))
+        if not wanted:
+            return {}
+        generation_id = self._generation_id()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s "
+                "AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
+                (self._tenant, generation_id, wanted, wanted),
+            ).fetchall()
+        )
+        requested = set(wanted)
+        resolved: dict[str, list[str]] = {}
+        for source, file in rows:
+            for identifier in {file, source} & requested:
+                bucket = resolved.setdefault(str(identifier), [])
+                if str(source) not in bucket:
+                    bucket.append(str(source))
+        return resolved
+
     def chunk_by_id(self, chunk_id: str) -> Chunk | None:
         """Compatibility wrapper over the generation scoped batch accessor."""
         return self.chunks_by_ids((chunk_id,)).get(chunk_id)

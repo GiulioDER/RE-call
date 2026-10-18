@@ -139,8 +139,9 @@ class ServedState:
 
     Called like a `ServedSources` (names in, the served ones out). A store that can say more
     answers three further questions: the content hashes it serves each name with
-    (`content_hashes`; None when the lookup failed, and then no stated card is checked against
-    content), the names its supersession graph retires (`superseded`), and the names whose memos
+    (`content_hashes`; None only when the store has no such lookup, and then no stated card is
+    checked against content; a lookup that FAILED answers an empty mapping, so no stated card
+    lives), the names its supersession graph retires (`superseded`), and the names whose memos
     the operator's rule lets state facts now (`stated_admitted`; None means it was not asked, and
     then no stated card is checked against the rule).
     """
