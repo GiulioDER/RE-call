@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from recall.evidence import cards_from_trusted_result
-from recall.fact_ledger import PostgresFactLedger
+from recall.fact_ledger import PostgresFactLedger, project_current
 from recall.fact_retraction import served_sources
 from recall.frontmatter import validity_bounds
 from recall.generations import NoActiveGeneration
@@ -18,9 +18,12 @@ from recall_mcp.evidence_cards import register_evidence_cards  # re-exported
 from recall.provenance_controller import (
     EvidenceCardResolver,
     FactApplicationRequest,
+    FactEvent,
     FactLedger,
     ProvenanceController,
+    live_sources,
     source_digest,
+    split_contested,
 )
 from recall.trust_policy import TrustPolicy
 from recall.types import AtomicFact, EvidenceCard
@@ -186,28 +189,65 @@ def apply_fact_memory(
 
 
 def current_facts_memory(
-    store: PgVectorStore, *, as_of: datetime | None = None
+    store: PgVectorStore, *, as_of: datetime | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> dict[str, object]:
     """Return the ledger's deterministic current fact projection for this tenant.
 
     A fact none of whose memos the store serves now (deleted, pruned, or left out of the active
     generation) is not listed, and is listed again when a memo returns
-    (`recall.fact_retraction`).
+    (`recall.fact_retraction`). A fact lists its memos in `sources`. Facts that conflict, with no
+    supersession between their memos, are listed under `contested` and not under `facts`
+    (`recall.provenance_controller.split_contested`).
     """
+    if security_policy is not None:
+        if access_context is None or access_context.tenant != store.tenant:
+            raise PermissionError("a matching source access context is required for current facts")
     instant = as_of or datetime.now(UTC)
     served = served_sources(store)
     ledger = _fact_backends(store)[0]
-    events = (
-        ledger.current(tenant_id=store.tenant, now=instant)
-        if served is None
-        else ledger.current(tenant_id=store.tenant, now=instant, served=served)
-    )
+    # One history snapshot serves both the projection and its supporting source names.
+    history = getattr(ledger, "events", None)
+    if history is not None:
+        history = tuple(event for event in history if event.tenant_id == store.tenant)
+        events = project_current(history, instant, served)
+    else:
+        events = (
+            ledger.current(tenant_id=store.tenant, now=instant)
+            if served is None
+            else ledger.current(tenant_id=store.tenant, now=instant, served=served)
+        )
+        history = events
+    sources = live_sources(history, served)
+    if security_policy is not None:
+        assert access_context is not None
+
+        def permitted(name: str) -> bool:
+            decision = security_policy.decide(name, access_context)
+            # Structured values cannot safely be projected through a text redaction rule.
+            return decision.allowed and not decision.redactions
+
+        sources = {fact_id: tuple(name for name in names if permitted(name))
+                   for fact_id, names in sources.items()}
+        events = tuple(event for event in events if sources.get(event.fact_id or ""))
+
+    def card_ids(event: FactEvent) -> list[str]:
+        allowed = sources.get(event.fact_id or "", ())
+        return [card.card_id for card in event.evidence_cards
+                if security_policy is None or card.source in allowed]
+
+    standing, contested = split_contested(events)
     try:
         generation_id: str | None = store.generation_id
     except NoActiveGeneration:
         # The ledger is tenant scoped and answers before any generation is promoted; say there
         # is no serving generation rather than raise or name a generation that does not exist.
         generation_id = None
+
+    def names(event: FactEvent) -> list[str]:
+        return list(sources.get(event.fact_id or "", ()))
+
     return {
         "tenant_id": store.tenant,
         "generation_id": generation_id,
@@ -217,11 +257,30 @@ def current_facts_memory(
                 "event_id": event.event_id,
                 "fact_id": event.fact_id,
                 "fact": event.fact.to_payload() if event.fact else None,
-                "evidence_card_ids": [card.card_id for card in event.evidence_cards],
+                "evidence_card_ids": card_ids(event),
                 "generation_id": event.generation_id,
                 "writer": event.writer,
                 "asserted_at": event.created_at.isoformat(),
+                "sources": names(event),
             }
-            for event in events
+            for event in standing
+        ],
+        "contested": [
+            {
+                "namespace": group[0].fact.namespace if group[0].fact else None,
+                "subject": group[0].fact.subject if group[0].fact else None,
+                "predicate": group[0].fact.predicate if group[0].fact else None,
+                "context": group[0].fact.context if group[0].fact else {},
+                "values": [
+                    {
+                        "fact": event.fact.to_payload() if event.fact else None,
+                        "fact_id": event.fact_id,
+                        "sources": names(event),
+                        "evidence_card_ids": card_ids(event),
+                    }
+                    for event in group
+                ],
+            }
+            for group in contested
         ],
     }

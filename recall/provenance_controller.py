@@ -27,6 +27,13 @@ from recall.types import AtomicFact, EvidenceCard, Verdict
 
 CONTROLLER_SCHEMA_VERSION = 1
 CONTROLLER_POLICY_VERSION = "provenance-controller-v1"
+#: The trust state of a card the server builds from a memo that states its own facts
+#: (`recall.stated_facts`). No search produced it, so `trusted_for_application` refuses it and it
+#: authorizes `ProvenanceController.apply_stated` only.
+STATED_TRUST_STATE = "stated"
+#: The writer and policy version of the events the stated path appends.
+STATED_WRITER = "recall_stated"
+STATED_POLICY_VERSION = "stated-facts-v1"
 _PERMIT_SENTINEL = object()
 MAX_PROVENANCE_CARD_IDS = 64
 MAX_PROVENANCE_IDENTIFIER_CHARS = 256
@@ -126,6 +133,75 @@ def retracted_keys(events: Iterable[FactEvent]) -> frozenset[RetractionKey]:
 ServedSources = Callable[[frozenset[str]], Collection[str]]
 
 
+class ServedState:
+    """What a store serves now, per memo name, as the projections ask for it.
+
+    Called like a `ServedSources` (names in, the served ones out). A store that can say more
+    answers three further questions: the content hashes it serves each name with
+    (`content_hashes`; None when the lookup failed, and then no stated card is checked against
+    content), the names its supersession graph retires (`superseded`), and the names whose memos
+    the operator's rule lets state facts now (`stated_admitted`; None means it was not asked, and
+    then no stated card is checked against the rule).
+    """
+
+    def __init__(
+        self,
+        served: Callable[[frozenset[str]], Collection[str]],
+        *,
+        content_hashes: Callable[[frozenset[str]], Mapping[str, frozenset[str]] | None] | None = None,
+        superseded: Callable[[frozenset[str]], frozenset[str]] | None = None,
+        stated_admitted: Callable[[frozenset[str]], frozenset[str]] | None = None,
+    ) -> None:
+        self._served = served
+        self._content_hashes = content_hashes
+        self._superseded = superseded
+        self._stated_admitted = stated_admitted
+
+    def __call__(self, names: frozenset[str]) -> Collection[str]:
+        return self._served(names)
+
+    def content_hashes(self, names: frozenset[str]) -> Mapping[str, frozenset[str]] | None:
+        return None if self._content_hashes is None else self._content_hashes(names)
+
+    def superseded(self, names: frozenset[str]) -> frozenset[str]:
+        return frozenset() if self._superseded is None else self._superseded(names)
+
+    def stated_admitted(self, names: frozenset[str]) -> frozenset[str] | None:
+        return None if self._stated_admitted is None else self._stated_admitted(names)
+
+
+def card_liveness(served: ServedSources, names: frozenset[str]) -> Callable[[EvidenceCard], bool]:
+    """Whether the memo behind a card still stands behind it, asked once for `names`.
+
+    An applied card lives while its memo's name is served (#932). A stated card lives while its
+    memo is served with the content hash the card recorded, so an edit retires what the old text
+    stated and a revert restores it, and while the operator's rule still lets that memo state
+    facts, so narrowing the rule or turning it off retires what it recorded. Neither lives while
+    the store's supersession graph retires its memo: memo-level, the graph search's `superseded`
+    verdict comes from, counting only memos the operator lets state facts (`ServedState`).
+    """
+    present = set(served(names)) if names else set()
+    hashes: Mapping[str, frozenset[str]] | None = None
+    retired: frozenset[str] = frozenset()
+    admitted: frozenset[str] | None = None
+    if isinstance(served, ServedState) and names:
+        hashes = served.content_hashes(names)
+        retired = served.superseded(names)
+        admitted = served.stated_admitted(names)
+
+    def live(card: EvidenceCard) -> bool:
+        if card.source not in present or card.source in retired:
+            return False
+        if card.trust_state == STATED_TRUST_STATE:
+            if admitted is not None and card.source not in admitted:
+                return False
+            if hashes is not None:
+                return card.source_digest in hashes.get(card.source, frozenset())
+        return True
+
+    return live
+
+
 def absent_fact_ids(events: Sequence[FactEvent], served: ServedSources | None) -> frozenset[str]:
     """Facts none of whose evidence the store serves now: every card names a memo it lacks.
 
@@ -133,6 +209,8 @@ def absent_fact_ids(events: Sequence[FactEvent], served: ServedSources | None) -
     decision: a rollback, a restored file or a repaired sync brings it back. So a fact whose every
     card, across all its live applications (DUPLICATE ones included), names a memo the store does
     not serve is hidden at read time and reappears when the memo does, with nothing written.
+    A stated card also needs its memo served with the content it recorded, and no card counts
+    while the store's supersession graph retires its memo (`card_liveness`).
     `recall_forget` is the decision, and writes a `retracted` event instead. `served` None checks
     nothing (every fact counts as present), which is how a caller without a store reads the
     ledger.
@@ -149,11 +227,61 @@ def absent_fact_ids(events: Sequence[FactEvent], served: ServedSources | None) -
         ):
             cards.setdefault(event.fact_id, []).extend(event.evidence_cards)
     names = frozenset(card.source for group in cards.values() for card in group)
-    present = set(served(names)) if names else set()
+    live = card_liveness(served, names)
     return frozenset(
         fact_id for fact_id, group in cards.items()
-        if group and not any(card.source in present for card in group)
+        if group and not any(live(card) for card in group)
     )
+
+
+def live_sources(events: Sequence[FactEvent], served: ServedSources | None) -> dict[str, tuple[str, ...]]:
+    """Per fact id, the sorted memo names of its live cards, across its live applications.
+
+    What `recall_current_facts` shows as a fact's `sources`, so an answer can cite the memo. A
+    DUPLICATE application counts, since a second memo stating a fact is a second source. `served`
+    None counts every card.
+    """
+    retracted = retracted_keys(events)
+    cards: dict[str, list[EvidenceCard]] = {}
+    for event in events:
+        if event.event_type == "asserted" and event.fact_id is not None and retraction_key(event) not in retracted:
+            cards.setdefault(event.fact_id, []).extend(event.evidence_cards)
+    if served is None:
+        return {fact_id: tuple(sorted({card.source for card in group})) for fact_id, group in cards.items()}
+    live = card_liveness(served, frozenset(card.source for group in cards.values() for card in group))
+    return {
+        fact_id: tuple(sorted({card.source for card in group if live(card)}))
+        for fact_id, group in cards.items()
+    }
+
+
+def split_contested(
+    current: Sequence[FactEvent],
+) -> tuple[tuple[FactEvent, ...], tuple[tuple[FactEvent, ...], ...]]:
+    """`current` split into the facts that stand alone and the groups that disagree.
+
+    Two current facts that conflict (`facts_conflict`: same key, another value, overlapping
+    windows) are both contested: memos that state different values with no supersession between
+    them leave the question open, and neither is listed as the answer. Values in separate windows
+    are history, not a dispute. A group is the contested facts of one conflict key, in order.
+    """
+    by_key: dict[str, list[FactEvent]] = {}
+    for event in current:
+        if event.fact is not None:
+            by_key.setdefault(fact_conflict_key(event.fact), []).append(event)
+    contested: set[str] = set()
+    for group in by_key.values():
+        for index, left in enumerate(group):
+            for right in group[index + 1:]:
+                if left.fact and right.fact and facts_conflict(left.fact, right.fact):
+                    contested.update((left.event_id, right.event_id))
+    standing = tuple(event for event in current if event.event_id not in contested)
+    groups = tuple(
+        tuple(event for event in group if event.event_id in contested)
+        for group in by_key.values()
+        if any(event.event_id in contested for event in group)
+    )
+    return standing, groups
 
 
 def fact_conflict_key(fact: AtomicFact) -> str:
@@ -394,6 +522,7 @@ class FactLedger(Protocol):
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
         served: ServedSources | None = None,
+        stated: bool = False,
     ) -> LedgerApplyResult: ...
 
     def record_decision(
@@ -528,6 +657,7 @@ class InMemoryFactLedger:
         cards: tuple[EvidenceCard, ...],
         supersedes_fact_ids: tuple[str, ...] = (),
         now: datetime | None = None,
+        policy_version: str = CONTROLLER_POLICY_VERSION,
     ) -> FactEvent:
         moment = _as_utc(now or datetime.now(UTC))
         event_id = "evt_" + hashlib.sha256(
@@ -545,7 +675,7 @@ class InMemoryFactLedger:
             request_id=request_id,
             writer=writer,
             decision_code=decision_code,
-            policy_version=CONTROLLER_POLICY_VERSION,
+            policy_version=policy_version,
             controller_version=CONTROLLER_SCHEMA_VERSION,
             created_at=moment,
         )
@@ -614,8 +744,9 @@ class InMemoryFactLedger:
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
         served: ServedSources | None = None,
+        stated: bool = False,
     ) -> LedgerApplyResult:
-        del policy_version, controller_version
+        del controller_version
         with self._lock:
             _consume_permit(
                 permit,
@@ -641,6 +772,7 @@ class InMemoryFactLedger:
                     fact=fact,
                     cards=cards,
                     now=now,
+                    policy_version=policy_version,
                 )
                 self._events.append(event)
                 self._by_request[request_id] = event
@@ -656,10 +788,12 @@ class InMemoryFactLedger:
                 and facts_conflict(event.fact, fact)
             )
             conflict_ids = {event.fact_id for event in conflicts}
-            if conflict_ids - set(supersedes_fact_ids):
-                raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
-            if supersedes_fact_ids and not conflict_ids.issubset(set(supersedes_fact_ids)):
-                raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
+            if not stated:
+                # A stated fact that disagrees is recorded, not refused (`assertion_is_duplicate`).
+                if conflict_ids - set(supersedes_fact_ids):
+                    raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
+                if supersedes_fact_ids and not conflict_ids.issubset(set(supersedes_fact_ids)):
+                    raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
             event = self._event(
                 event_type="asserted",
                 tenant_id=tenant_id,
@@ -671,6 +805,7 @@ class InMemoryFactLedger:
                 cards=cards,
                 supersedes_fact_ids=supersedes_fact_ids,
                 now=now,
+                policy_version=policy_version,
             )
             self._events.append(event)
             self._by_request[request_id] = event
@@ -686,6 +821,7 @@ class InMemoryFactLedger:
                     cards=cards,
                     supersedes_fact_ids=tuple(supersedes_fact_ids),
                     now=now,
+                    policy_version=policy_version,
                 )
                 self._events.append(replacement)
             return LedgerApplyResult(event)
@@ -1042,6 +1178,68 @@ class ProvenanceController:
             DecisionCode.DUPLICATE if result.duplicate else DecisionCode.APPLIED,
             cards=cards,
             retried=retried,
+            event=result.event,
+        )
+
+    def apply_stated(
+        self, fact: AtomicFact, card: EvidenceCard, request_id: str
+    ) -> ControllerDecision:
+        """Record `fact`, which the memo behind `card` states, with that card as its evidence.
+
+        The path of `recall.stated_facts`: no search ran, so `apply_fact`'s search-trust gates do
+        not apply, and the caller has already decided that the memo may state facts. What is
+        checked here is that the card is a stated card of this tenant and generation that carries
+        exactly this fact. A disagreement with a current fact is appended, never refused: the
+        projection lists both as contested. A refusal writes nothing, because a card failing these
+        checks is the caller's defect, not a decision about the fact.
+        """
+        request = FactApplicationRequest(fact, (card.card_id,), request_id)
+        if (
+            card.trust_state != STATED_TRUST_STATE
+            or card.tenant_id != self.tenant_id
+            or card.generation_id != self.generation_id
+            or not self._supported(fact, (card,))
+        ):
+            return self._decision(request, DecisionCode.UNSUPPORTED_CLAIM, cards=(card,))
+        permit = FactApplicationPermit(
+            tenant_id=self.tenant_id,
+            generation_id=self.generation_id,
+            request_id=request_id,
+            fact_id=fact_identity(fact),
+            card_ids=(card.card_id,),
+            _token=_PERMIT_SENTINEL,
+        )
+        assertion: dict[str, Any] = {
+            "tenant_id": self.tenant_id,
+            "generation_id": self.generation_id,
+            "fact": fact,
+            "cards": (card,),
+            "request_id": request_id,
+            "writer": self.writer,
+            "permit": permit,
+            "policy_version": STATED_POLICY_VERSION,
+            "now": self.now(),
+            "stated": True,
+        }
+        if self.served_sources is not None:
+            assertion["served"] = self.served_sources
+        try:
+            result = self.ledger.apply_assertion(**assertion)
+        except ValueError as exc:
+            # A ledger refuses with the decision code as the message, as `apply_fact` reads it.
+            try:
+                code = DecisionCode(str(exc))
+            except ValueError:
+                code = DecisionCode.LEDGER_UNAVAILABLE
+            return self._decision(request, code, cards=(card,), detail=str(exc))
+        except Exception as exc:  # BROAD-CATCH: fail-closed
+            return self._decision(
+                request, DecisionCode.LEDGER_UNAVAILABLE, cards=(card,), detail=type(exc).__name__
+            )
+        return self._decision(
+            request,
+            DecisionCode.DUPLICATE if result.duplicate else DecisionCode.APPLIED,
+            cards=(card,),
             event=result.event,
         )
 

@@ -373,6 +373,9 @@ def _cmd_index(args: argparse.Namespace) -> None:
 
                     outcome = ensure_calibrated(store, embedder)
                     print(f"calibration: {outcome.status.value}: {outcome.reason}")
+                    from recall.stated_facts import reconcile_stated_facts
+
+                    print(reconcile_stated_facts(store).render())
         except LiteWriterBusy as exc:
             raise SystemExit(str(exc)) from exc
 

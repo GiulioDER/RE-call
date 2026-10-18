@@ -290,6 +290,8 @@ def assertion_is_duplicate(
     fact: AtomicFact,
     supersedes_fact_ids: Sequence[str],
     absent: frozenset[str] = frozenset(),
+    *,
+    stated: bool = False,
 ) -> bool:
     """Whether `fact` repeats a current candidate; refuses one it contradicts without superseding.
 
@@ -297,10 +299,16 @@ def assertion_is_duplicate(
     a lite store decide the same application the same way. A fact in `absent` (its memos are
     not served now) still makes a re-application a DUPLICATE, so it is never listed twice when its
     memo returns, but it is never a conflict: a deleted memo cannot block a new value.
+
+    `stated` is the path a memo's own facts take (`recall.stated_facts`): a disagreement is
+    recorded, not refused, and the projection lists both values as contested
+    (`recall.provenance_controller.split_contested`).
     """
     identity = fact_identity(fact)
     if any(event.fact_id == identity for event in candidates):
         return True
+    if stated:
+        return False
     conflicts = tuple(
         event for event in candidates
         if event.fact and event.fact_id not in absent and facts_conflict(event.fact, fact)
@@ -800,6 +808,7 @@ class PostgresFactLedger:
         now: datetime | None = None,
         materialization_outbox: Any | None = None,
         served: ServedSources | None = None,
+        stated: bool = False,
     ) -> LedgerApplyResult:
         del policy_version, controller_version
         if tenant_id != self.tenant_id:
@@ -827,7 +836,7 @@ class PostgresFactLedger:
             history = self._events(conn)
             candidates = project_candidates(history)
             absent = absent_fact_ids(history, served)
-            if assertion_is_duplicate(candidates, fact, supersedes_fact_ids, absent):
+            if assertion_is_duplicate(candidates, fact, supersedes_fact_ids, absent, stated=stated):
                 event = self._insert(
                     conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
                     fact=fact, cards=cards, supersedes_fact_ids=(), request_id=request_id,

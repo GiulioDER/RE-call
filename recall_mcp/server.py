@@ -1801,10 +1801,20 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     async def recall_current_facts(
         ctx: Context[dict, object], as_of: str | None = None
     ) -> str:
-        """Return the tenant scoped current projection of the append only fact ledger."""
+        """Return the tenant scoped current projection of the append only fact ledger.
+
+        Facts a memo states in its `recall_graph` frontmatter appear here, with the memo in
+        `sources`, once the store has recorded them; a lite store does so whenever it indexes.
+        Values that disagree with no supersession between their memos are listed under
+        `contested`, not `facts`: memory holds both and says neither is current.
+        """
         store = await _require(SCOPE_READ, ctx)
         instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
-        result = await _to_thread(lambda: current_facts_memory(store, as_of=instant))
+        state = _state(ctx)
+        result = await _to_thread(lambda: current_facts_memory(
+            store, as_of=instant, security_policy=state.get("source_security_policy"),
+            access_context=_access_context(state, store),
+        ))
         return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
 
     @mcp.tool(
