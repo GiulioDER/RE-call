@@ -395,6 +395,9 @@ class DashboardApp:
         project_root: Path | None = None,
         config_host: str = "",
         config_command: str = "",
+        default_tenant: str = DEFAULT_TENANT,
+        recover_lite_tenant: bool = False,
+        auto_reports_tenant: bool = False,
     ) -> None:
         self.root = root.resolve()
         # Where the configuration page looks for registered MCP servers (the client keys them by
@@ -403,6 +406,11 @@ class DashboardApp:
         self.project_root = (project_root or Path.cwd()).resolve()
         self.config_host = config_host
         self.config_command = config_command
+        # The tenant a page shows when none is chosen: `memory` for the shared corpora, the file's
+        # own tenant for a lite store, which holds exactly one.
+        self.default_tenant = default_tenant
+        self._recover_lite_tenant = recover_lite_tenant
+        self._auto_reports_tenant = auto_reports_tenant
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
         self.db = db
@@ -419,8 +427,29 @@ class DashboardApp:
 
     # ------------------------------------------------------------------ tenants (database)
 
+    def _resolve_pending_lite_tenant(self) -> None:
+        """Recover a file unavailable at startup without widening an explicit report scope."""
+        if not self._recover_lite_tenant or self.db is None or not self.db.lite:
+            return
+        from recall.dashboard.lite_db import file_tenant
+
+        with self._tenant_lock:
+            if not self._recover_lite_tenant:
+                return
+            try:
+                tenant = file_tenant(self.db.dsn)
+            except dbq.DatabaseUnavailable:
+                return
+            if not tenant:
+                return
+            self.default_tenant = tenant
+            if self._auto_reports_tenant:
+                self.reports_tenants = (tenant,)
+            self._tenant_cache = None
+            self._recover_lite_tenant = False
+
     def _current_tenant(self) -> str:
-        return getattr(self._request, "tenant", "") or DEFAULT_TENANT
+        return getattr(self._request, "tenant", "") or self.default_tenant
 
     def _tenants(self) -> list[dict[str, Any]]:
         """Every tenant, cached for a minute: counting chunks for each one takes seconds."""
@@ -517,11 +546,14 @@ class DashboardApp:
         if not has_cookie:
             return self._error(HTTPStatus.FORBIDDEN, "Open the link `recall dashboard` printed to start a session.")
 
+        self._resolve_pending_lite_tenant()
         chosen = query.get("tenant", "")
         chosen = chosen if TENANT_NAME.fullmatch(chosen) else ""
         remembered = cookies[TENANT_COOKIE].value if TENANT_COOKIE in cookies else ""
         remembered = remembered if TENANT_NAME.fullmatch(remembered) else ""
-        self._request.tenant = chosen or remembered or DEFAULT_TENANT
+        if getattr(self.db, "lite", False):
+            remembered = ""  # one tenant per file; a cookie from another dashboard on this port would hide it
+        self._request.tenant = chosen or remembered or self.default_tenant
         self._request.path = url.path
         self._request.query = dict(query)
         self._request.find = query.get("q", "") if url.path == "/find" else ""
@@ -1424,7 +1456,7 @@ class DashboardApp:
         migrations = ", ".join(f"{table} {version}" for table, version in status["migrations"] if not table.startswith(("bench_", "comparison_", "locomo_", "recall_aml_", "structural_", "selective_", "voyage4_", "category4_", "chunks_bge")))
         avail = (
             "<div class='tiles'>"
-            f"<div class='card tile'><span class='eyebrow'>database</span><b class='ok-text'>answering</b><span class='muted'>PostgreSQL {_e(status['server_version'].split()[0])}</span></div>"
+            f"<div class='card tile'><span class='eyebrow'>database</span><b class='ok-text'>answering</b><span class='muted'>{_e(status.get('engine', 'PostgreSQL'))} {_e(status['server_version'].split()[0])}</span></div>"
             f"<div class='card tile'><span class='eyebrow'>connected as</span><b class='mono small'>{_e(status['role'])}</b><span class='muted'>{'read-only session' if status['read_only'] else 'NOT read-only'}</span></div>"
             f"<div class='card tile'><span class='eyebrow'>tenants</span><b>{sum(1 for t in every if t['generation'])}</b><span class='muted'>{len(every)} known, the rest without an active generation</span></div>"
             f"<div class='card tile'><span class='eyebrow'>searches recorded</span><b>{recorded}</b><span class='muted'>for {_e(tenant)}; needs RECALL_DECISION_LEDGER=1</span></div>"
