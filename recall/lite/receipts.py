@@ -10,9 +10,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS, MAX_IDEMPOTENCY_RESULT_BYTES
-from recall.errors import IdempotencyConflict
-from recall.store import PgVectorStore
+from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS
+from recall.idempotency_receipts import check_receipt_matches, check_result_size, receipt_key_hash
 
 if TYPE_CHECKING:
     from recall.lite.store import LiteStore
@@ -50,7 +49,7 @@ def get_receipt(
     now: datetime | None = None,
 ) -> str | None:
     """The stored response for `idempotency_key`, None when absent or expired."""
-    key_hash = PgVectorStore._operation_receipt_event_id(idempotency_key, operation)
+    key_hash = receipt_key_hash(idempotency_key, operation)
     _ensure(store)
     rows = store._metadata_values(
         "SELECT result, operation, request_fingerprint FROM recall_idempotency_receipts "
@@ -60,10 +59,9 @@ def get_receipt(
     if not rows or rows[0][0] is None:
         return None
     result, stored_operation, stored_fingerprint = rows[0]
-    if operation != "legacy" and stored_operation != operation:
-        raise IdempotencyConflict()
-    if request_fingerprint is not None and stored_fingerprint != request_fingerprint:
-        raise IdempotencyConflict()
+    check_receipt_matches(
+        stored_operation, stored_fingerprint, operation=operation, request_fingerprint=request_fingerprint
+    )
     return str(result)
 
 
@@ -79,9 +77,8 @@ def record_receipt(
     """Persist a completed response; the first writer of a key wins until it expires."""
     if request_fingerprint is None:
         request_fingerprint = ""
-    if len(result.encode("utf-8")) > MAX_IDEMPOTENCY_RESULT_BYTES:
-        raise ValueError("idempotent mutation result exceeds the 512 KiB replay limit")
-    key_hash = PgVectorStore._operation_receipt_event_id(idempotency_key, operation)
+    check_result_size(result)
+    key_hash = receipt_key_hash(idempotency_key, operation)
     moment = now or datetime.now(UTC)
     _ensure(store)
     with store._write():

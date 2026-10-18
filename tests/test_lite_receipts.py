@@ -7,6 +7,9 @@ Invariants and the failure each one catches:
 - R3 a receipt expires after the retention window; before that the first writer wins.
 - R4 a result over 512 KiB is refused before any write.
 - R5 `chunk_by_id` returns the chunk without its embedding, None when absent.
+- R6 the lite store files a receipt under the key hash `PgVectorStore` derives for the same key,
+  because both call `recall.idempotency_receipts.receipt_key_hash` (CCA CODE-006).
+- R7 the replay limit is inclusive: a result of exactly 512 KiB is kept, one byte more is refused.
 
 Red proof: recorded in each test's docstring.
 """
@@ -21,6 +24,7 @@ import pytest
 from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS, MAX_IDEMPOTENCY_RESULT_BYTES
 from recall.errors import IdempotencyConflict
 from recall.lite import LiteStore
+from recall.store import PgVectorStore
 from recall.types import Chunk
 
 T0 = datetime(2026, 10, 12, 12, tzinfo=UTC)
@@ -61,6 +65,24 @@ def test_r4_an_oversized_result_is_refused(store: LiteStore) -> None:
     """Red: `record_receipt` without the size check raises nothing."""
     with pytest.raises(ValueError, match="512 KiB"):
         store.record_operation_receipt("k", "x" * (MAX_IDEMPOTENCY_RESULT_BYTES + 1), operation="op")
+
+
+def test_r6_the_key_hash_is_postgres_s(store: LiteStore) -> None:
+    """Red, 2026-10-18: `recall/lite/receipts.py` hashing `idempotency_key + operation` itself
+    instead of calling `receipt_key_hash` failed the equality assertion."""
+    store.record_operation_receipt("k", "x", operation="op", request_fingerprint="f")
+    stored = store._metadata_values("SELECT idempotency_key_hash FROM recall_idempotency_receipts")
+    assert stored == [(PgVectorStore._operation_receipt_event_id("k", "op"),)], (
+        "the lite store and PostgreSQL file the same key under different identities"
+    )
+
+
+def test_r7_the_replay_limit_is_inclusive(store: LiteStore) -> None:
+    """Red, 2026-10-18: `check_result_size` comparing with `>=` refused the exact-limit result."""
+    store.record_operation_receipt("k", "x" * MAX_IDEMPOTENCY_RESULT_BYTES, operation="op")
+    assert store.get_operation_receipt("k", operation="op") == "x" * MAX_IDEMPOTENCY_RESULT_BYTES
+    with pytest.raises(ValueError, match="512 KiB"):
+        store.record_operation_receipt("j", "x" * (MAX_IDEMPOTENCY_RESULT_BYTES + 1), operation="op")
 
 
 def test_r5_chunk_by_id(store: LiteStore) -> None:
