@@ -2,12 +2,14 @@
 -- recall_forget retracts a fact whose every evidence card names a forgotten source: a
 -- `retracted` event, coded SOURCE_FORGOTTEN, carrying no fact, appended through the protected
 -- append function like every other ledger event.
+-- Validate existing rows in 0028, after this transaction releases its exclusive table lock.
+-- NOT VALID still enforces both constraints on every new or changed row immediately.
 ALTER TABLE recall_fact_ledger_events
     DROP CONSTRAINT IF EXISTS recall_fact_ledger_events_event_type_check;
 
 ALTER TABLE recall_fact_ledger_events
     ADD CONSTRAINT recall_fact_ledger_events_event_type_check
-    CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained', 'retracted'));
+    CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained', 'retracted')) NOT VALID;
 
 ALTER TABLE recall_fact_ledger_events
     DROP CONSTRAINT IF EXISTS recall_fact_ledger_fact_shape;
@@ -17,7 +19,7 @@ ALTER TABLE recall_fact_ledger_events
     CHECK (
         (event_type IN ('asserted', 'rejected') AND fact IS NOT NULL)
         OR event_type IN ('superseded', 'abstained', 'retracted')
-    );
+    ) NOT VALID;
 
 CREATE OR REPLACE FUNCTION recall_append_fact_ledger_event(
     p_event_id TEXT,

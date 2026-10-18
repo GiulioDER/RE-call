@@ -1485,6 +1485,22 @@ class PgVectorStore:
         self._with_retry(_op)
         return event_id
 
+    def forgotten_source_aliases(self, sources: Sequence[str]) -> set[str]:
+        """Recover card names recorded before these exact sources were forgotten."""
+        if not sources:
+            return set()
+
+        def _op(conn: "psycopg.Connection") -> set[str]:
+            rows = conn.execute(
+                "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+                "AND event_type = 'forget_source_aliases' AND source_uri = ANY(%s)",
+                (self._tenant, list(sources)),
+            ).fetchall()
+            return {name for (payload,) in rows for name in payload.get("aliases", ())
+                    if isinstance(name, str)}
+
+        return self._with_retry(_op)
+
     @staticmethod
     def _operation_receipt_event_id(idempotency_key: str, operation: str = "legacy") -> str:
         """Derive one bounded, nonrevealing audit identity from the request key.

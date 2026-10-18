@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from collections.abc import Callable
@@ -132,6 +135,7 @@ def _forget_retractions(
     ledger = _fact_ledger_for(store)
     if ledger is None:
         return None
+    named, erased = requested, to_delete
     names = sorted({
         card.source
         for event in ledger.events
@@ -144,16 +148,40 @@ def _forget_retractions(
             bucket = resolved.setdefault(name, [])
             bucket.extend(value for value in values if value not in bucket)
     known = set(names)
-    erased = set(to_delete)
-    named = set(requested) | erased
-
-    def gone(card: EvidenceCard) -> bool:
-        return card.source in known and set(resolved.get(card.source, ())) <= erased
+    gone_sources = set(erased)
+    touched_names = set(named) | gone_sources
+    touched_names.update(name for name, values in resolved.items() if set(values) & gone_sources)
+    for target in (store, shadow_store):
+        recover = getattr(target, "forgotten_source_aliases", None)
+        if callable(recover):
+            touched_names.update(recover(sorted(named)))
+    # Keep only source names, never memo text. The mapping must commit before the chunks vanish,
+    # so a failed append can be retried with the original absolute source.
+    append = getattr(store, "append_audit_event", None)
+    if callable(append):
+        for source in sorted(gone_sources):
+            aliases = sorted(name for name, values in resolved.items() if source in values)
+            if aliases:
+                identity = json.dumps([store.tenant, source, aliases], ensure_ascii=False)
+                append(
+                    "forget_source_aliases", {"aliases": aliases}, source_uri=source,
+                    event_id="forget_alias_" + hashlib.sha256(identity.encode()).hexdigest(),
+                )
 
     def touched(card: EvidenceCard) -> bool:
-        return card.source in named or (bool(resolved.get(card.source)) and gone(card))
+        return card.source in touched_names
 
     def retract() -> int:
+        # Look again after deletion. Concurrent forgets may each have observed the other's memo
+        # before either deletion; the last committer must see that both are now gone.
+        remaining = dict(store.sources_for_identifiers(names)) if names else {}
+        if shadow_store is not None and names:
+            for name, values in shadow_store.sources_for_identifiers(names).items():
+                remaining.setdefault(name, []).extend(values)
+
+        def gone(card: EvidenceCard) -> bool:
+            return card.source in known and not remaining.get(card.source)
+
         written = ledger.retract_forgotten(tenant_id=store.tenant, touched=touched, gone=gone)
         return len({fact_id for event in written for fact_id in event.supersedes_fact_ids})
 
@@ -228,7 +256,8 @@ def _forget_memory_unlocked(
             "fact retraction plan failed before chunk deletion for tenant %r",
             getattr(store, "tenant", None),
         )
-        facts_retracted = -1
+        # Keep chunks intact when a recovery plan cannot be persisted.
+        raise
     if to_delete and shadow_store is not None:
         chunks_removed = store.delete_sources_across([store.table, shadow_store.table], to_delete)
     else:
