@@ -7,5 +7,16 @@ scope arms in Python (`recall.lite.store._matches`), and its tests pin the copy 
 """
 
 from recall.lite.store import LITE_DSN_PREFIX, LiteStore, LiteStoreError, LiteUnsupported, is_lite_dsn
+from recall.lite.writer_lock import LiteWriterBusy, LiteWriterCoalesced, lite_lane, lite_lane_status
 
-__all__ = ["LITE_DSN_PREFIX", "LiteStore", "LiteStoreError", "LiteUnsupported", "is_lite_dsn"]
+__all__ = [
+    "LITE_DSN_PREFIX",
+    "LiteStore",
+    "LiteStoreError",
+    "LiteUnsupported",
+    "LiteWriterBusy",
+    "LiteWriterCoalesced",
+    "is_lite_dsn",
+    "lite_lane",
+    "lite_lane_status",
+]

@@ -229,7 +229,9 @@ def _setup_lite(args: argparse.Namespace) -> None:
     import os
     from pathlib import Path
 
+    from recall.lite import LiteWriterBusy
     from recall.lite.setup import run_lite_setup
+    from recall.lite.writer_lock import queued_notice
 
     project_root = Path.cwd()
     memory = Path(args.memory or os.environ.get("RECALL_INDEX_ROOT") or project_root)
@@ -248,9 +250,14 @@ def _setup_lite(args: argparse.Namespace) -> None:
             embedder_name=args.embedder,
             store_path=Path(args.store) if args.store else None,
             register=not args.no_register,
+            on_queued=queued_notice("recall setup --lite"),
         )
     except NotADirectoryError as exc:
         raise SystemExit(f"recall setup --lite: {exc}; pass --memory <folder of notes>") from exc
+    except LiteWriterBusy as exc:
+        # Another client (a running MCP server indexing, say) holds the store; the message names
+        # it and says to retry, which is advice, not a traceback.
+        raise SystemExit(f"recall setup --lite: {exc}") from exc
     except ValueError as exc:
         raise SystemExit(f"recall setup --lite: {exc}") from exc
     print(report.render())
