@@ -100,7 +100,7 @@ jobs:
       # traced back to, rather than to bytes somebody handed the service.
       - name: Upload the unsigned bundle
         id: unsigned
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: recall-install-windows-unsigned
           path: dist/recall-install
@@ -171,7 +171,7 @@ jobs:
       # warning they get, and it has to be one they cannot miss.
       - name: Publish the unsigned bootstrap artifact
         if: steps.sign.outcome == 'skipped' && inputs.allow_unsigned == true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: recall-install-windows-UNSIGNED-will-be-blocked-by-smart-app-control
           path: dist/recall-install
@@ -202,7 +202,7 @@ jobs:
 
       - name: Upload the signed bundle
         if: steps.sign.outcome == 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: recall-install-windows
           # `dist-signed`, not `dist-signed/recall-install`: see the verify step above for why that
