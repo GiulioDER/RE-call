@@ -1810,7 +1810,11 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         store = await _require(SCOPE_READ, ctx)
         instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
-        result = await _to_thread(lambda: current_facts_memory(store, as_of=instant))
+        state = _state(ctx)
+        result = await _to_thread(lambda: current_facts_memory(
+            store, as_of=instant, security_policy=state.get("source_security_policy"),
+            access_context=_access_context(state, store),
+        ))
         return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
 
     @mcp.tool(

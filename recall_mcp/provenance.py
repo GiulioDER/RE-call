@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from recall.evidence import cards_from_trusted_result
-from recall.fact_ledger import PostgresFactLedger
+from recall.fact_ledger import PostgresFactLedger, project_current
 from recall.fact_retraction import served_sources
 from recall.frontmatter import validity_bounds
 from recall.generations import NoActiveGeneration
@@ -189,7 +189,9 @@ def apply_fact_memory(
 
 
 def current_facts_memory(
-    store: PgVectorStore, *, as_of: datetime | None = None
+    store: PgVectorStore, *, as_of: datetime | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> dict[str, object]:
     """Return the ledger's deterministic current fact projection for this tenant.
 
@@ -199,19 +201,42 @@ def current_facts_memory(
     supersession between their memos, are listed under `contested` and not under `facts`
     (`recall.provenance_controller.split_contested`).
     """
+    if security_policy is not None:
+        if access_context is None or access_context.tenant != store.tenant:
+            raise PermissionError("a matching source access context is required for current facts")
     instant = as_of or datetime.now(UTC)
     served = served_sources(store)
     ledger = _fact_backends(store)[0]
-    events = (
-        ledger.current(tenant_id=store.tenant, now=instant)
-        if served is None
-        else ledger.current(tenant_id=store.tenant, now=instant, served=served)
-    )
-    # A fact's memos come from every live application of it, DUPLICATE ones included, so from the
-    # whole stream; it is read only when something is listed, and a ledger offering `current` alone
-    # names the memos of the applications it lists.
-    history = getattr(ledger, "events", None) if events else None
-    sources = live_sources(history if history is not None else events, served)
+    # One history snapshot serves both the projection and its supporting source names.
+    history = getattr(ledger, "events", None)
+    if history is not None:
+        history = tuple(event for event in history if event.tenant_id == store.tenant)
+        events = project_current(history, instant, served)
+    else:
+        events = (
+            ledger.current(tenant_id=store.tenant, now=instant)
+            if served is None
+            else ledger.current(tenant_id=store.tenant, now=instant, served=served)
+        )
+        history = events
+    sources = live_sources(history, served)
+    if security_policy is not None:
+        assert access_context is not None
+
+        def permitted(name: str) -> bool:
+            decision = security_policy.decide(name, access_context)
+            # Structured values cannot safely be projected through a text redaction rule.
+            return decision.allowed and not decision.redactions
+
+        sources = {fact_id: tuple(name for name in names if permitted(name))
+                   for fact_id, names in sources.items()}
+        events = tuple(event for event in events if sources.get(event.fact_id or ""))
+
+    def card_ids(event: FactEvent) -> list[str]:
+        allowed = sources.get(event.fact_id or "", ())
+        return [card.card_id for card in event.evidence_cards
+                if security_policy is None or card.source in allowed]
+
     standing, contested = split_contested(events)
     try:
         generation_id: str | None = store.generation_id
@@ -232,7 +257,7 @@ def current_facts_memory(
                 "event_id": event.event_id,
                 "fact_id": event.fact_id,
                 "fact": event.fact.to_payload() if event.fact else None,
-                "evidence_card_ids": [card.card_id for card in event.evidence_cards],
+                "evidence_card_ids": card_ids(event),
                 "generation_id": event.generation_id,
                 "writer": event.writer,
                 "asserted_at": event.created_at.isoformat(),
@@ -251,7 +276,7 @@ def current_facts_memory(
                         "fact": event.fact.to_payload() if event.fact else None,
                         "fact_id": event.fact_id,
                         "sources": names(event),
-                        "evidence_card_ids": [card.card_id for card in event.evidence_cards],
+                        "evidence_card_ids": card_ids(event),
                     }
                     for event in group
                 ],

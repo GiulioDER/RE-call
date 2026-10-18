@@ -559,7 +559,7 @@ def _refresh_locked(
         corpus_version=store._version(),
         policy=policy_key(security_policy, security_context),
         key_root=key_root,
-        stated=_stated_marker(store, roots),
+        stated=_stated_marker(store, roots) if report.facts_stated >= 0 else None,
     )
 
 

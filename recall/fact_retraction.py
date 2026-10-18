@@ -10,15 +10,15 @@ from. Two things take a memo away, and they are treated differently on purpose:
   STATE. A rollback, a restored file or a repaired sync brings it back, so nothing is written: the
   projections hide a fact none of whose memos the store serves now (`served_sources`, rule in
   `recall.provenance_controller.absent_fact_ids`), and show it again when a memo returns. A lite
-  store also answers with which content each memo is served and which memos its supersession
+  or PostgreSQL store also answers with which content each memo is served and which memos its supersession
   graph retires (`recall.provenance_controller.ServedState`).
 """
 from __future__ import annotations
 
+from collections.abc import Callable, Collection, Mapping
+from functools import cache
 import hashlib
 import json
-
-from collections.abc import Callable, Collection, Mapping
 from typing import TYPE_CHECKING, Any
 
 from recall.observability import get_logger
@@ -132,8 +132,10 @@ def prepare_retraction(
 
 
 def served_sources(store: object) -> ServedSources | None:
-    """The memo names `store` serves now, with their content and supersession on a lite store;
-    None without a lookup.
+    """The memo names `store` serves now, with their content, supersession and stating rule on a
+    lite or PostgreSQL store; None without a lookup. On a generation store the content is the
+    SERVED generation's: `sources_for_identifiers` spans every generation, `source_raw_hashes` the
+    served one, so a stated card lives only while that generation holds the content it recorded.
 
     Fails open: when a lookup errors every name counts as served, unedited and unsuperseded, so an
     outage shows facts as the ledger alone would rather than hiding all of them.
@@ -142,6 +144,7 @@ def served_sources(store: object) -> ServedSources | None:
     if not callable(lookup):
         return None
 
+    @cache
     def served(names: frozenset[str]) -> Collection[str]:
         try:
             return {str(name) for name in lookup(sorted(names))}
@@ -155,18 +158,35 @@ def served_sources(store: object) -> ServedSources | None:
         return served
     from recall.provenance_controller import ServedState
 
+    @cache
+    def resolved_names(names: frozenset[str]) -> dict[str, list[str]]:
+        return store.sources_for_identifiers(sorted(names))
+
+    @cache
+    def raw_hashes() -> dict[str, str]:
+        return store.source_raw_hashes()
+
+    @cache
     def content_hashes(names: frozenset[str]) -> dict[str, frozenset[str]] | None:
+        from recall.stated_facts import stating_rule
+
         try:
-            resolved = store.sources_for_identifiers(sorted(names))
-            raw = store.source_raw_hashes()
+            rule = stating_rule(store)
+            if isinstance(rule, str):
+                return {}
+            resolved = resolved_names(names)
+            raw = raw_hashes()
         except Exception:  # BROAD-CATCH: fail-open  # no stated card is checked against content
             _log.exception("content lookup for %d memo name(s) failed; checking no stated card", len(names))
             return None
         return {
-            name: frozenset(raw[source] for source in sources if raw.get(source))
+            # Admission and content must come from the same absolute source. A relative
+            # alias can also resolve to an excluded namesake with a different hash.
+            name: frozenset(raw[source] for source in sources if raw.get(source) and rule.admits(name, source))
             for name, sources in resolved.items()
         }
 
+    @cache
     def stated_admitted(names: frozenset[str]) -> frozenset[str]:
         """The names whose memos the operator's rule lets state facts now. Fails CLOSED: a rule
         that cannot be computed admits nothing, so no memo states facts on an error."""
@@ -176,7 +196,7 @@ def served_sources(store: object) -> ServedSources | None:
             rule = stating_rule(store)
             if isinstance(rule, str) or not names:
                 return frozenset()
-            resolved = store.sources_for_identifiers(sorted(names))
+            resolved = resolved_names(names)
         except Exception:  # BROAD-CATCH: fail-closed  # no stated fact is current on an error
             _log.exception("stating rule lookup failed; listing no stated fact")
             return frozenset()
@@ -184,6 +204,7 @@ def served_sources(store: object) -> ServedSources | None:
             name for name, sources in resolved.items() if any(rule.admits(name, s) for s in sources)
         )
 
+    @cache
     def superseded(names: frozenset[str]) -> frozenset[str]:
         """Names a served memo the operator admits supersedes. A memo that may not state facts
         (an upload, a file outside the prefixes) cannot retire another memo's facts either, and an
@@ -193,13 +214,27 @@ def served_sources(store: object) -> ServedSources | None:
         sorting after an admitted claimant would displace it and keep the old value current.
         """
         try:
+            from recall.stated_facts import stating_rule
+
+            # Only admitted memos can retire facts, so with stating off nothing can be retired, and
+            # the store's supersession graph is not asked at all: that lookup would otherwise run on
+            # every read of every PostgreSQL deployment that never turned stating on.
+            rule = stating_rule(store)
+            if isinstance(rule, str):
+                return frozenset()
             edges, _unresolved, candidates = store.supersession_all()
             claims = {
                 name: {claimant for claimant, _when in candidates.get(name, ())} | {edges[name]}
                 for name in names
                 if name in edges
             }
-            admitted = stated_admitted(frozenset(c for group in claims.values() for c in group))
+            claimants = resolved_names(frozenset(c for group in claims.values() for c in group))
+            # The supersession graph identifies a claimant only by its relative name.
+            # Ambiguous authority cannot retire another memo's facts.
+            admitted = frozenset(
+                name for name, sources in claimants.items()
+                if sources and all(rule.admits(name, source) for source in sources)
+            )
         except Exception:  # BROAD-CATCH: fail-open  # no memo's facts are retired
             _log.exception("supersession lookup failed; retiring no memo's facts")
             return frozenset()

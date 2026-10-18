@@ -192,7 +192,7 @@ class LiteAutoRefresher:
     def _refreshed_elsewhere(self, fingerprint: str) -> bool:
         """Did another refresher (a person's CLI run) bring this failing snapshot current? Then adopt it."""
         last = read_state(self._store.path).get("last_success") or {}
-        if last.get("fingerprint") != fingerprint:
+        if last.get("fingerprint") != fingerprint or last.get("stated") is None:
             return False
         with self._lock:
             self._refreshed, self._failed, self._failure, self._backoff_s = fingerprint, None, None, 0.0
@@ -255,11 +255,11 @@ class LiteAutoRefresher:
             return
         _log.info("lite auto refresh: %s (%s)", report.outcome.value, report.reason)
         with self._lock:
-            if report.outcome in (Outcome.REFRESHED, Outcome.UNCHANGED):
+            if report.outcome in (Outcome.REFRESHED, Outcome.UNCHANGED) and report.facts_stated >= 0:
                 self._refreshed, self._failed, self._backoff_s = report.fingerprint, None, 0.0
                 self._failure = None
-            elif report.outcome is Outcome.FAILED:
-                self._failure = report.reason
+            elif report.outcome is Outcome.FAILED or report.facts_stated < 0:
+                self._failure = report.stated if report.facts_stated < 0 else report.reason
                 repeated = report.fingerprint == self._failed
                 self._backoff_s = (
                     min(self._backoff_s * 2, MAX_BACKOFF_S) if repeated else max(2 * self._interval_s, MIN_BACKOFF_S)
