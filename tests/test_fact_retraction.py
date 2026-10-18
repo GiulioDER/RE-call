@@ -101,9 +101,10 @@ def test_r2_a_fact_stays_while_any_of_its_memos_survives(store: LiteStore) -> No
 
     Red, mutation of `plan_retractions` (recall/fact_ledger.py): the surviving-evidence test
     removed (`all(gone(card) ...)` dropped, so a touched fact is retracted), fails on "a fact with
-    a surviving memo was retracted". Red, mutation of `_forget_retractions`
-    (recall_mcp/lifecycle.py): a card counted as gone only when this call names its source
-    (`gone=lambda card: touched(card) and card.source in named`), fails on "the fact outlived
+    a surviving memo was retracted". Red, mutation of `prepare_retraction`
+    (recall/fact_retraction.py; `_forget_retractions` in recall_mcp/lifecycle.py before the prune
+    follow-up): a card counted as gone only when this call names its source
+    (`gone=lambda card: touched(card) and card.source in touched_names`), fails on "the fact outlived
     its last memo". Red against the pre-fix chain end: fails on "the fact outlived its last memo".
     """
     remember(store, "a.md")
@@ -175,8 +176,9 @@ def test_r5_forgetting_a_successor_does_not_revive_what_it_superseded(store: Lit
 def test_r6_a_rerun_completes_a_failed_retraction(store: LiteStore, monkeypatch: pytest.MonkeyPatch) -> None:
     """Node tests/test_fact_retraction.py::test_r6_a_rerun_completes_a_failed_retraction.
 
-    Red, mutation of `_forget_retractions` (recall_mcp/lifecycle.py): `touched` matching only the
-    sources this call deletes (the requested names dropped), so a re-run, which deletes nothing,
+    Red, mutation of `prepare_retraction` (recall/fact_retraction.py; `_forget_retractions` in
+    recall_mcp/lifecycle.py before the prune follow-up): `touched` matching only the sources this
+    call deletes (the requested names dropped), so a re-run, which deletes nothing,
     touches nothing: fails on "the re-run did not retract the fact".
     """
     remember(store, "door.md")
