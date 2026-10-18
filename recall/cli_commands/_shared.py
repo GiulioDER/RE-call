@@ -86,6 +86,14 @@ def _print_result(result: TrustedResult) -> None:
         f"retrieval={terminal_safe(d.retrieval_profile)} "
         f"generation={terminal_safe(d.index_generation)}"
     )
+    print("  query support: not_checked (retrieval eligibility does not establish answerability)")
+    coverage = result.calibration_coverage
+    print(f"  calibration coverage: {terminal_safe(coverage.status)} "
+          f"calibration={terminal_safe(coverage.calibration_id or 'none')}")
+    if coverage.report is not None:
+        from recall.near_miss import describe
+
+        print("  " + terminal_safe(describe(coverage.report)))
     if result.reason:
         print(f"  reason: {result.reason}")
     for h in result.hits:

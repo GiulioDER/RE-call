@@ -78,11 +78,11 @@ STATED_FACT_SCHEMA: dict[str, Any] = {
 #: The compact view, in the order a model reads it. Absent fields are written as null.
 SEARCH_FIELDS = (
     "decision_state", "abstained", "reason", "advice", "evidence", "refresh_warning",
-    "unknown_term_check", "unknown_terms", "historical",
+    "unknown_term_check", "unknown_terms", "historical", "query_support", "calibration_coverage",
 )
 EVIDENCE_FIELDS = (
     "decision_state", "decision", "reason_code", "trust_state", "advice", "refresh_warning",
-    "unknown_term_check", "unknown_terms",
+    "unknown_term_check", "unknown_terms", "query_support", "calibration_coverage",
 )
 
 APPLY_FACT_FIELDS = (

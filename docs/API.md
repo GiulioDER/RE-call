@@ -268,3 +268,31 @@ Reasoning policy and operational behavior are documented in
 Benchmark harnesses under `benchmarks/`, result builders under `results/`, and experimental code
 under `benchmarks/finetune/` are not the library API. They are retained for reproducibility and
 evidence review.
+
+## Retrieval eligibility and answerability
+
+Search and evidence responses add `query_support` and `calibration_coverage`. Existing
+`decision_state`, `decision`, `abstained`, verdicts, confidence and citation eligibility retain
+their behavior. `supported`, `answer` and a citable chunk mean that retrieval trust checks admitted
+evidence; they do not establish that the requested detail is stated or that a generated claim is
+correct. Callers must establish support for each claim from the eligible passages.
+
+`query_support` is `{ "status": "not_checked", "scope": "returned_evidence", "method": null }`.
+No answerability verifier runs. It remains not checked on certified, degraded and empty results.
+`validate_answer` still checks structure and citation identity only.
+
+`calibration_coverage` contains the selected `calibration_id`, a `status`, a `method` and a
+`report`. When available, `method` is `synthetic_corpus_probes` and `report` preserves the stored
+`unknown_entity` and `in_vocabulary` counts, rejection rates, per-class measurement states and
+`provisional_in_vocabulary` warning. These are synthetic diagnostics, not audited labels or
+per-query semantic support. `measured` means both probe classes were measured, not that the gate
+passed them: a measured report can still be provisional.
+
+Missing measurements, a backend without this optional reader, or a report for another calibration
+produce `unmeasured` and a null report. Reader failures produce `unavailable`. A carried calibration
+does not inherit near-miss measurements from the parent fit. Coverage is read in the search's
+snapshot for the calibration actually selected, without refitting or changing admission.
+
+The Python trusted result and evidence bundle carry the same dataclasses. MCP, the in-process
+agent tools, the compact assistant view and CLI report the distinction. Older MCP payloads without
+these additive fields remain readable, defaulting to not checked support and unmeasured coverage.

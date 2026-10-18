@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Search and evidence now report unchecked semantic query support separately from retrieval
+  eligibility, and carry calibration-bound synthetic near-miss coverage when available. Missing
+  measurements remain unmeasured and report failures are unavailable. Existing retrieval decisions,
+  certification and citation eligibility are unchanged. The compact assistant surface and CLI
+  expose the same distinction. No verifier or additional model call is enabled.
+
 ### Security
 
 * **`mcp` is pinned at 2.2.0, up from 2.1.0** (GHSA-84m7-p3x7-pcfv, CVE-2026-59951). In 2.1.0 a
