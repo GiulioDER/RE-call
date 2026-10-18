@@ -114,7 +114,7 @@ pool = ["psycopg-pool>=3.2"]
 # `recall_mcp.limits.RateLimited` carries the `ToolError` base to survive this; the pin is what
 # makes the next such change arrive as a deliberate bump with a test run behind it.
 mcp = [
-    "mcp==2.1.0",
+    "mcp==2.2.0",
     "psycopg-pool>=3.2",
     "PyJWT[crypto]>=2.10.1,<3",
     # MCP server and HTTP client modules import these packages directly.
@@ -189,7 +189,7 @@ dev = [
     # lever on its wall clock is running it in parallel. `tests/conftest.py::_isolate_xdist_worker`
     # is what makes that safe against a shared database; see the note there.
     "pytest-xdist>=3.6",
-    "mcp==2.1.0", "psycopg-pool>=3.2",
+    "mcp==2.2.0", "psycopg-pool>=3.2",
     "python-dotenv>=1.0",
     "PyJWT[crypto]>=2.10.1,<3",
     "langchain-core>=0.3",
@@ -218,7 +218,7 @@ analysis = [
     "pytest-benchmark>=5,<6",
 ]
 # Optional Windows desktop shell. Keeping this separate preserves the small library install.
-desktop = ["PySide6>=6.7", "keyring>=25", "mcp==2.1.0", "fastembed>=0.3,<1"]
+desktop = ["PySide6>=6.7", "keyring>=25", "mcp==2.2.0", "fastembed>=0.3,<1"]
 
 # Declared LAST among the `[project]` sub-tables: every bare key above (`dependencies`,
 # `classifiers`, …) belongs to `[project]`, and opening a sub-table earlier would silently

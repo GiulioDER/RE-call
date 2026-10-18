@@ -84,7 +84,7 @@ updates:
           - "version-update:semver-minor"
           - "version-update:semver-major"
 
-      # mcp: pinned EXACTLY (`mcp==2.1.0`) in three separate extras, so every bump is a pin edit
+      # mcp: pinned EXACTLY (`mcp==2.2.0`) in three separate extras, so every bump is a pin edit
       # in three places, and a protocol library is one where a wire-format change is not a
       # routine upgrade. Patch and minor are held; a MAJOR still opens a PR, which is the moment
       # this is worth a person's attention.
