@@ -17,6 +17,7 @@ SQLite file, or `recall setup` for PostgreSQL. [INSTALLATION.md](INSTALLATION.md
 | [FOR_AGENTS.md](FOR_AGENTS.md) | Why agents need persistent, trusted memory and the experience loop for using it safely. |
 | [INSTALLATION.md](INSTALLATION.md) | Local SQLite and PostgreSQL installation, the wizard, headless provisioning, and integrations. |
 | [API.md](API.md) | Supported Python, CLI, and MCP surface. |
+| [MEMO_CORRECTIONS.md](MEMO_CORRECTIONS.md) | Assistant memo correction preconditions, retry identities, receipts and compatibility. |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | Versioning, API and wire contracts, schema upgrades, and release evidence. |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | Product, evidence, benchmark support, and archive boundaries. |
 | [WIZARD.md](WIZARD.md) | The install wizard's headless and GUI front ends, config format, and refusals. |

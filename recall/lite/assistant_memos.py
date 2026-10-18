@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall.atomic_write import atomic_write_bytes
+from recall.lite.memo_requests import load_ledger, write_memo
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -68,7 +69,9 @@ class MemoFolder:
         return {str(k): str(v) for k, v in data.get("authors", {}).items()}
 
     def _record(self, authors: dict[str, str]) -> None:
-        body = json.dumps({"version": 1, "authors": authors}, indent=1) + "\n"
+        ledger = load_ledger(self.ledger_path)
+        ledger["authors"] = authors
+        body = json.dumps(ledger, indent=1) + "\n"
         atomic_write_bytes(self.ledger_path, body.encode("utf-8"))
 
     def _next_number(self, authors: Mapping[str, str]) -> int:
@@ -87,6 +90,9 @@ class MemoFolder:
         fact: object = None,
         *,
         author: str = "assistant",
+        request_id: str | None = None,
+        expected_revision: str | None = None,
+        include_receipt: bool = False,
     ) -> dict[str, Any]:
         """Write one memo file without indexing it. Returns {memo_id} or {refused: reason}.
 
@@ -135,20 +141,10 @@ class MemoFolder:
         if graph:
             front.append("recall_graph: " + json.dumps(graph, ensure_ascii=False))
         body = ("---\n" + "\n".join(front) + "\n---\n" if front else "") + text.strip() + "\n"
-        self.folder.mkdir(parents=True, exist_ok=True)
-        number = self._next_number(authors)
-        while True:
-            memo_id = f"{kind}-{number:04d}"
-            try:
-                # "x": never over a file somebody else put in the folder under the same name.
-                with open(self.folder / f"{memo_id}.md", "x", encoding="utf-8", newline="\n") as fh:
-                    fh.write(body)
-                break
-            except FileExistsError:
-                number += 1
-        authors[memo_id] = author
-        self._record(authors)
-        return {"memo_id": memo_id}
+        return write_memo(
+            self.folder, self.ledger_path, body, kind=kind, author=author, supersedes=supersedes,
+            request_id=request_id, expected_revision=expected_revision, include_receipt=include_receipt,
+        )
 
     def refresh(self, store: LiteStore, embedder: Embedder, **kwargs: Any) -> RefreshReport:
         """Index the folder now, through the lite refresh the server itself runs, keyed to the index root.

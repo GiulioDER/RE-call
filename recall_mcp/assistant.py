@@ -65,6 +65,10 @@ REMEMBER_DESCRIPTION = (
     "when the fact holds; supersedes names a memo_id this fact replaces. fact (optional) is the "
     "same fact as {subject, predicate, object}: recall_evidence then returns cards that "
     "recall_apply_fact can cite."
+    " Corrections should pass supersedes and the revision returned by search or a write receipt "
+    "as expected_revision. Reuse request_id only to retry the same write. include_receipt returns "
+    "write, indexing and calibration readiness separately; old calls still return only memo_id. "
+    "A correction target that already has a successor is refused."
 )
 FORGET_DESCRIPTION = "Delete one memo from long-term memory by memo_id."
 _STRING = {"type": "string"}
@@ -148,13 +152,38 @@ class AssistantMemos(MemoFolder):
         fact: object = None,
         *,
         author: str = "assistant",
+        request_id: str | None = None,
+        expected_revision: str | None = None,
+        include_receipt: bool = False,
         **refresh_kwargs: Any,
     ) -> dict[str, Any]:
         """`write` then `refresh`, both under the store's write lane."""
         with write_session(store, "remember"):
-            result = self.write(text, kind, valid_from, valid_until, supersedes, fact, author=author)
+            result = self.write(
+                text, kind, valid_from, valid_until, supersedes, fact, author=author,
+                request_id=request_id, expected_revision=expected_revision, include_receipt=include_receipt,
+            )
             if "memo_id" in result:
-                self.refresh(store, embedder, **refresh_kwargs)
+                receipt = result.get("receipt")
+                if receipt is None:
+                    self.refresh(store, embedder, **refresh_kwargs)
+                else:
+                    try:
+                        self.refresh(store, embedder, **refresh_kwargs)
+                        path = self.path_of(result["memo_id"])
+                        indexed = path is not None and store.source_raw_hashes().get(str(path)) == receipt["revision"]
+                        receipt["index_state"] = "indexed" if indexed else "failed"
+                    except Exception as exc:  # BROAD-CATCH: fail-closed receipt; retry can finish indexing
+                        receipt.update(index_state="failed", calibration_status="unavailable",
+                                       retrieval_ready=False, error_type=type(exc).__name__)
+                        return result
+                    try:
+                        resolution = store.resolve_calibration()
+                        receipt["calibration_status"] = resolution.status.value
+                        receipt["retrieval_ready"] = indexed and resolution.status.value == "certified"
+                    except Exception as exc:  # BROAD-CATCH: fail-closed readiness, keep verified indexing state
+                        receipt.update(calibration_status="unavailable", retrieval_ready=False,
+                                       error_type=type(exc).__name__)
             return result
 
     def forget(
@@ -234,6 +263,7 @@ class AssistantMemos(MemoFolder):
                     "chunk_id": h.get("chunk_id"),
                     "verdict": h["verdict"],
                     "text": h["text"],
+                    "revision": h.get("revision"),
                     "valid_from": h.get("valid_from"),
                     "valid_until": h.get("valid_until"),
                     "superseded_by": h.get("superseded_by"),

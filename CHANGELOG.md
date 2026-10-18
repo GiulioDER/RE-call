@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Add optional memo correction receipts, revision preconditions and persistent request identities;
+  refuse stale correction targets while preserving legacy write replies.
+
 ### Security
 
 * **`mcp` is pinned at 2.2.0, up from 2.1.0** (GHSA-84m7-p3x7-pcfv, CVE-2026-59951). In 2.1.0 a

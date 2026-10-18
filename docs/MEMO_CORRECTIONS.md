@@ -1,0 +1,56 @@
+# Reliable corrections through the assistant surface
+
+The existing `recall_remember` tool accepts three optional parameters. Calls that omit them retain
+the exact legacy `{memo_id}` success reply and raising refresh failures.
+
+* `request_id`: an opaque nonempty string, at most 128 characters. Reuse it only for the same
+  text, fact, kind, dates, supersession target and revision precondition. The memo folder journals
+  its reserved memo id and request hash before publication. A retry finishes the original write
+  and refreshes that memo instead of allocating another one. Reusing an id for different intent
+  returns `conflict="request_mismatch"`. Request metadata contains hashes and ids, never memo text.
+* `expected_revision`: the lowercase SHA-256 digest of the memo bytes the caller observed. Pass it
+  together with `supersedes`. Search hits, including the compact assistant view, carry `revision`
+  from the indexed source's content hash, never a fresh filesystem read beside stale search text.
+  Sources without an indexed content hash report null. A changed target returns
+  `conflict="revision_mismatch"` before writing anything.
+* `include_receipt`: request a detailed reply without an idempotency key. A request id or revision
+  precondition also enables receipts automatically.
+
+```json
+{
+  "memo_id": "pref-0043",
+  "receipt": {
+    "revision": "<SHA-256 of the new memo bytes>",
+    "supersedes": "pref-0042",
+    "write_state": "written",
+    "replayed": false,
+    "index_state": "indexed",
+    "calibration_status": "certified",
+    "retrieval_ready": true
+  }
+}
+```
+
+`retrieval_ready` describes indexing plus the store's calibration readiness. It does not establish
+that this memo answers a query, is currently valid, or passes that query's other trust checks.
+Every read still passes through trusted search. A small store can report a written, indexed memo
+while its calibration is missing and `retrieval_ready` is false. This adds no onboarding mode.
+
+A failed refresh on a receipt-enabled call returns the persisted memo id with
+`index_state="failed"`, unavailable calibration readiness, and an exception type without its
+message. Retry with the same request id to finish indexing. A failure to inspect calibration
+preserves successful indexing and reports unavailable readiness. Persistence failures still raise.
+
+Only an existing assistant-authored memo can be a correction target. A memo with an authored
+successor is refused as `stale_target`, including on legacy calls. The write lane checks this
+before installing a correction, so two clients of the same SQLite file cannot install competing
+corrections. Idempotent replays retain the original id even if that memo subsequently acquired a
+successor; a replay never removes supersession metadata or makes the old memo current again.
+
+An edited or removed request memo is refused rather than overwritten or recreated. A prepared
+request without a published memo rechecks its correction preconditions before publication. The
+authorship ledger retains reservations and request identities when legacy calls write new memos.
+
+Old memos are retained for historical inspection. This workflow does not infer supersession from
+prose or rewrite imported notes. For those corrections, use the existing `recall_report_stale`
+review queue and the dashboard or reviewed rewrite commands. No migration or model call is added.

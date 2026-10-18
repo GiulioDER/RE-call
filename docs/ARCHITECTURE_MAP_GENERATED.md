@@ -8,16 +8,16 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 327
+Modules: 328
 Cross package edges: 342
-Source tree fingerprint: `bed2be4d0ce59412dd69f1b0c3ea916d89345cdd3c38b4440edc746b4239c1d4`
+Source tree fingerprint: `7a547731776ee53dad723c8f257dcebbf1b5b4e2b34bafcb4ffaddbeebb069e4`
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
-| 176 | `recall_mcp.codex_server` |
-| 175 | `recall_mcp.server` |
+| 177 | `recall_mcp.codex_server` |
+| 176 | `recall_mcp.server` |
 | 158 | `recall_mcp.service` |
 | 149 | `recall.cli_commands.setup_wizard` |
 | 144 | `recall.desktop.main` |
@@ -601,10 +601,11 @@ They are observations, not automatic failures.
 | `recall.lineage` | 2 | 12 |
 | `recall.lint` | 4 | 19 |
 | `recall.lite` | 2 | 83 |
-| `recall.lite.assistant_memos` | 5 | 84 |
+| `recall.lite.assistant_memos` | 6 | 85 |
 | `recall.lite.calibration` | 11 | 83 |
 | `recall.lite.facts` | 6 | 83 |
 | `recall.lite.inspect` | 3 | 83 |
+| `recall.lite.memo_requests` | 3 | 17 |
 | `recall.lite.receipts` | 3 | 83 |
 | `recall.lite.refresh` | 13 | 83 |
 | `recall.lite.setup` | 10 | 104 |
@@ -745,9 +746,9 @@ They are observations, not automatic failures.
 | `recall_interop` | 1 | 95 |
 | `recall_interop.memory_benchmarks` | 7 | 94 |
 | `recall_mcp` | 0 | 0 |
-| `recall_mcp.assistant` | 6 | 105 |
+| `recall_mcp.assistant` | 6 | 106 |
 | `recall_mcp.auth` | 3 | 27 |
-| `recall_mcp.codex_server` | 1 | 176 |
+| `recall_mcp.codex_server` | 1 | 177 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.config_report` | 1 | 99 |
 | `recall_mcp.desktop_ingest` | 13 | 101 |
@@ -774,7 +775,7 @@ They are observations, not automatic failures.
 | `recall_mcp.related_api` | 8 | 108 |
 | `recall_mcp.retrieval` | 22 | 107 |
 | `recall_mcp.semantic_graph_cache` | 16 | 104 |
-| `recall_mcp.server` | 56 | 175 |
+| `recall_mcp.server` | 56 | 176 |
 | `recall_mcp.service` | 59 | 158 |
 | `recall_mcp.settings` | 7 | 98 |
 | `recall_mcp.stale_reports_api` | 3 | 109 |
