@@ -195,7 +195,8 @@ def _forget_memory_unlocked(
             "fact retraction plan failed before chunk deletion for tenant %r",
             getattr(store, "tenant", None),
         )
-        # Keep chunks intact when a recovery plan cannot be persisted.
+        # A deletion without its recovery aliases would make an absolute-source retry
+        # irrecoverable. A preparation failure therefore leaves the chunks in place.
         raise
     if to_delete and shadow_store is not None:
         chunks_removed = store.delete_sources_across([store.table, shadow_store.table], to_delete)
