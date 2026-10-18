@@ -73,6 +73,12 @@ def job_status(
 
 def calibration_status(store: PgVectorStore) -> dict[str, object]:
     """Return calibration bound to the generation the tenant currently serves."""
+    from recall.lite import LiteStore
+
+    if isinstance(store, LiteStore):
+        from recall.lite.calibration import status_report
+
+        return status_report(store)
     repository = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp")
     records = repository.list_records()
     manager = GenerationManager(store._dsn, store.tenant, actor="recall-mcp")

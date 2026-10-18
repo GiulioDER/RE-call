@@ -53,6 +53,12 @@ def run_calibration(
     queries: Sequence[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     """Measure a calibration artifact for a generation."""
+    from recall.lite import LiteStore
+
+    if isinstance(store, LiteStore):
+        from recall.lite.calibration import run_report
+
+        return run_report(store, embedder, generation_id, queries)
     from recall_mcp import desktop_ingest
 
     return desktop_ingest.run_calibration(store, embedder, generation_id, queries)

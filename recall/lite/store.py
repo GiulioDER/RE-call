@@ -36,13 +36,14 @@ import json
 import re
 import sqlite3
 import threading
+import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
 from recall.errors import RecallError
@@ -85,6 +86,15 @@ for _n in range(1, _MAX_POSITIONS + 1):
 
 class LiteStoreError(RecallError, ValueError):
     """The lite store refused an operation; the message says why."""
+
+
+class LiteUnsupported(LiteStoreError, AttributeError):
+    """A Postgres store feature the lite store does not have.
+
+    An `AttributeError` as well, so the probes the shared code makes with `getattr(store, name,
+    None)` still read it as absent, while a direct call explains itself instead of naming an
+    attribute.
+    """
 
 
 def is_lite_dsn(dsn: str | None) -> bool:
@@ -220,7 +230,6 @@ class LiteStore:
         self._dim = dim
         self._tenant = tenant
         self._table = table
-        self.generation_id: str | None = None
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30.0)
@@ -234,10 +243,10 @@ class LiteStore:
         self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
 
     @classmethod
-    def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default") -> LiteStore:
+    def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default", table: str = "chunks") -> LiteStore:
         if not is_lite_dsn(dsn):
             raise LiteStoreError(f"not a lite store address (expected {LITE_DSN_PREFIX}<path>): {dsn!r}")
-        return cls(dsn[len(LITE_DSN_PREFIX):], dim=dim, tenant=tenant)
+        return cls(dsn[len(LITE_DSN_PREFIX):], dim=dim, tenant=tenant, table=table)
 
     # ------------------------------------------------------------------ identity
 
@@ -252,6 +261,11 @@ class LiteStore:
     @property
     def dim(self) -> int:
         return self._dim
+
+    @property
+    def generation_id(self) -> str:
+        """The corpus identity results report: the id the calibration binds to (`lite_generation_id`)."""
+        return self.lite_generation_id()
 
     def close(self) -> None:
         with self._lock:
@@ -282,6 +296,26 @@ class LiteStore:
 
     _read = snapshot
 
+    def __enter__(self) -> LiteStore:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def check_schema(self) -> None:
+        """Nothing to migrate: the file's schema is created, and its tenant and width checked, on open."""
+
+    if not TYPE_CHECKING:  # hidden from mypy, so a typo in lite code is still a type error
+
+        def __getattr__(self, name: str) -> Any:
+            # Only reached for a name this class does not define: a Postgres store feature.
+            if name.startswith("__"):
+                raise AttributeError(name)
+            raise LiteUnsupported(
+                f"{name!r} needs the full (Postgres) install; the lite store (one SQLite file) "
+                "indexes, searches, calibrates and resolves supersession only"
+            )
+
     def _create_schema(self) -> None:
         with self._lock:
             self._conn.executescript(
@@ -307,6 +341,16 @@ class LiteStore:
                     created_at TEXT NOT NULL,
                     payload TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS audit_events (
+                    event_id TEXT PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    generation_id TEXT,
+                    source_uri TEXT,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS audit_events_lookup ON audit_events(event_type, created_at);
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                     text, content='chunks', content_rowid='rowid', tokenize='porter unicode61'
                 );
@@ -494,6 +538,86 @@ class LiteStore:
             (project,),
         )
         return {name: str(digest) for name, digest in rows}
+
+    def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """`{identifier: [source, ...]}` for identifiers matching a row's `file` or its `source`.
+
+        The rule `PgVectorStore.sources_for_identifiers` states: a search hit shows the
+        root-relative file, deletion keys on the absolute source, so either names the row.
+        Identifiers that match nothing are absent.
+        """
+        requested = set(identifiers)
+        resolved: dict[str, list[str]] = {}
+        if not requested:
+            return resolved
+        # One bound JSON list avoids SQLite's variable limit without constructing SQL.
+        # Source resolution reads metadata only; deleting immediately invalidates a search matrix.
+        rows = self._metadata_values(
+            "WITH requested AS (SELECT value FROM json_each(?)) "
+            "SELECT source, json_extract(metadata, '$.file'), json_type(metadata, '$.file') FROM chunks "
+            "WHERE source IN (SELECT value FROM requested) "
+            "OR (json_type(metadata, '$.file') = 'text' "
+            "AND json_extract(metadata, '$.file') IN (SELECT value FROM requested)) "
+            "GROUP BY source, json_extract(metadata, '$.file'), json_type(metadata, '$.file') ORDER BY MIN(rowid)",
+            (json.dumps(list(dict.fromkeys(identifiers))),),
+        )
+        for source, file, file_type in rows:
+            for ident in {file if file_type == "text" else None, source} & requested:
+                assert ident is not None
+                bucket = resolved.setdefault(ident, [])
+                if source not in bucket:
+                    bucket.append(source)
+        return resolved
+
+    def append_audit_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        generation_id: str | None = None,
+        source_uri: str | None = None,
+        actor: str = "serving",
+        event_id: str | None = None,
+    ) -> str:
+        """Append one event to this file's audit ledger, as `PgVectorStore.append_audit_event`.
+
+        Append only, and idempotent per event id (a repeated id is one row): the decision ledger,
+        agent use reports and stale reports persist here for local readers.
+        """
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("event_type must be a non-empty str")
+        event_id = event_id or f"evt_{uuid.uuid4().hex}"
+        row = (event_id, event_type, actor, generation_id, source_uri, json.dumps(dict(payload), default=str), _now())
+        insert = (
+            "INSERT OR IGNORE INTO audit_events "
+            "(event_id, event_type, actor, generation_id, source_uri, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)"
+        )
+        with self._lock:
+            pinned = self._conn.in_transaction
+        if pinned:
+            # A read snapshot is open on this connection (`snapshot()`: the decision ledger records
+            # a search from inside the trusted search it witnesses). `BEGIN IMMEDIATE` cannot nest
+            # in it, and a write folded into it would be rolled back with the read view. An audit
+            # row is append-only and independent of that view, so it is written on a connection of
+            # its own; WAL lets it commit while this reader keeps its snapshot. (Restack fix: the
+            # ledger swallows write errors, so every lite search went unrecorded, silently.)
+            conn = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    conn.execute(insert, row)
+                    conn.execute("COMMIT")
+                except BaseException:
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK")
+                    raise
+            finally:
+                conn.close()
+            return event_id
+        with self._write():
+            self._conn.execute(insert, row)
+        return event_id
 
     def count(self) -> int:
         return int(self._metadata_values("SELECT count(*) FROM chunks")[0][0])
