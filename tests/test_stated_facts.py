@@ -623,13 +623,15 @@ def test_f4_a_memo_that_may_not_state_cannot_retire_a_fact(root: Path, store: Li
     assert listed(store) == ["4512"], f"an upload retired a real fact: {listed(store)}"
 
 
-def test_f5_a_postgres_store_gets_the_plain_served_lookup() -> None:
-    """Node tests/test_stated_facts.py::test_f5_a_postgres_store_gets_the_plain_served_lookup.
+def test_f5_a_store_that_is_neither_lite_nor_postgres_gets_the_plain_served_lookup() -> None:
+    """Node tests/test_stated_facts.py::test_f5_a_store_that_is_neither_lite_nor_postgres_gets_the_plain_served_lookup.
 
-    Review Important 5, the "nothing moved" boundary: a store that is not lite gets PR 932's plain
-    served callable, so content hashes, memo-level supersession and stating admission cannot act on
-    PostgreSQL in this change. Red, mutation of `served_sources` (recall/fact_retraction.py):
-    return the ServedState for every store: fails on "a non-lite store got the lite served state".
+    Review Important 5, the boundary: a store that is neither lite nor PostgreSQL (a client's own
+    store) gets PR 932's plain served callable, so content hashes, memo-level supersession and
+    stating admission act only where a stating rule exists. (PR 934 drew this line at "not lite";
+    the PostgreSQL change moved it, and `tests/test_stated_facts_postgres.py` covers that side.)
+    Red, mutation of `served_sources` (recall/fact_retraction.py): return the ServedState for
+    every store: fails on "a non-lite store got the lite served state".
     """
     from recall.fact_retraction import served_sources
     from recall.provenance_controller import ServedState
@@ -719,3 +721,28 @@ def test_f8_an_upload_cannot_cancel_an_admitted_supersession(root: Path, store: 
     refreshed(store, root, key_root=root)
     reconcile(store, root)
     assert listed(store) == [], f"an upload cancelled an admitted supersession: {listed(store)}"
+
+
+def test_f9_with_stating_off_reading_facts_asks_no_supersession(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_f9_with_stating_off_reading_facts_asks_no_supersession.
+
+    Review of PR B (cost with stating off): memo-level supersession counts only memos the rule
+    admits, so with the rule off it can retire nothing, and asking the store's supersession graph
+    first was a lookup on every `recall_current_facts` of every default PostgreSQL deployment. Red
+    against 0d753ce78: fails on "a supersession lookup ran with stating off: 1".
+    """
+    memo(folder, "door.md", facts=[DOOR])
+    refreshed(store, folder)
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
+    calls: list[int] = []
+    real = store.supersession_all
+
+    def counted() -> Any:
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(store, "supersession_all", counted)
+    current_facts_memory(store)
+    assert not calls, f"a supersession lookup ran with stating off: {len(calls)}"

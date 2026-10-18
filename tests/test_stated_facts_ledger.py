@@ -237,3 +237,25 @@ def test_lv3_values_in_separate_windows_are_history_not_a_dispute(store: LiteSto
     listed_events, contested = split_contested(events)
     assert contested == (), "values in separate windows were contested"
     assert len(listed_events) == 2
+
+
+def test_l8_the_stated_path_never_asks_the_served_state(store: LiteStore) -> None:
+    """Node tests/test_stated_facts_ledger.py::test_l8_the_stated_path_never_asks_the_served_state.
+
+    Review I1 (PR B): a stated assertion ignores the absence set, yet `apply_stated` handed the
+    served lookup to the ledger, which evaluated it on every append: on PostgreSQL a scan of the
+    served generation per fact. Red (2026-10-16), mutation of `ProvenanceController.apply_stated`
+    (recall/provenance_controller.py): pass `served` again: the lookup raises, the ledger turns that
+    into LEDGER_UNAVAILABLE, and the test fails on "the stated path consulted the served state".
+    """
+    def refuses(names: frozenset[str]) -> set[str]:
+        raise AssertionError("served state consulted")
+
+    # One fact first: with an empty ledger there is no card to look up, and nothing is consulted.
+    _controller(store).apply_stated(COFFEE, _stated_card(COFFEE, tenant=store.tenant, source="b.md"), "s0")
+    controller = ProvenanceController(
+        tenant_id=store.tenant, generation_id="g1", cards=LiteEvidenceCardStore(store),
+        ledger=LiteFactLedger(store), now=lambda: NOW, writer="recall_stated", served_sources=refuses,
+    )
+    decision = controller.apply_stated(TEA, _stated_card(TEA, tenant=store.tenant, source="a.md"), "s1")
+    assert decision.code == DecisionCode.APPLIED, f"the stated path consulted the served state: {decision.code}"

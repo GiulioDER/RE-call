@@ -244,13 +244,16 @@ def _index_memory_unlocked(
 
         outcome = ensure_calibrated(store, embedder, background=True)
         message += f" Calibration: {outcome.status.value}. {outcome.reason}"
-        from recall.stated_facts import reconcile_stated_facts
+    # The facts the indexed memos state, on a lite store or the legacy table (a generation store
+    # records them when its generation is promoted). The rule is read from the process
+    # environment, not `values`: it is applied again whenever facts are read, there, and a private
+    # env here would let recording and reading disagree. The controller role's DSN is read from
+    # `values`, the runtime environment with its secrets, as `recall_apply_fact` and forget read it.
+    from recall.stated_facts import reconcile_stated_facts
 
-        # The process environment, not `values`: the rule is applied again whenever facts are
-        # read, there, and a private env here would let recording and reading disagree.
-        stated = reconcile_stated_facts(store)
-        if stated.enabled:
-            message += f" Stated facts: {stated.summary()}."
+    stated = reconcile_stated_facts(store, write_env=values)
+    if stated.enabled:
+        message += f" Stated facts: {stated.summary()}."
     return IndexResult(
         files=stats.files,
         chunks=stats.chunks,
