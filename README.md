@@ -42,7 +42,7 @@ clear the calibrated trust gate becomes `ABSTAIN` with a reason. Declared supers
 over stale but similar memory.
 
 The default path uses local embeddings plus hybrid dense and keyword retrieval. PostgreSQL uses
-its full text search; Lite uses SQLite FTS5. It needs no memory-layer LLM call. Additional retrieval,
+its full text search; Lite uses SQLite `FTS5`. It needs no memory-layer LLM call. Additional retrieval,
 reasoning, and structured-fact modules are optional.
 
 For the agent reading this, [RE-call for agents](docs/FOR_AGENTS.md) explains the experience loop
