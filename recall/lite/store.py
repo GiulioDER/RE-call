@@ -38,6 +38,7 @@ from typing import Any
 
 from recall.errors import RecallError
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope
+from recall.supersession import EdgeCandidates, chunk_supersedes_targets, resolve_supersession_candidates
 from recall.types import Chunk, ScoredChunk
 
 #: A DSN naming a lite store: ``sqlite:///path/to/memory.db``.
@@ -207,6 +208,7 @@ class LiteStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._create_schema()
         self._matrix: _Matrix | None = None
+        self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
 
     @classmethod
     def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default") -> LiteStore:
@@ -233,11 +235,15 @@ class LiteStore:
             self._conn.close()
 
     @contextmanager
-    def _read(self) -> Iterator[None]:
-        """Keep related retrieval reads on one SQLite view under the store lock.
+    def snapshot(self) -> Iterator[None]:
+        """Pin one SQLite read view across retrieval and trust evaluation.
 
-        The first persisted version read pins the view. Reuse a surrounding
-        transaction; only the owner ends this read transaction.
+        The lock protects the shared connection and caches. WAL permits another
+        handle to commit while this reader retains its corpus view. Nested readers
+        reuse the existing transaction; only its owner ends it. `recall.trust` enters
+        it by name around a whole trusted search; `_read` is the same view for the
+        store's own related reads (restack of PR 894's and PR 895's audit fixes, which
+        each added this transaction under a different name).
         """
         with self._lock:
             if self._conn.in_transaction:
@@ -245,10 +251,13 @@ class LiteStore:
                 return
             self._conn.execute("BEGIN")
             try:
+                self._conn.execute("SELECT value FROM meta WHERE key = 'corpus_version'").fetchone()
                 yield
             finally:
                 if self._conn.in_transaction:
                     self._conn.execute("ROLLBACK")
+
+    _read = snapshot
 
     def _create_schema(self) -> None:
         with self._lock:
@@ -401,8 +410,9 @@ class LiteStore:
     def delete_sources(self, sources: list[str]) -> int:
         """Delete every row of `sources`; the delete and the version bump commit together or not at all.
 
-        Apart, a failed bump would leave the rows gone and every cached matrix still serving them,
-        and a retry finds nothing left to delete, so nothing would ever move the version.
+        Apart, a failed bump would leave the rows gone and every cache keyed on the version (the
+        matrix, the supersession map) still serving them, and a retry finds nothing left to delete,
+        so nothing would ever move the version.
         """
         if not sources:
             return 0
@@ -466,11 +476,22 @@ class LiteStore:
         """Every chunk by id, fetched `batch_size` rows at a time, as `PgVectorStore.iter_chunks`
         streams them: no embeddings are read and the search matrix is not built.
 
-        One SELECT on a read connection of its own, so the whole iteration sees one snapshot (rows
-        written after it opened are not seen) and no lock is held between rows.
+        Inside a trust snapshot, use that pinned connection. Otherwise one SELECT
+        on an independent reader sees one snapshot without holding the store lock
+        between rows.
         """
         if not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive int")
+        with self._lock:
+            if self._conn.in_transaction:
+                cursor = self._conn.execute("SELECT id, source, text, metadata FROM chunks ORDER BY id")
+                try:
+                    while rows := cursor.fetchmany(batch_size):
+                        for cid, source, text, metadata in rows:
+                            yield Chunk(id=cid, source=source, text=text, metadata=json.loads(metadata))
+                finally:
+                    cursor.close()
+                return
         reader = sqlite3.connect(self.path, timeout=30.0)
         try:
             cursor = reader.execute("SELECT id, source, text, metadata FROM chunks ORDER BY id")
@@ -612,3 +633,55 @@ class LiteStore:
 
     def query_learned_sparse(self, *args: Any, **kwargs: Any) -> list[ScoredChunk]:
         raise LiteStoreError("learned sparse retrieval needs the full (Postgres) install")
+
+    # ------------------------------------------------------------------ supersession
+
+    def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
+        """``(edges, unresolved)``, as `PgVectorStore.supersession` returns them."""
+        edges, unresolved, _candidates = self.supersession_all()
+        return edges, unresolved
+
+    def supersession_all(self) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+        """``(edges, unresolved, candidates)`` from one scan, cached per corpus version.
+
+        The rows have the shape `PgVectorStore.supersession_all` builds in SQL, read per chunk by
+        the shared Python twin (`chunk_supersedes_targets`): one row per (file, declared
+        reference), a chunk declaring nothing still yields one row so every file reaches the
+        resolver, dated by the earliest `first_indexed_at` among the chunks carrying the claim.
+        The shared `resolve_supersession_candidates` then applies the rule both stores share.
+
+        Two residues, neither reachable from metadata the indexer writes: the twin reads a few
+        hand-written `supersedes` shapes (a flow-sequence string, padded or non-string list
+        items) more leniently than the SQL, and a non-string `file` is skipped. Rows are ordered
+        by code point, which is Postgres's order under the C collation only, so when two files
+        supersede one target the `edges` winner (last row wins) can differ from a Postgres store
+        on another collation, and so can the successor a replay (`known_as_of`) picks when two
+        claims on one target carry the same `first_indexed_at`, the usual case for claims written
+        in one indexing batch, because `resolve_successor` breaks that tie by scan position. The
+        set of candidates and their dates do not depend on the order.
+
+        The cache is keyed on the corpus version stored in the file, so an edge written by
+        another process (`recall index` beside a running server) is seen on the next call.
+        """
+        matrix = self._load()
+        cached = self._supersession_cache
+        if cached is None or cached[0] != matrix.version:
+            first: dict[tuple[str, str | None], str] = {}
+            for row in matrix.rows:
+                file = row.metadata.get("file")
+                if not isinstance(file, str):
+                    continue
+                targets: tuple[str | None, ...] = chunk_supersedes_targets(row.metadata) or (None,)
+                for target in targets:
+                    key = (file, target)
+                    if key not in first or row.first_indexed_at < first[key]:
+                        first[key] = row.first_indexed_at
+            rows: list[tuple[str | None, str | None, datetime | None]] = [
+                (file, target, _parse_time(stamp))
+                for (file, target), stamp in sorted(first.items(), key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or ""))
+            ]
+            edges, unresolved, candidates = resolve_supersession_candidates(rows)
+            cached = (matrix.version, edges, unresolved, candidates)
+            self._supersession_cache = cached
+        _version, edges, unresolved, candidates = cached
+        return dict(edges), unresolved, {target: list(claims) for target, claims in candidates.items()}
