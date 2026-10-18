@@ -48,7 +48,7 @@ from typing import TYPE_CHECKING, Any
 from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
 from recall.db_constants import DEFAULT_TABLE
 from recall.errors import RecallError
-from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope
+from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope, group_expression
 from recall.supersession import EdgeCandidates, chunk_supersedes_targets, resolve_supersession_candidates
 from recall.types import Chunk, ScoredChunk
 
@@ -100,6 +100,11 @@ class LiteUnsupported(LiteStoreError, AttributeError):
 
 def is_lite_dsn(dsn: str | None) -> bool:
     return bool(dsn) and str(dsn).startswith(LITE_DSN_PREFIX)
+
+
+def lite_dsn_path(dsn: str) -> Path:
+    """The file a `sqlite:///<path>` DSN names."""
+    return Path(dsn[len(LITE_DSN_PREFIX):])
 
 
 def _now() -> str:
@@ -221,8 +226,7 @@ def _matches(scope: Scope, row: _Row) -> bool:
     A hand copy of the SQL, so `tests/test_lite_store.py` pins `Scope`'s fields: a field added there
     and not here would be ignored, which widens a search instead of failing it.
     """
-    file = row.metadata.get("file")
-    file = file if isinstance(file, str) else None
+    file = _json_text(row.metadata, "file")  # `metadata->>'file'`, a non-string value as its text
     if scope.source is not None and scope.source not in (file, row.source):
         return False
     if scope.source_prefixes is not None:
@@ -250,6 +254,30 @@ def _matches(scope: Scope, row: _Row) -> bool:
         if not isinstance(value, str) or value.lower() != facet:
             return False
     return True
+
+
+def _json_text(metadata: dict[str, Any], key: str) -> str | None:
+    """PostgreSQL's `metadata->>key`: NULL when absent or JSON null, the text of anything else.
+
+    A string is itself. Anything else is rendered as `jsonb` prints it: characters unescaped,
+    object keys shortest first then by bytes, `", "` and `": "` as separators. One difference is
+    left: `jsonb` keeps a number's written form (`1.0`, `1e5`) and Python's JSON reader does not, so
+    a non-integral or exponent number can read differently. The indexer writes strings here.
+    """
+    raw = metadata.get(key)
+    if raw is None:
+        return None
+    return raw if isinstance(raw, str) else _jsonb_text(raw)
+
+
+def _jsonb_text(value: Any) -> str:
+    """`value` as PostgreSQL prints a `jsonb` value (see `_json_text` for the one difference)."""
+    if isinstance(value, dict):
+        keys = sorted(value, key=lambda name: (len(str(name).encode("utf-8")), str(name).encode("utf-8")))
+        return "{" + ", ".join(f"{json.dumps(str(k), ensure_ascii=False)}: {_jsonb_text(value[k])}" for k in keys) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_jsonb_text(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _chunk_identity(chunks: Sequence[Chunk]) -> tuple[str | None, list[str]]:
@@ -298,7 +326,7 @@ class LiteStore:
     def from_dsn(cls, dsn: str, *, dim: int, tenant: str = "default", table: str = "chunks") -> LiteStore:
         if not is_lite_dsn(dsn):
             raise LiteStoreError(f"not a lite store address (expected {LITE_DSN_PREFIX}<path>): {dsn!r}")
-        return cls(dsn[len(LITE_DSN_PREFIX):], dim=dim, tenant=tenant, table=table)
+        return cls(lite_dsn_path(dsn), dim=dim, tenant=tenant, table=table)
 
     # ------------------------------------------------------------------ identity
 
@@ -611,6 +639,59 @@ class LiteStore:
             (json.dumps(list(sources)),),
         )
         return {str(row[0]) for row in rows}
+
+    def _scope_rows(self, dimension: str) -> Iterator[tuple[str | None, dict[str, Any], str]]:
+        """Each row's value on `dimension`, as `recall.scope.GROUP_SQL` computes it, with its metadata
+        and source.
+
+        Reads `source` and `metadata` only, never the embeddings: `_load()` would build the whole
+        vector matrix and hash every text, in a one-shot CLI process, only to count metadata.
+        """
+        group_expression(dimension, "chunks")  # refuses an unknown dimension with PostgreSQL's message
+        key = "file" if dimension == "folder" else FACET_METADATA_KEY
+        for source, raw in self._metadata_values("SELECT source, metadata FROM chunks"):
+            metadata = json.loads(raw)
+            text = _json_text(metadata, key)
+            if text is None:
+                yield None, metadata, source
+            elif dimension == "folder":
+                yield (re.sub(r"/[^/]*\Z", "", text, count=1) if "/" in text else ""), metadata, source
+            else:
+                # Python's full Unicode `lower`, as `Scope.normalized_facet` and `_matches` use, so
+                # a listed facet is one a lite search matches. PostgreSQL's `lower` follows the
+                # database's LC_CTYPE, so a non-ASCII facet can list differently there.
+                yield text.lower(), metadata, source
+
+    def scope_summary(self, dimension: str = "folder") -> tuple[list[tuple[str, int, int]], int]:
+        """`scope_inventory` and `scope_undeclared_count` from one pass over the metadata."""
+        chunks: dict[str, int] = {}
+        documents: dict[str, set[str]] = {}
+        undeclared = 0
+        for value, metadata, source in self._scope_rows(dimension):
+            if value is None:
+                undeclared += 1
+                continue
+            chunks[value] = chunks.get(value, 0) + 1
+            file = _json_text(metadata, "file")  # COALESCE(metadata->>'file', source)
+            documents.setdefault(value, set()).add(file if file is not None else source)
+        inventory = sorted(
+            ((value, count, len(documents[value])) for value, count in chunks.items()),
+            key=lambda item: (-item[1], item[0]),
+        )
+        return inventory, undeclared
+
+    def scope_inventory(self, dimension: str = "folder") -> list[tuple[str, int, int]]:
+        """`[(value, chunk_count, document_count)]`, largest first, as `PgVectorStore.scope_inventory`.
+
+        Ties are ordered by Python's string order, which is PostgreSQL's under the C collation
+        only; under a linguistic collation (`en_US.UTF-8`, ICU) values with punctuation or mixed
+        case can tie in another order.
+        """
+        return self.scope_summary(dimension)[0]
+
+    def scope_undeclared_count(self, dimension: str = "folder") -> int:
+        """How many chunks have no value on `dimension`, as `PgVectorStore.scope_undeclared_count`."""
+        return self.scope_summary(dimension)[1]
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """`{identifier: [source, ...]}` for identifiers matching a row's `file` or its `source`.
