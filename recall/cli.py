@@ -240,6 +240,17 @@ def _main(argv: list[str] | None = None) -> None:
     raw_argv = sys.argv[1:] if argv is None else list(argv)
     parser = build_parser(_command_from_argv(raw_argv))
     args = parser.parse_args(raw_argv)
+    # A command that cannot serve a lite store (`sqlite:///`) stops here, by name, before any
+    # guard or handler opens anything; `recall.backends.LITE_REFUSED` lists them, and every
+    # command must be classified there or in `LITE_SERVED`.
+    # The prefix test first, so a run whose DSNs are all PostgreSQL never imports the lite store
+    # (and through it calibration, embeddings and sqlite3): 30 to 130 ms on most commands.
+    judged = (getattr(args, name, None) for name in ("dsn", "existing_dsn", "migration_dsn"))
+    if any(isinstance(dsn, str) and dsn.startswith("sqlite:") for dsn in judged):
+        from recall.backends import lite_command_refusal
+
+        if (lite_refusal := lite_command_refusal(args)) is not None:
+            raise SystemExit(lite_refusal)
     # Commands that will actually open a connection FAIL CLOSED on the insecure default DSN;
     # everything else only warns.
     #
