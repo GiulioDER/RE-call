@@ -9,7 +9,8 @@ an existing setup.
 | Goal | Command or guide |
 |---|---|
 | See RE-call work | `pip install "recall-rag[fastembed]"` then `recall quickstart` |
-| Install for your own corpus | `pip install "recall-rag[fastembed]"` then `recall setup` |
+| Keep one project's memory in a local file | `pip install "recall-rag[fastembed,mcp]"` then `recall setup --lite --memory ./notes` |
+| Install your own PostgreSQL corpus | `pip install "recall-rag[fastembed]"` then `recall setup` |
 | Provision from a reviewed JSON file | `recall wizard --headless --config wizard.json` |
 | Configure Claude Code or Codex | Run `recall setup`, then see [the Claude guide](USING_WITH_CLAUDE.md) or [the Codex guide](CODEX_RECALL_INTEGRATION.md) |
 | Configure Claude Desktop or another MCP client | See [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) |
@@ -21,14 +22,37 @@ install the unrelated PyPI package named `recall`.
 ## Prerequisites
 
 - Python 3.11 or newer
-- PostgreSQL with the pgvector extension
-- Docker, if you want RE-call to start PostgreSQL for you
+- For the PostgreSQL path, PostgreSQL with the pgvector extension
+- Docker, if you want RE-call to start PostgreSQL for you or run the bundled quickstart
+
+The lite path uses SQLite on a local disk and needs neither PostgreSQL nor Docker.
 
 The default `fastembed` extra provides a local embedding backend. Hosted alternatives are available
 through the `voyage` and `openai` extras. Optional retrieval and integration extras are listed in
 the [dependency guide](DEPENDENCIES.md).
 
-## Database
+## Local memory in one file
+
+```bash
+pip install "recall-rag[fastembed,mcp]"
+recall setup --lite --memory ./notes
+```
+
+Use an existing folder of Markdown memos. Setup creates `.recall/memory.db`, indexes the folder,
+fits calibration when the corpus has enough text, and registers a project-scoped Claude Code MCP
+server. Restart Claude Code after setup. Add `.recall/` to `.gitignore`.
+
+Setup prints doctor and dashboard commands configured for this file. Use those commands: the CLI
+does not read the MCP client's registered environment. Re-running setup updates changed memos and
+refits calibration. Once the server is running, it refreshes changed memos automatically;
+`recall lite refresh --check` checks freshness without writing when run with the same store
+configuration. Leave strict trust enabled: an uncertified store refuses unsupported answers.
+
+Lite supports one project on one machine. Generations, multi-tenant serving, and authentication
+require PostgreSQL. See the [local install guide](../README.md#local-with-no-database-server-and-no-docker)
+for refresh limits, write queues, and the differences in retrieval.
+
+## PostgreSQL database
 
 RE-call keeps the corpus in your PostgreSQL database. If you need a disposable local database, save
 this as `docker-compose.yml`:
@@ -65,7 +89,7 @@ If PostgreSQL with pgvector already exists, provide its DSN to `recall setup` wh
 wizard applies the schema itself after the embedder is chosen, because the vector dimension belongs
 to the selected embedder.
 
-## Guided setup
+## Guided PostgreSQL setup
 
 ```bash
 pip install "recall-rag[fastembed]"
@@ -84,7 +108,7 @@ When asked whether to calibrate, use queries labeled against the same corpus bei
 calibration made from the bundled sample corpus demonstrates the mechanism but is not valid for
 your own corpus.
 
-The interactive setup is the recommended install. The scriptable equivalent is documented in
+For PostgreSQL, the scriptable equivalent of interactive setup is documented in
 [WIZARD.md](WIZARD.md), including the JSON configuration, resume behavior, GUI front end, and
 two-role database deployments.
 

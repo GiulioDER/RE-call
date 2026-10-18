@@ -4,10 +4,10 @@ This directory separates the product documentation from the evaluation record. S
 operating guides when you are deciding whether to use RE-call. Use the evidence sections when you
 want to audit a claim or reproduce a benchmark.
 
-The one canonical path after `recall quickstart` is `recall setup` (the guided wizard in the
-README's "full install"). [WIZARD.md](WIZARD.md) documents the scriptable `recall wizard
---headless` form of the same install, and [FIRST_CALIBRATION.md](FIRST_CALIBRATION.md) is the
-manual step-by-step for anyone who wants to see each command the wizard runs.
+After `recall quickstart`, choose `recall setup --lite --memory ./notes` for one project's local
+SQLite file, or `recall setup` for PostgreSQL. [INSTALLATION.md](INSTALLATION.md) covers both paths.
+[WIZARD.md](WIZARD.md) documents the scriptable `recall wizard --headless` PostgreSQL install, and
+[FIRST_CALIBRATION.md](FIRST_CALIBRATION.md) is its manual calibration walkthrough.
 
 ## Product path
 
@@ -15,7 +15,7 @@ manual step-by-step for anyone who wants to see each command the wizard runs.
 |---|---|
 | [../README.md](../README.md) | Product overview, setup, and integrations. |
 | [FOR_AGENTS.md](FOR_AGENTS.md) | Why agents need persistent, trusted memory and the experience loop for using it safely. |
-| [INSTALLATION.md](INSTALLATION.md) | Detailed install paths for PostgreSQL, the wizard, headless provisioning, and integrations. |
+| [INSTALLATION.md](INSTALLATION.md) | Local SQLite and PostgreSQL installation, the wizard, headless provisioning, and integrations. |
 | [API.md](API.md) | Supported Python, CLI, and MCP surface. |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | Versioning, API and wire contracts, schema upgrades, and release evidence. |
 | [REPOSITORY_MAP.md](REPOSITORY_MAP.md) | Product, evidence, benchmark support, and archive boundaries. |
