@@ -247,6 +247,9 @@ def _main(argv: list[str] | None = None) -> None:
     # was not. The set is derived from the parsers now: a subcommand declares `_opens_db=True`
     # beside its own definition, so a new one cannot be added without answering the question.
     opens_db = bool(getattr(args, "_opens_db", False))
+    lite_setup = args.cmd == "setup" and getattr(args, "lite", False)
+    if lite_setup:
+        opens_db = False  # the serving and migration PostgreSQL DSNs are unused
     if args.cmd == "provenance" and getattr(args, "sqlite_path", None):
         # The local provenance adapter is deliberately independent of PostgreSQL and the
         # embedder. It still revalidates source bytes below, so this is not a trust bypass.
@@ -311,7 +314,7 @@ def _main(argv: list[str] | None = None) -> None:
                 ) from exc
         elif args.cmd != "wizard":
             _require_secure(args.dsn)
-    else:
+    elif not lite_setup:
         warn_if_insecure_dsn(args.dsn)  # loud stderr note if default creds target a remote host
 
     # The DDL-owner credential was never checked or even warned about on any path, which is the
