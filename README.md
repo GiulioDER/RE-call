@@ -265,8 +265,9 @@ name.
 The trust layer is the same code: superseded and expired verdicts, abstention, and strict refusal
 until the calibration certifies. Retrieval is exact cosine search plus PostgreSQL's own keyword
 ranking formula, so results track the PostgreSQL store closely but not identically. It serves one
-project: generations, multi-tenant serving, authentication and the fact ledger need the PostgreSQL
-install below. `recall dashboard` reads the same file, read-only.
+project: generations, multi-tenant serving and authentication need the PostgreSQL install below.
+The fact tools keep their ledger in the same file. The printed dashboard command reads the same
+file, read-only.
 
 Several local clients (Claude Code and Codex, say) can share the file. Writes take turns, first
 come first served: an index, ingest or forget waits for the one in progress and gives up after

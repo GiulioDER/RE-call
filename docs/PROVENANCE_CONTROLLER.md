@@ -26,7 +26,8 @@ only facts that are asserted, not superseded, and valid at the requested point i
 For an offline local corpus, `recall provenance apply --sqlite-path PATH --source-root ROOT`
 uses the SQLite card and fact stores. `--source-root` is mandatory in this mode; each card source
 is resolved beneath that root and hashed again before authorization. PostgreSQL remains the default
-CLI backend and the only backend used by the MCP service.
+CLI backend. The MCP service uses PostgreSQL, or, on a lite `sqlite:///` store, the ledger and cards
+kept in that file (`recall.lite.facts`), with the same event ids and projection.
 
 The low level ledger adapters also require a single use permit minted by the controller. A direct
 ledger assertion without that capability is refused, even if the caller can import the adapter.
@@ -74,7 +75,10 @@ projection over the event stream, so generation garbage collection cannot remove
 an applied fact.
 
 PostgreSQL is the production adapter. `SQLiteFactLedger` is the durable local adapter and
-`SQLiteEvidenceCardStore` provides the matching durable local card projection. `InMemoryFactLedger`
+`SQLiteEvidenceCardStore` provides the matching durable local card projection. On a lite
+`sqlite:///` store the MCP service uses `LiteFactLedger` and `LiteEvidenceCardStore`
+(`recall.lite.facts`), which keep the same tables in the store's own file and mint PostgreSQL's
+event ids. `InMemoryFactLedger`
 and `EvidenceCardStore` are deterministic test adapters. Evidence cards are persisted in
 `recall_evidence_cards`; applied facts retain card snapshots in
 `recall_fact_ledger_events`. Database application serializes on the canonical conflict key and

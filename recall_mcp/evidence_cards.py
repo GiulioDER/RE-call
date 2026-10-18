@@ -12,20 +12,30 @@ from typing import TYPE_CHECKING, Any
 from recall.provenance_cards import PostgresEvidenceCardStore, _put_cards
 
 if TYPE_CHECKING:
+    from recall.lite import LiteStore
     from recall.store import PgVectorStore
     from recall.types import EvidenceCard
 
 
 def register_evidence_cards(
-    cards: Sequence[EvidenceCard], *, store: PgVectorStore | None = None
+    cards: Sequence[EvidenceCard], *, store: PgVectorStore | LiteStore | None = None
 ) -> None:
-    """Persist server-created cards when a PostgreSQL store is available.
+    """Persist server-created cards in the store's own database: PostgreSQL, or a lite file.
 
-    Only the PostgreSQL store is written. A process-wide in-memory `EvidenceCardStore` was also
+    Only the store's database is written. A process-wide in-memory `EvidenceCardStore` was also
     filled here on every `recall_evidence` call and read by nothing (`apply_fact_memory` resolves
-    cards from PostgreSQL), so it grew without bound for the life of the server.
+    cards from the store's own database), so it grew without bound for the life of the server.
     """
     if store is None:
+        return
+    from recall.lite import LiteStore
+
+    if isinstance(store, LiteStore):
+        # The lite file keeps its own cards. Without this branch every `recall_apply_fact` on lite
+        # would answer CARD_NOT_FOUND: the PostgreSQL branches below find no connection and return.
+        from recall.lite.facts import LiteEvidenceCardStore
+
+        LiteEvidenceCardStore(store).put(cards)
         return
     tenant = getattr(store, "tenant", None)
     borrow = getattr(store, "_with_retry", None)

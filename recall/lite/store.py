@@ -728,6 +728,59 @@ class LiteStore:
         )
         return [Chunk(id=cid, source=src, text=text, metadata=json.loads(metadata)) for cid, src, text, metadata in rows]
 
+    def ensure_schema(self, script: str) -> None:
+        """Run `IF NOT EXISTS` DDL for a table another `recall.lite` module owns (facts, receipts).
+
+        Outside `_write()` on purpose: `executescript` commits any open transaction first. The
+        other package-internal seams those modules use are `_write()` (one BEGIN IMMEDIATE
+        transaction), `_conn` inside it, and `_metadata_values` for reads.
+        """
+        with self._lock:
+            self._conn.executescript(script)
+
+    def chunk_by_id(self, chunk_id: str) -> Chunk | None:
+        """One chunk by id without its embedding, as `PgVectorStore.chunk_by_id`; None when absent."""
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise ValueError("chunk_id must be a non-empty string")
+        rows = self._metadata_values("SELECT id, source, text, metadata FROM chunks WHERE id = ?", (chunk_id,))
+        if not rows:
+            return None
+        cid, source, text, metadata = rows[0]
+        return Chunk(id=cid, source=source, text=text, metadata=json.loads(metadata) or {})
+
+    # ------------------------------------------------------------------ idempotency receipts
+
+    def get_operation_receipt(
+        self,
+        idempotency_key: str,
+        *,
+        operation: str = "legacy",
+        request_fingerprint: str | None = None,
+        now: datetime | None = None,
+    ) -> str | None:
+        """The stored response of a completed mutation, as `PgVectorStore.get_operation_receipt`."""
+        from recall.lite.receipts import get_receipt
+
+        return get_receipt(
+            self, idempotency_key, operation=operation, request_fingerprint=request_fingerprint, now=now
+        )
+
+    def record_operation_receipt(
+        self,
+        idempotency_key: str,
+        result: str,
+        *,
+        operation: str = "legacy",
+        request_fingerprint: str | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """Keep a completed mutation's response, as `PgVectorStore.record_operation_receipt`."""
+        from recall.lite.receipts import record_receipt
+
+        record_receipt(
+            self, idempotency_key, result, operation=operation, request_fingerprint=request_fingerprint, now=now
+        )
+
     # ------------------------------------------------------------------ retrieval
 
     def _version(self) -> int:

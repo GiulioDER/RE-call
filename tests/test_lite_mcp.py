@@ -6,8 +6,8 @@ content-word embedder from `test_lite_calibration`, patched in where the lifespa
 so calibration certifies offline.
 
 Invariants and the failure each one catches:
-- N1 a lite server does not offer the tools that need PostgreSQL (the fact ledger, calibration
-  publish) and offers the rest.
+- N1 a lite server does not offer calibration publish (nothing to publish on lite) and offers the
+  rest, the fact ledger tools included.
 - N2 `recall_index` calibrates a lite store, after which strict `recall_search` answers, trusted,
   from the memo that holds the answer.
 - N3 `recall_calibration_status` reports the lite calibration instead of reaching for a DSN.
@@ -15,6 +15,15 @@ Invariants and the failure each one catches:
 - N5 `recall_forget` resolves a root-relative file name, as a search hit shows it, and deletes it.
 - N6 the generation route is refused at startup, by name.
 - N7 the reasoning tools work on a lite store before any calibration exists.
+- N8 `recall_evidence` mints cards the lite file keeps, `recall_apply_fact` applies a fact cited by
+  them, and `recall_current_facts` returns it.
+- N9 a retried `recall_apply_fact` replays the first answer byte for byte; the same request id
+  with other arguments is an idempotency conflict, as on PostgreSQL.
+- N10 a newer memo naming the old one in `authored_supersedes` replaces its fact.
+- N11 a card minted before a later index (the lite generation moved) is recovered by the
+  controller's one fresh search.
+- N12 every keyed mutation keeps an operation receipt on lite, not only the fact tools: the same
+  request replays its first answer, and other arguments under the same key conflict.
 
 Red proof, 2026-10-07, each mutation alone, failing in its intended assertion (JUnit XML), then
 restored byte for byte and green:
@@ -30,6 +39,17 @@ restored byte for byte and green:
   missing generations.
 - S7 (N7) `_reasoning_generation` indexing `payload["pipeline_fingerprint"]` again: "a reasoning
   tool failed on an uncalibrated lite store" (KeyError).
+
+Red proof, 2026-10-12, for the fact tools, same method:
+- (N1) `LITE_UNSERVED_TOOLS` still naming `recall_apply_fact`: the fact tools' assertions fail.
+- (N8) the LiteStore branch of `register_evidence_cards` dropped: the application is refused.
+- (N9) `LiteStore.get_operation_receipt` returning None: "a retried request did not replay the
+  first answer".
+- (N10) `LiteFactLedger.apply_assertion` never writing the `superseded` event: current shows tea
+  and coffee.
+- (N11) `fresh_search` in `apply_fact_memory` returning (): FRESH_SEARCH_INSUFFICIENT.
+- (N12, 2026-10-12, commit c5eec57c3) `LiteStore.get_operation_receipt` returning None: a retried
+  keyed index did not replay the first answer.
 """
 
 from __future__ import annotations
@@ -105,6 +125,8 @@ def test_a_lite_server_does_not_offer_postgres_only_tools(lite_env: dict[str, st
     tools = {t.name for t in srv.build_server(bootstrap_settings(lite_env))._tool_manager.list_tools()}
     assert not tools & LITE_UNSERVED_TOOLS, f"a Postgres-only tool was offered: {sorted(tools & LITE_UNSERVED_TOOLS)}"
     assert {"recall_search", "recall_index", "recall_forget", "recall_calibration_status"} <= tools
+    assert not {"recall_current_facts", "recall_apply_fact"} & LITE_UNSERVED_TOOLS
+    assert {"recall_current_facts", "recall_apply_fact"} <= tools, "the fact ledger tools were not served on lite"
 
 
 def test_index_calibrates_then_strict_search_answers(lite_env: dict[str, str], tmp_path: Path) -> None:
@@ -195,5 +217,109 @@ def test_reasoning_tools_work_before_any_calibration(lite_env: dict[str, str], t
         for name, kwargs in (("recall_reasoning_query", {"query": QUESTION}), ("recall_reasoning_audit", {"query": QUESTION})):
             out = await call(name, **kwargs)
             assert not out.startswith("RAISED"), f"a reasoning tool failed on an uncalibrated lite store: {out}"
+
+    _serve(lite_env, body)
+
+
+TEA = {"namespace": "memory", "subject": "user", "predicate": "drink", "object": "tea"}
+COFFEE = {"namespace": "memory", "subject": "user", "predicate": "drink", "object": "coffee"}
+
+
+def _fact_memo(path: Path, fact: dict[str, Any], supersedes: list[str] | None = None) -> None:
+    """A memo carrying one structured fact, whose body holds the fact's own words.
+
+    The body matters: the controller's one fresh search queries "<subject> <predicate> <object>",
+    so a memo that never says those words could not be found again on either backend.
+    """
+    graph: dict[str, Any] = {"facts": [fact]}
+    if supersedes:
+        graph["authored_supersedes"] = supersedes
+    words = f"{fact['subject']} {fact['predicate']} {fact['object']}"
+    path.write_text(
+        f"---\nrecall_graph: {json.dumps(graph)}\n---\n# The {words}\n\nThe {words}, every morning.\n",
+        encoding="utf-8",
+    )
+
+
+def _card_ids(raw: str) -> list[str]:
+    return [card["card_id"] for card in json.loads(raw)["cards"]]
+
+
+def test_facts_round_trip_on_a_lite_server(lite_env: dict[str, str], tmp_path: Path) -> None:
+    """N8 evidence, apply, current; N9 a retry replays the same bytes and other arguments conflict."""
+    _write_memos(tmp_path / "mem", 48)
+    _fact_memo(tmp_path / "mem" / "user-drink.md", TEA)
+
+    async def body(state: dict[str, Any], call: Callable[..., Any]) -> None:
+        await call("recall_index", path=str(tmp_path / "mem"))
+        ids = _card_ids(await call("recall_evidence", query="user drink tea"))
+        assert ids, "recall_evidence minted no card for a memo with a structured fact"
+        first = await call("recall_apply_fact", request_id="r1", evidence_card_ids=ids, **TEA)
+        applied = json.loads(first)
+        assert applied["allowed"] is True and applied["decision_code"] == "APPLIED", first
+        again = await call("recall_apply_fact", request_id="r1", evidence_card_ids=ids, **TEA)
+        assert again == first, "a retried request did not replay the first answer"
+        conflict = await call("recall_apply_fact", request_id="r1", evidence_card_ids=ids, **COFFEE)
+        assert "idempotency_conflict" in conflict, conflict
+        current = json.loads(await call("recall_current_facts"))
+        assert [f["fact"]["object"] for f in current["facts"]] == ["tea"], current
+        assert current["tenant_id"] == "default" and current["generation_id"].startswith("lite-"), current
+
+    _serve(lite_env, body)
+
+
+def test_a_newer_memo_supersedes_a_fact(lite_env: dict[str, str], tmp_path: Path) -> None:
+    """N10 a memo naming the old one in authored_supersedes replaces its fact."""
+    _write_memos(tmp_path / "mem", 48)
+    _fact_memo(tmp_path / "mem" / "user-drink.md", TEA)
+
+    async def body(state: dict[str, Any], call: Callable[..., Any]) -> None:
+        await call("recall_index", path=str(tmp_path / "mem"))
+        tea_ids = _card_ids(await call("recall_evidence", query="user drink tea"))
+        tea = json.loads(await call("recall_apply_fact", request_id="r1", evidence_card_ids=tea_ids, **TEA))
+        assert tea["allowed"] is True, tea
+        _fact_memo(tmp_path / "mem" / "user-drink-now.md", COFFEE, supersedes=["user-drink.md"])
+        await call("recall_index", path=str(tmp_path / "mem"))
+        coffee_ids = _card_ids(await call("recall_evidence", query="user drink coffee"))
+        coffee = json.loads(await call("recall_apply_fact", request_id="r2", evidence_card_ids=coffee_ids, **COFFEE))
+        assert coffee["allowed"] is True, coffee
+        current = json.loads(await call("recall_current_facts"))
+        assert [f["fact"]["object"] for f in current["facts"]] == ["coffee"], current
+
+    _serve(lite_env, body)
+
+
+def test_a_card_from_before_a_later_index_recovers_by_fresh_search(lite_env: dict[str, str], tmp_path: Path) -> None:
+    """N11 a write moves the lite generation; the old card's GENERATION_MISMATCH is recovered by the
+    controller's one fresh search, as on PostgreSQL after a promotion."""
+    _write_memos(tmp_path / "mem", 48)
+    _fact_memo(tmp_path / "mem" / "user-drink.md", TEA)
+
+    async def body(state: dict[str, Any], call: Callable[..., Any]) -> None:
+        await call("recall_index", path=str(tmp_path / "mem"))
+        ids = _card_ids(await call("recall_evidence", query="user drink tea"))
+        _write_memos(tmp_path / "mem", 2, start=48)
+        await call("recall_index", path=str(tmp_path / "mem"))
+        applied = json.loads(await call("recall_apply_fact", request_id="r1", evidence_card_ids=ids, **TEA))
+        assert applied["allowed"] is True and applied["retried"] is True, applied
+        assert set(applied["evidence_card_ids"]).isdisjoint(ids), "the fresh search reused the stale card"
+
+    _serve(lite_env, body)
+
+
+def test_keyed_mutations_replay_and_conflict_as_on_postgres(lite_env: dict[str, str], tmp_path: Path) -> None:
+    """N12 lite keeps operation receipts for every keyed mutation, not only the fact tools: the same
+    key replays the first answer, and the same key with another path is an idempotency conflict.
+    This is PostgreSQL's contract; before lite had receipts it re-ran both calls."""
+    _write_memos(tmp_path / "mem", 30)
+    _write_memos(tmp_path / "other", 2, start=30)
+
+    async def body(state: dict[str, Any], call: Callable[..., Any]) -> None:
+        first = await call("recall_index", path=str(tmp_path / "mem"), idempotency_key="nightly")
+        assert not first.startswith("RAISED"), first
+        again = await call("recall_index", path=str(tmp_path / "mem"), idempotency_key="nightly")
+        assert again == first, "a retried keyed index did not replay the first answer"
+        other = await call("recall_index", path=str(tmp_path / "other"), idempotency_key="nightly")
+        assert "idempotency_conflict" in other, other
 
     _serve(lite_env, body)

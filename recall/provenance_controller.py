@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, cast
 
+from recall.frontmatter import supersedes_key
 from recall.types import AtomicFact, EvidenceCard, Verdict
 
 
@@ -754,8 +755,15 @@ class ProvenanceController:
                 for card in event.evidence_cards
                 for value in (card.card_id, card.chunk_id, card.source)
             }
+            # A memo names what it supersedes by file name, resolved to a stem exactly as the
+            # store resolves `supersedes:` (`recall.frontmatter.supersedes_key`), so a link
+            # `user-drink.md` designates a memo stored as `mem/user-drink.md`. Without this a
+            # lite store, which names memos relative to RECALL_INDEX_ROOT, never matched one.
+            old_stems = {supersedes_key(card.source) for card in event.evidence_cards if card.source}
             allowed = any(
-                event.fact_id in card.supersession_links or old_source_ids.intersection(card.supersession_links)
+                event.fact_id in card.supersession_links
+                or old_source_ids.intersection(card.supersession_links)
+                or old_stems.intersection(supersedes_key(link) for link in card.supersession_links)
                 for card in cards
             )
             if allowed and event.fact_id is not None:
