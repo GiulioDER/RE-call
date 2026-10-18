@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 322
 Cross package edges: 332
-Source tree fingerprint: `6f842d60de8e84346262918197427ce20ea238c55ed7e96ec2843a886daa91fd`
+Source tree fingerprint: `0edb1abcd207b5fa2f8925908c8c44c28776ec12176420e24f5e433afda8f29b`
 
 ## Highest fan in modules
 
@@ -63,7 +63,7 @@ Source tree fingerprint: `6f842d60de8e84346262918197427ce20ea238c55ed7e96ec2843a
 |---:|---|
 | 59 | `recall_mcp.service` |
 | 54 | `recall_mcp.server` |
-| 26 | `recall.cli_commands.index_search` |
+| 27 | `recall.cli_commands.index_search` |
 | 22 | `recall_mcp.reasoning_engine` |
 | 22 | `recall_mcp.retrieval` |
 | 20 | `recall` |
@@ -475,7 +475,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 11 | 78 |
 | `recall.cli_commands.graph_cmd` | 1 | 53 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 27 |
-| `recall.cli_commands.index_search` | 26 | 91 |
+| `recall.cli_commands.index_search` | 27 | 92 |
 | `recall.cli_commands.lint_check` | 7 | 78 |
 | `recall.cli_commands.lite_cmd` | 8 | 97 |
 | `recall.cli_commands.manifest_cmd` | 4 | 41 |
@@ -591,11 +591,11 @@ They are observations, not automatic failures.
 | `recall.lite` | 2 | 72 |
 | `recall.lite.calibration` | 11 | 71 |
 | `recall.lite.facts` | 5 | 75 |
-| `recall.lite.inspect` | 2 | 72 |
+| `recall.lite.inspect` | 3 | 72 |
 | `recall.lite.receipts` | 3 | 71 |
 | `recall.lite.refresh` | 12 | 74 |
 | `recall.lite.setup` | 10 | 93 |
-| `recall.lite.store` | 7 | 71 |
+| `recall.lite.store` | 8 | 71 |
 | `recall.lite.writer_lock` | 1 | 71 |
 | `recall.manifest` | 3 | 14 |
 | `recall.memory_index` | 6 | 38 |
