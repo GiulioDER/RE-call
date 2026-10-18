@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 # Eager, NOT to defer a cost: `recall.store` is imported at module level elsewhere in the CLI
 # and already pulls in psycopg and pgvector, so nothing would be saved by a function-local
@@ -19,6 +20,9 @@ from recall.drift import DRIFT_SCREEN_DELTA
 from recall.setup import CalibrationResult
 
 from recall.cli_commands._shared import _make_embedder
+
+if TYPE_CHECKING:
+    from recall.lite import LiteStore
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -148,13 +152,96 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_cal_import.add_argument("path")
 
 
+#: The `recall calibration` subcommands a lite store serves. The rest are bound to PostgreSQL
+#: generations and labelled query sets, which a lite file does not have.
+_LITE_CALIBRATION_COMMANDS = frozenset({"list", "show", "export"})
+
+
+def _lite_meta(path: Path) -> dict[str, str] | None:
+    """A lite file's `meta` table, read over a read-only connection; None when it has none."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        return {str(key): str(value) for key, value in conn.execute("SELECT key, value FROM meta").fetchall()}
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+
+def _cmd_calibration_lite(args: argparse.Namespace) -> None:
+    """`recall calibration` on a `sqlite:///` DSN: list, show and export; the rest refused by name."""
+    from recall.backends import lite_route_refusal, open_legacy_store
+    from recall.calibration_v2 import CalibrationError
+    from recall.lite import calibration as lite_calibration
+    from recall.lite import lite_dsn_path
+    from recall.runtime_route import resolve_runtime_route
+
+    route = getattr(args, "_runtime_route", None) or resolve_runtime_route()
+    if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+        raise SystemExit(refusal)
+    command = args.calibration_cmd
+    if command not in _LITE_CALIBRATION_COMMANDS:
+        raise SystemExit(
+            f"recall calibration {command}: not available on a lite store ({args.dsn}). A lite "
+            "store calibrates itself when it is indexed (`recall index`, `recall setup --lite`, or "
+            "recall_index over MCP; recall_calibration_run refits it on demand); generations, "
+            "carry-forward, drift and labelled query sets need the full "
+            "(PostgreSQL) install. `recall calibration list`, `show` and `export` work here."
+        )
+    path = lite_dsn_path(args.dsn)
+    if not path.exists():
+        # Nothing calibrated yet, as an empty PostgreSQL table reads; reading must not create it.
+        if command == "list":
+            print(json.dumps([], indent=2))
+            return
+        raise SystemExit(f"calibration {args.calibration_id} not found: {path} does not exist")
+    # The width and tenant the file records, read without writing: opening a store at a guessed
+    # width stamped a file that is not a lite store with one, and broke every later `recall index`.
+    meta = _lite_meta(path)
+    if meta is None or "dim" not in meta:
+        raise SystemExit(f"{path} is not a lite store (it has no RE-call meta table); nothing was read or written")
+    if meta.get("tenant") != args.tenant:
+        raise SystemExit(
+            f"{path} holds tenant {meta.get('tenant')!r}, not {args.tenant!r}; "
+            f"pass --tenant {meta.get('tenant')} to read it"
+        )
+    with open_legacy_store(args.dsn, dim=int(meta["dim"]), table=args.table, tenant=args.tenant) as opened:
+        store = cast("LiteStore", opened)
+        try:
+            if command == "list":
+                problems: list[str] = []
+                print(json.dumps(lite_calibration.list_records(store, problems=problems), indent=2, default=str))
+                for problem in problems:
+                    print(problem, file=sys.stderr)
+            elif command == "show":
+                print(json.dumps(lite_calibration.show_record(store, args.calibration_id), indent=2, default=str))
+            else:
+                target = lite_calibration.export_artifact(store, args.calibration_id, args.output)
+                print(target)
+                print(
+                    "the artifact alone: a lite store keeps no labelled query set, so no "
+                    "`recall calibration import` accepts this bundle"
+                )
+        except CalibrationError as exc:
+            raise SystemExit(str(exc)) from exc
+
+
 def _cmd_calibration(args: argparse.Namespace) -> None:
+    from recall.backends import is_lite_dsn
     from recall.calibration_v2 import (
         CalibrationError,
         CalibrationRepository,
         load_query_set,
     )
 
+    if is_lite_dsn(args.dsn):
+        _cmd_calibration_lite(args)
+        return
     repository = CalibrationRepository(args.dsn, args.tenant)
     try:
         if args.calibration_cmd == "list":
