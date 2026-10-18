@@ -41,6 +41,11 @@ dependencies = [
     # `import recall_agent` raised ModuleNotFoundError: pydantic. Relying on somebody else's
     # transitive for a module-scope import is a dependency whether or not it is declared.
     "pydantic>=2",
+    # `recall.lite.store.LiteStore` keeps its dense leg as one float32 matrix and needs numpy on its
+    # first write. pgvector 0.5.0 no longer pulls numpy in, so a core-only install raised
+    # ModuleNotFoundError: numpy there (PR 894, verified 2026-10-07). The zero-setup install is the
+    # lite store, so numpy belongs to the base install rather than to an extra.
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
@@ -129,8 +134,9 @@ mcp = [
 # `requests` is what `recall._voyage_http` speaks HTTP with, stated rather than inherited from
 # voyageai. The SDK itself stays: its version is part of every Voyage profile's identity.
 voyage = ["voyageai>=0.2.2", "requests>=2.31"]
-# Atomic rescue keeps NumPy optional so the default-off path preserves the base install and import
-# surface. Operators enabling the generation-bound artifact install this extra explicitly.
+# Operators enabling the generation-bound atomic rescue artifact install this extra explicitly.
+# NumPy is also a core dependency now (LiteStore); it stays listed here so the extra states what
+# atomic rescue needs on its own.
 # threadpoolctl bounds the BLAS pool of the view-matrix product (`recall.atomic_rescue._view_scores`).
 atomic = ["numpy>=1.26", "threadpoolctl>=3.1"]
 # OpenAI-compatible embeddings, including OpenRouter-hosted models.
