@@ -45,6 +45,7 @@ from recall.reasoning_proposals import (
     ProviderFailure,
 )
 from recall.types import AtomicFact, DecisionState, EvidenceCard
+from recall.support import CalibrationCoverage, QuerySupport, validated_coverage_report
 
 ReasoningOutcome = Literal["answered", "abstained", "needs_clarification", "needs_review"]
 GraphExpansionMode = Literal["off", "one_hop"]
@@ -344,6 +345,8 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
         items=items,
         trust_state=trust_state,
         failure_code=_optional_str(payload.get("failure_code")),
+        query_support=_query_support_from_dict(_mapping(payload.get("query_support", {}))),
+        calibration_coverage=_coverage_from_dict(_mapping(payload.get("calibration_coverage", {}))),
         cards=tuple(
             EvidenceCard(
                 card_id=str(card["card_id"]),
@@ -381,6 +384,40 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
             )
             for card in (_mapping(value) for value in _sequence(payload.get("cards", ())))
         ),
+    )
+
+
+def _query_support_from_dict(payload: Mapping[str, object]) -> QuerySupport:
+    status = _checked_literal(payload.get("status", "not_checked"), ("not_checked",), "query_support.status")
+    scope = _checked_literal(payload.get("scope", "returned_evidence"), ("returned_evidence",), "query_support.scope")
+    if payload.get("method") is not None:
+        raise EvidenceValidationError("query_support.method must be null")
+    return QuerySupport(status=status, scope=scope)
+
+
+def _coverage_from_dict(payload: Mapping[str, object]) -> CalibrationCoverage:
+    calibration_id = _optional_str(payload.get("calibration_id"))
+    status = _checked_literal(
+        payload.get("status", "unmeasured"), ("measured", "unmeasured", "unavailable"),
+        "calibration_coverage.status",
+    )
+    method = payload.get("method")
+    report = payload.get("report")
+    if report is None:
+        if status == "measured" or method is not None:
+            raise EvidenceValidationError("coverage measurement requires a report")
+        return CalibrationCoverage(calibration_id=calibration_id, status=status)
+    if calibration_id is None or method != "synthetic_corpus_probes" or status == "unavailable":
+        raise EvidenceValidationError("invalid coverage measurement")
+    try:
+        clean = validated_coverage_report(dict(_mapping(report)), calibration_id)
+    except (TypeError, ValueError) as exc:
+        raise EvidenceValidationError("invalid coverage report") from exc
+    measured = all(clean[name]["state"] == "measured" for name in ("unknown_entity", "in_vocabulary"))
+    if status != ("measured" if measured else "unmeasured"):
+        raise EvidenceValidationError("coverage status disagrees with report")
+    return CalibrationCoverage(
+        calibration_id=calibration_id, status=status, method="synthetic_corpus_probes", report=clean,
     )
 
 

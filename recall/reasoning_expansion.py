@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_proposals import ProviderFailure
+from recall.support import merge_calibration_coverage
 from recall.trust import decision_state_for
 from recall.types import TrustedHit, TrustedResult
 
@@ -422,6 +423,10 @@ def merge_trusted_results(
         query_set_digest=initial.query_set_digest,
         trust_state=initial.trust_state,
         failure_code=initial.failure_code,
+        query_support=initial.query_support,
+        calibration_coverage=merge_calibration_coverage(
+            initial.calibration_coverage, *(result.calibration_coverage for result in expanded)
+        ),
     )
 
 

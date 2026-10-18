@@ -12,6 +12,11 @@ from recall.observability import get_logger
 
 _log = get_logger("support")
 
+# Shared by the probe producer and its serving/decoder boundary. Keep this contract data-only.
+PROVISIONAL_BAR = 0.90
+MIN_PROBES = 10
+CLASSES = ("unknown_entity", "in_vocabulary")
+
 ELIGIBILITY_NOTE = (
     " Citable passages passed retrieval trust checks; this does not establish that they "
     "answer the question. query_support is not_checked: establish that each cited passage "
@@ -43,6 +48,53 @@ class CalibrationCoverage:
     report: dict[str, Any] | None = None
 
 
+def merge_calibration_coverage(
+    initial: CalibrationCoverage, *expanded: CalibrationCoverage,
+) -> CalibrationCoverage:
+    """Carry identical diagnostics; mixed fits or measurements have no aggregate report."""
+    if all(coverage == initial for coverage in expanded):
+        return initial
+    calibration_id = initial.calibration_id if all(
+        coverage.calibration_id == initial.calibration_id for coverage in expanded
+    ) else None
+    return CalibrationCoverage(calibration_id=calibration_id)
+
+
+def validated_coverage_report(report: dict[str, Any], calibration_id: str) -> dict[str, Any]:
+    """Copy content-free diagnostics only when they agree with the producer's count rules."""
+    if report.get("calibration_id") != calibration_id:
+        raise ValueError("coverage calibration mismatch")
+    clean: dict[str, Any] = {"calibration_id": calibration_id}
+    for name in CLASSES:
+        entry = report.get(name)
+        if not isinstance(entry, dict):
+            raise ValueError("invalid coverage class")
+        n, rejected, rate, state = (entry.get(k) for k in ("n", "rejected", "rate", "state"))
+        if type(n) is not int or type(rejected) is not int or not 0 <= rejected <= n:
+            raise ValueError("invalid coverage counts")
+        if state != ("measured" if n >= MIN_PROBES else "unmeasured"):
+            raise ValueError("inconsistent coverage state")
+        expected_rate = round(rejected / n, 3) if n else None
+        if (n == 0 and rate is not None) or (n > 0 and (
+                not isinstance(rate, (float, int)) or isinstance(rate, bool)
+                or rate != expected_rate)):
+            raise ValueError("inconsistent coverage rate")
+        clean[name] = {"n": n, "rejected": rejected, "rate": rate, "state": state}
+    in_vocab = clean["in_vocabulary"]
+    provisional = in_vocab["state"] == "unmeasured" or (
+        in_vocab["n"] > 0 and in_vocab["rejected"] / in_vocab["n"] < PROVISIONAL_BAR
+    )
+    if (not isinstance(report.get("provisional_in_vocabulary"), bool)
+            or report["provisional_in_vocabulary"] != provisional):
+        raise ValueError("inconsistent coverage warning")
+    clean["provisional_in_vocabulary"] = provisional
+    gate = report.get("unknown_term_gate")
+    if gate not in {"checked", "unavailable", "disabled", "not_run"}:
+        raise ValueError("invalid coverage gate")
+    clean["unknown_term_gate"] = gate
+    return clean
+
+
 def calibration_coverage(store: object, calibration_id: str | None) -> CalibrationCoverage:
     """Read only the served fit's report; optional faults cannot change serving behavior."""
     empty = CalibrationCoverage(calibration_id=calibration_id)
@@ -59,26 +111,7 @@ def calibration_coverage(store: object, calibration_id: str | None) -> Calibrati
             return empty
         # Only the documented, content-free diagnostic shape crosses this boundary.
         # A damaged optional report must not break CLI formatting or pretend it measured a class.
-        clean: dict[str, Any] = {"calibration_id": calibration_id}
-        for name in ("unknown_entity", "in_vocabulary"):
-            entry = report.get(name)
-            if not isinstance(entry, dict):
-                raise ValueError("invalid coverage class")
-            n, rejected, rate, state = (entry.get(k) for k in ("n", "rejected", "rate", "state"))
-            if (type(n) is not int or type(rejected) is not int or not 0 <= rejected <= n
-                    or state not in {"measured", "unmeasured"}):
-                raise ValueError("invalid coverage counts")
-            if (n == 0 and rate is not None) or (n > 0 and (
-                    not isinstance(rate, (float, int)) or isinstance(rate, bool) or not 0 <= rate <= 1)):
-                raise ValueError("invalid coverage rate")
-            clean[name] = {"n": n, "rejected": rejected, "rate": rate, "state": state}
-        if not isinstance(report.get("provisional_in_vocabulary"), bool):
-            raise ValueError("invalid coverage warning")
-        clean["provisional_in_vocabulary"] = report["provisional_in_vocabulary"]
-        gate = report.get("unknown_term_gate")
-        if gate not in {"checked", "unavailable", "disabled", "not_run"}:
-            raise ValueError("invalid coverage gate")
-        clean["unknown_term_gate"] = gate
+        clean = validated_coverage_report(report, calibration_id)
         measured = all(
             isinstance(report.get(name), dict) and report[name].get("state") == "measured"
             for name in ("unknown_entity", "in_vocabulary")

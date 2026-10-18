@@ -36,6 +36,11 @@ from typing import Any
 from recall.embeddings import Embedder, embed_query
 from recall.eval.vocab import word_tokens
 from recall.unknown_terms import check_unknown_terms
+from recall.support import (
+    CLASSES as CLASSES,
+    MIN_PROBES as MIN_PROBES,
+    PROVISIONAL_BAR as PROVISIONAL_BAR,
+)
 from recall.wizard.queryset import (
     _ANSWERABLE_TEMPLATES,
     _STOPWORDS,
@@ -43,12 +48,6 @@ from recall.wizard.queryset import (
     _document_frequency,
     _heading_of,
 )
-
-PROVISIONAL_BAR = 0.90
-#: Fewer probes than this and a class is reported as unmeasured rather than given a rate.
-MIN_PROBES = 10
-CLASSES = ("unknown_entity", "in_vocabulary")
-
 
 def _invented_codes(corpus_words: set[str], rng: random.Random, count: int) -> list[str]:
     """Codes like QK4817 that occur nowhere in the corpus, deterministic for the seed."""

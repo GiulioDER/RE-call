@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 328
 Cross package edges: 344
-Source tree fingerprint: `de9c4dcc1aee45451177c0d01a6293d8cdcd558d71d547c77e37be8f8d1a4b5c`
+Source tree fingerprint: `f0b58e7c5537e1e9bd5cdf1ed47447af67e1354afbb40fb704bb98aed863c1a6`
 
 ## Highest fan in modules
 
@@ -617,7 +617,7 @@ They are observations, not automatic failures.
 | `recall.migration` | 1 | 28 |
 | `recall.migrations` | 0 | 0 |
 | `recall.multimodal` | 3 | 11 |
-| `recall.near_miss` | 4 | 60 |
+| `recall.near_miss` | 5 | 60 |
 | `recall.observability` | 0 | 0 |
 | `recall.ops` | 0 | 0 |
 | `recall.ops.backup` | 1 | 4 |
@@ -633,7 +633,7 @@ They are observations, not automatic failures.
 | `recall.pool` | 3 | 27 |
 | `recall.profiles` | 1 | 1 |
 | `recall.promotion` | 1 | 31 |
-| `recall.proof_obligations` | 2 | 6 |
+| `recall.proof_obligations` | 3 | 6 |
 | `recall.proof_provider` | 3 | 9 |
 | `recall.provenance_card_hash` | 0 | 0 |
 | `recall.provenance_cards` | 3 | 30 |
@@ -646,7 +646,7 @@ They are observations, not automatic failures.
 | `recall.quickstart` | 2 | 109 |
 | `recall.readiness` | 5 | 86 |
 | `recall.reasoning` | 13 | 100 |
-| `recall.reasoning_expansion` | 4 | 95 |
+| `recall.reasoning_expansion` | 5 | 95 |
 | `recall.reasoning_expansion_service` | 5 | 100 |
 | `recall.reasoning_graph` | 7 | 24 |
 | `recall.reasoning_graph_service` | 3 | 100 |
@@ -659,7 +659,7 @@ They are observations, not automatic failures.
 | `recall.reasoning_proposals._metrics` | 1 | 26 |
 | `recall.reasoning_proposals._providers` | 3 | 27 |
 | `recall.reasoning_proposals.types` | 2 | 25 |
-| `recall.reasoning_response` | 6 | 97 |
+| `recall.reasoning_response` | 7 | 97 |
 | `recall.related` | 7 | 88 |
 | `recall.rerank` | 4 | 15 |
 | `recall.retrieval_plan` | 1 | 1 |

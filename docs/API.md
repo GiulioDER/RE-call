@@ -271,6 +271,13 @@ evidence review.
 
 ## Retrieval eligibility and answerability
 
+Reasoning response decoding preserves these diagnostics and accepts older payloads with the
+same unchecked and unmeasured defaults. Retrieval expansion and proof repair retain identical
+coverage reports. When merged results disagree about coverage, the aggregate is unmeasured
+without a report; its calibration ID is retained only when all merged diagnostics name the same
+fit. Stored reports with inconsistent counts, rates, measurement states, or provisional warnings
+are unavailable diagnostics and do not change evidence admission.
+
 Search and evidence responses add `query_support` and `calibration_coverage`. Existing
 `decision_state`, `decision`, `abstained`, verdicts, confidence and citation eligibility retain
 their behavior. `supported`, `answer` and a citable chunk mean that retrieval trust checks admitted
