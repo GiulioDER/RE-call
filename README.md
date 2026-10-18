@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Memory that abstains instead of guessing.</b><br>
-  RE-call is agent memory on your own PostgreSQL with pgvector. Each result carries a verdict,
+  RE-call is agent memory in a local SQLite file or your own PostgreSQL with pgvector. Each result carries a verdict,
   confidence, and provenance, while unsupported questions are refused instead of answered by the
   nearest match.
 </p>
@@ -33,26 +33,26 @@
 
 ## What is RE-call
 
-RE-call is agent memory on your own PostgreSQL database. It indexes source documents with pgvector
-and keeps validity, lineage, confidence, and provenance attached to every result.
+RE-call is agent memory in a local SQLite file or your own PostgreSQL database. It indexes source
+documents and keeps validity, lineage, confidence, and provenance attached to every result.
 
 Vector search returns nearby text. RE-call also checks whether that text is current, supported, and
 trustworthy enough for the query. A superseded claim is marked `superseded`; a result that does not
 clear the calibrated trust gate becomes `ABSTAIN` with a reason. Declared supersession makes the current memory win
 over stale but similar memory.
 
-The default path uses local embeddings plus hybrid dense and Postgres full text retrieval. It needs
-no memory-layer LLM call. Additional retrieval, reasoning, and structured-fact modules are
-optional.
+The default path uses local embeddings plus hybrid dense and keyword retrieval. PostgreSQL uses
+its full text search; Lite uses SQLite `FTS5`. It needs no memory-layer LLM call. Additional retrieval,
+reasoning, and structured-fact modules are optional.
 
 For the agent reading this, [RE-call for agents](docs/FOR_AGENTS.md) explains the experience loop
 and how to use persistent memory as a trustworthy past rather than an unverified scratchpad.
 
 ## How it works
 
-RE-call builds an immutable, calibrated generation once and serves queries against that pinned
-generation. Every search, including the reasoning and fact paths, goes through trusted search, so
-nothing bypasses the pinned generation or the trust gate.
+On PostgreSQL, RE-call builds an immutable, calibrated generation and serves queries against that
+pinned generation. Lite binds calibration to its single-file corpus. Every search, including the
+reasoning and fact paths, goes through trusted search and the trust gate.
 
 <p align="center">
   <a href="https://giulioder.github.io/RE-call/how-it-works.html">
