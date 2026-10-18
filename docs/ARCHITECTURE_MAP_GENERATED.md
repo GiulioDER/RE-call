@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 307
+Modules: 308
 Cross package edges: 310
-Source tree fingerprint: `d773837f0b2b0ccb8d57322d530dab06ca7e270c86bc4635bf48f0ad8a2d06ff`
+Source tree fingerprint: `abd1649e1cebd05ce629cb2d95726448cf26d15f87aef6c01642df2a9a0f3606`
 
 ## Highest fan in modules
 
@@ -561,8 +561,9 @@ They are observations, not automatic failures.
 | `recall.integrations.llamaindex` | 10 | 72 |
 | `recall.lineage` | 2 | 12 |
 | `recall.lint` | 4 | 19 |
-| `recall.lite` | 1 | 7 |
-| `recall.lite.store` | 4 | 6 |
+| `recall.lite` | 1 | 58 |
+| `recall.lite.calibration` | 7 | 57 |
+| `recall.lite.store` | 6 | 57 |
 | `recall.manifest` | 3 | 14 |
 | `recall.memory_index` | 6 | 37 |
 | `recall.migration` | 1 | 26 |

@@ -36,6 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
 from recall.errors import RecallError
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope
 from recall.supersession import EdgeCandidates, chunk_supersedes_targets, resolve_supersession_candidates
@@ -119,6 +120,7 @@ class _Matrix:
     rows: list[_Row]
     by_id: dict[str, int]
     vectors: Any  # numpy float32 array, rows normalised
+    fingerprint: str  # `recall.lite.calibration.corpus_digest` of these rows
 
 
 def _normalize(vectors: Any) -> Any:
@@ -279,6 +281,11 @@ class LiteStore:
                 CREATE INDEX IF NOT EXISTS chunks_source ON chunks(source);
                 CREATE INDEX IF NOT EXISTS chunks_project_file
                     ON chunks(json_extract(metadata, '$.project'), json_extract(metadata, '$.file'));
+                CREATE TABLE IF NOT EXISTS calibrations (
+                    rowid INTEGER PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                     text, content='chunks', content_rowid='rowid', tokenize='porter unicode61'
                 );
@@ -529,7 +536,12 @@ class LiteStore:
             vectors: Any = np.zeros((len(raw), self._dim), dtype=np.float32)
             for i, r in enumerate(raw):
                 vectors[i] = np.frombuffer(r[5], dtype=np.float32)
-            self._matrix = _Matrix(version, rows, {row.id: i for i, row in enumerate(rows)}, _normalize(vectors))
+            from recall.lite.calibration import corpus_digest
+
+            fingerprint = corpus_digest([(r[1], r[3], r[5]) for r in raw])
+            self._matrix = _Matrix(
+                version, rows, {row.id: i for i, row in enumerate(rows)}, _normalize(vectors), fingerprint
+            )
             return self._matrix
 
     def _query_vector(self, vector: Sequence[float]) -> Any:
@@ -633,6 +645,70 @@ class LiteStore:
 
     def query_learned_sparse(self, *args: Any, **kwargs: Any) -> list[ScoredChunk]:
         raise LiteStoreError("learned sparse retrieval needs the full (Postgres) install")
+
+    # ------------------------------------------------------------------ calibration and lineage
+
+    def corpus_fingerprint(self) -> str:
+        """A digest of chunk ids, text and stored vectors, including vector-only replacements."""
+        return self._load().fingerprint
+
+    def corpus_revision(self) -> int:
+        """The persisted write revision used to guard calibration publication."""
+        return self._version()
+
+    def lite_generation_id(self) -> str:
+        """A stable name for the corpus as it is now, in the place a Postgres generation id goes."""
+        return "lite-" + self.corpus_fingerprint()[:16]
+
+    def save_calibration(
+        self, payload: str, *, created_at: str, model: str, dimension: int, expected_revision: int | None = None
+    ) -> None:
+        """Append a fit, keeping identity metadata aligned with the timestamp-selected row.
+
+        An expected revision refuses publication if any corpus write occurred during the fit.
+        The comparison and insertion share the write transaction, excluding another writer.
+        """
+        with self._write():
+            if expected_revision is not None and self._version() != expected_revision:
+                raise CalibrationBindingError("corpus changed during calibration; retry the fit")
+            inserted = self._conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)", (created_at, payload))
+            selected = self._conn.execute("SELECT rowid FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
+            if selected is not None and selected[0] == inserted.lastrowid:
+                self._conn.executemany(
+                    "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [("embedder_model", model), ("embedder_dimension", str(dimension))],
+                )
+
+    def latest_calibration_json(self) -> str | None:
+        row = self._metadata_values("SELECT payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1")
+        return str(row[0][0]) if row else None
+
+    def resolve_calibration(self) -> CalibrationResolution:
+        """What `trusted_search` asks every search: see `recall.lite.calibration.resolve`."""
+        from recall.lite.calibration import resolve
+
+        return resolve(self)
+
+    def generation_binding(self) -> dict[str, str]:
+        """The identity `trusted_search` checks the runtime embedder against.
+
+        The embedder is recorded when a calibration is stored, because indexing hands this store
+        vectors, not a model name. Until then there is no model to compare and no threshold to
+        protect, so the binding names the corpus only.
+        """
+        meta = dict(self._metadata_values("SELECT key, value FROM meta"))
+        binding = {
+            "tenant_id": self._tenant,
+            "generation_id": self.lite_generation_id(),
+            "corpus_fingerprint": self.corpus_fingerprint(),
+        }
+        if "embedder_model" in meta:
+            from recall.lite.calibration import pipeline_fingerprint
+
+            binding["embedder_model"] = meta["embedder_model"]
+            binding["embedder_dimension"] = meta["embedder_dimension"]
+            binding["pipeline_fingerprint"] = pipeline_fingerprint(meta["embedder_model"], int(meta["embedder_dimension"]))
+        return binding
 
     # ------------------------------------------------------------------ supersession
 
