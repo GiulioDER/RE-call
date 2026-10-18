@@ -12,24 +12,29 @@ the backends apart. Table names and columns are those of the SQLite adapters.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+import sqlite3
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
 from recall.fact_ledger import (
     FACT_LEDGER_TABLE,
     LEDGER_COLUMNS,
+    RETRACTION_WRITER,
     SQLITE_FACT_LEDGER_DDL,
     assertion_event_id,
     assertion_is_duplicate,
     decision_event_id,
     decision_event_type,
     decode_ledger_row,
+    plan_retractions,
     project_candidates,
     project_current,
+    retraction_ids,
     supersession_ids,
 )
 from recall.lite.store import LiteStore
+from recall.observability import get_logger
 from recall.provenance_cards import (
     EVIDENCE_CARD_TABLE,
     SQLITE_EVIDENCE_CARD_DDL,
@@ -50,6 +55,7 @@ from recall.provenance_controller import (
 from recall.types import AtomicFact, EvidenceCard
 
 _SCHEMA = SQLITE_FACT_LEDGER_DDL + SQLITE_EVIDENCE_CARD_DDL
+_log = get_logger("lite.facts")
 
 
 def _json(value: Any) -> str:
@@ -73,8 +79,61 @@ def ensure_fact_tables(store: LiteStore) -> None:
 
     Outside `_write()` on purpose: `executescript` commits any open transaction first, and every
     statement is `IF NOT EXISTS`, so running it on each adapter construction costs a catalog read.
+    A ledger table made before `retracted` existed is upgraded in place (`_admit_retraction`).
     """
     store.ensure_schema(_SCHEMA)
+    if not _admits_retraction(store):
+        _admit_retraction(store)
+
+
+def _admits_retraction(store: LiteStore) -> bool:
+    rows = store._metadata_values(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (FACT_LEDGER_TABLE,)
+    )
+    return not rows or "'retracted'" in str(rows[0][0])
+
+
+def _ledger_statements() -> list[str]:
+    """`SQLITE_FACT_LEDGER_DDL` one statement at a time (a trigger body holds its own `;`)."""
+    statements: list[str] = []
+    pending = ""
+    for line in SQLITE_FACT_LEDGER_DDL.splitlines(keepends=True):
+        pending += line
+        if sqlite3.complete_statement(pending):
+            statements.append(pending.strip())
+            pending = ""
+    return statements
+
+
+def _admit_retraction(store: LiteStore) -> None:
+    """Rebuild a ledger table whose CHECK predates `retracted`, in one transaction, keeping its rows.
+
+    SQLite cannot alter a CHECK, so the table is renamed, recreated from the current DDL, refilled
+    and the old one dropped; the append-only triggers are recreated with it. A row the current
+    CHECKs refuse (a file older than the fact-shape CHECK can hold one) rolls the whole rebuild
+    back: the ledger stays as it was and serves as before, and only a retraction fails, which
+    `recall_forget` reports.
+    """
+    old = FACT_LEDGER_TABLE + "_before_retraction"
+    try:
+        with store._write():
+            if _admits_retraction(store):  # another handle upgraded it first
+                return
+            conn = store._conn
+            conn.execute(f"ALTER TABLE {FACT_LEDGER_TABLE} RENAME TO {old}")
+            for name in ("recall_fact_ledger_no_update", "recall_fact_ledger_no_delete"):
+                conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+            conn.execute("DROP INDEX IF EXISTS recall_fact_ledger_current_idx")
+            for statement in _ledger_statements():
+                conn.execute(statement)
+            columns = LEDGER_COLUMNS + ", fact_id"
+            conn.execute(f"INSERT INTO {FACT_LEDGER_TABLE} ({columns}) SELECT {columns} FROM {old}")
+            conn.execute(f"DROP TABLE {old}")
+    except sqlite3.IntegrityError:
+        _log.warning(
+            "the fact ledger in %s holds a row the current schema refuses; it was not upgraded",
+            store.path,
+        )
 
 
 class LiteFactLedger:
@@ -208,6 +267,30 @@ class LiteFactLedger:
                     decision_code=DecisionCode.APPLIED, now=moment,
                 )
             return LedgerApplyResult(event)
+
+    def retract_forgotten(
+        self,
+        *,
+        tenant_id: str,
+        touched: Callable[[EvidenceCard], bool],
+        gone: Callable[[EvidenceCard], bool],
+        writer: str = RETRACTION_WRITER,
+        now: datetime | None = None,
+    ) -> tuple[FactEvent, ...]:
+        """`PostgresFactLedger.retract_forgotten` on the file: plan and append in one transaction."""
+        self._check(tenant_id)
+        moment = _as_utc(now or datetime.now(UTC))
+        written: list[FactEvent] = []
+        with self._store._write():
+            for assertion in plan_retractions(self._events(), touched=touched, gone=gone):
+                event_id, request_id = retraction_ids(self.tenant_id, assertion)
+                written.append(self._insert(
+                    event_id=event_id, event_type="retracted", generation_id=assertion.generation_id,
+                    fact=None, cards=assertion.evidence_cards,
+                    supersedes_fact_ids=(str(assertion.fact_id),), request_id=request_id,
+                    writer=writer, decision_code=DecisionCode.SOURCE_FORGOTTEN, now=moment,
+                ))
+        return tuple(written)
 
     def record_decision(
         self,

@@ -773,6 +773,17 @@ class LiteStore:
             self._conn.execute(insert, row)
         return event_id
 
+    def forgotten_source_aliases(self, sources: Sequence[str]) -> set[str]:
+        """Recover card names recorded before these exact sources were forgotten."""
+        if not sources:
+            return set()
+        rows = self._metadata_values(
+            "SELECT payload FROM audit_events WHERE event_type = 'forget_source_aliases' "
+            "AND source_uri IN (SELECT value FROM json_each(?))", (json.dumps(list(sources)),),
+        )
+        return {name for (payload,) in rows for name in json.loads(payload).get("aliases", ())
+                if isinstance(name, str)}
+
     def count(self) -> int:
         return int(self._metadata_values("SELECT count(*) FROM chunks")[0][0])
 

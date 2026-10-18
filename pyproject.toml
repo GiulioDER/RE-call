@@ -670,6 +670,12 @@ no_implicit_optional = true
 # NOT depend on whether the extra happens to be installed — a local run with `[fastembed]` and a
 # CI run without it must agree, or the gate is advisory.
 [[tool.mypy.overrides]]
+# The published runners stay frozen even when maintained modules import them. Discovery's
+# exclude above does not apply to followed imports; preserve their types for the importers.
+module = ["benchmarks.atm_bench", "benchmarks.atm_full_run"]
+ignore_errors = true
+
+[[tool.mypy.overrides]]
 module = [
     # `agent` extra, deliberately excluded from `dev` so CI proves the SDK-absent import path.
     # That is why it needs an entry here: `benchmarks/agent_ab/sdk_exec.py` and

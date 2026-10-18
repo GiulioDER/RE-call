@@ -50,6 +50,7 @@ class DecisionCode(StrEnum):
     FRESH_SEARCH_INSUFFICIENT = "FRESH_SEARCH_INSUFFICIENT"
     LEDGER_UNAVAILABLE = "LEDGER_UNAVAILABLE"
     MATERIALIZATION_UNAVAILABLE = "MATERIALIZATION_UNAVAILABLE"
+    SOURCE_FORGOTTEN = "SOURCE_FORGOTTEN"
 
 
 def _canonical(value: object) -> object:
@@ -95,6 +96,29 @@ def asserts_fact(event: FactEvent) -> bool:
     Projections skip it, so a fact is listed once however many requests applied it.
     """
     return event.event_type == "asserted" and event.decision_code != DecisionCode.DUPLICATE
+
+
+RetractionKey = tuple[str | None, str, frozenset[str]]
+
+
+def retraction_key(event: FactEvent) -> RetractionKey:
+    """What an `asserted` event and the `retracted` event that retracts it share.
+
+    The fact, the generation and the exact set of evidence cards: a retraction hides the
+    applications it was written for and no other, so the same fact applied again later from a new
+    memo (new cards) is listed, and nothing depends on how two events with one timestamp sort.
+    """
+    return event.fact_id, event.generation_id, frozenset(card.card_id for card in event.evidence_cards)
+
+
+def retracted_keys(events: Iterable[FactEvent]) -> frozenset[RetractionKey]:
+    """The `retraction_key` of every assertion that a `retracted` event in `events` retracts."""
+    return frozenset(
+        (fact_id, event.generation_id, frozenset(card.card_id for card in event.evidence_cards))
+        for event in events
+        if event.event_type == "retracted"
+        for fact_id in event.supersedes_fact_ids
+    )
 
 
 def fact_conflict_key(fact: AtomicFact) -> str:
@@ -494,12 +518,15 @@ class InMemoryFactLedger:
             for event in self._events:
                 if event.tenant_id == tenant_id and event.event_type == "superseded":
                     superseded.update(event.supersedes_fact_ids)
+            retracted = retracted_keys(event for event in self._events if event.tenant_id == tenant_id)
             result: list[FactEvent] = []
             instant = _as_utc(now)
             for event in self._events:
                 if event.tenant_id != tenant_id or not asserts_fact(event):
                     continue
                 if event.fact_id in superseded or event.fact is None:
+                    continue
+                if retraction_key(event) in retracted:
                     continue
                 if event.fact.valid_until and instant >= _as_utc(event.fact.valid_until):
                     continue
@@ -520,6 +547,7 @@ class InMemoryFactLedger:
             if event.tenant_id == tenant_id and event.event_type == "superseded"
             for fact_id in event.supersedes_fact_ids
         }
+        retracted = retracted_keys(event for event in self._events if event.tenant_id == tenant_id)
         return tuple(
             event
             for event in self._events
@@ -527,6 +555,7 @@ class InMemoryFactLedger:
             and asserts_fact(event)
             and event.fact_id not in superseded
             and event.fact is not None
+            and retraction_key(event) not in retracted
         )
 
     def apply_assertion(

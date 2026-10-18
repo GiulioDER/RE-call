@@ -13,7 +13,7 @@ import hashlib
 import json
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from typing import Any
@@ -33,6 +33,8 @@ from recall.provenance_controller import (
     _consume_permit,
     _as_utc,
     asserts_fact,
+    retracted_keys,
+    retraction_key,
     canonical_json,
     evidence_card_from_payload,
     fact_conflict_key,
@@ -51,7 +53,7 @@ CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
     event_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
     generation_id TEXT NOT NULL,
-    event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained')),
+    event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained', 'retracted')),
     fact_id TEXT,
     fact TEXT,
     evidence_cards TEXT NOT NULL,
@@ -63,8 +65,8 @@ CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
     controller_version INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (tenant_id, request_id),
-    -- PostgreSQL's recall_fact_ledger_fact_shape (migration 0018); a table made before it lacks it.
-    CHECK ((event_type IN ('asserted', 'rejected') AND fact IS NOT NULL) OR event_type IN ('superseded', 'abstained'))
+    -- PostgreSQL's recall_fact_ledger_fact_shape (migrations 0018 and 0026); a table made before it lacks it.
+    CHECK ((event_type IN ('asserted', 'rejected') AND fact IS NOT NULL) OR event_type IN ('superseded', 'abstained', 'retracted'))
 );
 CREATE INDEX IF NOT EXISTS recall_fact_ledger_current_idx
     ON {FACT_LEDGER_TABLE} (tenant_id, fact_id, created_at);
@@ -171,39 +173,95 @@ def decode_ledger_row(row: Sequence[Any]) -> FactEvent:
 
 
 def project_current(events: Sequence[FactEvent], now: datetime) -> tuple[FactEvent, ...]:
-    """The facts in force at `now`: asserted, not superseded, inside their validity window."""
+    """The facts in force at `now`: asserted, not superseded or retracted, inside their validity."""
     superseded = {
         fact_id
         for event in events
         if event.event_type == "superseded"
         for fact_id in event.supersedes_fact_ids
     }
+    retracted = retracted_keys(events)
     instant = _as_utc(now)
     return tuple(
         event for event in events
         if asserts_fact(event)
         and event.fact_id not in superseded
         and event.fact is not None
+        and retraction_key(event) not in retracted
         and (event.fact.valid_from is None or instant >= _as_utc(event.fact.valid_from))
         and (event.fact.valid_until is None or instant < _as_utc(event.fact.valid_until))
     )
 
 
 def project_candidates(events: Sequence[FactEvent]) -> tuple[FactEvent, ...]:
-    """Asserted, not superseded facts regardless of time: what a new claim may conflict with."""
+    """Asserted, not superseded or retracted, regardless of time: what a new claim may conflict with."""
     superseded = {
         fact_id
         for event in events
         if event.event_type == "superseded"
         for fact_id in event.supersedes_fact_ids
     }
+    retracted = retracted_keys(events)
     return tuple(
         event
         for event in events
         if asserts_fact(event)
         and event.fact_id not in superseded
         and event.fact is not None
+        and retraction_key(event) not in retracted
     )
+
+
+#: The writer `recall_forget` records on the retractions it appends.
+RETRACTION_WRITER = "recall_forget"
+
+
+def plan_retractions(
+    events: Sequence[FactEvent],
+    *,
+    touched: Callable[[EvidenceCard], bool],
+    gone: Callable[[EvidenceCard], bool],
+) -> tuple[FactEvent, ...]:
+    """The live assertions a forget retracts: every one of each fact it leaves without evidence.
+
+    A fact is retracted when at least one of its cards names a source this forget erased
+    (`touched`) and every card on every live assertion of it, the APPLIED one and any DUPLICATE
+    re-application alike, names a source that is gone. One surviving card keeps the fact, so a
+    fact two memos support survives forgetting one of them. Superseded facts are left as they are:
+    forgetting never makes a fact current again.
+    """
+    superseded = {
+        fact_id
+        for event in events
+        if event.event_type == "superseded"
+        for fact_id in event.supersedes_fact_ids
+    }
+    retracted = retracted_keys(events)
+    live: dict[str, list[FactEvent]] = {}
+    for event in events:
+        if (
+            event.event_type == "asserted"
+            and event.fact_id is not None
+            and event.fact_id not in superseded
+            and retraction_key(event) not in retracted
+        ):
+            live.setdefault(event.fact_id, []).append(event)
+    planned: list[FactEvent] = []
+    for assertions in live.values():
+        cards = [card for event in assertions for card in event.evidence_cards]
+        if cards and any(touched(card) for card in cards) and all(gone(card) for card in cards):
+            planned.extend(assertions)
+    return tuple(planned)
+
+
+def retraction_ids(tenant_id: str, assertion: FactEvent) -> tuple[str, str]:
+    """The event id and request id of the `retracted` event for `assertion`, on every backend.
+
+    One retraction per assertion, ever: the request id is unique per tenant, and a retracted
+    assertion is never planned again, so a forget run twice appends nothing the second time.
+    """
+    request_id = "retraction:" + assertion.event_id
+    return decision_event_id(tenant_id, request_id, "retracted"), request_id
 
 
 def assertion_event_id(tenant_id: str, fact: AtomicFact, request_id: str) -> str:
@@ -784,6 +842,39 @@ class PostgresFactLedger:
         if outbox is None:
             raise ValueError("materialization_outbox is required")
         return self.apply_assertion(materialization_outbox=outbox, **kwargs)
+
+    def retract_forgotten(
+        self, *, tenant_id: str, touched: Callable[[EvidenceCard], bool],
+        gone: Callable[[EvidenceCard], bool], writer: str = RETRACTION_WRITER,
+        now: datetime | None = None,
+    ) -> tuple[FactEvent, ...]:
+        """Append a `retracted` event for each assertion `plan_retractions` selects; return them.
+
+        The plan is made twice: once to learn which facts to lock, and again under the same
+        per-fact advisory locks `apply_assertion` takes, so an application that lands between the
+        two reads is seen before anything is retracted.
+        """
+        if tenant_id != self.tenant_id:
+            raise ValueError("ledger tenant mismatch")
+        moment = _as_utc(now or datetime.now(UTC))
+        with self._connect() as conn, conn.transaction():
+            first = plan_retractions(self._events(conn), touched=touched, gone=gone)
+            for key in sorted({fact_conflict_key(event.fact) for event in first if event.fact}):
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"fact\x1f{self.tenant_id}\x1f{key}",),
+                )
+            written: list[FactEvent] = []
+            for assertion in plan_retractions(self._events(conn), touched=touched, gone=gone):
+                event_id, request_id = retraction_ids(self.tenant_id, assertion)
+                written.append(self._insert(
+                    conn, event_id=event_id, event_type="retracted",
+                    generation_id=assertion.generation_id, fact=None,
+                    cards=assertion.evidence_cards, supersedes_fact_ids=(str(assertion.fact_id),),
+                    request_id=request_id, writer=writer,
+                    decision_code=DecisionCode.SOURCE_FORGOTTEN, now=moment,
+                ))
+            return tuple(written)
 
     def record_decision(
         self, *, tenant_id: str, generation_id: str, request_id: str, writer: str,
