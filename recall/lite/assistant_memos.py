@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall.atomic_write import atomic_write_bytes
-from recall.lite.memo_requests import load_ledger, write_memo
+from recall.lite.memo_requests import cancel_requests, load_ledger, write_memo
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -168,4 +168,5 @@ class MemoFolder:
         path = self.path_of(memo_id)
         if path is None:
             raise ValueError(f"{memo_id!r} is not a memo id")
+        cancel_requests(self.ledger_path, memo_id)
         path.unlink()

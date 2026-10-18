@@ -1,6 +1,6 @@
 """Correction invariants exercised through the existing write and MCP consumers.
 
-Red proof against b7f5d9c032791477f046ebc374eb77a2233b052f: the nineteen cases here plus
+Red proof against b7f5d9c032791477f046ebc374eb77a2233b052f: the original nineteen cases plus
 test_assistant_surface.py::test_the_published_tools_are_the_contract and
 test_assistant_surface.py::test_remember_then_search_answers_in_the_compact_view produced
 20 intended assertion failures and one passing legacy control, zero errors. The five existing
@@ -12,6 +12,14 @@ missing optional parameters. The two existing contract nodes reject the old tool
 missing revision projection respectively. The compatibility adapter discards
 only parameters absent from the baseline signature: old code reaches the real write path and
 fails behavioral assertions, never collection or unexpected-keyword errors.
+
+Audit regressions BUG-001 and DAT-002: seven cases failed at intended assertions against
+139b138b6152c09a2c18082c8b3806a9bf3ec68a, with zero setup or collection errors. They exercise
+explicit forget after interrupted publication, cancellation-save failure, real search revisions
+for CRLF/BOM/NUL targets, and receipt parity with the actual stored hash for BOM/NUL text.
+The two raw-byte replay controls also failed their intended memo_changed assertions with the
+plausible mutation replacing the raw replay digest by revision(path); a persistent journal
+restored the fixed production bytes and verified their SHA-256 before the final green run.
 """
 from __future__ import annotations
 
@@ -240,3 +248,94 @@ def test_mcp_exposes_optional_guards_and_indexed_revision(tmp_path, monkeypatch)
         assert full["hits"][0].get("revision") == expected, "search did not expose the indexed revision"
         assert compact["hits"][0].get("revision") == expected, "compact search lost the correction precondition"
     _serve_both(envs, body)
+
+
+def test_forget_cancels_a_published_but_uncommitted_request(serving, monkeypatch):
+    """BUG-001: baseline 139b138b recreates the memo after a successful explicit forget."""
+    from recall.lite import memo_requests
+    store, memos = serving
+    save = memo_requests._save
+    def interrupted(path, ledger):
+        if ledger.get("requests", {}).get("interrupted", {}).get("state") == "written":
+            raise OSError("injected final journal save failure")
+        return save(path, ledger)
+    monkeypatch.setattr(memo_requests, "_save", interrupted)
+    with pytest.raises(OSError, match="final journal save"):
+        remember(store, memos, request_id="interrupted")
+    monkeypatch.setattr(memo_requests, "_save", save)
+    entry = json.loads(memos.ledger_path.read_text())["requests"]["interrupted"]
+    assert entry["state"] == "prepared" and memos.path_of(entry["memo_id"]).exists()
+    memos.refresh(store, ContentWordEmbedder())
+    assert memos.forget(store, ContentWordEmbedder(), entry["memo_id"])["deleted"] == 1
+    result = remember(store, memos, request_id="interrupted")
+    assert result.get("conflict") == "memo_missing", "retry resurrected an explicitly forgotten prepared memo"
+    assert not memos.path_of(entry["memo_id"]).exists()
+    assert str(memos.path_of(entry["memo_id"])) not in store.source_raw_hashes()
+
+
+def test_forget_persists_cancellation_before_unlinking(serving, monkeypatch):
+    """BUG-001: baseline 139b138b deletes without durable cancellation, so no error is raised."""
+    from recall.lite import memo_requests
+    store, memos = serving
+    first = remember(store, memos, request_id="cancel-save")
+    save = memo_requests._save
+    def unavailable(path, ledger):
+        if ledger.get("requests", {}).get("cancel-save", {}).get("state") == "cancelled":
+            raise OSError("injected cancellation save failure")
+        return save(path, ledger)
+    monkeypatch.setattr(memo_requests, "_save", unavailable)
+    with pytest.raises(OSError, match="cancellation save"):
+        memos.forget(store, ContentWordEmbedder(), first["memo_id"])
+    assert memos.path_of(first["memo_id"]).exists(), "failed cancellation unlinked the memo"
+
+
+@pytest.mark.parametrize("encoding", ["crlf", "bom", "nul"])
+def test_search_revision_can_correct_the_same_indexed_markdown(tmp_path, monkeypatch, encoding):
+    """DAT-002: baseline 139b138b rejects the real search revision as revision_mismatch."""
+    envs = base_envs.__wrapped__(tmp_path, monkeypatch)
+    async def body(a, p, state):
+        first = json.loads(await a("recall_remember", text="The user drink tea, every morning."))
+        path = tmp_path / "memos" / f"{first['memo_id']}.md"
+        raw = path.read_bytes()
+        changed = {"crlf": raw.replace(b"\n", b"\r\n"), "bom": b"\xef\xbb\xbf" + raw,
+                   "nul": raw.replace(b"tea", b"t\x00ea")}[encoding]
+        path.write_bytes(changed)
+        AssistantMemos(path.parent, index_root=tmp_path).refresh(state["store"], state["embedder"])
+        full = json.loads(await p("recall_search", query="user drink tea"))
+        compact = json.loads(await a("recall_search", query="user drink tea"))
+        matching = [h for h in full["hits"] if h["source"].endswith(f"memos/{path.name}")]
+        assert matching, [h["source"] for h in full["hits"]]
+        hit = matching[0]
+        small = next(h for h in compact["hits"] if h["memo_id"] == first["memo_id"])
+        assert small["revision"] == hit["revision"]
+        corrected = json.loads(await a("recall_remember", text="The user drinks coffee.",
+                                       supersedes=first["memo_id"], expected_revision=hit["revision"]))
+        assert "memo_id" in corrected, "unchanged indexed Markdown rejected its published revision"
+    _serve_both(envs, body)
+
+
+@pytest.mark.parametrize("text", ["\ufeffThe user drinks tea.", "The user drinks t\x00ea."])
+def test_receipt_revision_matches_the_indexed_markdown_representation(serving, text):
+    """DAT-002: baseline 139b138b reports failed indexing for successfully indexed BOM/NUL text."""
+    store, memos = serving
+    result = remember(store, memos, text, request_id="normalized-receipt")
+    receipt = result["receipt"]
+    indexed = store.source_raw_hashes()[str(memos.path_of(result["memo_id"]))]
+    assert receipt["revision"] == indexed, "write receipt differs from the indexed Markdown revision"
+    assert receipt["index_state"] == "indexed" and receipt["retrieval_ready"] is True
+    replay = remember(store, memos, text, request_id="normalized-receipt")
+    assert replay["memo_id"] == result["memo_id"] and replay["receipt"]["replayed"]
+
+
+@pytest.mark.parametrize("change", ["crlf", "bom"])
+def test_replay_protects_raw_bytes_even_when_indexed_revision_is_unchanged(serving, change):
+    """DAT-002 control: mutating the replay raw digest to revision(path) must expose an edit."""
+    store, memos = serving
+    first = remember(store, memos, request_id="raw-byte-guard")
+    path = memos.path_of(first["memo_id"])
+    raw = path.read_bytes()
+    edited = raw.replace(b"\n", b"\r\n") if change == "crlf" else b"\xef\xbb\xbf" + raw
+    path.write_bytes(edited)
+    result = remember(store, memos, request_id="raw-byte-guard")
+    assert result.get("conflict") == "memo_changed", "replay ignored a raw-byte edit with the same indexed revision"
+    assert path.read_bytes() == edited

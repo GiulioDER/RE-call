@@ -8,11 +8,13 @@ the exact legacy `{memo_id}` success reply and raising refresh failures.
   its reserved memo id and request hash before publication. A retry finishes the original write
   and refreshes that memo instead of allocating another one. Reusing an id for different intent
   returns `conflict="request_mismatch"`. Request metadata contains hashes and ids, never memo text.
-* `expected_revision`: the lowercase SHA-256 digest of the memo bytes the caller observed. Pass it
+* `expected_revision`: the lowercase SHA-256 digest of the indexed memo representation. Pass it
   together with `supersedes`. Search hits, including the compact assistant view, carry `revision`
   from the indexed source's content hash, never a fresh filesystem read beside stale search text.
   Sources without an indexed content hash report null. A changed target returns
   `conflict="revision_mismatch"` before writing anything.
+  Markdown uses the existing index normalization: one leading UTF-8 BOM and NUL characters are
+  removed, and CRLF/CR newlines become LF. Representation-only changes do not change this revision.
 * `include_receipt`: request a detailed reply without an idempotency key. A request id or revision
   precondition also enables receipts automatically.
 
@@ -20,7 +22,7 @@ the exact legacy `{memo_id}` success reply and raising refresh failures.
 {
   "memo_id": "pref-0043",
   "receipt": {
-    "revision": "<SHA-256 of the new memo bytes>",
+    "revision": "<SHA-256 of the indexed memo representation>",
     "supersedes": "pref-0042",
     "write_state": "written",
     "replayed": false,
@@ -47,9 +49,14 @@ before installing a correction, so two clients of the same SQLite file cannot in
 corrections. Idempotent replays retain the original id even if that memo subsequently acquired a
 successor; a replay never removes supersession metadata or makes the old memo current again.
 
-An edited or removed request memo is refused rather than overwritten or recreated. A prepared
-request without a published memo rechecks its correction preconditions before publication. The
-authorship ledger retains reservations and request identities when legacy calls write new memos.
+A completed request's edited or removed memo is refused rather than overwritten or recreated.
+Replay checks raw bytes independently of the indexed revision, so even a representation-only edit
+is protected. Explicit forgetting durably cancels request reservations before unlinking, including
+an interrupted request whose file was published but whose final journal update failed. If cancellation
+cannot be saved, forgetting raises and leaves the file present. A prepared request without a published
+memo can finish after rechecking correction preconditions; use explicit forgetting for deletion, since
+a direct filesystem deletion in that interrupted state cannot be distinguished from non-publication.
+The authorship ledger retains reservations and request identities when legacy calls write new memos.
 
 Old memos are retained for historical inspection. This workflow does not infer supersession from
 prose or rewrite imported notes. For those corrections, use the existing `recall_report_stale`

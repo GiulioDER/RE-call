@@ -19,7 +19,7 @@ _UNKNOWN_TERM_CHECK_DESCRIPTION = (
 )
 
 class SearchHit(BaseModel):
-    revision: str | None = Field(default=None, description="SHA-256 of the indexed source bytes, when known; a correction precondition, not a trust verdict.")
+    revision: str | None = Field(default=None, description="SHA-256 of the indexed source representation, when known (Markdown normalizes BOM, NUL and newlines); a correction precondition, not a trust verdict.")
     chunk_id: str | None = Field(default=None, description="Stable retrieved chunk identifier.")
     source: str = Field(description="Where this memory came from (file/source id).")
     score: float | None = Field(default=None, description="True dense cosine similarity in [-1, 1].")

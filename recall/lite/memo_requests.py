@@ -2,7 +2,7 @@
 
 The existing authorship file also journals request identities, hashes and reserved memo ids.
 It never journals memo text. A retry can finish a prepared write, but cannot resurrect a
-written memo that was subsequently forgotten or overwrite one that changed.
+written memo that was subsequently removed or any explicitly forgotten request memo.
 """
 from __future__ import annotations
 
@@ -23,8 +23,13 @@ _REVISION = re.compile(r"[0-9a-f]{64}")
 
 
 def revision(path: Path) -> str:
-    """Hash the complete memo bytes, matching the indexer's content_hash for Markdown."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """Match Markdown content_hash: strip the UTF-8 BOM/NULs and normalize newlines."""
+    return _indexed_revision(path.read_bytes())
+
+
+def _indexed_revision(data: bytes) -> str:
+    text = data.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def load_ledger(path: Path) -> dict[str, Any]:
@@ -40,6 +45,18 @@ def load_ledger(path: Path) -> dict[str, Any]:
 
 def _save(path: Path, ledger: dict[str, Any]) -> None:
     atomic_write_bytes(path, (json.dumps(ledger, sort_keys=True, indent=1) + "\n").encode())
+
+
+def cancel_requests(ledger_path: Path, memo_id: str) -> None:
+    """Persist explicit deletion intent before unlinking, including prepared publications."""
+    ledger = load_ledger(ledger_path)
+    changed = False
+    for entry in ledger.get("requests", {}).values():
+        if isinstance(entry, dict) and entry.get("memo_id") == memo_id and entry.get("state") != "cancelled":
+            entry["state"] = "cancelled"
+            changed = True
+    if changed:
+        _save(ledger_path, ledger)
 
 
 def _conflict(code: str, reason: str) -> dict[str, Any]:
@@ -102,10 +119,12 @@ def write_memo(
             return _conflict("request_mismatch", "request_id was already used for different content or preconditions")
         memo_id = entry.get("memo_id")
         if (not isinstance(memo_id, str) or not _ID.fullmatch(memo_id)
-                or authors.get(memo_id) != author or entry.get("state") not in {"prepared", "written"}):
+                or authors.get(memo_id) != author or entry.get("state") not in {"prepared", "written", "cancelled"}):
             raise ValueError("invalid memo request reservation")
+        if entry["state"] == "cancelled":
+            return _conflict("memo_missing", "the request's memo was explicitly forgotten; retry cannot recreate it")
         path = folder / f"{memo_id}.md"
-        if path.is_symlink() or (path.exists() and revision(path) != digest):
+        if path.is_symlink() or (path.exists() and hashlib.sha256(path.read_bytes()).hexdigest() != digest):
             return _conflict("memo_changed", "the request's memo changed; retry cannot overwrite it")
         if not path.exists() and entry["state"] == "written":
             return _conflict("memo_missing", "the request's memo was removed; retry cannot recreate it")
@@ -136,6 +155,6 @@ def write_memo(
     _save(ledger_path, ledger)
     result: dict[str, Any] = {"memo_id": memo_id}
     if include_receipt or request_id is not None or expected_revision is not None:
-        result["receipt"] = {"revision": digest, "supersedes": supersedes,
+        result["receipt"] = {"revision": _indexed_revision(data), "supersedes": supersedes,
                              "write_state": "written", "replayed": replayed}
     return result
