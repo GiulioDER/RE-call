@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 from recall.provenance_controller import (
     FactApplicationRequest,
@@ -15,6 +17,10 @@ from recall.provenance_controller import (
     source_digest,
 )
 from recall.types import AtomicFact, EvidenceCard
+
+if TYPE_CHECKING:
+    from recall.lite import LiteStore
+    from recall.store import PgVectorStore
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -68,9 +74,67 @@ def _decision_payload(decision: Any) -> dict[str, object]:
     }
 
 
+def _lite_file(path: Path) -> tuple[dict[str, str] | None, set[str]]:
+    """A lite file's `meta` table (None when it has none) and its table names, read-only."""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None, set()
+    try:
+        tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "meta" not in tables:
+            return None, tables
+        return {str(key): str(value) for key, value in conn.execute("SELECT key, value FROM meta").fetchall()}, tables
+    except sqlite3.Error:
+        return None, set()
+    finally:
+        conn.close()
+
+
+def _lite_target(args: argparse.Namespace) -> tuple[Path, dict[str, str], set[str]]:
+    """The lite file a `sqlite:///` DSN names, checked without writing to it.
+
+    The generation route is refused by name; a file that does not exist, or is not a lite store,
+    is refused untouched. Opening a `LiteStore` on either would create it, or stamp it with a
+    tenant and a width, which a later `recall index` at the real width then refuses.
+    """
+    from recall.backends import lite_route_refusal
+    from recall.lite import LITE_DSN_PREFIX
+    from recall.runtime_route import resolve_runtime_route
+
+    route = getattr(args, "_runtime_route", None) or resolve_runtime_route()
+    if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+        raise SystemExit(refusal)
+    path = Path(args.dsn[len(LITE_DSN_PREFIX):])
+    if not path.exists():
+        raise SystemExit(f"{path} does not exist; nothing was read or created (build it with `recall setup --lite`)")
+    meta, tables = _lite_file(path)
+    if meta is None or "dim" not in meta:
+        raise SystemExit(f"{path} is not a lite store (it has no RE-call meta table); nothing was read or written")
+    return path, meta, tables
+
+
+def _open_lite(args: argparse.Namespace, dim: int) -> LiteStore:
+    """The lite store at the width `dim`, a mismatch refused by name instead of a traceback."""
+    from recall.backends import open_legacy_store
+    from recall.lite import LiteStoreError
+
+    try:
+        store = open_legacy_store(args.dsn, dim=dim, table=args.table, tenant=args.tenant)
+    except LiteStoreError as exc:
+        raise SystemExit(f"provenance: {exc}") from exc
+    return cast("LiteStore", store)
+
+
 def _cmd_provenance(args: argparse.Namespace) -> None:
+    from recall.backends import is_lite_dsn
     from recall.fact_ledger import PostgresFactLedger, SQLiteFactLedger
 
+    # A `sqlite:///` DSN is a lite store: its own fact ledger and cards, the same output as
+    # PostgreSQL. `--sqlite-path` stays the separate local adapter it always was.
+    lite = not args.sqlite_path and is_lite_dsn(args.dsn)
     if args.provenance_cmd == "current":
         instant = (
             datetime.fromisoformat(args.as_of.replace("Z", "+00:00"))
@@ -80,6 +144,21 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         if args.sqlite_path:
             with SQLiteFactLedger(args.sqlite_path, tenant_id=args.tenant) as ledger:
                 events = ledger.current(tenant_id=args.tenant, now=instant)
+        elif lite:
+            from recall.fact_ledger import FACT_LEDGER_TABLE
+            from recall.lite.facts import LiteFactLedger
+
+            # A read needs no embedder: the width is the one the file records.
+            path, meta, tables = _lite_target(args)
+            if meta.get("tenant") != args.tenant:
+                # As on PostgreSQL, a tenant with no rows reads no facts; a lite file holds one.
+                print(f"{path} holds tenant {meta.get('tenant')!r}; pass --tenant {meta.get('tenant')} to read it", file=sys.stderr)
+                events = ()
+            elif FACT_LEDGER_TABLE not in tables:
+                events = ()  # no fact was ever applied; opening the ledger would create its tables
+            else:
+                with _open_lite(args, int(meta["dim"])) as lite_store:
+                    events = LiteFactLedger(lite_store).current(tenant_id=args.tenant, now=instant)
         else:
             events = PostgresFactLedger(args.dsn, tenant_id=args.tenant).current(
                 tenant_id=args.tenant, now=instant
@@ -140,11 +219,30 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         print(json.dumps(_decision_payload(decision), ensure_ascii=False, indent=2, sort_keys=True))
         return
 
-    from recall_mcp.provenance import apply_fact_memory
     from recall.cli_commands._shared import _make_embedder
     from recall.store import PgVectorStore
 
     embedder = _make_embedder(args.embedder)
+    if lite:
+        path, meta, _tables = _lite_target(args)
+        if meta.get("tenant") != args.tenant:
+            raise SystemExit(f"provenance apply: {path} holds tenant {meta.get('tenant')!r}; pass --tenant {meta.get('tenant')}")
+        if int(meta["dim"]) != embedder.dim:
+            raise SystemExit(
+                f"provenance apply: {path} was built at width {meta['dim']}, but the embedder "
+                f"({args.embedder}) has width {embedder.dim}; use the embedder the store was built with"
+            )
+        with _open_lite(args, embedder.dim) as lite_store:
+            # A lite store's generation is the digest of what it holds, so it cannot take one
+            # from the command line. `apply_fact_memory` uses the store's own generation, so
+            # without this check a stale --generation would be silently ignored.
+            if args.generation != lite_store.generation_id:
+                raise SystemExit(
+                    f"provenance apply: --generation {args.generation!r} is not this lite store's; "
+                    f"it is {lite_store.generation_id} now (it moves with every write to the store)"
+                )
+            _print_applied(cast("PgVectorStore", lite_store), embedder, claim_payload, cards, args)
+        return
     with PgVectorStore(
         args.dsn,
         dim=embedder.dim,
@@ -152,11 +250,24 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         tenant=args.tenant,
         generation_id=args.generation,
     ) as store:
-        print(json.dumps(apply_fact_memory(
-            store,
-            embedder,
-            claim=claim_payload,
-            evidence_card_ids=[card.card_id for card in cards],
-            request_id=args.request_id,
-            writer=args.writer,
-        ), ensure_ascii=False, indent=2, sort_keys=True))
+        _print_applied(store, embedder, claim_payload, cards, args)
+
+
+def _print_applied(
+    store: PgVectorStore,
+    embedder: Any,
+    claim_payload: Any,
+    cards: Sequence[EvidenceCard],
+    args: argparse.Namespace,
+) -> None:
+    """Apply the claim through the MCP path on `store` and print its decision, for either backend."""
+    from recall_mcp.provenance import apply_fact_memory
+
+    print(json.dumps(apply_fact_memory(
+        store,
+        embedder,
+        claim=claim_payload,
+        evidence_card_ids=[card.card_id for card in cards],
+        request_id=args.request_id,
+        writer=args.writer,
+    ), ensure_ascii=False, indent=2, sort_keys=True))
