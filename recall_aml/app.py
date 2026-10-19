@@ -599,9 +599,11 @@ def create_app(
                 "active_components": service.active_components,
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
-                "reranker": RERANK_MODEL,
+                # RK-1: the model the service actually loaded, and whether Searches rerank.
+                "reranker": f"voyage:{service.rerank_model}" if service.rerank_model else RERANK_MODEL,
                 "reranker_provider": RERANK_MODEL.split(":", 1)[0],
-                "reranker_model": RERANK_MODEL.split(":", 1)[1],
+                "reranker_model": service.rerank_model or RERANK_MODEL.split(":", 1)[1],
+                "reranker_enabled": service.reranker_enabled,
                 "reranker_price_usd_per_million_tokens": (RERANK_PRICE_USD_PER_MILLION_TOKENS),
                 "reranker_price_source_date": RERANK_PRICE_SOURCE_DATE,
                 "reranker_price_source_url": RERANK_PRICE_SOURCE_URL,

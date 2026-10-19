@@ -550,7 +550,13 @@ class HostedRetriever:
                     and Counter(output_ids) == Counter(baseline_ids)
                 )
                 if permutation_valid:
-                    hits = reranked
+                    # A reranker reorders without rescoring. Hand the fused scores out again in
+                    # descending order, so the returned scores stay non-increasing (RK-1).
+                    descending = sorted((hit.score for hit in baseline_hits), reverse=True)
+                    hits = [
+                        replace(hit, score=score)
+                        for hit, score in zip(reranked, descending, strict=True)
+                    ]
                 else:
                     fallback = True
                     hits = baseline_hits

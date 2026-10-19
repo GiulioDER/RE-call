@@ -96,6 +96,7 @@ from recall_aml.temporal_render import RENDER_VERSIONS, resolve_relative_times
 from recall_aml.window_compose import ADD_DIGEST_CHARS, compose_items
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
+from recall_aml.rerank_switch import RERANKER_ENV
 from recall_aml.feedback_guard import FEEDBACK_GUARD_ENV, AskedQuestions, filter_feedback
 from recall_aml.forget import (
     FORGET_DETECTOR,
@@ -501,9 +502,11 @@ class HostedService:
         multimodal_embedder: MultimodalEmbedder | None = None,
         specialist_retrievers: dict[str, HostedRetriever] | None = None,
         image_text_extractor: ImageTextExtractor | None = None,
+        rerank_model: str | None = None,
     ) -> None:
         self._repository = repository
         self._image_text_extractor = image_text_extractor
+        self.rerank_model = rerank_model
         self._compiler = compiler
         self._retriever = retriever
         self._context_chars = context_chars
@@ -531,6 +534,7 @@ class HostedService:
             self.relative_times_render,
             self.speaker_marks,
             self.session_coalesce,
+            self.reranker_enabled,
             self.same_subject_order,
             self.image_text_leg,
             self.image_text_shown,
@@ -1283,7 +1287,7 @@ class HostedService:
                 store,
                 query_text,
                 facets,
-                rerank=self._behavior.reranker,
+                rerank=self.reranker_enabled,
                 learned_sparse=self._behavior.learned_sparse,
                 code_aware=self._behavior.code_aware,
                 canonical_bm25=self._behavior.canonical_bm25,
@@ -2026,6 +2030,11 @@ class HostedService:
         return _env_flag("RECALL_AML_SESSION_COALESCE", self._behavior.session_coalesce)
 
     @property
+    def reranker_enabled(self) -> bool:
+        """RK-1: ``RECALL_AML_RERANKER`` (1/0) when set, else the variant's ``reranker``."""
+        return _env_flag(RERANKER_ENV, self._behavior.reranker)
+
+    @property
     def image_text_build(self) -> bool:
         """``RECALL_AML_IMAGE_TEXT_BUILD`` (1/0) when set, else the variant's setting."""
         return _env_flag("RECALL_AML_IMAGE_TEXT_BUILD", self._behavior.image_text_build)
@@ -2063,7 +2072,7 @@ class HostedService:
         components = {
             "compiler": self._behavior.compiler,
             "facets": self._behavior.facets,
-            "reranker": self._behavior.reranker,
+            "reranker": self.reranker_enabled,
             "learned_sparse": self._behavior.learned_sparse,
             "code_aware": self._behavior.code_aware,
             "graph_sidecar": self._behavior.graph_sidecar,
