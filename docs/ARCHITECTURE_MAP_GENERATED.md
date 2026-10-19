@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 328
 Cross package edges: 342
-Source tree fingerprint: `243c004c088ca0a545d1bfde53b8b3e7448cbaa2a71117f262b5707473738b91`
+Source tree fingerprint: `38bee3ecfd60855f6d01be26ba695c7d8ad031c28d272cef0756280f60ff318e`
 
 ## Highest fan in modules
 
@@ -601,7 +601,7 @@ They are observations, not automatic failures.
 | `recall.lineage` | 2 | 12 |
 | `recall.lint` | 4 | 19 |
 | `recall.lite` | 2 | 83 |
-| `recall.lite.assistant_memos` | 6 | 85 |
+| `recall.lite.assistant_memos` | 5 | 85 |
 | `recall.lite.calibration` | 11 | 83 |
 | `recall.lite.facts` | 6 | 83 |
 | `recall.lite.inspect` | 3 | 83 |

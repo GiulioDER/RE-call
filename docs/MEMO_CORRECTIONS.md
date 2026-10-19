@@ -58,6 +58,18 @@ memo can finish after rechecking correction preconditions; use explicit forgetti
 a direct filesystem deletion in that interrupted state cannot be distinguished from non-publication.
 The authorship ledger retains reservations and request identities when legacy calls write new memos.
 
+A reservation is not authorship. The ledger records the assistant as author only once its file
+exists, so a file somebody else puts in the folder under a reserved name is never claimed: the
+write, or the retry of an interrupted one, moves to the next free id and leaves that file alone.
+A memo is published with a hard link where the filesystem has them, and with an exclusive create
+otherwise (FAT32 and exFAT, many network shares); neither replaces an existing file. A memo of the
+folder that cannot be read, or is not UTF-8, does not block a correction; one that declares a
+successor in another encoding still counts.
+
+The request journal is bounded. A prepared request is kept until it completes or is forgotten. A
+completed or cancelled request is kept for 30 days and at most 1,000 of them, the newest first;
+past that its request id is treated as new. Retry within that window.
+
 Old memos are retained for historical inspection. This workflow does not infer supersession from
 prose or rewrite imported notes. For those corrections, use the existing `recall_report_stale`
 review queue and the dashboard or reviewed rewrite commands. No migration or model call is added.
