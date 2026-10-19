@@ -70,14 +70,15 @@
   <div class="benchmark-head" aria-hidden="true"><span>Benchmark / scope</span><span>RE-call result</span><span>Position / comparison</span><span>Run verification</span></div>
   <ul class="benchmark-list">
     <li class="benchmark-row" id="atm">
-      <div><h2>ATM-Bench</h2><p>Personal multimodal memory</p><p class="benchmark-note">Full split · 1,013 questions</p></div>
+      <div><h2>ATM-Bench</h2><p>Personal multimodal memory</p><p class="benchmark-note">Run: 21 Aug 2026<br>Full split · 1,013 questions</p></div>
       <dl><dt>Result</dt><dd><span class="benchmark-score">90.10%</span><p>Recall@10</p><p class="benchmark-note">QS 68.43%</p></dd></dl>
       <dl><dt>Position</dt><dd><span class="benchmark-position benchmark-position--listed">2nd on Recall@10</span><p class="benchmark-note">Listed Memory/RAG configurations, excluding oracles. Checked 19 Oct 2026.</p></dd></dl>
       <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested</span><p>Organizer-listed</p><p class="benchmark-note">No independent rerun established.</p></dd></dl>
       <details class="benchmark-detail"><summary>Method, limits and sources</summary>
-        <p>The organizer accepted the submission on 23 August 2026. The official retrieval evaluator rescored the frozen run on 4 October: Recall@10 is 90.0995%. The earlier value labelled Recall@10 measured whether any gold item was found, a different metric.</p>
+        <p>This is RE-call's frozen 21 August 2026 run, accepted on 23 August. The official retrieval evaluator rescored that same run on 4 October: Recall@10 is 90.0995%. The earlier value labelled Recall@10 measured whether any gold item was found, a different metric.</p>
         <p>Voyage-4-large embeddings, Voyage rerank-2.5 and Qwen image captions; DeepSeek V4 Pro answers. The official QS judge model and prompt ran through OpenRouter, disclosed and accepted. QS is not answer-model-matched to the Qwen baselines. Memexa v2 currently leads the listed systems on both Recall@10 and QS. Oracle rows are excluded from the rank.</p>
-        <div class="benchmark-sources"><a href="https://atmbench.github.io/leaderboard.html">Official leaderboard</a><a href="https://github.com/atmbench/atmbench.github.io/pull/2">Accepted submission</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/atm/atm_recall_rescore_20261004.json">Recall artifact</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/atm/atm_bench_full_20260821.json">QS and configuration</a></div>
+        <p>The Memexa v2 submission was merged on 4 October 2026. The board compares these submitted configurations from different dates; it is not a simultaneous head-to-head test or a new test of current RE-call.</p>
+        <div class="benchmark-sources"><a href="https://atmbench.github.io/leaderboard.html">Official leaderboard</a><a href="https://github.com/atmbench/atmbench.github.io/pull/2">Accepted RE-call submission</a><a href="https://github.com/atmbench/atmbench.github.io/pull/3">Later Memexa v2 submission</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/atm/atm_recall_rescore_20261004.json">Recall artifact</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/atm/atm_bench_full_20260821.json">QS and configuration</a></div>
       </details>
     </li>
     <li class="benchmark-row" id="enterprise">
