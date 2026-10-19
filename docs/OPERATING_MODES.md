@@ -4,6 +4,9 @@ RE-call is deliberately configurable because memory deployments differ by legal 
 latency target, quality bar, and cost model. The default path keeps retrieval local. Hosted
 embedding, reranking, and stricter serving profiles are opt-in choices after measurement.
 
+For Lite source installation, automatic refresh, software updates, and backups, use
+[LITE.md](LITE.md). The PostgreSQL generation and production configuration below is a separate path.
+
 | Mode | Use when | Trust policy | Egress | Typical configuration |
 |---|---|---|---|---|
 | Local demo | You want to try the product surface on the bundled corpus. | Development, with degraded confidence marked clearly. | None with FastEmbed. | `RECALL_TRUST_MODE=development`, `RECALL_EMBEDDER=fastembed`. |

@@ -26,7 +26,7 @@
   &nbsp;·&nbsp;
   <a href="#how-it-works">How it works</a>
   &nbsp;·&nbsp;
-  <a href="#quickstart">Try the demo</a>
+  <a href="#quickstart">Start with Lite</a>
   &nbsp;·&nbsp;
   <a href="#install-and-integrate">Install and integrate</a>
 </p>
@@ -207,6 +207,30 @@ For details, see the [architecture writeup](docs/WRITEUP.md), [provenance contro
 
 ## Quickstart
 
+For one project's memory on your machine, start with **RE-call Lite**. It stores memory in
+`.recall/memory.db`, refreshes changed memos automatically, and needs no Docker or database server.
+
+**Install the source build first:** Lite is in the repository; the published `0.14.0` PyPI wheel
+predates it. Follow the [Lite installation guide](docs/LITE.md#install-a-build-that-contains-lite)
+to create an environment and install the source, then run this from your own project with an
+existing folder of notes:
+
+```bash
+recall setup --lite --memory ./notes
+```
+
+Setup indexes the notes, attempts automatic calibration, and registers Claude Code for this project.
+Inspect the calibration and registration results, use the printed doctor command, and restart the
+client. Strict trust stays enabled; a corpus that cannot certify will refuse trusted answers.
+For other MCP clients, use [manual Lite wiring](docs/LITE.md#connect-another-client).
+
+| Choose | Best fit | Maintenance |
+|---|---|---|
+| **Lite** | One project on one machine, using a local SQLite file | Automatic memo refresh and calibration; back up notes and the store. |
+| **PostgreSQL** | Shared serving, immutable generations, multiple tenants, or authentication | Manage the database, schema migrations, generations, calibration, and backups. |
+
+### Try the PostgreSQL demo
+
 Prerequisites: Python 3.11 or newer, Docker, and a Docker installation able to run PostgreSQL with
 pgvector.
 
@@ -232,60 +256,32 @@ demo is intentionally separate from a real install and is not calibrated for you
 
 ### Local, with no database server and no Docker
 
-For one person's memory in one project, RE-call can keep everything in a single SQLite file:
+Use the [Lite source installation](docs/LITE.md#install-a-build-that-contains-lite), then run
+from the project whose notes you want to index:
 
 ```bash
-pip install "recall-rag[fastembed,mcp]"
-recall setup --lite --memory <folder of notes>
+recall setup --lite --memory ./notes
 ```
 
-This creates `.recall/memory.db` in the current project, indexes the folder with a local model,
-fits a calibration to it automatically once there is enough text to test itself (about twenty
-memos), and registers the MCP server with Claude Code for this project only. Restart Claude Code in
-the project and the tools are there. Setup prints configured doctor and dashboard commands that
-select this SQLite file; use those commands because the CLI does not read MCP registration.
-Re-running it re-indexes
-what changed and refits the calibration when the memory changed. Add `.recall/` to `.gitignore`.
+Setup creates `.recall/memory.db`, attempts automatic calibration, and registers Claude Code for
+this project. Use the printed doctor and read-only dashboard commands, and add `.recall/` to
+`.gitignore`. For CLI or manual client wiring, add `--no-register`.
 
-The memory then keeps itself current. The MCP server refreshes the store when it starts, and before
-a search it checks the folder (at most every `RECALL_LITE_REFRESH_INTERVAL` seconds, thirty by
-default): when a memo changed it indexes it first, waiting up to `RECALL_LITE_REFRESH_WAIT` seconds
-(three), and refits the calibration. `RECALL_LITE_AUTO_REFRESH=0` turns this off. `recall lite
-refresh` does the same by hand or from a scheduler, and `recall lite refresh --check` reports whether
-the store is current without changing anything.
+The MCP server refreshes changed memos automatically. To check or refresh explicitly:
 
-Like `recall_index`, the automatic refresh refuses a folder larger than `RECALL_INDEX_MAX_FILES` (two
-thousand files by default) or `RECALL_INDEX_MAX_BYTES` (twenty megabytes), and indexes nothing;
-`recall lite refresh` run by hand indexes it anyway, with a warning. While refreshing fails, every
-search answer carries a `refresh_warning` naming the cause, `recall doctor` reports it, and
-`recall_stats` shows the last refresh and its reason. Every memo is filed under its path relative to
-`RECALL_INDEX_ROOT`, whether the refresh or `recall_index` indexed it, and `recall_forget` takes that
-name.
+```bash
+recall lite refresh --store .recall/memory.db --memory ./notes --check
+recall lite refresh --store .recall/memory.db --memory ./notes
+```
 
-The trust layer is the same code: superseded and expired verdicts, abstention, and strict refusal
-until the calibration certifies. Retrieval is exact cosine search plus PostgreSQL's own keyword
-ranking formula, so results track the PostgreSQL store closely but not identically. It serves one
-project: generations, multi-tenant serving and authentication need the PostgreSQL install below.
-The fact tools keep their ledger in the same file. The printed dashboard command reads the same
-file, read-only.
+Use the same memo root and embedder as setup. The CLI does not read the MCP client's environment;
+apply setup's printed settings before CLI searches or doctor. Strict trust remains enabled, and
+successful indexing alone does not guarantee certification.
 
-Several local clients (Claude Code and Codex, say) can share the file. Writes take turns, first
-come first served: an index, ingest or forget waits for the one in progress and gives up after
-`RECALL_LITE_WRITE_WAIT` seconds (five minutes by default), naming what holds the store; a
-calibration fit waits on its own queue (`RECALL_LITE_REFIT_WAIT`, two minutes by default) so it
-never holds up a write.
-A search never waits for that queue; it waits only for a refresh of memos it found changed, as
-above. The queue lives in `memory.db.lanes/` beside the file, which is safe to delete
-while nothing is using the store. Keep the file on a local disk: file locks on network shares are
-not reliable, and two machines writing one file are not supported.
-
-Lite also checks entity-like query tokens against its global FTS vocabulary by default. An
-absent identifier demotes otherwise trusted hits to `unknown_term` and the search abstains.
-PostgreSQL and constrained searches report this optional check as `unavailable`; their verdicts
-are left unchanged. `RECALL_UNKNOWN_TERM_GATE=0` disables it. This heuristic does not establish
-that an answer is stated in the memory. Lite calibration reports its near-miss coverage separately
-and warns when that coverage is provisional or unavailable. See [the API](docs/API.md) and
-[calibration reference](docs/CALIBRATION.md) for the returned states and limits.
+The [Lite guide](docs/LITE.md) covers other clients, source updates, backup and restore, refresh
+budgets, and queued writes. Keep the file on a local disk. Lite uses exact cosine search and
+SQLite keyword retrieval; results can differ from PostgreSQL. Generations, multi-tenant serving,
+and authentication require PostgreSQL. See [the API](docs/API.md) for trust and retrieval limits.
 
 ### With PostgreSQL
 
@@ -309,8 +305,9 @@ see [docs/INSTALLATION.md](docs/INSTALLATION.md) and [docs/WIZARD.md](docs/WIZAR
 
 | Use case | Install | Next step |
 |---|---|---|
-| CLI and Python | `pip install "recall-rag[fastembed]"` | Run `recall setup`, then use `recall search` or the [Python API](docs/API.md). |
-| MCP, Claude Code, Claude Desktop, or Codex | `pip install "recall-rag[fastembed,mcp]"` | Run setup and follow [the MCP guide](docs/USING_WITH_CLAUDE.md). Host specific steps are below. |
+| Lite CLI or MCP | [Install from source](docs/LITE.md#install-a-build-that-contains-lite) | Run `recall setup --lite --memory ./notes`; use `--no-register` for CLI or manual client wiring. |
+| PostgreSQL CLI and Python | `pip install "recall-rag[fastembed]"` | Run `recall setup`, then use `recall search` or the [Python API](docs/API.md). |
+| PostgreSQL MCP clients | `pip install "recall-rag[fastembed,mcp]"` | Run setup and follow [the MCP guide](docs/USING_WITH_CLAUDE.md). Host specific steps are below. |
 | Claude Agent SDK | `pip install "recall-rag[agent,fastembed]"` | Use the in process integration in [USING_WITH_AGENT_SDK.md](docs/USING_WITH_AGENT_SDK.md). |
 | LangChain or LlamaIndex | Install the matching extra | Use the adapters described in [API.md](docs/API.md). |
 | Windows desktop UI | `pip install "recall-rag[desktop]"` | Run `recall-install`; the current release does not ship a standalone Windows binary. See [the wizard guide](docs/WIZARD.md). |
@@ -324,13 +321,17 @@ Inside Claude Code, install the plugin after installing the Python package:
 /plugin install recall@re-call
 ```
 
-The plugin supplies the MCP server, memory search skill, and lifecycle hooks. `recall setup` still
-needs to run against the project and database that Claude should use. The plugin keeps credentials
-out of the repository. Details and manual wiring are in [plugin/README.md](plugin/README.md).
+The plugin supplies the MCP server, memory search skill, and lifecycle hooks. Lite setup already
+registers a project server; the plugin is optional. If you add it, configure its Database DSN with
+the SQLite DSN printed by setup and avoid enabling duplicate servers for the same memory.
+For PostgreSQL, run `recall setup` against the project and database Claude should use.
+Details are in [plugin/README.md](plugin/README.md).
 
 #### Codex
 
-Run `recall setup` from the project. When Codex is detected, setup installs the Codex MCP server,
+For Lite, use [manual MCP wiring](docs/LITE.md#connect-another-client): `recall setup --lite` only
+registers Claude Code. For PostgreSQL, run `recall setup` from the project. When Codex is detected,
+setup installs the Codex MCP server,
 plugin bundle, memory skills, and hooks into the user configuration. Restart Codex afterward. The
 Codex and Claude Code integrations share the same memo format and trust layer. See
 [docs/CODEX_RECALL_INTEGRATION.md](docs/CODEX_RECALL_INTEGRATION.md).
@@ -361,7 +362,9 @@ See [docs/API.md](docs/API.md) for the supported classes and methods.
 recall doctor
 ```
 
-The doctor checks the interpreter, console scripts, embedder, Docker, database, pgvector, schema,
+For Lite, first apply the environment printed by setup so doctor inspects the SQLite store.
+For PostgreSQL, the doctor checks the interpreter, console scripts, embedder, Docker, database,
+pgvector, schema,
 configured table and tenant, calibration, and agent registration. It changes nothing and prints the
 repair command for each problem.
 
@@ -383,7 +386,8 @@ aware. See [docs/PRODUCTION.md](docs/PRODUCTION.md) for deployment boundaries.
 |---|---|
 | Why an agent needs persistent, trusted memory | [docs/FOR_AGENTS.md](docs/FOR_AGENTS.md) |
 | Full documentation map | [docs/README.md](docs/README.md) |
-| Install and provision | [docs/INSTALLATION.md](docs/INSTALLATION.md), [docs/WIZARD.md](docs/WIZARD.md) |
+| Install and maintain Lite | [docs/LITE.md](docs/LITE.md) |
+| Install and provision PostgreSQL | [docs/INSTALLATION.md](docs/INSTALLATION.md), [docs/WIZARD.md](docs/WIZARD.md) |
 | Python, CLI, and MCP reference | [docs/API.md](docs/API.md) |
 | Trust, architecture, and provenance | [docs/WRITEUP.md](docs/WRITEUP.md), [docs/PROVENANCE_CONTROLLER.md](docs/PROVENANCE_CONTROLLER.md) |
 | Security and operations | [docs/AUTH.md](docs/AUTH.md), [docs/PRODUCTION.md](docs/PRODUCTION.md), [docs/OPERATING_MODES.md](docs/OPERATING_MODES.md) |

@@ -59,7 +59,7 @@
     <p class="eyebrow eyebrow--signal">Current release · 0.14.0</p>
     <h1>Install RE-call from PyPI on the platform you already use.</h1>
     <hr class="rule">
-    <p class="hero-lede">The current release is distributed as a Python wheel and source archive. Install it on Windows, macOS or Linux, then run the guided setup against your PostgreSQL database.</p>
+    <p class="hero-lede">The published 0.14.0 package supports the PostgreSQL path. RE-call Lite is available from the repository source and uses a local SQLite file. Choose the matching installation below.</p>
     <div class="hero-actions">
       <a class="button" href="https://pypi.org/project/recall-rag/0.14.0/">Open 0.14.0 on PyPI</a>
       <a class="button-ghost" href="start.html">Read the install guide</a>
@@ -90,7 +90,7 @@
   <div class="shell split" data-reveal>
     <div>
       <p class="eyebrow">Install the current release</p>
-      <h2>Two commands get you to the guided setup.</h2>
+      <h2>Published package: PostgreSQL.</h2>
       <p>Python 3.11 or newer and Docker are the supported prerequisites. Docker runs the PostgreSQL database locally; the default embedding path keeps corpus text on your machine.</p>
       <div class="terminal terminal--command" data-shell="powershell">
         <div class="terminal-bar">
@@ -103,17 +103,14 @@
       <p class="muted">The quickstart is a disposable demonstration. Remove its database with <code>recall quickstart --remove</code>, then return to the <a href="start.html">full install</a> for your own corpus.</p>
     </div>
     <div>
-      <p class="eyebrow eyebrow--signal">For your own memory</p>
-      <h2>Run setup after the demo.</h2>
-      <div class="terminal terminal--command" data-shell="powershell">
-        <div class="terminal-bar">
-          <span class="terminal-label">PowerShell, macOS or Linux</span>
-          <button class="copy-button" type="button">Copy</button>
-        </div>
-        <div class="terminal-body"><pre><span class="line">python -m pip install "recall-rag[fastembed]"</span>
-<span class="line">recall setup</span></pre></div>
+      <p class="eyebrow eyebrow--signal">RE-call Lite: source build</p>
+      <h2>Local memory without a database server.</h2>
+      <p>The PyPI wheel predates Lite. Follow the <a href="start.html#lite">source installation</a>, then run from your project with its environment active:</p>
+      <div class="terminal terminal--command">
+        <div class="terminal-bar"><span class="terminal-label">After installing the source build</span><button class="copy-button" type="button">Copy</button></div>
+        <div class="terminal-body"><pre><span class="line">recall setup --lite --memory ./notes</span></pre></div>
       </div>
-      <p class="muted">The wizard applies the schema, asks for the embedder and retrieval options, indexes your corpus, offers calibration and configures the selected agent integration.</p>
+      <p class="muted">Lite indexes your notes, attempts automatic calibration, and registers Claude Code. It refreshes changed memos automatically. The <a href="start.html#lite-maintenance">maintenance guide</a> covers checks, source updates, and backups.</p>
     </div>
   </div>
 </section>

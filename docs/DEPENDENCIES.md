@@ -15,6 +15,10 @@ provide a top-level `recall` module and the last installed distribution wins the
 
 ## Runtime Floors
 
+Lite uses SQLite on a local disk and needs no PostgreSQL, pgvector server, or Docker. Install the
+source build with `fastembed,mcp` for local embeddings and MCP; the published `0.14.0` wheel
+predates Lite. See [LITE.md](LITE.md) for the installation and maintenance path.
+
 PostgreSQL 16, 17, and 18 are supported with pgvector. The local Docker default tracks PostgreSQL
 18 through `pgvector/pgvector:pg18`, while CI keeps migration coverage for 16 and 17 as older
 supported majors.

@@ -3,6 +3,32 @@
 This is the detailed environment reference. The root `.env.example` keeps the short copyable
 template, while this file records the operational rationale behind each group.
 
+## Lite store and maintenance
+
+See [LITE.md](LITE.md) for source installation, client configuration, updates, and backup and restore.
+Lite setup prints the absolute SQLite DSN and configured diagnostic commands. The CLI does not
+read the MCP registration, so apply those settings when running CLI searches or doctor.
+
+| Variable | Default or setup value | Purpose |
+|---|---|---|
+| `RECALL_SERVING_DSN` | Setup prints `sqlite:///<absolute-path>` | Select the local store; use the same file in every client and CLI command. |
+| `RECALL_INDEX_ROOT` | The folder passed to Lite setup | Memo root for automatic refresh and source names. |
+| `RECALL_TRUST_MODE` | Setup writes `strict` | Require certification; do not relax it to hide a calibration failure. |
+| `RECALL_ENV` | Setup writes `development` | Local operating mode, separate from strict trust. |
+| `RECALL_INDEX_MODE` | Setup writes `legacy` | Lite uses its single-file corpus, not PostgreSQL generations. |
+| `RECALL_LITE_AUTO_REFRESH` | On | Refresh at MCP startup and before retrieval when memos changed; `0` disables both triggers. |
+| `RECALL_LITE_REFRESH_INTERVAL` | `30` seconds | Minimum interval between checks before retrieval. |
+| `RECALL_LITE_REFRESH_WAIT` | `3` seconds | How long a retrieval waits for a detected refresh. |
+| `RECALL_LITE_WRITE_WAIT` | `300` seconds | Maximum wait in the local writer queue. |
+| `RECALL_LITE_REFIT_WAIT` | `120` seconds | Maximum wait in the separate calibration queue. |
+| `RECALL_INDEX_MAX_FILES` | `2000` | File budget for automatic refresh and MCP indexing. |
+| `RECALL_INDEX_MAX_BYTES` | `20000000` bytes | Byte budget for automatic refresh and MCP indexing. |
+
+Set refresh overrides in the MCP server environment and restart the client. Manual
+`recall lite refresh --store <file> --memory <folder>` warns and proceeds when the folder exceeds
+the indexing budgets; `--check` writes nothing. A refresh failure appears in `refresh_warning`,
+doctor, and `recall_stats`. See [API.md](API.md) for command results and refusal behavior.
+
 ## Unknown-term vocabulary gate
 
 `RECALL_UNKNOWN_TERM_GATE` defaults to `1`. Set it to `0`, `false`, `no`, or `off` to disable it;

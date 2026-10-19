@@ -46,7 +46,7 @@ This is not training. It is continuity: capability informed by a trustworthy pas
 
 ## Start using it
 
-1. Use the [quickstart](../README.md#quickstart) to see trusted, superseded, and abstained results.
+1. Choose [Lite for local memory](LITE.md) or the [PostgreSQL demo](../README.md#try-the-postgresql-demo).
 2. Choose an agent integration in [Install and integrate](../README.md#install-and-integrate).
 3. Read the [API reference](API.md) for the full tool and result contracts.
 4. Read [Evidence and limits](EVIDENCE.md) before making claims about what persistent memory

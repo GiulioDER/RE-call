@@ -6,6 +6,12 @@ surfaced closed decision (that isn't a `gap_warning`) tells it to back off inste
 
 Works with **Claude Code** and **Claude Desktop** — both take the same MCP server block.
 
+For one project's local memory, [install Lite from source](LITE.md) and run
+`recall setup --lite --memory ./notes`. This registers Claude Code directly with strict trust and
+automatic memo refresh; no PostgreSQL or plugin is required. For Claude Desktop, use
+[Lite's manual client wiring](LITE.md#connect-another-client). The schema commands and PostgreSQL
+configuration below apply to the server edition.
+
 **On Claude Code, the plugin is the short path** — it wires the server, the session hooks and a
 skill that teaches Claude when to search, and keeps the DSN in your OS keychain:
 
@@ -14,7 +20,8 @@ skill that teaches Claude when to search, and keeps the DSN in your OS keychain:
 /plugin install recall@re-call
 ```
 
-You still need a database first (`recall quickstart` makes a throwaway one). See
+You still need a configured store first. Lite uses the SQLite DSN printed by setup; PostgreSQL
+uses its own database (`recall quickstart` makes a throwaway demo). See
 [plugin/README.md](../plugin/README.md). Everything below is the manual wiring, for other
 clients and for anyone who wants to see what the plugin writes.
 

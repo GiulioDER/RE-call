@@ -56,9 +56,10 @@
   <p class="eyebrow">Working with Claude</p>
   <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 20ch; margin-bottom: 1.5rem;">Give Claude your memory, and the rules for using it.</h1>
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
-  <p class="lede">You already registered the server in <a href="start.html#step-7">step 7 of the install guide</a>. This page is the part that step could not hold: every tool the server exposes, the instructions that decide whether Claude ever calls them, and the boundaries that stop it writing where it should not.</p>
+  <p class="lede">Lite setup registers a project server directly; the PostgreSQL path registers it in <a href="start.html#step-7">the install guide</a>. This page explains the memory workflow and manual PostgreSQL wiring. Tool availability depends on server configuration; use the <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/API.md">API reference</a> for the current tool contracts.</p>
 </section>
 
+<section class="shell-narrow" style="padding-bottom: 2rem;"><div class="notice notice--signal"><p class="notice-title">Lite is already wired after successful setup</p><p>Follow <a href="start.html#lite">the source install</a>, then <code>recall setup --lite --memory ./notes</code>. Inspect the registration result and restart Claude Code in that project. Keep the SQLite DSN and strict trust from setup instead of copying the PostgreSQL development configuration below. Plugins and hooks are optional and separate; avoid duplicate servers for the same memory. For another client, use <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md#connect-another-client">Lite MCP wiring</a>.</p></div></section>
 <div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
 
   <!-- Contents rail -->

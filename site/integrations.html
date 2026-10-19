@@ -46,7 +46,7 @@
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
   <p class="lede">RE-call ships retrievers for LangChain and LlamaIndex, in-process tools for the Claude Agent SDK, and an MCP server for any MCP client. All of them return the same thing: trust-evaluated memories carrying verdict, confidence, cosine and provenance, or an explicit abstention when the corpus cannot answer. The adapters depend only on each framework's core package.</p>
 
-  <p>Every integration sits on the same store: your own PostgreSQL with pgvector. Set one up first with the <a href="start.html">install guide</a>, or in one command with <code>recall quickstart</code>.</p>
+  <p>MCP clients can use a local Lite file or PostgreSQL. For Lite, follow the <a href="start.html#lite">source installation</a> and <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md#connect-another-client">manual client wiring</a>; Lite setup registers Claude Code only. The framework examples below show PostgreSQL stores. The separate <code>recall quickstart</code> command is a PostgreSQL demo, not a required Lite step.</p>
 
   <h2 id="langchain">LangChain</h2>
 
