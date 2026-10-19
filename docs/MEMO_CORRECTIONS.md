@@ -1,7 +1,9 @@
 # Reliable corrections through the assistant surface
 
 The existing `recall_remember` tool accepts three optional parameters. Calls that omit them retain
-the exact legacy `{memo_id}` success reply and raising refresh failures.
+the exact legacy `{memo_id}` success reply and raising refresh failures. One check is new for them
+too: a `supersedes` target that is not an existing memo file (`target_missing`) or already has a
+successor (`stale_target`) is refused on every call.
 
 * `request_id`: an opaque nonempty string, at most 128 characters. Reuse it only for the same
   text, fact, kind, dates, supersession target and revision precondition. The memo folder journals

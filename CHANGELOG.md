@@ -9,7 +9,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 ## [Unreleased]
 
 - Add optional memo correction receipts, revision preconditions and persistent request identities;
-  refuse stale correction targets while preserving legacy write replies.
+  refuse a missing or already superseded correction target on every call, legacy calls included;
+  calls without the new parameters keep the `{memo_id}` reply.
 
 ### Security
 
