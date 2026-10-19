@@ -623,6 +623,14 @@ class LiteStore:
         )
         return {source: str(digest) for source, digest in rows}
 
+    def source_raw_hash(self, source: str) -> str | None:
+        """`source_raw_hashes()[source]` for one source, by the `source` index; None when absent."""
+        rows = self._metadata_values(
+            "SELECT coalesce(json_extract(metadata, '$.content_hash'), '') FROM chunks WHERE source = ? LIMIT 1",
+            (source,),
+        )
+        return next((str(row[0]) for row in rows), None)
+
     def project_file_hashes(self, project: str) -> dict[str, str]:
         rows = self._metadata_values(
             "SELECT DISTINCT json_extract(metadata, '$.file'), coalesce(json_extract(metadata, '$.index_fingerprint'), "
