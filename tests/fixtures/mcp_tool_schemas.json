@@ -299,7 +299,7 @@
       "readOnlyHint": true,
       "title": "Read current structured facts"
     },
-    "description": "Return the tenant scoped current projection of the append only fact ledger.\n\nFacts a memo states in its `recall_graph` frontmatter appear here, with the memo in\n`sources`, once the store has recorded them; a lite store does so whenever it indexes.\nValues that disagree with no supersession between their memos are listed under\n`contested`, not `facts`: memory holds both and says neither is current.",
+    "description": "Return the tenant scoped current projection of the append only fact ledger.\n\nFacts a memo states in its `recall_graph` frontmatter appear here, with the memo in\n`sources`, once the store has recorded them; a lite store does so whenever it indexes.\nValues that disagree with no supersession between their memos are listed under\n`contested`, not `facts`: memory holds both and says neither is current.\n`served_state` is `degraded` when a check against the served memos failed, naming each in\n`served_lookups_failed`; stated facts may then be missing, so do not read an absence as\nsettled.",
     "inputSchema": {
       "properties": {
         "as_of": {
@@ -541,7 +541,7 @@
       "readOnlyHint": false,
       "title": "Forget agent memory"
     },
-    "description": "Permanently delete indexed memory for the given source(s). IRREVERSIBLE.\n\nThis is the right-to-erasure path: use it to make the agent forget a memory that should\nno longer be recalled (e.g. it indexed something it should not have retained). Deletion\nis scoped to this server's own tenant and cannot reach another tenant's memory. A source\nthat does not exist is reported in `sources_not_found` rather than silently counted as\n\"removed\" — check that list before assuming a name was actually forgotten. A fact\napplied with `recall_apply_fact` whose only evidence was in these sources is retracted\nwith them, so `recall_current_facts` stops listing it; a fact with evidence in a memo\nthat survives stays.\n\nArgs:\n    sources: one or more source values to forget, exactly as they appear in\n        `recall_search` hits (the `source` field).\n\nReturns:\n    JSON of {chunks_removed, sources_removed, sources_not_found, message,\n    facts_retracted}.",
+    "description": "Permanently delete indexed memory for the given source(s). IRREVERSIBLE.\n\nThis is the right-to-erasure path: use it to make the agent forget a memory that should\nno longer be recalled (e.g. it indexed something it should not have retained). Deletion\nis scoped to this server's own tenant and cannot reach another tenant's memory. A source\nthat does not exist is reported in `sources_not_found` rather than silently counted as\n\"removed\" — check that list before assuming a name was actually forgotten. A fact\napplied with `recall_apply_fact` whose only evidence was in these sources is retracted\nwith them, so `recall_current_facts` stops listing it; a fact with evidence in a memo\nthat survives stays. Retraction is not erasure: a retracted fact's value, and the\nevidence cards that cited these sources, stay in the append-only fact ledger as its\naudit trail. Only the chunks (and staged upload files) are deleted.\n\nArgs:\n    sources: one or more source values to forget, exactly as they appear in\n        `recall_search` hits (the `source` field).\n\nReturns:\n    JSON of {chunks_removed, sources_removed, sources_not_found, message,\n    facts_retracted}.",
     "inputSchema": {
       "properties": {
         "idempotency_key": {

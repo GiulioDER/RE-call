@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 328
 Cross package edges: 342
-Source tree fingerprint: `243c004c088ca0a545d1bfde53b8b3e7448cbaa2a71117f262b5707473738b91`
+Source tree fingerprint: `d055c222205c0c048eaf276dced71756c3701add63ca87420cd6114c8cbafb09`
 
 ## Highest fan in modules
 
@@ -89,6 +89,7 @@ Source tree fingerprint: `243c004c088ca0a545d1bfde53b8b3e7448cbaa2a71117f262b570
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.doctor` |
 | 12 | `recall.eval.harness` |
+| 12 | `recall.stated_facts` |
 | 12 | `recall.store` |
 | 12 | `recall_agent.memory` |
 | 11 | `recall.cli_commands.generation_cmd` |
@@ -97,7 +98,6 @@ Source tree fingerprint: `243c004c088ca0a545d1bfde53b8b3e7448cbaa2a71117f262b570
 | 11 | `recall.desktop.ui` |
 | 11 | `recall.generation_store` |
 | 11 | `recall.lite.calibration` |
-| 11 | `recall.stated_facts` |
 | 11 | `recall.wizard.pipeline` |
 | 11 | `recall_mcp.lifecycle` |
 | 10 | `recall.integrations.langchain` |
@@ -681,7 +681,7 @@ They are observations, not automatic failures.
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |
 | `recall.stale_reports` | 3 | 107 |
-| `recall.stated_facts` | 11 | 83 |
+| `recall.stated_facts` | 12 | 83 |
 | `recall.store` | 12 | 26 |
 | `recall.supersession` | 1 | 2 |
 | `recall.supersession_arbiter` | 4 | 20 |

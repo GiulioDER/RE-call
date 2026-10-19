@@ -70,7 +70,10 @@ REMEMBER_DESCRIPTION = (
     "write, indexing and calibration readiness separately; old calls still return only memo_id. "
     "A correction target that already has a successor is refused."
 )
-FORGET_DESCRIPTION = "Delete one memo from long-term memory by memo_id."
+FORGET_DESCRIPTION = (
+    "Delete one memo from long-term memory by memo_id. A fact it alone supported is retracted, "
+    "but its value stays in the append-only fact ledger."
+)
 _STRING = {"type": "string"}
 #: The published schema of `recall_remember`'s `fact`: an inline object, not a `$ref`.
 STATED_FACT_SCHEMA: dict[str, Any] = {
@@ -322,4 +325,6 @@ class AssistantMemos(MemoFolder):
                 for f in payload["facts"]
             ],
             "contested": payload.get("contested", []),
+            "served_state": payload.get("served_state"),
+            "served_lookups_failed": payload.get("served_lookups_failed", []),
         }

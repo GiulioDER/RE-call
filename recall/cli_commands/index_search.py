@@ -133,7 +133,10 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "build will re-admit that URI even if the file is there; nothing deletes a tombstone "
             "and there is no `unforget`. Name a source exactly as stored, which is the `source` "
             "field printed by `recall search`; a source this store has never seen is reported as NOT "
-            "erased and NOT tombstoned rather than acted on."
+            "erased and NOT tombstoned rather than acted on. What is erased is the chunks: a fact "
+            "the fact ledger holds whose only evidence was in these sources is retracted, so it is "
+            "no longer listed, but its value stays in the append-only fact ledger and evidence "
+            "cards, the audit trail, which nothing deletes."
         ),
         help="permanently delete indexed memory for the given source(s) — irreversible",
     )
