@@ -88,7 +88,7 @@
     <p class="eyebrow">Architecture</p>
     <h1 style="font-size: clamp(2rem, 5vw, 3.25rem); max-width: 22ch; margin-bottom: 1rem;">How RE-call works</h1>
     <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
-    <p class="lede">RE-call builds an immutable, calibrated generation of your memory once, then answers every search against that one pinned generation. Before anything reaches the caller, a trust gate gives each hit a verdict. When nothing qualifies, it abstains with a reason instead of returning the nearest match.</p>
+    <p class="lede">Lite binds calibration to a local SQLite corpus; PostgreSQL serves an immutable calibrated generation. Both evaluate trust before returning evidence and can abstain when nothing qualifies. The diagrams below describe the PostgreSQL generation path. For local setup and maintenance, use <a href="start.html#lite">the Lite guide</a>.</p>
     <p>Both diagrams on this page are interactive. Click any box to see the source lines it describes, on GitHub, pinned to the commit the diagram was drawn from. Open a diagram full screen to trace a path between two boxes, switch to the light theme, or export it as an image.</p>
   </div>
 </section>

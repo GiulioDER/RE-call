@@ -8,11 +8,12 @@ an existing setup.
 
 | Goal | Command or guide |
 |---|---|
-| See RE-call work | `pip install "recall-rag[fastembed]"` then `recall quickstart` |
-| Keep one project's memory in a local file | `pip install "recall-rag[fastembed,mcp]"` then `recall setup --lite --memory ./notes` |
+| Keep one project's memory in a local file | [Install Lite from source](LITE.md), then `recall setup --lite --memory ./notes` |
+| See the PostgreSQL demo | `pip install "recall-rag[fastembed]"` then `recall quickstart` |
 | Install your own PostgreSQL corpus | `pip install "recall-rag[fastembed]"` then `recall setup` |
 | Provision from a reviewed JSON file | `recall wizard --headless --config wizard.json` |
-| Configure Claude Code or Codex | Run `recall setup`, then see [the Claude guide](USING_WITH_CLAUDE.md) or [the Codex guide](CODEX_RECALL_INTEGRATION.md) |
+| Configure Lite MCP clients | [Lite client wiring](LITE.md#connect-another-client); setup registers Claude Code only |
+| Configure PostgreSQL clients | Run `recall setup`, then see [the Claude guide](USING_WITH_CLAUDE.md) or [the Codex guide](CODEX_RECALL_INTEGRATION.md) |
 | Configure Claude Desktop or another MCP client | See [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) |
 | Diagnose without changing anything | `recall doctor` |
 
@@ -25,7 +26,8 @@ install the unrelated PyPI package named `recall`.
 - For the PostgreSQL path, PostgreSQL with the pgvector extension
 - Docker, if you want RE-call to start PostgreSQL for you or run the bundled quickstart
 
-The lite path uses SQLite on a local disk and needs neither PostgreSQL nor Docker.
+The Lite path uses SQLite on a local disk and needs neither PostgreSQL nor Docker. It currently
+requires a source installation with Git: the published `0.14.0` wheel predates Lite.
 
 The default `fastembed` extra provides a local embedding backend. Hosted alternatives are available
 through the `voyage` and `openai` extras. Optional retrieval and integration extras are listed in
@@ -33,8 +35,10 @@ the [dependency guide](DEPENDENCIES.md).
 
 ## Local memory in one file
 
+Use [the Lite guide](LITE.md) for source installation, client wiring, refresh, upgrades, and backup
+and restore. After installing that build, run from your own project:
+
 ```bash
-pip install "recall-rag[fastembed,mcp]"
 recall setup --lite --memory ./notes
 ```
 
@@ -45,12 +49,21 @@ server. Restart Claude Code after setup. Add `.recall/` to `.gitignore`.
 Setup prints doctor and dashboard commands configured for this file. Use those commands: the CLI
 does not read the MCP client's registered environment. Re-running setup updates changed memos and
 refits calibration. Once the server is running, it refreshes changed memos automatically;
-`recall lite refresh --check` checks freshness without writing when run with the same store
-configuration. Leave strict trust enabled: an uncertified store refuses unsupported answers.
+the following commands check and refresh the same folder explicitly:
+
+```bash
+recall lite refresh --store .recall/memory.db --memory ./notes --check
+recall lite refresh --store .recall/memory.db --memory ./notes
+```
+
+Leave strict trust enabled: an uncertified store refuses trusted answers. Successful indexing does
+not guarantee certification. The CLI does not inherit the server's registered environment; apply
+setup's printed settings before CLI searches and diagnostics.
 
 Lite supports one project on one machine. Generations, multi-tenant serving, and authentication
-require PostgreSQL. See the [local install guide](../README.md#local-with-no-database-server-and-no-docker)
-for refresh limits, write queues, and the differences in retrieval.
+require PostgreSQL. The [Lite guide](LITE.md) explains refresh limits, write queues, and the source
+update routine. Keep backups of both the original memos and the SQLite store, including fact
+ledger data; stop clients before making a file copy.
 
 ## PostgreSQL database
 
@@ -169,14 +182,15 @@ Never commit passwords or API keys to MCP configuration, `.env` files, or the re
 
 ## Integration setup
 
-The package installs the core CLI and Python API. Add only the integration you need:
+The package installs the core CLI and Python API. Lite source builds use the client wiring above;
+the following package commands and automatic installer refer to the PostgreSQL path:
 
 | Integration | Extra and follow-up |
 |---|---|
 | MCP | `pip install "recall-rag[fastembed,mcp]"`; use [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) |
 | Claude Code | Install the MCP package, install the [plugin](../plugin/README.md), and run `recall setup` |
 | Claude Desktop | Install the MCP package and add the server block from [USING_WITH_CLAUDE.md](USING_WITH_CLAUDE.md) |
-| Codex | Install the base package and run `recall setup`; see [CODEX_RECALL_INTEGRATION.md](CODEX_RECALL_INTEGRATION.md) |
+| Codex | Install `recall-rag[fastembed,mcp]` and run `recall setup`; see [CODEX_RECALL_INTEGRATION.md](CODEX_RECALL_INTEGRATION.md) |
 | Claude Agent SDK | `pip install "recall-rag[agent,fastembed]"`; see [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md) |
 | LangChain | `pip install "recall-rag[langchain,fastembed]"` |
 | LlamaIndex | `pip install "recall-rag[llamaindex,fastembed]" llama-index-core` |
@@ -186,6 +200,9 @@ All integrations share the same trust and provenance behavior. They differ only 
 is delivered to the host application.
 
 ## Troubleshooting
+
+For Lite, use setup's printed doctor command and [Lite troubleshooting](LITE.md#common-problems).
+For PostgreSQL:
 
 ```bash
 recall doctor

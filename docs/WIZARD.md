@@ -1,5 +1,9 @@
 # The installation wizard
 
+This page describes the PostgreSQL installer. For local SQLite memory without a database server,
+use [RE-call Lite](LITE.md). `recall setup --lite` is a separate noninteractive path and does not
+run the PostgreSQL wizard or its automatic Codex integration.
+
 > **When to prefer this page:** the canonical interactive install is `recall setup` (the README's
 > "full install"). This page is for the scriptable form of the same install — CI, provisioning,
 > or a config you want to review before it runs. For the manual command-by-command path instead,

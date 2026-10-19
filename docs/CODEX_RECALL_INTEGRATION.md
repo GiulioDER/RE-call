@@ -2,9 +2,15 @@
 
 Codex uses the same RE-call memory corpus and memo format as Claude Code.
 
+For a local SQLite store, follow [Lite client wiring](LITE.md#connect-another-client).
+`recall setup --lite` registers Claude Code only; it does not run the automatic Codex installer
+described below. Codex can connect to the same local file through a manually configured stdio MCP
+server, using the interpreter and environment printed by Lite setup.
+
 ## Automatic installation
 
-`recall setup` detects Codex and, with the default answer, installs the RE-call Codex integration
+The PostgreSQL `recall setup` path detects Codex and, with the default answer, installs the RE-call
+Codex integration
 automatically. It writes a personal marketplace entry at `~/.agents/plugins/marketplace.json`,
 copies the validated plugin bundle below that marketplace, stores the DSN in the user-owned Codex
 integration directory, and merges the five user-level hooks into `CODEX_HOME/hooks.json`.

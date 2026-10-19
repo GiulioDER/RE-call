@@ -4,8 +4,10 @@ This directory separates the product documentation from the evaluation record. S
 operating guides when you are deciding whether to use RE-call. Use the evidence sections when you
 want to audit a claim or reproduce a benchmark.
 
-After `recall quickstart`, choose `recall setup --lite --memory ./notes` for one project's local
-SQLite file, or `recall setup` for PostgreSQL. [INSTALLATION.md](INSTALLATION.md) covers both paths.
+Start with [Lite](LITE.md) for one project's local SQLite file, or `recall setup` for PostgreSQL.
+Lite currently requires the source build; the published `0.14.0` wheel predates it.
+`recall quickstart` is a separate PostgreSQL demo that needs Docker or an existing database.
+[INSTALLATION.md](INSTALLATION.md) covers both installation paths.
 [WIZARD.md](WIZARD.md) documents the scriptable `recall wizard --headless` PostgreSQL install, and
 [FIRST_CALIBRATION.md](FIRST_CALIBRATION.md) is its manual calibration walkthrough.
 
@@ -16,6 +18,7 @@ SQLite file, or `recall setup` for PostgreSQL. [INSTALLATION.md](INSTALLATION.md
 | [../README.md](../README.md) | Product overview, setup, and integrations. |
 | [FOR_AGENTS.md](FOR_AGENTS.md) | Why agents need persistent, trusted memory and the experience loop for using it safely. |
 | [INSTALLATION.md](INSTALLATION.md) | Local SQLite and PostgreSQL installation, the wizard, headless provisioning, and integrations. |
+| [LITE.md](LITE.md) | Lite source installation, client wiring, automatic refresh, software updates, backups, and troubleshooting. |
 | [API.md](API.md) | Supported Python, CLI, and MCP surface. |
 | [MEMO_CORRECTIONS.md](MEMO_CORRECTIONS.md) | Assistant memo correction preconditions, retry identities, receipts and compatibility. |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | Versioning, API and wire contracts, schema upgrades, and release evidence. |

@@ -6,6 +6,11 @@ question the corpus cannot answer is refused rather than answered from the neare
 
 ## Install for Claude Code
 
+For a local SQLite store, [install Lite from source](../docs/LITE.md) and run
+`recall setup --lite --memory ./notes`. The published `0.14.0` wheel predates Lite. Setup registers
+a project server directly; this plugin is optional. If using its server instead, pass
+`--no-register` to setup and use the printed SQLite DSN in the plugin's Database DSN setting.
+
 **Install the package first.** This plugin is a client, not an engine: its MCP server and its
 hooks are the console scripts `recall-mcp` and `recall-hooks`, invoked by bare name. The plugin
 delegates to the same `recall_hooks` implementation used by Claude Code. A plugin
@@ -16,7 +21,9 @@ look like.
 
 ## Install for Codex
 
-Install the Python package and run `recall setup` from the project. When Codex is detected, the
+For Lite, use [manual MCP wiring](../docs/LITE.md#connect-another-client); Lite setup does not
+install Codex hooks or its plugin. For PostgreSQL, install the Python package and run
+`recall setup` from the project. When Codex is detected, the
 wizard automatically installs the Codex plugin bundle, registers its MCP server, and merges the
 same lifecycle hooks into `CODEX_HOME/hooks.json`. Restart Codex after setup. The Codex bundle uses
 `recall-codex-mcp` and `recall-codex-hooks`; Claude's bundle continues to use `recall-mcp` and
@@ -62,7 +69,8 @@ wrong table looks exactly like an empty corpus.
 `.recall/memory.db`, indexes and calibrates it, and registers the server for that project by itself,
 so the plugin's own server is optional there. To use the plugin's server instead, run it with
 `--no-register` and paste the `sqlite:///` address it prints as the **Database DSN**; keep table
-`chunks`, tenant `default` and trust mode `strict`. Install with `pip install "recall-rag[fastembed,mcp]"`.
+`chunks`, tenant `default` and trust mode `strict`. Use the [Lite source install](../docs/LITE.md),
+then follow its refresh, update, and backup instructions.
 
 ## What the database has to look like
 

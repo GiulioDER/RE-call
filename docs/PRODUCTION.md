@@ -3,6 +3,11 @@
 Itemised status of every property "enterprise-grade" is usually meant to cover, the limits that
 are known and measured, and the upgrade notes that can break a working deployment.
 
+This deployment posture describes PostgreSQL unless a section explicitly names Lite.
+[RE-call Lite](LITE.md) is a local SQLite store for one project on one machine. Its strict trust
+policy does not add server authentication, multi-tenant isolation, or immutable generations.
+Use the Lite guide for its own update and backup procedure; use PostgreSQL for shared serving.
+
 ## Production posture
 
 "Enterprise-grade" is not a single property, so here is the itemised version — verified on a real
