@@ -38,3 +38,35 @@ sitemap directly in Search Console instead of relying on a project-path robots f
 
 A sitemap and metadata help discovery and identification; neither guarantees indexing
 or a particular search position.
+
+## Benchmark scorecard
+
+`benchmarks.html` is the compact register of published benchmark families. It is static
+HTML, so the scores, sources and disclosures remain available without JavaScript.
+`benchmarks.css` extends the shared site tokens. The homepage and sitemap link to it.
+
+To add a result, including a future AML result:
+
+1. Establish that it is publishable. Retain a public compact score artifact or an
+   organizer result, with the metric, split, run date, model stack and reproduction path.
+   A partial screen, failed run or private competition result is not a leaderboard score.
+2. Copy one `benchmark-row`, give it a unique id and name the exact metric and scope.
+   Link the artifact and method in its native `details` element. Preserve negative
+   results and relevant comparator or configuration limits.
+3. Label who operated the run. An official scorer, signature or accepted submission
+   does not justify `Independently verified`. That label requires a public independent
+   rerun. Use `Organizer-listed` separately when applicable.
+4. Check the live organizer board. State the rank's metric, track, eligible row set,
+   ties and check date. Do not insert a local result into an official table to invent
+   its place. An owner-run board must say so. Keep a local recomparison labelled local.
+5. Recheck every displayed value against its linked source, including rounding and
+   percentage conversion. Never substitute Hit@k for Recall@k or retrieval for QA.
+   Update the evidence review date after reviewing the rows, not just deploying.
+6. Preview at narrow and desktop widths, expand the disclosures with the keyboard,
+   check horizontal overflow, and run the repository's public-tree guard. Inspect the
+   canonical URL and sitemap entry if the page identity changes.
+
+The scorecard intentionally carries no placeholder score or rank for an unpublished
+competition. Its historical sections preserve tested families whose artifacts or
+former public boards are unavailable. Detailed configuration sweeps remain linked to
+their existing records rather than being presented as additional leaderboard entries.

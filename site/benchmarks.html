@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://giulioder.github.io/RE-call/benchmarks.html">
+<title>RE-call benchmark results: scores, rankings and verification</title>
+<meta name="description" content="RE-call results on ATM-Bench, EnterpriseRAG-Bench, MTRAG, LoCoMo, LongMemEval and other evaluations, with dated rankings, sources and verification status.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RE-call">
+<meta property="og:title" content="RE-call benchmark results">
+<meta property="og:description" content="Measured results, dated leaderboard positions and a clear distinction between self-tested and independently verified runs.">
+<meta property="og:url" content="https://giulioder.github.io/RE-call/benchmarks.html">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="benchmarks.css">
+<script src="app.js" defer></script>
+<script src="translate.js" defer></script>
+</head>
+<body class="benchmark-page">
+<a class="benchmark-skip" href="#main">Skip to results</a>
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html"><img class="wordmark-mark" src="assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>Evidence</span></a>
+    <nav aria-label="Main navigation">
+      <a href="index.html">Home</a>
+      <a href="benchmarks.html" aria-current="page">Benchmarks</a>
+      <a href="start.html">Install</a>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+    </nav>
+    <div class="language-control" data-translate-control>
+      <label for="site-language">Language</label>
+      <select id="site-language" aria-describedby="site-translation-status">
+        <option value="english" data-html-lang="en">English</option>
+        <option value="italian" data-html-lang="it">Italiano</option>
+        <option value="spanish" data-html-lang="es">Español</option>
+        <option value="french" data-html-lang="fr">Français</option>
+        <option value="german" data-html-lang="de">Deutsch</option>
+        <option value="portuguese" data-html-lang="pt">Português</option>
+        <option value="chinese_simplified" data-html-lang="zh-CN">简体中文</option>
+        <option value="japanese" data-html-lang="ja">日本語</option>
+        <option value="korean" data-html-lang="ko">한국어</option>
+        <option value="russian" data-html-lang="ru">Русский</option>
+        <option value="arabic" data-html-lang="ar">العربية</option>
+        <option value="hindi" data-html-lang="hi">हिन्दी</option>
+        <option value="turkish" data-html-lang="tr">Türkçe</option>
+      </select>
+      <span id="site-translation-status" class="translation-status translation-status--sr" role="status" aria-live="polite">English source</span>
+    </div>
+  </div>
+</header>
+<main id="main">
+<section class="shell benchmark-hero">
+  <p class="eyebrow eyebrow--signal">The evaluation record</p>
+  <h1>RE-call benchmark results.</h1>
+  <hr class="rule">
+  <p class="lede">Published scores, dated positions and who ran each test.</p>
+  <p class="benchmark-qualification">All runs below were operated by the RE-call author. None has an independently verified rerun.</p>
+  <p class="benchmark-date">Evidence reviewed <time datetime="2026-10-19">19 October 2026</time>. Leaderboard positions are a dated snapshot.</p>
+  <nav class="benchmark-jumps" aria-label="On this page">
+    <a href="#results">Benchmark results</a>
+    <a href="#verification">Verification key</a>
+    <a href="#studies">Other tests and historical runs</a>
+  </nav>
+</section>
+
+<section class="shell benchmark-register" id="results" aria-label="Benchmark results">
+  <div class="benchmark-head" aria-hidden="true"><span>Benchmark / scope</span><span>RE-call result</span><span>Position / comparison</span><span>Run verification</span></div>
+  <ul class="benchmark-list">
+    <li class="benchmark-row" id="atm">
+      <div><h2>ATM-Bench</h2><p>Personal multimodal memory</p><p class="benchmark-note">Full split · 1,013 questions</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-score">90.10%</span><p>Recall@10</p><p class="benchmark-note">QS 68.43%</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position benchmark-position--listed">2nd on Recall@10</span><p class="benchmark-note">Listed Memory/RAG configurations, excluding oracles. Checked 19 Oct 2026.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested</span><p>Organizer-listed</p><p class="benchmark-note">No independent rerun established.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>The organizer accepted the submission on 23 August 2026. The official retrieval evaluator rescored the frozen run on 4 October: Recall@10 is 90.0995%. The earlier value labelled Recall@10 measured whether any gold item was found, a different metric.</p>
+        <p>Voyage-4-large embeddings, Voyage rerank-2.5 and Qwen image captions; DeepSeek V4 Pro answers. The official QS judge model and prompt ran through OpenRouter, disclosed and accepted. QS is not answer-model-matched to the Qwen baselines. Memexa v2 currently leads the listed systems on both Recall@10 and QS. Oracle rows are excluded from the rank.</p>
+        <div class="benchmark-sources"><a href="https://atmbench.github.io/leaderboard.html">Official leaderboard</a><a href="https://github.com/atmbench/atmbench.github.io/pull/2">Accepted submission</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/atm/atm_recall_rescore_20261004.json">Recall artifact</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/atm/atm_bench_full_20260821.json">QS and configuration</a></div>
+      </details>
+    </li>
+    <li class="benchmark-row" id="enterprise">
+      <div><h2>EnterpriseRAG-Bench</h2><p>Company knowledge retrieval and QA</p><p class="benchmark-note">500 questions</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-score">63.80%</span><p>Answer correctness</p><p class="benchmark-note">Combined score 46.16<br>Document recall 77.34%</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position">Unranked</span><p class="benchmark-note">No RE-call row on the organizer's board when checked 19 Oct 2026.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested</span><p>Public score summary</p><p class="benchmark-note">No independent rerun established.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>GPT-4o answers; a homogeneous GPT-5.4 medium judge pass, without correction or citation stripping. Voyage-4-large, lexical plus SPLADE retrieval, Voyage reranking and a bounded context. Completeness is 53.23%.</p>
+        <p>The separate default judge pass reported 65.60% correctness but mixed reasoning settings. This page uses the homogeneous pass. A locally computed score does not receive a hypothetical place among accepted submissions.</p>
+        <div class="benchmark-sources"><a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/artifacts/enterprise_rag/re_call_voyage_splade_gpt4o.judge_gpt54_medium.no_correction.summary.json">Score artifact</a><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/ENTERPRISE_RAG_SUBMISSION.md">Protocol and other judge passes</a><a href="https://huggingface.co/spaces/onyx-dot-app/EnterpriseRAG-Bench-Leaderboard">Official leaderboard</a></div>
+      </details>
+    </li>
+    <li class="benchmark-row" id="mtrag">
+      <div><h2>MTRAG</h2><p>Multi-turn conversational RAG</p><p class="benchmark-note">842 generation tasks</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-score">0.5527</span><p>Task C harmonic score</p><p class="benchmark-note">Correct refusals: 16/55 (29.1%)</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position">4th of 10 locally</span><p class="benchmark-note">Recomputed end-to-end comparison. Tied 2nd on correct refusals. No official placement.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested</span><p>Official evaluator</p><p class="benchmark-note">An external judge model is not an independent operator.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>GPT-4o generation with the official prompt, scored by the benchmark's GPT-4o-mini judge. All baselines were recomputed through the same corrected, answerability-conditioned scorer. Their instance set differs from the paper's, so these positions cannot be quoted as the published leaderboard.</p>
+        <p>The recomputed GPT-4o baseline scores 0.5591. Holding the prompt fixed, replacing ELSER contexts with RE-call contexts changes 0.5516 to 0.5527. Correct refusals are tied with Llama-3.1-70B; that metric depends on the generator prompt as well as retrieval.</p>
+        <p>Retrieval Task A, a separate 777-query evaluation, reaches nDCG@5 0.4342 and Recall@100 0.7668 with SPLADE and Voyage reranking. The free hybrid SPLADE arm scores 0.3573 and 0.7377 respectively. Task B supplies gold contexts and is a harness control, not a RE-call retrieval result.</p>
+        <div class="benchmark-sources"><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md">Corrected results and reproduction</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/mtrag_generation/CORRECTION-idk-conditioning-2026-08-09.md">Scoring correction</a><a href="https://github.com/IBM/mt-rag-benchmark">Organizer benchmark</a></div>
+      </details>
+    </li>
+    <li class="benchmark-row" id="locomo">
+      <div><h2>LoCoMo</h2><p>Long conversation memory</p><p class="benchmark-note">Paired QA · 1,540 answerable questions</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-score">48.4%</span><p>Judged answer accuracy</p><p class="benchmark-note">Mem0 OSS: 44.4% in the same setup</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position">Ahead in paired test</span><p class="benchmark-note">RE-call versus Mem0 OSS, with matched reader and judge. No official placement.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested</span><p>Public compact artifact</p><p class="benchmark-note">A second scoring script is not a third-party rerun.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>GPT-4o reader and judge, token-matched retrieval budgets. RE-call uses the local bge embedder. The direction depends on the reader: a post-hoc Sonnet 4.5 subset reverses it. The paired artifact records the raw-run hashes; raw generated answers are not committed.</p>
+        <p>Separate retrieval-only tests use 1,536 answerable questions: turn-level hit@5 is 0.671 without reranking and 0.777 with the shipped cross-encoder. These are not session-level competitor scores or judged answer accuracy. Default retrieval abstained on none of the 446 adversarial questions; that failure is retained in the record.</p>
+        <div class="benchmark-sources"><a href="https://github.com/GiulioDER/RE-call/blob/master/results/head_to_head/paired_accuracy.json">Paired QA artifact</a><a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md">Review and reader controls</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/locomo_rerank/rerank_shipped.json">Retrieval artifact</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md">Full retrieval and abstention record</a></div>
+      </details>
+    </li>
+    <li class="benchmark-row" id="longmemeval">
+      <div><h2>LongMemEval</h2><p>Session retrieval</p><p class="benchmark-note">Historical local-embedder study</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-score">0.970 / 0.366</span><p>Hit@5, small / merged haystack</p><p class="benchmark-note">Retrieval only, not answer accuracy</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position">Unranked</span><p class="benchmark-note">Different haystack scopes; no comparable official row.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested · historical</span><p>Original artifact lost</p><p class="benchmark-note">Documented result, limited auditability.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>The per-question haystacks contain roughly 49 sessions; the merged index contains 19,195. The intermediate Oracle scope scores 0.719. Knowledge-update retrieval is 36/36 on the comparable arm, while false abstention is 0.481.</p>
+        <p>This run predates the sparse-leg fix and is effectively dense-only. The indexes and original run output were not retained. The published commands provide a reproduction method, not a retained artifact or independent verification. A separate Bench'd harness run is recorded below.</p>
+        <div class="benchmark-sources"><a href="https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md">Historical result and retention limits</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md#10-longmemeval-the-retrieval-result-and-the-abstention-failure-underneath-it">Analysis</a></div>
+      </details>
+    </li>
+    <li class="benchmark-row" id="beam">
+      <div><h2>BEAM</h2><p>Long-context memory and abstention</p><p class="benchmark-note">Historical 1M-token probes</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-position">Partial results only</span><p>Temporal category: 0.408</p><p class="benchmark-note">Mem0 reference: 0.567</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position">Unranked</span><p class="benchmark-note">No retained full-run aggregate suitable for a leaderboard claim.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested · historical</span><p>Published study notes</p><p class="benchmark-note">Incomplete retained evidence.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>The harness follows upstream answerer and judge prompts and compares against historical Mem0 Platform answers. The published temporal probe identifies wrong date selection. The source record does not retain a complete aggregate artifact, so this page does not assign an overall score or rank.</p>
+        <p>BEAM includes deliberately difficult unanswerable questions. Follow-up entailment and threshold probes did not establish a usable general abstention rule. The committed Voyage k-sweep measures nugget-coverage proxy, not judged answer quality.</p>
+        <div class="benchmark-sources"><a href="https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md">Temporal result</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/beam_9l_temporal.json">Temporal diagnostic artifact</a><a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/beam/UPSTREAM.md">Upstream protocol</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/beam_voyage/ksweep.json">Proxy artifact</a></div>
+      </details>
+    </li>
+    <li class="benchmark-row" id="beir">
+      <div><h2>BEIR / CQADupStack</h2><p>Cross-corpus retrieval study</p><p class="benchmark-note">17 corpora</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-score">16 / 17</span><p>Corpora improved by cloud embeddings</p><p class="benchmark-note">Median hit@5 lift: +0.059</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position">No system ranking</span><p class="benchmark-note">Within-RE-call embedder comparison.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested</span><p>Public study summaries</p><p class="benchmark-note">Per-corpus artifact set incomplete.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>Hybrid retrieval with bge-small-en-v1.5 versus Voyage-3. This measures the embedder change within RE-call, not RE-call versus other retrieval systems. The corpus samples and configuration are part of the study; these figures are not official full-corpus BEIR nDCG scores.</p>
+        <p>The study and analysis summaries are public; the complete set of per-corpus run artifacts is not retained in this tree.</p>
+        <p>Corpora: NFCorpus, SciFact, SCIDOCS, FiQA, ArguAna, and CQADupStack Android, English, Gaming, GIS, Mathematica, Physics, Programmers, Stats, TeX, Unix, Webmasters and WordPress.</p>
+        <div class="benchmark-sources"><a href="https://github.com/GiulioDER/RE-call/blob/master/results/gap/FINDINGS-embedder-gap.md">Study results</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/gap/summary.json">Corpus inventory</a><a href="https://github.com/GiulioDER/RE-call/blob/master/results/gap/analysis.json">Analysis artifact</a></div>
+      </details>
+    </li>
+    <li class="benchmark-row" id="financebench">
+      <div><h2>FinanceBench</h2><p>Financial-document retrieval</p><p class="benchmark-note">150 questions</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-score">0.393 → 0.527</span><p>Hit@5 as the candidate pool grew</p><p class="benchmark-note">Pool 40 versus 100</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position">No system ranking</span><p class="benchmark-note">Within-RE-call configuration study.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested · historical</span><p>Published aggregate</p><p class="benchmark-note">No compact run artifact linked in the record.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>Voyage-finance-2, dense retrieval plus reranking over 72,151 chunks, with the dense search-width cap corrected. This is a retrieval-pool experiment, not the benchmark's end-to-end financial QA score.</p>
+        <div class="benchmark-sources"><a href="https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md">Published measurement and scope</a></div>
+      </details>
+    </li>
+    <li class="benchmark-row" id="agent-memory-bench">
+      <div><h2>agent-memory-bench</h2><p>Coding-agent task execution</p><p class="benchmark-note">official-003 · 317 paired cells</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-score">65.93%</span><p>Task success</p><p class="benchmark-note">Bare: 65.93% · Placebo: 67.19%</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position">Tied 2nd, owner-run board</span><p class="benchmark-note">Among displayed arms by success. Null versus the designated baseline.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested</span><p>Benchmark by the RE-call author</p><p class="benchmark-note">Execution-graded; no independent operator.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>Claude Code with DeepSeek V4 Flash over a bulk-ingested corpus. No positive arm's confidence interval excludes zero against the designated CLAUDE.md baseline. RE-call ties the bare arm; placebo scores highest. This does not demonstrate an overall coding benefit.</p>
+        <p>The write lifecycle is not measured. The run disclosed late preregistration, no advance announcement, and source and condition names visible to agents. The current board joins later vendor runs with different admitted cell counts, so its descriptive order is not a controlled pairwise ranking. Earlier pilots and protocol runs remain in the linked history.</p>
+        <div class="benchmark-sources"><a href="https://giulioder.github.io/agent-memory-bench/">Owner-run leaderboard</a><a href="https://github.com/GiulioDER/agent-memory-bench/blob/master/site/data/leaderboard.js">Displayed data</a><a href="https://github.com/GiulioDER/agent-memory-bench/blob/master/docs/STATUS.md">All public runs and deviations</a></div>
+      </details>
+    </li>
+    <li class="benchmark-row" id="mem-bench">
+      <div><h2>mem-bench</h2><p>Isolation and temporal axes</p><p class="benchmark-note">Earlier author-built benchmark</p></div>
+      <dl><dt>Result</dt><dd><span class="benchmark-position">Historical runs</span><p class="benchmark-note">No current score promoted here.</p></dd></dl>
+      <dl><dt>Position</dt><dd><span class="benchmark-position">Unavailable</span><p class="benchmark-note">Former public repository returned 404 on 19 Oct 2026.</p></dd></dl>
+      <dl><dt>Verification</dt><dd><span class="benchmark-status">Self-tested · historical</span><p>Adapters retained</p><p class="benchmark-note">Declared versions were not live-verified.</p></dd></dl>
+      <details class="benchmark-detail"><summary>Method, limits and sources</summary>
+        <p>The retained documentation records earlier isolation and temporal runs. The original board's artifacts declared a version without confirmation; a declared version and deterministic scoring do not establish an independently verified run. The adapters are public, but the former board is not currently accessible.</p>
+        <div class="benchmark-sources"><a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/membench/README.md">Retained adapters and version caveat</a></div>
+      </details>
+    </li>
+  </ul>
+</section>
+
+<section class="shell benchmark-section" id="verification">
+  <p class="eyebrow">Read the labels</p>
+  <h2>Who ran it matters.</h2>
+  <dl class="benchmark-key">
+    <div><dt>Self-tested</dt><dd>The RE-call author operated the run. An official evaluator, public artifact or signed manifest can make it auditable without making the operator independent.</dd></div>
+    <div><dt>Organizer-listed</dt><dd>The benchmark maintainer accepted a row onto its leaderboard. Acceptance alone does not establish that the organizer reran it.</dd></div>
+    <div><dt>Independently verified</dt><dd>A separate operator reproduced the run and published evidence. No result on this page currently has that status.</dd></div>
+  </dl>
+  <p>Positions apply only to the named metric, track, eligible rows and review date. A local baseline comparison is labelled local. Missing placements stay unranked.</p>
+</section>
+
+<section class="shell benchmark-section benchmark-end" id="studies">
+  <p class="eyebrow">The rest of the record</p>
+  <h2>Other tests and historical runs.</h2>
+  <p>This register covers published benchmark families. Configuration sweeps, diagnostic controls and earlier runs remain in their linked records. In-progress and unpublished competition results are outside this scorecard.</p>
+  <details><summary>Bench'd harness: historical LoCoMo and LongMemEval runs</summary>
+    <p>The August 2026 self-run release reports nuance scores of 71.6 on LoCoMo and 69.0 on LongMemEval. These use a different pipeline from the retrieval and paired QA rows above: Voyage embeddings and reranking, DeepSeek synthesis inside memory, and the harness's locked GPT-4o-mini answerer and judge. Abstention was suppressed on the answerable-only evaluation.</p>
+    <p>The manifests are signed by the submitting operator. They were not accepted onto a public board and were not independently rerun. No rank or independent-verification claim is made from them.</p>
+    <p><a href="https://github.com/GiulioDER/RE-call/releases/tag/benchd-official-2026-08-23">Signed manifests and run records</a> · <a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/benchd/README.md">Harness protocol and disclosures</a></p>
+  </details>
+  <details><summary>Internal agent A/B, answerability and trust evaluations</summary>
+    <ul>
+      <li><strong>Additive agent A/B:</strong> known-hazard trap rate 0.000 with RE-call versus 0.525 with the same static memory alone, over 40 memory-only pairs. This author-designed task set is narrow and is not a public coding leaderboard. <a href="https://github.com/GiulioDER/RE-call/blob/master/results/agent_ab/agent_ab_additive_2026-08-21.json">Artifact and limits</a>.</li>
+      <li><strong>SDK replication:</strong> a separate in-process tool replication was inside its preregistered equivalence bands. It was still run by the author. <a href="https://github.com/GiulioDER/RE-call/blob/master/results/agent_ab/agent_ab_sdk_replication_2026-08-26.json">Replication artifact</a>.</li>
+      <li><strong>Answerability ladder:</strong> diagnostic levels and the corrected H1 verdict are retained, without a leaderboard position. <a href="https://github.com/GiulioDER/RE-call/blob/master/results/ladder/H1_VERDICT_v2.md">Corrected verdict</a>.</li>
+      <li><strong>Trust, supersession and entailment:</strong> synthetic controls and near-miss studies test particular failure modes. Generated-corpus success is not a production reliability rate. <a href="https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md">Full result tables</a> · <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/ENTAILMENT_SUPERSESSION_STUDY.md">Study</a>.</li>
+      <li><strong>Reasoning controls:</strong> frozen offline control and ablation suites, distinct from externally graded reasoning benchmarks. <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/REASONING_SESSION8_AUDIT.md">Audit and release limits</a>.</li>
+    </ul>
+  </details>
+  <details><summary>PEPs, real-corpus, fine-tuning, scale and latency studies</summary>
+    <p>The author also tested PEP retrieval, labelled private-corpus retrieval, embedding fine-tuning, synthetic scale, reranking, cosine distributions, generation parity and store latency. These measure individual mechanisms or operating costs. They do not assign a place among competing memory products.</p>
+    <p>Only published aggregates are linked here. Private corpus text and raw operational traces are not part of this page. All of these studies are self-tested.</p>
+    <p><a href="https://github.com/GiulioDER/RE-call/blob/master/results/RESULTS.md">Result tables</a> · <a href="https://github.com/GiulioDER/RE-call/blob/master/results/ARTIFACTS.md">Artifact map</a> · <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/RAG_TRAINING_STUDY.md">Fine-tuning study</a></p>
+  </details>
+  <details><summary>Corrections and withdrawn figures</summary>
+    <p>Withdrawn measurements are excluded from the scorecard. The linked record preserves the corrections, including contaminated LoCoMo pool runs, an invalid known-item evaluation, and ATM metric and token-accounting errors. Historical figures with lost artifacts remain explicitly labelled above.</p>
+    <p><a href="https://github.com/GiulioDER/RE-call/blob/master/results/WITHDRAWN.json">Withdrawal register</a> · <a href="https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md">Findings and corrections</a></p>
+  </details>
+</section>
+</main>
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <a href="sitemap.xml">Sitemap</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>AGPL-3.0 or commercial license</small>
+  </div>
+</footer>
+</body>
+</html>
