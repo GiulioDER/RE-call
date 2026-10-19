@@ -135,7 +135,8 @@ learned sparse sidecars if present, and Add replay receipts. Other user tenants 
 ### Runs of record
 
 Every AML Cycle 2 Full that RE-call ran, except the first Multimodal Full, was served by the
-variant `C9_routed_specialists_grounded_graph_atomic`, selected with
+variant `C9_routed_specialists_grounded_graph_atomic`, and Multimodal Full 2, which has not run yet,
+will be served by it too, selected with
 `RECALL_AML_VARIANT=C9_routed_specialists_grounded_graph_atomic`. Each fixed commit is a signed tag
 in this repository.
 
@@ -168,7 +169,7 @@ its full commit hash.
 
 The only generative call is the Add compiler: OpenAI `gpt-4o-mini` through OpenRouter, with the
 fixed model identifier `openai/gpt-4o-mini`, temperature zero, and a JSON object response. In
-Multimodal Full 2 it was off, so that run called no generative model at all. Search never calls
+Multimodal Full 2 it is off, so that run will call no generative model at all. Search never calls
 one.
 
 The embedding models are Voyage AI models, one per route:
