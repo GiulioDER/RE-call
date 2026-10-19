@@ -157,6 +157,13 @@ Full 1 ran the earlier variant `C8_routed_specialists_grounded_graph` at `5d82b5
 C9's fields are `HostedVariant` in `recall_aml/variants.py`. The three commits define it the same
 way except where the sections below name a commit.
 
+### License
+
+Every commit named above carries the PolyForm Noncommercial License 1.0.0 in its tree, because the
+project moved to AGPL-3.0-only after these runs. [`LICENSE_GRANT_AGPL.md`](../LICENSE_GRANT_AGPL.md),
+dated 5 October 2026, additionally licenses each of them under AGPL-3.0-only and names each one by
+its full commit hash.
+
 ### Models
 
 The only generative call is the Add compiler: OpenAI `gpt-4o-mini` through OpenRouter, with the
