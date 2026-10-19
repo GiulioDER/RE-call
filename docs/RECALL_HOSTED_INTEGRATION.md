@@ -1,4 +1,4 @@
-# RE-call Hosted 1.0 vendor integration
+# RE-call Hosted 1.0: method, evidence and integration
 
 ## Product identity
 
@@ -11,6 +11,74 @@ AML run is listed under [Runs of record](#runs-of-record).
 The service is intended to remain reachable and configuration frozen for at least 30 days after
 an AML submission. A release candidate must not be submitted until the contract, isolation,
 concurrency, latency, persistence, and recovery gates in the committed preregistration pass.
+
+## Method and evidence
+
+RE-call Hosted stores what a user said and returns it as dated evidence. It never writes an
+answer. Six design choices define the method, each listed with the measurement that supports it.
+Every number comes from the author's own run on a public benchmark and is stated in a committed
+pre-registration or result record. The raw run outputs are not in the repository, and none of
+these numbers is an AML score. Other public results are on the project's
+[benchmark page](https://giulioder.github.io/RE-call/benchmarks.html).
+
+```mermaid
+flowchart LR
+  subgraph add["Add"]
+    msgs["Messages"] --> win["Word windows<br/>160 words, stride 120"]
+    win --> views["Atomic views<br/>no model"]
+    msgs -. "compiler on" .-> rec["Records citing<br/>server anchors"]
+    rec --> grf["Graph sidecar"]
+    msgs --> img["Original images<br/>voyage-multimodal-3.5"]
+  end
+  subgraph search["Search"]
+    q["Query"] --> route{"Router"}
+    route --> code["Code route<br/>voyage-code-4 + BM25"]
+    route --> ctx["Context route<br/>voyage-context-4 + BM25"]
+    code --> fuse["Rank fusion<br/>within the route"]
+    ctx --> fuse
+    fuse --> lift["Atomic rescue<br/>top five fixed"]
+    lift --> promote["Graph promotion<br/>at most two"]
+    promote --> leg["Image leg"]
+    leg --> out["Dated evidence<br/>at most top_k"]
+  end
+  win -.-> code
+  views -.-> lift
+  grf -.-> promote
+  img -.-> leg
+```
+
+1. Compiled records hold only source text the server verified (see [Add](#add)). In the admission
+   run, 1,230 records from 194 of 196 sessions carried no invalid span and no unsupported claim
+   ([record](results/2026-09-19-aml-anchor-compiler-v3-admission.md)). Sending the earlier records
+   without their identifiers took later-call fallbacks from 7 to 0 and accepted records per call
+   from 4.06 to 6.69 ([record](preregistrations/2026-09-25-c9-prior-record-ids.md)).
+2. A deterministic router ranks each query in one embedding space, so the ranking never mixes
+   scores from different models. On 1,535 LoCoMo questions, choosing the better of Code4
+   and Context4 for every query with hindsight would add at most 1.76 points of turn hit@10, and
+   routing with gpt-4o-mini lost 0.91 [-1.69, -0.13] against always using Code4, so Search runs
+   no model to route
+   ([record](preregistrations/2026-09-24-c9-code4-context4-routing-headroom.md)).
+3. Every item carries the date a reader needs, including the date a relative phrase refers to.
+   The date header added 53.75 points [+48.12, +59.38] on LoCoMo temporal questions over undated
+   windows, with Coding MRR unchanged
+   ([record](preregistrations/2026-09-25-aml-c9-window-format.md)), and resolving relative phrases
+   added 14.69 [+9.06, +20.31] more
+   ([record](preregistrations/2026-09-25-aml-c9-relative-dates-and-conflict-adjacency.md)). Both
+   used DeepSeek readers. The second one copied relative phrases instead of
+   computing dates, so a reader that computes them would gain less, and on BEAM that change had no
+   measurable effect.
+4. Each Add builds its own atomic views, so a Search between two Adds already uses them, and the
+   rescue cannot change the fused top five. On 187 coding queries it was active on every query
+   with no fallback, and the top five matched the rescue-off ranking on all 187
+   ([record](preregistrations/2026-09-23-aml-c9-add-time-atomizer.md)).
+5. The model cannot draw a graph edge: edges come only from verified evidence spans, and
+   promotion can only reorder windows that retrieval already found. Each of these rules, and the
+   raw ranking served on failure, has a mutation test that fails when the rule is broken
+   ([receipts](results/aml-graph-v1/RED_PROOF_RECEIPTS.md)).
+6. The image leg searches wherever the user's memory holds images, not only when a question names
+   a visual word. On 291 MemEye questions that name no image, this raised debiased exact match by
+   0.182 [+0.135, +0.229], with the answer step capped at 30 images
+   ([record](preregistrations/2026-09-25-aml-c9-multimodal-scope-and-dates.md)).
 
 ## API
 
@@ -189,8 +257,7 @@ stride of 120, in a store isolated per `user_id`. Window text holds message cont
 role or timestamp.
 
 The Add also builds atomic views from its own raw windows, with no model: short spans (profile
-`aml-add-micro-v1`), each linked to its parent window and stored in an isolated tenant. They depend
-on that request alone, so a Search between two Adds sees the views of every Add that has returned.
+`aml-add-micro-v1`), each linked to its parent window and stored in an isolated tenant.
 
 When the compiler is on, the server cuts the Add's messages into evidence anchors with identifiers
 it creates. The model returns at most eight records, each citing one to eight of those identifiers,
@@ -217,8 +284,8 @@ Otherwise text with a code signal takes the code route, text with a conversation
 and no code signal takes the context route, and anything else takes the code route.
 
 On the chosen route, exact dense retrieval and canonical BM25 (`k1` 1.5, `b` 0.75) each return 100
-candidates, and reciprocal rank fusion with constant 60 merges them. Each route fuses only its own
-rankings. Ties on the code route follow a fixed window order.
+candidates, and reciprocal rank fusion with constant 60 merges them. Ties on the code route follow
+a fixed window order.
 
 After fusion, atomic rescue can lift the parent window of an atomic view that matches the query,
 never into the first five positions. Graph promotion then lets the compiled records nearest the
@@ -318,9 +385,8 @@ commands are in
 ### Routed specialist use and embedding reuse
 
 `C7_routed_specialists` incorporates the retained MM2 behavior as its visual route while keeping
-Code4 as the conservative default and Context4 for explicit conversational memory. Each route
-performs rank fusion only inside the selected specialist path, so heterogeneous cosine scores are
-never compared or averaged. C8 and C9 keep this routing.
+Code4 as the conservative default and Context4 for explicit conversational memory. C8 and C9 keep
+this routing.
 
 Hosted deployments may opt into the shared content addressed cache with:
 
