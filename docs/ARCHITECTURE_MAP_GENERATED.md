@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 328
 Cross package edges: 344
-Source tree fingerprint: `f0b58e7c5537e1e9bd5cdf1ed47447af67e1354afbb40fb704bb98aed863c1a6`
+Source tree fingerprint: `3c87c8b8007a7dd6d4483644a065552601be7540fc3c6076bb4cc8b82b74415e`
 
 ## Highest fan in modules
 
@@ -89,6 +89,7 @@ Source tree fingerprint: `f0b58e7c5537e1e9bd5cdf1ed47447af67e1354afbb40fb704bb98
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.doctor` |
 | 12 | `recall.eval.harness` |
+| 12 | `recall.stated_facts` |
 | 12 | `recall.store` |
 | 12 | `recall_agent.memory` |
 | 11 | `recall.cli_commands.generation_cmd` |
@@ -97,7 +98,6 @@ Source tree fingerprint: `f0b58e7c5537e1e9bd5cdf1ed47447af67e1354afbb40fb704bb98
 | 11 | `recall.desktop.ui` |
 | 11 | `recall.generation_store` |
 | 11 | `recall.lite.calibration` |
-| 11 | `recall.stated_facts` |
 | 11 | `recall.wizard.pipeline` |
 | 11 | `recall_mcp.lifecycle` |
 | 10 | `recall.cli_commands._shared` |
@@ -682,7 +682,7 @@ They are observations, not automatic failures.
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |
 | `recall.stale_reports` | 3 | 108 |
-| `recall.stated_facts` | 11 | 84 |
+| `recall.stated_facts` | 12 | 84 |
 | `recall.store` | 12 | 27 |
 | `recall.supersession` | 1 | 2 |
 | `recall.supersession_arbiter` | 4 | 20 |

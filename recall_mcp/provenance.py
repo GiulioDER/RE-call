@@ -201,12 +201,19 @@ def current_facts_memory(
     (`recall.fact_retraction`). A fact lists its memos in `sources`. Facts that conflict, with no
     supersession between their memos, are listed under `contested` and not under `facts`
     (`recall.provenance_controller.split_contested`).
+
+    `served_state` says how far the answer was checked against what the store serves: `ok`,
+    `degraded` when a lookup failed (each named in `served_lookups_failed`: a failed `presence` or
+    `supersession` check hides nothing it would have hidden, a failed `admission` or `content`
+    check lists no stated fact), or `unchecked` for a store with no lookup, read as the ledger
+    alone. Added for review of PR 946, so a client can tell a quiet answer from an incomplete one.
     """
     if security_policy is not None:
         if access_context is None or access_context.tenant != store.tenant:
             raise PermissionError("a matching source access context is required for current facts")
     instant = as_of or eval_clock.now() or datetime.now(UTC)
-    served = served_sources(store)
+    failures: list[str] = []
+    served = served_sources(store, failures=failures)
     ledger = _fact_backends(store)[0]
     # One history snapshot serves both the projection and its supporting source names.
     history = getattr(ledger, "events", None)
@@ -284,4 +291,6 @@ def current_facts_memory(
             }
             for group in contested
         ],
+        "served_state": "unchecked" if served is None else ("degraded" if failures else "ok"),
+        "served_lookups_failed": list(failures),
     }

@@ -165,7 +165,7 @@ one that honoured it.
 | **`recall_search`** | Before proposing an idea, forming a hypothesis, or repeating past work. Use it to check what memory already says, and follow the returned `advice`. |
 | **`recall_evidence`** | When the agent is about to answer from memory. It returns a citable evidence bundle plus `system_prompt` and `user_message`; the client remains the generator. |
 | **`recall_index`** | To add a markdown file/folder to memory (bounded by `RECALL_INDEX_ROOT`). |
-| **`recall_forget`** | To permanently delete indexed memory for source values returned by `recall_search`. Requires `recall:forget` on authenticated transports; irreversible, so check the returned `sources_not_found` before assuming a request matched. |
+| **`recall_forget`** | To permanently delete indexed memory for source values returned by `recall_search`. Requires `recall:forget` on authenticated transports; irreversible, so check the returned `sources_not_found` before assuming a request matched. It erases chunks, not fact values: a fact whose only evidence was a forgotten source is retracted and no longer listed, but its value stays in the append-only fact ledger. |
 | **`recall_stats`** | To check how much memory exists and whether the index is stale. |
 | **`recall_reasoning_query`** | When the agent explicitly needs the reasoning layer. It runs over trusted retrieval, obeys the configured policy and budget, and returns cited output, review state, clarification, or abstention. |
 | **`recall_reasoning_projection`** | To inspect the generation-bound reasoning graph projection without answering. |

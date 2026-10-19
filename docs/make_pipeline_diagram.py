@@ -410,7 +410,8 @@ STORE = (
     "7 · Store — PostgreSQL + pgvector",
     "One transactional database holds both legs: dense vectors on an HNSW index and Postgres FTS "
     "`tsvector` side by side. No separate vector service to operate. Row-level security per tenant, "
-    "`recall forget` for right-to-erasure, registered index generations with a shadow route, durable "
+    "`recall forget` erases chunks (a retracted fact's value stays in the append-only fact ledger), "
+    "registered index generations with a shadow route, durable "
     "ordered outbox and a transactional cutover that refuses while events are pending. Measured at "
     "50,600 chunks: recall@5 1.00 filtered and unfiltered.",
     "standard",
