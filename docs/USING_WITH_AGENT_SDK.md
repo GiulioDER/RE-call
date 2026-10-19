@@ -45,7 +45,7 @@ RE-call's own server name raises; pick a different `server_name` at construction
 | `mcp__recall__recall_search` | `recall_mcp.service.search_memory` | Same description the MCP server publishes, drift-tested. |
 | `mcp__recall__recall_evidence` | `recall_mcp.service.evidence_memory` | Citable bundle plus the exact prompt to answer with. |
 | `mcp__recall__recall_index` | `recall_mcp.service.index_memory` | Only with `write_tools=True`. Confined to `RECALL_INDEX_ROOT`. |
-| `mcp__recall__recall_forget` | `recall_mcp.service.forget_memory` | Only with `write_tools=True`. Right-to-erasure; irreversible. |
+| `mcp__recall__recall_forget` | `recall_mcp.service.forget_memory` | Only with `write_tools=True`. Erases the sources' chunks, irreversibly; a fact whose only evidence they were is retracted, but its value stays in the append-only fact ledger. |
 
 Write tools are off by default because an in-process server has no scope or auth layer: the MCP
 server gates these operations behind authenticated scopes, and here the host application is the
