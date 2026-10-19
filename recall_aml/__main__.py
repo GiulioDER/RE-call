@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ from recall_aml.embedding_lock import (
     LockedMultimodalEmbedder,
     embedding_call_lock,
 )
+from recall_aml.rerank_switch import rerank_model
 from recall_aml.retrieval import HostedRetriever
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.service import HostedService
@@ -142,6 +144,14 @@ def build_image_text_extractor(
     )
 
 
+def _env_reranker(behavior: HostedVariant) -> bool:
+    """Whether the reranker serves at startup: ``RECALL_AML_RERANKER`` when set, else the variant."""
+    from recall_aml.rerank_switch import RERANKER_ENV
+    from recall_aml.service import _env_flag
+
+    return _env_flag(RERANKER_ENV, behavior.reranker)
+
+
 def build_app(settings: HostedSettings | None = None) -> Any:
     settings = settings or HostedSettings.from_env()
     behavior = variant(settings.variant_name)
@@ -188,7 +198,10 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         specialist_embedders=specialist_embedders,
     )
     compiler = build_compiler(settings, behavior)
-    reranker = VoyageReranker(model="rerank-2.5", api_key=settings.voyage_api_key)
+    # RK-1: the model is chosen once here; whether a Search reranks is the service's switch.
+    selected_rerank_model = rerank_model(os.environ)
+    reranker = VoyageReranker(model=selected_rerank_model, api_key=settings.voyage_api_key)
+    rerank_on = _env_reranker(behavior)
     multimodal_embedder: MultimodalEmbedder | None = (
         VoyageMultimodalEmbedder(settings.voyage_api_key)
         if behavior.multimodal_native
@@ -212,7 +225,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
             sparse_encoder=sparse_encoder,
             multimodal_embedder=multimodal_embedder,
             specialist_embedders=specialist_embedders,
-            behavior=behavior,
+            behavior=replace(behavior, reranker=rerank_on),
         )
     except BaseException:
         pool.close()
@@ -231,11 +244,12 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         multimodal_embedder=multimodal_embedder,
         specialist_retrievers=specialist_retrievers,
         image_text_extractor=build_image_text_extractor(settings, behavior),
+        rerank_model=selected_rerank_model,
         model_clients_ready=all(
             readiness[name]
             for name in ("embedder_ready",)
             + (("compiler_ready",) if behavior.compiler or behavior.facets else ())
-            + (("reranker_ready",) if behavior.reranker else ())
+            + (("reranker_ready",) if rerank_on else ())
             + (("sparse_ready",) if behavior.learned_sparse else ())
             + (("multimodal_ready",) if behavior.multimodal_native else ())
             + (
