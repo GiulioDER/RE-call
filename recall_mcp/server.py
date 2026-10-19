@@ -1615,9 +1615,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
         Call this before proposing an idea, forming a hypothesis, or repeating past work:
         if a closed decision or falsified hypothesis surfaces, do not re-litigate it. Every hit
-        carries a trust verdict (only `ok` hits support the present state), a calibrated confidence,
+        carries a trust verdict (only `ok` hits are eligible for present-state citation), a calibrated confidence,
         provenance (indexed_at) and validity (superseded_by / valid_until). When `abstained` is
-        true, no present-state answer is supported: say you don't know about the present.
+        true, no present-state evidence is eligible: say you don't know about the present.
         `evidence` says what a present-state answer may cite: rely only on the hits whose chunk_id is
         in `evidence.citable`, and cite those chunk_ids. It covers these hits only, not related
         items or deeper pages of a paged document. `advice` states what to do.
@@ -1627,6 +1627,12 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         `valid_from` and `valid_until`. If its interval or text does not establish that time, report
         only the archived assertion, not that it held then. Historical candidates never support
         a present-state answer and do not expand `evidence.citable`.
+
+        Citable passages passed retrieval trust checks; this does not establish that they
+        answer the question. `query_support` reports semantic checking separately and is
+        `not_checked` here. Establish support for each claim before answering.
+        `calibration_coverage` reports synthetic near-miss diagnostics for the served
+        calibration; missing measurements are unmeasured, not a successful check.
 
         Args:
             query: what to recall (natural language).
@@ -1729,6 +1735,12 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
         This server runs no generator — you are the generator, which is why the prompt is handed
         back rather than consumed.
+
+        Citable passages passed retrieval trust checks; this does not establish that they
+        answer the question. `query_support` reports semantic checking separately and is
+        `not_checked` here. Establish support for each claim before answering.
+        `calibration_coverage` reports synthetic near-miss diagnostics for the served
+        calibration; missing measurements are unmeasured, not a successful check.
 
         Args:
             query: what to recall (natural language).

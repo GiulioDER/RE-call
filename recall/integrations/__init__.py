@@ -6,6 +6,7 @@ itself pulls in nothing heavy — pick the submodule you need, e.g. ``recall.int
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from recall.types import TrustedHit, TrustedResult
@@ -24,6 +25,8 @@ def result_trust_metadata(result: TrustedResult) -> dict[str, Any]:
     """
     return {
         "recall_trust_state": result.trust_state,
+        "recall_query_support": asdict(result.query_support),
+        "recall_calibration_coverage": asdict(result.calibration_coverage),
         "recall_failure_code": result.failure_code,
         "recall_calibrated": result.calibrated,
         "recall_calibration_id": result.calibration_id,

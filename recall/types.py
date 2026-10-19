@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
+from recall.support import CalibrationCoverage, QuerySupport
+
 Authority = Literal[
     "policy",
     "user_confirmed_decision",
@@ -351,6 +353,9 @@ class TrustedResult:
     trust_state: str = "trusted"
     #: The stable `TrustFailureCode` value when degraded, else None. See `recall.trust_policy`.
     failure_code: str | None = None
+
+    query_support: QuerySupport = field(default_factory=QuerySupport)
+    calibration_coverage: CalibrationCoverage = field(default_factory=CalibrationCoverage)
 
     @property
     def calibrated(self) -> bool:

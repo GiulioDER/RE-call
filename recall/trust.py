@@ -71,6 +71,7 @@ from recall.retriever import (
 from recall.scope import Scope, coerce_scope
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates, PgVectorStore
+from recall.support import calibration_coverage
 from recall.unknown_terms import apply_unknown_term_gate, check_unknown_terms
 from recall.trust_policy import (
     TrustFailureCode,
@@ -701,6 +702,7 @@ def _trusted_search(
         dependency_mode=configured_dependency_mode,
         record_metrics=False,
     )
+    trusted = replace(trusted, calibration_coverage=calibration_coverage(store, calibration_id))
     trusted = _with_stage_ms(trusted, "trust_evaluation", trust_started)
     if successor_expansion is not None and successor_expansion.ordering != "pool":
         # `result` is the POST-expansion pool and is still in pool order here, which is exactly

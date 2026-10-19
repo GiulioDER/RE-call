@@ -10,6 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from recall.support import CalibrationCoverage, QuerySupport
 from recall.types import DecisionState
 
 _UNKNOWN_TERM_CHECK_DESCRIPTION = (
@@ -99,15 +100,18 @@ class HistoricalSearchEvidence(BaseModel):
 
 
 class SearchResult(BaseModel):
+    query_support: QuerySupport = Field(default_factory=QuerySupport)
+    calibration_coverage: CalibrationCoverage = Field(default_factory=CalibrationCoverage)
+
     query: str
     decision_state: DecisionState | None = Field(
         default=None,
-        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
+        description="supported | corpus_gap | no_supporting_evidence. Retrieval eligibility only, not semantic answerability; "
         "for the present state. Legacy payloads may omit it and yield null; do not infer "
         "support from hit count.",
     )
     abstained: bool = Field(
-        description="True when no present-state fact is supported. Historical candidates, "
+        description="True when no present-state hit is eligible for citation. Historical candidates, "
         "when present, remain conditional on a validity check.",
     )
     reason: str = Field(description="Why the search abstained; empty otherwise.")
@@ -286,10 +290,13 @@ class EvidenceResult(BaseModel):
     the search; this response is about what may be cited.
     """
 
+    query_support: QuerySupport = Field(default_factory=QuerySupport)
+    calibration_coverage: CalibrationCoverage = Field(default_factory=CalibrationCoverage)
+
     query: str
     decision_state: DecisionState | None = Field(
         default=None,
-        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
+        description="supported | corpus_gap | no_supporting_evidence. Retrieval eligibility only, not semantic answerability; "
         "legacy payloads may omit it and yield null.",
     )
     decision: str = Field(

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 import re
 from typing import Literal, Protocol
@@ -11,6 +11,8 @@ from typing import Literal, Protocol
 from recall.errors import RecallError
 from recall.types import (
     AtomicFact,
+    CalibrationCoverage,
+    QuerySupport,
     DecisionState,
     EvidenceCard,
     TrustedHit,
@@ -113,6 +115,8 @@ class EvidenceBundle:
     #: The stable `TrustFailureCode` value when degraded, else None. See `recall.trust_policy`.
     failure_code: str | None = None
     cards: tuple[EvidenceCard, ...] = ()
+    query_support: QuerySupport = field(default_factory=QuerySupport)
+    calibration_coverage: CalibrationCoverage = field(default_factory=CalibrationCoverage)
 
 
 @dataclass(frozen=True)
@@ -386,6 +390,8 @@ def build_evidence_bundle(
             items=(),
             trust_state=result.trust_state,
             failure_code=result.failure_code,
+            query_support=result.query_support,
+            calibration_coverage=result.calibration_coverage,
         )
     trusted = [hit for hit in result.hits if hit.verdict == "ok"]
     missing_slots: tuple[str, ...] = ()
@@ -411,6 +417,8 @@ def build_evidence_bundle(
                 items=(),
                 trust_state=result.trust_state,
                 failure_code=result.failure_code,
+                query_support=result.query_support,
+                calibration_coverage=result.calibration_coverage,
             )
     elif policy.selection_mode == "beam":
         trusted = _select_beam_hits(trusted, policy)
@@ -475,6 +483,8 @@ def build_evidence_bundle(
         items=tuple(selected),
         trust_state=result.trust_state,
         failure_code=result.failure_code,
+        query_support=result.query_support,
+        calibration_coverage=result.calibration_coverage,
         cards=cards_from_trusted_result(result),
     )
 

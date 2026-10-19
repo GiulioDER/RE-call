@@ -25,9 +25,9 @@ RECALL_SEARCH_DESCRIPTION = (
     "\n"
     "Call this before proposing an idea, forming a hypothesis, or repeating past work:\n"
     "if a closed decision or falsified hypothesis surfaces, do not re-litigate it. Every hit\n"
-    "carries a trust verdict (only `ok` hits support the present state), a calibrated confidence,\n"
+    "carries a trust verdict (only `ok` hits are eligible for present-state citation), a calibrated confidence,\n"
     "provenance (indexed_at) and validity (superseded_by / valid_until). When `abstained` is\n"
-    "true, no present-state answer is supported: say you don't know about the present.\n"
+    "true, no present-state evidence is eligible: say you don't know about the present.\n"
     "`evidence` says what a present-state answer may cite: rely only on the hits whose chunk_id is\n"
     "in `evidence.citable`, and cite those chunk_ids. It covers these hits only, not related\n"
     "items or deeper pages of a paged document. `advice` states what to do.\n"
@@ -37,6 +37,12 @@ RECALL_SEARCH_DESCRIPTION = (
     "`valid_from` and `valid_until`. If its interval or text does not establish that time, report\n"
     "only the archived assertion, not that it held then. Historical candidates never support\n"
     "a present-state answer and do not expand `evidence.citable`."
+    "\n\n"
+    "Citable passages passed retrieval trust checks; this does not establish that they\n"
+    "answer the question. `query_support` reports semantic checking separately and is\n"
+    "`not_checked` here. Establish support for each claim before answering.\n"
+    "`calibration_coverage` reports synthetic near-miss diagnostics for the served\n"
+    "calibration; missing measurements are unmeasured, not a successful check."
 )
 
 RECALL_EVIDENCE_DESCRIPTION = (
@@ -55,6 +61,12 @@ RECALL_EVIDENCE_DESCRIPTION = (
     "\n"
     "This server runs no generator — you are the generator, which is why the prompt is handed\n"
     "back rather than consumed."
+    "\n\n"
+    "Citable passages passed retrieval trust checks; this does not establish that they\n"
+    "answer the question. `query_support` reports semantic checking separately and is\n"
+    "`not_checked` here. Establish support for each claim before answering.\n"
+    "`calibration_coverage` reports synthetic near-miss diagnostics for the served\n"
+    "calibration; missing measurements are unmeasured, not a successful check."
 )
 
 RECALL_INDEX_DESCRIPTION = (

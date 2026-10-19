@@ -25,6 +25,7 @@ from recall.related import RelatedEvidenceResult, trusted_related
 from recall.rerank import COREB_CODE_RERANKER_MODEL
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
+from recall.support import ELIGIBILITY_NOTE
 from recall.trust import decision_state_for, trusted_search
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.types import EvidenceCard, RetrievalResult, TrustedHit, TrustedResult
@@ -711,7 +712,7 @@ def search_memory(
             related_diagnostics.append(f"rejected_related:{related_result.rejected_count}")
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
-    advice = _search_advice_fn(result, hits, reasoning_available)
+    advice = _search_advice_fn(result, hits, reasoning_available) + ELIGIBILITY_NOTE
     evidence_enabled = search_evidence_enabled(values)
     evidence = _search_evidence(result, retrieval.effective_k) if evidence_enabled else None
     historical = _historical_evidence(result, retrieval.effective_k) if evidence_enabled else None
@@ -746,6 +747,8 @@ def search_memory(
         abstained=result.abstained,
         reason=result.reason,
         calibrated=result.calibrated,
+        query_support=result.query_support,
+        calibration_coverage=result.calibration_coverage,
         calibration_id=result.calibration_id,
         calibration_status=result.calibration_status,
         trust_state=result.trust_state,
@@ -888,7 +891,7 @@ def evidence_memory(
     register_evidence_cards_fn(bundle.cards, store=store)
     system, user = render_evidence_prompt(bundle)
     items = [_evidence_item_model_fn(item, related_ids) for item in bundle.items]
-    advice = _evidence_advice_fn(bundle)
+    advice = _evidence_advice_fn(bundle) + ELIGIBILITY_NOTE
     stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
     explanation = None
     if explain:
@@ -930,6 +933,8 @@ def evidence_memory(
         decision=bundle.decision,
         reason_code=bundle.reason_code,
         calibrated=bundle.calibrated,
+        query_support=bundle.query_support,
+        calibration_coverage=bundle.calibration_coverage,
         stale=bundle.stale,
         # From the BUNDLE, not from `result`: one object is the answer to "what may be cited and
         # under what warrant", and reading half of it from a second object is how the two come to

@@ -17,6 +17,7 @@ from typing import Literal
 
 from recall.errors import RecallError
 from recall.evidence import EvidenceBundle, EvidenceItem
+from recall.support import merge_calibration_coverage
 
 
 PROOF_SCHEMA_VERSION = 1
@@ -286,6 +287,10 @@ def _merge_bundles(initial: EvidenceBundle, repair: EvidenceBundle) -> EvidenceB
         trust_state=initial.trust_state,
         failure_code=initial.failure_code,
         cards=initial.cards,
+        query_support=initial.query_support,
+        calibration_coverage=merge_calibration_coverage(
+            initial.calibration_coverage, repair.calibration_coverage
+        ),
     )
 
 
