@@ -220,6 +220,8 @@ def test_evidence_and_facts_answer_in_the_compact_view(envs: tuple[dict[str, str
             "as_of": full_facts["as_of"],
             "facts": [{k: f[k] for k in v["fact"]} for f in full_facts["facts"]],
             "contested": full_facts["contested"],
+            "served_state": full_facts["served_state"],
+            "served_lookups_failed": full_facts["served_lookups_failed"],
         }, "recall_current_facts's compact view is not the contract's projection"
         assert [list(f) for f in compact_facts["facts"]] == [v["fact"]], compact_facts
 

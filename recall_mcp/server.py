@@ -1831,6 +1831,9 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         `sources`, once the store has recorded them; a lite store does so whenever it indexes.
         Values that disagree with no supersession between their memos are listed under
         `contested`, not `facts`: memory holds both and says neither is current.
+        `served_state` is `degraded` when a check against the served memos failed, naming each in
+        `served_lookups_failed`; stated facts may then be missing, so do not read an absence as
+        settled.
         """
         store = await _require(SCOPE_READ, ctx)
         instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
@@ -2874,7 +2877,9 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         "removed" — check that list before assuming a name was actually forgotten. A fact
         applied with `recall_apply_fact` whose only evidence was in these sources is retracted
         with them, so `recall_current_facts` stops listing it; a fact with evidence in a memo
-        that survives stays.
+        that survives stays. Retraction is not erasure: a retracted fact's value, and the
+        evidence cards that cited these sources, stay in the append-only fact ledger as its
+        audit trail. Only the chunks (and staged upload files) are deleted.
 
         Args:
             sources: one or more source values to forget, exactly as they appear in
