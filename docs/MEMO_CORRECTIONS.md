@@ -1,7 +1,9 @@
 # Reliable corrections through the assistant surface
 
 The existing `recall_remember` tool accepts three optional parameters. Calls that omit them retain
-the exact legacy `{memo_id}` success reply and raising refresh failures.
+the exact legacy `{memo_id}` success reply and raising refresh failures. One check is new for them
+too: a `supersedes` target that is not an existing memo file (`target_missing`) or already has a
+successor (`stale_target`) is refused on every call.
 
 * `request_id`: an opaque nonempty string, at most 128 characters. Reuse it only for the same
   text, fact, kind, dates, supersession target and revision precondition. The memo folder journals
@@ -57,6 +59,18 @@ cannot be saved, forgetting raises and leaves the file present. A prepared reque
 memo can finish after rechecking correction preconditions; use explicit forgetting for deletion, since
 a direct filesystem deletion in that interrupted state cannot be distinguished from non-publication.
 The authorship ledger retains reservations and request identities when legacy calls write new memos.
+
+A reservation is not authorship. The ledger records the assistant as author only once its file
+exists, so a file somebody else puts in the folder under a reserved name is never claimed: the
+write, or the retry of an interrupted one, moves to the next free id and leaves that file alone.
+A memo is published with a hard link where the filesystem has them, and with an exclusive create
+otherwise (FAT32 and exFAT, many network shares); neither replaces an existing file. A memo of the
+folder that cannot be read, or is not UTF-8, does not block a correction; one that declares a
+successor in another encoding still counts.
+
+The request journal is bounded. A prepared request is kept until it completes or is forgotten. A
+completed or cancelled request is kept for 30 days and at most 1,000 of them, the newest first;
+past that its request id is treated as new. Retry within that window.
 
 Old memos are retained for historical inspection. This workflow does not infer supersession from
 prose or rewrite imported notes. For those corrections, use the existing `recall_report_stale`

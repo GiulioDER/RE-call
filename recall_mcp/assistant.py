@@ -174,7 +174,7 @@ class AssistantMemos(MemoFolder):
                     try:
                         self.refresh(store, embedder, **refresh_kwargs)
                         path = self.path_of(result["memo_id"])
-                        indexed = path is not None and store.source_raw_hashes().get(str(path)) == receipt["revision"]
+                        indexed = path is not None and store.source_raw_hash(str(path)) == receipt["revision"]
                         receipt["index_state"] = "indexed" if indexed else "failed"
                     except Exception as exc:  # BROAD-CATCH: fail-closed receipt; retry can finish indexing
                         receipt.update(index_state="failed", calibration_status="unavailable",

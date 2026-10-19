@@ -21,13 +21,11 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from recall.atomic_write import atomic_write_bytes
-from recall.lite.memo_requests import cancel_requests, load_ledger, write_memo
+from recall.lite.memo_requests import MEMO_ID, cancel_requests, restore_requests, write_memo
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -36,7 +34,6 @@ if TYPE_CHECKING:
 
 __all__ = ["LEDGER_NAME", "MEMO_ID", "MemoFolder"]
 
-MEMO_ID = re.compile(r"^[a-z]+-\d{4,}$")
 LEDGER_NAME = ".recall-authors.json"
 
 
@@ -67,17 +64,6 @@ class MemoFolder:
             return {}
         data = json.loads(self.ledger_path.read_text(encoding="utf-8"))
         return {str(k): str(v) for k, v in data.get("authors", {}).items()}
-
-    def _record(self, authors: dict[str, str]) -> None:
-        ledger = load_ledger(self.ledger_path)
-        ledger["authors"] = authors
-        body = json.dumps(ledger, indent=1) + "\n"
-        atomic_write_bytes(self.ledger_path, body.encode("utf-8"))
-
-    def _next_number(self, authors: Mapping[str, str]) -> int:
-        stems = [p.stem for p in self.folder.glob("*.md")] if self.folder.is_dir() else []
-        numbers = [int(i.rsplit("-", 1)[1]) for i in (*authors, *stems) if MEMO_ID.match(i)]
-        return max(numbers, default=0) + 1
 
     # -- writes -----------------------------------------------------------------------------------
     def write(
@@ -168,5 +154,12 @@ class MemoFolder:
         path = self.path_of(memo_id)
         if path is None:
             raise ValueError(f"{memo_id!r} is not a memo id")
-        cancel_requests(self.ledger_path, memo_id)
-        path.unlink()
+        previous = cancel_requests(self.ledger_path, memo_id)
+        try:
+            path.unlink()
+        except OSError:
+            # The file is still there (a Windows editor holding it, say): the request it came from
+            # must stay finishable rather than read as forgotten.
+            if path.exists():
+                restore_requests(self.ledger_path, memo_id, previous)
+            raise
