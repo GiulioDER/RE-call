@@ -155,7 +155,7 @@
       }
     },
     "recall_remember": {
-      "description": "Store ONE fact in the user's long-term memory for future sessions. Put dates in the text as YYYY-MM-DD with the weekday and the user's time zone. valid_from/valid_until (YYYY-MM-DD) say when the fact holds; supersedes names a memo_id this fact replaces. fact (optional) is the same fact as {subject, predicate, object}: recall_evidence then returns cards that recall_apply_fact can cite.",
+      "description": "Store ONE fact in the user's long-term memory for future sessions. Put dates in the text as YYYY-MM-DD with the weekday and the user's time zone. valid_from/valid_until (YYYY-MM-DD) say when the fact holds; supersedes names a memo_id this fact replaces. fact (optional) is the same fact as {subject, predicate, object}: recall_evidence then returns cards that recall_apply_fact can cite. Corrections should pass supersedes and the revision returned by search or a write receipt as expected_revision. Reuse request_id only to retry the same write. include_receipt returns write, indexing and calibration readiness separately; old calls still return only memo_id. A correction target that already has a successor is refused.",
       "parameters": {
         "properties": {
           "text": {
@@ -202,6 +202,21 @@
             ],
             "title": "Fact",
             "type": "object"
+          },
+          "request_id": {
+            "default": "",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "expected_revision": {
+            "default": "",
+            "title": "Expected Revision",
+            "type": "string"
+          },
+          "include_receipt": {
+            "default": false,
+            "title": "Include Receipt",
+            "type": "boolean"
           }
         },
         "required": [
@@ -251,6 +266,7 @@
         "chunk_id",
         "verdict",
         "text",
+        "revision",
         "valid_from",
         "valid_until",
         "superseded_by"

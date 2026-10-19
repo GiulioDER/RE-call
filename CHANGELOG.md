@@ -13,6 +13,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   measurements remain unmeasured and report failures are unavailable. Existing retrieval decisions,
   certification and citation eligibility are unchanged. The compact assistant surface and CLI
   expose the same distinction. No verifier or additional model call is enabled.
+- Add optional memo correction receipts, revision preconditions and persistent request identities;
+  refuse a missing or already superseded correction target on every call, legacy calls included;
+  calls without the new parameters keep the `{memo_id}` reply.
 
 ### Security
 

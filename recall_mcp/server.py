@@ -3084,6 +3084,9 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
         valid_until: str = "",
         supersedes: str = "",
         fact: Annotated[dict[str, Any] | None, WithJsonSchema(STATED_FACT_SCHEMA)] = None,
+        request_id: str = "",
+        expected_revision: str = "",
+        include_receipt: bool = False,
     ) -> str:
         state = _state(ctx)
         store = await _require(SCOPE_WRITE, ctx)
@@ -3098,6 +3101,9 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
                     valid_until or None,
                     memo_ref(supersedes),
                     fact or None,
+                    request_id=request_id or None,
+                    expected_revision=expected_revision or None,
+                    include_receipt=include_receipt,
                     **_policy(state, store),
                 )
             )
