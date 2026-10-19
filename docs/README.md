@@ -64,6 +64,7 @@ Lite currently requires the source build; the published `0.14.0` wheel predates 
 
 | Document | Use it for |
 |---|---|
+| [Benchmark scorecard](https://giulioder.github.io/RE-call/benchmarks.html) | Published benchmark families, dated positions, operator independence, and retained-evidence limits. |
 | [EVIDENCE.md](EVIDENCE.md) | The shortest evidence path: claims, measurements, limits, and withdrawn claims. |
 | [../results/FINDINGS.md](../results/FINDINGS.md) | What the measurements establish, where they stop, and which claims were corrected. |
 | [../results/README.md](../results/README.md) | Map of committed result summaries and compact artifacts. |
