@@ -1,4 +1,4 @@
-# RE-call Hosted 1.0: method, evidence and integration
+# RE-call Hosted 1.0: method and integration
 
 ## Product identity
 
@@ -12,14 +12,10 @@ The service is intended to remain reachable and configuration frozen for at leas
 an AML submission. A release candidate must not be submitted until the contract, isolation,
 concurrency, latency, persistence, and recovery gates in the committed preregistration pass.
 
-## Method and evidence
+## Method
 
 RE-call Hosted stores what a user said and returns it as dated evidence. It never writes an
-answer. Six design choices define the method, each listed with the measurement that supports it.
-Every number comes from the author's own run on a public benchmark and is stated in a committed
-pre-registration or result record. The raw run outputs are not in the repository, and none of
-these numbers is an AML score. Other public results are on the project's
-[benchmark page](https://giulioder.github.io/RE-call/benchmarks.html).
+answer. Six design choices define the method.
 
 ```mermaid
 flowchart LR
@@ -47,38 +43,19 @@ flowchart LR
   img -.-> leg
 ```
 
-1. Compiled records hold only source text the server verified (see [Add](#add)). In the admission
-   run, 1,230 records from 194 of 196 sessions carried no invalid span and no unsupported claim
-   ([record](results/2026-09-19-aml-anchor-compiler-v3-admission.md)). Sending the earlier records
-   without their identifiers took later-call fallbacks from 7 to 0 and accepted records per call
-   from 4.06 to 6.69 ([record](preregistrations/2026-09-25-c9-prior-record-ids.md)).
+1. Compiled records hold only source text the server verified: the model cites anchor identifiers
+   the server created, and the server builds every quote from them (see [Add](#add)).
 2. A deterministic router ranks each query in one embedding space, so the ranking never mixes
-   scores from different models. On 1,535 LoCoMo questions, choosing the better of Code4
-   and Context4 for every query with hindsight would add at most 1.76 points of turn hit@10, and
-   routing with gpt-4o-mini lost 0.91 [-1.69, -0.13] against always using Code4, so Search runs
-   no model to route
-   ([record](preregistrations/2026-09-24-c9-code4-context4-routing-headroom.md)).
+   scores from different models, and the routing itself uses no model.
 3. Every item carries the date a reader needs, including the date a relative phrase refers to.
-   The date header added 53.75 points [+48.12, +59.38] on LoCoMo temporal questions over undated
-   windows, with Coding MRR unchanged
-   ([record](preregistrations/2026-09-25-aml-c9-window-format.md)), and resolving relative phrases
-   added 14.69 [+9.06, +20.31] more
-   ([record](preregistrations/2026-09-25-aml-c9-relative-dates-and-conflict-adjacency.md)). Both
-   used DeepSeek readers. The second one copied relative phrases instead of
-   computing dates, so a reader that computes them would gain less, and on BEAM that change had no
-   measurable effect.
 4. Each Add builds its own atomic views, so a Search between two Adds already uses them, and the
-   rescue cannot change the fused top five. On 187 coding queries it was active on every query
-   with no fallback, and the top five matched the rescue-off ranking on all 187
-   ([record](preregistrations/2026-09-23-aml-c9-add-time-atomizer.md)).
+   rescue cannot change the fused top five.
 5. The model cannot draw a graph edge: edges come only from verified evidence spans, and
    promotion can only reorder windows that retrieval already found. Each of these rules, and the
    raw ranking served on failure, has a mutation test that fails when the rule is broken
    ([receipts](results/aml-graph-v1/RED_PROOF_RECEIPTS.md)).
 6. The image leg searches wherever the user's memory holds images, not only when a question names
-   a visual word. On 291 MemEye questions that name no image, this raised debiased exact match by
-   0.182 [+0.135, +0.229], with the answer step capped at 30 images
-   ([record](preregistrations/2026-09-25-aml-c9-multimodal-scope-and-dates.md)).
+   a visual word, and leaves the ranking of a user without images unchanged.
 
 ## API
 
@@ -356,37 +333,7 @@ PostgreSQL row level security applies the tenant inside each pooled transaction.
 exact `session_id` only as evidence metadata so a result can identify its source session. The Delete
 endpoint erases the primary tenant and both multimodal sidecars without affecting another user.
 
-## Measured multimodal admission result
-
-This section records how the image leg was chosen; no AML Full ran these variants. `MM0_caption`
-keeps the supplied text and drops images, `MM1_preserve` stores and returns the original images,
-and `MM2_dual` adds the `voyage-multimodal-3.5` leg that C9 now carries.
-
-Measured on 2026-09-20 at exact RE-call commit
-`61dc7b8d0cbb8714904a1e07e40819c76a1c1971`, the frozen public MemEye Brand pilot completed all
-three arms and passed its independent audit. The mechanical verdict was `NO_GAIN`.
-
-`MM0_caption`, `MM1_preserve`, and `MM2_dual` achieved mean debiased exact match of `0.4655`,
-`0.4310`, and `0.4741`, respectively. All three achieved any-clue Recall at 10 of `0.9655` and
-Recall at 100 of `1.0`. Dual retrieval improved answer exact match over preservation by `0.0431`,
-but it produced no Recall at 10 gain. Preservation regressed answer exact match by `0.0345`
-relative to captions. Every contract, isolation, cleanup, identity, and response-budget check
-passed.
-
-This is directional evidence from one public MemEye scenario, not an AML hosted result or
-leaderboard score. The frozen gate did not authorize scientific promotion or the full
-eight-scenario follow-up. The user nevertheless retained `MM2_dual` as the preferred operational
-multimodal candidate because it had the strongest measured answer accuracy without reducing
-Recall at 10 or Recall at 100. This explicit operational selection preserves the `NO_GAIN`
-verdict and does not claim that the registered retrieval gate passed. The selector and audit
-commands are in
-[`2026-09-20-aml-multimodal-memeye-brand-v2.md`](preregistrations/2026-09-20-aml-multimodal-memeye-brand-v2.md).
-
-### Routed specialist use and embedding reuse
-
-`C7_routed_specialists` incorporates the retained MM2 behavior as its visual route while keeping
-Code4 as the conservative default and Context4 for explicit conversational memory. C8 and C9 keep
-this routing.
+## Embedding cache
 
 Hosted deployments may opt into the shared content addressed cache with:
 
