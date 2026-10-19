@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -1030,16 +1030,7 @@ class GenerationStore(PgVectorStore):
         )
         rows += self._legacy_rows_for_identifiers(identifiers)
         requested = set(identifiers)
-        resolved: dict[str, list[str]] = {}
-        for source, file in rows:
-            for identifier in {file, source} & requested:
-                # De-duplicate, as the base implementation does. Now that this spans every
-                # generation and the legacy table, one source legitimately appears more than
-                # once: under different `metadata->>'file'` values in different generations, or
-                # in both recall_chunks_v1 and the adopted v0.8 table.
-                bucket = resolved.setdefault(str(identifier), [])
-                if str(source) not in bucket:
-                    bucket.append(str(source))
+        resolved = _bucket_sources(rows, requested)
         unresolved = requested - set(resolved)
         if unresolved:
             # Chunk rows are not the corpus. An object that chunks to nothing has no rows, and
@@ -1306,21 +1297,9 @@ class GenerationStore(PgVectorStore):
         Not `sources_for_identifiers`, which spans every generation on purpose (erasure must reach
         them all): a memo the promoted generation left out is not served even while a retired
         generation still holds its rows, and is served again after a rollback to one that does.
+        The keys of `served_sources_for_identifiers`, so the two can never disagree.
         """
-        wanted = list(dict.fromkeys(identifiers))
-        if not wanted:
-            return set()
-        generation_id = self._generation_id()
-        rows = self._with_retry(
-            lambda conn: conn.execute(
-                "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s "
-                "AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
-                (self._tenant, generation_id, wanted, wanted),
-            ).fetchall()
-        )
-        requested = set(wanted)
-        return {str(value) for row in rows for value in row if value is not None and str(value) in requested}
+        return set(self.served_sources_for_identifiers(identifiers))
 
     def served_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve identifiers (`file` or `source_uri`) to source URIs in the pinned generation only.
@@ -1344,14 +1323,7 @@ class GenerationStore(PgVectorStore):
                 (self._tenant, generation_id, wanted, wanted),
             ).fetchall()
         )
-        requested = set(wanted)
-        resolved: dict[str, list[str]] = {}
-        for source, file in rows:
-            for identifier in {file, source} & requested:
-                bucket = resolved.setdefault(str(identifier), [])
-                if str(source) not in bucket:
-                    bucket.append(str(source))
-        return resolved
+        return _bucket_sources(rows, set(wanted))
 
     def chunk_by_id(self, chunk_id: str) -> Chunk | None:
         """Compatibility wrapper over the generation scoped batch accessor."""
@@ -1452,3 +1424,18 @@ class GenerationStore(PgVectorStore):
 
     def project_file_hashes(self, project: str) -> dict[str, str]:
         raise NotImplementedError("project_file_hashes reads the legacy chunk table only")
+
+
+def _bucket_sources(rows: Iterable[Sequence[Any]], requested: set[str]) -> dict[str, list[str]]:
+    """`{identifier: [source, ...]}` from `(source, file)` rows, for the requested identifiers.
+
+    Each source once per identifier: across generations and the adopted v0.8 table one source
+    legitimately appears more than once, under different `metadata->>'file'` values.
+    """
+    resolved: dict[str, list[str]] = {}
+    for source, file in rows:
+        for identifier in {file, source} & requested:
+            bucket = resolved.setdefault(str(identifier), [])
+            if str(source) not in bucket:
+                bucket.append(str(source))
+    return resolved

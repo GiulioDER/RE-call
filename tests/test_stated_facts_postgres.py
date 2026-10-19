@@ -489,6 +489,72 @@ def test_p15_a_namesake_in_a_retained_generation_does_not_block_a_supersession(
     assert got == [], f"a namesake in a retained generation kept a superseded value current: {got}"
 
 
+def test_p16_a_promote_between_two_lookups_does_not_mix_generations(
+    manager: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts_postgres.py::test_p16_a_promote_between_two_lookups_does_not_mix_generations.
+
+    Review of PR 946, finding 3: presence, names, content hashes and supersession each read the
+    ACTIVE generation, so a promote between two of them answered with one generation's names and
+    another's content. Here corpus-v2, which edits the door code, is promoted right after the
+    first lookup of a read that began on corpus-v1; every answer must still be corpus-v1's. Red
+    against cd93af5fc, the unpinned lookups in `served_sources` (recall/fact_retraction.py): fails
+    on "a promote between two lookups mixed generations: []" (v1's card checked against v2's hash).
+    """
+    from recall.generation_store import GenerationStore
+
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", uri(manager, "memory"))
+    promote(manager, MEMOS, "corpus-v1")
+    moved: list[str] = []
+
+    def promote_after(name: str) -> None:
+        real = getattr(GenerationStore, name)
+
+        def first_lookup_then_promote(self: Any, identifiers: list[str]) -> Any:
+            answer = real(self, identifiers)
+            if not moved:
+                edited = {**MEMOS, "memory/door.md": body([{**DOOR, "object": "9001"}])}
+                moved.append(promote(manager, edited, "corpus-v2"))
+            return answer
+
+        monkeypatch.setattr(GenerationStore, name, first_lookup_then_promote)
+
+    for name in ("served_identifiers", "served_sources_for_identifiers"):
+        promote_after(name)
+    with served(manager) as store:
+        got = listed(store)
+    assert moved, "no lookup ran, so no promote came between two"
+    assert got == [("4512", ("memory/door.md",))], f"a promote between two lookups mixed generations: {got}"
+
+
+def test_p17_a_failed_lookup_is_reported_as_degraded(manager: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Node tests/test_stated_facts_postgres.py::test_p17_a_failed_lookup_is_reported_as_degraded.
+
+    Review of PR 946, finding 2: since test_p14 a failed content lookup lists no stated fact, and
+    `recall_current_facts` said nothing, so an outage read as a memory that holds no such fact. It
+    now answers `served_state` `degraded` and names the lookup; a healthy read answers `ok`. Red
+    against cd93af5fc, `current_facts_memory` (recall_mcp/provenance.py) with no marker: fails on
+    "a failed content lookup was not reported: (None, None)".
+    """
+    from recall.generation_store import GenerationStore
+
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", uri(manager, "memory"))
+    promote(manager, MEMOS, "corpus-v1")
+    with served(manager) as store:
+        healthy = current_facts_memory(store)
+
+    def timed_out(self: object) -> dict[str, str]:
+        raise TimeoutError("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(GenerationStore, "source_raw_hashes", timed_out)
+    with served(manager) as store:
+        out = current_facts_memory(store)
+    marker = (out.get("served_state"), out.get("served_lookups_failed"))
+    assert marker == ("degraded", ["content"]), f"a failed content lookup was not reported: {marker}"
+    assert (healthy.get("served_state"), healthy.get("served_lookups_failed")) == ("ok", [])
+    assert out["facts"] == [] and healthy["facts"], "the stated fact was not hidden only by the failure"
+
+
 @pytest.fixture(autouse=True)
 def _no_cache(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("RECALL_EMBED_CACHE", "off")

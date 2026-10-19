@@ -1831,6 +1831,9 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         `sources`, once the store has recorded them; a lite store does so whenever it indexes.
         Values that disagree with no supersession between their memos are listed under
         `contested`, not `facts`: memory holds both and says neither is current.
+        `served_state` is `degraded` when a check against the served memos failed, naming each in
+        `served_lookups_failed`; stated facts may then be missing, so do not read an absence as
+        settled.
         """
         store = await _require(SCOPE_READ, ctx)
         instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None

@@ -81,7 +81,7 @@
       }
     },
     "recall_current_facts": {
-      "description": "Return the tenant scoped current projection of the append only fact ledger.\n\nFacts a memo states in its `recall_graph` frontmatter appear here, with the memo in\n`sources`, once the store has recorded them; a lite store does so whenever it indexes.\nValues that disagree with no supersession between their memos are listed under\n`contested`, not `facts`: memory holds both and says neither is current.",
+      "description": "Return the tenant scoped current projection of the append only fact ledger.\n\nFacts a memo states in its `recall_graph` frontmatter appear here, with the memo in\n`sources`, once the store has recorded them; a lite store does so whenever it indexes.\nValues that disagree with no supersession between their memos are listed under\n`contested`, not `facts`: memory holds both and says neither is current.\n`served_state` is `degraded` when a check against the served memos failed, naming each in\n`served_lookups_failed`; stated facts may then be missing, so do not read an absence as\nsettled.",
       "parameters": {
         "properties": {
           "as_of": {
@@ -140,7 +140,7 @@
       }
     },
     "recall_forget_memo": {
-      "description": "Delete one memo from long-term memory by memo_id.",
+      "description": "Delete one memo from long-term memory by memo_id. A fact it alone supported is retracted, but its value stays in the append-only fact ledger.",
       "parameters": {
         "properties": {
           "memo_id": {
@@ -286,7 +286,9 @@
       "top": [
         "as_of",
         "facts",
-        "contested"
+        "contested",
+        "served_state",
+        "served_lookups_failed"
       ],
       "fact": [
         "fact_id",

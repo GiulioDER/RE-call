@@ -16,10 +16,11 @@ from. Two things take a memo away, and they are treated differently on purpose:
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from functools import cache
 import hashlib
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from recall.observability import get_logger
 
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
     from recall.types import EvidenceCard
 
 _log = get_logger("fact_retraction")
+_P = ParamSpec("_P")
+_V = TypeVar("_V")
 
 #: The variable naming the controller role's DSN; `recall_mcp.provenance` reads the same one.
 FACT_WRITE_DSN_ENV = "RECALL_FACT_WRITE_DSN"
@@ -131,58 +134,119 @@ def prepare_retraction(
     return retract
 
 
-def served_sources(store: object) -> ServedSources | None:
+def _settled(fn: Callable[_P, _V]) -> Callable[_P, _V]:
+    """`fn` run once per argument tuple, its failure remembered like its answer.
+
+    `functools.cache` keeps no exception, so a lookup that timed out would be run, and time out,
+    again for every check that reads it; here the second caller gets the same error at once.
+    """
+    outcomes: dict[tuple[object, ...], tuple[_V | None, Exception | None]] = {}
+
+    def call(*args: _P.args, **kwargs: _P.kwargs) -> _V:
+        if args not in outcomes:
+            try:
+                outcomes[args] = (fn(*args, **kwargs), None)
+            except Exception as exc:  # BROAD-CATCH: error-translation  # kept and raised to every caller
+                outcomes[args] = (None, exc)
+        value, error = outcomes[args]
+        if error is not None:
+            raise error
+        return value  # type: ignore[return-value]
+
+    return call
+
+
+def served_sources(store: object, *, failures: list[str] | None = None) -> ServedSources | None:
     """The memo names `store` serves now, with their content, supersession and stating rule on a
     lite or PostgreSQL store; None without a lookup. On a generation store every answer is the
-    SERVED generation's: names resolve through `served_sources_for_identifiers` (the pinned
-    generation), not `sources_for_identifiers`, which spans every generation for erasure, and
-    `source_raw_hashes` reads the served one, so a stated card lives only while that generation
-    holds the content it recorded.
+    SERVED generation's, and ONE generation's: the first lookup reads which generation the store
+    serves (pinned, fixed, else active) and every lookup is pinned to it, so a promote between two
+    lookups cannot pair one generation's names with another's content. Names resolve through
+    `served_sources_for_identifiers`, not `sources_for_identifiers`, which spans every generation
+    for erasure, so a stated card lives only while that generation holds the content it recorded.
+    Presence is the keys of the same resolution, so one query answers both.
 
     Presence and supersession fail open: when those lookups error every name counts as served and
     unsuperseded, so an outage shows applied facts as the ledger alone would rather than hiding
     all of them. A stated card's two checks, admission and content, fail CLOSED: stated facts are
     recorded with no review, so one whose content cannot be checked is not shown (review of PR 935,
     where a timed-out hash lookup brought an edited memo's old value back beside its new one).
+    Either way the answer is incomplete, so each failed lookup is named in `failures` (`presence`,
+    `supersession`, `admission`, `content`) for the caller to report (`recall_current_facts`'s
+    `served_state`).
     """
     lookup = getattr(store, "served_identifiers", None)
     if not callable(lookup):
         return None
 
-    @cache
-    def served(names: frozenset[str]) -> Collection[str]:
-        try:
-            return {str(name) for name in lookup(sorted(names))}
-        except Exception:  # BROAD-CATCH: fail-open  # the ledger's own answer, without hiding
-            _log.exception("serving lookup for %d memo name(s) failed; hiding no fact", len(names))
-            return names
+    def failed(what: str) -> None:
+        if failures is not None and what not in failures:
+            failures.append(what)
 
     from recall.lite import LiteStore
     from recall.store import PgVectorStore
 
     if not isinstance(store, (LiteStore, PgVectorStore)):
-        return served
+
+        @cache
+        def plain(names: frozenset[str]) -> Collection[str]:
+            try:
+                return {str(name) for name in lookup(sorted(names))}
+            except Exception:  # BROAD-CATCH: fail-open  # the ledger's own answer, without hiding
+                _log.exception("serving lookup for %d memo name(s) failed; hiding no fact", len(names))
+                failed("presence")
+                return names
+
+        return plain
     from recall.provenance_controller import ServedState
+    from recall.stated_facts import stating_rule
 
     # The served generation only on a generation store; a lite file or the legacy table has one
-    # set of rows, so its erasure resolver already answers for what it serves.
+    # set of rows, so its erasure resolver already answers for what it serves, and its
+    # `served_identifiers` is that resolver's keys.
     resolve = getattr(store, "served_sources_for_identifiers", None) or store.sources_for_identifiers
+    pin = getattr(store, "pin_generation", None)
 
-    @cache
+    @_settled
+    def generation() -> str:
+        return str(store.generation_id)
+
+    def pinned() -> AbstractContextManager[object]:
+        return pin(generation()) if callable(pin) else nullcontext()
+
+    @_settled
     def resolved_names(names: frozenset[str]) -> dict[str, list[str]]:
-        return resolve(sorted(names))
+        with pinned():
+            return dict(resolve(sorted(names)))
+
+    @_settled
+    def raw_hashes() -> dict[str, str]:
+        with pinned():
+            return store.source_raw_hashes()
+
+    @_settled
+    def supersession() -> tuple[dict[str, str], Mapping[str, Any]]:
+        with pinned():
+            edges, _unresolved, candidates = store.supersession_all()
+        return edges, candidates
+
+    # Once per read: the rule resolves every prefix on disk.
+    rule = _settled(lambda: stating_rule(store))
 
     @cache
-    def raw_hashes() -> dict[str, str]:
-        return store.source_raw_hashes()
+    def served(names: frozenset[str]) -> Collection[str]:
+        try:
+            return set(resolved_names(names))
+        except Exception:  # BROAD-CATCH: fail-open  # the ledger's own answer, without hiding
+            _log.exception("serving lookup for %d memo name(s) failed; hiding no fact", len(names))
+            failed("presence")
+            return names
 
     @cache
     def content_hashes(names: frozenset[str]) -> dict[str, frozenset[str]] | None:
-        from recall.stated_facts import stating_rule
-
         try:
-            rule = stating_rule(store)
-            if isinstance(rule, str):
+            admits = rule()
+            if isinstance(admits, str):
                 return {}
             resolved = resolved_names(names)
             raw = raw_hashes()
@@ -191,11 +255,12 @@ def served_sources(store: object) -> ServedSources | None:
             # memo's old value back as current whenever this lookup timed out while admission,
             # computed from the same cached names, still passed.
             _log.exception("content lookup for %d memo name(s) failed; listing no stated fact", len(names))
+            failed("content")
             return {}
         return {
             # Admission and content must come from the same absolute source. A relative
             # alias can also resolve to an excluded namesake with a different hash.
-            name: frozenset(raw[source] for source in sources if raw.get(source) and rule.admits(name, source))
+            name: frozenset(raw[source] for source in sources if raw.get(source) and admits.admits(name, source))
             for name, sources in resolved.items()
         }
 
@@ -203,18 +268,17 @@ def served_sources(store: object) -> ServedSources | None:
     def stated_admitted(names: frozenset[str]) -> frozenset[str]:
         """The names whose memos the operator's rule lets state facts now. Fails CLOSED: a rule
         that cannot be computed admits nothing, so no memo states facts on an error."""
-        from recall.stated_facts import stating_rule
-
         try:
-            rule = stating_rule(store)
-            if isinstance(rule, str) or not names:
+            admits = rule()
+            if isinstance(admits, str) or not names:
                 return frozenset()
             resolved = resolved_names(names)
         except Exception:  # BROAD-CATCH: fail-closed  # no stated fact is current on an error
             _log.exception("stating rule lookup failed; listing no stated fact")
+            failed("admission")
             return frozenset()
         return frozenset(
-            name for name, sources in resolved.items() if any(rule.admits(name, s) for s in sources)
+            name for name, sources in resolved.items() if any(admits.admits(name, s) for s in sources)
         )
 
     @cache
@@ -227,15 +291,13 @@ def served_sources(store: object) -> ServedSources | None:
         sorting after an admitted claimant would displace it and keep the old value current.
         """
         try:
-            from recall.stated_facts import stating_rule
-
             # Only admitted memos can retire facts, so with stating off nothing can be retired, and
             # the store's supersession graph is not asked at all: that lookup would otherwise run on
             # every read of every PostgreSQL deployment that never turned stating on.
-            rule = stating_rule(store)
-            if isinstance(rule, str):
+            admits = rule()
+            if isinstance(admits, str):
                 return frozenset()
-            edges, _unresolved, candidates = store.supersession_all()
+            edges, candidates = supersession()
             claims = {
                 name: {claimant for claimant, _when in candidates.get(name, ())} | {edges[name]}
                 for name in names
@@ -246,10 +308,11 @@ def served_sources(store: object) -> ServedSources | None:
             # Ambiguous authority cannot retire another memo's facts.
             admitted = frozenset(
                 name for name, sources in claimants.items()
-                if sources and all(rule.admits(name, source) for source in sources)
+                if sources and all(admits.admits(name, source) for source in sources)
             )
         except Exception:  # BROAD-CATCH: fail-open  # no memo's facts are retired
             _log.exception("supersession lookup failed; retiring no memo's facts")
+            failed("supersession")
             return frozenset()
         return frozenset(name for name, group in claims.items() if group & admitted)
 
