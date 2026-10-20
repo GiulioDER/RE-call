@@ -96,6 +96,8 @@ from recall_aml.temporal_render import RENDER_VERSIONS, resolve_relative_times
 from recall_aml.window_compose import ADD_DIGEST_CHARS, compose_items
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
+from recall_aml.rerank_switch import RERANKER_ENV
+from recall_aml.feedback_guard import FEEDBACK_GUARD_ENV, AskedQuestions, filter_feedback
 from recall_aml.forget import (
     FORGET_DETECTOR,
     FORGET_ENV,
@@ -500,9 +502,11 @@ class HostedService:
         multimodal_embedder: MultimodalEmbedder | None = None,
         specialist_retrievers: dict[str, HostedRetriever] | None = None,
         image_text_extractor: ImageTextExtractor | None = None,
+        rerank_model: str | None = None,
     ) -> None:
         self._repository = repository
         self._image_text_extractor = image_text_extractor
+        self.rerank_model = rerank_model
         self._compiler = compiler
         self._retriever = retriever
         self._context_chars = context_chars
@@ -530,10 +534,12 @@ class HostedService:
             self.relative_times_render,
             self.speaker_marks,
             self.session_coalesce,
+            self.reranker_enabled,
             self.same_subject_order,
             self.image_text_leg,
             self.image_text_shown,
             self.last_window_append,
+            self.feedback_guard,
             self.stop_on_credit_exhausted,
             self.forget_mode,
             self.forget_gate,
@@ -578,6 +584,8 @@ class HostedService:
         self._local_tenant_locks: dict[str, asyncio.Lock] = local_locks
         #: Per-user mutation queues, used only when ``tenant_lock_wait_seconds`` is set.
         self._tenant_gates: dict[str, _TenantGate] = {}
+        #: ST-1a: the questions each tenant was searched with, kept while the feedback guard is on.
+        self._asked_questions = AskedQuestions()
         self._stopping = False
 
     async def _request_lock(
@@ -690,6 +698,21 @@ class HostedService:
         )
         if receipt is not None:
             return AddResponse.model_validate_json(receipt)
+        if self.feedback_guard and request.messages:
+            # ST-1a: a record of an earlier answer that reports a failure, about a question this
+            # tenant was searched with, is not stored. Every other message, and the whole Add when
+            # nothing is such a record, passes through unchanged.
+            screened = filter_feedback(
+                request.messages, asked=lambda question: self._asked_questions.asked(tenant, question)
+            )
+            if screened.dropped:
+                log.info(
+                    "hosted_add_feedback_dropped dropped=%d kept=%d session_digest=%s",
+                    screened.dropped,
+                    len(screened.kept),
+                    session_digest(request.session_id)[:16],
+                )
+                request = request.model_copy(update={"messages": screened.kept})
         if not request.messages:
             # Every message was blank and was dropped at validation. There is nothing to store,
             # and refusing would fail the sample permanently, so the Add is durable and empty.
@@ -1212,6 +1235,8 @@ class HostedService:
     async def search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)
         query_text = content_text(request.query)
+        if self.feedback_guard:
+            self._asked_questions.remember(tenant, query_text)
         started = time.perf_counter()
         facet_fallback = False
         last_windows_added = 0
@@ -1262,7 +1287,7 @@ class HostedService:
                 store,
                 query_text,
                 facets,
-                rerank=self._behavior.reranker,
+                rerank=self.reranker_enabled,
                 learned_sparse=self._behavior.learned_sparse,
                 code_aware=self._behavior.code_aware,
                 canonical_bm25=self._behavior.canonical_bm25,
@@ -1553,8 +1578,12 @@ class HostedService:
                 reranker_attempted=run.reranker_attempted,
                 reranker_completed=run.reranker_completed,
                 reranker_provider="voyage" if run.reranker_attempted else "none",
+                # RK-1: the model the service loaded, not the config default (which named
+                # rerank-2.5 on every header while rerank-3 served).
                 reranker_model=(
-                    RERANK_MODEL.split(":", 1)[1] if run.reranker_attempted else "none"
+                    (self.rerank_model or RERANK_MODEL.split(":", 1)[1])
+                    if run.reranker_attempted
+                    else "none"
                 ),
                 candidate_input_count=run.candidate_input_count,
                 candidate_output_count=run.candidate_output_count,
@@ -1873,6 +1902,14 @@ class HostedService:
         return _env_flag("RECALL_AML_LAST_WINDOW", self._behavior.last_window_append)
 
     @property
+    def feedback_guard(self) -> bool:
+        """``RECALL_AML_FEEDBACK_GUARD`` (1/0): drop failed answer-feedback records at Add.
+
+        Off unless set (``recall_aml.feedback_guard``); no variant turns it on.
+        """
+        return _env_flag(FEEDBACK_GUARD_ENV, False)
+
+    @property
     def forget_mode(self) -> ForgetMode:
         """``RECALL_AML_FORGET`` (off, drop, stub, annotate) when set, else the variant's.
 
@@ -1997,6 +2034,11 @@ class HostedService:
         return _env_flag("RECALL_AML_SESSION_COALESCE", self._behavior.session_coalesce)
 
     @property
+    def reranker_enabled(self) -> bool:
+        """RK-1: ``RECALL_AML_RERANKER`` (1/0) when set, else the variant's ``reranker``."""
+        return _env_flag(RERANKER_ENV, self._behavior.reranker)
+
+    @property
     def image_text_build(self) -> bool:
         """``RECALL_AML_IMAGE_TEXT_BUILD`` (1/0) when set, else the variant's setting."""
         return _env_flag("RECALL_AML_IMAGE_TEXT_BUILD", self._behavior.image_text_build)
@@ -2034,7 +2076,7 @@ class HostedService:
         components = {
             "compiler": self._behavior.compiler,
             "facets": self._behavior.facets,
-            "reranker": self._behavior.reranker,
+            "reranker": self.reranker_enabled,
             "learned_sparse": self._behavior.learned_sparse,
             "code_aware": self._behavior.code_aware,
             "graph_sidecar": self._behavior.graph_sidecar,
