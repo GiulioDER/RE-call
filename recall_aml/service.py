@@ -53,6 +53,7 @@ from recall_aml.models import (
     SearchRequest,
     SearchResponse,
     TaskType,
+    TextContentPart,
 )
 from recall_aml.multimodal import (
     MULTIMODAL_EMBEDDING_MODEL,
@@ -141,6 +142,8 @@ MAX_CORPUS_STATUS_CACHE_ENTRIES = 1_024
 #: Search of an image tenant; under the ``dual`` scope, every Search). MM-1 measured its cost at
 #: +390 ms median and +2.7 s p90.
 OFF_ROUTE_VISUAL_LEG_SECONDS = 15.0
+#: How long a healthy ``/health`` answer is shared between callers.
+HEALTH_CACHE_SECONDS = 5.0
 
 
 FORGET_GATE_ENV = "RECALL_AML_FORGET_GATE"
@@ -586,6 +589,8 @@ class HostedService:
         self._tenant_gates: dict[str, _TenantGate] = {}
         #: ST-1a: the questions each tenant was searched with, kept while the feedback guard is on.
         self._asked_questions = AskedQuestions()
+        self._health_cache: tuple[float, dict[str, object]] | None = None
+        self._health_lock = asyncio.Lock()
         self._stopping = False
 
     async def _request_lock(
@@ -748,7 +753,10 @@ class HostedService:
             and not self._behavior.context_specialist
         ):
             if self._behavior.multimodal_preserve:
-                prepared = prepare_messages(
+                # Off the event loop: each image is decoded, hashed and opened with Pillow (and
+                # resized past Voyage's pixel cap), which stalled every concurrent request.
+                prepared = await asyncio.to_thread(
+                    prepare_messages,
                     normalized_messages,
                     request_id=request.request_id,
                     session_id=request.session_id,
@@ -1235,6 +1243,9 @@ class HostedService:
     async def search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)
         query_text = content_text(request.query)
+        query_has_text = isinstance(request.query, str) or any(
+            isinstance(part, TextContentPart) for part in request.query
+        )
         if self.feedback_guard:
             self._asked_questions.remember(tenant, query_text)
         started = time.perf_counter()
@@ -1287,7 +1298,10 @@ class HostedService:
                 store,
                 query_text,
                 facets,
-                rerank=self.reranker_enabled,
+                # An image-only query reaches the text leg as the "[image evidence]"
+                # placeholder; reranking text against that string only adds noise and a
+                # provider call, so such a Search keeps the fused order.
+                rerank=self.reranker_enabled and query_has_text,
                 learned_sparse=self._behavior.learned_sparse,
                 code_aware=self._behavior.code_aware,
                 canonical_bm25=self._behavior.canonical_bm25,
@@ -1440,7 +1454,14 @@ class HostedService:
                 visual_route
                 or (
                     scope != "route"
-                    and any("multimodal_parent_id" in hit.chunk.metadata for hit in run.hits)
+                    # A primary from the text leg carries ``multimodal_parent_id``; an image
+                    # only the visual leg found arrives as its vector chunk, which does not. Both
+                    # need the preserved renderer, or the image is served as its placeholder text.
+                    and any(
+                        "multimodal_parent_id" in hit.chunk.metadata
+                        or hit.chunk.metadata.get("record_type") == "multimodal_vector"
+                        for hit in run.hits
+                    )
                 )
             ):
                 parent_ids = list(
@@ -2243,7 +2264,19 @@ class HostedService:
     async def health(self) -> dict[str, object]:
         if not self._model_clients_ready:
             raise RuntimeError("mandatory model clients are not ready")
-        return await asyncio.to_thread(self._repository.health)
+        # /health is public and each check re-reads and hashes every migration file and runs
+        # the schema queries on a pooled connection, so a healthy answer is shared for a few
+        # seconds and concurrent checks wait for one. A failure is never cached.
+        cached = self._health_cache
+        if cached is not None and time.monotonic() - cached[0] < HEALTH_CACHE_SECONDS:
+            return dict(cached[1])
+        async with self._health_lock:
+            cached = self._health_cache
+            if cached is not None and time.monotonic() - cached[0] < HEALTH_CACHE_SECONDS:
+                return dict(cached[1])
+            result = await asyncio.to_thread(self._repository.health)
+            self._health_cache = (time.monotonic(), dict(result))
+            return result
 
     async def delete_user(self, user_id: str, *, budget: float | None = None) -> int:
         """Delete the user. ``budget`` bounds its wait in the user's queue (the app passes the

@@ -11,6 +11,10 @@ unchanged:
 
 A reranker reorders without rescoring, so `HostedRetriever.search` reassigns the fused scores in
 descending order to the reranked list: the returned scores stay non-increasing.
+
+The rerank runs on the whole candidate list after the atomic rescue's ``fused`` placement, so with
+it on, the fused top five and the rescue's rank six are no longer fixed (they hold only before the
+reranker). The Full 2 configuration serves it on (owner, 2026-10-20).
 """
 
 from __future__ import annotations

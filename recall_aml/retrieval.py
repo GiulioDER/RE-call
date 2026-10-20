@@ -138,7 +138,8 @@ class AtomicRescueBinding:
     #: ``dense`` inserts the winner at dense rank six before fusion (a full fusion vote, so it can
     #: reach the fused top five); ``fused`` places it at fused rank six after fusion, keeping the
     #: fused top five exactly as they were. Measured 2026-09-22/23: ``dense`` lost 2 of 34 CAMBench
-    #: task prompts at exact rank one.
+    #: task prompts at exact rank one. A Search that reranks (RK-1) reorders the list after this
+    #: placement, so both guarantees hold only before the reranker.
     placement: str = "dense"
     #: The scope's Add-time atomic view store (``recall_aml.atomic_views``). When set, the rescue
     #: selects from it and no file artifact, lineage or corpus fingerprint is consulted: the views

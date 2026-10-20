@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from recall.embeddings import Embedder, embed_query
+from recall.embeddings import Embedder, embed_query, retry_with_backoff
 from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
 from recall.types import Chunk, ScoredChunk
@@ -104,7 +104,12 @@ def verify_model_readiness(
             ),
             1.0,
         )
-        result = reranker.rerank("RE-call Hosted readiness probe", [probe])
+        # A refused key or an unknown model still stops startup on the first answer; only a
+        # transient one (429, 5xx, timeout) is retried, so a provider blip at a restart does not
+        # keep the service down when every Search would fall back to the fused order anyway.
+        result = retry_with_backoff(
+            lambda: reranker.rerank("RE-call Hosted readiness probe", [probe])
+        )
         if len(result) != 1 or result[0].chunk.id != probe.chunk.id:
             raise RuntimeError("reranker readiness probe returned an invalid result")
         status["reranker_ready"] = True

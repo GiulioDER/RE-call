@@ -119,10 +119,14 @@ class VoyageReranker:
         top_k: int | None = None,
         max_document_chars: int | None = None,
         client: Any | None = None,
+        timeout: float | None = None,
     ) -> None:
         import os
         import threading
 
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout must be positive when set")
+        self._timeout = timeout
         self.model = model
         self.top_k = top_k
         if max_document_chars is not None and max_document_chars < 1:
@@ -143,10 +147,12 @@ class VoyageReranker:
                 from recall.embeddings import _voyage_client_class
 
                 # RE-call's HTTP client rather than the SDK, whose import pulls in `torch`. The
-                # timeout is stated because the SDK defaulted to none.
+                # timeout is stated because the SDK defaulted to none; a caller that reranks
+                # inline on a request path passes its own, shorter than the embedding default.
                 client_class = _voyage_client_class("VoyageReranker")
                 self._client = client_class(
-                    api_key=self._api_key, timeout=_voyage_timeout(os.environ)
+                    api_key=self._api_key,
+                    timeout=self._timeout or _voyage_timeout(os.environ),
                 )
             return self._client
 

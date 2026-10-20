@@ -273,6 +273,9 @@ SPECIALIST_VARIANTS = (
     # persisted inside Add, so every Search, including a streaming one between two Adds, can use
     # them. Active by default and placed after fusion (user decision 2026-09-23: the fused top
     # five must not change), so an unset environment cannot silently switch the stage off.
+    # With RK-1's reranker on (``RECALL_AML_RERANKER=1``, Full 2) the reranker reorders the list
+    # after this placement, so the fixed top five and the rescue's rank six hold before
+    # reranking only; the owner adopted rerank-3 on those terms (2026-10-20).
     HostedVariant(
         "C9_routed_specialists_grounded_graph_atomic",
         True,

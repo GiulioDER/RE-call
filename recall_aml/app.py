@@ -14,6 +14,8 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable, TypeVar
 
+from PIL import UnidentifiedImageError
+from PIL.Image import DecompressionBombError
 from pydantic import BaseModel, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -293,6 +295,15 @@ def create_app(
                 {"error": "tenant_busy"},
                 status_code=503,
                 headers={"Retry-After": "60"},
+            )
+        except (UnidentifiedImageError, DecompressionBombError) as exc:
+            # Admission checks only an image's type, size and magic bytes, so Pillow refusing an
+            # admitted image is a fact about the payload: every resend fails the same way. The
+            # generic 503 told AML to retry it up to 32 times; 422 is the permanent answer.
+            log.warning("hosted_request_unreadable_image", extra={"error_class": type(exc).__name__})
+            return JSONResponse(
+                {"error": "invalid_request", "detail": "an image could not be read"},
+                status_code=422,
             )
         except Exception as exc:  # BROAD-CATCH: public error translation without content leakage
             log.error("hosted_request_failed", extra={"error_class": type(exc).__name__})
