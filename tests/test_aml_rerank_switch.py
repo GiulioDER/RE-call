@@ -89,6 +89,19 @@ def test_the_switch_reranks_every_search_and_reports_it(monkeypatch: pytest.Monk
     assert service.active_components["reranker"] is True
 
 
+def test_the_search_reports_the_model_that_reranked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invariant: a reranked Search names the model the service loaded (here rerank-3), which is
+    what the per-Search header and the journal carry; an unreranked Search names none.
+
+    Red proof: `HostedService.search` reporting ``RERANK_MODEL.split(":", 1)[1]`` (the config
+    default, rerank-2.5) fails the model equality. Found 2026-10-20 on RK-1's stress run, where
+    every header said rerank-2.5 while rerank-3 served.
+    """
+    assert _search(_service(_ReversingReranker()), "rk1-user", QUERY).reranker_model == "none"
+    monkeypatch.setenv("RECALL_AML_RERANKER", "1")
+    assert _search(_service(_ReversingReranker()), "rk1-user", QUERY).reranker_model == "rerank-3"
+
+
 def test_reranked_scores_stay_non_increasing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Invariant: a reranker reorders without rescoring, so the returned scores would follow the
     fused order; the retriever hands the fused scores out again in descending order.

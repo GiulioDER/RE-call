@@ -1578,8 +1578,12 @@ class HostedService:
                 reranker_attempted=run.reranker_attempted,
                 reranker_completed=run.reranker_completed,
                 reranker_provider="voyage" if run.reranker_attempted else "none",
+                # RK-1: the model the service loaded, not the config default (which named
+                # rerank-2.5 on every header while rerank-3 served).
                 reranker_model=(
-                    RERANK_MODEL.split(":", 1)[1] if run.reranker_attempted else "none"
+                    (self.rerank_model or RERANK_MODEL.split(":", 1)[1])
+                    if run.reranker_attempted
+                    else "none"
                 ),
                 candidate_input_count=run.candidate_input_count,
                 candidate_output_count=run.candidate_output_count,
