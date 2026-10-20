@@ -29,11 +29,15 @@ from recall.types import Chunk, ScoredChunk
 from recall_aml.atomic_views import select_view_rescue
 from recall_aml.code4 import stable_window_key
 from recall_aml.graph import GRAPH_PROFILE, promote_grounded_raw
+from recall_aml.config import RERANK_TIMEOUT_SECONDS
 from recall_aml.models import SearchItem
+from recall_aml.search_deadline import bounded_call, stage_budget
 from recall_aml.window_compose import render_facts
 from recall_aml.search_cache import TenantSearchCache
 
 
+#: Below this much Search budget a rerank is not attempted (RK-1 measured 0.3 s typical, 2.1 s p95).
+MIN_RERANK_SECONDS = 3.0
 CANDIDATE_WIDTH = 100
 RRF_CONSTANT = 60
 MAX_ITEMS = 12
@@ -542,7 +546,20 @@ class HostedRetriever:
         if rerank:
             rerank_started = time.perf_counter()
             try:
-                reranked = self._reranker.rerank(query, baseline_hits)
+                # Inside a Search the rerank waits at most its timeout or the budget left,
+                # whichever is shorter: the client's connect retries can otherwise multiply its
+                # per-request timeout past the cut (CCA V-05). Below a floor it is not tried; any
+                # miss serves the fused order, as on every rerank failure.
+                left = stage_budget()
+                if left is None:
+                    reranked = self._reranker.rerank(query, baseline_hits)
+                elif left < MIN_RERANK_SECONDS:
+                    raise TimeoutError("Search budget too short for the rerank")
+                else:
+                    reranked = bounded_call(
+                        lambda: self._reranker.rerank(query, baseline_hits),
+                        min(RERANK_TIMEOUT_SECONDS, left),
+                    )
                 completed = True
                 output_ids = [hit.chunk.id for hit in reranked]
                 permutation_valid = (

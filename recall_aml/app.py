@@ -57,6 +57,7 @@ from recall_aml.retrieval import (
     CODE_RRF_WEIGHT,
     RRF_CONSTANT,
 )
+from recall_aml.search_deadline import SearchDeadlineExceeded
 from recall_aml.service import CompilerCreditExhausted, HostedService, TenantLockBusy
 
 
@@ -295,6 +296,15 @@ def create_app(
                 {"error": "tenant_busy"},
                 status_code=503,
                 headers={"Retry-After": "60"},
+            )
+        except SearchDeadlineExceeded:
+            # The query embedding did not answer within the Search budget: answer before the
+            # ~100 s cut in front of the service, so AML resends instead of losing the request.
+            log.warning("hosted_search_deadline")
+            return JSONResponse(
+                {"error": "search_deadline"},
+                status_code=503,
+                headers={"Retry-After": "5"},
             )
         except (UnidentifiedImageError, DecompressionBombError) as exc:
             # Admission checks only an image's type, size and magic bytes, so Pillow refusing an

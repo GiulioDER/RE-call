@@ -62,7 +62,11 @@ class _FakeC9:
     def _headers(self, query: str) -> dict[str, str]:
         return {
             "x-recall-specialist-route": route_query(query),
-            "x-recall-graph-attempted": "1",
+            "x-recall-graph-attempted": (
+                "0"
+                if self.faults.get("compile_off") and not self.faults.get("graph_runs_anyway")
+                else "1"
+            ),
             "x-recall-graph-fallback": "1" if self.faults.get("graph_fallback") else "0",
             "x-recall-graph-invalid-relations": "0",
             "x-recall-graph-relation-hits": "2",
@@ -82,8 +86,11 @@ class _FakeC9:
             return Call(200, {
                 "variant": bench.EXPECTED_VARIANT,
                 "git_commit": "abc123",
-                "graph_sidecar": True,
-                "active_components": {"graph_sidecar": True},
+                "graph_sidecar": not self.faults.get("compile_off"),
+                "active_components": {
+                    "graph_sidecar": not self.faults.get("compile_off"),
+                    "compiler": not self.faults.get("compile_off"),
+                },
                 "atomic_rescue": {"enabled": True, "mode": "active", "placement": "fused"},
                 "authorized_user_scope": "platform",
             }, {})
@@ -289,3 +296,24 @@ def test_the_burst_really_runs_every_job_at_once() -> None:
     barrier = threading.Barrier(32, timeout=10)
     results, _ = bench._burst([barrier.wait for _ in range(32)])
     assert sorted(results) == list(range(32))
+
+
+def test_a_compile_off_service_passes_with_its_inert_graph_skipped() -> None:
+    """CCA V-10 (2026-10-20). Invariant: on a compile-off build (Textual and Multimodal Full 2),
+    whose graph holds nothing and is therefore skipped (U-07), the bench passes.
+
+    Red proof: the bench at 43693e37 required graph_sidecar true and graph-attempted '1' on every
+    build, so this run fails its version_graph_sidecar and search_*_graph_ok checks.
+    """
+    report, _ = _run(compile_off=True)
+
+    assert report["passed"], report["failed_checks"]
+
+
+def test_a_compile_off_service_that_still_runs_its_graph_fails() -> None:
+    """CCA V-10 control: the graph check still bites; a graph attempted while the compile is off
+    (the inert stage U-07 removed) fails the run."""
+    report, _ = _run(compile_off=True, graph_runs_anyway=True)
+
+    assert not report["passed"]
+    assert any("graph_ok" in name for name in report["failed_checks"])

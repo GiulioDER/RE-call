@@ -152,6 +152,9 @@ def verify(
     *,
     expected_variant: str,
     user_id: str | None = None,
+    expect_commit: str | None = None,
+    expect_compiler: bool | None = None,
+    expect_reranker: bool | None = None,
     clock: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
@@ -187,9 +190,19 @@ def verify(
 
     components = version.payload.get("active_components", {})
     route_gates = version.payload.get("route_gates", "route")
+    # The grounded graph reads compiled records only, so it serves exactly when the compile does
+    # (an inert sidecar is skipped since the 2026-10-20 CCA fix U-07). The operator states what the
+    # deployment must serve; the service's own report is checked against it, never trusted as the
+    # expectation, so a lost drop-in fails the smoke instead of changing what it expects.
+    reported_compiler = components.get("compiler") is True
+    reported_reranker = version.payload.get("reranker_enabled") is True
+    graph_on = reported_compiler if expect_compiler is None else expect_compiler
+    rerank_on = reported_reranker if expect_reranker is None else expect_reranker
     checks: dict[str, bool] = {
         "variant": version.status == 200 and version.payload.get("variant") == expected_variant,
-        "graph_sidecar_active": components.get("graph_sidecar") is True,
+        "graph_sidecar_matches_compiler": components.get("graph_sidecar") is graph_on,
+        "compiler_as_expected": reported_compiler is graph_on,
+        "reranker_as_expected": reported_reranker is rerank_on,
         "adds_stored": len(adds) == 3 and all(
             add.status == 200 and add.payload.get("status") == "stored" for add in adds
         ),
@@ -206,8 +219,19 @@ def verify(
             call.status == 200 and _contains(call, case.must_contain)
         )
         checks[f"{case.name}_graph_no_fallback"] = (
-            call.headers.get("x-recall-graph-attempted") == "1"
+            call.headers.get("x-recall-graph-attempted") == ("1" if graph_on else "0")
             and call.headers.get("x-recall-graph-fallback") == "0"
+        )
+        if rerank_on:
+            # A reranker that falls back on every Search serves the fused order and still
+            # passes every check above, so its own headers are checked when it is on.
+            checks[f"{case.name}_reranked"] = (
+                call.headers.get("x-recall-reranker-completed") == "1"
+                and call.headers.get("x-recall-reranker-fallback") == "0"
+            )
+    if expect_commit:
+        checks["served_commit"] = str(version.payload.get("git_commit", "")).startswith(
+            expect_commit
         )
     checks["cleanup"] = cleanup.status == 200
     return {
@@ -241,6 +265,23 @@ def main() -> None:
             "The tenant is DELETED at the end, so never pass a user id that holds real data."
         ),
     )
+    parser.add_argument(
+        "--expect-compiler",
+        choices=("0", "1"),
+        required=True,
+        help="1 if the deployment must compile at Add, 0 if not (the graph follows it)",
+    )
+    parser.add_argument(
+        "--expect-reranker",
+        choices=("0", "1"),
+        required=True,
+        help="1 if every Search must be reranked, 0 if not",
+    )
+    parser.add_argument(
+        "--expect-commit",
+        default=None,
+        help="fail unless /version git_commit starts with this (the build just deployed)",
+    )
     args = parser.parse_args()
     api_key = os.environ.get("RECALL_AML_API_KEY", "").strip()
     if not api_key:
@@ -249,6 +290,9 @@ def main() -> None:
         Client(args.base_url, api_key),
         expected_variant=args.expected_variant,
         user_id=args.user_id,
+        expect_commit=args.expect_commit,
+        expect_compiler=args.expect_compiler == "1",
+        expect_reranker=args.expect_reranker == "1",
     )
     print(json.dumps(result, indent=2, sort_keys=True))
     if not result["passed"]:

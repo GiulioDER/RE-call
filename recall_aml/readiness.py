@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from recall.embeddings import Embedder, embed_query, retry_with_backoff
 from recall.rerank import Reranker
 from recall.sparse import SparseEncoderProtocol
@@ -22,8 +24,16 @@ def verify_model_readiness(
     specialist_embedders: dict[str, Embedder] | None = None,
     behavior: HostedVariant,
 ) -> dict[str, bool]:
-    """Make one bounded live call to every provider stage used by the active variant."""
-    vector = embed_query(embedder, "RE-call Hosted readiness probe")
+    """Make one bounded live call to every provider stage used by the active variant.
+
+    The embedders are wrapped in the on-disk query cache in production, so a fixed probe text was
+    answered from it on every start after the first and proved nothing about the provider (CCA
+    U-18). Each probe text now carries this start's nonce, so it is a cache miss and a live call.
+    The text embedders retry transient answers themselves; the multimodal and rerank probes are
+    retried here. A refused key or model still stops startup.
+    """
+    nonce = uuid.uuid4().hex
+    vector = embed_query(embedder, f"RE-call Hosted readiness probe {nonce}")
     if len(vector) != embedder.dim:
         raise RuntimeError("embedding readiness probe returned the wrong dimension")
     status = {
@@ -34,7 +44,7 @@ def verify_model_readiness(
 
     for profile, specialist in (specialist_embedders or {}).items():
         specialist_vector = embed_query(
-            specialist, "RE-call Hosted specialist readiness probe"
+            specialist, f"RE-call Hosted specialist readiness probe {nonce}"
         )
         if len(specialist_vector) != specialist.dim:
             raise RuntimeError(
@@ -45,8 +55,10 @@ def verify_model_readiness(
     if behavior.multimodal_native:
         if multimodal_embedder is None:
             raise RuntimeError(f"{behavior.name} has no multimodal embedder")
-        multimodal_vector = multimodal_embedder.embed_query(
-            "RE-call Hosted multimodal readiness probe"
+        multimodal_vector = retry_with_backoff(
+            lambda: multimodal_embedder.embed_query(
+                f"RE-call Hosted multimodal readiness probe {nonce}"
+            )
         )
         if len(multimodal_vector) != multimodal_embedder.dim:
             raise RuntimeError("multimodal readiness probe returned the wrong dimension")

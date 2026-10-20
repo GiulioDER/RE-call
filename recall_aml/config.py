@@ -33,6 +33,13 @@ RERANK_PRICE_SOURCE_URL = "https://docs.voyageai.com/docs/pricing"
 #: front of the service rather than at the 60 s embedding default. RK-1 measured the whole
 #: reranked Search at 319 ms and the added p95 at 2.1 s, so 15 s cuts only a stalled call.
 RERANK_TIMEOUT_SECONDS = 15.0
+#: Per-request timeout of the image leg's query embedding, under both legs' waits (15 s off the image
+#: route; 25 s on it, which also covers its one retry), so an abandoned call ends near its wait
+#: instead of at the 180 s document timeout and stalled calls do not pile up in the shared executor
+#: (PR 810's open risk). It bounds each connect and each read, not the total: the SDK retries a
+#: failed connect twice, so a host that never accepts can hold the thread about three times this.
+#: MM-1 measured the whole leg at +390 ms median and +2.7 s p90.
+VISUAL_QUERY_TIMEOUT_SECONDS = 12.0
 SPARSE_MODEL = "prithivida/Splade_PP_en_v1"
 SPARSE_REVISION = "762be6a7206e2f299182705972a65e5c46e62be2"
 #: ``RECALL_AML_ADD_RESPONSE_BUDGET_SECONDS`` when unset: off, the old path, like every other

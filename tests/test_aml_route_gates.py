@@ -504,12 +504,14 @@ def test_a_slow_off_route_visual_leg_is_cut_at_its_deadline(monkeypatch) -> None
     assert response.visual_leg is False
 
 
-def test_the_visual_route_still_fails_loudly(monkeypatch) -> None:
-    """Invariant: on the visual route (a query that carries an image) the image leg is the primary
-    leg, so its failure still fails the Search rather than serving a ranking without it.
+def test_the_visual_route_serves_the_text_ranking_when_its_leg_fails(monkeypatch) -> None:
+    """Invariant: on the visual route (a query that carries an image) a failing image leg costs the
+    images, not the Search: the text ranking already computed is served and the response says no
+    visual leg ran.
 
-    Red proof: wrapping the visual-route leg in the same fail-open handler lets the Search answer,
-    and the test fails with DID NOT RAISE.
+    Contract changed on purpose (CCA U-48, owner 2026-10-20): this test used to pin that the
+    Search fails loudly here (PR 810), which turned a multimodal provider error into a 503 for
+    every image query. Red proof: the served build raises ``RuntimeError: provider down``.
     """
     monkeypatch.setenv("RECALL_AML_ROUTE_GATES", "data")
     service, _, _, _, _ = _service("C7_routed_specialists")
@@ -519,8 +521,11 @@ def test_the_visual_route_still_fails_loudly(monkeypatch) -> None:
         {"type": "text", "text": "the parking receipt"},
         {"type": "image_url", "image_url": {"url": _png_data_url(b"receipt")}},
     ]
-    with pytest.raises(RuntimeError, match="provider down"):
-        _search(service, query=image_query)
+
+    response = _search(service, query=image_query)
+
+    assert response.data, "the text ranking is served"
+    assert response.visual_leg is False
 
 
 def test_version_reports_the_route_gates_and_the_effective_scope(monkeypatch) -> None:

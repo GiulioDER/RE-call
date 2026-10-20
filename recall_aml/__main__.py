@@ -23,6 +23,7 @@ from recall_aml.config import (
     OPENROUTER_BASE_URL,
     RERANK_TIMEOUT_SECONDS,
     SPARSE_MODEL,
+    VISUAL_QUERY_TIMEOUT_SECONDS,
     SPARSE_REVISION,
 )
 from recall_aml.embedding_lock import (
@@ -34,6 +35,7 @@ from recall_aml.embedding_lock import (
 )
 from recall_aml.rerank_switch import rerank_model
 from recall_aml.retrieval import HostedRetriever
+from recall_aml.search_deadline import DeadlineEmbedder
 from recall_aml.readiness import verify_model_readiness
 from recall_aml.service import HostedService
 from recall_aml.storage import PgHostedRepository
@@ -222,7 +224,9 @@ def build_app(settings: HostedSettings | None = None) -> Any:
     )
     rerank_on = _env_reranker(behavior)
     multimodal_embedder: MultimodalEmbedder | None = (
-        VoyageMultimodalEmbedder(settings.voyage_api_key)
+        VoyageMultimodalEmbedder(
+            settings.voyage_api_key, query_timeout=VISUAL_QUERY_TIMEOUT_SECONDS
+        )
         if behavior.multimodal_native
         else None
     )
@@ -249,9 +253,12 @@ def build_app(settings: HostedSettings | None = None) -> Any:
     except BaseException:
         pool.close()
         raise
-    retriever = HostedRetriever(embedder, reranker, sparse_encoder=sparse_encoder)
+    # Retrievers embed queries only, and each query embedding waits at most the Search budget.
+    retriever = HostedRetriever(
+        DeadlineEmbedder(embedder), reranker, sparse_encoder=sparse_encoder
+    )
     specialist_retrievers = {
-        profile: HostedRetriever(specialist, reranker)
+        profile: HostedRetriever(DeadlineEmbedder(specialist), reranker)
         for profile, specialist in specialist_embedders.items()
     }
     service = HostedService(

@@ -179,13 +179,18 @@ database work must complete before the caller's 45 second integration timeout. S
 a 10 second transport timeout, while the release gate requires a measured Search p95 below 5
 seconds and Add p95 below 30 seconds. HTTP 422 is permanent to the caller, so it is reserved for input
 that can never be accepted: invalid JSON, a body over 44 MiB, a missing or blank `request_id`,
-`user_id` or `session_id`, and a malformed or oversized image. Everything else the service can store
-or answer is accepted: unknown fields are ignored, `content: null` and blank messages are dropped,
+`user_id` or `session_id`, a malformed or oversized image, an Add in which no part can be read, and a
+Search query image that cannot be decoded. An image that passes admission but cannot be decoded is
+dropped from an Add that holds anything else readable; the rest of the Add is stored. Everything else
+the service can store or answer is accepted: unknown fields are ignored, `content: null` and blank
+messages are dropped,
 an unreadable `timestamp` is dropped, `top_k` is clamped to 0 through 100 (`null` means 100), a
 query over 20,000 characters keeps its first 10,000 and last 9,999, and a blank query or
 `top_k: 0` returns an empty `data` list. A failure inside the service returns a retryable 503; so
 does an Add answered pending (`X-Recall-Add-Pending: 1`, see `POST /v1/add`), which is not a failure,
-and an Add answered `tenant_busy` (`Retry-After: 60`, see `POST /v1/add`), which stored nothing.
+and an Add answered `tenant_busy` (`Retry-After: 60`, see `POST /v1/add`), which stored nothing. A
+Search whose query embedding does not answer within the service's Search time budget (90 seconds)
+returns 503 `{"error": "search_deadline"}` with `Retry-After: 5`; it is safe to resend.
 Authentication failures return HTTP 401.
 
 Add compilation makes at most three provider attempts with an eight second timeout per attempt.

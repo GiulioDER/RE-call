@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import logging
 from typing import Any, Protocol
+
+from PIL import UnidentifiedImageError
+from PIL.Image import DecompressionBombError
 
 from recall.multimodal import (
     VOYAGE_MAX_INPUT_TOKENS,
@@ -105,6 +108,7 @@ def prepare_messages(
     vectors: list[Chunk] = []
     voyage_inputs: list[dict[str, Any]] = []
     session_hash = session_digest(session_id)
+    unreadable: Exception | None = None
 
     for ordinal, message in enumerate(messages):
         value = message.content
@@ -126,8 +130,19 @@ def prepare_messages(
             media_type, payload = decode_image_data_url(part.image_url.url)
             digest = hashlib.sha256(payload).hexdigest()
             media_id = "media_" + digest
+            try:
+                voyage_image, transformed = _voyage_image_data_url(part.image_url.url)
+            except (UnidentifiedImageError, DecompressionBombError) as exc:
+                # Admission checks only type, size and magic bytes. An image Pillow cannot read
+                # is never sent (PR 832) and now never stored either, but the rest of the Add is:
+                # one unreadable image used to lose every message of it (CCA U-47).
+                log.warning(
+                    "multimodal_image_unreadable",
+                    extra={"error_class": type(exc).__name__, "ordinal": ordinal},
+                )
+                unreadable = unreadable or exc
+                continue
             manifest.append({"type": "image_ref", "media_id": media_id})
-            voyage_image, transformed = _voyage_image_data_url(part.image_url.url)
             image_transform_count += int(transformed)
             voyage_content.append(
                 {"type": "image_base64", "image_base64": voyage_image}
@@ -148,6 +163,9 @@ def prepare_messages(
                 ),
             )
 
+        if not manifest:
+            # Every part of this message was an unreadable image: nothing of it can be stored.
+            continue
         supplied_text = content_text(value)
         segments = [
             supplied_text[index : index + RAW_SEGMENT_CHARS]
@@ -214,6 +232,9 @@ def prepare_messages(
         )
         voyage_inputs.append({"content": voyage_content})
 
+    if unreadable is not None and not primary:
+        # Nothing in the Add could be read: refuse it, which the app answers with a permanent 422.
+        raise unreadable
     return PreparedMultimodal(primary, list(media.values()), vectors, voyage_inputs)
 
 
@@ -250,19 +271,29 @@ class VoyageMultimodalEmbedder:
         *,
         client: Any = None,
         timeout: float = 180.0,
+        query_timeout: float | None = None,
         token_counter: Callable[[list[str]], list[int]] | None = None,
     ) -> None:
         """Build the adapter.
 
-        ``token_counter`` returns one text token count per string. It defaults to Voyage's
-        published tokenizer for the model, loaded on first use, and falls back to a UTF-8 byte
-        bound when that cannot be loaded.
+        ``timeout`` bounds a document request (an Add, up to the request caps); ``query_timeout``,
+        when set, bounds a Search's single query input with a client of its own, so a stalled
+        query does not hold its worker thread for the document timeout. ``token_counter`` returns
+        one text token count per string. It defaults to Voyage's published tokenizer for the
+        model, loaded on first use, and falls back to a UTF-8 byte bound when that cannot be loaded.
         """
+        query_client = client
         if client is None:
             import voyageai
 
             client = voyageai.Client(api_key=api_key, max_retries=0, timeout=timeout)
+            query_client = (
+                voyageai.Client(api_key=api_key, max_retries=0, timeout=query_timeout)
+                if query_timeout is not None
+                else client
+            )
         self._client = client
+        self._query_client = query_client
         self._text_counter = token_counter or lazy_voyage_text_counter(
             MULTIMODAL_EMBEDDING_MODEL
         )
@@ -318,7 +349,7 @@ class VoyageMultimodalEmbedder:
         provider_input = to_voyage_input(value)
         [(tokens, images)] = estimate_voyage_inputs([provider_input], self._text_counter)
         self._warn_if_over_context(0, tokens, images, "query")
-        response = self._client.multimodal_embed(
+        response = self._query_client.multimodal_embed(
             [provider_input],
             model=MULTIMODAL_EMBEDDING_MODEL,
             input_type="query",
@@ -390,11 +421,77 @@ def _text_item(hit: ScoredChunk) -> SearchItem:
     )
 
 
+def manifest_media_ids(parent: Chunk | None) -> list[str]:
+    """The media ids a stored primary's manifest refers to, in part order."""
+    manifest = parent.metadata.get("multimodal_manifest", []) if parent is not None else []
+    if not isinstance(manifest, list):
+        return []
+    return [
+        str(entry["media_id"])
+        for entry in manifest
+        if isinstance(entry, dict)
+        and entry.get("type") == "image_ref"
+        and isinstance(entry.get("media_id"), str)
+    ]
+
+
+class LazyMedia(Mapping[str, Chunk]):
+    """Media rows fetched in ranked order, a batch at a time, only when the renderer asks.
+
+    `render_preserved` stops at ``top_k`` items and the response media budget, but the rows of
+    every candidate parent (up to about 200 after visual fusion, each image up to 13 MB of base64)
+    used to be read before it started (CCA U-23). This mapping reads, on the first miss of an id,
+    that id and the next ``batch - 1`` ids in ranked order that were not read yet, so the renderer
+    sees exactly the rows it would have seen with everything read up front: an id is either read or
+    absent from the store, never skipped.
+    """
+
+    def __init__(
+        self,
+        ordered_ids: Sequence[str],
+        fetch: Callable[[list[str]], dict[str, Chunk]],
+        *,
+        batch: int,
+    ) -> None:
+        self._ordered = list(dict.fromkeys(ordered_ids))
+        self._position = {media_id: index for index, media_id in enumerate(self._ordered)}
+        self._fetch = fetch
+        self._batch = max(1, batch)
+        self._loaded: dict[str, Chunk] = {}
+        self._requested: set[str] = set()
+        self.fetches = 0
+
+    def _load_from(self, media_id: str) -> None:
+        start = self._position.get(media_id)
+        if start is None:
+            wanted = [media_id]
+        else:
+            wanted = [
+                candidate
+                for candidate in self._ordered[start:]
+                if candidate not in self._requested
+            ][: self._batch]
+        self._requested.update(wanted)
+        self.fetches += 1
+        self._loaded.update(self._fetch(wanted))
+
+    def __getitem__(self, media_id: str) -> Chunk:
+        if media_id not in self._requested:
+            self._load_from(media_id)
+        return self._loaded[media_id]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._loaded)
+
+    def __len__(self) -> int:
+        return len(self._loaded)
+
+
 def render_preserved(
     hits: Sequence[ScoredChunk],
     *,
     primary_by_id: dict[str, Chunk],
-    media_by_id: dict[str, Chunk],
+    media_by_id: Mapping[str, Chunk],
     top_k: int,
 ) -> list[SearchItem]:
     """Reconstruct exact ordered AML parts while enforcing the response media limit."""

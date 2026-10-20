@@ -15,6 +15,10 @@ import threading
 import time
 from typing import Any
 
+from PIL import UnidentifiedImageError
+from PIL.Image import DecompressionBombError
+
+from recall.embeddings import retry_with_backoff
 from recall.types import Chunk, ScoredChunk
 from recall_aml.add_flight import add_fingerprint
 from recall_aml.atomic_views import (
@@ -35,6 +39,7 @@ from recall_aml.config import (
     RERANK_MODEL,
     RERANK_PRICE_USD_PER_MILLION_TOKENS,
     RETRIEVAL_PROFILE,
+    VISUAL_QUERY_TIMEOUT_SECONDS,
 )
 from recall_aml.identity import (
     canonical_digest,
@@ -58,8 +63,10 @@ from recall_aml.models import (
 from recall_aml.multimodal import (
     MULTIMODAL_EMBEDDING_MODEL,
     MULTIMODAL_EMBEDDING_PROFILE,
+    LazyMedia,
     MultimodalEmbedder,
     content_text,
+    manifest_media_ids,
     fuse_hits,
     is_multimodal,
     prepare_messages,
@@ -98,6 +105,7 @@ from recall_aml.window_compose import ADD_DIGEST_CHARS, compose_items
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
 from recall_aml.rerank_switch import RERANKER_ENV
+from recall_aml.search_deadline import backoff_before, search_budget, stage_budget
 from recall_aml.feedback_guard import FEEDBACK_GUARD_ENV, AskedQuestions, filter_feedback
 from recall_aml.forget import (
     FORGET_DETECTOR,
@@ -142,6 +150,15 @@ MAX_CORPUS_STATUS_CACHE_ENTRIES = 1_024
 #: Search of an image tenant; under the ``dual`` scope, every Search). MM-1 measured its cost at
 #: +390 ms median and +2.7 s p90.
 OFF_ROUTE_VISUAL_LEG_SECONDS = 15.0
+#: The image leg's wait when the query itself carries an image: room for two tries of the query
+#: client (`VISUAL_QUERY_TIMEOUT_SECONDS`, ``__main__``) and a backoff, so the worker thread ends
+#: near the wait instead of holding an executor thread for the 180 s document timeout.
+VISUAL_ROUTE_LEG_SECONDS = 25.0
+#: Tries of the image-route query embedding: one retry of a transient provider answer.
+VISUAL_ROUTE_ATTEMPTS = 2
+#: Media rows an image Search reads per round trip, in ranked order. The response holds at most
+#: 30 MiB of media, so a few rows usually finish it; each row can carry up to 13.98 MB of base64.
+MEDIA_FETCH_BATCH = 8
 #: How long a healthy ``/health`` answer is shared between callers.
 HEALTH_CACHE_SECONDS = 5.0
 
@@ -1241,12 +1258,18 @@ class HostedService:
                 )
 
     async def search(self, request: SearchRequest) -> SearchResponse:
+        # Every provider stage of this Search draws on one time budget (search_deadline).
+        with search_budget():
+            return await self._search(request)
+
+    async def _search(self, request: SearchRequest) -> SearchResponse:
         tenant = tenant_for(request.user_id)
         query_text = content_text(request.query)
         query_has_text = isinstance(request.query, str) or any(
             isinstance(part, TextContentPart) for part in request.query
         )
-        if self.feedback_guard:
+        if self.feedback_guard and query_has_text:
+            # An image-only query has no question text: its placeholder is not a question.
             self._asked_questions.remember(tenant, query_text)
         started = time.perf_counter()
         facet_fallback = False
@@ -1321,7 +1344,7 @@ class HostedService:
                 ),
                 atomic_rescue=self._atomic_rescue_binding(corpus, corpus_scope),
             )
-            if self._behavior.graph_sidecar:
+            if self.graph_sidecar:
                 try:
                     # The sidecar embeds with the primary retriever. When that is also the
                     # retriever this Search used (the Code route), its query vector is the one the
@@ -1346,16 +1369,37 @@ class HostedService:
             if self._behavior.multimodal_native and (visual_route or scope == "dual"):
                 visual_hits: list[ScoredChunk] | None
                 if visual_route:
-                    visual_hits = await self._visual_leg_hits(tenant, request.query, visual_route=True)
+                    # The image leg leads on this route. A transient provider answer is retried
+                    # inside the leg's share of the budget; past it, a query that has text is
+                    # served the text ranking already computed (CCA U-48). A query with no text
+                    # has no such ranking (its text leg searched the "[image evidence]"
+                    # placeholder), so its failure still raises: a retryable 503 as before, or the
+                    # permanent 422 for a query image Pillow cannot read (CCA V-02, V-03).
+                    try:
+                        visual_hits = await asyncio.wait_for(
+                            self._visual_leg_hits(tenant, request.query, visual_route=True),
+                            timeout=stage_budget(VISUAL_ROUTE_LEG_SECONDS),
+                        )
+                    except (UnidentifiedImageError, DecompressionBombError):
+                        raise
+                    except Exception as exc:  # BROAD-CATCH: fail-open only for a query with text
+                        if not query_has_text:
+                            raise
+                        log.warning(
+                            "visual_leg_failed",
+                            extra={"error_class": type(exc).__name__, "visual_route": True},
+                        )
+                        visual_hits = None
                 else:
                     # Off the visual route the leg adds images to a complete text ranking, so a
                     # slow or failing multimodal provider or store costs the images, never the
-                    # Search (the embedder's own timeout is 180 s, past the ~100 s cut in front of
-                    # the service). The worker thread may outlive the deadline; the Search does not.
+                    # Search. The query client gives up at VISUAL_QUERY_TIMEOUT_SECONDS (plus
+                    # its connect retries), so the worker thread may outlive this wait by some
+                    # seconds; the Search does not.
                     try:
                         visual_hits = await asyncio.wait_for(
                             self._visual_leg_hits(tenant, request.query, visual_route=False),
-                            timeout=OFF_ROUTE_VISUAL_LEG_SECONDS,
+                            timeout=stage_budget(OFF_ROUTE_VISUAL_LEG_SECONDS),
                         )
                     except Exception as exc:  # BROAD-CATCH: fail-open, the text ranking is complete
                         log.warning("visual_leg_failed", extra={"error_class": type(exc).__name__})
@@ -1363,7 +1407,12 @@ class HostedService:
                 # Off the visual route, a tenant with no image memories must get exactly the
                 # ranking it gets today (MM-1 pre-registration, apparatus check 1).
                 if visual_hits is not None and (visual_route or visual_hits):
-                    run.hits[:] = fuse_hits(run.hits, visual_hits)
+                    # A query with no text reached the text leg as the "[image evidence]"
+                    # placeholder, which every image-only memory also stores, so that half of the
+                    # fusion was an arbitrary order at equal weight. When the image leg found
+                    # something, it alone ranks such a query (CCA U-17).
+                    text_hits = run.hits if query_has_text or not visual_hits else []
+                    run.hits[:] = fuse_hits(text_hits, visual_hits)
                     visual_leg = True
             if self.image_text_leg:
                 query_sidecars = getattr(self._repository, "query_image_text", None)
@@ -1471,27 +1520,26 @@ class HostedService:
                     )
                 )
                 primary_by_id = await asyncio.to_thread(store.chunks_by_ids, parent_ids)
-                media_ids: list[str] = []
-                for parent in primary_by_id.values():
-                    manifest = parent.metadata.get("multimodal_manifest", [])
-                    if not isinstance(manifest, list):
-                        continue
-                    media_ids.extend(
-                        str(entry["media_id"])
-                        for entry in manifest
-                        if isinstance(entry, dict)
-                        and entry.get("type") == "image_ref"
-                        and isinstance(entry.get("media_id"), str)
-                    )
-                media_by_id = await asyncio.to_thread(
+                # Media rows in ranked order, read only as far as the renderer goes (top_k and
+                # the response media budget), and rendered off the event loop: each image is
+                # decoded there (CCA U-23).
+                media_by_id = LazyMedia(
+                    [
+                        media_id
+                        for parent_id in parent_ids
+                        for media_id in manifest_media_ids(primary_by_id.get(parent_id))
+                    ],
                     self._repository.media_store(tenant).chunks_by_ids,
-                    list(dict.fromkeys(media_ids)),
+                    batch=MEDIA_FETCH_BATCH,
                 )
-                items = render_preserved(
-                    run.hits,
-                    primary_by_id=primary_by_id,
-                    media_by_id=media_by_id,
-                    top_k=request.top_k,
+                items = await asyncio.to_thread(
+                    functools.partial(
+                        render_preserved,
+                        run.hits,
+                        primary_by_id=primary_by_id,
+                        media_by_id=media_by_id,
+                        top_k=request.top_k,
+                    )
                 )
             elif self._behavior.pack:
                 items = pack_evidence(
@@ -2100,7 +2148,7 @@ class HostedService:
             "reranker": self.reranker_enabled,
             "learned_sparse": self._behavior.learned_sparse,
             "code_aware": self._behavior.code_aware,
-            "graph_sidecar": self._behavior.graph_sidecar,
+            "graph_sidecar": self.graph_sidecar,
             "multimodal_native": self._behavior.multimodal_native,
             "canonical_bm25": self._behavior.canonical_bm25,
             "exact_dense": self._behavior.exact_dense,
@@ -2166,6 +2214,9 @@ class HostedService:
             "view_profile": ATOMIC_VIEW_PROFILE if self._behavior.atomic_views_at_add else "none",
             "mode": self.atomic_rescue_mode,
             "placement": self.atomic_rescue_placement,
+            # The reranker reorders the list after the placement, so the fixed top five and the
+            # rescue's rank six hold only when this is false (CCA U-03).
+            "reranked_after_placement": self.reranker_enabled,
         }
 
     @property
@@ -2194,7 +2245,13 @@ class HostedService:
 
     @property
     def graph_sidecar(self) -> bool:
-        return self._behavior.graph_sidecar
+        """Whether a Search consults the grounded graph: the variant's sidecar AND the compile.
+
+        The graph holds only compiled records, so with the compile off it stays empty and the
+        sidecar can only pass the ranking through, at the cost of a fingerprint, a dense and a
+        sparse query per Search, plus a second query embedding on the Context route (CCA U-07).
+        """
+        return self._behavior.graph_sidecar and self._behavior.compiler
 
     @property
     def context_specialist(self) -> bool:
@@ -2231,7 +2288,22 @@ class HostedService:
         if not visual_route and not await self._tenant_has_image_vectors(tenant):
             return None
         assert self._multimodal_embedder is not None
-        visual_vector = await asyncio.to_thread(self._multimodal_embedder.embed_query, query)
+        embedder = self._multimodal_embedder
+        if visual_route:
+            # The query client makes one attempt, so on the image route a transient 429 or 5xx is
+            # retried here, and only when the backoff and the retry both fit in the leg's own wait
+            # (CCA V-03): a long Retry-After ends the leg instead of outliving it.
+            leg_wait = stage_budget(VISUAL_ROUTE_LEG_SECONDS)
+            if leg_wait is None:  # outside a Search; 0.0 means no budget left, never a retry
+                leg_wait = VISUAL_ROUTE_LEG_SECONDS
+            visual_vector = await asyncio.to_thread(
+                retry_with_backoff,
+                lambda: embedder.embed_query(query),
+                attempts=VISUAL_ROUTE_ATTEMPTS,
+                sleep=backoff_before(time.monotonic() + leg_wait, VISUAL_QUERY_TIMEOUT_SECONDS),
+            )
+        else:
+            visual_vector = await asyncio.to_thread(embedder.embed_query, query)
         return await asyncio.to_thread(
             self._repository.multimodal_store(tenant).query_dense, visual_vector, 100
         )

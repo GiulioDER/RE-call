@@ -135,7 +135,11 @@ def bounded_query_parts(value: list[ContentPart]) -> list[ContentPart]:
         if isinstance(part, ImageContentPart):
             bounded.append(part)
         elif not placed:
-            bounded.append(TextContentPart(type="text", text=bounded_query(joined)))
+            text = bounded_query(joined)
+            if not text.strip():
+                # Both kept ends were whitespace; bound the text without it instead.
+                text = bounded_query(joined.strip())
+            bounded.append(TextContentPart(type="text", text=text))
             placed = True
     return bounded
 
