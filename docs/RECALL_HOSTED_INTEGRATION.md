@@ -6,7 +6,8 @@
 public RE-call storage and retrieval layers plus the `recall_aml` package in the same repository.
 A deployment's build identity is the Git commit that `/version` reports as `git_commit`. The
 `version` field stays `1.0.0` on every build, so it does not identify one. The fixed commit of each
-AML run is listed under [Runs of record](#runs-of-record).
+AML run is listed under [Runs of record](#runs-of-record). To cite RE-call, use
+[CITATION.cff](../CITATION.cff).
 
 The service is intended to remain reachable and configuration frozen for at least 30 days after
 an AML submission. A release candidate must not be submitted until the contract, isolation,
@@ -33,7 +34,9 @@ flowchart LR
     code --> fuse["Rank fusion<br/>within the route"]
     ctx --> fuse
     fuse --> lift["Atomic rescue<br/>top five fixed"]
+    lift -. "Full 2" .-> rr["Voyage rerank-3"]
     lift --> promote["Graph promotion<br/>at most two"]
+    rr --> promote
     promote --> leg["Image leg"]
     leg --> out["Dated evidence<br/>at most top_k"]
   end
@@ -49,7 +52,7 @@ flowchart LR
    scores from different models, and the routing itself uses no model.
 3. Every item carries the date a reader needs, including the date a relative phrase refers to.
 4. Each Add builds its own atomic views, so a Search between two Adds already uses them, and the
-   rescue cannot change the fused top five.
+   rescue cannot change the fused top five. In the Full 2 runs the reranker that follows may.
 5. The model cannot draw a graph edge: edges come only from verified evidence spans, and
    promotion can only reorder windows that retrieval already found. Each of these rules, and the
    raw ranking served on failure, has a mutation test that fails when the rule is broken
@@ -167,8 +170,9 @@ in seconds (`add_response_budget_seconds`, 0 when off), and the tenant queue bud
 (`tenant_lock_wait_seconds`, 0 when off). It contains no credential, database URL, host inventory,
 or other infrastructure identifier.
 
-`active_components` is the field that shows which stages run. The `reranker` and
-`retrieval_profile` fields are fixed labels present in every build and say nothing about it.
+`active_components` is the field that shows which stages run. `retrieval_profile` is a fixed label
+present in every build. `reranker` names the reranker model the service loaded (`voyage:rerank-3` at
+`b712ec33`), and only `active_components.reranker` says whether it runs.
 
 ### `POST /v1/delete`
 
@@ -180,8 +184,8 @@ learned sparse sidecars if present, and Add replay receipts. Other user tenants 
 ### Runs of record
 
 Every AML Cycle 2 Full that RE-call ran, except the first Multimodal Full, was served by the
-variant `C9_routed_specialists_grounded_graph_atomic`, and Multimodal Full 2, which has not run yet,
-will be served by it too, selected with
+variant `C9_routed_specialists_grounded_graph_atomic`, and both second Fulls, which have not run
+yet, will be served by it too, selected with
 `RECALL_AML_VARIANT=C9_routed_specialists_grounded_graph_atomic`. Each fixed commit is a signed tag
 in this repository.
 
@@ -189,11 +193,15 @@ in this repository.
 |---|---|---|---|---|
 | Textual | Full 1 | `3eb447c4ea1f04f41f941ad8f089c9a02106e763` | `aml-c2-full1-textual` | on |
 | Coding | Full 1 | `1f8666df2b04c34efd33153f0751c624fb17b8f6` | `aml-c2-full1-coding` | on |
-| Multimodal | Full 2 | `225e7509eedf130314e1eab2b06a412d14dc1aae` | `aml-c2-full2` | off |
+| Multimodal | Full 2 | `b712ec3304404e6016d02229afb3e3e6df9715f0` | `aml-c2-full2-b712ec33` | off |
+| Textual | Full 2 | `b712ec3304404e6016d02229afb3e3e6df9715f0` | `aml-c2-full2-b712ec33` | off |
 
-Multimodal Full 2 also sets `RECALL_AML_ROUTE_GATES=data`, `RECALL_AML_T1_GATE=content`,
-`RECALL_AML_T1_RENDER=v2`, and `RECALL_AML_COMPILER=0`, so its `/version` reports `route_gates`
-`data`, `multimodal_scope` `dual`, and `active_components.compiler` `false`.
+Both Full 2 runs also set `RECALL_AML_ROUTE_GATES=data`, `RECALL_AML_T1_GATE=content`,
+`RECALL_AML_T1_RENDER=v2`, `RECALL_AML_COMPILER=0`, `RECALL_AML_RERANKER=1`,
+`RECALL_AML_RERANK_MODEL=rerank-3` and `RECALL_AML_FEEDBACK_GUARD=1`, so `/version` reports
+`route_gates` `data`, `multimodal_scope` `dual`, `reranker` `voyage:rerank-3`, and
+`active_components.compiler` `false` and `active_components.reranker` `true`. The tag
+`aml-c2-full2` on `225e7509` marks an earlier plan for Multimodal Full 2; no run uses it.
 
 Two builds are outside this table. The first Adds of Textual Full 1 were served by the earlier
 build `efb79146` (tag `aml-c2-full1-textual-early`) before `3eb447c4` was deployed. Multimodal
@@ -201,21 +209,24 @@ Full 1 ran the earlier variant `C8_routed_specialists_grounded_graph` at `5d82b5
 `aml-c2-full1-multimodal`), with the compiler on.
 
 C9's fields are `HostedVariant` in `recall_aml/variants.py`. The three commits define it the same
-way except where the sections below name a commit.
+way except where the sections below name a commit. `b712ec33` is `225e7509` plus two switches, both
+off unless set: the reranker switch (`recall_aml/rerank_switch.py`) and the feedback rule
+(`recall_aml/feedback_guard.py`).
 
 ### License
 
-Every commit named above carries the PolyForm Noncommercial License 1.0.0 in its tree, because the
-project moved to AGPL-3.0-only after these runs. [`LICENSE_GRANT_AGPL.md`](../LICENSE_GRANT_AGPL.md),
+Every commit named above carries the PolyForm Noncommercial License 1.0.0 in its tree: each is on,
+or branched from, the history before the project moved to AGPL-3.0-only.
+[`LICENSE_GRANT_AGPL.md`](../LICENSE_GRANT_AGPL.md),
 dated 5 October 2026, additionally licenses each of them under AGPL-3.0-only and names each one by
 its full commit hash.
 
 ### Models
 
 The only generative call is the Add compiler: OpenAI `gpt-4o-mini` through OpenRouter, with the
-fixed model identifier `openai/gpt-4o-mini`, temperature zero, and a JSON object response. In
-Multimodal Full 2 it is off, so that run will call no generative model at all. Search never calls
-one.
+fixed model identifier `openai/gpt-4o-mini`, temperature zero, and a JSON object response. In both
+Full 2 runs it is off, so they call no generative model at all. Search never calls one. Both Full 2
+runs also reorder candidates with the Voyage reranker `rerank-3`.
 
 The embedding models are Voyage AI models, one per route:
 
@@ -235,6 +246,13 @@ role or timestamp.
 
 The Add also builds atomic views from its own raw windows, with no model: short spans (profile
 `aml-add-micro-v1`), each linked to its parent window and stored in an isolated tenant.
+
+In the Full 2 runs, an Add message that records an earlier answer reporting a failure, about a
+question this user was already asked, is not stored. Two record shapes are recognised: a message
+whose text is a JSON object with a question, the model's answer and its outcome, and a judge verdict
+line, the shapes the public AgentMemoryBench protocol (solomoon313/AgentMemoryBench, MIT) writes. A
+failed record that also carries the reference answer is kept, and every other message is stored
+unchanged.
 
 When the compiler is on, the server cuts the Add's messages into evidence anchors with identifiers
 it creates. The model returns at most eight records, each citing one to eight of those identifiers,
@@ -265,11 +283,12 @@ candidates, and reciprocal rank fusion with constant 60 merges them. Ties on the
 a fixed window order.
 
 After fusion, atomic rescue can lift the parent window of an atomic view that matches the query,
-never into the first five positions. Graph promotion then lets the compiled records nearest the
+never into the first five positions. In the Full 2 runs, Voyage `rerank-3` then reorders the whole
+candidate pool; a reranker failure serves the fused order. Graph promotion then lets the compiled records nearest the
 query move at most two raw windows they reference, which must already be in the ranking, never
 into the first eight positions; if it fails, the raw ranking is served. The image leg fuses
 `voyage-multimodal-3.5` hits into the ranking: under the default route gates (Textual and Coding
-Full 1) on the multimodal route only, and under `data` (Multimodal Full 2) on every Search of a
+Full 1) on the multimodal route only, and under `data` (both Full 2 runs) on every Search of a
 tenant that holds image vectors. A tenant without images gets the text ranking unchanged.
 
 Compiled records that a later record supersedes are left out unless the query asks about the
@@ -279,9 +298,9 @@ with that date.
 
 From `1f8666df`, a relative time phrase in a returned text item keeps its wording, and the date it
 refers to, computed from the item's own date, follows it in brackets. Under the default gate this
-skips the code route. Multimodal Full 2 uses the `content` gate, which covers every route but
-leaves code-like items and phrases alone, and the `v2` rendering, which keeps week expressions
-relative to an anchor date. Nothing stored, embedded, or ranked changes.
+skips the code route. Both Full 2 runs use the `content` gate, which covers every route but leaves
+code-like items and phrases alone, and the `v2` rendering, which keeps week expressions relative to
+an anchor date. Nothing stored, embedded, or ranked changes.
 
 ### Variants that served no AML run
 
