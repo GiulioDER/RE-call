@@ -344,7 +344,8 @@ Exact text message content is sent through OpenRouter to `gpt-4o-mini` when the 
 and to the Voyage embedding service. Ordered text and image Data URIs are sent to Voyage's
 multimodal embedding endpoint. Images above Voyage's 16 million pixel input limit are
 proportionally resized only for that transient embedding request. RE-call stores and returns the
-exact original image bytes. Search queries are sent to Voyage only. Evidence is stored in the
+exact original image bytes. Search queries are sent to Voyage only, and in the Full 2 runs the
+candidate text that `rerank-3` reorders is sent to Voyage as well. Evidence is stored in the
 dedicated PostgreSQL evaluation database. Application logs contain only truncated user, request,
 and query digests, counts, latency, fallback flags, and error classes. They never contain messages,
 queries, model output, API keys, or database URLs.
