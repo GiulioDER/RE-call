@@ -352,8 +352,8 @@ def build_history_query(history: "Sequence[str]") -> str:
 def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
     """Fuse several best-first ID rankings into one score map (Reciprocal Rank Fusion).
 
-    Each input list is an independent ranking, best first. Every id accrues
-    ``1 / (k + rank)`` from each list it appears in; `k` (default 60, the standard RRF
+    Cormack, Clarke and Büttcher, SIGIR 2009. Each input list is a ranking, best first; an id
+    accrues ``1 / (k + rank)`` from each list it appears in; `k` (default 60, the standard RRF
     damping constant — unrelated to the caller's result-count `k`) softens the weight of
     top ranks so no single ranking dominates. The returned dict is UNSORTED; callers sort
     by value descending.

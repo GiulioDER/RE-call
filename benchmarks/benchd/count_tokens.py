@@ -7,7 +7,8 @@ Two subcommands, no harness import, stdlib plus optional tiktoken:
 
         Recomputes answerer and judge token usage from the run's traces by re-rendering the
         harness's exact prompt templates (copied verbatim below from
-        benchd_harness/scoring/llm_judge.py, clone of 2026-08-23). Counts with tiktoken's
+        benchd_harness/scoring/llm_judge.py, clone of 2026-08-23 at bd4824fe; benchdai/harness,
+        MIT licence, see benchmarks/benchd/NOTICE.md). Counts with tiktoken's
         o200k_base when installed (the gpt-4o-mini tokenizer), otherwise falls back to the
         harness's own estimator (words * 4 // 3) and says so. Prints totals, per-question means,
         the recall-token distribution that feeds Bench'd's BMI efficiency term, and a linear

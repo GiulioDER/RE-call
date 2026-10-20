@@ -12,6 +12,8 @@ taken from Mem0's own harness rather than reimplemented.
 | `prompts.py` | `benchmarks/beam/prompts.py` in [mem0ai/memory-benchmarks](https://github.com/mem0ai/memory-benchmarks) (Apache-2.0) | `4b61c5d31b9c668a12b4f5e78064248a02c82d2b` (2026-05-13) | `0833206ac40cddfa6067e047cde84bb541509c6199ddf177bdad8badfff0d969` |
 
 Vendored 2026-07-26. Only a header docstring was added; the prompt bodies are byte-identical.
+The Apache-2.0 licence text it is distributed under is in `LICENSE-mem0-memory-benchmarks.txt`
+beside it, and `NOTICE.md` records it together with the other prompts copied into this directory.
 Re-copy wholesale if upstream changes them — a prompt edit invalidates every cell produced with
 the old one, so it is a re-run, not a patch.
 
