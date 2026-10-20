@@ -14,18 +14,25 @@ Two shapes are recognised, and only these:
    colon (``Streaming online QA feedback:``), carrying a question, the model's answer and an outcome.
    Flat (``{"question", "predicted_answer", "score"}``) or AgentMemoryBench's result shape
    (``{"reward", "result": {"question", "predicted_answer", ...}}``).
-2. AgentMemoryBench's judge message, text that starts ``response: {"label": "CORRECT"|"WRONG"}``. An
-   Add that holds one beside at least one other message is a feedback unit as a whole, and a WRONG
-   verdict drops every message of it.
+2. AgentMemoryBench's judge unit (``src/server/tasks/locomo/task.py``): an optional system prompt,
+   the user message that ends with ``Question: ...`` and ``Answer:`` (memories may come before it),
+   the model's answer, then the judge message, text that starts
+   ``response: {"label": "CORRECT"|"WRONG"}``. The unit is the span from the nearest question turn
+   before the judge to the judge, plus a system message directly before that turn; a WRONG verdict
+   drops that span and nothing else, so dialogue sent in the same Add is stored. When the judge
+   messages of one Add disagree, none of them acts.
 
 A failed record that also carries a reference answer (``gold_answer`` and the like) is kept: it holds
-the correct answer, which is evidence.
+the correct answer, which is evidence, and so is a judge unit that holds such a record. ``answer``
+names the model's answer when it is the only answer field; beside a key that can only be the model's
+(``response``, ``predicted_answer``, ...), as in mem0's evaluation records, it is the reference.
 
 **A record is dropped only if its question is one this tenant was searched with earlier** (``asked``,
 fed by ``AskedQuestions``). Feedback can only be about a question the platform already asked, and
 outside Streaming a tenant is written before it is searched, so on ordinary data the guard cannot act
 at all. The memory of asked questions lives in the process (C9 serves from one worker): a restart
-empties it, which only switches the guard off for what follows, never on. Anything else, including a JSON object that lacks one of the
+empties it, and so does deleting the user, which only switches the guard off for what follows, never
+on. Anything else, including a JSON object that lacks one of the
 three parts, or whose outcome cannot be read or contradicts itself, is not a feedback record and is
 stored unchanged. Which format AML uses, if any, is not public and its organiser does not answer
 questions about it, so the guard is built so that a wrong guess costs nothing.
@@ -46,8 +53,9 @@ FEEDBACK_GUARD_ENV = "RECALL_AML_FEEDBACK_GUARD"
 Verdict = Literal["passed", "failed"]
 
 _QUESTION_KEYS = frozenset({"question", "query"})
-_ANSWER_KEYS = frozenset(
-    {"predicted_answer", "prediction", "predicted", "answer", "model_answer", "response", "output"}
+#: Keys that can only hold the model's answer; ``answer`` is read beside them (``record_verdict``).
+_MODEL_ANSWER_KEYS = frozenset(
+    {"predicted_answer", "prediction", "predicted", "model_answer", "response", "output"}
 )
 _OUTCOME_KEYS = (
     "score", "reward", "llm_score", "correct", "is_correct", "label", "verdict", "judgement", "judgment",
@@ -62,8 +70,10 @@ _FAILED_WORDS = frozenset({"wrong", "incorrect", "false", "no", "fail", "failed"
 _LABEL_LINE = re.compile(r"[^\n{}]{1,80}:[ \t]*\n")
 #: AgentMemoryBench's ``llm_judge`` tool message: ``response: {"label": "WRONG"}\nreasoning: ...``.
 _JUDGE = re.compile(r"\s*response:\s*(\{[^{}\n]*\})")
-#: The question line of an AgentMemoryBench answer turn: ``Question: ...`` then ``Answer:``.
-_QUESTION_LINE = re.compile(r"Question:\s*(.+?)\s*(?:\nAnswer:|$)", re.DOTALL)
+#: The start of a question line, as AgentMemoryBench writes it after any memories.
+_QUESTION_START = re.compile(r"^[ \t]*Question:", re.MULTILINE)
+#: What follows the last ``Question:`` of an answer turn: the question, then ``Answer:``.
+_FRAMED_QUESTION = re.compile(r"\s*(\S.*?)[ \t]*\nAnswer:", re.DOTALL)
 #: Below this many characters a question must match a searched query exactly; above it, one may
 #: contain the other (a query can carry the options or an instruction around the question).
 MIN_CONTAINED_CHARS = 20
@@ -106,6 +116,10 @@ class AskedQuestions:
         self._by_tenant[tenant] = seen
         while len(self._by_tenant) > self._max_tenants:
             self._by_tenant.popitem(last=False)
+
+    def forget(self, tenant: str) -> None:
+        """Drop what ``tenant`` was asked, so a user created again under its id starts empty."""
+        self._by_tenant.pop(tenant, None)
 
     def asked(self, tenant: str, question: str) -> bool:
         wanted = normalize_question(question)
@@ -200,7 +214,8 @@ def record_verdict(record: dict[str, Any]) -> FeedbackRecord | None:
     questions = [fields[k] for k in ("question", "query") if _filled(fields.get(k))]
     if not questions:
         return None
-    if not any(k in fields and fields[k] is not None for k in _ANSWER_KEYS):
+    model_answered = any(fields.get(k) is not None for k in _MODEL_ANSWER_KEYS)
+    if not model_answered and fields.get("answer") is None:
         return None
     present = [k for k in _OUTCOME_KEYS if k in fields]
     if not present:
@@ -210,7 +225,12 @@ def record_verdict(record: dict[str, Any]) -> FeedbackRecord | None:
         return None
     verdict = verdicts.pop()
     assert verdict is not None
-    return FeedbackRecord(verdict, any(_filled(fields.get(k)) for k in _REFERENCE_KEYS), str(questions[0]))
+    # Beside a key that can only be the model's answer, ``answer`` is the reference (mem0's
+    # evaluation records: ``{"question", "answer": gold, "response": model, "llm_score"}``).
+    reference = any(_filled(fields.get(k)) for k in _REFERENCE_KEYS) or (
+        model_answered and _filled(fields.get("answer"))
+    )
+    return FeedbackRecord(verdict, reference, str(questions[0]))
 
 
 def message_verdict(message: Any) -> FeedbackRecord | None:
@@ -240,13 +260,51 @@ def judge_verdict(message: Any) -> Verdict | None:
     return {"CORRECT": "passed", "WRONG": "failed"}.get(label)  # type: ignore[return-value]
 
 
-def unit_question(messages: list[Any]) -> str | None:
-    """The question of an AgentMemoryBench judge unit, from its ``Question: ...`` line."""
-    for message in messages:
-        match = _QUESTION_LINE.search(_text(getattr(message, "content", None)) or "")
-        if match:
-            return match.group(1)
-    return None
+def turn_question(message: Any) -> str | None:
+    """The question of a message that is an AgentMemoryBench answer turn, else None.
+
+    A turn ends with its question: after its last ``Question:`` line comes the question and then
+    ``Answer:`` (and the answer, when it is written in the same message), or the question alone on
+    that last line. Earlier ``Question:`` lines are memories, and a question line followed by
+    anything else is not a turn.
+    """
+    text = _text(getattr(message, "content", None)) or ""
+    starts = list(_QUESTION_START.finditer(text))
+    if not starts:
+        return None
+    tail = text[starts[-1].end():]
+    framed = _FRAMED_QUESTION.match(tail)
+    if framed:
+        return framed.group(1)
+    line = tail.strip()
+    return line if line and "\n" not in line else None
+
+
+def _carries_reference(message: Any) -> bool:
+    record = message_verdict(message)
+    return record is not None and record.has_reference
+
+
+def _judge_units(messages: list[Any], judged: list[Verdict | None]) -> list[tuple[range, str]]:
+    """Each judge message's unit: the span from its question turn to it, and that question.
+
+    A unit never reaches back past an earlier judge message, and a judge with no question turn
+    before it has no unit.
+    """
+    units: list[tuple[range, str]] = []
+    floor = 0
+    for end, verdict in enumerate(judged):
+        if verdict is None:
+            continue
+        for start in range(end - 1, floor - 1, -1):
+            question = turn_question(messages[start])
+            if question is not None:
+                if start > floor and getattr(messages[start - 1], "role", None) == "system":
+                    start -= 1
+                units.append((range(start, end + 1), question))
+                break
+        floor = end + 1
+    return units
 
 
 def filter_feedback(messages: list[Any], asked: Callable[[str], bool] | None = None) -> FeedbackFilter:
@@ -259,14 +317,27 @@ def filter_feedback(messages: list[Any], asked: Callable[[str], bool] | None = N
     def was_asked(question: str | None) -> bool:
         return asked is None or (question is not None and asked(question))
 
-    judged = [v for v in (judge_verdict(m) for m in messages) if v is not None]
-    if len(messages) > 1 and judged and len(set(judged)) == 1:
-        if judged[0] == "failed" and was_asked(unit_question(messages)):
-            return FeedbackFilter(kept=[], dropped=len(messages), passed=0)
-        return FeedbackFilter(kept=list(messages), dropped=0, passed=int(judged[0] == "passed"))
-    kept: list[Any] = []
+    judged = [judge_verdict(m) for m in messages]
+    verdicts = {v for v in judged if v is not None}
+    units = _judge_units(messages, judged) if len(verdicts) == 1 else []
+    in_unit: set[int] = set()
+    drop: set[int] = set()
     dropped = passed = 0
-    for message in messages:
+    for span, question in units:
+        in_unit.update(span)
+        if verdicts == {"passed"}:
+            passed += 1
+            continue
+        if not any(_carries_reference(messages[i]) for i in span) and was_asked(question):
+            drop.update(span)
+    kept: list[Any] = []
+    for index, message in enumerate(messages):
+        if index in drop:
+            dropped += 1
+            continue
+        if index in in_unit:
+            kept.append(message)
+            continue
         record = message_verdict(message)
         if (
             record is not None

@@ -56,6 +56,66 @@ moved.
   folding in ``normalize_question`` failed ``assert False`` on the upper-case question.
 - ``test_a_judge_unit_is_dropped_only_when_its_question_was_asked``: ``and
   was_asked(unit_question(messages))`` deleted. Failed: ``[] == [Message(...)]``.
+
+Red proofs, run 2026-10-20 on the remote test host (``sess-c9-fg-fix``, branch ``claude/c9-feedback-guard-fix-9bee2c``
+off ``43693e37``), same method, for the fix of three false drops found by the CCA hunt of the C9
+Full 2 build: U-45 (mem0's gold read as the model's answer), U-46 (a judge unit took the whole Add
+and its question ran to the end of the message), U-44 (a deleted user kept its asked questions).
+
+Baseline: the new tests run against ``43693e37``'s ``feedback_guard.py`` and ``service.py``, this file
+unchanged. Red there, each in its assertion:
+
+- ``test_a_mem0_record_with_the_gold_under_answer_is_kept``: ``([], 1) == ([Message(...)], 0)``.
+- ``test_the_feedback_shapes_the_guard_drops_stay_dropped[streamicl-memories]``: ``([Message(...)],
+  0) == ([], 3)`` (the old code read the first ``Question:`` line, a memory).
+- ``test_dialogue_sent_beside_a_wrong_judge_unit_is_stored``: ``([], 5) == ([Message(...)], 3)``.
+- ``test_a_question_line_followed_by_dialogue_is_not_an_answer_turn``: ``([], 3) == ([Message(...)],
+  0)``.
+- ``test_a_reference_sent_after_a_wrong_judge_unit_is_stored``: ``([], 4) == ([Message(...)], 3)``.
+- ``test_a_judge_unit_that_holds_the_reference_is_kept``: ``([], 4) == ([Message(...)], 0)``.
+- ``test_the_question_of_a_turn_is_its_last_not_a_memory_before_it``: ``([], 3) == ([Message(...)],
+  0)``.
+- ``test_deleting_a_user_forgets_what_it_was_asked``: ``assert False`` (the record was dropped).
+
+Green on the baseline, because the old code drops these shapes too, and each red under a mutation
+of the fixed code (the ``[id]`` is a case of
+``test_the_feedback_shapes_the_guard_drops_stay_dropped``):
+
+- ``[st1c-flat]``, ST-1c's measured shape: ``value > 0`` in ``_outcome`` made ``>= 0``. Failed:
+  ``([Message(...)], 0) == ([], 1)``.
+- ``[flat-answer-only]``: the ``answer`` key no longer read as an answer (``if not model_answered:``),
+  and ``answer`` always read as the reference (``model_answered and`` deleted). Both failed
+  ``([Message(...)], 0) == ([], 1)``.
+- ``[amb-result]``: the merge of outer outcome keys in ``record_verdict`` deleted. Failed:
+  ``([Message(...)], 0) == ([], 1)``.
+- ``[amb-judge-unit]``: ``drop.update(span)`` in ``filter_feedback`` made ``pass``. Failed:
+  ``([Message(...)], 0) == ([], 3)``.
+- ``[amb-system-and-memories]``: the system message before the turn left out (``if False:`` in
+  ``_judge_units``). Failed: ``([Message(...)], 3) == ([], 4)``.
+- ``[answer-inline]``: ``_FRAMED_QUESTION`` made to require ``Answer:`` at the end of the message.
+  Failed: ``([Message(...)], 0) == ([], 2)``.
+- ``[question-on-next-line]``: the whitespace ``_FRAMED_QUESTION`` allows before the question
+  narrowed to spaces and tabs. Failed: ``([Message(...)], 0) == ([], 3)``.
+- ``test_judge_verdicts_that_disagree_in_one_add_drop_nothing``: ``if len(verdicts) == 1`` made ``if
+  verdicts``. Failed: ``([], 6) == ([Message(...)], 0)``.
+
+Mutations of the fixed code that also turn the baseline-red tests red: ``starts[-1]`` made
+``starts[0]`` in ``turn_question`` (``[streamicl-memories]`` and
+``test_the_question_of_a_turn_is_its_last_not_a_memory_before_it``); the one-line rule at the end of
+``turn_question`` made ``return line or None`` (``test_a_question_line_followed_by_dialogue_is_not_an_answer_turn``);
+the reference check removed from the unit branch (``test_a_judge_unit_that_holds_the_reference_is_kept``,
+``([], 4) == ([Message(...)], 0)``); every unit made the whole Add
+(``test_dialogue_sent_beside_a_wrong_judge_unit_is_stored``, ``([], 5) == ...``, and
+``test_a_reference_sent_after_a_wrong_judge_unit_is_stored``, ``([Message(...)], 0) == ...``);
+``self._asked_questions.forget(tenant)`` in ``HostedService.delete_user`` made ``pass``
+(``test_deleting_a_user_forgets_what_it_was_asked``, ``assert False``).
+
+Re-anchored, since the fix removed the lines their 2026-10-10 mutations changed:
+``test_a_lone_judge_message_is_not_a_unit`` (a judge with no question turn given a unit of its own,
+failed ``[] == [Message(...)]``); ``test_a_judge_unit_is_dropped_only_when_its_question_was_asked``
+(``and was_asked(question)`` deleted, failed ``[] == [Message(...)]``);
+``test_a_wrong_judge_verdict_drops_the_whole_feedback_unit`` (``drop.update(span)`` made ``pass``,
+failed ``[Message(...)] == []``). Every case restored, the whole file: 41 passed.
 """
 
 from __future__ import annotations
@@ -73,7 +133,7 @@ from recall_aml.feedback_guard import (
     message_verdict,
 )
 from recall_aml.models import AddRequest, Message, TextContentPart
-from tests.test_aml_forget import _search, _service, _text
+from tests.test_aml_forget import _Repository as _ServiceRepository, _search, _service, _text
 
 PREFIX = "Streaming online QA feedback:\n"
 QUESTION = "Which city did Mara move to after the conference?"
@@ -305,3 +365,159 @@ def test_a_bad_value_stops_service_startup(monkeypatch) -> None:
     monkeypatch.setenv(FEEDBACK_GUARD_ENV, "yes")
     with pytest.raises(ValueError, match=FEEDBACK_GUARD_ENV):
         _service()
+
+
+# ---------------------------------------------------------------- 2026-10-20: false drops (U-44, U-45, U-46)
+
+OTHER = "What did Mara order at the cafe on Friday afternoon?"
+JUDGE_WRONG = 'response: {"label": "WRONG"}\nreasoning: the city differs'
+JUDGE_RIGHT = 'response: {"label": "CORRECT"}\nreasoning: matches'
+AMB_SYSTEM = "You are an intelligent memory assistant. Prioritize the most recent memory."
+
+
+def _asked_only(*questions: str):
+    """The service's own gate, for one tenant searched with exactly ``questions``."""
+    asked = AskedQuestions()
+    for question in questions:
+        asked.remember("t", question)
+    return lambda question: asked.asked("t", question)
+
+
+def _turn(question: str = QUESTION, memories: str = "") -> Message:
+    return Message(role="user", content=f"{memories}Question: {question}\nAnswer:")
+
+
+def test_a_mem0_record_with_the_gold_under_answer_is_kept() -> None:
+    """U-45: beside ``response``, ``answer`` is mem0's gold answer, so the record is evidence."""
+    message = Message(role="user", content=json.dumps(
+        {"question": QUESTION, "answer": "Porto", "response": WRONG, "category": 2, "llm_score": 0}
+    ))
+    result = filter_feedback([message], asked=lambda q: True)
+    assert (result.kept, result.dropped) == ([message], 0)
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        [_flat(0)],
+        [Message(role="user", content=_record(question=QUESTION, answer=WRONG, score=0))],
+        [Message(role="user", content=json.dumps(
+            {"status": "completed", "reward": 0, "result": {"question": QUESTION, "predicted_answer": WRONG}}
+        ))],
+        [_turn(), Message(role="assistant", content=WRONG), Message(role="tool", content=JUDGE_WRONG)],
+        [
+            Message(role="system", content=AMB_SYSTEM),
+            _turn(memories="Memories:\n\n--- Session 3 started at 1:56 pm on 8 May, 2023 ---\nMara: I moved.\n\n"),
+            Message(role="assistant", content=WRONG),
+            Message(role="tool", content=JUDGE_WRONG),
+        ],
+        [
+            _turn(memories=f"Memories:\n\nQuestion: {OTHER}\nAnswer: a flat white\n\n"),
+            Message(role="assistant", content=WRONG),
+            Message(role="tool", content=JUDGE_WRONG),
+        ],
+        [
+            Message(role="user", content=f"Question: {QUESTION}\nAnswer: {WRONG}"),
+            Message(role="tool", content=JUDGE_WRONG),
+        ],
+        [
+            Message(role="user", content=f"Question:\n{QUESTION}\nAnswer:"),
+            Message(role="assistant", content=WRONG),
+            Message(role="tool", content=JUDGE_WRONG),
+        ],
+    ],
+    ids=["st1c-flat", "flat-answer-only", "amb-result", "amb-judge-unit", "amb-system-and-memories",
+         "streamicl-memories", "answer-inline", "question-on-next-line"],
+)
+def test_the_feedback_shapes_the_guard_drops_stay_dropped(unit) -> None:
+    """Every shape the guard was built for, about a question asked earlier, is still dropped whole."""
+    result = filter_feedback(unit, asked=_asked_only(QUESTION))
+    assert (result.kept, result.dropped) == ([], len(unit))
+
+
+def test_dialogue_sent_beside_a_wrong_judge_unit_is_stored() -> None:
+    """U-46: the unit is the span from its question turn to its judge, not the whole Add."""
+    dialogue = [
+        Message(role="user", content="Mara: I finally booked the flights to Porto."),
+        Message(role="assistant", content="Lovely, when do you leave?"),
+    ]
+    unit = [_turn(), Message(role="assistant", content=WRONG), Message(role="tool", content=JUDGE_WRONG)]
+    result = filter_feedback(dialogue + unit, asked=_asked_only(QUESTION))
+    assert (result.kept, result.dropped) == (dialogue, 3)
+
+
+def test_a_question_line_followed_by_dialogue_is_not_an_answer_turn() -> None:
+    """U-46: the question was read to the end of the message, and then contained the asked one."""
+    messages = [
+        Message(role="user", content=f"Question: {QUESTION}\nMara: we should ask Leo about the venue."),
+        Message(role="assistant", content="Sure, I will."),
+        Message(role="tool", content=JUDGE_WRONG),
+    ]
+    result = filter_feedback(messages, asked=_asked_only(QUESTION))
+    assert (result.kept, result.dropped) == (messages, 0)
+
+
+_GOLD_RECORD = json.dumps(
+    {"reward": 0, "result": {"question": QUESTION, "gold_answer": ["Porto"], "predicted_answer": WRONG}}
+)
+
+
+def test_a_reference_sent_after_a_wrong_judge_unit_is_stored() -> None:
+    """U-46: the reference was dropped with the unit; now the unit goes and the reference stays."""
+    gold = Message(role="user", content=_GOLD_RECORD)
+    unit = [_turn(), Message(role="assistant", content=WRONG), Message(role="tool", content=JUDGE_WRONG)]
+    result = filter_feedback(unit + [gold], asked=_asked_only(QUESTION))
+    assert (result.kept, result.dropped) == ([gold], 3)
+
+
+def test_a_judge_unit_that_holds_the_reference_is_kept() -> None:
+    """U-46: the reference exemption holds for a judge unit as it does for a lone record."""
+    unit = [
+        _turn(),
+        Message(role="assistant", content=WRONG),
+        Message(role="user", content=_GOLD_RECORD),
+        Message(role="tool", content=JUDGE_WRONG),
+    ]
+    result = filter_feedback(unit, asked=_asked_only(QUESTION))
+    assert (result.kept, result.dropped) == (unit, 0)
+
+
+def test_the_question_of_a_turn_is_its_last_not_a_memory_before_it() -> None:
+    """A memory that quotes an asked question does not make a new question asked."""
+    unit = [
+        _turn(OTHER, memories=f"Memories:\n\nQuestion: {QUESTION}\nAnswer: Porto\n\n"),
+        Message(role="assistant", content="a cappuccino"),
+        Message(role="tool", content=JUDGE_WRONG),
+    ]
+    result = filter_feedback(unit, asked=_asked_only(QUESTION))
+    assert (result.kept, result.dropped) == (unit, 0)
+
+
+def test_judge_verdicts_that_disagree_in_one_add_drop_nothing() -> None:
+    messages = [
+        _turn(), Message(role="assistant", content=WRONG), Message(role="tool", content=JUDGE_WRONG),
+        _turn(OTHER), Message(role="assistant", content="a flat white"), Message(role="tool", content=JUDGE_RIGHT),
+    ]
+    result = filter_feedback(messages, asked=_asked_only(QUESTION, OTHER))
+    assert (result.kept, result.dropped) == (messages, 0)
+
+
+class _DeletableRepository(_ServiceRepository):
+    def delete_tenant(self, tenant):
+        count = sum(len(rows) for key, rows in self.chunks.items() if key.startswith(tenant))
+        for key in [key for key in self.chunks if key.startswith(tenant)]:
+            self.chunks.pop(key)
+        for key in [key for key in self.receipts if key[0] == tenant]:
+            self.receipts.pop(key)
+        return count
+
+
+def test_deleting_a_user_forgets_what_it_was_asked(monkeypatch) -> None:
+    """U-44: a user created again under a deleted id was never searched, so nothing is dropped."""
+    monkeypatch.setenv(FEEDBACK_GUARD_ENV, "1")
+    repository = _DeletableRepository()
+    service, _ = _service(repository)
+    _asked(service, "fg-deleted")
+    asyncio.run(service.delete_user("fg-deleted"))
+    _add(service, "fg-deleted", [_flat(0)], request_id="after-delete")
+    assert any(WRONG in text for text in _stored(repository))

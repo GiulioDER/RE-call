@@ -2363,6 +2363,9 @@ class HostedService:
                 return await asyncio.to_thread(self._repository.delete_tenant, tenant)
             finally:
                 self._invalidate_corpus_status(tenant, deleted=True)
+                # ST-1a: a user created again under this id was never searched. Forgetting on a
+                # failed delete too only switches the guard off for this tenant, never on.
+                self._asked_questions.forget(tenant)
                 await asyncio.to_thread(self._repository.release_request_lock, tenant_handle)
 
     async def _corpus_status(self, tenant: str) -> dict[str, object]:
