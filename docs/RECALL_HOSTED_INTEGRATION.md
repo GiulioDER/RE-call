@@ -223,9 +223,12 @@ its full commit hash.
 
 ### Models
 
-The only generative call is the Add compiler: OpenAI `gpt-4o-mini` through OpenRouter, with the
-fixed model identifier `openai/gpt-4o-mini`, temperature zero, and a JSON object response. In both
-Full 2 runs it is off, so they call no generative model at all. Search never calls one. Both Full 2
+The only generative model is OpenAI `gpt-4o-mini` through OpenRouter, with the fixed model
+identifier `openai/gpt-4o-mini`, temperature zero, and a JSON object response. It is called by the
+Add compiler, and by one readiness check at service start that compiles a fixed test sentence
+(`recall_aml/readiness.py`) and never sees evaluation data. In both Full 2 runs the compiler is off,
+so no generative model runs during Add or Search; the readiness check still runs at start. Search
+never calls one. Both Full 2
 runs also reorder candidates with the Voyage reranker `rerank-3`.
 
 The embedding models are Voyage AI models, one per route:
