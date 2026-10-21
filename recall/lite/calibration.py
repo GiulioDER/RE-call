@@ -77,7 +77,7 @@ from recall.eval.calibrate import measure_top_cosines
 from recall.lineage import canonical_json, canonical_sha256
 from recall.lite.store import LiteStoreError
 from recall.near_miss import describe as describe_near_miss
-from recall.near_miss import near_miss_coverage, near_miss_probes
+from recall.near_miss import UNAVAILABLE_MESSAGE, near_miss_coverage, near_miss_probes
 from recall.observability import get_logger
 
 if TYPE_CHECKING:
@@ -87,7 +87,7 @@ if TYPE_CHECKING:
 CREATED_BY = "recall-lite"
 _PLACEHOLDER_CHECKSUM = "0" * 64
 _log = get_logger("lite.calibration")
-_COVERAGE_UNAVAILABLE = "near-miss coverage unavailable; provisional for in-vocabulary near-misses"
+_COVERAGE_UNAVAILABLE = UNAVAILABLE_MESSAGE
 
 #: Past this corpus delta from the fit, a carried threshold is no longer served at all, however
 #: well it re-verifies. Between `DEFAULT_MAX_CORPUS_DELTA` (where a refit becomes due) and this, the

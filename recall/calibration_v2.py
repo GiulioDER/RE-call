@@ -23,8 +23,11 @@ from recall.embedding_core import profile_lineage_mismatch
 from recall.embeddings import Embedder
 from recall.lineage import PipelineIdentity, canonical_json, canonical_sha256
 from recall.errors import RecallError
+from recall.observability import get_logger
 
 ARTIFACT_VERSION = 2
+
+_log = get_logger("calibration")
 
 
 class CalibrationStatus(StrEnum):
@@ -1070,7 +1073,75 @@ class CalibrationRepository:
                     generation_id,
                     {"reason": runtime.certification_reason},
                 )
-        return self.get(calibration_id)
+        stored = self.get(calibration_id)
+        self._record_near_miss_coverage(stored, labels, embedder)
+        return stored
+
+    def _record_near_miss_coverage(
+        self,
+        artifact: CalibrationArtifactV2,
+        labels: Sequence[Mapping[str, Any]],
+        embedder: Embedder,
+    ) -> None:
+        """Measure near-miss coverage with a fresh fit and append it as an audit event. Fail-open.
+
+        The PostgreSQL side of the lite fit (`recall.lite.calibration.auto_calibrate`): probes are
+        built from this generation's own chunks and the fit's answerable questions
+        (`recall.near_miss.near_miss_probes`), scored at the threshold just fitted with the
+        unknown-term gate (`near_miss_coverage`), and stored by calibration id, counts only. It runs
+        after the artifact is saved and never touches it: certification, lifecycle and threshold
+        are decided before this line. A carried calibration is not measured, as on lite, so it reads
+        as unmeasured and provisional until the next fit.
+        """
+        from recall.generation_store import GenerationStore
+        from recall.near_miss import near_miss_coverage, near_miss_probes
+        from recall.support import COVERAGE_EVENT
+
+        try:
+            with self._connect() as conn:
+                texts = [
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s "
+                        "AND generation_id = %s ORDER BY chunk_id",
+                        (self.tenant_id, artifact.generation_id),
+                    ).fetchall()
+                ]
+            asked = [str(item["query"]) for item in labels if item.get("answerable") is True]
+            probes = near_miss_probes(texts, asked, per_class=len(asked))
+            store = GenerationStore(self.dsn, embedder.dim, tenant=self.tenant_id)
+            try:
+                with store.pin_generation(artifact.generation_id):
+                    report = near_miss_coverage(store, embedder, float(artifact.threshold), probes)
+            finally:
+                store.close()
+            with self._connect() as conn:
+                self._audit(
+                    conn, COVERAGE_EVENT, artifact.calibration_id, artifact.generation_id, report
+                )
+        except Exception as exc:  # BROAD-CATCH: fail-open
+            # The fit is already saved. Optional diagnostics cannot withdraw it, and provider
+            # errors may carry private input or credentials, so log only the type.
+            _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
+
+    def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
+        """The near-miss coverage measured with this calibration's fit, validated, or None.
+
+        Raises ValueError for a stored report that disagrees with the producer's count rules, so a
+        reader can report it unavailable rather than print it.
+        """
+        from recall.support import COVERAGE_EVENT, validated_coverage_report
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+                "AND event_type = %s AND payload->>'calibration_id' = %s "
+                "ORDER BY created_at DESC, event_id DESC LIMIT 1",
+                (self.tenant_id, COVERAGE_EVENT, calibration_id),
+            ).fetchone()
+        if row is None or not isinstance(row[0], Mapping):
+            return None
+        return validated_coverage_report(dict(row[0]), calibration_id)
 
     def carry_forward(
         self,

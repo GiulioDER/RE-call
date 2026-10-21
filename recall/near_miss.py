@@ -49,6 +49,10 @@ from recall.wizard.queryset import (
     _heading_of,
 )
 
+#: What status says when a calibration has no readable coverage report, lite and PostgreSQL alike.
+UNAVAILABLE_MESSAGE = "near-miss coverage unavailable; provisional for in-vocabulary near-misses"
+
+
 def _invented_codes(corpus_words: set[str], rng: random.Random, count: int) -> list[str]:
     """Codes like QK4817 that occur nowhere in the corpus, deterministic for the seed."""
     letters = "BCDFGHJKLMNPQRSTVWXZ"

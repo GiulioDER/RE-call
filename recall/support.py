@@ -16,6 +16,8 @@ _log = get_logger("support")
 PROVISIONAL_BAR = 0.90
 MIN_PROBES = 10
 CLASSES = ("unknown_entity", "in_vocabulary")
+#: The audit event a PostgreSQL calibration's coverage report is stored as (lite keeps it in meta).
+COVERAGE_EVENT = "calibration_near_miss_coverage"
 
 ELIGIBILITY_NOTE = (
     " Citable passages passed retrieval trust checks; this does not establish that they "

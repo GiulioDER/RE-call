@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 330
-Cross package edges: 346
-Source tree fingerprint: `578304fc9eea44adf039b4c12e6e8fd07717c5fcde2f0449b8859c06b64b5a3c`
+Cross package edges: 347
+Source tree fingerprint: `ef72e2b82cc03ed052a6a007533b68df4ea2a92ff77273beaea3beb410764f13`
 
 ## Highest fan in modules
 
@@ -86,21 +86,21 @@ Source tree fingerprint: `578304fc9eea44adf039b4c12e6e8fd07717c5fcde2f0449b8859c
 | 13 | `recall.reasoning` |
 | 13 | `recall_mcp.desktop_ingest` |
 | 13 | `recall_mcp.reasoning_api` |
+| 12 | `recall.cli_commands.calibration_cmd` |
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.doctor` |
 | 12 | `recall.eval.harness` |
+| 12 | `recall.generation_store` |
 | 12 | `recall.stated_facts` |
 | 12 | `recall.store` |
 | 12 | `recall_agent.memory` |
-| 11 | `recall.cli_commands.calibration_cmd` |
+| 11 | `recall.calibration_v2` |
 | 11 | `recall.cli_commands.generation_cmd` |
 | 11 | `recall.cli_commands.provenance_cmd` |
 | 11 | `recall.cli_commands.reasoning_cmd` |
 | 11 | `recall.desktop.ui` |
-| 11 | `recall.generation_store` |
 | 11 | `recall.lite.calibration` |
 | 11 | `recall.wizard.pipeline` |
-| 11 | `recall_mcp.lifecycle` |
 
 ## Cross package edges
 
@@ -441,6 +441,7 @@ They are observations, not automatic failures.
 | `recall_mcp.status` | `recall.generations` |
 | `recall_mcp.status` | `recall.lite` |
 | `recall_mcp.status` | `recall.lite.calibration` |
+| `recall_mcp.status` | `recall.near_miss` |
 | `recall_mcp.status` | `recall.near_miss_certificate` |
 | `recall_mcp.status` | `recall.observability` |
 | `recall_mcp.status` | `recall.store` |
@@ -474,7 +475,7 @@ They are observations, not automatic failures.
 | `recall.build_progress` | 0 | 0 |
 | `recall.cache` | 2 | 12 |
 | `recall.calibration` | 3 | 13 |
-| `recall.calibration_v2` | 8 | 85 |
+| `recall.calibration_v2` | 11 | 85 |
 | `recall.capabilities` | 0 | 0 |
 | `recall.check` | 4 | 23 |
 | `recall.claude_code` | 5 | 105 |
@@ -482,7 +483,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._shared` | 10 | 96 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
-| `recall.cli_commands.calibration_cmd` | 11 | 120 |
+| `recall.cli_commands.calibration_cmd` | 12 | 120 |
 | `recall.cli_commands.dashboard_cmd` | 4 | 140 |
 | `recall.cli_commands.doctor_cmd` | 1 | 133 |
 | `recall.cli_commands.extract_rewrite` | 12 | 112 |
@@ -590,7 +591,7 @@ They are observations, not automatic failures.
 | `recall.fix` | 6 | 22 |
 | `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 86 |
-| `recall.generation_store` | 11 | 85 |
+| `recall.generation_store` | 12 | 85 |
 | `recall.generation_types` | 2 | 13 |
 | `recall.generations` | 20 | 85 |
 | `recall.graph_first` | 2 | 25 |
@@ -785,7 +786,7 @@ They are observations, not automatic failures.
 | `recall_mcp.service` | 59 | 160 |
 | `recall_mcp.settings` | 7 | 100 |
 | `recall_mcp.stale_reports_api` | 3 | 111 |
-| `recall_mcp.status` | 7 | 86 |
+| `recall_mcp.status` | 8 | 86 |
 | `recall_mcp.stores` | 7 | 87 |
 | `recall_mcp.tool_surface` | 1 | 1 |
 | `recall_mcp.translation` | 3 | 7 |

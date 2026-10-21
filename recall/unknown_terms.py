@@ -17,8 +17,12 @@ lacks. It does not cover a near-miss built entirely from the memory's own words 
 portal named in Amendment A-1"); that needs a reader, not a vocabulary.
 
 The check needs a store that can say whether a term occurs anywhere in it: ``unknown_terms``.
-The lite store answers from its FTS5 vocabulary. A store without the method is skipped and the
-result says so (``unknown_term_check="unavailable"``); nothing about its verdicts changes.
+The lite store answers from its FTS5 vocabulary, and a PostgreSQL ``GenerationStore`` from the
+active generation's own full-text index (``tsv``). A store without the method (the legacy
+PostgreSQL route) is skipped and the result says so (``unknown_term_check="unavailable"``); nothing
+about its verdicts changes. A scoped request, which includes every request constrained by a source
+security policy, is reported unavailable too, because a whole-store vocabulary would disclose what
+the caller's denied sources contain.
 ``RECALL_UNKNOWN_TERM_GATE=0`` switches the gate off and the result says that too.
 """
 

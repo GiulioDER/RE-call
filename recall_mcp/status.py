@@ -103,14 +103,38 @@ def calibration_status(store: PgVectorStore) -> dict[str, object]:
     if not matching:
         matching = [item for item in records if str(item.get("generation_id")) == generation_id]
     record = repository.show_record(str(matching[0]["calibration_id"])) if matching else {}
+    message = str(record.get("certification_reason", ""))
+    coverage: dict[str, object] = {}
+    if record:
+        coverage = _coverage_status(repository, str(record["calibration_id"]))
+        message += "; " + str(coverage.pop("_message"))
     return {
         "tenant": store.tenant,
         "generation_id": generation_id,
         "status": resolution,
-        "message": str(record.get("certification_reason", "")),
+        "message": message,
         **record,
+        **coverage,
         **(_near_miss_status(repository, str(record["calibration_id"])) if record else {}),
     }
+
+
+def _coverage_status(repository: CalibrationRepository, calibration_id: str) -> dict[str, object]:
+    """The fit's synthetic near-miss coverage, as lite status reports it. Read only, fail-open.
+
+    Same key, same report shape and same message as `recall.lite.calibration.status_report`; a
+    calibration measured at no fit (a carried one) reads as unavailable and provisional.
+    """
+    from recall.near_miss import UNAVAILABLE_MESSAGE, describe
+
+    try:
+        report = repository.near_miss_coverage(calibration_id)
+        message = describe(report) if report else UNAVAILABLE_MESSAGE
+    except Exception as exc:  # BROAD-CATCH: fail-open, an optional report never fails status
+        _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
+        report = None
+        message = UNAVAILABLE_MESSAGE
+    return {"near_miss_coverage": report, "_message": message}
 
 
 def _near_miss_status(

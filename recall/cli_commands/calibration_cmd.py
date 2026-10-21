@@ -303,6 +303,10 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
             print(f"pipeline: {artifact.pipeline_fingerprint}")
             print(f"corpus: {artifact.corpus_fingerprint}")
             print(f"queries: {artifact.query_set_digest}")
+            from recall.near_miss import UNAVAILABLE_MESSAGE, describe as describe_coverage
+
+            coverage = repository.near_miss_coverage(artifact.calibration_id)
+            print(describe_coverage(coverage) if coverage else UNAVAILABLE_MESSAGE)
         elif args.calibration_cmd == "carry-forward":
             bound = (
                 DEFAULT_MAX_CORPUS_DELTA

@@ -151,6 +151,11 @@ def test_cross_tenant_access_and_import_are_rejected(calibration_tenant, tmp_pat
 
 @requires_db
 def test_new_corpus_is_stale_and_reusing_labels_recomputes_every_score(calibration_tenant) -> None:
+    """Changed 2026-10-21: a fit now also embeds near-miss probes, so labels are counted by text.
+
+    Red proof, on a Linux host against a throwaway pg18 container: `calibrate` scoring its labels
+    twice failed in "a label was reused rather than re-scored, or scored twice"; restored, green.
+    """
     tenant, manager = calibration_tenant
     embedder = _CalibrationEmbedder()
     first = _ready(manager, embedder, b"answer corpus v1", "v1")
@@ -165,9 +170,21 @@ def test_new_corpus_is_stale_and_reusing_labels_recomputes_every_score(calibrati
     manager.promote(second, unsafe_development=True)
     assert repository.resolve(second).status == CalibrationStatus.STALE
 
-    calls_before = embedder.calls
+    # Every label is scored again, exactly once. Counted by text, not by calls: a fit also embeds
+    # its near-miss probes (`_record_near_miss_coverage`), which are not labels.
+    embedded: list[str] = []
+    original_embed = embedder.embed
+
+    def recording(texts: list[str]) -> list[list[float]]:
+        embedded.extend(texts)
+        return original_embed(texts)
+
+    embedder.embed = recording  # type: ignore[method-assign]
     second_artifact = repository.calibrate(second, labels, embedder)
-    assert embedder.calls - calls_before == len(labels)
+    label_texts = sorted(str(item["query"]) for item in labels)
+    assert sorted(text for text in embedded if text in set(label_texts)) == label_texts, (
+        "a label was reused rather than re-scored, or scored twice"
+    )
     assert second_artifact.calibration_id != first_artifact.calibration_id
     assert second_artifact.query_set_digest == first_artifact.query_set_digest
     assert second_artifact.corpus_fingerprint != first_artifact.corpus_fingerprint

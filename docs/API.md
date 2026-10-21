@@ -32,7 +32,9 @@ only from returned hits whose verdict and provenance satisfy the caller's policy
 ## Unknown-term vocabulary check
 
 `trusted_search` checks entity-like query tokens when the store supports a global vocabulary
-lookup. Lite supports it through FTS5; PostgreSQL does not. The heuristic selects tokens of at
+lookup. Lite supports it through FTS5, and a PostgreSQL generation store through the active
+generation's full-text index (`tsv`, its own configuration); the legacy PostgreSQL route does not.
+The heuristic selects tokens of at
 least three characters containing a letter and a digit, all-capital names, or an inner capital.
 Plain words are not checked. An absent token demotes otherwise `ok` hits to `unknown_term` and
 the result abstains. Other verdicts and raw candidate scores retain their existing meaning.

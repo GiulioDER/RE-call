@@ -42,6 +42,21 @@ questions that use the corpus's own vocabulary and still have no answer in it. W
 has been measured it separates far worse (LongMemEval per-question haystacks: AUC 0.753,
 `results/FINDINGS.md`). Status prints this as `certificate_population`.
 
+## PostgreSQL near-miss coverage
+
+Every PostgreSQL fit (`recall calibration calibrate`, and the refit inside `recall calibration
+auto`) measures the same synthetic near-miss coverage as a Lite fit, right after the artifact is
+saved: unknown-entity and in-vocabulary probes built from the generation's own chunks and the
+fit's answerable questions, scored at the threshold just fitted with the unknown-term check. The
+report has the Lite shape and rules (`MIN_PROBES`, `PROVISIONAL_BAR`), is stored as one
+`calibration_near_miss_coverage` audit event bound to the calibration ID (counts only), and is
+reported as `near_miss_coverage` in `recall_calibration_status`, in the status message, and as
+`calibration_coverage` beside every search. Measuring it embeds about twice as many probe
+questions as the fit has answerable ones. It never changes the threshold or the certification
+decision, and a failure to measure leaves the saved fit untouched and reads as unavailable. A
+carried-forward calibration is not measured, as on Lite, so it reads as unavailable and
+provisional until the next fit.
+
 ## PostgreSQL near-miss certificate
 
 A second certificate can be measured for any PostgreSQL calibration against a held-out set of
@@ -58,7 +73,7 @@ The questions are scored by the calibration sampling rule (the exact best cosine
 calibration's own generation) and compared with the answerable scores the artifact stores, at its
 threshold. The report keeps the Lite near-miss shape: the held-out questions are its
 `in_vocabulary` class, with the same `provisional_in_vocabulary` rule, and `unknown_entity` is
-`unmeasured` because PostgreSQL has no unknown-term gate. It adds `separability` with its
+`unmeasured` because held-out questions are not built around invented codes. It adds `separability` with its
 95% interval against the stored answerable class, `false_confirm_rate` (the fraction of near-miss
 questions at or above the threshold, which serving would answer), and `certified` under the same
 bars as the calibration itself (20 per class, interval lower bound at least 0.90).
