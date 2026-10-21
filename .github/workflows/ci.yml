@@ -932,17 +932,18 @@ jobs:
         # imports it. Keep the exception narrow and temporary, while every other resolved package
         # remains a hard gate. Remove it as soon as the upstream fixed release is published.
         #
-        # The twenty-five pillow CVEs are fixed only in pillow 13.0.0, and fastembed (0.9.0
+        # The twenty-eight pillow CVEs are fixed only in pillow 13.0.0, and fastembed (0.9.0
         # included, checked 2026-10-21) requires pillow<13, so no lock can reach the fix. They are
-        # every advisory OSV listed for pillow 12.3.0 at 21:40 UTC on 2026-10-21; they were
+        # every advisory OSV listed for pillow 12.3.0 at 21:50 UTC on 2026-10-21; they were
         # published over two days, so a later one can still fail this job. Remove all of them as
         # soon as a fastembed release lifts that cap and the lock moves to pillow 13.
         run: >-
           uvx pip-audit --requirement requirements.lock.txt --no-deps
           --ignore-vuln CVE-2026-69112
           --ignore-vuln CVE-2026-112390 --ignore-vuln CVE-2026-112391
-          --ignore-vuln CVE-2026-112392 --ignore-vuln CVE-2026-112394
-          --ignore-vuln CVE-2026-112395 --ignore-vuln CVE-2026-112397
+          --ignore-vuln CVE-2026-112392 --ignore-vuln CVE-2026-112393
+          --ignore-vuln CVE-2026-112394 --ignore-vuln CVE-2026-112395
+          --ignore-vuln CVE-2026-112396 --ignore-vuln CVE-2026-112397
           --ignore-vuln CVE-2026-112399 --ignore-vuln CVE-2026-112400
           --ignore-vuln CVE-2026-112401 --ignore-vuln CVE-2026-112402
           --ignore-vuln CVE-2026-112403 --ignore-vuln CVE-2026-112404
@@ -952,7 +953,7 @@ jobs:
           --ignore-vuln CVE-2026-112895 --ignore-vuln CVE-2026-112896
           --ignore-vuln CVE-2026-112897 --ignore-vuln CVE-2026-112898
           --ignore-vuln CVE-2026-112899 --ignore-vuln CVE-2026-112900
-          --ignore-vuln CVE-2026-112901
+          --ignore-vuln CVE-2026-112901 --ignore-vuln CVE-2026-112902
 
       # `always()` so a CVE finding cannot hide lockfile drift either.
       - name: Fail if the lockfile had drifted
