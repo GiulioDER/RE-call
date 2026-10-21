@@ -22,6 +22,7 @@ from recall.setup import CalibrationResult
 from recall.cli_commands._shared import _make_embedder
 
 if TYPE_CHECKING:
+    from recall.calibration_v2 import CalibrationRepository
     from recall.lite import LiteStore
 
 
@@ -142,6 +143,32 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     p_cal_auto.add_argument("--json", action="store_true")
 
+    p_cal_near = calibration_sub.add_parser(
+        "near-miss",
+        help="score held-out in-domain near-miss questions against a calibration; a report, "
+        "never a gate (without --queries, print the stored report)",
+    )
+    p_cal_near.add_argument(
+        "--calibration",
+        dest="calibration_id",
+        default=None,
+        help="calibration to measure (default: the one serving the active generation)",
+    )
+    p_cal_near.add_argument(
+        "--queries",
+        dest="query_file",
+        default=None,
+        help="JSON array of {query, answerable: false}, reviewed by a person and held out from "
+        "any fit; its text is never stored, only its digest",
+    )
+    p_cal_near.add_argument(
+        "--no-record",
+        dest="record",
+        action="store_false",
+        help="measure and print without appending the report to the audit ledger",
+    )
+    p_cal_near.add_argument("--json", action="store_true")
+
     calibration_sub.add_parser("list")
     p_cal_show = calibration_sub.add_parser("show")
     p_cal_show.add_argument("calibration_id")
@@ -185,6 +212,13 @@ def _cmd_calibration_lite(args: argparse.Namespace) -> None:
     if (refusal := lite_route_refusal(args.dsn, route)) is not None:
         raise SystemExit(refusal)
     command = args.calibration_cmd
+    if command == "near-miss":
+        raise SystemExit(
+            f"recall calibration near-miss: not available on a lite store ({args.dsn}). A lite "
+            "store measures its own near-miss coverage every time it calibrates and reports it "
+            "in recall_calibration_status and beside every `recall search`; scoring a held-out "
+            "near-miss set needs the full (PostgreSQL) install."
+        )
     if command not in _LITE_CALIBRATION_COMMANDS:
         raise SystemExit(
             f"recall calibration {command}: not available on a lite store ({args.dsn}). A lite "
@@ -254,6 +288,8 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
             print(repository.export_bundle(args.calibration_id, args.output))
         elif args.calibration_cmd == "import":
             print(repository.import_bundle(args.path))
+        elif args.calibration_cmd == "near-miss":
+            _cmd_near_miss(args, repository)
         elif args.calibration_cmd == "calibrate":
             labels, _digest = load_query_set(args.query_file)
             artifact = repository.calibrate(
@@ -385,6 +421,50 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
             raise SystemExit(f"unknown calibration subcommand: {args.calibration_cmd}")
     except CalibrationError as exc:
         raise SystemExit(str(exc)) from exc
+
+
+def _cmd_near_miss(args: argparse.Namespace, repository: CalibrationRepository) -> None:
+    """`recall calibration near-miss`: measure or print the near-miss certificate. Never a gate."""
+    from recall.calibration_v2 import CalibrationStatus, load_query_set
+    from recall.generations import GenerationManager, NoActiveGeneration
+    from recall.near_miss_certificate import CERTIFICATE_POPULATION, describe
+
+    calibration_id = args.calibration_id
+    if calibration_id is None:
+        try:
+            generation_id = GenerationManager(args.dsn, args.tenant).active_generation_id()
+        except NoActiveGeneration as exc:
+            raise SystemExit(f"no active generation for tenant {args.tenant!r}; pass --calibration") from exc
+        resolution = repository.resolve(generation_id)
+        if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
+            raise SystemExit(
+                f"the active generation's calibration is {resolution.status.value}, not serving a "
+                "certified threshold; pass --calibration to measure a specific artifact"
+            )
+        calibration_id = resolution.artifact.calibration_id
+    if args.query_file is None:
+        report = repository.near_miss_report(calibration_id)
+    else:
+        labels, _digest = load_query_set(args.query_file)
+        report = repository.measure_near_miss(
+            calibration_id, labels, _make_embedder(args.embedder), record=args.record
+        )
+    if args.json:
+        print(json.dumps({"calibration_id": calibration_id, "near_miss_coverage": report},
+                         indent=2, default=str))
+        return
+    print(f"calibration: {calibration_id}")
+    if report is not None:
+        print(f"generation: {report.get('generation_id')}")
+        print(f"near-miss set: {report.get('query_set_digest')}")
+        rate = report.get("false_confirm_rate")
+        if rate is not None:
+            print(f"false confirm at the threshold: {rate:.1%} of {report['in_vocabulary']['n']}")
+        print(f"certificate: {report.get('certification_reason')}")
+    print(describe(report))
+    print(f"the calibration's own certificate: {CERTIFICATE_POPULATION}")
+    if args.query_file is not None:
+        print("recorded in the audit ledger" if args.record else "not recorded (--no-record)")
 
 
 def _cmd_calibrate(args: argparse.Namespace) -> None:
