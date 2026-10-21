@@ -172,7 +172,7 @@ or other infrastructure identifier.
 
 `active_components` is the field that shows which stages run. `retrieval_profile` is a fixed label
 present in every build. `reranker` names the reranker model the service loaded (`voyage:rerank-3` at
-`b712ec33`), and only `active_components.reranker` says whether it runs.
+`625b7138`), and only `active_components.reranker` says whether it runs.
 
 ### `POST /v1/delete`
 
@@ -193,15 +193,17 @@ in this repository.
 |---|---|---|---|---|
 | Textual | Full 1 | `3eb447c4ea1f04f41f941ad8f089c9a02106e763` | `aml-c2-full1-textual` | on |
 | Coding | Full 1 | `1f8666df2b04c34efd33153f0751c624fb17b8f6` | `aml-c2-full1-coding` | on |
-| Multimodal | Full 2 | `b712ec3304404e6016d02229afb3e3e6df9715f0` | `aml-c2-full2-b712ec33` | off |
-| Textual | Full 2 | `b712ec3304404e6016d02229afb3e3e6df9715f0` | `aml-c2-full2-b712ec33` | off |
+| Multimodal | Full 2 | `625b71381c2f5c7de6d34c8dc5b9f45e08370b58` | `aml-c2-full2-625b7138` | off |
+| Textual | Full 2 | `625b71381c2f5c7de6d34c8dc5b9f45e08370b58` | `aml-c2-full2-625b7138` | off |
 
 Both Full 2 runs also set `RECALL_AML_ROUTE_GATES=data`, `RECALL_AML_T1_GATE=content`,
 `RECALL_AML_T1_RENDER=v2`, `RECALL_AML_COMPILER=0`, `RECALL_AML_RERANKER=1`,
 `RECALL_AML_RERANK_MODEL=rerank-3` and `RECALL_AML_FEEDBACK_GUARD=1`, so `/version` reports
 `route_gates` `data`, `multimodal_scope` `dual`, `reranker` `voyage:rerank-3`, and
 `active_components.compiler` `false` and `active_components.reranker` `true`. The tag
-`aml-c2-full2` on `225e7509` marks an earlier plan for Multimodal Full 2; no run uses it.
+`aml-c2-full2` on `225e7509` marks an earlier plan for Multimodal Full 2; no run uses it. The tag
+`aml-c2-full2-b712ec33` marks the build served from 2026-10-20 until `625b7138` replaced it on
+2026-10-21; both Full 2 runs use `625b7138`.
 
 Two builds are outside this table. The first Adds of Textual Full 1 were served by the earlier
 build `efb79146` (tag `aml-c2-full1-textual-early`) before `3eb447c4` was deployed. Multimodal
@@ -209,9 +211,12 @@ Full 1 ran the earlier variant `C8_routed_specialists_grounded_graph` at `5d82b5
 `aml-c2-full1-multimodal`), with the compiler on.
 
 C9's fields are `HostedVariant` in `recall_aml/variants.py`. The three commits define it the same
-way except where the sections below name a commit. `b712ec33` is `225e7509` plus two switches, both
-off unless set: the reranker switch (`recall_aml/rerank_switch.py`) and the feedback rule
-(`recall_aml/feedback_guard.py`).
+way except where the sections below name a commit. `625b7138` is `225e7509` plus two switches, both
+off unless set, the reranker switch (`recall_aml/rerank_switch.py`) and the feedback rule
+(`recall_aml/feedback_guard.py`), and the fixes of a code audit: a compiler switched off is neither
+required nor probed at start, an image-only query is not reranked, the reranker has a 15 second
+timeout, every Search has one time budget (`recall_aml/search_deadline.py`), and an unreadable image
+is dropped from an Add rather than failing it.
 
 ### License
 
@@ -225,11 +230,10 @@ its full commit hash.
 
 The only generative model is OpenAI `gpt-4o-mini` through OpenRouter, with the fixed model
 identifier `openai/gpt-4o-mini`, temperature zero, and a JSON object response. It is called by the
-Add compiler, and by one readiness check at service start that compiles a fixed test sentence
-(`recall_aml/readiness.py`) and never sees evaluation data. In both Full 2 runs the compiler is off,
-so no generative model runs during Add or Search; the readiness check still runs at start. Search
-never calls one. Both Full 2
-runs also reorder candidates with the Voyage reranker `rerank-3`.
+Add compiler and, when the compiler is on, by one readiness check at service start that compiles a
+fixed test sentence (`recall_aml/readiness.py`) and never sees evaluation data. In both Full 2 runs
+the compiler is off, so no generative model runs during Add, Search or service start. Search never
+calls one. Both Full 2 runs also reorder candidates with the Voyage reranker `rerank-3`.
 
 The embedding models are Voyage AI models, one per route:
 
@@ -287,7 +291,8 @@ a fixed window order.
 
 After fusion, atomic rescue can lift the parent window of an atomic view that matches the query,
 never into the first five positions. In the Full 2 runs, Voyage `rerank-3` then reorders the whole
-candidate pool; a reranker failure serves the fused order. Graph promotion then lets the compiled records nearest the
+candidate pool, except for a query that is only an image, which keeps its fused order; a reranker
+failure or timeout serves the fused order. Graph promotion then lets the compiled records nearest the
 query move at most two raw windows they reference, which must already be in the ranking, never
 into the first eight positions; if it fails, the raw ranking is served. The image leg fuses
 `voyage-multimodal-3.5` hits into the ranking: under the default route gates (Textual and Coding
@@ -295,7 +300,9 @@ Full 1) on the multimodal route only, and under `data` (both Full 2 runs) on eve
 tenant that holds image vectors. A tenant without images gets the text ranking unchanged.
 
 Compiled records that a later record supersedes are left out unless the query asks about the
-past. An image-bearing message is returned as its ordered parts with its original images. Every
+past. An image-bearing message is returned as its ordered parts with its original images; from
+`625b7138`, an image that only the image leg found is returned as its image, not as placeholder
+text. Every
 item carries the time of its source messages in `created_at`, and each text item's content begins
 with that date.
 
@@ -321,13 +328,20 @@ database work must complete before the caller's 45 second integration timeout. S
 a 10 second transport timeout, while the release gate requires a measured Search p95 below 5
 seconds and Add p95 below 30 seconds. HTTP 422 is permanent to the caller, so it is reserved for input
 that can never be accepted: invalid JSON, a body over 44 MiB, a missing or blank `request_id`,
-`user_id` or `session_id`, and a malformed or oversized image. Everything else the service can store
-or answer is accepted: unknown fields are ignored, `content: null` and blank messages are dropped,
+`user_id` or `session_id`, a malformed or oversized image, an Add in which no part can be read, and a
+Search query image that cannot be decoded. An image that passes admission but cannot be decoded is
+dropped from an Add that holds anything else readable; the rest of the Add is stored. Everything else
+the service can store or answer is accepted: unknown fields are ignored, `content: null` and blank
+messages are dropped,
 an unreadable `timestamp` is dropped, `top_k` is clamped to 0 through 100 (`null` means 100), a
 query over 20,000 characters keeps its first 10,000 and last 9,999, and a blank query or
 `top_k: 0` returns an empty `data` list. A failure inside the service returns a retryable 503; so
 does an Add answered pending (`X-Recall-Add-Pending: 1`, see `POST /v1/add`), which is not a failure,
-and an Add answered `tenant_busy` (`Retry-After: 60`, see `POST /v1/add`), which stored nothing.
+and an Add answered `tenant_busy` (`Retry-After: 60`, see `POST /v1/add`), which stored nothing. A
+Search whose query embedding does not answer within the service's Search time budget (90 seconds)
+returns 503 `{"error": "search_deadline"}` with `Retry-After: 5`; it is safe to resend. Within that
+budget a rerank or image search that runs out of time is skipped, and a query with text is served
+its text ranking.
 Authentication failures return HTTP 401.
 
 The C8 and C9 compiler makes at most three provider attempts, twelve seconds each, and sends every
