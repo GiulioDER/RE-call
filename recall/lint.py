@@ -80,6 +80,10 @@ def sentence_around(text: str, start: int, end: int) -> str:
     return text[left: following.start() if following else len(text)]
 
 
+#: The name `recall.dashboard.triage` imports.
+_sentence_around = sentence_around
+
+
 def closure_marker_naming_a_memo(prose: str) -> re.Match[str] | None:
     """The first closure marker that shares a sentence with a reference to another memo, else None.
 
