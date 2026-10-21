@@ -13,7 +13,7 @@ from typing import Any
 from recall.frontmatter import supersedes_key
 from recall.lineage import canonical_sha256
 from recall.reasoning_graph import EVIDENCE_TEXT_METADATA_KEY, ReasoningGraphNode, ReasoningGraphProjection
-from recall.supersession_cues import clause_head, unasserted
+from recall.supersession_cues import sentence_head, unasserted
 from recall.reasoning_proposals.types import (
     DETERMINISTIC_MODEL_ID,
     DETERMINISTIC_PROVIDER_ID,
@@ -149,7 +149,15 @@ _DIRECT_REF_RE = re.compile(
 #: A document named as the subject before a cue: "new.md replaces old.md", "[[new]] supersedes".
 #: Only explicit forms, because a bare word ("the team replaces ...") would resolve against any
 #: memo that happens to share its stem.
-_SUBJECT_REF_RE = re.compile(r"\[\[(?P<wiki>[^\]\n]+)\]\]|`?(?P<file>[\w./\-]+\.md)\b`?")
+_SUBJECT_REF_RE = re.compile(
+    r"\[\[(?P<wiki>[^\]\n]{1,200})\]\]|`?(?<![\w./\-])(?P<file>[\w./\-]+\.md)\b`?"
+)
+#: What may stand between a named subject and its cue: "new.md replaces", "`new.md` now
+#: replaces", "new.md, which replaces". Anything else ("Per new.md this replaces") means the
+#: document is not the subject.
+_IMMEDIATE_SUBJECT_GAP = re.compile(
+    r"[\s`'\"*_]*(?:,\s*(?:which|that)\s+)?(?:(?:now|also)\s+)?", re.IGNORECASE
+)
 _POSITIVE_VALIDITY_RE = re.compile(r"\b(enabled|active|valid|approved|ship|on)\b", re.IGNORECASE)
 _NEGATIVE_VALIDITY_RE = re.compile(
     r"\b(disabled|inactive|invalid|rejected|blocked|off)\b", re.IGNORECASE
@@ -332,13 +340,15 @@ def _direct_reference_proposals(
         for match in _DIRECT_REF_RE.finditer(text):
             matched_target = match.group("target").rstrip(".,;:)")
             target_span = (match.start("target"), match.start("target") + len(matched_target))
-            # "This draft never supersedes old.md" names the relation without asserting it.
-            if unasserted(text, match.span("cue"), target_span):
-                continue
+            # The O(1) lookup first: most cue words name no memo, and the cue check reads the
+            # text around the cue.
             target = unique(matched_target)
             if target is None:
                 continue
-            superseder = _named_subject(text, match.start("cue"), target_span, unique, file)
+            # "This draft never supersedes old.md" names the relation without asserting it.
+            if unasserted(text, match.span("cue"), target_span):
+                continue
+            superseder = _named_subject(text, match.start("cue"), unique, file)
             if superseder is None or target == superseder or (target, superseder) in authored:
                 continue
             reported = superseder != file
@@ -374,27 +384,30 @@ def _direct_reference_proposals(
 def _named_subject(
     text: str,
     cue_start: int,
-    target_span: tuple[int, int],
     unique: Callable[[str], str | None],
     holder: str,
 ) -> str | None:
     """The document that supersedes in a direct reference, or None when it cannot be told.
 
-    The file holding the sentence, unless the clause before the cue names a document: "new.md
+    The file holding the sentence, unless the sentence before the cue names a document. "new.md
     replaces old.md" in meeting notes is new.md replacing old.md, and taking the notes as the
-    superseder demoted old.md beneath a memo that never claimed it. A named subject that does not
-    resolve to exactly one file, or two named subjects, leave the superseder unknown.
+    superseder demoted old.md beneath a memo that never claimed it. A named document counts as the
+    subject only when it sits right before the cue: in "Per [[meeting]] this replaces old.md" and
+    "new.md, approved Monday, replaces old.md" the subject cannot be told from the words, so the
+    superseder is unknown rather than guessed either way. Two named documents, or one that does not
+    resolve to exactly one file, leave it unknown too.
     """
-    start, end = clause_head(text, cue_start, (target_span,))
-    named = {
-        match.group("wiki") or match.group("file")
-        for match in _SUBJECT_REF_RE.finditer(text, start, end)
-    }
+    head = sentence_head(text, cue_start)
+    if head is None:
+        return None
+    start, end = head
+    named = list(_SUBJECT_REF_RE.finditer(text, start, end))
     if not named:
         return holder
-    if len(named) > 1:
+    names = {match.group("wiki") or match.group("file") for match in named}
+    if len(names) > 1 or not _IMMEDIATE_SUBJECT_GAP.fullmatch(text, named[-1].end(), end):
         return None
-    return unique(named.pop())
+    return unique(names.pop())
 
 
 def _repeated_decision_subject_proposals(

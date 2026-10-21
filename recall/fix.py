@@ -58,10 +58,11 @@ from recall.frontmatter import (
 )
 from recall.lint import (
     DEFAULT_GLOB,
+    corpus_frontmatter,
     describe_cycle,
     sentence_around,
     supersession_cycle_closed_by,
-    supersession_graph,
+    supersession_graph_of,
 )
 from recall.observability import get_logger
 from recall.errors import RecallError
@@ -92,7 +93,15 @@ _REF = (
     r"|([a-z][a-z0-9]*(?:[_\-][a-z0-9]+)*[_\-]20\d\d(?:[_\-]\d\d){0,2})"
 )
 
-_REF_RE = re.compile(_REF, re.IGNORECASE)
+#: The references above, for MASKING only: each alternative may start only at the start of a token,
+#: so a memo holding one very long token is scanned once rather than once per character. Matching
+#: still uses `_REF`, whose spans start after a cue and so are already anchored.
+_REF_MASK_RE = re.compile(
+    r"\[\[[^\]\n]{1,120}\]\]"
+    r"|(?<![\w\-])[A-Za-z0-9][\w\-]{5,}\.md"
+    r"|(?<![\w\-])[a-z][a-z0-9]*(?:[_\-][a-z0-9]+)*[_\-]20\d\d(?:[_\-]\d\d){0,2}",
+    re.IGNORECASE,
+)
 _PASSIVE_RE = re.compile(
     rf"(?P<marker>{_PASSIVE})[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE
 )
@@ -218,7 +227,7 @@ def _is_partial_scope(between: str) -> bool:
     return bool(_PARTIAL_SCOPE.search(between))
 
 
-def _accept(body: str, m: re.Match, references: list[tuple[int, int]]) -> str | None:
+def _accept(body: str, m: re.Match) -> str | None:
     """The reference this match declares, or None when the sentence does not declare one."""
     ref = _first_ref(m)
     if not ref:
@@ -233,7 +242,7 @@ def _accept(body: str, m: re.Match, references: list[tuple[int, int]]) -> str | 
     # "This never supersedes [[x]]" and "if the canary fails, this would be replaced by [[y]]"
     # name the relation without asserting it. Both were proposed, and an applied edge demotes the
     # memo it names, so a negated or conditional cue goes back to a human like a hedged one.
-    if unasserted(body, (m.start("marker"), marker_end), (ref_start, m.end()), references):
+    if unasserted(body, (m.start("marker"), marker_end), (ref_start, m.end()), _REF_MASK_RE):
         return None
     return ref
 
@@ -261,15 +270,8 @@ def _edges_with_evidence(
     body: str,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """`extract_edges`, with the sentence that states each edge beside its reference."""
-    references = [(r.start(), r.end()) for r in _REF_RE.finditer(body)]
-    active = [
-        (r, _evidence(body, m)) for m in _ACTIVE_RE.finditer(body)
-        if (r := _accept(body, m, references))
-    ]
-    passive = [
-        (r, _evidence(body, m)) for m in _PASSIVE_RE.finditer(body)
-        if (r := _accept(body, m, references))
-    ]
+    active = [(r, _evidence(body, m)) for m in _ACTIVE_RE.finditer(body) if (r := _accept(body, m))]
+    passive = [(r, _evidence(body, m)) for m in _PASSIVE_RE.finditer(body) if (r := _accept(body, m))]
     # "superseded by X" also matches the active pattern's bare "supersede" stem in some
     # phrasings; passive wins, since its voice is the more specific reading.
     passive_keys = {supersedes_key(p) for p, _evidence_text in passive}
@@ -472,8 +474,11 @@ def apply_proposal(root: Path, p: Proposal, *, glob: str = DEFAULT_GLOB) -> None
     report, so "is not valid UTF-8" would be a false thing to say about the value in front of
     them and would name nothing they could act on.
 
-    Last, an edge that would close a supersession cycle in the corpus `glob` selects is refused
-    with `UnreadableMemo`, before the write rather than as a `recall lint` error after it.
+    Last, an edge that would close a supersession cycle is refused with `UnreadableMemo`, before
+    the write rather than as a `recall lint` error after it. The cycle is judged on every memo
+    under `root` that `DEFAULT_GLOB` or `glob` selects: search and a plain `recall lint` read
+    every memo, so a cycle through one outside a narrower `--glob` is still a cycle, and a `glob`
+    that selects other files (`**/*.txt`) adds those to the graph rather than replacing it.
     """
     if NAME_STAND_IN_MARK in p.target:
         # The marker is stripped from the message: it carries a NUL, which is there to keep two
@@ -517,9 +522,12 @@ def apply_proposal(root: Path, p: Proposal, *, glob: str = DEFAULT_GLOB) -> None
         _log.info("%s already declares %s", p.edit_file, line)
         return
     # Read from disk for every edge, not once per run: an edge written earlier in the same run is
-    # part of the graph the next one is judged against. `glob` is the corpus `propose_fixes`
-    # read, so the graph is the one `recall lint` checks with the same pattern.
-    chain = supersession_cycle_closed_by(supersession_graph(root, glob), p.edit_file, p.target)
+    # part of the graph the next one is judged against.
+    # A tuple, not a set: the order fixes which chain a refusal names when two close the cycle.
+    globs = (DEFAULT_GLOB,) if glob == DEFAULT_GLOB else (DEFAULT_GLOB, glob)
+    documents = {f: meta for g in globs for f, meta in corpus_frontmatter(root, g)}
+    graph = supersession_graph_of((f.name, meta) for f, meta in documents.items())
+    chain = supersession_cycle_closed_by(graph, p.edit_file, p.target)
     if chain is not None:
         raise UnreadableMemo(
             f"{p.edit_file} cannot declare supersedes: {p.target!r}: "

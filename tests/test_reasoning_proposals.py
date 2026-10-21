@@ -558,13 +558,17 @@ def _direct(chunks: list[Chunk]) -> list[tuple[str, str, str]]:
     "This no longer replaces rollout_v1.md.",
     "If the vote passes, this replaces rollout_v1.md.",
     "This replaces rollout_v1.md if the vote passes.",
+    "This replaces rollout_v1.md, if the vote passes.",
+    "Nothing replaces rollout_v1.md.",
 ])
 def test_a_negated_or_conditional_reference_proposes_nothing(text: str) -> None:
     """The cue is named, not asserted.
 
     Red: baseline, `tests/test_reasoning_proposals.py::test_a_negated_or_conditional_reference_proposes_nothing`
     failed on every case with `[('rollout_v1.md', 'rollout_draft.md', 'candidate')] == []`; target
-    `recall.reasoning_proposals._deterministic._direct_reference_proposals`.
+    `recall.reasoning_proposals._deterministic._direct_reference_proposals`. The last two cases
+    (audit findings BUG-001 and BUG-007 of 2026-10-21) also failed against branch head 4b68f972b,
+    which read a trailing condition only to the next clause break and had no "nothing".
     """
     assert _direct([
         _chunk("old", "rollout_v1.md", "decision: rollout. Status: active."),
@@ -624,3 +628,59 @@ def test_a_plain_direct_reference_is_unchanged() -> None:
         _chunk("a", "rollout_v1.md", "decision: rollout. Status: active."),
         _chunk("b", "rollout_v2.md", "decision: rollout. Supersedes rollout_v1.md."),
     ]) == [("rollout_v1.md", "rollout_v2.md", "candidate")]
+
+
+@pytest.mark.parametrize("text,holder", [
+    ("Per [[meeting]] this replaces old_plan.md.", "new_plan.md"),
+    ("We agreed new_plan.md, approved Monday, replaces old_plan.md.", "meeting.md"),
+])
+def test_a_document_not_right_before_the_cue_leaves_the_superseder_unknown(text: str, holder: str) -> None:
+    """Only a document written right before the cue is its subject; otherwise nobody is guessed.
+
+    "Per [[meeting]] this replaces old_plan.md" does not say the meeting replaces the plan, and
+    in "new_plan.md, approved Monday, replaces old_plan.md" the holder is not the subject either.
+
+    Red: branch head 4b68f972b,
+    `tests/test_reasoning_proposals.py::test_a_document_not_right_before_the_cue_leaves_the_superseder_unknown`
+    failed with `[('old_plan.md', 'meeting.md', 'requires_review')]` for the first case and
+    `[('old_plan.md', 'meeting.md', 'candidate')]` for the second; target
+    `recall.reasoning_proposals._deterministic._named_subject` (audit findings STAKES-004, BUG-002).
+    """
+    texts = {"old_plan.md": "The old plan.", "new_plan.md": "The new plan.", "meeting.md": "Notes."}
+    texts[holder] = text
+    assert _direct([_chunk(name.split(".")[0], name, body) for name, body in texts.items()]) == []
+
+
+def test_a_subject_set_off_by_which_is_still_the_subject() -> None:
+    """"new_plan.md, which replaces old_plan.md" names its subject, so the rule keeps it.
+
+    Red: branch head 4b68f972b,
+    `tests/test_reasoning_proposals.py::test_a_subject_set_off_by_which_is_still_the_subject`
+    failed with `[('old_plan.md', 'meeting.md', 'candidate')]`: the comma ended the clause it read,
+    so the holder was taken (audit finding BUG-002). Red also by mutation of
+    `recall.reasoning_proposals._deterministic._IMMEDIATE_SUBJECT_GAP` accepting whitespace only:
+    this test failed with `[] == [('old_plan.md', 'new_plan.md', 'requires_review')]`.
+    """
+    assert _direct([
+        _chunk("old", "old_plan.md", "The old plan."),
+        _chunk("new", "new_plan.md", "The new plan."),
+        _chunk("meeting", "meeting.md", "new_plan.md, which replaces old_plan.md, ships Monday."),
+    ]) == [("old_plan.md", "new_plan.md", "requires_review")]
+
+
+def test_a_long_token_does_not_stall_the_direct_reference_rule() -> None:
+    """A crafted memo must not cost seconds every time the rule runs.
+
+    Red: branch head 4b68f972b,
+    `tests/test_reasoning_proposals.py::test_a_long_token_does_not_stall_the_direct_reference_rule`
+    failed at the time bound; target the per-cue `unasserted` and `clause_head` calls in
+    `recall.reasoning_proposals._deterministic._direct_reference_proposals`, which re-scanned the
+    text with an unanchored reference pattern (audit finding SEC-002).
+    """
+    import time
+
+    text = "This replaces x.md. " + "a" * 3000 + " " + " ".join(["This replaces x.md."] * 10)
+    start = time.perf_counter()
+    found = _direct([_chunk("x", "x.md", "x"), _chunk("holder", "holder.md", text)])
+    assert time.perf_counter() - start < 0.5
+    assert found == [("x.md", "holder.md", "candidate")]

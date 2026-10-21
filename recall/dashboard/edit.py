@@ -23,6 +23,7 @@ import difflib
 import hashlib
 import json
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -30,7 +31,12 @@ from pathlib import Path
 from recall.atomic_write import atomic_write_bytes
 from recall.dashboard.review import _DECISION_LOCK, ReviewRefused
 from recall.document import parse_document
-from recall.lint import describe_cycle, supersession_cycle_closed_by, supersession_graph_of
+from recall.lint import (
+    corpus_frontmatter,
+    describe_cycle,
+    supersession_cycle_closed_by,
+    supersession_graph_of,
+)
 from recall.frontmatter import (
     SupersedesDeclaresNothing,
     add_supersedes_target,
@@ -131,24 +137,32 @@ def _refuse_cycles(root: Path, path: Path, after: bytes, added: list[str]) -> No
 
     Judged on the corpus as it would stand after the edit, this memo's removals included, so the
     preview refuses what `recall lint` would report as `supersession-cycle` after the write. A
-    cycle makes search abstain on every memo in it.
+    cycle makes search abstain on every memo in it. The corpus is the one lint reads
+    (`corpus_frontmatter`), hidden directories included, not the narrower list of memos an edit
+    may name: a cycle through an Obsidian `.trash/` memo is still one lint reports.
     """
     if not added:
         return
-    documents: list[tuple[str, dict[str, object]]] = []
-    for other in _corpus_files(root):
-        if other == path:
-            continue
-        try:
-            documents.append((other.name, dict(parse_document(other.read_text(encoding="utf-8-sig")).meta)))
-        except (UnicodeDecodeError, OSError):
-            continue  # lint reports an unreadable memo; it declares no edge anyone can follow
+    documents: list[tuple[str, Mapping[str, object]]] = [
+        (other.name, meta) for other, meta in corpus_frontmatter(root) if other != path
+    ]
     documents.append((path.name, dict(parse_document(after.decode("utf-8-sig", errors="replace")).meta)))
     graph = supersession_graph_of(documents)
     for target in added:
         chain = supersession_cycle_closed_by(graph, path.name, target)
         if chain is not None:
             raise EditRefused(describe_cycle(supersedes_key(path.name), supersedes_key(target), chain))
+
+
+def _restored_targets(before: bytes, after: bytes) -> list[str]:
+    """The `supersedes:` references `before` declares and `after` does not: what an undo adds."""
+
+    def declared(raw: bytes) -> tuple[str, ...]:
+        meta = parse_document(raw.decode("utf-8-sig", errors="replace")).meta
+        return supersedes_targets(meta.get("supersedes"))
+
+    present = {supersedes_key(target) for target in declared(after)}
+    return [target for target in declared(before) if supersedes_key(target) not in present]
 
 
 def _check_date(key: str, value: str) -> str:
@@ -352,6 +366,9 @@ def undo_edit(root: Path, edit_id: int, *, editor: str, note: str, now: datetime
         _corpus_name, path = _memo(root, name)
         if path.read_bytes() != after:
             raise EditRefused(f"{name} changed after edit {edit_id}; undo it by hand or edit it again")
+        # An undo can put back an edge that an edit removed, and another memo may have declared
+        # the reverse since: the same cycle `plan_edit` refuses, reached the other way round.
+        _refuse_cycles(root, path, before, _restored_targets(before, after))
         atomic_write_bytes(path, before)
         ledger.mark_undone(edit_id, editor=editor, at=now)
         ledger.record(

@@ -776,11 +776,15 @@ def apply_rewrite(
 ) -> RewriteResult:
     """Declare `fact` in the corpus file it belongs to, or report why it was not.
 
-    Two kinds of "no" are distinguished on purpose. A `RewriteRefused` is a caller error — an
-    unreviewed fact, an unwritable key, an unresolvable reference — and raises. A memo that
-    already declares the key, or a claim a human has already rejected, is a normal outcome of a
-    batch run and comes back as a populated `RewriteResult` with `written=False` and a reason.
-    Neither is silent: a refusal a caller cannot see is indistinguishable from a write.
+    Two kinds of "no" are distinguished on purpose. A `RewriteRefused` raises: a caller error (an
+    unreviewed fact, an unwritable key, an unresolvable reference), or a `supersedes:` edge that
+    would close a supersession cycle in the corpus. The cycle is a property of the corpus rather
+    than of the call, and it is judged in `plan_rewrite`, before the rejection ledger and the
+    already-declares checks, so such an edge raises even when its claim was rejected or is already
+    declared. A memo that already declares the key, or a claim a human has already rejected, is
+    otherwise a normal outcome of a batch run and comes back as a populated `RewriteResult` with
+    `written=False` and a reason. Neither is silent: a refusal a caller cannot see is
+    indistinguishable from a write.
 
     ⚠️ **Single writer.** The read, the already-declares check and the swap are three steps with
     no lock between them. `atomic_write_bytes` guarantees the file is never half written, but two

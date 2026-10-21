@@ -39,16 +39,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
-* **Every tool that writes a `supersedes:` edge is gated, so none demotes a current memo by
-  mistake.** `recall lint --fix` and the deterministic `rewrite plan` rule no longer propose an
-  edge from a cue the sentence does not assert ("this never supersedes X", "if the canary fails,
-  this would be replaced by Y"). The `lint --fix` dry run shows each edge with an id and the
-  sentence it came from, and `--apply` now takes the ids to write (`--apply 3f2a91c0d4,77b1e0a9c2`);
-  a bare `--apply`, which wrote every proposal, is refused and writes nothing. The direct-reference
-  rule takes the document a sentence names as its subject as the superseder ("new.md replaces
-  old.md" in meeting notes) and skips a stem two files share. `lint --fix --apply`,
-  `rewrite apply` and the dashboard's edit and review pages refuse an edge that would close a
-  supersession cycle, before the write.
+* **BREAKING: every tool that writes a `supersedes:` edge is gated, so none demotes a current memo
+  by mistake.** `recall lint --fix`, the deterministic extraction engine behind
+  `recall rewrite plan`, and the deterministic proposal rule behind `recall reasoning proposals`
+  and the MCP `recall_rewrite_plan` tool no longer propose an edge from a cue the sentence does
+  not assert ("this never supersedes X", "nothing replaces X", "if the canary fails, this would be
+  replaced by Y"); a cue more than 2,000 characters into an unbroken line is refused rather than
+  judged on part of it. The extraction engine's revision is now `truth-extraction-rules-v2`, so cached
+  extractions are recomputed. The `lint --fix` dry run shows each edge with an id and the sentence
+  it came from, and `--apply` now takes the ids to write, directly after it
+  (`recall lint <path> --fix --apply <id>,<id>`). A bare `--apply`, which wrote every proposal,
+  and `--apply` without `--fix`, which was ignored, now exit 2 and write nothing. The
+  direct-reference rule takes a document named right before the cue as the superseder ("new.md
+  replaces old.md" in meeting notes), proposes it as `requires_review` with that document among
+  its evidence ids, proposes nothing when another document is named elsewhere in the sentence,
+  and skips a stem two files share. `lint --fix --apply`, `rewrite apply` and the dashboard's
+  edit, undo and review actions refuse an edge that would close a supersession cycle in the
+  whole corpus, before the write.
 
 * **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
   from this one on are open source under the GNU Affero General Public License v3.0, which permits

@@ -150,3 +150,61 @@ def test_an_edit_that_closes_no_cycle_is_still_planned(corpus: Path) -> None:
     """
     plan = edit.plan_edit(corpus, "old.md", add_supersedes=("older.md",))
     assert plan.summary == ("supersedes older.md",)
+
+
+def test_an_undo_that_would_restore_a_supersession_cycle_is_refused(corpus: Path) -> None:
+    """Undo writes earlier bytes back, so it can restore an edge that now closes a cycle.
+
+    `new.md` supersedes `older.md`. Edit 1 withdraws it; edit 2 lets `older.md` supersede
+    `new.md`; undoing edit 1 would put the first edge back beside the second: the cycle
+    `plan_edit` refuses, reached the other way round (audit finding STAKES-001, P1).
+
+    Red: branch head 4b68f972b,
+    `tests/test_dashboard_edit.py::test_an_undo_that_would_restore_a_supersession_cycle_is_refused`
+    failed with `DID NOT RAISE EditRefused`, the undo having written `supersedes: older.md` back;
+    target `recall.dashboard.edit.undo_edit`, which checked only that the memo still held the
+    bytes edit 1 wrote.
+    """
+    from recall.lint import lint_corpus
+
+    first = _apply(corpus, remove_supersedes=("older.md",))
+    plan = edit.plan_edit(corpus, "older.md", add_supersedes=("new.md",))
+    edit.apply_edit(corpus, "older.md", editor="giulio", note="reverse", shown_sha=plan.before_sha, now=NOW,
+                    add_supersedes=("new.md",))
+    before = (corpus / "new.md").read_bytes()
+
+    with pytest.raises(edit.EditRefused, match=r"cycle.*\(older -> new\)"):
+        edit.undo_edit(corpus, first.edit_id, editor="giulio", note="undo", now=NOW)
+
+    assert (corpus / "new.md").read_bytes() == before
+    assert not any(i.code == "supersession-cycle" for i in lint_corpus(corpus))
+    assert {record.edit_id: record for record in edit.history(corpus)}[first.edit_id].undone_at is None
+
+
+def test_an_undo_that_restores_no_cycle_still_runs(corpus: Path) -> None:
+    """The undo gate refuses a cycle and nothing else.
+
+    Passes at 4b68f972b. Red by mutation of `recall.dashboard.edit.undo_edit` passing every
+    target `before` declares to `_refuse_cycles` with each judged as closing a cycle
+    (`_restored_targets` made to return `["new.md"]`): this test failed with `EditRefused`.
+    """
+    first = _apply(corpus, remove_supersedes=("older.md",))
+    assert edit.undo_edit(corpus, first.edit_id, editor="giulio", note="undo", now=NOW) == "new.md"
+    assert supersedes_targets(_meta(corpus / "new.md").get("supersedes")) == ("older.md",)
+
+
+def test_the_edit_cycle_check_reads_hidden_directories_as_lint_does(corpus: Path) -> None:
+    """A memo under a dot directory is part of the corpus `recall lint` checks for cycles.
+
+    Red: branch head 4b68f972b,
+    `tests/test_dashboard_edit.py::test_the_edit_cycle_check_reads_hidden_directories_as_lint_does`
+    failed with `DID NOT RAISE EditRefused`; target `recall.dashboard.edit._refuse_cycles`, which
+    built its graph from the memos an edit may name and so skipped `.trash/` (audit finding
+    ENV-001).
+    """
+    (corpus / ".trash").mkdir()
+    (corpus / ".trash" / "gone.md").write_text("---\nsupersedes: old.md\n---\n# Gone\n", encoding="utf-8")
+    (corpus / "older.md").write_text("---\nsupersedes: gone\n---\n# Older\n", encoding="utf-8")
+
+    with pytest.raises(edit.EditRefused, match=r"cycle.*\(older -> gone -> old\)"):
+        edit.plan_edit(corpus, "old.md", add_supersedes=("older.md",))

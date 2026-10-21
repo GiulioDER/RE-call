@@ -17,6 +17,16 @@ from recall.cli_commands._shared import _make_embedder
 _NO_SELECTION = ""
 
 
+def _shown(text: str) -> str:
+    """`text` for the terminal, with every non-printable character escaped.
+
+    A proposal's target is copied from memo prose, and the reviewer picks ids from these lines:
+    an escape sequence in a wikilink could rewrite the line beside an id, so the line shown would
+    not be the edge the id writes.
+    """
+    return "".join(c if c.isprintable() else repr(c)[1:-1] for c in text)
+
+
 def _selected_ids(raw: str) -> list[str]:
     """The proposal ids `--apply` names, in order, each once."""
     ids: list[str] = []
@@ -112,10 +122,10 @@ def _cmd_lint(args: argparse.Namespace) -> None:
         proposals, unfixable = propose_fixes(args.path, glob=args.glob)
         print()
         for p in proposals:
-            print(f"  [{p.id}] {p.edit_file}: + supersedes: {p.target}")
-            print(f"      because {p.evidence_file} says {p.evidence!r}")
+            print(f"  [{p.id}] {_shown(p.edit_file)}: + supersedes: {_shown(p.target)}")
+            print(f"      because {_shown(p.evidence_file)} says {p.evidence!r}")
         for u in unfixable:
-            print(f"  SKIP {u.file}: {u.reason}")
+            print(f"  SKIP {_shown(u.file)}: {_shown(u.reason)}")
         print(f"\n{len(proposals)} edge(s) proposable, {len(unfixable)} need a human")
         selected: list[Proposal] = []
         if args.apply is not None:
@@ -183,7 +193,7 @@ def _cmd_lint(args: argparse.Namespace) -> None:
                     # code point, not a file. A nameless SKIP in a list of many, followed by
                     # "skipped 1", leaves the operator of a destructive command unable to
                     # tell WHICH memo was passed over.
-                    print(f"  SKIP {p.edit_file}: {exc}")
+                    print(f"  SKIP {_shown(p.edit_file)}: {_shown(str(exc))}")
                     continue
                 written += 1
             print(

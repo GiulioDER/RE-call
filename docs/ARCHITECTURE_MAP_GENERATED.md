@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 330
 Cross package edges: 344
-Source tree fingerprint: `dc48f02bd55cb6cf4690bdfe40cc84391bbdbe02ee81c8ffe224272cd6cecb40`
+Source tree fingerprint: `abec2e46744c87d7f68c11ddfc0fb0cfc0091446f9f5483b45fc3bcd28acf021`
 
 ## Highest fan in modules
 
@@ -694,15 +694,15 @@ They are observations, not automatic failures.
 | `recall.trust_gate` | 8 | 46 |
 | `recall.trust_policy` | 2 | 86 |
 | `recall.trust_verdicts` | 2 | 33 |
-| `recall.truth_extraction` | 4 | 22 |
-| `recall.truth_extraction._cache` | 6 | 24 |
-| `recall.truth_extraction._engine` | 2 | 16 |
+| `recall.truth_extraction` | 4 | 23 |
+| `recall.truth_extraction._cache` | 6 | 25 |
+| `recall.truth_extraction._engine` | 3 | 17 |
 | `recall.truth_extraction._normalize` | 3 | 17 |
 | `recall.truth_extraction._openai_engine` | 3 | 15 |
 | `recall.truth_extraction._prompt` | 1 | 2 |
 | `recall.truth_extraction._serialize` | 2 | 2 |
 | `recall.truth_extraction._sqlite_cache` | 3 | 3 |
-| `recall.truth_extraction.extract` | 5 | 25 |
+| `recall.truth_extraction.extract` | 5 | 26 |
 | `recall.truth_extraction.types` | 1 | 1 |
 | `recall.types` | 2 | 3 |
 | `recall.unknown_terms` | 3 | 35 |
