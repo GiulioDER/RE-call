@@ -54,7 +54,7 @@ EVENT_TYPE = "calibration_near_miss_measured"
 CERTIFICATE_POPULATION = (
     "certified against the labelled set's unanswerable queries, which are off-topic by "
     "construction (far gap); in-domain near-miss questions are reported separately in "
-    "near_miss_coverage and never gate"
+    "near_miss_certificate and never gate"
 )
 
 
