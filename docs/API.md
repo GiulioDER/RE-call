@@ -85,7 +85,7 @@ removal.
 | `recall lint` | Validate memo frontmatter and corpus shape. |
 | `recall check` | Validate one memo, optionally in strict mode. |
 | `recall calibrate` | Fit an abstention threshold from a labeled query file (legacy single-shot form). |
-| `recall calibration` | Calibration artifact lifecycle (`calibrate`, `carry-forward`, `drift`, `auto`, `list`, `show`, `export`, `import`). |
+| `recall calibration` | Calibration artifact lifecycle (`calibrate`, `carry-forward`, `drift`, `auto`, `list`, `show`, `export`, `import`), and the reported near-miss certificate (`near-miss`). |
 | `recall provenance` | Apply structured facts through the deterministic provenance controller, or inspect the current fact projection (`apply`, `current`). |
 | `recall backup` | Inspect, create, verify, and restore encrypted Aurora backups through the explicit `status`, `create`, `verify`, and `restore` workflows. |
 | `recall secret` | `verify`: verify that every running ECS task reports the intended nonsecret secret version identifiers. |
