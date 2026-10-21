@@ -1,6 +1,6 @@
 """MTRAG Tasks B and C: generate answers, in the official submission format.
 
-Prior work (searched before writing, per CLAUDE.md):
+Prior work: searched before writing, per CLAUDE.md.
 `docs_search(source_type='memory', "MTRAG Task B Task C generation RAG answer quality GPT-4o judge
 RL_F RB_llm RB_alg harmonic mean")` returned substantial prior art, and three findings from it bind
 this module rather than merely informing it:

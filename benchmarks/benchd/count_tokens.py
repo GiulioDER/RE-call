@@ -22,6 +22,9 @@ Two subcommands, no harness import, stdlib plus optional tiktoken:
 
 Prices default to gpt-4o-mini list prices in USD per million tokens as of 2026-08-23
 (re-check at openrouter.ai/openai/gpt-4o-mini before trusting a projection).
+
+Prior work: the prompt templates are the Bench'd harness's own (benchdai/harness at bd4824fe,
+MIT, attribution in benchmarks/benchd/NOTICE.md); the token counting around them is new here.
 """
 
 from __future__ import annotations
