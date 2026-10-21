@@ -1271,3 +1271,55 @@ def test_the_dry_run_escapes_the_evidence_file(tmp_path, capsys, monkeypatch):
     assert out.count("\x1b") == 0, "an escape byte reached the terminal"
     assert out.count("\r") == 0, "a carriage return reached the terminal"
     assert "\\x1b[1A" in out
+
+
+# --- CODE-002: a condition before a semicolon (2026-10-21) ----------------------------------------
+#
+# The gate ended a sentence at a semicolon, so a leading "If X;" fell outside the span it judged
+# and the cue after it was accepted as asserted. The wider evidence a reviewer sees still showed the
+# "If", which is why the display stays wide; the gate now reads the condition itself.
+
+
+@pytest.mark.parametrize("body", [
+    "If the canary fails; this is replaced by [[rollback_plan_2026-07-01]].",
+    "Unless the vote passes; superseded by [[new_plan_2026-02-02]].",
+])
+def test_a_condition_before_a_semicolon_still_governs_the_cue(body):
+    """A leading if/unless governs the clause after its semicolon.
+
+    Red: branch head 5a4aa2e85,
+    `tests/test_fix.py::test_a_condition_before_a_semicolon_still_governs_the_cue` failed on both
+    cases with the reference returned as a passive edge; target
+    `recall.supersession_cues.unasserted`, which looked for a condition only after the last
+    semicolon before the cue.
+    """
+    assert extract_edges(body) == ([], [])
+
+
+def test_a_negation_before_a_semicolon_does_not_govern_the_cue():
+    """A negation stays clause-scoped: a semicolon still ends its reach.
+
+    Passes at 5a4aa2e85. Red by mutation of `recall.supersession_cues.unasserted` reading negation
+    across the semicolon (`clause_start` searched from the `_CONDITION_BREAK` sentence start
+    instead of `sentence_start`):
+    `tests/test_fix.py::test_a_negation_before_a_semicolon_does_not_govern_the_cue` failed with
+    `([], []) == ([], ['new_plan_2026-02-02'])`.
+    """
+    assert extract_edges("We decided not to ship it; superseded by [[new_plan_2026-02-02]].") == (
+        [], ["new_plan_2026-02-02"],
+    )
+
+
+def test_a_condition_after_a_semicolon_following_the_reference_does_not_refuse_the_cue():
+    """After the reference, a semicolon still ends the cue's sentence: a later "if" is another
+    clause's condition.
+
+    Passes at 5a4aa2e85. Red by mutation of `recall.supersession_cues.unasserted` ending the tail
+    at the condition boundary instead (`_SENTENCE_BREAK.search(masked, ref_end)` made
+    `_CONDITION_BREAK.search(masked, ref_end)`):
+    `tests/test_fix.py::test_a_condition_after_a_semicolon_following_the_reference_does_not_refuse_the_cue`
+    failed with `([], []) == ([], ['new_plan_2026-02-02'])`.
+    """
+    assert extract_edges("Superseded by [[new_plan_2026-02-02]]; see it if you need the history.") == (
+        [], ["new_plan_2026-02-02"],
+    )

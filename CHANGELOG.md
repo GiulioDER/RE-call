@@ -52,9 +52,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `recall rewrite plan`, and the deterministic proposal rule behind `recall reasoning proposals`
   and the MCP `recall_rewrite_plan` tool no longer propose an edge from a cue the sentence does
   not assert ("this never supersedes X", "nothing replaces X", "if the canary fails, this would be
-  replaced by Y"); a cue more than 2,000 characters into an unbroken line is refused rather than
-  judged on part of it. The extraction engine's revision is now `truth-extraction-rules-v2`, so cached
-  extractions are recomputed. The `lint --fix` dry run shows each edge with an id and the sentence
+  replaced by Y", "if the canary fails; this is replaced by Y"); a cue more than 2,000 characters
+  into an unbroken line is refused rather than judged on part of it. The extraction engine's
+  revision is now `truth-extraction-rules-v2`, so cached extractions are recomputed. The `lint --fix` dry run shows each edge with an id and the sentence
   it came from, and `--apply` now takes the ids to write, directly after it
   (`recall lint <path> --fix --apply <id>,<id>`). A bare `--apply`, which wrote every proposal,
   and `--apply` without `--fix`, which was ignored, now exit 2 and write nothing. The

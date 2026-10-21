@@ -560,15 +560,19 @@ def _direct(chunks: list[Chunk]) -> list[tuple[str, str, str]]:
     "This replaces rollout_v1.md if the vote passes.",
     "This replaces rollout_v1.md, if the vote passes.",
     "Nothing replaces rollout_v1.md.",
+    "If the vote passes; this replaces rollout_v1.md.",
 ])
 def test_a_negated_or_conditional_reference_proposes_nothing(text: str) -> None:
     """The cue is named, not asserted.
 
     Red: baseline, `tests/test_reasoning_proposals.py::test_a_negated_or_conditional_reference_proposes_nothing`
     failed on every case with `[('rollout_v1.md', 'rollout_draft.md', 'candidate')] == []`; target
-    `recall.reasoning_proposals._deterministic._direct_reference_proposals`. The last two cases
-    (audit findings BUG-001 and BUG-007 of 2026-10-21) also failed against branch head 4b68f972b,
-    which read a trailing condition only to the next clause break and had no "nothing".
+    `recall.reasoning_proposals._deterministic._direct_reference_proposals`. The cases with a
+    trailing ", if" and "Nothing" (audit findings BUG-001 and BUG-007 of 2026-10-21) also failed
+    against branch head 4b68f972b, which read a trailing condition only to the next clause break
+    and had no "nothing". The last case, a condition before a semicolon (CODE-002), also failed
+    against 5a4aa2e85, whose `recall.supersession_cues.unasserted` ended the sentence at the
+    semicolon and so never saw the "If".
     """
     assert _direct([
         _chunk("old", "rollout_v1.md", "decision: rollout. Status: active."),

@@ -17,12 +17,22 @@ Each word is judged over the narrowest span that still governs the cue:
   no longer current, superseded by [[b]]" stays a real cue, because its negation sits in the clause
   before;
 * ``if`` and ``unless``: the whole sentence, before the cue and after the reference, because a
-  condition governs the clause it is attached to whichever side of a comma it sits;
+  condition governs the clause it is attached to whichever side of a comma it sits. Before the cue
+  a semicolon does not end that sentence ("If the canary fails; this is replaced by [[b]]" is
+  conditional); after the reference it does ("superseded by [[b]]; see it if you need the
+  history" keeps its cue);
 * ``should``, ``were`` or ``had`` right after the reference: an inverted condition ("replaced by
   [[b]], should the canary fail").
 
-A sentence ends at terminal punctuation, a semicolon, a blank line, a list item, or either end of a
-heading line; a single newline inside prose does not end one, because memos wrap their prose.
+A sentence ends at terminal punctuation, a semicolon (except for a leading condition, above), a
+blank line, a list item, or either end of a heading line; a single newline inside prose does not
+end one, because memos wrap their prose.
+
+The span judged here is not the sentence a reviewer is shown: `recall.fix` shows
+`recall.lint.sentence_around`, which ignores semicolons and masks nothing, so it is usually the
+wider of the two. That is deliberate. The reviewer is the last gate, and the wider sentence is
+where they see anything this module did not read.
+
 References are masked before any word is looked for, so a memo named ``never-again.md`` does not
 negate the sentence that names it.
 
@@ -51,13 +61,22 @@ _WINDOW = 2000
 _REFERENCE = re.compile(
     r"\[\[[^\]\n]{1,200}\]\]|\]\([^)\s]{1,400}\)|`[^`\n]+`|(?<![\w./\-])[\w./\-]+\.md\b"
 )
-#: The last alternative ends a sentence after an ATX heading line (one to six `#`, then a space or
-#: the end of the line), so a wrapped prose line that starts with `#470` is not a heading.
-_SENTENCE_BREAK = re.compile(
-    r"[.!?][\"')\]*]*(?=\s|$)|;|\n[ \t]*\n|\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t])|\n(?=[ \t]*#)"
-    r"|^[ \t]{0,3}#{1,6}(?:[ \t][^\n]*)?\n",
-    re.MULTILINE,
+#: Where a sentence ends, semicolons aside. The last alternative ends one after an ATX heading line
+#: (one to six `#`, then a space or the end of the line), so a wrapped prose line that starts with
+#: `#470` is not a heading.
+_BREAKS = (
+    r"[.!?][\"')\]*]*(?=\s|$)",
+    r"\n[ \t]*\n",
+    r"\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t])",
+    r"\n(?=[ \t]*#)",
+    r"^[ \t]{0,3}#{1,6}(?:[ \t][^\n]*)?\n",
 )
+#: The sentence that bounds a negation, a modal and the text after the reference: a semicolon ends
+#: it, so "Not now; superseded by [[b]]" keeps its cue.
+_SENTENCE_BREAK = re.compile("|".join((";", *_BREAKS)), re.MULTILINE)
+#: The sentence a leading `if` or `unless` governs: a semicolon does not end it, so "If the canary
+#: fails; this is replaced by [[b]]" is conditional.
+_CONDITION_BREAK = re.compile("|".join(_BREAKS), re.MULTILINE)
 _CLAUSE_BREAK = re.compile(r"[,:()\u2013\u2014]|\s-\s")
 _NEGATION = re.compile(
     r"\b(?:not|never|cannot|neither|nor|nothing|none|nobody|no\s+longer)\b|\bno\b(?!-)"
@@ -147,8 +166,9 @@ def unasserted(
         return "conditional"
     following = _SENTENCE_BREAK.search(masked, ref_end)
     tail = masked[ref_end: following.start() if following else len(masked)]
+    condition_start = _last_break_end(_CONDITION_BREAK, masked, 0, cue_start)
     if (
-        _CONDITION.search(masked[sentence_start:cue_start] + " " + gap + " " + tail)
+        _CONDITION.search(masked[condition_start:cue_start] + " " + gap + " " + tail)
         or _INVERTED_CONDITION.match(tail)
     ):
         return "conditional"
