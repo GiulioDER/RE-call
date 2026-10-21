@@ -1487,6 +1487,65 @@ class CalibrationRepository:
                 value[key] = _utc_isoformat(datetime.fromisoformat(item))
         return value
 
+    def measure_near_miss(
+        self,
+        calibration_id: str,
+        queries: Sequence[Mapping[str, Any]],
+        embedder: Embedder,
+        *,
+        record: bool = True,
+    ) -> dict[str, Any]:
+        """Score held-out near-miss questions against one calibration; report, never a gate.
+
+        See `recall.near_miss_certificate`. The questions are scored on the calibration's OWN
+        generation by the calibration sampling rule and compared with the answerable scores the
+        artifact stores, at its threshold. With `record`, the report is appended to the audit
+        ledger as one event bound to the calibration id: counts, scores and the set's digest,
+        never a question's text. Nothing that decides serving reads that event.
+        """
+        from recall.near_miss_certificate import EVENT_TYPE, certificate_report
+
+        artifact = self.get(calibration_id)
+        labels, digest = canonical_query_set(queries)
+        if any(item["answerable"] is not False for item in labels):
+            raise CalibrationBindingError(
+                "a near-miss set holds unanswerable questions only (answerable: false); an "
+                "answerable entry would be scored as a near-miss"
+            )
+        with self._connect() as conn:
+            _state, pipeline_raw, _pipeline, _corpus = self._generation(
+                conn, artifact.generation_id
+            )
+        _require_runtime_embedder(PipelineIdentity.from_dict(pipeline_raw), embedder)
+        _answerable, near_miss = self.score_query_set(artifact.generation_id, embedder, labels)
+        report = certificate_report(
+            artifact.scores["answerable"], near_miss, float(artifact.threshold)
+        )
+        report.update(generation_id=artifact.generation_id, query_set_digest=digest)
+        if record:
+            with self._connect() as conn:
+                self._audit(conn, EVENT_TYPE, calibration_id, artifact.generation_id, report)
+        return {"calibration_id": calibration_id, **report}
+
+    def near_miss_report(self, calibration_id: str) -> dict[str, Any] | None:
+        """The newest near-miss certificate recorded for this calibration id, or None.
+
+        Validated against its own stored scores; raises ValueError for a row that disagrees with
+        itself, so a reader can report it unavailable rather than print it.
+        """
+        from recall.near_miss_certificate import EVENT_TYPE, validated_certificate
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+                "AND event_type = %s AND payload->>'calibration_id' = %s "
+                "ORDER BY created_at DESC, event_id DESC LIMIT 1",
+                (self.tenant_id, EVENT_TYPE, calibration_id),
+            ).fetchone()
+        if row is None or not isinstance(row[0], Mapping):
+            return None
+        return validated_certificate(row[0], calibration_id)
+
     def export_bundle(self, calibration_id: str, path: str | Path) -> Path:
         artifact = self.get(calibration_id)
         with self._connect() as conn:

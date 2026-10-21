@@ -31,6 +31,51 @@ Failure of this additional report cannot defeat a successfully saved calibration
 unreadable report is explicitly unavailable and provisional for in-vocabulary near-misses.
 Failed fitting, stale calibration and strict trust refusal retain their existing behavior.
 
+## Which population a certificate covers
+
+A calibration certifies that its labelled answerable queries outrank its labelled unanswerable
+ones by top cosine. The unanswerable queries are off-topic by construction: the offline generator
+(`recall.wizard.queryset`) draws them from subjects the corpus never touches, because perturbed
+in-domain negatives were not separable at all, and authored sets follow the same pattern. So the
+certified separability is that of the far-gap class. It does not cover in-domain near-misses:
+questions that use the corpus's own vocabulary and still have no answer in it. Where that class
+has been measured it separates far worse (LongMemEval per-question haystacks: AUC 0.753,
+`results/FINDINGS.md`). Status prints this as `certificate_population`.
+
+## PostgreSQL near-miss certificate
+
+A second certificate can be measured for any PostgreSQL calibration against a held-out set of
+in-domain near-miss questions: plausible, about the corpus, unanswerable from it, and reviewed by
+a person. The file is a labelled query set whose every entry is `"answerable": false`.
+
+```bash
+recall calibration near-miss --queries near_miss.json          # the serving calibration
+recall calibration near-miss --calibration cal_... --queries near_miss.json --no-record
+recall calibration near-miss                                    # print the stored report
+```
+
+The questions are scored by the calibration sampling rule (the exact best cosine over the
+calibration's own generation) and compared with the answerable scores the artifact stores, at its
+threshold. The report keeps the Lite near-miss shape: the held-out questions are its
+`in_vocabulary` class, with the same `provisional_in_vocabulary` rule, and `unknown_entity` is
+`unmeasured` because PostgreSQL has no unknown-term gate. It adds `separability` with its
+95% interval against the stored answerable class, `false_confirm_rate` (the fraction of near-miss
+questions at or above the threshold, which serving would answer), and `certified` under the same
+bars as the calibration itself (20 per class, interval lower bound at least 0.90).
+
+Each measurement appends one `calibration_near_miss_measured` audit event bound to the
+calibration ID. It holds counts, scores and the set's digest, never a question's text, because a
+near-miss set written over a private corpus carries that corpus's content. A carried calibration
+has a new ID and inherits no measurement. `recall_calibration_status` reports the newest one as
+`near_miss_certificate`, with a one-line `near_miss_certificate_summary`; an unreadable report is reported as
+unavailable and never fails status.
+
+**This certificate never gates.** Calibration resolution, carry-forward, drift and strict trust
+mode do not read it, and it is expected to fail: a gate on it would make strict mode refuse every
+tenant. The same near-miss set must never be used both to tune a score and to certify it. Search
+results on PostgreSQL keep reporting `calibration_coverage` as `unmeasured`; the certificate is a
+property of the calibration, read through status and the CLI.
+
 ## Binding and lifecycle
 
 `CalibrationArtifactV2` records the tenant and generation IDs, full embedder identity, pipeline and
