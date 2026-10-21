@@ -799,7 +799,7 @@ def test_the_memo_that_cannot_be_named_still_gains_its_own_edge(tmp_path):
 
 # --- what the sentence asserts, and what a reviewer sees (supersession audit 2026-10-21) --------
 #
-# Red proof for this section, run on VPS2 on 2026-10-21. "Baseline" is master 67ffcce59 with only
+# Red proof for this section, run on 2026-10-21. "Baseline" is master 67ffcce59 with only
 # these tests copied in; a mutation is one edit to the production line named, run alone and then
 # restored. Each failed in the assertion stated, and each passed again once restored.
 
