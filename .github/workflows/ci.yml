@@ -932,16 +932,24 @@ jobs:
         # imports it. Keep the exception narrow and temporary, while every other resolved package
         # remains a hard gate. Remove it as soon as the upstream fixed release is published.
         #
-        # The eight pillow CVEs are fixed only in pillow 13.0.0, and fastembed (0.9.0 included,
-        # checked 2026-10-21) requires pillow<13, so no lock can reach the fix. Remove these
-        # eight as soon as a fastembed release lifts that cap and the lock moves to pillow 13.
+        # The twenty pillow CVEs are fixed only in pillow 13.0.0, and fastembed (0.9.0 included,
+        # checked 2026-10-21) requires pillow<13, so no lock can reach the fix. They are every
+        # advisory OSV listed for pillow 12.3.0 on 2026-10-21; they were published over two days,
+        # so a later one can still fail this job. Remove all of them as soon as a fastembed
+        # release lifts that cap and the lock moves to pillow 13.
         run: >-
           uvx pip-audit --requirement requirements.lock.txt --no-deps
           --ignore-vuln CVE-2026-69112
-          --ignore-vuln CVE-2026-112395 --ignore-vuln CVE-2026-112397
-          --ignore-vuln CVE-2026-112400 --ignore-vuln CVE-2026-112404
-          --ignore-vuln CVE-2026-112895 --ignore-vuln CVE-2026-112896
-          --ignore-vuln CVE-2026-112897 --ignore-vuln CVE-2026-112899
+          --ignore-vuln CVE-2026-112390 --ignore-vuln CVE-2026-112392
+          --ignore-vuln CVE-2026-112394 --ignore-vuln CVE-2026-112395
+          --ignore-vuln CVE-2026-112397 --ignore-vuln CVE-2026-112400
+          --ignore-vuln CVE-2026-112401 --ignore-vuln CVE-2026-112402
+          --ignore-vuln CVE-2026-112403 --ignore-vuln CVE-2026-112404
+          --ignore-vuln CVE-2026-112405 --ignore-vuln CVE-2026-112891
+          --ignore-vuln CVE-2026-112893 --ignore-vuln CVE-2026-112895
+          --ignore-vuln CVE-2026-112896 --ignore-vuln CVE-2026-112897
+          --ignore-vuln CVE-2026-112898 --ignore-vuln CVE-2026-112899
+          --ignore-vuln CVE-2026-112900 --ignore-vuln CVE-2026-112901
 
       # `always()` so a CVE finding cannot hide lockfile drift either.
       - name: Fail if the lockfile had drifted
