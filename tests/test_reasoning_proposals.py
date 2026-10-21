@@ -555,16 +555,15 @@ def _direct(chunks: list[Chunk]) -> list[tuple[str, str, str]]:
 
 @pytest.mark.parametrize("text", [
     "This draft never supersedes rollout_v1.md; it only adds context.",
-    "This does not replace rollout_v1.md.",
-    "If the vote passes, this would replace rollout_v1.md.",
+    "This no longer replaces rollout_v1.md.",
+    "If the vote passes, this replaces rollout_v1.md.",
     "This replaces rollout_v1.md if the vote passes.",
 ])
 def test_a_negated_or_conditional_reference_proposes_nothing(text: str) -> None:
     """The cue is named, not asserted.
 
     Red: baseline, `tests/test_reasoning_proposals.py::test_a_negated_or_conditional_reference_proposes_nothing`
-    failed for the first and the last two cases with a `rollout_v1.md -> rollout_draft.md` proposal
-    (the second, "does not replace", never matched the cue); target
+    failed on every case with `[('rollout_v1.md', 'rollout_draft.md', 'candidate')] == []`; target
     `recall.reasoning_proposals._deterministic._direct_reference_proposals`.
     """
     assert _direct([

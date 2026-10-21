@@ -458,7 +458,7 @@ def test_apply_refuses_an_edge_that_would_close_a_cycle(corpus, capsys):
     `plan_rewrite`.
 
     Red: baseline, `tests/test_cli_rewrite.py::test_apply_refuses_an_edge_that_would_close_a_cycle`
-    failed with `DID NOT RAISE SystemExit` and `supersedes:` written into `NEW`; target
+    failed with `DID NOT RAISE SystemExit` on the dry run, which promised the write; target
     `recall.rewrite.plan_rewrite`, which had no cycle check.
     """
     (corpus / OLD).write_text(

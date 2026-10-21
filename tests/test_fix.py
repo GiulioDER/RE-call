@@ -901,7 +901,7 @@ def test_propose_fixes_shows_the_sentence_that_states_the_edge(tmp_path):
     the reference where the field promised the matched phrase.
     """
     _corpus(tmp_path, {
-        "old.md": "# old\n\nThe first call. Superseded by\n[[new_decision_2026]] after the review.",
+        "old.md": "# old\n\nThe first call was\nwrong. Superseded by [[new_decision_2026]] after\nthe review.\n",
         "new_decision_2026.md": "# new\n\nthe current decision",
     })
     proposals, unfixable = propose_fixes(tmp_path)
