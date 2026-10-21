@@ -59,11 +59,14 @@ def served_gap_report(
         name: {"n": 0, "agree": 0, "score_flips": 0, "abstain_disagreements": 0} for name in _CLASSES
     }
     gaps: list[float] = []
+    above = 0
     flips: list[dict[str, Any]] = []
     for row in items:
         served = row.served
         gap = row.exact - served if served is not None else None
-        agrees = gap is not None and gap <= tolerance
+        # Two-sided: a served maximum ABOVE the exact one is not a fused-out chunk, it is noise
+        # between two embedding calls or a read of another generation, and it must stay visible.
+        agrees = gap is not None and abs(gap) <= tolerance
         exact_clears = row.exact >= threshold
         flipped = exact_clears != (served is not None and served >= threshold)
         abstain_disagrees = exact_clears != (not row.abstained)
@@ -72,7 +75,9 @@ def served_gap_report(
         bucket["agree"] += agrees
         bucket["score_flips"] += flipped
         bucket["abstain_disagreements"] += abstain_disagrees
-        if not agrees:
+        if gap is not None and gap < -tolerance:
+            above += 1
+        elif not agrees:
             gaps.append(round(gap, 4) if gap is not None else float("inf"))
         if flipped:
             flips.append({
@@ -91,6 +96,7 @@ def served_gap_report(
         "agreement_rate": round(agree / n, 4) if n else None,
         "gaps_above_tolerance": len(gaps),
         "nothing_served": len(gaps) - len(finite),
+        "served_above_exact": above,
         "gap_median": round(statistics.median(finite), 4) if finite else None,
         "gap_max": finite[-1] if finite else None,
         "score_flips": sum(bucket["score_flips"] for bucket in per_class.values()),
@@ -104,7 +110,7 @@ def served_gap_report(
 
 def describe(report: Mapping[str, Any]) -> str:
     """One line for the CLI."""
-    by_class = report["by_class"]
+    below = report["gaps_above_tolerance"]
     line = (
         f"served versus exact maximum: {report['agree']} of {report['n']} agree within "
         f"{report['tolerance']}; {report['score_flips']} verdict flip(s) at threshold "
@@ -112,11 +118,11 @@ def describe(report: Mapping[str, Any]) -> str:
     )
     if report["gaps_above_tolerance"]:
         line += (
-            f"; {report['gaps_above_tolerance']} gap(s) (answerable "
-            f"{by_class['answerable']['n'] - by_class['answerable']['agree']}, unanswerable "
-            f"{by_class['unanswerable']['n'] - by_class['unanswerable']['agree']}), "
-            f"median {report['gap_median']}, largest {report['gap_max']}"
+            f"; {below} served below the exact maximum, "
+            f"median gap {report['gap_median']}, largest {report['gap_max']}"
         )
+    if report.get("served_above_exact"):
+        line += f"; {report['served_above_exact']} served above the exact maximum"
     if report["abstain_disagreements"]:
         line += (
             f"; {report['abstain_disagreements']} abstain disagreement(s) between the served "

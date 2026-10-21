@@ -87,9 +87,11 @@ unavailable and never fails status.
 
 **This certificate never gates.** Calibration resolution, carry-forward, drift and strict trust
 mode do not read it, and it is expected to fail: a gate on it would make strict mode refuse every
-tenant. The same near-miss set must never be used both to tune a score and to certify it. Search
-results on PostgreSQL keep reporting `calibration_coverage` as `unmeasured`; the certificate is a
-property of the calibration, read through status and the CLI.
+tenant. The same near-miss set must never be used both to tune a score and to certify it. It is a
+property of the calibration, read through status and the CLI; what search results carry as
+`calibration_coverage` is the synthetic coverage measured at each fit (above), not this certificate.
+The questions are scored by cosine alone, without the unknown-term check, so `false_confirm_rate`
+can only overstate what a gated search confirms.
 
 ## Served versus exact maximum
 
@@ -103,14 +105,18 @@ recall calibration served-gap                       # the calibration serving th
 recall calibration served-gap -k 5 --tolerance 0.002 --json
 ```
 
-For every stored labelled query of the calibration, it runs the MCP service search under the
-current environment (so the retrieval profile, reranker and rescue settings are the ones a server
-started there would use) and compares the best served cosine with the exact one. It reports how many
-agree within the tolerance, the size of the gaps per labelled class, the queries the gap moves
-across the threshold (a served score equal to the threshold clears it), and how often the served
-abstention disagrees with the exact score. A fused-out chunk only lowers the served score, so this
-slack can add false abstentions near the threshold and never false confirms. When the two sides
-embed the query separately on a hosted model whose repeated calls differ, widen `--tolerance`.
+For every stored labelled query of the calibration, it runs the MCP service search under the current
+environment (so the retrieval profile, reranker and rescue settings are the ones a server started
+there would use) and compares the best served cosine with the exact one. It reports how many agree
+within the tolerance (per labelled class in `--json`), the median and largest gap below the exact
+maximum, the queries the gap moves across the threshold (a served score equal to the threshold
+clears it), and how often the served abstention disagrees with the exact score. On an unconstrained
+search a fused-out chunk only lowers the served score, so this slack can add false abstentions near
+the threshold and never false confirms; a served score above the exact one (two embeddings of the
+query that differ) is counted apart as a disagreement. When the two sides embed the query separately
+on a hosted model whose repeated calls differ, widen `--tolerance`. It refuses to run when
+`RECALL_SOURCE_POLICY_FILE` is set, because a policy-filtered search is not the population
+calibration sampled, and it never writes search decision rows to the ledger.
 
 It reads only: nothing is stored, and the threshold, certification and trust policy are untouched.
 It refuses a calibration bound to any generation other than the active one, and a Lite store,

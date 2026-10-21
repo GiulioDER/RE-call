@@ -16,6 +16,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - Add optional memo correction receipts, revision preconditions and persistent request identities;
   refuse a missing or already superseded correction target on every call, legacy calls included;
   calls without the new parameters keep the `{memo_id}` reply.
+- **PostgreSQL generations now refuse by name, as Lite does, a strict search naming an entity-like
+  term absent from the generation's vocabulary** (`unknown_term`). This changes verdicts: it is on
+  by default and `RECALL_UNKNOWN_TERM_GATE=0` disables it. Each `calibrate()` fit also measures
+  synthetic near-miss coverage, stored as an audit event and reported on search results as
+  `calibration_coverage`; it never gates.
+- `recall calibration near-miss` scores a held-out near-miss question set against a calibration and
+  reports a certificate (`near_miss_certificate` in status); `recall calibration served-gap`
+  compares the served top-k maximum with the exact maximum calibration sampled. Both report only.
 
 ### Security
 

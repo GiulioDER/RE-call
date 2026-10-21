@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 331
 Cross package edges: 348
-Source tree fingerprint: `5e36f4c1b72e2b182a2ac0f12508d1e64b95cfddcd8e5f3823d7bc96baf750fb`
+Source tree fingerprint: `d17bacbdfbc9fe347059261139527c5501544a820ab6585c20a8554de877471d`
 
 ## Highest fan in modules
 
@@ -71,8 +71,8 @@ Source tree fingerprint: `5e36f4c1b72e2b182a2ac0f12508d1e64b95cfddcd8e5f3823d7bc
 | 20 | `recall.generations` |
 | 18 | `recall.rewrite` |
 | 18 | `recall_mcp.provenance` |
+| 17 | `recall.cli_commands.calibration_cmd` |
 | 17 | `recall_mcp.indexing` |
-| 16 | `recall.cli_commands.calibration_cmd` |
 | 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall_mcp.semantic_graph_cache` |
 | 15 | `recall.index` |
@@ -484,7 +484,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._shared` | 10 | 97 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
-| `recall.cli_commands.calibration_cmd` | 16 | 184 |
+| `recall.cli_commands.calibration_cmd` | 17 | 184 |
 | `recall.cli_commands.dashboard_cmd` | 4 | 141 |
 | `recall.cli_commands.doctor_cmd` | 1 | 134 |
 | `recall.cli_commands.extract_rewrite` | 12 | 113 |
@@ -622,7 +622,7 @@ They are observations, not automatic failures.
 | `recall.migration` | 1 | 28 |
 | `recall.migrations` | 0 | 0 |
 | `recall.multimodal` | 3 | 11 |
-| `recall.near_miss` | 5 | 60 |
+| `recall.near_miss` | 6 | 60 |
 | `recall.near_miss_certificate` | 2 | 15 |
 | `recall.observability` | 0 | 0 |
 | `recall.ops` | 0 | 0 |

@@ -1130,18 +1130,11 @@ class CalibrationRepository:
         Raises ValueError for a stored report that disagrees with the producer's count rules, so a
         reader can report it unavailable rather than print it.
         """
-        from recall.support import COVERAGE_EVENT, validated_coverage_report
+        from recall.support import COVERAGE_EVENT, latest_calibration_event, validated_coverage_report
 
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
-                "AND event_type = %s AND payload->>'calibration_id' = %s "
-                "ORDER BY created_at DESC, event_id DESC LIMIT 1",
-                (self.tenant_id, COVERAGE_EVENT, calibration_id),
-            ).fetchone()
-        if row is None or not isinstance(row[0], Mapping):
-            return None
-        return validated_coverage_report(dict(row[0]), calibration_id)
+            payload = latest_calibration_event(conn, self.tenant_id, COVERAGE_EVENT, calibration_id)
+        return None if payload is None else validated_coverage_report(payload, calibration_id)
 
     def carry_forward(
         self,
@@ -1605,17 +1598,11 @@ class CalibrationRepository:
         itself, so a reader can report it unavailable rather than print it.
         """
         from recall.near_miss_certificate import EVENT_TYPE, validated_certificate
+        from recall.support import latest_calibration_event
 
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
-                "AND event_type = %s AND payload->>'calibration_id' = %s "
-                "ORDER BY created_at DESC, event_id DESC LIMIT 1",
-                (self.tenant_id, EVENT_TYPE, calibration_id),
-            ).fetchone()
-        if row is None or not isinstance(row[0], Mapping):
-            return None
-        return validated_certificate(row[0], calibration_id)
+            payload = latest_calibration_event(conn, self.tenant_id, EVENT_TYPE, calibration_id)
+        return None if payload is None else validated_certificate(payload, calibration_id)
 
     def served_gap(
         self,

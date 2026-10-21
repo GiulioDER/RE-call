@@ -14,6 +14,9 @@ Invariants and the failure each one catches:
 - P5 a measurement that fails never withdraws the fit, and status then says coverage is
   unavailable.
 - P6 every search on the served calibration carries that report as `calibration_coverage`.
+- P7 a term the default parser keeps only inside a compound token (a file name, a host, a dotted
+  name) is known, as the lite tokenizer, which splits on the punctuation, finds it.
+- P8 a view bound to another tenant never reads coverage the source store cached.
 
 Node IDs, all in `tests/test_postgres_near_miss_parity.py`:
 P1 `test_p1_unknown_terms_reads_the_pinned_generation_vocabulary`,
@@ -21,7 +24,9 @@ P2 `test_p2_strict_search_refuses_an_unknown_term_by_name`,
 P3 `test_p3_a_scoped_request_reports_the_check_unavailable`,
 P4 `test_p4_each_fit_records_lite_shaped_coverage`,
 P5 `test_p5_a_failing_measurement_never_withdraws_the_fit`,
-P6 `test_p6_search_carries_the_fits_coverage`.
+P6 `test_p6_search_carries_the_fits_coverage`,
+P7 `test_p7_a_term_inside_a_compound_token_is_known`,
+P8 `test_p8_a_tenant_view_starts_with_its_own_coverage_cache`.
 
 Red proof, 2026-10-21, on a Linux host (not a workstation) against a throwaway pg18 container, each
 mutation alone, the named test failing in the named assertion (exit 1, "1 failed", no error), then
@@ -42,6 +47,13 @@ restored byte for byte and the whole file green (6 passed):
   the fit".
 - PU6 (P6) `GenerationStore.near_miss_coverage` renamed away: "a search did not carry the fit's
   coverage".
+Added by the CCA audit fixes, 2026-10-21, on a Linux host against a throwaway pg18 container,
+each mutation alone, the named test failing in the named assertion (exit 1, "1 failed", no
+error), then restored byte for byte and the four files the fixes touch green (30 passed):
+- FU1 (P7) `GenerationStore.unknown_terms` returning the index misses without the text
+  confirmation: "a term inside a compound token was reported unknown".
+- FU2 (P8) `_reset_tenant_state` no longer resetting `_coverage_cache`: "a tenant view read another
+  tenant's cached coverage".
 """
 
 from __future__ import annotations
@@ -55,6 +67,7 @@ from recall.calibration_v2 import CalibrationRepository
 from recall.generation_store import GenerationStore
 from recall.generations import GenerationManager
 from recall.near_miss import UNAVAILABLE_MESSAGE
+from recall.pool import SharedPool
 from recall.support import validated_coverage_report
 from recall.trust import trusted_search
 from recall.trust_policy import TrustPolicy
@@ -210,3 +223,39 @@ def test_p6_search_carries_the_fits_coverage(parity_tenant) -> None:
     assert coverage.calibration_id == cal
     assert coverage.method == "synthetic_corpus_probes", "a search did not carry the fit's coverage"
     assert coverage.report is not None and coverage.report["unknown_entity"]["rejected"] == 22
+
+
+@requires_db
+def test_p7_a_term_inside_a_compound_token_is_known(parity_tenant) -> None:
+    tenant, manager = parity_tenant
+    embedder = _CarryEmbedder()
+    bodies = {**BODIES, "compound.md": (
+        b"see README.md, call api.VoyageAI.com and run CalibrationRepository.calibrate"
+    )}
+    generation = _ready(manager, embedder, bodies, "v1")
+    store = GenerationStore(TEST_DSN, embedder.dim, tenant=tenant)
+    try:
+        with store.pin_generation(generation):
+            unknown = store.unknown_terms(
+                ["README", "VoyageAI", "CalibrationRepository", "QX7777"]
+            )
+    finally:
+        store.close()
+    assert unknown == ["QX7777"], "a term inside a compound token was reported unknown"
+
+
+@requires_db
+def test_p8_a_tenant_view_starts_with_its_own_coverage_cache(parity_tenant) -> None:
+    tenant, _manager, _generation_id, repository, embedder, cal = _served(parity_tenant)
+    assert repository.near_miss_coverage(cal) is not None
+    pool = SharedPool(TEST_DSN, min_size=1, max_size=2)
+    store = GenerationStore(TEST_DSN, embedder.dim, tenant=tenant, shared_pool=pool)
+    try:
+        assert store.near_miss_coverage(cal) is not None
+        view = store.for_tenant("parity-other-" + uuid.uuid4().hex[:10])
+        assert view.near_miss_coverage(cal) is None, (
+            "a tenant view read another tenant's cached coverage"
+        )
+    finally:
+        store.close()
+        pool.close()

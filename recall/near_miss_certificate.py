@@ -19,8 +19,11 @@ generation) and compared with the answerable scores stored in the artifact, at t
 threshold. The report keeps the lite store's shape (`recall.near_miss`, validated by
 `recall.support.validated_coverage_report`): the held-out questions are its `in_vocabulary`
 class and the same `provisional_in_vocabulary` rule applies; `unknown_entity` is unmeasured
-because PostgreSQL has no unknown-term gate. It adds the AUC, its interval, the false-confirm rate
-at the threshold and the same certification bars, so the two certificates read side by side.
+because held-out questions are not built around invented codes. The questions are scored by cosine
+alone: the unknown-term check is not applied to this measurement (`unknown_term_gate` reads
+`not_run`), so `false_confirm_rate` is the score's share and can only overstate what a gated
+search confirms. It adds the AUC, its interval, the false-confirm rate at the threshold and the
+same certification bars, so the two certificates read side by side.
 
 **It never gates.** Nothing in `resolve`, carry-forward, drift or the trust policy reads it: this
 certificate is expected to fail, and a gate on it would make strict mode refuse every tenant. It is
@@ -71,22 +74,7 @@ def certificate_report(
     n = len(scores)
     rejected = sum(score < threshold for score in scores)
     auc = separability([float(score) for score in answerable], scores)
-    interval = None if auc is None else separability_interval(auc, len(answerable), n)
-    if auc is None or interval is None:
-        certified: bool | None = None
-        reason = "nothing to judge: a class is empty"
-    elif min(len(answerable), n) < MIN_CALIBRATION_SAMPLES:
-        certified = False
-        reason = (
-            f"too few samples: {len(answerable)} answerable and {n} near-miss, "
-            f"{MIN_CALIBRATION_SAMPLES} each required"
-        )
-    else:
-        certified = interval[0] >= MIN_SEPARABILITY
-        reason = (
-            f"separability lower bound {interval[0]:.3f} "
-            f"{'reaches' if certified else 'is below'} {MIN_SEPARABILITY}"
-        )
+    interval, certified, reason = _judgement(auc, len(answerable), n)
     return {
         "method": METHOD,
         "unknown_entity": {"n": 0, "rejected": 0, "rate": None, "state": "unmeasured"},
@@ -98,11 +86,11 @@ def certificate_report(
         },
         # The lite rule, unchanged: unmeasured, or fewer than PROVISIONAL_BAR rejected.
         "provisional_in_vocabulary": n < MIN_PROBES or rejected / n < PROVISIONAL_BAR,
-        "unknown_term_gate": "unavailable",
+        "unknown_term_gate": "not_run",
         "threshold": float(threshold),
         "n_answerable": len(answerable),
         "separability": auc,
-        "separability_ci": None if interval is None else [interval[0], interval[1]],
+        "separability_ci": interval,
         "false_confirm_rate": round((n - rejected) / n, 4) if n else None,
         "certified": certified,
         "certification_reason": reason,
@@ -135,12 +123,38 @@ def validated_certificate(report: Mapping[str, Any], calibration_id: str) -> dic
             or rate != (round((n - rejected) / n, 4) if n else None)
             or report.get("certified") not in (True, False, None)):
         raise ValueError("near-miss certificate statistics are malformed")
+    expected_interval, expected_certified, _reason = _judgement(auc, n_answerable, n)
+    if (report.get("certified") is not expected_certified
+            or (interval is None) != (expected_interval is None)
+            or (interval is not None and expected_interval is not None
+                and any(abs(a - b) > 1e-9 for a, b in zip(interval, expected_interval, strict=True)))):
+        raise ValueError("near-miss certificate verdict disagrees with its statistics")
     for key in ("separability", "separability_ci", "false_confirm_rate", "certified",
                 "certification_reason", "generation_id", "query_set_digest"):
         clean[key] = report.get(key)
     clean.update(method=METHOD, threshold=threshold, n_answerable=n_answerable,
                  near_miss_scores=[float(s) for s in scores])
     return clean
+
+
+def _judgement(
+    auc: float | None, n_answerable: int, n: int
+) -> tuple[list[float] | None, bool | None, str]:
+    """The interval, verdict and reason for an AUC: the producer's rule, and the validator's."""
+    if auc is None:
+        return None, None, "nothing to judge: a class is empty"
+    low, high = separability_interval(auc, n_answerable, n)
+    if min(n_answerable, n) < MIN_CALIBRATION_SAMPLES:
+        return [low, high], False, (
+            f"too few samples: {n_answerable} answerable and {n} near-miss, "
+            f"{MIN_CALIBRATION_SAMPLES} each required"
+        )
+    certified = low >= MIN_SEPARABILITY
+    # Four places: a bound just under the bar must not print as the bar itself ("0.900 is below").
+    return [low, high], certified, (
+        f"separability lower bound {low:.4f} {'reaches' if certified else 'is below'} "
+        f"{MIN_SEPARABILITY}"
+    )
 
 
 def _number(value: object) -> bool:

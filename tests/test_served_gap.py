@@ -12,6 +12,8 @@ Invariants and the failure each one catches:
 - G5 it reads only: no audit event, no calibration row, no change to resolution.
 - G6 the CLI runs the MCP service search over the stored set and prints the report, and a lite
   store refuses the subcommand by name without creating a file.
+- G7 agreement is two-sided: a served score above the exact one by more than the tolerance
+  disagrees and is counted apart, never as a gap below.
 
 Node IDs, all in `tests/test_served_gap.py`:
 G1 `test_g1_a_served_score_at_the_threshold_clears_it`,
@@ -19,7 +21,8 @@ G2 `test_g2_agreement_is_within_tolerance_and_nothing_served_disagrees`,
 G3 `test_g3_abstain_disagreement_has_the_right_polarity`,
 G4 `test_g4_each_query_is_paired_with_its_own_exact_score`,
 G5 `test_g5_served_gap_reads_only`,
-G6 `test_g6_cli_reports_over_the_mcp_service_path`, `test_g6_lite_refuses_served_gap_by_name`.
+G6 `test_g6_cli_reports_over_the_mcp_service_path`, `test_g6_lite_refuses_served_gap_by_name`,
+G7 `test_g7_a_served_score_above_the_exact_one_disagrees`.
 
 Red proof, 2026-10-21, on a Linux host (not a workstation) against a throwaway pg18 container, each
 mutation alone, the named test failing in the named assertion (exit 1, "1 failed", no error), then
@@ -36,6 +39,8 @@ restored byte for byte and the whole file green (7 passed):
   disagreements.
 - GU6b (G6) `served-gap` added to the lite-served subcommands: the lite path answers "calibration
   None not found" instead of refusing the subcommand by name.
+- FU7 (G7, a CCA audit fix, same day and host, 30 passed after restore) agreement one-sided again
+  (`gap <= tolerance`): "a served score above the exact one agreed".
 Analysis checked against a known answer: the rows of the 2026-10-21 live measurement reproduce
 72 of 78 and 47 of 48 agreeing, 0 flips, gap median 0.0321 and largest 0.0726.
 """
@@ -95,6 +100,18 @@ def test_g3_abstain_disagreement_has_the_right_polarity() -> None:
     assert report["abstain_disagreements"] == 2
     assert report["by_class"]["unanswerable"]["abstain_disagreements"] == 1
     assert "2 abstain disagreement(s)" in describe(report)
+
+
+def test_g7_a_served_score_above_the_exact_one_disagrees() -> None:
+    rows = [
+        ServedGapRow(True, 0.700, 0.7050, False),   # above by 0.005: two embeddings that differ
+        ServedGapRow(True, 0.700, 0.7005, False),   # above within the tolerance: agrees
+    ]
+    report = served_gap_report(rows, 0.41)
+    assert report["agree"] == 1, "a served score above the exact one agreed"
+    assert report["served_above_exact"] == 1
+    assert report["gaps_above_tolerance"] == 0 and report["gap_max"] is None
+    assert "1 served above the exact maximum" in describe(report)
 
 
 # --------------------------------------------------------------------------------------------

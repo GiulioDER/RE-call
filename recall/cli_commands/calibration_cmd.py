@@ -326,10 +326,10 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
             print(f"pipeline: {artifact.pipeline_fingerprint}")
             print(f"corpus: {artifact.corpus_fingerprint}")
             print(f"queries: {artifact.query_set_digest}")
-            from recall.near_miss import UNAVAILABLE_MESSAGE, describe as describe_coverage
+            from recall.near_miss import coverage_summary
 
-            coverage = repository.near_miss_coverage(artifact.calibration_id)
-            print(describe_coverage(coverage) if coverage else UNAVAILABLE_MESSAGE)
+            # Fail-open: the fit is saved; an unreadable optional report must not fail the command.
+            print(coverage_summary(repository.near_miss_coverage, artifact.calibration_id)[1])
         elif args.calibration_cmd == "carry-forward":
             bound = (
                 DEFAULT_MAX_CORPUS_DELTA
@@ -490,8 +490,17 @@ def _cmd_served_gap(args: argparse.Namespace, repository: CalibrationRepository)
             f"calibration {calibration_id} is bound to {generation_id}, which is not the active "
             "generation; serving searches only the active one, so the two would not be comparable"
         )
+    if os.environ.get("RECALL_SOURCE_POLICY_FILE", "").strip():
+        raise SystemExit(
+            "recall calibration served-gap: RECALL_SOURCE_POLICY_FILE is set, and a served search "
+            "under a source policy depends on the caller's access context, which a CLI run does not "
+            "have; the diagnostic measures unconstrained searches only. Unset it to run."
+        )
     embedder = _make_embedder(args.embedder)
-    env = dict(os.environ)
+    from recall.decision_ledger import LEDGER_ENV
+
+    # Read only: the decision ledger would record every labelled question as a served search.
+    env = {**os.environ, LEDGER_ENV: "0"}
     policy = TrustPolicy.from_env(env)
     store = GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
 
@@ -525,7 +534,17 @@ def _cmd_near_miss(args: argparse.Namespace, repository: CalibrationRepository) 
 
     calibration_id = _serving_calibration_id(args, repository)
     if args.query_file is None:
-        report = repository.near_miss_report(calibration_id)
+        try:
+            report = repository.near_miss_report(calibration_id)
+        except Exception as exc:  # BROAD-CATCH: fail-open, a damaged optional report is reported
+            if args.json:
+                print(json.dumps({"calibration_id": calibration_id, "near_miss_certificate": None,
+                                  "error": type(exc).__name__}, indent=2))
+                return
+            print(f"calibration: {calibration_id}")
+            print(f"near-miss certificate unavailable: the stored report could not be read "
+                  f"({type(exc).__name__})")
+            return
     else:
         labels, _digest = load_query_set(args.query_file)
         report = repository.measure_near_miss(

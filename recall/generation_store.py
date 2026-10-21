@@ -35,7 +35,7 @@ from recall.store import (
     SUPERSEDES_TARGET_ROWS_SQL,
     resolve_supersession_candidates,
 )
-from recall.support import COVERAGE_EVENT
+from recall.support import COVERAGE_EVENT, latest_calibration_event
 from recall.types import Chunk, ScoredChunk
 from recall.errors import RecallError
 
@@ -168,6 +168,7 @@ class GenerationStore(PgVectorStore):
         self._graph_readiness_cache = None
         self._binding_cache = None
         self._newest_indexed_at_cache = None
+        self._coverage_cache = {}
 
     def check_schema(self) -> None:
         from recall.schema import check_schema
@@ -665,6 +666,14 @@ class GenerationStore(PgVectorStore):
         in capitals, "THE") has no lexeme to look for and is never reported unknown, where the
         lite tokenizer, which drops nothing, would have one. Refusing on a word the index could
         never hold would refuse real answers.
+
+        A token whose lexemes miss is then confirmed against the chunk TEXT before it is reported:
+        PostgreSQL's default parser keeps a file name, host, e-mail address or dotted name whole
+        (`README.md` is the one lexeme 'readme.md', never 'readm'), so a term that occurs only
+        inside one has no lexeme of its own, while the lite tokenizer splits on the punctuation and
+        finds it. The confirmation is a case-insensitive whole-word match bounded by any
+        non-alphanumeric character, and it runs only for the few tokens the index could not find.
+        Tokens hold letters and digits only (`entity_like_tokens`), so none can carry regex syntax.
         """
         if not tokens:
             return []
@@ -693,7 +702,22 @@ class GenerationStore(PgVectorStore):
         """
         params = {"tokens": list(tokens), "tenant": self._tenant, "generation": generation_id}
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
-        return [str(row[0]) for row in rows]
+        missing = [str(row[0]) for row in rows]
+        if not missing:
+            return []
+        confirm = """
+            SELECT t.token
+            FROM unnest(%(tokens)s::text[]) WITH ORDINALITY AS t(token, ord)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM recall_chunks_v1 c
+                WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+                  AND c.text ~* ('(^|[^[:alnum:]])' || t.token || '([^[:alnum:]]|$)')
+            )
+            ORDER BY t.ord
+        """
+        params["tokens"] = missing
+        absent = self._with_retry(lambda conn: conn.execute(confirm, params).fetchall())
+        return [str(row[0]) for row in absent]
 
     def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
         """The near-miss coverage measured with `calibration_id` (`recall.near_miss`), or None.
@@ -708,16 +732,9 @@ class GenerationStore(PgVectorStore):
         if cached is not None and cached[0] > now:
             return cached[1]
 
-        def _op(conn: psycopg.Connection) -> tuple[Any, ...] | None:
-            return conn.execute(
-                "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
-                "AND event_type = %s AND payload->>'calibration_id' = %s "
-                "ORDER BY created_at DESC, event_id DESC LIMIT 1",
-                (self._tenant, COVERAGE_EVENT, calibration_id),
-            ).fetchone()
-
-        row = self._with_retry(_op)
-        report = dict(row[0]) if row is not None and isinstance(row[0], Mapping) else None
+        report = self._with_retry(
+            lambda conn: latest_calibration_event(conn, self._tenant, COVERAGE_EVENT, calibration_id)
+        )
         self._coverage_cache[calibration_id] = (now + _COVERAGE_TTL_S, report)
         return report
 

@@ -6,6 +6,8 @@ Invariants and the failure each one catches:
 - M2 the report keeps the lite shape and its rules: it passes the lite validator, and fewer than
   `MIN_PROBES` questions is unmeasured and provisional however many were rejected.
 - M3 a stored report whose counts disagree with its own scores is refused, not printed.
+- M9 a stored verdict or interval that disagrees with its own statistics is refused, and the
+  report says the unknown-term check was not run on these questions.
 - M4 status reports the certificate of the calibration actually serving, and only that one.
 - M5 a failing certificate changes no serving decision: calibration resolution, strict trusted
   search, the MCP search service, status and carry-forward come out exactly as before it was
@@ -19,6 +21,7 @@ Node IDs, all in `tests/test_near_miss_certificate.py`:
 M1 `test_m1_a_near_miss_at_the_threshold_is_confirmed`,
 M2 `test_m2_the_report_keeps_the_lite_shape_and_rules`,
 M3 `test_m3_a_report_that_disagrees_with_its_scores_is_refused`,
+M9 `test_m9_a_verdict_that_disagrees_with_its_statistics_is_refused`,
 M4 `test_m4_status_reports_the_serving_calibrations_certificate_only`,
 M5 `test_m5_a_failing_certificate_changes_no_serving_decision`,
 M6 `test_m6_the_audit_row_holds_no_question_text`,
@@ -48,6 +51,9 @@ restored byte for byte and the whole file green (9 passed):
 - MU7 (M7) the answerable-entry refusal removed: DID NOT RAISE.
 - MU8 (M8) the CLI's population line removed: "the CLI does not say what the certificate covers".
 - MU8b (M8) the lite refusal's near-miss branch removed: the generic refusal lacks the reason.
+- FU8 (M9, a CCA audit fix, same day and host, 30 passed after restore) the gate field back to
+  `unavailable`: "the certificate claims a gate it never ran".
+- FU8b (M9) `validated_certificate` without the verdict recheck: DID NOT RAISE.
 The runner applies each mutation as one exact string replacement and is kept with the
 maintainer's research records.
 """
@@ -123,6 +129,19 @@ def test_m3_a_report_that_disagrees_with_its_scores_is_refused() -> None:
     report["near_miss_scores"] = [0.30] * 20
     with pytest.raises(ValueError, match="disagree"):
         validated_certificate(report, "cal_x")
+
+
+def test_m9_a_verdict_that_disagrees_with_its_statistics_is_refused() -> None:
+    failing = {"calibration_id": "cal_x",
+               **certificate_report([0.40] * 25 + [0.70] * 25, [0.45] * 30 + [0.30] * 15, 0.41)}
+    assert failing["unknown_term_gate"] == "not_run", "the certificate claims a gate it never ran"
+    assert validated_certificate(failing, "cal_x")["certified"] is False
+    tampered = {**failing, "certified": True}
+    with pytest.raises(ValueError, match="verdict"):
+        validated_certificate(tampered, "cal_x")
+    narrowed = {**failing, "separability_ci": [0.95, 0.99]}
+    with pytest.raises(ValueError, match="verdict"):
+        validated_certificate(narrowed, "cal_x")
 
 
 # --------------------------------------------------------------------------------------------
