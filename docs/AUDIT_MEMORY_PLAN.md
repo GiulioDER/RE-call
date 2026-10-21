@@ -116,7 +116,7 @@ file name to its parsed `recall_record`.
 ```json
 {"tenant_id": "...", "generation_id": "...", "truncated": false,
  "records": [{"id": "...", "kind": "bug", "recall_record": {}, "name": "...", "description": "...",
-   "source": "...", "chunk_id": "...", "valid_from": "...", "supersedes": null,
+   "source": "...", "chunk_id": "...", "chunk_ids": ["..."], "valid_from": "...", "supersedes": null,
    "superseded_by": null, "valid_until": null, "caused": [],
    "anchor_matches": [{"anchor": {}, "match": "exact|symbol_changed|file_only|none"}],
    "anchor_match": "exact|symbol_changed|file_only|none"}]}
@@ -126,6 +126,13 @@ file name to its parsed `recall_record`.
 record with no anchor matching at least `file_only` is not returned for an anchor query. For an
 `ids` or `--all` query every `match` is `none`. In a code tenant each code chunk is returned as a
 record with `kind: "code"` and `recall_record` set to its `code_anchor` object.
+
+**Amended 2026-10-22 (orchestrator, from Session 3's report on PR 976):** several code chunks
+share one `code_anchor` (a split symbol, and every module-level chunk of a file), so a code tenant
+returns ONE record per distinct anchor `(repo, file, symbol, code_sha)`, with `chunk_id` the
+lowest-ordinal chunk and `chunk_ids` every chunk carrying that anchor. A memo's record carries
+`chunk_ids` too: every chunk of the memo. A code anchor's `repo` may be null (a build with no
+`--project`), and a null `repo` never matches a `repo` query.
 
 ---
 

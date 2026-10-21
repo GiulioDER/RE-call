@@ -1141,6 +1141,28 @@ class GenerationStore(PgVectorStore):
                 resolved[identifier] = [identifier]
         return resolved
 
+    def record_chunks(self) -> list[Chunk]:
+        """Every chunk of the served generation carrying an audit record or a code anchor, without
+        passage text: the read behind `recall.records.lookup_records`."""
+        generation_id = self._generation_id()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT chunk_id, source_uri, metadata FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s "
+                "AND (metadata ? 'recall_record' OR metadata ? 'code_anchor') ORDER BY chunk_id",
+                (self._tenant, generation_id),
+            ).fetchall()
+        )
+        return [
+            Chunk(
+                str(chunk_id),
+                str(source),
+                "",
+                metadata if isinstance(metadata, dict) else json.loads(metadata),
+            )
+            for chunk_id, source, metadata in rows
+        ]
+
     def iter_chunks(self, batch_size: int = 1000) -> Iterator[Chunk]:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")

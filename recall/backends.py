@@ -51,6 +51,8 @@ __all__ = [
 LITE_SERVED: frozenset[str] = frozenset(
     {
         "index", "search", "lite", "forget", "scopes", "doctor", "dashboard", "calibration", "provenance",
+        # Exact lookup of audit records by key: metadata only, the same query on both stores.
+        "records",
         # Never open the store a DSN names: files, manifests, backups, secrets, client config.
         "check", "extract", "rewrite", "manifest", "backup", "secret", "uninstall",
         # Takes its database from its own config file, not from the global DSN.
