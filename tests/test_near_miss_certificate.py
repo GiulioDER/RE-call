@@ -211,9 +211,9 @@ def test_m4_status_reports_the_serving_calibrations_certificate_only(near_miss_t
         store.close()
 
     assert before.get("calibration_id") == served_id
-    assert before.get("near_miss_coverage") is None, "another calibration's certificate was reported"
-    assert str(before.get("near_miss_summary", "")).startswith("near-miss certificate: unmeasured")
-    report = after.get("near_miss_coverage")
+    assert before.get("near_miss_certificate") is None, "another calibration's certificate was reported"
+    assert str(before.get("near_miss_certificate_summary", "")).startswith("near-miss certificate: unmeasured")
+    report = after.get("near_miss_certificate")
     assert isinstance(report, dict), "status does not carry the serving calibration's certificate"
     assert report["calibration_id"] == served_id
     assert report["in_vocabulary"]["n"] == len(NEAR_MISS)

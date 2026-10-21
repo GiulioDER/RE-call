@@ -450,7 +450,7 @@ def _cmd_near_miss(args: argparse.Namespace, repository: CalibrationRepository) 
             calibration_id, labels, _make_embedder(args.embedder), record=args.record
         )
     if args.json:
-        print(json.dumps({"calibration_id": calibration_id, "near_miss_coverage": report},
+        print(json.dumps({"calibration_id": calibration_id, "near_miss_certificate": report},
                          indent=2, default=str))
         return
     print(f"calibration: {calibration_id}")

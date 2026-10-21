@@ -67,7 +67,7 @@ Each measurement appends one `calibration_near_miss_measured` audit event bound 
 calibration ID. It holds counts, scores and the set's digest, never a question's text, because a
 near-miss set written over a private corpus carries that corpus's content. A carried calibration
 has a new ID and inherits no measurement. `recall_calibration_status` reports the newest one as
-`near_miss_coverage`, with a one-line `near_miss_summary`; an unreadable report is reported as
+`near_miss_certificate`, with a one-line `near_miss_certificate_summary`; an unreadable report is reported as
 unavailable and never fails status.
 
 **This certificate never gates.** Calibration resolution, carry-forward, drift and strict trust

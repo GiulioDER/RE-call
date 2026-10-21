@@ -132,6 +132,6 @@ def _near_miss_status(
         summary = "near-miss certificate unavailable; provisional for in-vocabulary near-misses"
     return {
         "certificate_population": CERTIFICATE_POPULATION,
-        "near_miss_coverage": report,
-        "near_miss_summary": summary,
+        "near_miss_certificate": report,
+        "near_miss_certificate_summary": summary,
     }
