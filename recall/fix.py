@@ -58,6 +58,7 @@ from recall.frontmatter import (
 )
 from recall.lint import (
     DEFAULT_GLOB,
+    SENTENCE_LOOKBACK,
     corpus_frontmatter,
     describe_cycle,
     sentence_around,
@@ -87,19 +88,19 @@ _PASSIVE = r"(?:superseded\s+by|superceded\s+by|replaced\s+by)"
 #: `curate_wallets.wallet_weight = clamp(...)`. None of it could ever resolve to a file, so
 #: nothing unsafe was written, but the SKIP list became noise no human could act on. A proposal
 #: tool whose output must itself be filtered has not saved anyone any work.
-_REF = (
-    r"\[\[([^\]\n]{1,120})\]\]"
-    r"|([A-Za-z0-9][\w\-]{5,}\.md)"
-    r"|([a-z][a-z0-9]*(?:[_\-][a-z0-9]+)*[_\-]20\d\d(?:[_\-]\d\d){0,2})"
+_REF_FORMS = (
+    r"\[\[([^\]\n]{1,120})\]\]",
+    r"([A-Za-z0-9][\w\-]{5,}\.md)",
+    r"([a-z][a-z0-9]*(?:[_\-][a-z0-9]+)*[_\-]20\d\d(?:[_\-]\d\d){0,2})",
 )
+_REF = "|".join(_REF_FORMS)
 
 #: The references above, for MASKING only: each alternative may start only at the start of a token,
 #: so a memo holding one very long token is scanned once rather than once per character. Matching
-#: still uses `_REF`, whose spans start after a cue and so are already anchored.
+#: still uses `_REF`, whose spans start after a cue and so are already anchored. Built from
+#: `_REF_FORMS`, so the two cannot come to read different forms.
 _REF_MASK_RE = re.compile(
-    r"\[\[[^\]\n]{1,120}\]\]"
-    r"|(?<![\w\-])[A-Za-z0-9][\w\-]{5,}\.md"
-    r"|(?<![\w\-])[a-z][a-z0-9]*(?:[_\-][a-z0-9]+)*[_\-]20\d\d(?:[_\-]\d\d){0,2}",
+    "|".join((_REF_FORMS[0], *(rf"(?<![\w\-]){form}" for form in _REF_FORMS[1:]))),
     re.IGNORECASE,
 )
 _PASSIVE_RE = re.compile(
@@ -114,6 +115,18 @@ class UnreadableMemo(ValueError, RecallError):
     """`apply_proposal` was pointed at a memo it will not rewrite, and said which and why."""
 
 
+class SupersessionCycle(UnreadableMemo):
+    """The memo reads fine, but the edge would close a supersession cycle.
+
+    A subclass, so every caller that reports `UnreadableMemo` as SKIP still does, and a library
+    caller can tell this refusal from an encoding one without reading the message.
+    """
+
+
+#: Hex digits of a proposal id: the ten `recall lint --fix` prints and `--apply` takes back.
+PROPOSAL_ID_HEX_DIGITS = 10
+
+
 @dataclass(frozen=True)
 class Proposal:
     """One edge to declare. `edit_file` is the memo that gains `supersedes: <target>`."""
@@ -121,7 +134,8 @@ class Proposal:
     edit_file: str      # root-relative path of the file to modify
     target: str         # value to write for `supersedes:`
     evidence_file: str  # the memo whose prose stated the relation
-    evidence: str       # the sentence that states it, so a human can judge it
+    evidence: str       # the sentence that states it, on one line, cut to `_EVIDENCE_LIMIT`
+                        # characters around the cue when longer, so a human can judge it
 
     @property
     def id(self) -> str:
@@ -129,10 +143,13 @@ class Proposal:
 
         Derived from the edge AND the sentence a reviewer read, not from a position in the list,
         so an id taken from a dry run cannot select a different edge once the corpus has moved:
-        a memo added in between renumbers a list, and an edited sentence changes the id.
+        a memo added in between renumbers a list, and an edited sentence changes the id. It
+        hashes `evidence` as shown, so re-wrapping the sentence, or editing a long one outside
+        the excerpt shown, leaves the id as it was.
         """
         joined = "\0".join((self.edit_file, self.target, self.evidence_file, self.evidence))
-        return hashlib.sha256(joined.encode("utf-8", "surrogatepass")).hexdigest()[:10]
+        digest = hashlib.sha256(joined.encode("utf-8", "surrogatepass")).hexdigest()
+        return digest[:PROPOSAL_ID_HEX_DIGITS]
 
 
 @dataclass(frozen=True)
@@ -154,7 +171,7 @@ def _is_index(rel: str) -> bool:
                for n in _INDEX_NAMES)
 
 
-def _first_ref(match: re.Match) -> str | None:
+def _first_ref(match: re.Match[str]) -> str | None:
     """The document reference in a marker match.
 
     Skips group 1, which is the named `marker` group — the verb phrase itself is never the
@@ -189,16 +206,27 @@ def _is_reported_speech(body: str, marker_start: int) -> bool:
     that merely NARRATES it invented a second, false claimant for an edge another memo already
     declares correctly — the worst kind of false positive, because it looks authoritative.
     """
-    head = body[:marker_start]
-    cut = max((head.rfind(c) for c in _CLAUSE_END), default=-1)
-    return bool(_OTHER_DOC.search(head[cut + 1:]))
+    # The clause end is looked for in the `SENTENCE_LOOKBACK` characters behind the marker first,
+    # so a memo with many cues is read once rather than once per cue; failing that, all of it.
+    lo = max(0, marker_start - SENTENCE_LOOKBACK)
+    near = body[lo:marker_start]
+    cut = max((near.rfind(c) for c in _CLAUSE_END), default=-1)
+    if cut >= 0:
+        cut += lo
+    elif lo:
+        cut = max((body.rfind(c, 0, lo) for c in _CLAUSE_END), default=-1)
+    # Searched in place: the character before `cut + 1` is a clause end, never a word character,
+    # so `\b` there reads as it did at the start of the sliced head.
+    return bool(_OTHER_DOC.search(body, cut + 1, marker_start))
 
 
 #: Qualifiers that weaken the claim from "replaces" to "relates to".
-_HEDGE_BEFORE = re.compile(
-    r"\b(?:partially|partly|largely|mostly|arguably|effectively|broadly|possibly)\s+$",
-    re.IGNORECASE,
+_HEDGE_WORDS = (
+    "partially", "partly", "largely", "mostly", "arguably", "effectively", "broadly", "possibly",
 )
+_HEDGE_BEFORE = re.compile(rf"\b(?:{'|'.join(_HEDGE_WORDS)})\s+$", re.IGNORECASE)
+#: The longest hedge word, which bounds how far before the whitespace a hedge can begin.
+_HEDGE_WORD_MAX = max(len(word) for word in _HEDGE_WORDS)
 #: "supersedes/augments X", "supersedes or augments X" — the author declined to commit.
 _HEDGE_AFTER = re.compile(r"^\s*(?:/|\bor\b)\s*\w+", re.IGNORECASE)
 
@@ -214,7 +242,20 @@ def _is_hedged(body: str, marker_start: int, after: str) -> bool:
     A hedge is the author saying they are not sure. Resolving it for them is exactly the kind of
     confident wrong answer this project exists to avoid.
     """
-    return bool(_HEDGE_BEFORE.search(body[:marker_start]) or _HEDGE_AFTER.match(after))
+    return bool(_hedged_before(body, marker_start) or _HEDGE_AFTER.match(after))
+
+
+def _hedged_before(body: str, marker_start: int) -> bool:
+    """`_HEDGE_BEFORE` against ``body[:marker_start]``, read from the hedge word on.
+
+    A match ends in the whitespace run that ends at the marker and begins at the word before that
+    run, at most `_HEDGE_WORD_MAX` characters long, so it is searched from there rather than from
+    the start of the memo; `\\b` and `$` read the same in place as on the slice.
+    """
+    run = marker_start
+    while run and body[run - 1].isspace():
+        run -= 1
+    return bool(_HEDGE_BEFORE.search(body, max(0, run - _HEDGE_WORD_MAX), marker_start))
 
 
 def _is_partial_scope(between: str) -> bool:
@@ -227,7 +268,7 @@ def _is_partial_scope(between: str) -> bool:
     return bool(_PARTIAL_SCOPE.search(between))
 
 
-def _accept(body: str, m: re.Match) -> str | None:
+def _accept(body: str, m: re.Match[str]) -> str | None:
     """The reference this match declares, or None when the sentence does not declare one."""
     ref = _first_ref(m)
     if not ref:
@@ -251,7 +292,7 @@ def _accept(body: str, m: re.Match) -> str | None:
 _EVIDENCE_LIMIT = 400
 
 
-def _evidence(body: str, m: re.Match) -> str:
+def _evidence(body: str, m: re.Match[str]) -> str:
     """The sentence holding the match, on one line, so a reviewer judges the claim and not a name.
 
     The dry run printed only the reference, so "This never supersedes [[x]]" was reviewed as
@@ -474,7 +515,7 @@ def apply_proposal(root: Path, p: Proposal, *, glob: str = DEFAULT_GLOB) -> None
     report, so "is not valid UTF-8" would be a false thing to say about the value in front of
     them and would name nothing they could act on.
 
-    Last, an edge that would close a supersession cycle is refused with `UnreadableMemo`, before
+    Last, an edge that would close a supersession cycle is refused with `SupersessionCycle`, before
     the write rather than as a `recall lint` error after it. The cycle is judged on every memo
     under `root` that `DEFAULT_GLOB` or `glob` selects: search and a plain `recall lint` read
     every memo, so a cycle through one outside a narrower `--glob` is still a cycle, and a `glob`
@@ -529,9 +570,21 @@ def apply_proposal(root: Path, p: Proposal, *, glob: str = DEFAULT_GLOB) -> None
     graph = supersession_graph_of((f.name, meta) for f, meta in documents.items())
     chain = supersession_cycle_closed_by(graph, p.edit_file, p.target)
     if chain is not None:
-        raise UnreadableMemo(
+        raise SupersessionCycle(
             f"{p.edit_file} cannot declare supersedes: {p.target!r}: "
-            + describe_cycle(supersedes_key(p.edit_file), supersedes_key(p.target), chain)
+            + describe_cycle(p.edit_file, p.target, chain)
         )
+    # The scan above reads the whole corpus, so it is the window in which an editor, an agent or
+    # a session hook can save this memo. Writing `updated` then would put back the bytes read
+    # before that save; refuse instead, so the next run judges the memo as it now is.
+    try:
+        current = f.read_bytes()
+    except OSError as exc:
+        raise UnreadableMemo(
+            f"{p.edit_file} could not be read again before the write ({exc.strerror or exc}); "
+            f"run again"
+        ) from exc
+    if current != raw:
+        raise UnreadableMemo(f"{p.edit_file} changed while its edge was being checked; run again")
     atomic_write_bytes(f, updated)
     _log.info("declared %s in %s", line, p.edit_file)

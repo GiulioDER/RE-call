@@ -63,7 +63,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   its evidence ids, proposes nothing when another document is named elsewhere in the sentence,
   and skips a stem two files share. `lint --fix --apply`, `rewrite apply` and the dashboard's
   edit, undo and review actions refuse an edge that would close a supersession cycle in the
-  whole corpus, before the write.
+  whole corpus, before the write. A negation is not hidden by an aside right before the cue or its
+  `be`, `being` or `been` ("this has not (as of today) been superseded by Y", "it is not, however,
+  superseded by Y"), and the
+  direct-reference rule judges a condition that falls past the 4,000 characters it reads cues
+  from. `--apply` takes ids copied with the brackets the dry run prints, and refuses a repeated
+  `--apply` and an id two proposals share. `lint --fix --apply` skips a memo saved while its edge
+  was being checked rather than overwrite the save, and `recall.fix.apply_proposal` raises
+  `recall.fix.SupersessionCycle`, a subclass of `UnreadableMemo`, for a cycle. The dashboard
+  judges a memo named in another case, on a filesystem that ignores case, as the file it opens.
+  `recall lint`, `recall lint --fix` and the dashboard's triage read at most 2,000 characters
+  behind each cue to find its sentence when a sentence end lies within them, instead of the whole
+  memo before it, with the same results as before.
 
 * **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
   from this one on are open source under the GNU Affero General Public License v3.0, which permits

@@ -274,3 +274,25 @@ def test_the_cycle_check_agrees_with_what_lint_reports_after_the_write(
     _declare(tmp_path, after)
     codes = _codes(lint_corpus(tmp_path))
     assert ("supersession-cycle" in codes or "self-supersedes" in codes) == (expected is not None)
+
+
+def test_describe_cycle_keys_its_names_and_says_when_the_chain_is_transitive():
+    """A writer passes `describe_cycle` the names it gave the cycle check, and a chain of three or
+    more is named as reached through the memos between, since the target declares no edge to the
+    superseder itself.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_lint.py::test_describe_cycle_keys_its_names_and_says_when_the_chain_is_transitive`
+    failed at the first assertion with the names printed as given (`a.md`, `[[b]]`); target
+    `recall.lint.describe_cycle` (CCA deferred findings CODE-006 and DOC-012). Red also by mutation
+    dropping the transitive wording (`through = ""`): it failed at the second assertion, the
+    message saying "already supersedes it (b -> c -> a)".
+    """
+    from recall.lint import describe_cycle
+
+    message = describe_cycle("a.md", "[[b]]", ("b", "c", "a"))
+    assert message.startswith("declaring that a supersedes b would close a supersession cycle")
+    assert "because b already supersedes it through c (b -> c -> a)" in message
+    direct = describe_cycle("a.md", "b.md", ("b", "a"))
+    assert "because b already supersedes it (b -> a)" in direct
+    assert describe_cycle("a.md", "a.md", ("a",)) == "a memo cannot supersede itself"

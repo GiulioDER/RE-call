@@ -15,7 +15,11 @@ Each word is judged over the narrowest span that still governs the cue:
   ``should``, and a lower-case ``may``, so the month does not count): the clause that holds the cue,
   from the nearest comma, colon, parenthesis or dash before it up to the reference. "This memo is
   no longer current, superseded by [[b]]" stays a real cue, because its negation sits in the clause
-  before;
+  before. An aside closed right before the cue, or right before a ``be``, ``being`` or ``been``
+  that leads into it, does not end the clause it interrupts, so "This is not (as of today)
+  superseded by [[b]]", "It has not (as of today) been superseded by [[b]]" and "It is not,
+  however, superseded by [[b]]" are negated; an aside is a parenthesis, or one to four words
+  between two commas, and its own words count;
 * ``if`` and ``unless``: the whole sentence, before the cue and after the reference, because a
   condition governs the clause it is attached to whichever side of a comma it sits. Before the cue
   a semicolon does not end that sentence ("If the canary fails; this is replaced by [[b]]" is
@@ -78,6 +82,14 @@ _SENTENCE_BREAK = re.compile("|".join((";", *_BREAKS)), re.MULTILINE)
 #: fails; this is replaced by [[b]]" is conditional.
 _CONDITION_BREAK = re.compile("|".join(_BREAKS), re.MULTILINE)
 _CLAUSE_BREAK = re.compile(r"[,:()\u2013\u2014]|\s-\s")
+#: An aside that ends right before the cue, or right before the `be`, `being` or `been` that leads
+#: into it ("has not (as of today) been superseded"): a parenthesis, or one to four words between
+#: commas. Each part is bounded, so a window holding one very long token is still read in linear
+#: time.
+_ASIDE = re.compile(
+    r"(?:\([^()\n]{0,200}\)|,[ \t]*(?:[^\s,]{1,40}[ \t]+){0,3}[^\s,]{1,40}[ \t]*,)"
+    r"\s*(?:(?:been|being|be)\s+)?\Z"
+)
 _NEGATION = re.compile(
     r"\b(?:not|never|cannot|neither|nor|nothing|none|nobody|no\s+longer)\b|\bno\b(?!-)"
     r"|n['\u2019]t\b",
@@ -129,6 +141,15 @@ def _last_break_end(pattern: re.Pattern[str], text: str, start: int, end: int) -
     return found
 
 
+def _clause_start(masked: str, sentence_start: int, cue_start: int) -> int:
+    """Where the clause holding the cue begins: after the last clause break before it, read past
+    each aside that ends right before the cue, so the aside's breaks do not end the clause."""
+    end = cue_start
+    while (aside := _ASIDE.search(masked, sentence_start, end)) is not None:
+        end = aside.start()
+    return _last_break_end(_CLAUSE_BREAK, masked, sentence_start, end)
+
+
 def sentence_head(
     text: str, cue_start: int, references: re.Pattern[str] | None = None
 ) -> Span | None:
@@ -157,7 +178,7 @@ def unasserted(
     lo, masked = window
     cue_start, cue_end, ref_end = cue[0] - lo, cue[1] - lo, reference[1] - lo
     sentence_start = _last_break_end(_SENTENCE_BREAK, masked, 0, cue_start)
-    clause_start = _last_break_end(_CLAUSE_BREAK, masked, sentence_start, cue_start)
+    clause_start = _clause_start(masked, sentence_start, cue_start)
     gap = masked[cue_end:ref_end]
     clause = masked[clause_start:cue_start] + " " + gap
     if _NEGATION.search(clause):

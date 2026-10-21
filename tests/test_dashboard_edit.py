@@ -208,3 +208,76 @@ def test_the_edit_cycle_check_reads_hidden_directories_as_lint_does(corpus: Path
 
     with pytest.raises(edit.EditRefused, match=r"cycle.*\(older -> gone -> old\)"):
         edit.plan_edit(corpus, "old.md", add_supersedes=("older.md",))
+
+
+def test_an_edit_that_adds_no_reference_does_not_list_the_corpus(corpus: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A date or status edit names no other memo, so the memo listing is not walked for it.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_dashboard_edit.py::test_an_edit_that_adds_no_reference_does_not_list_the_corpus`
+    failed with `assert 1 == 0`; target `recall.dashboard.edit.plan_edit`, which listed every memo
+    for every edit (CCA deferred finding PERF-007).
+    """
+    listed = []
+    real = edit._corpus_names
+    monkeypatch.setattr(edit, "_corpus_names", lambda root: listed.append(root) or real(root))
+    plan = edit.plan_edit(corpus, "new.md", valid_until="2027-01-01", status="active")
+    assert plan.summary == ("valid_until 2027-01-01", "status active")
+    assert len(listed) == 0
+
+
+def _ignores_case(root: Path) -> bool:
+    (root / "case-probe.md").write_text("probe\n", encoding="utf-8")
+    try:
+        return (root / "CASE-PROBE.md").exists()
+    finally:
+        (root / "case-probe.md").unlink()
+
+
+@pytest.mark.parametrize("name, target, reason", [
+    ("New.md", "new.md", "cannot supersede itself"),
+    ("Older.md", "new.md", r"cycle.*\(new -> older\)"),
+])
+def test_a_memo_named_in_another_case_is_judged_as_the_file_it_opens(
+    corpus: Path, monkeypatch: pytest.MonkeyPatch, name: str, target: str, reason: str
+) -> None:
+    """On a filesystem that ignores case, ``Older.md`` opens ``older.md`` and is judged as it.
+
+    `Path.resolve` keeps the spelling it was given on macOS, so the memo being edited was keyed
+    apart from the corpus entry that is the same file: adding ``new.md`` to ``New.md`` passed the
+    self-check, and adding it to ``Older.md`` missed the cycle through ``new.md``. The patched
+    `resolve_memo` keeps the caller's spelling as macOS does; the test needs a filesystem that
+    ignores case (it runs on Windows and macOS, and skips on Linux).
+
+    Red: baseline 8e10eea6a, on Windows,
+    `tests/test_dashboard_edit.py::test_a_memo_named_in_another_case_is_judged_as_the_file_it_opens`
+    failed with `DID NOT RAISE EditRefused` in both cases; target `recall.dashboard.edit._memo`,
+    which used the caller's spelling (CCA deferred finding BUG-010).
+    """
+    if not _ignores_case(corpus):
+        pytest.skip("needs a filesystem that ignores case")
+    monkeypatch.setattr(
+        edit, "resolve_memo", lambda root, asked: (asked, root.resolve() / asked)
+    )
+    before = (corpus / name.lower()).read_bytes()
+    with pytest.raises(edit.EditRefused, match=reason):
+        edit.plan_edit(corpus, name, add_supersedes=(target,))
+    assert (corpus / name.lower()).read_bytes() == before
+
+
+def test_a_directory_that_cannot_be_listed_keeps_the_spelling_given(
+    corpus: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spelling a memo as its directory lists it needs the listing; without it the edit goes on
+    under the name `resolve_memo` accepted.
+
+    Red: mutation of `recall.dashboard.edit._as_listed` without its `OSError` fallback:
+    `tests/test_dashboard_edit.py::test_a_directory_that_cannot_be_listed_keeps_the_spelling_given`
+    failed with `PermissionError` from the listing.
+    """
+    def unlistable(path: object) -> list[str]:
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(edit.os, "listdir", unlistable)
+    plan = edit.plan_edit(corpus, "new.md", valid_until="2027-01-01")
+    assert plan.name == "new.md"

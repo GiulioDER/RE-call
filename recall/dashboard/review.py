@@ -422,12 +422,17 @@ def accept(root: Path, item: QueueItem, *, reviewer: str, note: str, shown_diges
     root = root.resolve()
     fact = _promoted(item, reviewer, note, now)
     with _DECISION_LOCK:
-        plan = preview(root, item, now)
+        # Planned once, for the fact being written, and handed to `apply_rewrite`: planning reads
+        # the whole corpus, and this lock holds every other decision while it does.
+        try:
+            plan = plan_rewrite(root, fact)
+        except RewriteRefused as exc:
+            raise ReviewRefused(str(exc)) from exc
         if memo_digest(root, plan.edit_file) != shown_digest:
             raise ReviewRefused(f"{plan.edit_file} changed since you reviewed it; review the new version")
         try:
             with RejectionLedger(default_ledger_path(root)) as ledger:
-                result = apply_rewrite(root, fact, ledger=ledger, apply=True)
+                result = apply_rewrite(root, fact, ledger=ledger, apply=True, plan=plan)
         except RewriteRefused as exc:
             raise ReviewRefused(str(exc)) from exc
         if not result.written:

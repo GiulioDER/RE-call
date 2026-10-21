@@ -55,7 +55,8 @@ CLOSURE_MARKERS = re.compile(
 )
 
 #: A reference to another memo: a ``[[wikilink]]``, a markdown link to a ``.md`` file, or a bare
-#: ``name.md``. Kept in step with what `recall.fix` can resolve, which reads the same three forms.
+#: ``name.md``. Not `recall.fix`'s grammar, which reads no markdown link and also takes a bare stem
+#: carrying a 20xx year (`recall.fix._REF_FORMS`).
 MEMO_REFERENCE = re.compile(r"\[\[[^\]\n]+\]\]|\]\([^)\s]+\.md\)|\b[\w.-]+\.md\b")
 
 #: Where a sentence ends: terminal punctuation then whitespace, a blank line, a list item or a
@@ -71,17 +72,36 @@ _VERSION_STEM = re.compile(r"^(?P<stem>.+)_v(?P<num>\d+)$")
 Level = Literal["error", "warning"]
 
 
+#: How far before a position a reader looks first for the boundary or clause end behind it. Past
+#: it, each reader falls back to reading from the start, so the window bounds the cost and never
+#: the result.
+SENTENCE_LOOKBACK = 2000
+#: A character no `_SENTENCE_END` match can contain. A scan that starts just after one finds the
+#: same boundaries from there as a scan from the start of the text: none of them can begin before
+#: it and end after it, and the pattern never looks behind where it starts.
+_OUTSIDE_SENTENCE_END = re.compile(r"[^\s\d.!?\"')\]*#-]")
+
+
 def sentence_around(text: str, start: int, end: int) -> str:
-    """The sentence of `text` that holds `text[start:end]`, as this module bounds a sentence."""
+    """The sentence of `text` that holds `text[start:end]`, as this module bounds a sentence.
+
+    The boundary before `start` is looked for in the `SENTENCE_LOOKBACK` characters behind it
+    first, from a point where a scan from the start of the text would be in step, so a text of
+    many short sentences costs time linear in its length and the sentence is the one a full scan
+    finds. A text with no boundary in that window is still scanned from its start.
+    """
     left = 0
-    for boundary in _SENTENCE_END.finditer(text, 0, start):
+    first = 0
+    if start > SENTENCE_LOOKBACK:
+        inert = _OUTSIDE_SENTENCE_END.search(text, start - SENTENCE_LOOKBACK, start)
+        first = inert.end() if inert else 0
+    for boundary in _SENTENCE_END.finditer(text, first, start):
         left = boundary.end()
+    if first and not left:
+        for boundary in _SENTENCE_END.finditer(text, 0, start):
+            left = boundary.end()
     following = _SENTENCE_END.search(text, end)
     return text[left: following.start() if following else len(text)]
-
-
-#: The name `recall.dashboard.triage` imports.
-_sentence_around = sentence_around
 
 
 def closure_marker_naming_a_memo(prose: str) -> re.Match[str] | None:
@@ -281,13 +301,21 @@ def supersession_cycle_closed_by(
 
 
 def describe_cycle(superseder: str, target: str, chain: Sequence[str]) -> str:
-    """The sentence a writer refuses a cycle with, naming the chain it would close."""
+    """The sentence a writer refuses a cycle with, naming the chain it would close.
+
+    ``superseder`` and ``target`` are the names `supersession_cycle_closed_by` was given; they are
+    keyed here as the chain is, so a writer passes the same two values to both.
+    """
     if len(chain) == 1:
         return "a memo cannot supersede itself"
+    superseder, target = supersedes_key(superseder), supersedes_key(target)
+    # A chain longer than two is transitive: `target` reaches the superseder through the memos
+    # between, and declares no edge to it itself.
+    through = f" through {' -> '.join(chain[1:-1])}" if len(chain) > 2 else ""
     return (
         f"declaring that {superseder} supersedes {target} would close a supersession cycle, "
-        f"because {target} already supersedes it ({' -> '.join(chain)}), and search abstains on "
-        f"every memo in a cycle"
+        f"because {target} already supersedes it{through} ({' -> '.join(chain)}), and search "
+        f"abstains on every memo in a cycle"
     )
 
 

@@ -75,7 +75,10 @@ demote it beneath the one it replaced.
 Session 3 implements high precision non model rules first:
 
 * Explicit version naming, for example `policy_v1.md` to `policy_v2.md`.
-* Direct textual references such as replaces, supersedes, deprecates, updates, or revises.
+* Direct textual references such as replaces, supersedes, deprecates, updates, or revises. The
+  file that holds the sentence is the superseder, unless a document is named right before the cue
+  ("new.md replaces old.md" in meeting notes): then the named document is, and the proposal is
+  `requires_review`. A negated or conditional cue proposes nothing.
 * Repeated decision subjects with later validity starts.
 * Contradictory validity windows with overlapping windows and opposing status language.
 * Temporal ordering over the same normalized entity.

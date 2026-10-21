@@ -26,7 +26,7 @@ from recall.dashboard.graph import _memo_files
 from recall.document import parse_document
 from recall.errors import RecallError
 from recall.frontmatter import supersedes_key
-from recall.lint import MEMO_REFERENCE, LintIssue, _sentence_around, closure_marker_naming_a_memo, lint_corpus, prose_only
+from recall.lint import MEMO_REFERENCE, LintIssue, closure_marker_naming_a_memo, lint_corpus, prose_only, sentence_around
 
 CODE = "closure-marker-unlinked"
 #: A memo linking at least this many others is an index page: its lines describe the memos they
@@ -162,7 +162,7 @@ def closure_findings(root: Path, issues: list[LintIssue] | None = None) -> list[
         marker = closure_marker_naming_a_memo(prose)
         if marker is None:
             continue
-        sentence = " ".join(_sentence_around(prose, marker.start(), marker.end()).split())
+        sentence = " ".join(sentence_around(prose, marker.start(), marker.end()).split())
         candidates: list[str] = []
         for reference in MEMO_REFERENCE.finditer(sentence):
             found = resolve(reference.group(0))

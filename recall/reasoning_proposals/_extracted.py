@@ -20,8 +20,10 @@ Three postures, all of them refusals:
 
 Direction, the hazard worth stating twice: a supersession claim read from file F naming target
 T means F REPLACES T, so `subject_id` is T (the superseded document) and `object_id` is F.
-That matches `_deterministic._direct_reference_proposals`. Reversing it declares the live memo
-stale and demotes it beneath the one it replaced.
+That matches `_deterministic._direct_reference_proposals` when the sentence names no other
+document as its subject; when it does ("new.md replaces old.md" in meeting notes), that rule takes
+the named document as the superseder and refers the proposal for review. Reversing it declares
+the live memo stale and demotes it beneath the one it replaced.
 """
 
 from __future__ import annotations

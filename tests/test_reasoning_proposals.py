@@ -627,11 +627,25 @@ def test_a_plain_direct_reference_is_unchanged() -> None:
 
     Passes on master; red by mutation of `_named_subject` returning None when nothing is named:
     this test then failed with `[] == [('rollout_v1.md', 'rollout_v2.md', 'candidate')]`.
+
+    The evidence ids, which the proposal id hashes, are pinned too (CCA deferred finding
+    CODE-017): red by mutation of `_direct_reference_proposals` leaving the target's claim out of
+    `source_evidence_ids`, this test failed with the target's source id missing from the set.
     """
-    assert _direct([
+    chunks = [
         _chunk("a", "rollout_v1.md", "decision: rollout. Status: active."),
         _chunk("b", "rollout_v2.md", "decision: rollout. Supersedes rollout_v1.md."),
-    ]) == [("rollout_v1.md", "rollout_v2.md", "candidate")]
+    ]
+    assert _direct(chunks) == [("rollout_v1.md", "rollout_v2.md", "candidate")]
+    graph = build_reasoning_graph(
+        chunks, tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a", include_text=True
+    )
+    sources = {node.file: node.id for node in graph.nodes if node.kind == "source"}
+    (proposal,) = [
+        proposal for proposal in deterministic_inference_proposals(graph)
+        if proposal.rule_id == "deterministic.direct_textual_reference"
+    ]
+    assert set(proposal.source_evidence_ids) == {sources["rollout_v1.md"], sources["rollout_v2.md"]}
 
 
 @pytest.mark.parametrize("text,holder", [
@@ -688,3 +702,80 @@ def test_a_long_token_does_not_stall_the_direct_reference_rule() -> None:
     found = _direct([_chunk("x", "x.md", "x"), _chunk("holder", "holder.md", text)])
     assert time.perf_counter() - start < 0.5
     assert found == [("x.md", "holder.md", "candidate")]
+
+
+# --- deferred audit fixes, 2026-10-21 (CCA run 20261021T200057Z) ----------------------------------
+
+
+@pytest.mark.parametrize("sentence, condition", [
+    ("This replaces old_plan.md, pending the board vote next week, unless the canary fails.",
+     "unless"),
+    ("This replaces old_plan.md," + " " * 20 + "should the canary fail.", "should"),
+])
+def test_a_condition_past_the_cue_scan_still_refuses_the_cue(sentence: str, condition: str) -> None:
+    """The cues are read from the first 4,000 characters; the condition is judged past them.
+
+    The reference ends before the cut and the condition word starts after it.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_reasoning_proposals.py::test_a_condition_past_the_cue_scan_still_refuses_the_cue`
+    failed on both cases with `[('old_plan.md', 'holder.md', 'candidate')] == []`; target
+    `recall.reasoning_proposals._deterministic._direct_reference_proposals`, which judged the
+    sliced text (CCA deferred finding BUG-012).
+    """
+    # Lines, not one long line: the cue gate reads from a line start at most 2,000 characters
+    # back, and with no newline it would refuse the cue for that reason alone.
+    pad = "Notes.\n" * 566
+    reference_end = len(pad) + sentence.index("old_plan.md") + len("old_plan.md")
+    assert reference_end < 4000 <= len(pad) + sentence.index(condition)
+    old = _chunk("old", "old_plan.md", "The old plan.")
+    # The same place without the condition is proposed, so the refusal below is the condition's.
+    assert _direct([old, _chunk("holder", "holder.md", pad + "This replaces old_plan.md.")]) == [
+        ("old_plan.md", "holder.md", "candidate"),
+    ]
+    assert _direct([old, _chunk("holder", "holder.md", pad + sentence)]) == []
+
+
+def test_a_superseded_document_naming_its_successor_is_not_called_a_third_document() -> None:
+    """old.md saying "[[new]] supersedes old.md" is a party to the edge, not a third document.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_reasoning_proposals.py::test_a_superseded_document_naming_its_successor_is_not_called_a_third_document`
+    failed with the uncertainty 'the relation is reported by a third document'; target
+    `recall.reasoning_proposals._deterministic._direct_reference_proposals` (CCA deferred finding
+    CODE-013).
+    """
+    graph = build_reasoning_graph(
+        [
+            _chunk("old", "old_plan.md", "[[new_plan]] supersedes old_plan.md."),
+            _chunk("new", "new_plan.md", "The new plan."),
+        ],
+        tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a", include_text=True,
+    )
+    (proposal,) = [
+        proposal for proposal in deterministic_inference_proposals(graph)
+        if proposal.rule_id == "deterministic.direct_textual_reference"
+    ]
+    assert (proposal.subject_id, proposal.object_id, proposal.status) == (
+        "old_plan.md", "new_plan.md", "requires_review",
+    )
+    assert "the superseded document names its successor" in proposal.uncertainty
+    assert not any("third document" in reason for reason in proposal.uncertainty)
+
+
+@pytest.mark.parametrize("text", [
+    "It never, in practice, supersedes rollout_v1.md.",
+    "This never (in practice) replaces rollout_v1.md.",
+])
+def test_an_aside_after_a_negation_still_refuses_the_direct_reference(text: str) -> None:
+    """The deterministic rule shares the cue gate, so an aside hides no negation there either.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_reasoning_proposals.py::test_an_aside_after_a_negation_still_refuses_the_direct_reference`
+    failed on both cases with `[('rollout_v1.md', 'rollout_draft.md', 'candidate')] == []`; target
+    `recall.supersession_cues.unasserted` (CCA deferred finding BUG-006).
+    """
+    assert _direct([
+        _chunk("old", "rollout_v1.md", "decision: rollout. Status: active."),
+        _chunk("draft", "rollout_draft.md", text),
+    ]) == []

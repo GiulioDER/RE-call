@@ -346,7 +346,11 @@ def _direct_reference_proposals(
             if target is None:
                 continue
             # "This draft never supersedes old.md" names the relation without asserting it.
-            if unasserted(text, match.span("cue"), target_span):
+            # Judged on the whole text, not the 4,000-character slice the cues are read from: a
+            # sentence that crosses the cut would lose a trailing "unless" or ", should".
+            # `unasserted` bounds its own read, and the offsets agree because the slice starts
+            # at 0.
+            if unasserted(claim.text, match.span("cue"), target_span):
                 continue
             superseder = _named_subject(text, match.start("cue"), unique, file)
             if superseder is None or target == superseder or (target, superseder) in authored:
@@ -371,7 +375,7 @@ def _direct_reference_proposals(
                     confidence=RULE_CONFIDENCE["deterministic.direct_textual_reference"],
                     uncertainty=(
                         ("the reference remains corpus text, not an instruction",)
-                        + (("the relation is reported by a third document",) if reported else ())
+                        + ((_reported_by(file, target),) if reported else ())
                     ),
                     status="requires_review" if reported else "candidate",
                     rule_id="deterministic.direct_textual_reference",
@@ -379,6 +383,18 @@ def _direct_reference_proposals(
                 )
             )
     return proposals
+
+
+def _reported_by(holder: str, target: str) -> str:
+    """Why a direct reference whose superseder is not its holder needs a reviewer.
+
+    The holder is either a third document or the superseded one naming its successor
+    ("[[new]] supersedes old.md" written in old.md); calling the second a third document was
+    wrong about who said it.
+    """
+    if holder == target:
+        return "the superseded document names its successor"
+    return "the relation is reported by a third document"
 
 
 def _named_subject(
