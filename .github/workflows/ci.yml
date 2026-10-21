@@ -931,7 +931,17 @@ jobs:
         # metadata. `accelerate` is only in the optional finetune extra and no RE-call package
         # imports it. Keep the exception narrow and temporary, while every other resolved package
         # remains a hard gate. Remove it as soon as the upstream fixed release is published.
-        run: uvx pip-audit --requirement requirements.lock.txt --no-deps --ignore-vuln CVE-2026-69112
+        #
+        # The eight pillow CVEs are fixed only in pillow 13.0.0, and fastembed (0.9.0 included,
+        # checked 2026-10-21) requires pillow<13, so no lock can reach the fix. Remove these
+        # eight as soon as a fastembed release lifts that cap and the lock moves to pillow 13.
+        run: >-
+          uvx pip-audit --requirement requirements.lock.txt --no-deps
+          --ignore-vuln CVE-2026-69112
+          --ignore-vuln CVE-2026-112395 --ignore-vuln CVE-2026-112397
+          --ignore-vuln CVE-2026-112400 --ignore-vuln CVE-2026-112404
+          --ignore-vuln CVE-2026-112895 --ignore-vuln CVE-2026-112896
+          --ignore-vuln CVE-2026-112897 --ignore-vuln CVE-2026-112899
 
       # `always()` so a CVE finding cannot hide lockfile drift either.
       - name: Fail if the lockfile had drifted
