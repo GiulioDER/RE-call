@@ -91,6 +91,31 @@ tenant. The same near-miss set must never be used both to tune a score and to ce
 results on PostgreSQL keep reporting `calibration_coverage` as `unmeasured`; the certificate is a
 property of the calibration, read through status and the CLI.
 
+## Served versus exact maximum
+
+Calibration samples each labelled query's exact best cosine over the whole generation. Serving
+thresholds the cosines of the hits it returns, after fusion, optional reranking and the cut to `k`.
+When the exact top chunk is fused out of the returned hits, serving reads a lower score than the
+one the threshold was fitted on.
+
+```bash
+recall calibration served-gap                       # the calibration serving the active generation
+recall calibration served-gap -k 5 --tolerance 0.002 --json
+```
+
+For every stored labelled query of the calibration, it runs the MCP service search under the
+current environment (so the retrieval profile, reranker and rescue settings are the ones a server
+started there would use) and compares the best served cosine with the exact one. It reports how many
+agree within the tolerance, the size of the gaps per labelled class, the queries the gap moves
+across the threshold (a served score equal to the threshold clears it), and how often the served
+abstention disagrees with the exact score. A fused-out chunk only lowers the served score, so this
+slack can add false abstentions near the threshold and never false confirms. When the two sides
+embed the query separately on a hosted model whose repeated calls differ, widen `--tolerance`.
+
+It reads only: nothing is stored, and the threshold, certification and trust policy are untouched.
+It refuses a calibration bound to any generation other than the active one, and a Lite store,
+which keeps no labelled query set.
+
 ## Binding and lifecycle
 
 `CalibrationArtifactV2` records the tenant and generation IDs, full embedder identity, pipeline and

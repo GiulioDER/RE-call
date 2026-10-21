@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -1616,6 +1616,50 @@ class CalibrationRepository:
         if row is None or not isinstance(row[0], Mapping):
             return None
         return validated_certificate(row[0], calibration_id)
+
+    def served_gap(
+        self,
+        calibration_id: str,
+        embedder: Embedder,
+        search: Callable[[str], tuple[float | None, bool]],
+        *,
+        tolerance: float | None = None,
+    ) -> dict[str, Any]:
+        """Compare served and exact best cosines over this calibration's labelled queries.
+
+        See `recall.served_gap`. `search(query)` runs the search path being measured and returns
+        `(best dense cosine among the hits it served, or None; abstained)`; it must search the
+        calibration's own generation. The exact side is the calibration sampling rule. Read only:
+        nothing is stored, and nothing that decides serving reads the result.
+        """
+        from recall.served_gap import DEFAULT_TOLERANCE, ServedGapRow, served_gap_report
+
+        artifact = self.get(calibration_id)
+        labels, digest = self.stored_query_set(artifact.query_set_digest)
+        if digest != artifact.query_set_digest:
+            raise CalibrationBindingError("stored labelled query set does not match its digest")
+        with self._connect() as conn:
+            _state, pipeline_raw, _pipeline, _corpus = self._generation(
+                conn, artifact.generation_id
+            )
+        _require_runtime_embedder(PipelineIdentity.from_dict(pipeline_raw), embedder)
+        answerable, unanswerable = self.score_query_set(artifact.generation_id, embedder, labels)
+        # `measure_top_cosines` keeps each class in label order, so walking the labels in the same
+        # order pairs every query with its own exact score.
+        exact = {True: iter(answerable), False: iter(unanswerable)}
+        rows = []
+        for item in labels:
+            served, abstained = search(str(item["query"]))
+            rows.append(ServedGapRow(
+                bool(item["answerable"]), next(exact[bool(item["answerable"])]), served, abstained
+            ))
+        report = served_gap_report(
+            rows, float(artifact.threshold),
+            DEFAULT_TOLERANCE if tolerance is None else tolerance,
+        )
+        report.update(calibration_id=calibration_id, generation_id=artifact.generation_id,
+                      query_set_digest=digest)
+        return report
 
     def export_bundle(self, calibration_id: str, path: str | Path) -> Path:
         artifact = self.get(calibration_id)
