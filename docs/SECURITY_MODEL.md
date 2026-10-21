@@ -142,7 +142,7 @@ caller's boundary to hold, not one this library can hold for you.
 A document marks another as stale by naming it in its `supersedes:` front matter (`VALIDITY_KEYS`
 in `recall/frontmatter.py`). The claim is not verified against anything. The store collects it from
 every indexed document (`resolve_supersession_candidates` in `recall/supersession.py`), and
-`resolve_successor` in `recall/trust_gate.py` applies it with no check of who wrote it or whether
+`resolve_successor` in `recall/supersession.py` applies it with no check of who wrote it or whether
 the successor is more correct than its target. That is deliberate, because supersession exists so
 an author can retire a memory without deleting it, but it has a consequence worth stating plainly:
 
@@ -154,6 +154,12 @@ served as `ok` even if its own score is below it (the `promoted_files` step in
 effect: the reference becomes ambiguous, the documents sharing that name are reported as
 `ambiguous_supersession`, and none of them is served as `ok`. Either way the outcome is a refusal or
 a wrong current answer, and nothing in the result distinguishes it from a legitimate update.
+
+Since the window rule (2026-10-21) a planted successor demotes its target only while the planted
+document's own `valid_from` and `valid_until` hold, and one whose window cannot be parsed demotes
+at every instant, as before. References are matched case-insensitively and NFC-folded, an exact
+root-relative path first, so a planted `NOTES.md` now collides with `notes.md` (ambiguity, a
+refusal) where it did not before, while a path-qualified reference names one file.
 
 **The agent-facing write paths carry the same authority.** `recall_ingest` indexes uploaded file
 contents through the same pipeline, and `recall_index` indexes files under `RECALL_INDEX_ROOT`, so

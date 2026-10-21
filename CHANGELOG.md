@@ -39,6 +39,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* **A successor hides what it supersedes only while the successor itself is valid.** A memo
+  `supersedes:` another from next month leaves it current until then, an expired time-bounded
+  successor gives its predecessor back, and a correction for 2020 to 2022 leaves today's memo alone;
+  a successor whose window cannot be read still applies at every instant. The same rule holds in
+  the fact ledger, where a successor now hides the ASSERTIONS recorded before it, so a value
+  asserted again after its successor (Paris, Rome, Paris) is current again, and in memo-level
+  retirement of stated facts. Search, `recall_current_state`, graph expansion, related evidence,
+  the reasoning graph and planner, the semantic graph, semantic lint and the dashboard now resolve
+  `supersedes:` with one rule: an exact root-relative path first, then the stem, case-insensitive,
+  a self-claim dropped, and two roots holding one path kept apart. A low-scoring successor whose
+  dependency is invalidated is no longer promoted to `ok`. A second value of a set-valued predicate
+  such as `email` is no contradiction, facts are NFC-normalised when built, and an authored link can
+  supersede an expired or future value it overlaps.
 * **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
   from this one on are open source under the GNU Affero General Public License v3.0, which permits
   commercial use on its conditions; closed source products and proprietary hosted services can

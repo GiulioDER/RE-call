@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 329
-Cross package edges: 344
-Source tree fingerprint: `2ac9d097ee80550d3b5e4631b9744e37272b0082eedd4b1df02944e9be849d39`
+Cross package edges: 346
+Source tree fingerprint: `0202215c97b69ebf2f5220be9180df6e58404610ff5b7ee178b8dc90fe20c974`
 
 ## Highest fan in modules
 
@@ -65,8 +65,8 @@ Source tree fingerprint: `2ac9d097ee80550d3b5e4631b9744e37272b0082eedd4b1df02944
 | 56 | `recall_mcp.server` |
 | 28 | `recall.cli_commands.index_search` |
 | 23 | `recall_mcp.retrieval` |
+| 22 | `recall.trust` |
 | 22 | `recall_mcp.reasoning_engine` |
-| 21 | `recall.trust` |
 | 20 | `recall` |
 | 20 | `recall.generations` |
 | 18 | `recall.rewrite` |
@@ -192,9 +192,11 @@ They are observations, not automatic failures.
 | `recall_mcp.generation_admin` | `recall.store` |
 | `recall_mcp.graph_expansion` | `recall.calibration` |
 | `recall_mcp.graph_expansion` | `recall.embeddings` |
+| `recall_mcp.graph_expansion` | `recall.frontmatter` |
 | `recall_mcp.graph_expansion` | `recall.reasoning` |
 | `recall_mcp.graph_expansion` | `recall.security_policy` |
 | `recall_mcp.graph_expansion` | `recall.store` |
+| `recall_mcp.graph_expansion` | `recall.supersession` |
 | `recall_mcp.graph_expansion` | `recall.trust` |
 | `recall_mcp.graph_expansion` | `recall.types` |
 | `recall_mcp.graph_first_api` | `recall.calibration` |
@@ -582,8 +584,8 @@ They are observations, not automatic failures.
 | `recall.evidence` | 2 | 5 |
 | `recall.explanations` | 1 | 4 |
 | `recall.extraction` | 1 | 1 |
-| `recall.fact_ledger` | 3 | 10 |
-| `recall.fact_retraction` | 8 | 84 |
+| `recall.fact_ledger` | 3 | 11 |
+| `recall.fact_retraction` | 9 | 84 |
 | `recall.federation` | 4 | 94 |
 | `recall.fix` | 6 | 22 |
 | `recall.frontmatter` | 1 | 1 |
@@ -638,12 +640,12 @@ They are observations, not automatic failures.
 | `recall.proof_provider` | 3 | 9 |
 | `recall.provenance_card_hash` | 0 | 0 |
 | `recall.provenance_cards` | 3 | 30 |
-| `recall.provenance_controller` | 3 | 7 |
+| `recall.provenance_controller` | 3 | 8 |
 | `recall.provider_metadata` | 0 | 0 |
 | `recall.query_anchor_admission` | 0 | 0 |
 | `recall.query_class` | 0 | 0 |
 | `recall.query_construction` | 0 | 0 |
-| `recall.query_entity_resolution` | 1 | 22 |
+| `recall.query_entity_resolution` | 1 | 23 |
 | `recall.quickstart` | 2 | 109 |
 | `recall.readiness` | 5 | 86 |
 | `recall.reasoning` | 13 | 100 |
@@ -651,7 +653,7 @@ They are observations, not automatic failures.
 | `recall.reasoning_expansion_service` | 5 | 100 |
 | `recall.reasoning_graph` | 7 | 24 |
 | `recall.reasoning_graph_service` | 3 | 100 |
-| `recall.reasoning_planner` | 5 | 94 |
+| `recall.reasoning_planner` | 6 | 94 |
 | `recall.reasoning_proposals` | 5 | 30 |
 | `recall.reasoning_proposals._arbiter` | 4 | 34 |
 | `recall.reasoning_proposals._deterministic` | 4 | 26 |
@@ -673,11 +675,11 @@ They are observations, not automatic failures.
 | `recall.scope_prior` | 2 | 5 |
 | `recall.security_policy` | 1 | 1 |
 | `recall.seed` | 4 | 39 |
-| `recall.semantic_graph` | 4 | 21 |
-| `recall.semantic_graph._build` | 3 | 19 |
+| `recall.semantic_graph` | 4 | 22 |
+| `recall.semantic_graph._build` | 4 | 20 |
 | `recall.semantic_graph._model` | 2 | 14 |
 | `recall.semantic_graph._store` | 1 | 15 |
-| `recall.semantic_lint` | 7 | 44 |
+| `recall.semantic_lint` | 8 | 44 |
 | `recall.setup` | 10 | 104 |
 | `recall.source_conditioning` | 1 | 1 |
 | `recall.sparse` | 1 | 1 |
@@ -689,8 +691,8 @@ They are observations, not automatic failures.
 | `recall.supersession_arbiter` | 4 | 20 |
 | `recall.support` | 1 | 1 |
 | `recall.timing` | 3 | 16 |
-| `recall.trust` | 21 | 93 |
-| `recall.trust_gate` | 8 | 45 |
+| `recall.trust` | 22 | 93 |
+| `recall.trust_gate` | 9 | 45 |
 | `recall.trust_policy` | 2 | 85 |
 | `recall.trust_verdicts` | 2 | 32 |
 | `recall.truth_extraction` | 4 | 22 |
@@ -759,7 +761,7 @@ They are observations, not automatic failures.
 | `recall_mcp.factories` | 6 | 17 |
 | `recall_mcp.federation_adapter` | 9 | 110 |
 | `recall_mcp.generation_admin` | 8 | 103 |
-| `recall_mcp.graph_expansion` | 7 | 101 |
+| `recall_mcp.graph_expansion` | 9 | 101 |
 | `recall_mcp.graph_first_api` | 15 | 122 |
 | `recall_mcp.graph_projection` | 6 | 36 |
 | `recall_mcp.indexing` | 17 | 88 |

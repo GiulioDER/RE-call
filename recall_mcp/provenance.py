@@ -227,7 +227,7 @@ def current_facts_memory(
             else ledger.current(tenant_id=store.tenant, now=instant, served=served)
         )
         history = events
-    sources = live_sources(history, served)
+    sources = live_sources(history, served, instant)
     if security_policy is not None:
         assert access_context is not None
 

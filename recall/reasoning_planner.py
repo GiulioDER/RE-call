@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 import threading
 import time
 from typing import Literal
@@ -17,6 +17,7 @@ from recall.reasoning_graph import (
     ReasoningGraphProjection,
 )
 from recall.reasoning_proposals import InferenceProposal, ProposedRelation
+from recall.supersession import SupersessionGraph
 from recall.trust import is_trusted
 from recall.types import TrustedHit, TrustedResult
 
@@ -223,6 +224,9 @@ class _PlannerState:
     evidence_tokens: int = 0
     failed_closed: bool = False
     stop_reason: PlannerStopReason = "complete"
+    #: Valid time and transaction time of the request, for the supersession window rule.
+    as_of: datetime | None = None
+    known_as_of: datetime | None = None
 
     @property
     def remaining_node_budget(self) -> int:
@@ -248,6 +252,23 @@ class _PlannerIndexes:
     blocking_diagnostic_node_ids: frozenset[str]
     blocking_diagnostic_references: frozenset[str]
     blocking_cycle_files: frozenset[str]
+    #: The authored supersession edges as the shared resolver reads them, with each successor's
+    #: window, so the planner follows a node to what hides it exactly as the trust gate does.
+    lineage: SupersessionGraph = field(default_factory=SupersessionGraph)
+
+
+def _lineage(graph: ReasoningGraphProjection) -> SupersessionGraph:
+    """The graph's authored `supersedes` edges as a `SupersessionGraph`, windows included."""
+    candidates: dict[str, list[tuple[str, datetime | None]]] = {}
+    windows: dict[str, tuple[datetime | None, datetime | None]] = {}
+    for edge in graph.authored_edges:
+        if edge.kind != "authored_supersedes" or edge.to_file is None:
+            continue
+        candidates.setdefault(edge.from_file, []).append((edge.to_file, edge.asserted_at))
+        if edge.valid_from is not None or edge.valid_until is not None:
+            windows[edge.to_file] = (edge.valid_from, edge.valid_until)
+    edges = {target: max(f for f, _when in claims) for target, claims in candidates.items()}
+    return SupersessionGraph.from_parts(edges, frozenset(), candidates, windows)
 
 
 _PLANNER_INDEX_CACHE_LOCK = threading.Lock()
@@ -320,6 +341,8 @@ def plan_multi_hop_evidence(
     model_calls_used: int = 0,
     clock: Callable[[], float] | None = None,
     policy_scope: str | None = None,
+    as_of: datetime | None = None,
+    known_as_of: datetime | None = None,
 ) -> ReasoningPlan:
     """Expand trusted retrieval through explicit graph operations under hard budgets.
 
@@ -338,6 +361,8 @@ def plan_multi_hop_evidence(
         started=active_clock(),
         clock=active_clock,
         model_calls_used=model_calls_used,
+        as_of=as_of or datetime.now(UTC),
+        known_as_of=known_as_of,
     )
     trusted_hits = tuple(hit for hit in retrieval.hits if is_trusted(hit))
     rejected_hits = tuple(hit for hit in retrieval.hits if not is_trusted(hit))
@@ -537,13 +562,23 @@ def _has_related_claims(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
     )
 
 
-def _has_authored_relationships(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
-    return any(
-        edge_index in indexes.authored_edges_by_file.get(node.file, ())
+def _successor_files(state: _PlannerState, indexes: _PlannerIndexes) -> frozenset[str]:
+    """The documents that hide an accepted node at the request's instant, by the shared rule."""
+    return frozenset(
+        successor
         for node in state.accepted.values()
         if node.file is not None
-        for edge_index in indexes.authored_edges_by_file.get(node.file, ())
+        and (
+            successor := indexes.lineage.successor(
+                node.file, now=state.as_of, known_as_of=state.known_as_of
+            )
+        )
+        is not None
     )
+
+
+def _has_authored_relationships(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
+    return bool(_successor_files(state, indexes))
 
 
 def _has_adjacent_proposals(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
@@ -686,6 +721,7 @@ def _build_indexes(
         blocking_diagnostic_node_ids=frozenset(blocking_node_ids),
         blocking_diagnostic_references=frozenset(blocking_references),
         blocking_cycle_files=frozenset(blocking_cycle_files),
+        lineage=_lineage(graph),
     )
 
 
@@ -746,14 +782,23 @@ def _retrieve_related_claims(state: _PlannerState, indexes: _PlannerIndexes) -> 
 
 
 def _follow_authored_relationships(state: _PlannerState, indexes: _PlannerIndexes) -> None:
+    """Follow `supersedes` FORWARD only, to the successor that hides an accepted node now.
+
+    Both directions were followed, so a trusted successor pulled its superseded predecessor into
+    `evidence_accepted`. The predecessor is history the trust gate refuses to serve, and a
+    successor not yet valid (or expired) at the request's instant hides nothing, so neither is
+    evidence here.
+    """
     input_ids = tuple(sorted(state.frontier))
+    accepted_files = {node.file for node in state.accepted.values() if node.file is not None}
+    targets = _successor_files(state, indexes)
     edge_indices = tuple(
         sorted(
             {
                 edge_index
-                for node in state.accepted.values()
-                if node.file is not None
-                for edge_index in indexes.authored_edges_by_file.get(node.file, ())
+                for file in accepted_files
+                for edge_index in indexes.authored_edges_by_file.get(file, ())
+                if state.graph.authored_edges[edge_index].from_file == file
             }
         )
     )
@@ -762,9 +807,7 @@ def _follow_authored_relationships(state: _PlannerState, indexes: _PlannerIndexe
         state,
         (
             node
-            for edge in edges
-            for file in (edge.from_file, edge.to_file)
-            if file is not None
+            for file in sorted(targets)
             for node in indexes.chunk_nodes_by_file.get(file, ())
             if node.id not in state.accepted
         ),

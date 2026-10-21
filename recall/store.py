@@ -22,6 +22,9 @@ from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS
 from recall.idempotency_receipts import check_receipt_matches, check_result_size, receipt_key_hash
 from recall.supersession import (  # noqa: F401  # re-exported: public names of this module
     EdgeCandidates,
+    SupersessionGraph,
+    resolve_supersession_graph,
+    supersession_rows_sql,
     _basename,
     _resolve_rows,
     resolve_supersession,
@@ -757,7 +760,7 @@ class PgVectorStore:
         self._dependency_mode = dependency_mode
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
-        #: (fingerprint, edges, unresolved, candidates) — see `supersession_all()`. The fingerprint is what
+        #: (fingerprint, SupersessionGraph): see `supersession_graph()`. The fingerprint is what
         #: makes the cache safe to reuse across processes.
         self._supersession_cache: tuple | None = None
         #: Count of full supersession scans actually performed (cache misses). Surfaced so a
@@ -2836,49 +2839,40 @@ class PgVectorStore:
         `ON CONFLICT` alone cannot cover because the row is gone before the insert runs.
         """
 
-        def _op(
-            conn: "psycopg.Connection",
-        ) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+        return self.supersession_graph().parts()
+
+    def supersession_graph(self) -> SupersessionGraph:
+        """The resolved graph behind `supersession_all()`, with each claimant's validity window.
+
+        The same validated cache and the same single scan, so the windows and the edges always
+        describe one corpus state; `recall.trust` reads this, and the three-part accessors are
+        projections of it. A copy, for the reason `supersession_all` gives.
+        """
+
+        def _op(conn: "psycopg.Connection") -> SupersessionGraph:
             fingerprint = conn.execute(
                 f"SELECT max(indexed_at), count(*) FROM {self._table} WHERE tenant_id = %s",
                 (self._tenant,),
             ).fetchone()
             cached = self._supersession_cache
             if cached is not None and cached[0] == fingerprint:
-                return cached[1], cached[2], cached[3]
+                graph: SupersessionGraph = cached[1]
+                return graph
             rows = conn.execute(
-                f"""
-                SELECT c.metadata->>'file' AS file,
-                       t.supersedes AS supersedes,
-                       -- COALESCE, mirroring the hit path's fallback: a row predating the
-                       -- column has no first write recorded, and its last write is the only
-                       -- evidence there is. Without this a migrated corpus dates every edge
-                       -- NULL, which reads as 'undated' and ignores known_as_of entirely.
-                       min(COALESCE(c.first_indexed_at, c.indexed_at)) AS first_indexed
-                FROM {self._table} AS c
-                CROSS JOIN LATERAL ({SUPERSEDES_TARGET_ROWS_SQL}) AS t
-                WHERE c.tenant_id = %s AND c.metadata ? 'file'
-                GROUP BY 1, 2
-                ORDER BY 1, 2
-                """,
+                supersession_rows_sql(self._table, source_column="source", scope="c.tenant_id = %s"),
                 (self._tenant,),
             ).fetchall()
             self._supersession_scans += 1
             METRICS.increment("recall_supersession_scans_total")
-            edges, unresolved, candidates = resolve_supersession_candidates(rows)
-            self._supersession_cache = (fingerprint, edges, unresolved, candidates)
-            return edges, unresolved, candidates
+            graph = resolve_supersession_graph(rows)
+            self._supersession_cache = (fingerprint, graph)
+            return graph
 
-        edges, unresolved, candidates = self._with_retry(_op)
         # COPIES. This is public, and the cache is process-wide and validated by fingerprint
         # rather than rebuilt, so handing out the live structures would let one caller's mutation
         # survive every later cache hit and redirect other callers' supersession verdicts. The
         # candidate LISTS are copied too, because a shallow `dict()` would still share them.
-        return (
-            dict(edges),
-            unresolved,
-            {target: list(claims) for target, claims in candidates.items()},
-        )
+        return self._with_retry(_op).copy()
 
     # `supersession_dates()` deliberately does NOT exist. It was a second accessor onto the same
     # cache, and its own docstring had to warn that pairing it with `supersession()` reintroduced

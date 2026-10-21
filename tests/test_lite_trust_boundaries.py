@@ -93,7 +93,12 @@ def test_retrieval_and_graph_share_one_corpus_view(
         if write == "delete_successor":
             chunks.append(_chunk("b.md", supersedes="a.md"))
         _put(store, chunks)
-        method = "supersession_all" if dated else "supersession"
+        # `supersession_graph`: the one read trusted search makes now, dated or not (it carries
+        # the successor windows). This patched `supersession_all` / `supersession`, the reads it
+        # made before the window rule; the second writer still lands between retrieval and it.
+        # Re-proved red 2026-10-21 by removing the snapshot hook in `recall.trust._trusted_search`:
+        # all four parameters fail on "trust mixed retrieval and graph revisions".
+        method = "supersession_graph"
         original = getattr(store, method)
 
         def fetch() -> Any:

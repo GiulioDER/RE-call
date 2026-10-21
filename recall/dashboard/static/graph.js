@@ -67,7 +67,9 @@
       current: v("--node-current"),
       superseded: v("--node-superseded"),
       expired: v("--node-expired"),
+      not_yet_valid: v("--node-expired"),
       pending: v("--node-pending"),
+      ambiguous: v("--node-pending"),
       link: v("--edge-link"),
       supersedes: v("--edge-supersedes"),
       pendingEdge: v("--edge-pending"),
@@ -564,7 +566,7 @@
     needsDraw = true;
   }, { passive: false });
 
-  const STATE_LABEL = { current: "current", superseded: "superseded", expired: "expired", pending: "pending review" };
+  const STATE_LABEL = { current: "current", superseded: "superseded", expired: "expired", not_yet_valid: "not yet valid", ambiguous: "ambiguous supersession", pending: "pending review" };
 
   function showTip(n, x, y) {
     if (!n) { tip.hidden = true; return; }

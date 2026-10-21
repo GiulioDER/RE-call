@@ -36,7 +36,7 @@ from psycopg import sql
 
 from recall.dashboard.db import DashboardDB
 from recall.db_constants import TENANT_GUC
-from recall.supersession import SUPERSEDES_TARGET_ROWS_SQL, resolve_supersession_candidates
+from recall.supersession import SupersessionGraph, resolve_supersession_graph, supersession_rows_sql
 
 __all__ = ["HUB_LINKS", "SHARE_MAX_FILES", "SHARE_PER_FILE", "assemble_graph", "corpus_graph", "resolve_imports", "source_detail"]
 
@@ -52,12 +52,14 @@ MAX_CHUNKS = 200
 MAX_ENTITIES = 60
 MAX_RELATIONS = 120
 
-#: `supersession_all`'s query, with the trust layer's own target-expansion fragment.
+#: The stores' supersession scan, verbatim, so this view resolves claims exactly as search does.
 _SUPERSESSION_ROWS = sql.SQL(
-    "SELECT c.metadata->>'file', t.supersedes, min(COALESCE(c.first_indexed_at, c.indexed_at)) "
-    "FROM recall_chunks_v1 AS c CROSS JOIN LATERAL ({}) AS t "
-    "WHERE c.tenant_id = %s AND c.generation_id = %s AND c.metadata ? 'file' GROUP BY 1, 2 ORDER BY 1, 2"
-).format(sql.SQL(SUPERSEDES_TARGET_ROWS_SQL))
+    supersession_rows_sql(
+        "recall_chunks_v1",
+        source_column="source_uri",
+        scope="c.tenant_id = %s AND c.generation_id = %s",
+    )
+)
 
 
 @contextmanager
@@ -73,11 +75,10 @@ def _generation(c: Any, tenant: str) -> str | None:
     return str(row[0]) if row and row[0] else None
 
 
-def _winners(c: Any, tenant: str, generation: str) -> tuple[dict[str, str], frozenset[str]]:
-    """`(superseded file -> the file that replaces it, unresolved claims)`, as search resolves them."""
+def _winners(c: Any, tenant: str, generation: str) -> SupersessionGraph:
+    """The generation's supersession graph, resolved and windowed as search resolves it."""
     rows = c.execute(_SUPERSESSION_ROWS, (tenant, generation)).fetchall()
-    winner, unresolved, _candidates = resolve_supersession_candidates(rows)
-    return winner, unresolved
+    return resolve_supersession_graph(rows)
 
 
 #: A Python import line: `from MODULE import NAMES` or `import MODULE`. Matched inside Postgres
@@ -170,11 +171,23 @@ def _title(file: str, hierarchy: Any) -> str:
     return PurePosixPath(file).stem or file
 
 
-def _state(file: str, winner: dict[str, str], valid_from: str | None, valid_until: str | None, today: str) -> str:
-    if file in winner:
+def _instant(today: str) -> datetime:
+    """Midday UTC of `today`: inside every window that holds on that date, by either bound."""
+    return datetime.fromisoformat(today[:10]).replace(hour=12, tzinfo=UTC)
+
+
+def _state(file: str, graph: SupersessionGraph, valid_from: str | None, valid_until: str | None, today: str) -> str:
+    """The trust gate's verdict for `file` on `today`, in this view's words: `superseded` only
+    while a successor is itself valid (the window rule), `ambiguous` for a file a claim cannot
+    pick out, and `not_yet_valid` apart from `expired`. A self-claim is no claim."""
+    if file in graph.unresolved:
+        return "ambiguous"
+    if graph.successor(file, now=_instant(today)) is not None:
         return "superseded"
-    if (valid_until and valid_until[:10] < today) or (valid_from and valid_from[:10] > today):
+    if valid_until and valid_until[:10] < today:
         return "expired"
+    if valid_from and valid_from[:10] > today:
+        return "not_yet_valid"
     return "current"
 
 
@@ -194,7 +207,7 @@ def corpus_graph(db: DashboardDB, tenant: str, *, today: date | None = None) -> 
             "from recall_chunks_v1 c where c.tenant_id = %s and c.generation_id = %s group by 1",
             (tenant, generation),
         ).fetchall()
-        winner, _unresolved = _winners(c, tenant, generation)
+        winner = _winners(c, tenant, generation)
         relations = c.execute(
             "select r.relation, s.canonical_name, o.canonical_name from recall_graph_relations_v1 r "
             "join recall_graph_entities_v1 s on s.tenant_id = r.tenant_id and s.generation_id = r.generation_id and s.entity_id = r.subject_id "
@@ -218,7 +231,7 @@ def corpus_graph(db: DashboardDB, tenant: str, *, today: date | None = None) -> 
 
 def assemble_graph(
     files: Any,
-    winner: dict[str, str],
+    winner: SupersessionGraph | dict[str, str],
     relations: Any,
     mentions: Any,
     imports: list[tuple[str, str]],
@@ -234,11 +247,13 @@ def assemble_graph(
     object file)`; `mentions`: `(entity id, file)`; `imports`: `(importer, imported)`.
     """
     now = today
+    graph = winner if isinstance(winner, SupersessionGraph) else SupersessionGraph.from_parts(winner)
+    winner = graph.edges
     nodes: dict[str, dict[str, Any]] = {}
     for file, chunks, first, kind, valid_from, valid_until, hierarchy in files:
         nodes[file] = {
             "id": file, "title": _title(file, hierarchy), "description": f"{chunks} chunk(s)", "type": kind or "",
-            "state": _state(file, winner, valid_from, valid_until, now), "born": _day(first) or now,
+            "state": _state(file, graph, valid_from, valid_until, now), "born": _day(first) or now,
             "valid_from": valid_from, "valid_until": valid_until,
             "folder": file.split("/", 1)[0] if "/" in file else "", "issues": [], "chunks": chunks,
         }
@@ -336,7 +351,7 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
             "and coalesce(c.metadata->>'file', c.source_uri) = %s",
             (tenant, generation, canonical),
         ).fetchone()[0]
-        winner, unresolved = _winners(c, tenant, generation)
+        graph = _winners(c, tenant, generation)
         entities = c.execute(
             "select e.canonical_name, e.entity_kind, count(*) from recall_graph_mentions_v1 m "
             "join recall_graph_entities_v1 e on e.tenant_id = m.tenant_id and e.generation_id = m.generation_id and e.entity_id = m.entity_id "
@@ -380,11 +395,15 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
         "type": first_meta.get("type"),
         "valid_from": valid_from,
         "valid_until": valid_until,
-        "state": _state(canonical, winner, valid_from, valid_until, now),
-        "superseded_by": winner.get(canonical),
-        "supersedes": sorted(old for old, newer in winner.items() if newer == canonical),
+        "state": _state(canonical, graph, valid_from, valid_until, now),
+        "superseded_by": graph.successor(canonical, now=_instant(now)),
+        "supersedes": sorted(
+            old for old, claims in graph.candidates.items() if any(f == canonical for f, _when in claims)
+        ),
         "declared_supersedes": declared_list,
-        "unresolved_claims": sorted(str(t) for t in unresolved if str(t) in set(declared_list)),
+        # The declared references that name several files, as the resolver found them. This
+        # compared resolved file paths with the references as written, so it was always empty.
+        "unresolved_claims": sorted(graph.ambiguous_claims.get(canonical, ())),
         "first_indexed": _day(min(row[6] for row in chunks)),
         "last_indexed": _day(max(row[5] for row in chunks)),
         "chunk_count": total,

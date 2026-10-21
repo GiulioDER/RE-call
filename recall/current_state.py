@@ -6,7 +6,7 @@ changing trust decisions.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol
@@ -18,7 +18,7 @@ from recall.dependency_invalidation import (
 )
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
-from recall.supersession import EdgeCandidates, chunk_supersedes_targets
+from recall.supersession import EdgeCandidates, SupersessionGraph, chunk_supersedes_targets
 from recall.types import Chunk
 
 CurrentState = Literal[
@@ -88,43 +88,40 @@ def _file(chunk: Chunk) -> str:
     return value if isinstance(value, str) and value else chunk.source
 
 
-def _direct_successors(
-    target: str, candidates: EdgeCandidates, as_of: datetime
-) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            successor
-            for successor, asserted_at in candidates.get(target, ())
-            if asserted_at is None or _utc(asserted_at) <= as_of
-        )
-    )
+def _graph(store: StateStore) -> SupersessionGraph:
+    """The store's resolved graph, windows included, or one built from its three-part shape."""
+    reader = getattr(store, "supersession_graph", None)
+    if callable(reader):
+        graph = reader()
+        if isinstance(graph, SupersessionGraph):
+            return graph
+    edges, unresolved, candidates = store.supersession_all()
+    return SupersessionGraph.from_parts(edges, unresolved, candidates)
 
 
 def _chain(
-    source: str, candidates: EdgeCandidates, as_of: datetime
+    source: str, graph: SupersessionGraph, as_of: datetime, known_as_of: datetime | None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    chain: list[str] = []
-    seen = {source}
-    current = source
-    while True:
-        successors = _direct_successors(current, candidates, as_of)
-        if len(successors) > 1:
-            return tuple(chain), ("multiple_live_successors",)
-        if not successors:
-            return tuple(chain), ()
-        successor = successors[0]
-        if successor in seen:
-            return tuple(chain), ("supersession_cycle",)
-        chain.append(successor)
-        seen.add(successor)
-        current = successor
+    """The successors that hide `source` at `as_of`, by the resolver every reader shares.
+
+    Valid time `as_of` is checked against each successor's own window (the window rule) and
+    transaction time `known_as_of` dates the edges, exactly as the trust gate reads them. This
+    projection adds two fail-closed diagnostics of its own: two claimants valid at once at any
+    step (fan-in the trust gate settles by scan order) and a claim cycle.
+    """
+    chain = graph.successor_path(source, now=as_of, known_as_of=known_as_of)
+    for node in (source, *chain[:-1]):
+        if len(graph.live_claimants(node, now=as_of, known_as_of=known_as_of)) > 1:
+            return (), ("multiple_live_successors",)
+    if chain and graph.on_cycle(source, known_as_of):
+        return chain, ("supersession_cycle",)
+    return chain, ()
 
 
 def _record(
     source: str,
     chunks: list[Chunk],
-    candidates: EdgeCandidates,
-    unresolved: frozenset[str],
+    graph: SupersessionGraph,
     as_of: datetime,
     tenant_id: str,
     generation_id: str,
@@ -155,8 +152,9 @@ def _record(
     if diagnostics:
         state: CurrentState = "invalid"
     else:
-        chain, chain_diagnostics = _chain(source, candidates, as_of)
+        chain, chain_diagnostics = _chain(source, graph, as_of, known_as_of)
         diagnostics.extend(chain_diagnostics)
+        unresolved = graph.unresolved
         if source in unresolved or any(
             supersedes_key(target) in unresolved
             for chunk in chunks
@@ -253,14 +251,24 @@ def _project(
         chunk_rows = timed_reader()
     else:
         chunk_rows = ((chunk, None) for chunk in store.iter_chunks())
+    rows_by_file: dict[str, list[tuple[Chunk, datetime | None]]] = {}
     for chunk, asserted_at in chunk_rows:
-        key = _file(chunk)
-        chunks_by_source.setdefault(key, []).append(chunk)
-        previous = asserted_at_by_source.get(key)
-        if key not in asserted_at_by_source or (
-            asserted_at is not None and (previous is None or asserted_at < previous)
-        ):
-            asserted_at_by_source[key] = asserted_at
+        rows_by_file.setdefault(_file(chunk), []).append((chunk, asserted_at))
+
+    def group(key_for: Callable[[Chunk], str]) -> None:
+        chunks_by_source.clear()
+        asserted_at_by_source.clear()
+        for rows in rows_by_file.values():
+            for chunk, asserted_at in rows:
+                key = key_for(chunk)
+                chunks_by_source.setdefault(key, []).append(chunk)
+                previous = asserted_at_by_source.get(key)
+                if key not in asserted_at_by_source or (
+                    asserted_at is not None and (previous is None or asserted_at < previous)
+                ):
+                    asserted_at_by_source[key] = asserted_at
+
+    group(_file)
     # `max_records` refuses rather than trims, and which sources it counts is fixed here, so it is
     # decided before the supersession scan, a record per source and the dependency build. The
     # predicate is the one the final loop filters on (each record's source is its grouping key).
@@ -272,13 +280,16 @@ def _project(
         )
         if matching > max_records:
             raise ValueError("current state projection exceeds max_records")
-    _edges, unresolved, candidates = store.supersession_all()
+    graph = _graph(store)
+    if graph.collided:
+        # A root-relative path two roots hold is two documents, keyed by source
+        # (`SupersessionGraph.key`); grouped by path they would be one record.
+        group(lambda chunk: graph.key(_file(chunk), chunk.source))
     all_records = tuple(
         _record(
             key,
             chunks,
-            candidates,
-            unresolved,
+            graph,
             as_of,
             str(store.tenant),
             generation_id,

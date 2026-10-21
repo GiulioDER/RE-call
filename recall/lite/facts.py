@@ -54,6 +54,8 @@ from recall.provenance_controller import (
     _consume_permit,
     absent_fact_ids,
     fact_identity,
+    fact_supersession,
+    ordered_after,
 )
 from recall.types import AtomicFact, EvidenceCard
 
@@ -253,10 +255,12 @@ class LiteFactLedger:
             if prior:
                 return LedgerApplyResult(prior[0], duplicate=True)
             history = self._events()
-            candidates = project_candidates(history)
+            index = fact_supersession(history)
+            candidates = project_candidates(history, index=index)
+            moment = ordered_after(moment, history, fact)
             if assertion_is_duplicate(
-                candidates, fact, supersedes_fact_ids, absent_fact_ids(history, served),
-                stated=stated,
+                candidates, fact, supersedes_fact_ids, absent_fact_ids(history, served, moment),
+                stated=stated, index=index, history=history, moment=moment,
             ):
                 event = self._insert(
                     event_id=event_id, event_type="asserted", generation_id=generation_id,

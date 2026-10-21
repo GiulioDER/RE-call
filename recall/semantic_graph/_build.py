@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from recall.frontmatter import dependencies_from_metadata, supersedes_key
+from recall.frontmatter import dependencies_from_metadata
 from recall.semantic_graph._model import (
     ENTITY_KINDS,
     RELATION_KINDS,
@@ -31,6 +31,7 @@ from recall.semantic_graph._model import (
     _relation_temporal_fields,
     normalize_entity_name,
 )
+from recall.supersession import ReferenceIndex
 from recall.types import Chunk
 
 
@@ -645,15 +646,30 @@ def build_semantic_graph(
     # A supersession claim is an authored semantic edge as well as a trust-layer verdict.  Its
     # direction is old document to replacement, so a traversal can move from a stale hit to the
     # document that replaced it.  The trust layer still decides which of the two may be evidence.
+    # The target is found by the resolver every reader shares (`recall.supersession`), so this
+    # graph has an edge exactly where the trust layer does: exact path first, then the folded
+    # stem, roots kept apart, a self-claim dropped.
+    def _chunk_file(chunk: Chunk) -> str:
+        value = chunk.metadata.get("file")
+        return value if isinstance(value, str) and value else chunk.source
+
+    references = ReferenceIndex((_chunk_file(chunk), chunk.source) for chunk in ordered_chunks)
     for chunk in ordered_chunks:
         subject_ids = file_entities_by_source.get(chunk.source, set())
         if len(subject_ids) != 1:
             continue
         replacement_id = next(iter(subject_ids))
+        claimant = references.key(_chunk_file(chunk), chunk.source)
         for target in _as_labels(chunk.metadata.get("supersedes")):
-            target_sources = file_targets.get(normalize_entity_name(supersedes_key(target)), set())
-            if len(target_sources) != 1:
-                if target_sources:
+            kind, keys = references.match(target, claimant)
+            target_sources = {
+                (source, entity_id)
+                for key in (keys if kind in {"resolved", "ambiguous"} else ())
+                if (source := references.nodes[key][2]) is not None
+                for entity_id in file_entities_by_source.get(source, set())
+            }
+            if kind != "resolved" or len(target_sources) != 1:
+                if kind == "ambiguous" or len(target_sources) > 1:
                     diagnostics.append(
                         SemanticGraphDiagnostic(
                             id=_identity(
