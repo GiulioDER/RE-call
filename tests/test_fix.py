@@ -1323,3 +1323,39 @@ def test_a_condition_after_a_semicolon_following_the_reference_does_not_refuse_t
     assert extract_edges("Superseded by [[new_plan_2026-02-02]]; see it if you need the history.") == (
         [], ["new_plan_2026-02-02"],
     )
+
+
+# --- a wrapped line starting with `#470` is prose, above the cue as well (2026-10-21) ------------
+
+
+@pytest.mark.parametrize("body", [
+    "If the vote passes this lands in PR\n#470 and replaces [[old_plan_2026-01-01]].",
+    "This plan never lands as\n#470 and replaces [[old_plan_2026-01-01]].",
+])
+def test_a_wrapped_issue_number_does_not_cut_off_what_governs_the_cue(body):
+    """A line that starts with `#470` continues the sentence above it, so its "If" or "never"
+    still governs the cue.
+
+    Reported by the deferred-findings session of 2026-10-21.
+
+    Red: branch head 8e10eea6a,
+    `tests/test_fix.py::test_a_wrapped_issue_number_does_not_cut_off_what_governs_the_cue` failed
+    on both cases with `(['old_plan_2026-01-01'], []) == ([], [])`; target
+    `recall.supersession_cues._BREAKS`, whose `\\n(?=[ \\t]*#)` ended a sentence before any line
+    starting with `#`.
+    """
+    assert extract_edges(body) == ([], [])
+
+
+def test_a_heading_after_the_cue_still_ends_its_sentence():
+    """A real heading below the cue, even the last line of a memo, is not part of the cue's
+    sentence, so a condition written in it does not refuse the cue.
+
+    Passes at 8e10eea6a. Red by mutation of `recall.supersession_cues._BREAKS` dropping the break
+    before a heading line altogether:
+    `tests/test_fix.py::test_a_heading_after_the_cue_still_ends_its_sentence` failed with
+    `([], []) == ([], ['new_plan_2026-02-02'])`, the heading's "If" having been read as the cue's.
+    """
+    assert extract_edges("Superseded by [[new_plan_2026-02-02]]\n## If anything breaks") == (
+        [], ["new_plan_2026-02-02"],
+    )

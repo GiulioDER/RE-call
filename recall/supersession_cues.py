@@ -61,14 +61,14 @@ _WINDOW = 2000
 _REFERENCE = re.compile(
     r"\[\[[^\]\n]{1,200}\]\]|\]\([^)\s]{1,400}\)|`[^`\n]+`|(?<![\w./\-])[\w./\-]+\.md\b"
 )
-#: Where a sentence ends, semicolons aside. The last alternative ends one after an ATX heading line
-#: (one to six `#`, then a space or the end of the line), so a wrapped prose line that starts with
-#: `#470` is not a heading.
+#: Where a sentence ends, semicolons aside. The last two alternatives end one before and after an
+#: ATX heading line (one to six `#`, then a space or the end of the line), so a wrapped prose line
+#: that starts with `#470` is not a heading at either end.
 _BREAKS = (
     r"[.!?][\"')\]*]*(?=\s|$)",
     r"\n[ \t]*\n",
     r"\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t])",
-    r"\n(?=[ \t]*#)",
+    r"\n(?=[ \t]{0,3}#{1,6}(?:[ \t]|$))",
     r"^[ \t]{0,3}#{1,6}(?:[ \t][^\n]*)?\n",
 )
 #: The sentence that bounds a negation, a modal and the text after the reference: a semicolon ends
