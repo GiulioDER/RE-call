@@ -30,11 +30,12 @@ must not lose a certification they hold because of a measurement they cannot act
 from __future__ import annotations
 
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from recall.embeddings import Embedder, embed_query
 from recall.eval.vocab import word_tokens
+from recall.observability import get_logger
 from recall.unknown_terms import check_unknown_terms
 from recall.support import (
     CLASSES as CLASSES,
@@ -48,6 +49,30 @@ from recall.wizard.queryset import (
     _document_frequency,
     _heading_of,
 )
+
+#: What status says when a calibration has no readable coverage report, lite and PostgreSQL alike.
+UNAVAILABLE_MESSAGE = "near-miss coverage unavailable; provisional for in-vocabulary near-misses"
+
+_log = get_logger("near_miss")
+
+
+def coverage_summary(
+    read: Callable[[str], dict[str, Any] | None], calibration_id: str
+) -> tuple[dict[str, Any] | None, str]:
+    """A calibration's stored coverage and its status line. Fail-open, for every surface.
+
+    Lite status, PostgreSQL status and the calibrate CLI all report coverage the same way: the
+    report and `describe` of it, or `UNAVAILABLE_MESSAGE` when there is none or it cannot be read.
+    An optional report never fails the surface that prints it; a reader error logs its type only,
+    because a provider or driver message may carry private input.
+    """
+    try:
+        report = read(calibration_id)
+    except Exception as exc:  # BROAD-CATCH: fail-open, an optional report never fails its caller
+        _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
+        return None, UNAVAILABLE_MESSAGE
+    return report, (describe(report) if report else UNAVAILABLE_MESSAGE)
+
 
 def _invented_codes(corpus_words: set[str], rng: random.Random, count: int) -> list[str]:
     """Codes like QK4817 that occur nowhere in the corpus, deterministic for the seed."""

@@ -32,7 +32,9 @@ only from returned hits whose verdict and provenance satisfy the caller's policy
 ## Unknown-term vocabulary check
 
 `trusted_search` checks entity-like query tokens when the store supports a global vocabulary
-lookup. Lite supports it through FTS5; PostgreSQL does not. The heuristic selects tokens of at
+lookup. Lite supports it through FTS5, and a PostgreSQL generation store through the active
+generation's full-text index (`tsv`, its own configuration); the legacy PostgreSQL route does not.
+The heuristic selects tokens of at
 least three characters containing a letter and a digit, all-capital names, or an inner capital.
 Plain words are not checked. An absent token demotes otherwise `ok` hits to `unknown_term` and
 the result abstains. Other verdicts and raw candidate scores retain their existing meaning.
@@ -85,7 +87,7 @@ removal.
 | `recall lint` | Validate memo frontmatter and corpus shape. |
 | `recall check` | Validate one memo, optionally in strict mode. |
 | `recall calibrate` | Fit an abstention threshold from a labeled query file (legacy single-shot form). |
-| `recall calibration` | Calibration artifact lifecycle (`calibrate`, `carry-forward`, `drift`, `auto`, `list`, `show`, `export`, `import`), and the reported near-miss certificate (`near-miss`). |
+| `recall calibration` | Calibration artifact lifecycle (`calibrate`, `carry-forward`, `drift`, `auto`, `list`, `show`, `export`, `import`), the reported near-miss certificate (`near-miss`), and the served versus exact maximum diagnostic (`served-gap`). |
 | `recall provenance` | Apply structured facts through the deterministic provenance controller, or inspect the current fact projection (`apply`, `current`). |
 | `recall backup` | Inspect, create, verify, and restore encrypted Aurora backups through the explicit `status`, `create`, `verify`, and `restore` workflows. |
 | `recall secret` | `verify`: verify that every running ECS task reports the intended nonsecret secret version identifiers. |

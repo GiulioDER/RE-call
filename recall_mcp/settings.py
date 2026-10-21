@@ -74,7 +74,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_DEPENDENCY_INVALIDATION", "Core runtime", "dependency invalidation mode", "off"),
     EnvironmentSpec(
         "RECALL_UNKNOWN_TERM_GATE", "Retrieval",
-        "Lite global vocabulary gate; 0, false, no or off disables; constrained scopes and unsupported stores report unavailable",
+        "global vocabulary gate (Lite and PostgreSQL generations); 0, false, no or off disables; constrained scopes and unsupported stores report unavailable",
         "1",
     ),
     EnvironmentSpec("RECALL_INDEX_MAX_FILES", "Core runtime", "maximum files per indexing request", "2000"),

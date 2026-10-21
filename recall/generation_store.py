@@ -35,6 +35,7 @@ from recall.store import (
     SUPERSEDES_TARGET_ROWS_SQL,
     resolve_supersession_candidates,
 )
+from recall.support import COVERAGE_EVENT, latest_calibration_event
 from recall.types import Chunk, ScoredChunk
 from recall.errors import RecallError
 
@@ -97,6 +98,14 @@ LIVE_MANIFEST_STATES = ("building", "validating", "ready", "active", "retired")
 CALIBRATION_RESOLUTION_TTL_S = 30.0
 
 
+#: How long a search reuses a calibration's near-miss coverage report before reading it again.
+_COVERAGE_TTL_S = 300.0
+#: At most this many index misses per query are confirmed against chunk text. Each confirmation is
+#: an unindexed scan of the generation's text, so the cap bounds a query's cost; a miss beyond it
+#: stays unknown, which is what the index alone answered, so the cap never answers more.
+_CONFIRM_LIMIT = 8
+
+
 class GenerationStore(PgVectorStore):
     """The retrieval surface for v1, scoped to a request-consistent active generation."""
 
@@ -138,6 +147,7 @@ class GenerationStore(PgVectorStore):
         self._graph_readiness_cache: tuple[tuple[str, str], GraphReadiness] | None = None
         self._binding_cache: tuple[tuple[str, str], dict[str, str]] | None = None
         self._newest_indexed_at_cache: tuple[tuple[str, str], datetime | None] | None = None
+        self._coverage_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 
     def _reset_tenant_state(self) -> None:
         """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
@@ -162,6 +172,7 @@ class GenerationStore(PgVectorStore):
         self._graph_readiness_cache = None
         self._binding_cache = None
         self._newest_indexed_at_cache = None
+        self._coverage_cache = {}
 
     def check_schema(self) -> None:
         from recall.schema import check_schema
@@ -645,6 +656,93 @@ class GenerationStore(PgVectorStore):
 
         row = self._with_retry(_op)
         return 0.0 if row is None or row[0] is None else float(row[0])
+
+    def unknown_terms(self, tokens: Sequence[str]) -> list[str]:
+        """The tokens that occur nowhere in this generation, judged by its full-text vocabulary.
+
+        The PostgreSQL side of `recall.unknown_terms`, and the lite store's rule
+        (`LiteStore.unknown_terms`) on the generation's own `tsv` column: a token is split into the
+        lexemes of the generation's full-text configuration (the same `to_tsvector` the sparse leg
+        uses), and it is unknown if any of them occurs in no chunk of the generation. The GIN index
+        on `tsv` answers each lexeme, so no migration and no vocabulary table are needed.
+
+        One deliberate difference: a token the configuration drops entirely (a stop word written
+        in capitals, "THE") has no lexeme to look for and is never reported unknown, where the
+        lite tokenizer, which drops nothing, would have one. Refusing on a word the index could
+        never hold would refuse real answers.
+
+        A token whose lexemes miss is then confirmed against the chunk TEXT before it is reported:
+        PostgreSQL's default parser keeps a file name, host, e-mail address or dotted name whole
+        (`README.md` is the one lexeme 'readme.md', never 'readm'), so a term that occurs only
+        inside one has no lexeme of its own, while the lite tokenizer splits on the punctuation and
+        finds it. The confirmation is a case-insensitive whole-word match bounded by any
+        non-alphanumeric character, and it runs only for the tokens the index could not find, at most
+        `_CONFIRM_LIMIT` per query, because each is an unindexed scan of the generation's text.
+        Tokens hold letters and digits only (`entity_like_tokens`), so none can carry regex syntax.
+        """
+        if not tokens:
+            return []
+        generation_id = self._generation_id()
+        sql = """
+            WITH config AS (
+                SELECT (pipeline_identity #>> '{fts_configuration,language}')::regconfig AS language
+                FROM recall_generations
+                WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s
+            ), lex AS (
+                SELECT t.token, t.ord, l.lexeme
+                FROM unnest(%(tokens)s::text[]) WITH ORDINALITY AS t(token, ord)
+                CROSS JOIN config
+                CROSS JOIN LATERAL unnest(to_tsvector(config.language, t.token))
+                    AS l(lexeme, positions, weights)
+            )
+            SELECT lex.token, min(lex.ord) AS ord
+            FROM lex
+            WHERE NOT EXISTS (
+                SELECT 1 FROM recall_chunks_v1 c
+                WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+                  AND c.tsv @@ quote_literal(lex.lexeme)::tsquery
+            )
+            GROUP BY lex.token
+            ORDER BY ord
+        """
+        params = {"tokens": list(tokens), "tenant": self._tenant, "generation": generation_id}
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+        missing = [str(row[0]) for row in rows]
+        if not missing:
+            return []
+        confirm = """
+            SELECT t.token
+            FROM unnest(%(tokens)s::text[]) WITH ORDINALITY AS t(token, ord)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM recall_chunks_v1 c
+                WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+                  AND c.text ~* ('(^|[^[:alnum:]])' || t.token || '([^[:alnum:]]|$)')
+            )
+            ORDER BY t.ord
+        """
+        checked, unchecked = missing[:_CONFIRM_LIMIT], missing[_CONFIRM_LIMIT:]
+        params["tokens"] = checked
+        absent = self._with_retry(lambda conn: conn.execute(confirm, params).fetchall())
+        return [str(row[0]) for row in absent] + unchecked
+
+    def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
+        """The near-miss coverage measured with `calibration_id` (`recall.near_miss`), or None.
+
+        The PostgreSQL side of `LiteStore.near_miss_coverage`: `CalibrationRepository.calibrate`
+        appends the report as one audit event, and `recall.support.calibration_coverage` reads it
+        here for every search, so it is kept for `_COVERAGE_TTL_S` per calibration id rather than
+        queried each time. A report never changes a verdict; a stale read only delays a report.
+        """
+        cached = self._coverage_cache.get(calibration_id)
+        now = monotonic()
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+        report = self._with_retry(
+            lambda conn: latest_calibration_event(conn, self._tenant, COVERAGE_EVENT, calibration_id)
+        )
+        self._coverage_cache[calibration_id] = (now + _COVERAGE_TTL_S, report)
+        return report
 
     def _query_sparse(
         self,

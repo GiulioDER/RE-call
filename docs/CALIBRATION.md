@@ -42,6 +42,21 @@ questions that use the corpus's own vocabulary and still have no answer in it. W
 has been measured it separates far worse (LongMemEval per-question haystacks: AUC 0.753,
 `results/FINDINGS.md`). Status prints this as `certificate_population`.
 
+## PostgreSQL near-miss coverage
+
+Every PostgreSQL fit (`recall calibration calibrate`, and the refit inside `recall calibration
+auto`) measures the same synthetic near-miss coverage as a Lite fit, right after the artifact is
+saved: unknown-entity and in-vocabulary probes built from the generation's own chunks and the
+fit's answerable questions, scored at the threshold just fitted with the unknown-term check. The
+report has the Lite shape and rules (`MIN_PROBES`, `PROVISIONAL_BAR`), is stored as one
+`calibration_near_miss_coverage` audit event bound to the calibration ID (counts only), and is
+reported as `near_miss_coverage` in `recall_calibration_status`, in the status message, and as
+`calibration_coverage` beside every search. Measuring it embeds about twice as many probe
+questions as the fit has answerable ones. It never changes the threshold or the certification
+decision, and a failure to measure leaves the saved fit untouched and reads as unavailable. A
+carried-forward calibration is not measured, as on Lite, so it reads as unavailable and
+provisional until the next fit.
+
 ## PostgreSQL near-miss certificate
 
 A second certificate can be measured for any PostgreSQL calibration against a held-out set of
@@ -58,7 +73,7 @@ The questions are scored by the calibration sampling rule (the exact best cosine
 calibration's own generation) and compared with the answerable scores the artifact stores, at its
 threshold. The report keeps the Lite near-miss shape: the held-out questions are its
 `in_vocabulary` class, with the same `provisional_in_vocabulary` rule, and `unknown_entity` is
-`unmeasured` because PostgreSQL has no unknown-term gate. It adds `separability` with its
+`unmeasured` because held-out questions are not built around invented codes. It adds `separability` with its
 95% interval against the stored answerable class, `false_confirm_rate` (the fraction of near-miss
 questions at or above the threshold, which serving would answer), and `certified` under the same
 bars as the calibration itself (20 per class, interval lower bound at least 0.90).
@@ -72,9 +87,40 @@ unavailable and never fails status.
 
 **This certificate never gates.** Calibration resolution, carry-forward, drift and strict trust
 mode do not read it, and it is expected to fail: a gate on it would make strict mode refuse every
-tenant. The same near-miss set must never be used both to tune a score and to certify it. Search
-results on PostgreSQL keep reporting `calibration_coverage` as `unmeasured`; the certificate is a
-property of the calibration, read through status and the CLI.
+tenant. The same near-miss set must never be used both to tune a score and to certify it. It is a
+property of the calibration, read through status and the CLI; what search results carry as
+`calibration_coverage` is the synthetic coverage measured at each fit (above), not this certificate.
+The questions are scored by cosine alone, without the unknown-term check, so `false_confirm_rate`
+can only overstate what a gated search confirms.
+
+## Served versus exact maximum
+
+Calibration samples each labelled query's exact best cosine over the whole generation. Serving
+thresholds the cosines of the hits it returns, after fusion, optional reranking and the cut to `k`.
+When the exact top chunk is fused out of the returned hits, serving reads a lower score than the
+one the threshold was fitted on.
+
+```bash
+recall calibration served-gap                       # the calibration serving the active generation
+recall calibration served-gap -k 5 --tolerance 0.002 --json
+```
+
+For every stored labelled query of the calibration, it runs the MCP service search under the current
+environment (so the retrieval profile, reranker and rescue settings are the ones a server started
+there would use) and compares the best served cosine with the exact one. It reports how many agree
+within the tolerance (per labelled class in `--json`), the median and largest gap below the exact
+maximum, the queries the gap moves across the threshold (a served score equal to the threshold
+clears it), and how often the served abstention disagrees with the exact score. On an unconstrained
+search a fused-out chunk only lowers the served score, so this slack can add false abstentions near
+the threshold and never false confirms; a served score above the exact one (two embeddings of the
+query that differ) is counted apart as a disagreement. When the two sides embed the query separately
+on a hosted model whose repeated calls differ, widen `--tolerance`. It refuses to run when
+`RECALL_SOURCE_POLICY_FILE` is set, because a policy-filtered search is not the population
+calibration sampled, and it never writes search decision rows to the ledger.
+
+It reads only: nothing is stored, and the threshold, certification and trust policy are untouched.
+It refuses a calibration bound to any generation other than the active one, and a Lite store,
+which keeps no labelled query set.
 
 ## Binding and lifecycle
 

@@ -103,12 +103,23 @@ def calibration_status(store: PgVectorStore) -> dict[str, object]:
     if not matching:
         matching = [item for item in records if str(item.get("generation_id")) == generation_id]
     record = repository.show_record(str(matching[0]["calibration_id"])) if matching else {}
+    message = str(record.get("certification_reason", ""))
+    coverage: dict[str, object] = {}
+    if record:
+        from recall.near_miss import coverage_summary
+
+        # The same report, key and message as lite status (`recall.lite.calibration.status_report`);
+        # a calibration measured at no fit (a carried one) reads as unavailable and provisional.
+        report, summary = coverage_summary(repository.near_miss_coverage, str(record["calibration_id"]))
+        coverage = {"near_miss_coverage": report}
+        message += "; " + summary
     return {
         "tenant": store.tenant,
         "generation_id": generation_id,
         "status": resolution,
-        "message": str(record.get("certification_reason", "")),
+        "message": message,
         **record,
+        **coverage,
         **(_near_miss_status(repository, str(record["calibration_id"])) if record else {}),
     }
 
