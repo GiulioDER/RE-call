@@ -71,13 +71,19 @@ authorization input.
 ## Conflict policy
 
 Facts are canonicalized with stable JSON and Unicode NFC normalization. Two facts conflict when
-namespace, subject, predicate, and context match, object values differ, and validity intervals
-overlap. Duplicate facts are idempotent. A conflicting fact is accepted only when an authored
-supersession link names the prior fact, prior card, prior chunk, or prior source. Model-inferred
-links are never authorization evidence.
+namespace, subject, predicate, and context match, object values differ, validity intervals
+overlap, and they are not both of one multi-valued cardinality. A fact repeating one already in
+force is a DUPLICATE when it adds nothing; one that names a fact to supersede which the earlier
+assertion did not is recorded anew. A conflicting fact is accepted only when an authored
+supersession link names the prior fact, prior card, prior chunk, or prior source, or when what
+it names already hides the prior value wherever the new fact holds. Model-inferred links are
+never authorization evidence.
 
-Predicates are single-valued by default. A future policy may explicitly allow a multi-valued
-predicate; multiplicity is never inferred from retrieval output.
+Predicates are single-valued by default. A fixed table makes a few multi-valued
+(`DEFAULT_PREDICATE_CARDINALITY`: `email`, `phone`, `alias` and similar are `set`; `visited`,
+`attended` and similar are `event`), and a fact may declare its own `cardinality`. Two values
+conflict unless both are `set` or both are `event`, so declaring `set` cannot slip a second
+value past a single-valued one. Multiplicity is never inferred from retrieval output.
 
 ## Ledger
 

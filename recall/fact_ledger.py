@@ -40,6 +40,7 @@ from recall.provenance_controller import (
     ordered_after,
     project_candidates,
     project_current,
+    repeats_assertion,
     unresolved_conflicts,
     retracted_keys,
     retraction_key,
@@ -48,7 +49,6 @@ from recall.provenance_controller import (
     evidence_card_from_payload,
     fact_conflict_key,
     fact_identity,
-    facts_conflict,
 )
 from recall.schema import FACT_LEDGER_APPEND_FUNCTION, FACT_MATERIALIZATION_APPEND_FUNCTION
 from recall.types import AtomicFact, EvidenceCard
@@ -252,9 +252,9 @@ def assertion_is_duplicate(
     supersedes_fact_ids: Sequence[str],
     absent: frozenset[str] = frozenset(),
     *,
+    history: Sequence[FactEvent],
     stated: bool = False,
     index: FactSupersession | None = None,
-    history: Sequence[FactEvent] | None = None,
     moment: datetime | None = None,
 ) -> bool:
     """Whether `fact` repeats a current candidate; refuses one it contradicts without superseding.
@@ -268,27 +268,17 @@ def assertion_is_duplicate(
     recorded, not refused, and the projection lists both values as contested
     (`recall.provenance_controller.split_contested`).
 
-    With `index`, a candidate conflicts only where it is in force inside `fact`'s window (its
-    successors hide it elsewhere); with `history` too, as if `fact` were already recorded
-    (`unresolved_conflicts`), which is the rule the controller refuses on.
+    A repeat is a DUPLICATE only when it adds nothing (`repeats_assertion`). A conflict is judged
+    over `history` as if `fact` were already recorded (`unresolved_conflicts`), the rule the
+    controller refuses on; `index` is that history's supersession index, when the caller has it.
+    The fallback that judged `candidates` alone was unreachable once every ledger passed its
+    history, and was removed (2026-10-21 audit, CODE-003).
     """
-    identity = fact_identity(fact)
-    if any(event.fact_id == identity for event in candidates):
+    if repeats_assertion(candidates, fact, supersedes_fact_ids):
         return True
     if stated:
         return False
-    if history is not None:
-        if unresolved_conflicts(
-            history, fact, supersedes_fact_ids, absent, moment=moment, index=index
-        ):
-            raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
-        return False
-    conflicts = tuple(
-        event for event in candidates
-        if event.fact and event.fact_id not in absent and facts_conflict(event.fact, fact)
-        and (index is None or index.overlaps(event, fact))
-    )
-    if {event.fact_id for event in conflicts} - set(supersedes_fact_ids):
+    if unresolved_conflicts(history, fact, supersedes_fact_ids, absent, moment=moment, index=index):
         raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
     return False
 

@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 from recall.calibration import Calibration
 from recall.lineage import canonical_sha256
 from recall.security_policy import AccessContext, SourceSecurityPolicy
-from recall.supersession import EdgeCandidates, SupersessionGraph
+from recall.supersession import EdgeCandidates, SupersessionGraph, store_supersession_graph
 from recall.trust_gate import evaluate
 from recall.trust_policy import TrustFailureCode, TrustPolicy, TrustRefusal, TrustState, code_for_status
 from recall.types import (
@@ -56,17 +56,6 @@ def _file(chunk: Chunk) -> str:
 def _ordinal(chunk: Chunk) -> int | None:
     value = chunk.metadata.get("ord")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _supersession_graph(store: RelatedStore) -> SupersessionGraph:
-    """The store's resolved graph (windows included), or one from its three-part shape."""
-    reader = getattr(store, "supersession_graph", None)
-    if callable(reader):
-        graph = reader()
-        if isinstance(graph, SupersessionGraph):
-            return graph
-    edges, unresolved, candidates = store.supersession_all()
-    return SupersessionGraph.from_parts(edges, unresolved, candidates)
 
 
 def _lineage(graph: SupersessionGraph, seed: str) -> frozenset[str]:
@@ -207,7 +196,7 @@ def trusted_related(
     graph = SupersessionGraph()
     linked: frozenset[str] = frozenset()
     if relation == "supersession":
-        graph = _supersession_graph(store)
+        graph = store_supersession_graph(store)
         # The only files the supersession match below can accept. When there are none, no chunk
         # can match, so the full-corpus scan the store falls back to is skipped: the common case,
         # since most documents are neither superseded nor superseding.

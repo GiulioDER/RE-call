@@ -71,7 +71,7 @@ from recall.retriever import (
 from recall.scope import Scope, coerce_scope
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates, PgVectorStore
-from recall.supersession import SupersessionGraph
+from recall.supersession import SupersessionGraph, stored_supersession_graph
 from recall.support import calibration_coverage
 from recall.unknown_terms import apply_unknown_term_gate, check_unknown_terms
 from recall.trust_policy import (
@@ -658,10 +658,10 @@ def _trusted_search(
     edge_candidates: EdgeCandidates | None = None
     evaluation_now = now or datetime.now(UTC)
     if result.hits:
-        graph_reader = getattr(store, "supersession_graph", None)
+        graph = stored_supersession_graph(store)
         fetch_all = getattr(store, "supersession_all", None) if known_as_of is not None else None
-        if callable(graph_reader):
-            supersession = graph_reader()
+        if graph is not None:
+            supersession = graph
         elif fetch_all is not None:
             supersession, unresolved, edge_candidates = fetch_all()
         else:

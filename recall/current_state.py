@@ -18,7 +18,12 @@ from recall.dependency_invalidation import (
 )
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
-from recall.supersession import EdgeCandidates, SupersessionGraph, chunk_supersedes_targets
+from recall.supersession import (
+    EdgeCandidates,
+    SupersessionGraph,
+    chunk_supersedes_targets,
+    store_supersession_graph,
+)
 from recall.types import Chunk
 
 CurrentState = Literal[
@@ -86,17 +91,6 @@ def _utc(value: datetime) -> datetime:
 def _file(chunk: Chunk) -> str:
     value = chunk.metadata.get("file")
     return value if isinstance(value, str) and value else chunk.source
-
-
-def _graph(store: StateStore) -> SupersessionGraph:
-    """The store's resolved graph, windows included, or one built from its three-part shape."""
-    reader = getattr(store, "supersession_graph", None)
-    if callable(reader):
-        graph = reader()
-        if isinstance(graph, SupersessionGraph):
-            return graph
-    edges, unresolved, candidates = store.supersession_all()
-    return SupersessionGraph.from_parts(edges, unresolved, candidates)
 
 
 def _chain(
@@ -268,23 +262,35 @@ def _project(
                 ):
                     asserted_at_by_source[key] = asserted_at
 
-    group(_file)
-    # `max_records` refuses rather than trims, and which sources it counts is fixed here, so it is
-    # decided before the supersession scan, a record per source and the dependency build. The
-    # predicate is the one the final loop filters on (each record's source is its grouping key).
-    if max_records is not None:
-        matching = sum(
-            1
-            for key, chunks in chunks_by_source.items()
-            if source is None or key == source or any(chunk.source == source for chunk in chunks)
+    def selected(key: str, chunks: list[Chunk]) -> bool:
+        """The final loop's filter: `source` names the record, its path, or one of its chunks."""
+        return (
+            source is None
+            or key == source
+            or _file(chunks[0]) == source
+            or any(chunk.source == source for chunk in chunks)
         )
-        if matching > max_records:
+
+    def check_bound() -> None:
+        if max_records is not None and sum(
+            1 for key, chunks in chunks_by_source.items() if selected(key, chunks)
+        ) > max_records:
             raise ValueError("current state projection exceeds max_records")
-    graph = _graph(store)
+
+    group(_file)
+    # The dependency projection keys a document by its root-relative path, so it reads the
+    # grouping by path whatever the records are keyed by.
+    asserted_at_by_file = dict(asserted_at_by_source)
+    # `max_records` refuses rather than trims, so it is decided before the supersession scan, a
+    # record per source and the dependency build, and again once collided paths are split, which
+    # adds records (2026-10-21 audit, SEC-008).
+    check_bound()
+    graph = store_supersession_graph(store)
     if graph.collided:
         # A root-relative path two roots hold is two documents, keyed by source
         # (`SupersessionGraph.key`); grouped by path they would be one record.
         group(lambda chunk: graph.key(_file(chunk), chunk.source))
+        check_bound()
     all_records = tuple(
         _record(
             key,
@@ -298,25 +304,37 @@ def _project(
         )
         for key, chunks in sorted(chunks_by_source.items())
     )
+    # Two roots' copies of one path are one node to the dependency projection, keyed by the path:
+    # keyed by source, every copy missed the path-keyed lookup and read current, so a dependent of
+    # a README expired in both roots was not invalidated (2026-10-21 audit, STAKES-004). The node
+    # is current when any copy is: a non-current node is an invalidation root, and its reason
+    # would relabel the current copy itself, here and in the trust gate's enforce mode. Whether a
+    # dependent of a path superseded or expired in ONE root should be invalidated is the owner's
+    # call.
+    file_of = {record.source: _file(chunks_by_source[record.source][0]) for record in all_records}
+    base_states: dict[str, CurrentState] = {}
+    for record in all_records:
+        path = file_of[record.source]
+        if path not in base_states or record.state == "current":
+            base_states[path] = record.state
     binding_reader = getattr(store, "generation_binding", None)
     binding = binding_reader() if callable(binding_reader) else {}
     dependency_projection = build_dependency_projection(
         [chunk for chunks in chunks_by_source.values() for chunk in chunks],
         tenant_id=str(store.tenant),
         generation_id=generation_id,
-        base_states={record.source: record.state for record in all_records},
+        base_states=base_states,
         as_of=as_of,
         known_as_of=known_as_of,
-        asserted_at_by_source=asserted_at_by_source,
+        asserted_at_by_source=asserted_at_by_file,
         corpus_fingerprint=binding.get("corpus_fingerprint"),
     )
     records_list: list[CurrentStateRecord] = []
     for record in all_records:
-        if source is not None and record.source != source and not any(
-            chunk.source == source for chunk in chunks_by_source[record.source]
-        ):
+        if not selected(record.source, chunks_by_source[record.source]):
             continue
-        reason = dependency_projection.reason_for(record.source)
+        path = file_of[record.source]
+        reason = dependency_projection.reason_for(path)
         diagnostics = record.diagnostics
         state: CurrentState = record.state
         invalidation_chain: tuple[str, ...] = ()
@@ -342,8 +360,10 @@ def _project(
             # failed still reports both facts, with the more actionable one as its state.
             if state == "current":
                 state = "dependency_invalidated"
-        authority = dependency_projection.authorities.get(record.source, "unknown")
-        dependencies = dependency_projection.dependencies.get(record.source, ())
+        # By path, as the projection keys them: by source, a collided copy reported no
+        # dependencies and an unknown authority (2026-10-21 architect gate, STAKES-004).
+        authority = dependency_projection.authorities.get(path, "unknown")
+        dependencies = dependency_projection.dependencies.get(path, ())
         state_id = "state_" + canonical_sha256(
             {
                 "schema_version": CURRENT_STATE_SCHEMA_VERSION,

@@ -648,18 +648,22 @@ def build_semantic_graph(
     # document that replaced it.  The trust layer still decides which of the two may be evidence.
     # The target is found by the resolver every reader shares (`recall.supersession`), so this
     # graph has an edge exactly where the trust layer does: exact path first, then the folded
-    # stem, roots kept apart, a self-claim dropped.
-    def _chunk_file(chunk: Chunk) -> str:
-        value = chunk.metadata.get("file")
-        return value if isinstance(value, str) and value else chunk.source
-
-    references = ReferenceIndex((_chunk_file(chunk), chunk.source) for chunk in ordered_chunks)
-    for chunk in ordered_chunks:
+    # stem, roots kept apart, a self-claim dropped. Over the population the stores' scan reads,
+    # the chunks that name their file (`supersession_rows_sql`): a chunk without one, matched
+    # here by its source, made this graph ambiguous where the trust layer resolved (2026-10-21
+    # audit, CODE-002).
+    filed = [
+        (chunk, file)
+        for chunk in ordered_chunks
+        if isinstance(file := chunk.metadata.get("file"), str) and file
+    ]
+    references = ReferenceIndex((file, chunk.source) for chunk, file in filed)
+    for chunk, file in filed:
         subject_ids = file_entities_by_source.get(chunk.source, set())
         if len(subject_ids) != 1:
             continue
         replacement_id = next(iter(subject_ids))
-        claimant = references.key(_chunk_file(chunk), chunk.source)
+        claimant = references.key(file, chunk.source)
         for target in _as_labels(chunk.metadata.get("supersedes")):
             kind, keys = references.match(target, claimant)
             target_sources = {

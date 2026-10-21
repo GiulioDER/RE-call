@@ -5,7 +5,7 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from recall.support import CalibrationCoverage, QuerySupport
 
@@ -53,7 +53,10 @@ def _utc_datetime(value: datetime | None) -> datetime | None:
 
 #: How many values a fact's predicate holds at once: ``single`` (a new value contradicts the old),
 #: ``set`` (a second email is a second email) or ``event`` (a second visit is a second visit).
-FACT_CARDINALITIES = ("single", "set", "event")
+FactCardinality = Literal["single", "set", "event"]
+#: The same values as a tuple, derived from the type so the two cannot drift (2026-10-21 audit,
+#: CODE-005).
+FACT_CARDINALITIES: tuple[FactCardinality, ...] = get_args(FactCardinality)
 
 
 def _nfc(value: Any) -> Any:
@@ -338,7 +341,10 @@ class Validity:
 
     valid_from: datetime | None
     valid_until: datetime | None
-    superseded_by: str | None  # terminal successor file, when superseded
+    #: When superseded, the deepest member of the chain that is valid at the evaluation
+    #: instant (`recall.supersession.successor_path`), which is the terminal successor when every
+    #: window is unknown; an absolute source for a path two roots hold.
+    superseded_by: str | None
 
 
 @dataclass(frozen=True)

@@ -265,8 +265,14 @@ def _lineage(graph: ReasoningGraphProjection) -> SupersessionGraph:
         if edge.kind != "authored_supersedes" or edge.to_file is None:
             continue
         candidates.setdefault(edge.from_file, []).append((edge.to_file, edge.asserted_at))
-        if edge.valid_from is not None or edge.valid_until is not None:
-            windows[edge.to_file] = (edge.valid_from, edge.valid_until)
+        start, end = edge.valid_from, edge.valid_until
+        # An inverted window is malformed, so unknown, and its edge applies at every instant, as
+        # the resolver reads it (`parse_window`); kept, it never held and revived the predecessor
+        # here alone (2026-10-21 audit, CODE-006).
+        if (start is not None or end is not None) and not (
+            start is not None and end is not None and start > end
+        ):
+            windows[edge.to_file] = (start, end)
     edges = {target: max(f for f, _when in claims) for target, claims in candidates.items()}
     return SupersessionGraph.from_parts(edges, frozenset(), candidates, windows)
 

@@ -14,7 +14,7 @@ by a named mutation of the production line instead. Each docstring says which, a
 from __future__ import annotations
 
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -485,3 +485,251 @@ def test_every_reader_agrees_on_one_corpus(tmp_path: Path, at: datetime) -> None
             if target in by_key
         }
         assert semantic_pairs == store_pairs, f"the semantic graph disagrees: {semantic_pairs ^ store_pairs}"
+
+
+# ------------------------------------------------------------------ the 2026-10-21 audit of this change
+
+
+def test_w13_a_bare_reference_is_not_captured_by_a_root_level_namesake(tmp_path: Path) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w13_a_bare_reference_is_not_captured_by_a_root_level_namesake.
+
+    Invariant: `supersedes: notes` names no folder, so it is matched by stem alone: with a
+    root-level `notes.md` beside `archive/notes.md` it is ambiguous, and neither is served `ok`
+    by a guess. Red on ``0f714299d``: fails on "a planted root-level file captured a bare
+    reference" (the path stage resolved it to `notes.md` and `archive/notes.md` read `ok`, audit
+    SEC-001).
+    """
+    chunks = [_chunk("archive/notes.md"), _chunk("new/plan.md", supersedes="notes"), _chunk("notes.md")]
+    with closing(_lite(tmp_path, chunks)) as store:
+        today = _verdicts(store, NOW)
+        assert today["archive/notes.md"][0] == "ambiguous_supersession", (
+            f"a planted root-level file captured a bare reference: {today}"
+        )
+        assert today["notes.md"][0] == "ambiguous_supersession"
+
+
+def test_w14_the_claimants_root_breaks_a_tie_only_between_copies_of_one_path(tmp_path: Path) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w14_the_claimants_root_breaks_a_tie_only_between_copies_of_one_path.
+
+    Invariant: the claimant's own root decides only between copies of ONE root-relative path
+    (w6); between different paths it is no evidence, so a file planted under the claimant's root
+    cannot capture a bare reference meant for another root's file. Red on ``0f714299d``: fails on
+    "a file planted in the claimant's root captured a bare reference" (`/two/archive/notes.md`
+    read `ok`, audit SEC-001).
+    """
+    chunks = [
+        _chunk("archive/notes.md", source="/two/archive/notes.md"),
+        _chunk("new/plan.md", source="/one/new/plan.md", supersedes="notes"),
+        _chunk("sub/notes.md", source="/one/sub/notes.md"),
+    ]
+    with closing(_lite(tmp_path, chunks)) as store:
+        result = dev_search(store, HashingEmbedder(dim=DIM), QUERY, k=20, now=NOW)
+        by_source = {h.chunk.source: h.verdict for h in result.hits}
+        assert by_source["/two/archive/notes.md"] == "ambiguous_supersession", (
+            f"a file planted in the claimant's root captured a bare reference: {by_source}"
+        )
+        assert by_source["/one/sub/notes.md"] == "ambiguous_supersession"
+
+
+def test_w15_a_root_level_file_naming_its_own_stem_supersedes_the_other_namesake(tmp_path: Path) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w15_a_root_level_file_naming_its_own_stem_supersedes_the_other_namesake.
+
+    Invariant: the claimant is never its own candidate, so root-level `notes.md` declaring
+    `supersedes: notes` names the one other `notes`, `archive/notes.md`, exactly as the same
+    claim from a subfolder does. Red on ``0f714299d``: fails on "a claim was dropped as a
+    self-claim" (the path stage found only the claimant and returned self, so the claim, which
+    the base resolver refused as ambiguous, vanished and both read `ok`, audit STAKES-003).
+    """
+    with closing(_lite(tmp_path, [_chunk("notes.md", supersedes="notes"), _chunk("archive/notes.md")])) as store:
+        today = _verdicts(store, NOW)
+        assert today["archive/notes.md"] == ("superseded", "notes.md"), f"a claim was dropped as a self-claim: {today}"
+        assert today["notes.md"] == ("ok", None)
+
+
+def test_w16_stated_facts_retire_through_the_chain_search_follows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w16_stated_facts_retire_through_the_chain_search_follows.
+
+    Invariant: memo-level retirement of stated facts follows the chain search follows. `a`;
+    `b`, valid only in the first half of 2025, superseding it; `c` superseding `b`: today search
+    hides `a` by `c`, and `a`'s facts are retired. Red on ``0f714299d``: fails on "retirement
+    asked only a's direct, expired claimant" (retired nothing, audit NUM-001).
+    """
+    from recall.fact_retraction import served_sources
+
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "mem")
+    chunks = [
+        _chunk("mem/a.md", source="/m/mem/a.md"),
+        _chunk("mem/b.md", source="/m/mem/b.md", supersedes="a", valid_from="2025-01-01", valid_until="2025-06-30"),
+        _chunk("mem/c.md", source="/m/mem/c.md", supersedes="b"),
+    ]
+    with closing(_lite(tmp_path, chunks)) as store:
+        assert store.supersession_graph().successor("mem/a.md", now=NOW) == "mem/c.md"
+        served = served_sources(store)
+        assert served is not None
+        retired = served.superseded(frozenset({"mem/a.md"}), NOW)
+        assert retired == frozenset({"mem/a.md"}), f"retirement asked only a's direct, expired claimant: {retired}"
+
+
+def test_w17_a_superseded_memo_another_root_also_holds_still_retires_its_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w17_a_superseded_memo_another_root_also_holds_still_retires_its_facts.
+
+    Invariant: a name two roots hold is keyed in the graph by each source, and retirement looks
+    it up that way, so an upload staging a copy of a superseded memo under its own root cannot
+    keep that memo's stated facts current. Red on ``0f714299d``: fails on "a collided name was
+    looked up by name and never retired" (audit SEC-005).
+    """
+    from recall.fact_retraction import served_sources
+
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "mem")
+    chunks = [
+        _chunk("mem/user-drink.md", source="/m/mem/user-drink.md"),
+        _chunk("mem/user-drink-2.md", source="/m/mem/user-drink-2.md", supersedes="user-drink"),
+        _chunk("mem/user-drink.md", source="/m/uploads/default/job1/mem/user-drink.md"),
+    ]
+    with closing(_lite(tmp_path, chunks)) as store:
+        assert "mem/user-drink.md" in store.supersession_graph().collided
+        failures: list[str] = []
+        served = served_sources(store, failures=failures)
+        assert served is not None
+        retired = served.superseded(frozenset({"mem/user-drink.md"}), NOW)
+        assert retired == frozenset({"mem/user-drink.md"}), (
+            f"a collided name was looked up by name and never retired: {retired}"
+        )
+        assert failures == []
+
+
+def test_w18_a_dependent_of_an_expired_path_two_roots_hold_is_invalidated(tmp_path: Path) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w18_a_dependent_of_an_expired_path_two_roots_hold_is_invalidated.
+
+    Invariant: the dependency projection keys a document by its root-relative path, so two
+    roots' copies of `README.md` are one node to it, current when any copy is (w6 keeps the
+    current copy current); a dependent of a README expired in both roots is invalidated with two
+    roots as with one. Red on
+    ``0f714299d``: fails on "a dependent of an expired collided path read current" (the
+    source-keyed state missed the path-keyed lookup, audit STAKES-004).
+    """
+    chunks = [
+        _chunk("README.md", source="/r1/README.md", valid_until="2026-08-01"),
+        _chunk("README.md", source="/r2/README.md", valid_until="2026-08-01"),
+        _chunk("x.md", source="/r1/x.md", recall_graph={"depends_on": ["README.md"]}),
+    ]
+    with closing(_lite(tmp_path, chunks)) as store:
+        states = _states(store, NOW)
+        assert states["x.md"] == "dependency_invalidated", f"a dependent of an expired collided path read current: {states}"
+        assert states["/r1/README.md"] == states["/r2/README.md"] == "expired"
+
+
+def _records(tmp_path: Path, chunks: list[Chunk]) -> dict[str, tuple[str, tuple[str, ...]]]:
+    with closing(_lite(tmp_path, chunks)) as store:
+        return {r.source: (r.state, r.dependencies) for r in project_current_state(store, as_of=NOW).records}
+
+
+def test_w20_a_collided_copy_reports_its_dependencies(tmp_path: Path) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w20_a_collided_copy_reports_its_dependencies.
+
+    Invariant: the projection keys dependencies and authority by path, and each copy of a path
+    two roots hold reads them by path, so both copies of `guide.md` declare `base.md`, and an
+    expired `base.md` invalidates both through that prerequisite. Red on ``0f714299d``: fails on
+    "a collided copy lost its dependencies" (read by source, they were ``()``, 2026-10-21
+    architect gate, STAKES-004).
+    """
+    guides = [
+        _chunk("guide.md", source="/r1/guide.md", recall_graph={"depends_on": ["base.md"]}),
+        _chunk("guide.md", source="/r2/guide.md", recall_graph={"depends_on": ["base.md"]}),
+    ]
+    current = _records(tmp_path / "a", [_chunk("base.md", source="/r1/base.md"), *guides])
+    assert current["/r1/guide.md"] == current["/r2/guide.md"] == ("current", ("base.md",)), (
+        f"a collided copy lost its dependencies: {current}"
+    )
+    expired = _records(tmp_path / "b", [_chunk("base.md", source="/r1/base.md", valid_until="2026-08-01"), *guides])
+    assert expired["/r1/guide.md"][0] == expired["/r2/guide.md"][0] == "dependency_invalidated"
+
+
+def test_a_naive_replay_instant_is_read_as_utc() -> None:
+    """Node tests/test_supersession_window_rule.py::test_a_naive_replay_instant_is_read_as_utc.
+
+    Invariant: a naive `known_as_of`, and a naive edge date, are UTC wherever the graph is
+    walked, as the trust gate reads both. Red on ``0f714299d``: fails on "a naive known_as_of was
+    compared raw" (TypeError against the stores' aware edge dates, in graph expansion and the
+    planner, audit NUM-002). The naive edge date half, by mutation of
+    `recall.supersession._live_claims` normalising the instant only (the fix's first version):
+    fails on the same message, an aware instant against a naive date (2026-10-21 review).
+    """
+    from recall.supersession import SupersessionGraph
+
+    def successors(written: datetime, at: datetime) -> tuple[str | None, str | None]:
+        graph = SupersessionGraph.from_parts({"a.md": "b.md"}, frozenset(), {"a.md": [("b.md", written)]})
+        return graph.successor("a.md", known_as_of=at), graph.successor("a.md", known_as_of=at - timedelta(days=2))
+
+    try:
+        naive_instant = successors(datetime(2026, 10, 1, tzinfo=UTC), datetime(2026, 10, 2))
+        naive_date = successors(datetime(2026, 10, 1), datetime(2026, 10, 2, tzinfo=UTC))
+    except TypeError:
+        pytest.fail("a naive known_as_of was compared raw")
+    assert naive_instant == naive_date == ("b.md", None)
+
+
+def test_the_shared_adapter_reads_a_list_and_refuses_a_malformed_answer() -> None:
+    """Node tests/test_supersession_window_rule.py::test_the_shared_adapter_reads_a_list_and_refuses_a_malformed_answer.
+
+    Invariant: `store_supersession_graph` reads any (edges, unresolved[, candidates]) sequence
+    a store's `supersession_all()` returns, and refuses any other shape loudly, since an empty
+    graph would serve every superseded document as current. A new symbol, so the red proof is a
+    mutation of `recall.supersession.store_supersession_graph` back to the fix's first version
+    (a tuple only, anything else an empty graph): fails on "a store answering a list lost its
+    edges" (2026-10-21 review of the audit fixes, CODE-001).
+    """
+    from recall.supersession import store_supersession_graph
+
+    class ListStore:
+        def supersession_all(self) -> list[object]:
+            return [{"a.md": "b.md"}, frozenset(), {}]
+
+    class MapStore:
+        def supersession_all(self) -> dict[str, str]:
+            return {"a.md": "b.md"}
+
+    assert store_supersession_graph(ListStore()).edges == {"a.md": "b.md"}, "a store answering a list lost its edges"
+    with pytest.raises(TypeError, match="supersession_all"):
+        store_supersession_graph(MapStore())
+
+
+def test_the_gate_refuses_a_graph_with_separate_edge_dates() -> None:
+    """Node tests/test_supersession_window_rule.py::test_the_gate_refuses_a_graph_with_separate_edge_dates.
+
+    Invariant: one verdict reads one scan, so `evaluate` given a graph refuses separate
+    `edge_candidates` rather than pairing one scan's edges with another's dates. Red on
+    ``0f714299d``: fails on pytest's "DID NOT RAISE" (the caller's dates were used, audit
+    CODE-009).
+    """
+    from datetime import timedelta
+
+    from recall.supersession import SupersessionGraph
+    from recall.trust_gate import evaluate
+    from recall.types import RetrievalResult, StalenessReport
+
+    pool = RetrievalResult("q", [], False, StalenessReport(False, NOW, timedelta(0), timedelta(days=2)))
+    graph = SupersessionGraph.from_parts({"a.md": "b.md"})
+    with pytest.raises(ValueError, match="edge_candidates"):
+        evaluate(pool, graph, Calibration(embedder="t", threshold=0.5), NOW, edge_candidates={}, record_metrics=False)
+
+
+def test_the_planner_reads_an_inverted_window_as_unknown() -> None:
+    """Node tests/test_supersession_window_rule.py::test_the_planner_reads_an_inverted_window_as_unknown.
+
+    Invariant: a successor whose window is inverted (from December to January) has a malformed,
+    so unknown, window, and hides its predecessor at every instant, in the planner's lineage as
+    in the resolver (`parse_window`). Red on ``0f714299d``: fails on "the planner kept an
+    inverted window that never holds" (`a.md` had no successor there, audit CODE-006).
+    """
+    from recall.reasoning_graph import build_reasoning_graph
+    from recall.reasoning_planner import _lineage
+
+    inverted = {"file": "b.md", "ord": 0, "supersedes": "a", "valid_from": "2026-12-01", "valid_until": "2026-01-01"}
+    chunks = [Chunk("a", "/r/a.md", "t", {"file": "a.md", "ord": 0}), Chunk("b", "/r/b.md", "t", inverted)]
+    lineage = _lineage(build_reasoning_graph(chunks, tenant_id="t", generation_id="g"))
+    assert lineage.successor("a.md", now=NOW) == "b.md", "the planner kept an inverted window that never holds"

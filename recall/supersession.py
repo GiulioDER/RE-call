@@ -11,6 +11,7 @@ import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import cast
 
 from recall.frontmatter import supersedes_key, supersedes_targets, validity_bounds
 
@@ -331,6 +332,50 @@ def as_supersession_graph(
     return SupersessionGraph.from_parts(value, unresolved, candidates)
 
 
+def stored_supersession_graph(store: object) -> SupersessionGraph | None:
+    """`store.supersession_graph()` when the store has it and it answers a graph, else None."""
+    reader = getattr(store, "supersession_graph", None)
+    if callable(reader):
+        graph = reader()
+        if isinstance(graph, SupersessionGraph):
+            return graph
+    return None
+
+
+def store_supersession_graph(store: object) -> SupersessionGraph:
+    """`store`'s resolved graph, windows included, by the one fallback every reader shares.
+
+    The store's own graph (`stored_supersession_graph`), else one from the three-part
+    `supersession_all()`, else from the two-part `supersession()`, else an empty graph. Written
+    once: five readers carried their own copy and fell back differently, and the trust path took
+    whatever `supersession_graph()` returned as a graph (2026-10-21 audit, CODE-001).
+    """
+    graph = stored_supersession_graph(store)
+    if graph is not None:
+        return graph
+    reader_all = getattr(store, "supersession_all", None)
+    if callable(reader_all):
+        result = reader_all()
+        if isinstance(result, Sequence) and not isinstance(result, str) and len(result) >= 2:
+            candidates = (
+                cast(EdgeCandidates, result[2]) if len(result) >= 3 and isinstance(result[2], Mapping) else None
+            )
+            return SupersessionGraph.from_parts(dict(result[0]), frozenset(result[1]), candidates)
+        # Loud, not an empty graph: an empty one serves every superseded document as current,
+        # where a raised error is recorded as a failed lookup by the readers that catch it.
+        raise TypeError("supersession_all() must return (edges, unresolved[, candidates])")
+    reader = getattr(store, "supersession", None)
+    if callable(reader):
+        edges, unresolved = reader()
+        return SupersessionGraph.from_parts(edges, unresolved)
+    return SupersessionGraph()
+
+
+def _aware(value: datetime) -> datetime:
+    """`value` read as UTC when naive, as the trust gate reads both sides of a replay comparison."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 def _live_claims(
     cur: str,
     supersession: Mapping[str, str],
@@ -342,8 +387,13 @@ def _live_claims(
     `primary` is `supersession[cur]` with no instant to replay, and with one the claim asserted
     LAST among those asserted by then (`resolve_successor` explains why). `every` is the primary
     first, then the other claimants in scan order, those asserted after `known_as_of` left out.
-    A self-claim is no claim at any step: a document cannot supersede itself.
+    A self-claim is no claim at any step: a document cannot supersede itself. A naive
+    `known_as_of`, and a naive candidate date, are read as UTC, as the trust gate reads both
+    sides: compared raw with the stores' aware dates a naive instant raised TypeError in graph
+    expansion and the planner (2026-10-21 audit, NUM-002).
     """
+    if known_as_of is not None:
+        known_as_of = _aware(known_as_of)
     primary: str | None
     if known_as_of is None or edge_candidates is None:
         primary = supersession.get(cur)
@@ -354,7 +404,11 @@ def _live_claims(
             # hand-built, inconsistent input. Fail closed: keep demoting.
             primary = supersession.get(cur)
         else:
-            live = [(f, when) for f, when in claims if f != cur and (when is None or when <= known_as_of)]
+            live = [
+                (f, None if when is None else _aware(when))
+                for f, when in claims
+                if f != cur and (when is None or _aware(when) <= known_as_of)
+            ]
             primary = None
             best_when: datetime | None = None
             for f, when in live:
@@ -367,12 +421,16 @@ def _live_claims(
         primary = None
     every: list[str] = [primary] if primary is not None else []
     if edge_candidates is not None:
+        # Membership in a set: a list made fan-in quadratic, 617 ms a hit at 8,000 claimants
+        # (2026-10-21 audit, SEC-006).
+        listed = set(every)
         for f, when in edge_candidates.get(cur, ()):
-            if f == cur or f in every:
+            if f == cur or f in listed:
                 continue
-            if known_as_of is not None and when is not None and when > known_as_of:
+            if known_as_of is not None and when is not None and _aware(when) > known_as_of:
                 continue
             every.append(f)
+            listed.add(f)
     return primary, every
 
 
@@ -567,50 +625,67 @@ class ReferenceIndex:
     """
 
     def __init__(self, files: Iterable[tuple[str, str | None]]) -> None:
-        pairs = list(files)
+        # Each distinct pair is rooted once and each file folded once: a store's scan has a row
+        # per chunk, and doing both per row made a cache miss several times slower (2026-10-21
+        # audit, PERF-004).
+        pairs = {(file, source): root_of(source, file) for file, source in files}
         roots: dict[str, set[str]] = {}
-        for file, source in pairs:
+        for (file, _source), root in pairs.items():
             members = roots.setdefault(file, set())
-            root = root_of(source, file)
             if root is not None:
                 members.add(root)
         self.collided = frozenset(f for f, members in roots.items() if len(members) > 1)
         #: key -> (root-relative file, root, first source seen)
         self.nodes: dict[str, tuple[str, str | None, str | None]] = {}
-        for file, source in pairs:
-            self.nodes.setdefault(self.key(file, source), (file, root_of(source, file), source))
+        for (file, source), root in pairs.items():
+            self.nodes.setdefault(self.key(file, source), (file, root, source))
         self._by_path: dict[str, list[str]] = {}
         self._by_stem: dict[str, list[str]] = {}
+        folded: dict[str, str] = {}
         for key, (file, _root, _source) in self.nodes.items():
-            self._by_path.setdefault(reference_path_key(file), []).append(key)
-            self._by_stem.setdefault(reference_stem_key(file), []).append(key)
+            path = folded.get(file)
+            if path is None:
+                path = folded[file] = reference_path_key(file)
+            self._by_path.setdefault(path, []).append(key)
+            self._by_stem.setdefault(path.rsplit("/", 1)[-1], []).append(key)
 
     def key(self, file: str, source: str | None) -> str:
         return source if file in self.collided and source else file
 
     def match(self, reference: str, claimant: str) -> tuple[str, list[str]]:
         """``("resolved" | "ambiguous" | "dangling" | "self", candidate keys)``."""
-        claimant_root = self.nodes[claimant][1] if claimant in self.nodes else None
-        stages = (
-            ("path", self._by_path, reference_path_key(reference)),
-            ("stem", self._by_stem, reference_stem_key(reference)),
-        )
-        for stage, index, folded in stages:
-            if not folded:
-                continue
-            found = index.get(folded, [])
+        claimant_file, claimant_root, _source = self.nodes.get(claimant, (None, None, None))
+        path = reference_path_key(reference)
+        # Only a reference that names a folder is matched by path. A bare name matched by path
+        # let a planted root-level `notes.md` capture `supersedes: notes` meant for
+        # `archive/notes.md`, which then read `ok` (2026-10-21 supersession audit, SEC-001).
+        if "/" in path:
+            found = self._by_path.get(path, [])
             others = [key for key in found if key != claimant]
-            if not others:
-                if found:
-                    return ("self", []) if stage == "path" else ("dangling", [])
-                continue
-            if len(others) > 1:
-                same_root = [key for key in others if self.nodes[key][1] == claimant_root]
-                if len(same_root) == 1:
-                    return "resolved", same_root
-                return "ambiguous", others
-            return "resolved", others
+            if others:
+                return self._pick(others, claimant_root)
+            if found:
+                return "self", []
+        stem = reference_stem_key(reference)
+        if not stem:
+            return "dangling", []
+        found = self._by_stem.get(stem, [])
+        others = [key for key in found if key != claimant]
+        if others:
+            return self._pick(others, claimant_root)
+        if found and claimant_file is not None and path == reference_path_key(claimant_file):
+            return "self", []
         return "dangling", []
+
+    def _pick(self, others: list[str], claimant_root: str | None) -> tuple[str, list[str]]:
+        """One candidate, or the claimant's own root's copy of one path; else ambiguous."""
+        if len(others) == 1:
+            return "resolved", others
+        if len({self.nodes[key][0] for key in others}) == 1:
+            same_root = [key for key in others if self.nodes[key][1] == claimant_root]
+            if len(same_root) == 1:
+                return "resolved", same_root
+        return "ambiguous", others
 
 
 def _resolve_rows(rows: Sequence[SupersessionRow]) -> SupersessionGraph:
@@ -624,14 +699,18 @@ def _resolve_rows(rows: Sequence[SupersessionRow]) -> SupersessionGraph:
     How a reference finds its target, in order:
 
     1. **The exact root-relative path**, folded (NFC, case-insensitive, a markdown-family
-       extension optional): `a/notes.md` picks `a/notes.md` out of two `notes.md` files.
+       extension optional), for a reference that names a folder: `a/notes.md` picks
+       `a/notes.md` out of two `notes.md` files. A bare name is never matched by path, so a
+       root-level `notes.md` cannot capture `supersedes: notes` from `archive/notes.md`.
     2. **The stem** of the last segment, folded the same way.
 
     At either stage the claimant itself is no candidate (a self-claim is dropped here, so it can
-    neither win last-row against a real claim nor make its own claimant ambiguous), and of several
-    candidates the one in the claimant's own ROOT wins when it is the only one there. Several left
-    is ambiguous: none is guessed at and all are named in `unresolved`. A reference whose path
-    stage finds only the claimant is a self-claim; one whose stem stage does is DANGLING (a moved
+    neither win last-row against a real claim nor make its own claimant ambiguous). Of several
+    copies of ONE root-relative path (the same file indexed under two roots) the one in the
+    claimant's own root wins when it is the only one there; between different paths the root is
+    no evidence. Anything else left is ambiguous: none is guessed at and all are named in
+    `unresolved`. A reference naming the claimant's own path, with no other candidate, is a
+    self-claim; one whose stem matches only the claimant under another path is DANGLING (a moved
     file naming its old location), keyed on the raw name as written.
 
     `winner` is last-row-wins over the rows in scan order, including the case where one file
@@ -727,24 +806,17 @@ def resolve_supersession(
 ) -> tuple[dict[str, str], frozenset[str]]:
     """Build the superseded -> superseding map from ``(file, supersedes)`` rows.
 
-    ``file`` is a root-relative path; ``supersedes`` references its target by basename (the
-    authoring convention). Three cases:
+    ``file`` is a root-relative path; ``supersedes`` names its target by path or by name, and is
+    matched by the rule `_resolve_rows` states (changed 2026-10-21): a reference naming a folder
+    by its folded path first, then any reference by its folded stem, the claimant never its own
+    candidate. One candidate resolves to its root-relative path; none leaves the raw name as a
+    DANGLING key (nothing to disambiguate, and dropping it would silently discard a claim on a
+    document since removed); several are AMBIGUOUS, not guessed at, and are returned in
+    ``unresolved`` so the read path can fail closed on them.
 
-    - **Unambiguous** (exactly one indexed file bears that basename): resolve to its
-      root-relative path. This is the fix for the original bug — a naive basename key would
-      have collided with an unrelated same-named file in another directory.
-    - **Dangling** (no indexed file bears that basename — the predecessor was never indexed,
-      or was deleted): fall back to the raw basename as the key. There is nothing to
-      disambiguate, so this cannot mis-map; dropping it would just as silently discard a valid
-      supersession claim (e.g. a memo intentionally superseding a doc that was since removed).
-    - **Ambiguous** (two or more indexed files share that basename): do not guess — a silent
-      mis-map to the wrong file is worse than a broken chain, since we cannot tell which one the
-      author meant. The candidates are returned in ``unresolved`` so the read path can fail
-      closed on them; dropping the edge and saying nothing would leave a possibly-superseded
-      memory looking perfectly healthy.
-
-    Both keys and values in the mapping are root-relative paths (or a bare basename for the
-    dangling case). ``unresolved`` holds root-relative paths.
+    These rows carry no source, so no path collides across roots here: keys and values are
+    root-relative paths (or the raw name for a dangling claim), and ``unresolved`` holds
+    root-relative paths.
 
     Pure and DB-free so the resolution rule can be unit-tested without a database.
 

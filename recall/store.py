@@ -2751,21 +2751,22 @@ class PgVectorStore:
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         """The supersession relation: ``(edges, unresolved)``.
 
-        `edges` maps superseded file -> superseding file (both root-relative). `unresolved`
-        names the files an edge pointed at but could not identify, so the read path can fail
-        closed on them rather than serve them as healthy.
+        `edges` maps superseded file -> superseding file. Both are root-relative, except a path
+        that two roots hold, which is keyed by its absolute source so the two stay two documents
+        (`SupersessionGraph.collided`). `unresolved` names the files an edge pointed at but could
+        not identify, so the read path can fail closed on them rather than serve them as healthy.
+        These edges carry no validity windows; the window rule needs `supersession_graph()`.
 
-
-        The ``supersedes:`` frontmatter references its target by basename (the authoring
-        convention), but files are identified by their root-relative path so same-named files in
-        different directories cannot collide. This resolves each basename reference to the unique
-        file that bears it: an AMBIGUOUS target (a basename shared by two files) is skipped
-        rather than mis-mapped — the same refusal `recall lint` makes when it flags
-        ``ambiguous-supersedes-target`` — so a stray sibling can never be silently marked
-        superseded. Only the ambiguous case is skipped. A DANGLING target (no such basename in
-        the corpus) is instead kept, as an edge keyed on the raw basename it was written as:
-        harmless, because that key matches no indexed file, and dropping it would silently
-        discard a valid supersession claim (e.g. a memo superseding a doc since removed).
+        A ``supersedes:`` reference is matched by the rule `recall.supersession._resolve_rows`
+        states (changed 2026-10-21): a reference naming a folder by its folded path, any
+        reference by its folded stem, the claimant never its own candidate. An AMBIGUOUS target
+        (several candidates) is skipped rather than mis-mapped, so a stray sibling can never be
+        silently marked superseded; `recall lint`'s ``ambiguous-supersedes-target`` still flags
+        by stem alone, so it can flag a reference this resolves by path. Only the ambiguous case
+        is skipped. A DANGLING target (no such file in the corpus) is instead kept, as an edge
+        keyed on the raw name it was written as: harmless, because that key matches no indexed
+        file, and dropping it would silently discard a valid supersession claim (e.g. a memo
+        superseding a doc since removed).
 
         The result is cached, but the cache is VALIDATED against the table on every call rather
         than trusted. It previously was not: it was invalidated only by this instance's own
@@ -2806,8 +2807,10 @@ class PgVectorStore:
         `b2.md` survived, so a replay of Tuesday saw a single edge dated Wednesday, dropped it,
         and answered `ok` when `a.md` was in fact superseded by `b1.md`. Renaming the two files
         flipped the answer, which is what showed the axis was wrong. `resolve_successor` now picks
-        the claim that was live at the instant. `edges` is unchanged, so callers who never replay
-        see exactly what they saw before.
+        the claim that was live at the instant. `edges` is still last-row-wins over the scan, so
+        a caller who never replays sees the scan-order winner; which file a reference matches is
+        `_resolve_rows`' rule, changed 2026-10-21 (folded paths, a self-claim dropped, roots kept
+        apart).
 
         This is the only accessor. A second one returning just the dates existed briefly and had
         to warn, in its own docstring, that pairing it with `supersession()` reintroduced the

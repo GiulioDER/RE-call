@@ -24,7 +24,7 @@ import json
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from recall.observability import get_logger
-from recall.supersession import SupersessionGraph
+from recall.supersession import SupersessionGraph, store_supersession_graph
 
 if TYPE_CHECKING:
     from recall.provenance_controller import ServedSources
@@ -229,13 +229,7 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
     @_settled
     def supersession() -> SupersessionGraph:
         with pinned():
-            reader = getattr(store, "supersession_graph", None)
-            if callable(reader):
-                graph = reader()
-                if isinstance(graph, SupersessionGraph):
-                    return graph
-            edges, unresolved, candidates = store.supersession_all()
-        return SupersessionGraph.from_parts(edges, unresolved, candidates)
+            return store_supersession_graph(store)
 
     # Once per read: the rule resolves every prefix on disk.
     rule = _settled(lambda: stating_rule(store))
@@ -298,7 +292,12 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
         Every claimant of a target counts, not the edge map's last-row winner: otherwise an upload
         sorting after an admitted claimant would displace it and keep the old value current. A
         claimant retires a memo only while the claimant itself is valid at `now` (the window rule,
-        as search applies it); with no instant, every claim applies.
+        as search applies it); with no instant, every claim applies. A memo is also retired
+        through its chain, as search hides it (`SupersessionGraph.successor_path`), when every
+        member of that chain is admitted: in a, b (expired) superseding a, c superseding b,
+        search hides a by c and retirement asked only b (2026-10-21 audit, NUM-001). A name two
+        roots hold is keyed in the graph by each source (`SupersessionGraph.collided`), and is
+        retired when any of them is: looked up by name, it never was (audit SEC-005).
         """
         try:
             # Only admitted memos can retire facts, so with stating off nothing can be retired, and
@@ -308,10 +307,22 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
             if isinstance(admits, str):
                 return frozenset()
             graph = supersession()
-            claims = {
-                name: set(graph.live_claimants(name, now=now)) for name in names if name in graph.edges
-            }
-            claimants = resolved_names(frozenset(c for group in claims.values() for c in group))
+            collided = frozenset(name for name in names if name in graph.collided)
+            copies = resolved_names(collided) if collided else {}
+            # name -> groups of claimants; a group retires the name when all of it is admitted
+            claims: dict[str, list[tuple[str, ...]]] = {}
+            for name in names:
+                for key in copies.get(name, ()) if name in collided else (name,):
+                    if key not in graph.edges:
+                        continue
+                    groups = claims.setdefault(name, [])
+                    groups.extend((claimant,) for claimant in graph.live_claimants(key, now=now))
+                    chain = graph.successor_path(key, now=now)
+                    if chain:
+                        groups.append(chain)
+            claimants = resolved_names(
+                frozenset(c for groups in claims.values() for group in groups for c in group)
+            )
             # The supersession graph identifies a claimant only by its relative name.
             # Ambiguous authority cannot retire another memo's facts.
             admitted = frozenset(
@@ -322,7 +333,10 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
             _log.exception("supersession lookup failed; retiring no memo's facts")
             failed("supersession")
             return frozenset()
-        return frozenset(name for name, group in claims.items() if group & admitted)
+        return frozenset(
+            name for name, groups in claims.items()
+            if any(all(c in admitted for c in group) for group in groups)
+        )
 
     return ServedState(
         served, content_hashes=content_hashes, superseded_at=superseded, stated_admitted=stated_admitted

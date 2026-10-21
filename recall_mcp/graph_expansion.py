@@ -12,7 +12,6 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Callable, Mapping, Sequence
-from typing import cast
 
 from recall.calibration import Calibration
 from recall.reasoning import ReasoningRequest, SemanticGraphExpansionResult
@@ -21,7 +20,7 @@ from recall.embeddings import Embedder
 from recall.store import PgVectorStore
 from recall.store import EdgeCandidates
 from recall.frontmatter import validity_bounds
-from recall.supersession import SupersessionGraph
+from recall.supersession import SupersessionGraph, store_supersession_graph
 from recall.trust import is_trusted
 from recall.types import Chunk, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
 
@@ -86,31 +85,6 @@ def temporal_bounds(
     if end is not None and end.tzinfo is None:
         end = end.replace(tzinfo=UTC)
     return start, end
-
-
-def _store_supersession_graph(store: Any) -> SupersessionGraph:
-    """The store's resolved supersession graph, windows included, or one from its older shape."""
-    graph_reader = getattr(store, "supersession_graph", None)
-    if callable(graph_reader):
-        graph = graph_reader()
-        if isinstance(graph, SupersessionGraph):
-            return graph
-    supersession_reader = getattr(store, "supersession_all", None)
-    if callable(supersession_reader):
-        supersession_result = supersession_reader()
-        if isinstance(supersession_result, tuple) and len(supersession_result) >= 2:
-            edge_candidates: EdgeCandidates = {}
-            if len(supersession_result) >= 3 and isinstance(supersession_result[2], Mapping):
-                edge_candidates = cast(EdgeCandidates, supersession_result[2])
-            return SupersessionGraph.from_parts(
-                dict(supersession_result[0]), frozenset(supersession_result[1]), edge_candidates
-            )
-        return SupersessionGraph()
-    supersession_reader = getattr(store, "supersession", None)
-    if callable(supersession_reader):
-        edges, unresolved = supersession_reader()
-        return SupersessionGraph.from_parts(edges, unresolved)
-    return SupersessionGraph()
 
 
 def _chunk_is_superseded(
@@ -396,7 +370,7 @@ def _admit_relations(
     candidate_relations_by_chunk: dict[str, list[Any]] = {}
     neighboring_entities: set[str] = set()
     relation_count = 0
-    graph = _store_supersession_graph(store)
+    graph = store_supersession_graph(store)
     supersession: dict[str, str] = dict(graph.edges)
     unresolved: frozenset[str] = graph.unresolved
     edge_candidates: EdgeCandidates = graph.candidates

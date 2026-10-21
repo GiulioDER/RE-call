@@ -20,11 +20,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Protocol, cast
 
 from recall import eval_clock
 from recall.supersession import reference_stem_key
-from recall.types import AtomicFact, EvidenceCard, Verdict
+from recall.types import AtomicFact, EvidenceCard, FactCardinality, Verdict
 
 
 CONTROLLER_SCHEMA_VERSION = 1
@@ -175,6 +175,31 @@ def _without(
     return out
 
 
+#: A closed-open interval on the whole time line, ``[low, high)``.
+Interval = tuple[datetime, datetime]
+
+
+def _span(window: FactWindow | None) -> Interval:
+    """`window` as an interval; an unknown window (None) is the whole line."""
+    if window is None:
+        return (_EARLIEST, _LATEST)
+    return (window[0] or _EARLIEST, window[1] or _LATEST)
+
+
+def _merge(intervals: Iterable[Interval]) -> tuple[Interval, ...]:
+    """The union of `intervals` as sorted disjoint intervals; an empty one (inverted) adds nothing."""
+    merged: list[Interval] = []
+    for low, high in sorted(intervals):
+        if low >= high:
+            continue
+        if merged and low <= merged[-1][1]:
+            if high > merged[-1][1]:
+                merged[-1] = (merged[-1][0], high)
+        else:
+            merged.append((low, high))
+    return tuple(merged)
+
+
 @dataclass(frozen=True)
 class FactSupersession:
     """Which assertion events a ledger's successors hide, and inside which windows.
@@ -189,13 +214,18 @@ class FactSupersession:
     it hid, each inside its own window, so a value superseded by a temporary one and then by its
     replacement stays hidden while either holds. Whether a successor is still live does not
     matter: forgetting a successor removes its value and gives nothing back.
+
+    `hidden` holds, per assertion event, the union of every such window as sorted disjoint
+    intervals. A union, not a list: a value asserted again keeps its fact id, so each later
+    successor hides every earlier assertion of it, and listing the windows grew by a factor of
+    about 1.6 per flip (2026-10-21 supersession audit, SEC-002).
     """
 
-    hiders: Mapping[str, tuple[FactWindow | None, ...]]
+    hidden: Mapping[str, tuple[Interval, ...]]
 
     def hidden_at(self, event: FactEvent, instant: datetime) -> bool:
         moment = _as_utc(instant)
-        return any(_holds(window, moment) for window in self.hiders.get(event.event_id, ()))
+        return any(low <= moment < high for low, high in self.hidden.get(event.event_id, ()))
 
     def in_force(self, event: FactEvent) -> list[tuple[datetime, datetime]]:
         """The intervals in which `event`'s fact holds and no successor hides it."""
@@ -203,7 +233,7 @@ class FactSupersession:
             return []
         start, end = fact_window(event.fact)
         intervals = [(start or _EARLIEST, end or _LATEST)]
-        for window in self.hiders.get(event.event_id, ()):
+        for window in self.hidden.get(event.event_id, ()):
             intervals = _without(intervals, window)
             if not intervals:
                 break
@@ -225,6 +255,10 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
     `created_at`; equal times count as before, the reading the ledger had when supersession hid
     a fact id outright, and the ledgers order the events of one conflict key strictly
     (`ordered_after`), so equal times are only met in rows written before they did.
+
+    Resolved without recursion: a chain is as long as a key's history, and a recursive walk hit
+    the interpreter's limit at about a thousand links, after which every read and write of the
+    tenant failed (2026-10-21 supersession audit, SEC-002).
     """
     by_fact: dict[str, list[FactEvent]] = {}
     successors: list[tuple[FactEvent, FactWindow | None]] = []
@@ -245,25 +279,32 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
             for assertion in by_fact.get(fact_id, ()):
                 if assertion.event_id != successor.event_id and _as_utc(assertion.created_at) <= written:
                     direct.setdefault(assertion.event_id, []).append((successor, window))
-    resolved: dict[str, tuple[FactWindow | None, ...]] = {}
-
-    def hiders(event_id: str, visiting: set[str]) -> tuple[FactWindow | None, ...]:
-        if event_id in resolved:
-            return resolved[event_id]
-        if event_id in visiting:
-            return ()  # a cycle, only possible among rows of one instant
-        visiting.add(event_id)
-        found: list[FactWindow | None] = []
-        for successor, window in direct.get(event_id, ()):
-            found.append(window)
-            if successor.event_type == "asserted":
-                found.extend(hiders(successor.event_id, visiting))
-        visiting.discard(event_id)
-        resolved[event_id] = tuple(found)
-        return resolved[event_id]
-
-    for event_id in direct:
-        hiders(event_id, set())
+    resolved: dict[str, tuple[Interval, ...]] = {}
+    for root in direct:
+        # Depth first, children before their parent, as the recursive walk visited them; an event
+        # on the current path is a cycle, only possible among rows of one instant, and adds nothing.
+        stack: list[tuple[str, bool]] = [(root, False)]
+        visiting: set[str] = set()
+        while stack:
+            event_id, ready = stack.pop()
+            if event_id in resolved:
+                continue
+            if ready:
+                spans: list[Interval] = []
+                for successor, window in direct.get(event_id, ()):
+                    spans.append(_span(window))
+                    if successor.event_type == "asserted":
+                        spans.extend(resolved.get(successor.event_id, ()))
+                resolved[event_id] = _merge(spans)
+                visiting.discard(event_id)
+                continue
+            if event_id in visiting:
+                continue
+            visiting.add(event_id)
+            stack.append((event_id, True))
+            for successor, _window in reversed(direct.get(event_id, ())):
+                if successor.event_type == "asserted" and successor.event_id not in resolved:
+                    stack.append((successor.event_id, False))
     return FactSupersession(resolved)
 
 
@@ -279,11 +320,18 @@ def ordered_after(moment: datetime, history: Sequence[FactEvent], fact: AtomicFa
     """
     instant = _as_utc(moment)
     key = fact_conflict_key(fact)
+    # The key is a hash of subject, predicate, namespace and context, so only an event that
+    # shares the first three is hashed: hashing the whole history on every write, under the
+    # key's lock, made writes six times slower at a thousand events (2026-10-21 audit, PERF-002).
     latest = max(
         (
             _as_utc(event.created_at)
             for event in history
-            if event.fact is not None and fact_conflict_key(event.fact) == key
+            if event.fact is not None
+            and event.fact.subject == fact.subject
+            and event.fact.predicate == fact.predicate
+            and event.fact.namespace == fact.namespace
+            and fact_conflict_key(event.fact) == key
         ),
         default=None,
     )
@@ -544,7 +592,7 @@ def intervals_overlap(left: AtomicFact, right: AtomicFact) -> bool:
     return max(left_start, right_start) < min(left_end, right_end)
 
 
-PredicateCardinality = Literal["single", "set", "event"]
+PredicateCardinality = FactCardinality
 
 #: The cardinality of a predicate a fact does not declare its own for (matched case-insensitively).
 #: Every predicate not named here is single-valued, which is the conservative reading: a second
@@ -573,17 +621,19 @@ def predicate_cardinality(fact: AtomicFact) -> PredicateCardinality:
 
 def facts_conflict(left: AtomicFact, right: AtomicFact) -> bool:
     """Whether two facts disagree: one subject, predicate and context, another value, overlapping
-    windows, and a SINGLE-valued predicate. A set-valued predicate (a second email) or an event
-    (a second visit) holds several values at once, so two of them never contradict each other
-    (`predicate_cardinality`). Compared on the canonical (NFC) forms, as the conflict key is."""
+    windows, and not both of one multi-valued cardinality. Two set-valued values (a second email)
+    or two events (a second visit) hold at once, so they never contradict each other
+    (`predicate_cardinality`). Two that disagree on cardinality do conflict: a fact declaring
+    `set` slipped a second value past a single-valued one, both standing and neither contested
+    (2026-10-21 audit, STAKES-002). Compared on the canonical (NFC) forms, as the conflict key is."""
+    kind = predicate_cardinality(left)
     return (
         left.namespace == right.namespace
         and left.subject == right.subject
         and left.predicate == right.predicate
         and canonical_json(left.context) == canonical_json(right.context)
         and canonical_json(left.object) != canonical_json(right.object)
-        and predicate_cardinality(left) == "single"
-        and predicate_cardinality(right) == "single"
+        and (kind == "single" or kind != predicate_cardinality(right))
         and intervals_overlap(left, right)
     )
 
@@ -860,19 +910,44 @@ def project_current(
     by a successor valid at `now` (`fact_supersession`).
 
     With `served`, a fact none of whose memos the store serves now is left out (`absent_fact_ids`).
+    A fact in force under two assertions (a re-assertion that adds a supersession is recorded
+    anew, `repeats_assertion`) is listed once, under the first.
     """
     index = fact_supersession(events)
     retracted = retracted_keys(events)
     absent = absent_fact_ids(events, served, now)
     instant = _as_utc(now)
-    return tuple(
-        event for event in events
-        if asserts_fact(event)
-        and event.fact is not None
-        and retraction_key(event) not in retracted
-        and event.fact_id not in absent
-        and _holds(fact_window(event.fact), instant)
-        and not index.hidden_at(event, instant)
+    listed: set[str | None] = set()
+    current: list[FactEvent] = []
+    for event in events:
+        if (
+            asserts_fact(event)
+            and event.fact is not None
+            and event.fact_id not in listed
+            and retraction_key(event) not in retracted
+            and event.fact_id not in absent
+            and _holds(fact_window(event.fact), instant)
+            and not index.hidden_at(event, instant)
+        ):
+            listed.add(event.fact_id)
+            current.append(event)
+    return tuple(current)
+
+
+def repeats_assertion(
+    candidates: Sequence[FactEvent], fact: AtomicFact, supersedes_fact_ids: Sequence[str]
+) -> bool:
+    """Whether asserting `fact` adds nothing: a candidate asserts it already and supersedes at
+    least every fact this application names, so the application is a DUPLICATE.
+
+    One that names more is a new assertion. Paris; Rome for the summer superseding it; Paris
+    again superseding Rome: recorded DUPLICATE, the third application's supersession was
+    dropped and Rome kept hiding Paris all summer (2026-10-21 audit, STAKES-001).
+    """
+    identity = fact_identity(fact)
+    named = set(supersedes_fact_ids)
+    return any(
+        event.fact_id == identity and named <= set(event.supersedes_fact_ids) for event in candidates
     )
 
 
@@ -1041,8 +1116,7 @@ class InMemoryFactLedger:
             index = fact_supersession(history)
             candidates = project_candidates(history, index=index)
             now = ordered_after(now or datetime.now(UTC), history, fact)
-            identity = fact_identity(fact)
-            if any(event.fact_id == identity for event in candidates):
+            if repeats_assertion(candidates, fact, supersedes_fact_ids):
                 event = self._event(
                     event_type="asserted",
                     tenant_id=tenant_id,
@@ -1145,6 +1219,18 @@ class ControllerDecision:
     event: FactEvent | None = None
     retried: bool = False
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class _ConflictSet:
+    """A tenant's ledger as `ProvenanceController.apply_fact` judges a claim on it, at one instant."""
+
+    candidates: Sequence[FactEvent]
+    index: FactSupersession
+    #: The tenant's events, or None for a ledger that exposes only `current`.
+    history: Sequence[FactEvent] | None
+    absent: frozenset[str]
+    instant: datetime
 
 
 class ProvenanceController:
@@ -1261,27 +1347,35 @@ class ProvenanceController:
                 old_ids.append(event.fact_id)
         return tuple(old_ids)
 
-    def _in_force(
-        self, current: Sequence[FactEvent]
-    ) -> tuple[Sequence[FactEvent], FactSupersession, Sequence[FactEvent] | None]:
+    def _in_force(self) -> _ConflictSet:
         """The tenant's values in force at some instant, with the index that says when.
 
         From the ledger's own events where it exposes them, as `apply_assertion` reads them;
         a ledger that exposes only `current` is read through it, so its conflict set is what
-        holds now.
+        holds now. `current` is read first in every case: it is the read authorization fails
+        closed on, so a ledger whose `current` cannot answer is refused (pinned by
+        `test_ledger_read_outage_fails_closed_without_asserting` and the provenance evaluation's
+        `ledger_outage` case). One clock reading, and the absent set computed once, inside the
+        fail-closed read; the second was computed outside it (2026-10-21 audit, CODE-004).
         """
+        instant = self.now()
+        current = (
+            self.ledger.current(tenant_id=self.tenant_id, now=instant)
+            if self.served_sources is None
+            else self.ledger.current(tenant_id=self.tenant_id, now=instant, served=self.served_sources)
+        )
         history = getattr(self.ledger, "events", None)
         if history is None or not isinstance(history, Sequence):
-            return current, fact_supersession(current), None
+            return _ConflictSet(current, fact_supersession(current), None, frozenset(), instant)
         events = [event for event in history if event.tenant_id == self.tenant_id]
         index = fact_supersession(events)
-        absent = absent_fact_ids(events, self.served_sources, self.now())
+        absent = absent_fact_ids(events, self.served_sources, instant)
         candidates = [
             event
             for event in project_candidates(events, index=index)
             if event.fact_id not in absent
         ]
-        return candidates, index, events
+        return _ConflictSet(candidates, index, events, absent, instant)
 
     def _decision(
         self,
@@ -1358,18 +1452,11 @@ class ProvenanceController:
                 return self._record_refusal(request, code, (), retried=True)
         cards = tuple(resolved)
         try:
-            current = (
-                self.ledger.current(tenant_id=self.tenant_id, now=self.now())
-                if self.served_sources is None
-                else self.ledger.current(
-                    tenant_id=self.tenant_id, now=self.now(), served=self.served_sources
-                )
-            )
             # The conflict set is the one the ledger refuses on: every value in force at SOME
             # instant of the claim's window, not only the ones current now. Deriving it from
             # `current` let an expired or future value block an authored correction, because the
             # link that names it was never read (2026-10-21 supersession audit, P2 #12).
-            in_force = self._in_force(current)
+            in_force = self._in_force()
         except Exception as exc:  # BROAD-CATCH: fail-closed
             # The read that establishes the conflict set is part of authorization.  Treating a
             # failed read as an empty set would turn an outage into an authorization bypass, so
@@ -1381,10 +1468,10 @@ class ProvenanceController:
                 retried=retried,
                 detail=type(exc).__name__,
             )
-        events, index, history = in_force
+        index = in_force.index
         conflicts = tuple(
             event
-            for event in events
+            for event in in_force.candidates
             if event.fact and facts_conflict(event.fact, request.claim) and index.overlaps(event, request.claim)
         )
         supersedes = self._superseding_fact_ids(request.claim, cards, conflicts)
@@ -1392,10 +1479,10 @@ class ProvenanceController:
         # contradicts and neither names nor hides through what it names.
         unsettled = (
             unresolved_conflicts(
-                history, request.claim, supersedes, absent_fact_ids(history, self.served_sources, self.now()),
-                moment=self.now(), index=index,
+                in_force.history, request.claim, supersedes, in_force.absent,
+                moment=in_force.instant, index=index,
             )
-            if history is not None
+            if in_force.history is not None
             else tuple(event for event in conflicts if event.fact_id not in supersedes)
         )
         if unsettled:
@@ -1420,7 +1507,7 @@ class ProvenanceController:
                 "writer": self.writer,
                 "permit": permit,
                 "supersedes_fact_ids": supersedes,
-                "now": self.now(),
+                "now": in_force.instant,
             }
             if self.served_sources is not None:
                 assertion_kwargs["served"] = self.served_sources

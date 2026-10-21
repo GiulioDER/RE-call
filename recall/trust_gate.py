@@ -169,10 +169,11 @@ def evaluate(
     They compose: ``evaluate(..., now=june, known_as_of=tuesday)`` asks what we believed on Tuesday
     about the state of the world in June. Passing neither leaves behaviour exactly as before.
 
-    **``edge_candidates`` rewinds supersession too**, when supplied. `trusted_search` gets it from
-    `PgVectorStore.supersession_all()` whenever `known_as_of` is set, the store exposes that
-    method and the retrieval returned hits; a store without it logs a warning and rewinds hits
-    only. An edge becomes
+    **The edges' dates rewind supersession too.** A `SupersessionGraph` carries them as its own
+    `candidates`, and `trusted_search` passes the store's graph (`supersession_graph()`) whenever
+    the store has one, dated or not. With a plain edge map they come as ``edge_candidates``:
+    `trusted_search` reads them from `supersession_all()` when `known_as_of` is set and the store
+    has no graph, and a store with neither logs a warning and rewinds hits only. An edge becomes
     assertable when the superseding document is written, so its `indexed_at` dates the edge; a
     chain resolves per step, to the successor current at the instant. Point-in-time replay is
     then honest about which memories existed *and* about which were current.
@@ -186,7 +187,10 @@ def evaluate(
     applies unconditionally, and ``unresolved`` is not rewound, so an ambiguous claim written
     after the instant still forces an abstention at it.
 
-    Omitting ``edge_candidates`` keeps the old behaviour exactly, so no caller changes.
+    With a plain edge map, omitting ``edge_candidates`` keeps the behaviour before edges were
+    dated. With a graph, ``edge_candidates`` must be omitted: its own are used, so one verdict
+    reads one scan, where a caller's from another read could pair one scan's edges with
+    another's dates (2026-10-21 audit, CODE-009).
 
     **The window rule.** `supersession` may be the store's `SupersessionGraph`
     (`supersession_graph()`), which carries every claimant's validity window: a successor then
@@ -208,31 +212,24 @@ def evaluate(
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
+    graph = isinstance(supersession, SupersessionGraph)
+    if graph and edge_candidates is not None:
+        raise ValueError("edge_candidates goes with a plain edge map; a SupersessionGraph has its own")
+    resolved = as_supersession_graph(supersession, unresolved)
+    if graph:
+        edge_candidates = resolved.candidates
     if known_as_of is not None:
         # BOTH operands, and NOT only when `known_as_of` happened to be naive. Nesting the
         # `edge_candidates` half inside that branch left the mirror combination raising: an AWARE
         # `known_as_of` against a naive hand-built date map still hit the comparison, so the more
         # careful caller was the one that crashed. Two rounds of review to get one comment to
-        # match its own code.
+        # match its own code. With no replay instant the dates are never compared.
         known_as_of = _as_utc(known_as_of)
         if edge_candidates:
             edge_candidates = {
                 target: [(f, None if w is None else _as_utc(w)) for f, w in claims]
                 for target, claims in edge_candidates.items()
             }
-    graph = isinstance(supersession, SupersessionGraph)
-    resolved = as_supersession_graph(supersession, unresolved)
-    if graph and edge_candidates is None:
-        # The graph's own candidates, dated as the replay branch above dates a caller's. With no
-        # replay instant their dates are never compared, so they are used as they are.
-        edge_candidates = (
-            resolved.candidates
-            if known_as_of is None
-            else {
-                target: [(f, None if w is None else _as_utc(w)) for f, w in claims]
-                for target, claims in resolved.candidates.items()
-            }
-        )
     windows = resolved.windows if graph else None
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []

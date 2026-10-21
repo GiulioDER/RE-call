@@ -26,13 +26,17 @@ from recall.fact_ledger import SQLiteFactLedger
 from recall.lite import LiteStore
 from recall.lite.facts import LiteFactLedger
 from recall.provenance_controller import (
+    CONTROLLER_SCHEMA_VERSION,
     DecisionCode,
     EvidenceCardStore,
     FactApplicationRequest,
+    FactEvent,
     InMemoryFactLedger,
     ProvenanceController,
     fact_identity,
+    fact_supersession,
     facts_conflict,
+    project_current,
     split_contested,
 )
 from recall.types import AtomicFact
@@ -295,3 +299,118 @@ def test_c3_an_nfd_subject_conflicts_with_its_nfc_twin(env: Env) -> None:
     assert rome.subject == nfc
     env.apply(paris, "m1.md", "u1")
     assert env.apply(rome, "m2.md", "u2").code == DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION
+
+
+def test_c4_declaring_a_cardinality_does_not_slip_a_second_value_past_a_single_one(env: Env) -> None:
+    """Node tests/test_fact_supersession_windows.py::test_c4_declaring_a_cardinality_does_not_slip_a_second_value_past_a_single_one.
+
+    Invariant: two values conflict unless both are of ONE multi-valued cardinality, so Rome
+    declaring `cardinality: set` still contradicts single-valued Paris and, unlinked, is refused
+    as Rome is; `set` against `event` conflicts too. Red on ``0f714299d``: fails on "a declared
+    cardinality slipped a second value past a single one" (audit STAKES-002: APPLIED, both
+    standing, none contested).
+    """
+    env.apply(city("Paris"), "m1.md", "k1")
+    rome = AtomicFact(namespace="memory", subject="person:alice", predicate="city", object="Rome", cardinality="set")
+    assert facts_conflict(city("Paris"), rome) and facts_conflict(rome, city("Paris")), (
+        "a declared cardinality slipped a second value past a single one"
+    )
+    decision = env.apply(rome, "m2.md", "k2")
+    assert decision.code == DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION, decision.code
+    hobby = dict(namespace="memory", subject="person:alice", predicate="hobby")
+    assert facts_conflict(
+        AtomicFact(**hobby, object="chess", cardinality="set"),
+        AtomicFact(**hobby, object="go", cardinality="event"),
+    )
+
+
+# ------------------------------------------------------------------ the 2026-10-21 audit of this change
+
+
+def _assertion(index: int, value: str, supersedes: tuple[str, ...], at: datetime) -> FactEvent:
+    """An applied assertion of `city(value)`, built directly, for the index's own scale tests."""
+    fact = city(value)
+    return FactEvent(
+        event_id=f"e{index}", event_type="asserted", tenant_id=TENANT, generation_id=GEN, fact=fact,
+        fact_id=fact_identity(fact), evidence_cards=(), supersedes_fact_ids=supersedes,
+        request_id=f"q{index}", writer="windows", decision_code=DecisionCode.APPLIED,
+        policy_version="test", controller_version=CONTROLLER_SCHEMA_VERSION, created_at=at,
+    )
+
+
+def test_f10_a_long_supersession_chain_resolves_without_recursion() -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f10_a_long_supersession_chain_resolves_without_recursion.
+
+    Invariant: 3,000 values, each superseding the one before, resolve, and every one but the
+    last is hidden. Every ledger read and write builds this index over the tenant's whole
+    history, so a chain long enough to exhaust the interpreter's recursion took the tenant down,
+    for unrelated keys too (audit SEC-002: refused from link 995). Red on ``0f714299d``: fails on
+    "the index recursed once per link of the chain".
+    """
+    events: list[FactEvent] = []
+    previous: tuple[str, ...] = ()
+    for i in range(3000):
+        event = _assertion(i, f"city-{i}", previous, NOW + timedelta(microseconds=i))
+        events.append(event)
+        previous = (str(event.fact_id),)
+    try:
+        index = fact_supersession(events)
+    except RecursionError:
+        pytest.fail("the index recursed once per link of the chain")
+    later = NOW + timedelta(days=1)
+    assert [e.event_id for e in events if not index.hidden_at(e, later)] == ["e2999"]
+
+
+def test_f11_a_value_flipped_back_and_forth_keeps_one_window_per_assertion() -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f11_a_value_flipped_back_and_forth_keeps_one_window_per_assertion.
+
+    Invariant: Paris and Rome alternating 24 times, each superseding the other, leave every
+    assertion but the last hidden inside ONE merged window. A value asserted again keeps its
+    fact id, so each later successor hides every earlier assertion of it; listed rather than
+    merged, the windows grew about 1.6 times per flip (24 million at 33 flips, audit SEC-002).
+    The pre-fix tree has no `hidden` map, so the red proof is a mutation of
+    `recall.provenance_controller.fact_supersession`: store `tuple(spans)` in place of
+    `_merge(spans)`; fails on "the windows hiding one assertion were listed, not merged".
+    """
+    events = []
+    for i in range(24):
+        value, other = ("Paris", "Rome") if i % 2 == 0 else ("Rome", "Paris")
+        supersedes = (fact_identity(city(other)),) if i else ()
+        events.append(_assertion(i, value, supersedes, NOW + timedelta(microseconds=i)))
+    index = fact_supersession(events)
+    widest = max(len(index.hidden.get(e.event_id, ())) for e in events)
+    assert widest == 1, f"the windows hiding one assertion were listed, not merged: {widest}"
+    assert [e.event_id for e in events if not index.hidden_at(e, NOW)] == ["e23"]
+
+
+def test_f12_a_value_asserted_again_over_a_bounded_successor_supersedes_it(env: Env) -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f12_a_value_asserted_again_over_a_bounded_successor_supersedes_it.
+
+    Invariant: Paris; Rome from ten days ago to sixty days ahead, superseding it; Paris again,
+    linking Rome. The third application adds a supersession the first lacks, so it is APPLIED,
+    not DUPLICATE, and Paris is current through Rome's window; a fourth that adds nothing is a
+    DUPLICATE. Red on ``0f714299d``: fails on "a re-assertion naming its successor was recorded
+    DUPLICATE" (audit STAKES-001: the link was dropped and Rome stayed current).
+    """
+    env.apply(city("Paris"), "m1.md", "r1")
+    summer = city("Rome", start=NOW - timedelta(days=10), end=NOW + timedelta(days=60))
+    assert env.apply(summer, "rome.md", "r2", links=("m1.md",)).code == DecisionCode.APPLIED
+    again = env.apply(city("Paris"), "m3.md", "r3", links=("rome.md",))
+    assert again.code == DecisionCode.APPLIED, f"a re-assertion naming its successor was recorded {again.code}"
+    assert env.current() == ["Paris"]
+    assert env.current(NOW + timedelta(days=30)) == ["Paris"]
+    assert env.current(NOW + timedelta(days=90)) == ["Paris"]
+    assert env.apply(city("Paris"), "m4.md", "r4", links=("rome.md",)).code == DecisionCode.DUPLICATE
+
+
+def test_f13_a_fact_in_force_under_two_assertions_is_listed_once() -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f13_a_fact_in_force_under_two_assertions_is_listed_once.
+
+    Invariant: now that a re-assertion adding a supersession is recorded anew (f12), one fact
+    can be in force under two assertions, and the projection lists it once, under the first.
+    Red on ``0f714299d``: fails on "a fact in force under two assertions was listed twice".
+    """
+    first = _assertion(0, "Paris", (), NOW)
+    second = _assertion(1, "Paris", (fact_identity(city("Rome")),), NOW + timedelta(microseconds=1))
+    listed = [e.event_id for e in project_current([first, second], NOW)]
+    assert listed == ["e0"], f"a fact in force under two assertions was listed twice: {listed}"
