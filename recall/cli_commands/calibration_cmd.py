@@ -22,6 +22,7 @@ from recall.setup import CalibrationResult
 from recall.cli_commands._shared import _make_embedder
 
 if TYPE_CHECKING:
+    from recall.calibration_v2 import CalibrationRepository
     from recall.lite import LiteStore
 
 
@@ -142,6 +143,53 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     p_cal_auto.add_argument("--json", action="store_true")
 
+    p_cal_near = calibration_sub.add_parser(
+        "near-miss",
+        help="score held-out in-domain near-miss questions against a calibration; a report, "
+        "never a gate (without --queries, print the stored report)",
+    )
+    p_cal_near.add_argument(
+        "--calibration",
+        dest="calibration_id",
+        default=None,
+        help="calibration to measure (default: the one serving the active generation)",
+    )
+    p_cal_near.add_argument(
+        "--queries",
+        dest="query_file",
+        default=None,
+        help="JSON array of {query, answerable: false}, reviewed by a person and held out from "
+        "any fit; its text is never stored, only its digest",
+    )
+    p_cal_near.add_argument(
+        "--no-record",
+        dest="record",
+        action="store_false",
+        help="measure and print without appending the report to the audit ledger",
+    )
+    p_cal_near.add_argument("--json", action="store_true")
+
+    p_cal_gap = calibration_sub.add_parser(
+        "served-gap",
+        help="compare the best cosine serving returns with the exact best cosine calibration "
+        "samples, over the calibration's own labelled queries; a report, never a gate",
+    )
+    p_cal_gap.add_argument(
+        "--calibration",
+        dest="calibration_id",
+        default=None,
+        help="calibration to measure (default: the one serving the active generation)",
+    )
+    p_cal_gap.add_argument("-k", type=int, default=5, help="hits served per search (default 5)")
+    p_cal_gap.add_argument(
+        "--tolerance",
+        type=float,
+        default=None,
+        help="maxima closer than this agree (default 0.001); widen it for an embedder whose "
+        "repeated calls differ",
+    )
+    p_cal_gap.add_argument("--json", action="store_true")
+
     calibration_sub.add_parser("list")
     p_cal_show = calibration_sub.add_parser("show")
     p_cal_show.add_argument("calibration_id")
@@ -185,6 +233,13 @@ def _cmd_calibration_lite(args: argparse.Namespace) -> None:
     if (refusal := lite_route_refusal(args.dsn, route)) is not None:
         raise SystemExit(refusal)
     command = args.calibration_cmd
+    if command == "near-miss":
+        raise SystemExit(
+            f"recall calibration near-miss: not available on a lite store ({args.dsn}). A lite "
+            "store measures its own near-miss coverage every time it calibrates and reports it "
+            "in recall_calibration_status and beside every `recall search`; scoring a held-out "
+            "near-miss set needs the full (PostgreSQL) install."
+        )
     if command not in _LITE_CALIBRATION_COMMANDS:
         raise SystemExit(
             f"recall calibration {command}: not available on a lite store ({args.dsn}). A lite "
@@ -254,6 +309,10 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
             print(repository.export_bundle(args.calibration_id, args.output))
         elif args.calibration_cmd == "import":
             print(repository.import_bundle(args.path))
+        elif args.calibration_cmd == "near-miss":
+            _cmd_near_miss(args, repository)
+        elif args.calibration_cmd == "served-gap":
+            _cmd_served_gap(args, repository)
         elif args.calibration_cmd == "calibrate":
             labels, _digest = load_query_set(args.query_file)
             artifact = repository.calibrate(
@@ -267,6 +326,10 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
             print(f"pipeline: {artifact.pipeline_fingerprint}")
             print(f"corpus: {artifact.corpus_fingerprint}")
             print(f"queries: {artifact.query_set_digest}")
+            from recall.near_miss import coverage_summary
+
+            # Fail-open: the fit is saved; an unreadable optional report must not fail the command.
+            print(coverage_summary(repository.near_miss_coverage, artifact.calibration_id)[1])
         elif args.calibration_cmd == "carry-forward":
             bound = (
                 DEFAULT_MAX_CORPUS_DELTA
@@ -385,6 +448,124 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
             raise SystemExit(f"unknown calibration subcommand: {args.calibration_cmd}")
     except CalibrationError as exc:
         raise SystemExit(str(exc)) from exc
+
+
+def _active_generation(args: argparse.Namespace) -> str:
+    from recall.generations import GenerationManager, NoActiveGeneration
+
+    try:
+        return GenerationManager(args.dsn, args.tenant).active_generation_id()
+    except NoActiveGeneration as exc:
+        raise SystemExit(f"no active generation for tenant {args.tenant!r}; pass --calibration") from exc
+
+
+def _serving_calibration_id(args: argparse.Namespace, repository: CalibrationRepository) -> str:
+    """The calibration serving the active generation, unless `--calibration` names one."""
+    from recall.calibration_v2 import CalibrationStatus
+
+    if args.calibration_id is not None:
+        return str(args.calibration_id)
+    resolution = repository.resolve(_active_generation(args))
+    if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
+        raise SystemExit(
+            f"the active generation's calibration is {resolution.status.value}, not serving a "
+            "certified threshold; pass --calibration to measure a specific artifact"
+        )
+    return resolution.artifact.calibration_id
+
+
+def _cmd_served_gap(args: argparse.Namespace, repository: CalibrationRepository) -> None:
+    """`recall calibration served-gap`: served against exact best cosine. Never a gate."""
+    import os
+
+    from recall.generation_store import GenerationStore
+    from recall.served_gap import describe
+    from recall.trust_policy import TrustPolicy
+    from recall_mcp.service import search_memory
+
+    calibration_id = _serving_calibration_id(args, repository)
+    generation_id = repository.get(calibration_id).generation_id
+    if generation_id != _active_generation(args):
+        raise SystemExit(
+            f"calibration {calibration_id} is bound to {generation_id}, which is not the active "
+            "generation; serving searches only the active one, so the two would not be comparable"
+        )
+    if os.environ.get("RECALL_SOURCE_POLICY_FILE", "").strip():
+        raise SystemExit(
+            "recall calibration served-gap: RECALL_SOURCE_POLICY_FILE is set, and a served search "
+            "under a source policy depends on the caller's access context, which a CLI run does not "
+            "have; the diagnostic measures unconstrained searches only. Unset it to run."
+        )
+    embedder = _make_embedder(args.embedder)
+    from recall.decision_ledger import LEDGER_ENV
+
+    # Read only: the decision ledger would record every labelled question as a served search.
+    env = {**os.environ, LEDGER_ENV: "0"}
+    policy = TrustPolicy.from_env(env)
+    store = GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
+
+    def search(query: str) -> tuple[float | None, bool]:
+        # The MCP service's own search, under this process's environment, so the retrieval
+        # profile, reranker and rescue settings are the ones a server started here would use.
+        result = search_memory(store, embedder, query, k=args.k, policy=policy, env=env)
+        scores = [hit.score for hit in result.hits if hit.score is not None]
+        return (max(scores) if scores else None), bool(result.abstained)
+
+    try:
+        report = repository.served_gap(calibration_id, embedder, search, tolerance=args.tolerance)
+    finally:
+        store.close()
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+        return
+    print(f"calibration: {calibration_id}")
+    print(f"generation: {generation_id}")
+    print(f"labelled queries: {report['n']} (searched at k={args.k} through the MCP service path)")
+    print(describe(report))
+    for flip in report["flips"]:
+        kind = "answerable" if flip["answerable"] else "unanswerable"
+        print(f"  flip: {kind} query, exact {flip['exact']}, served {flip['served']}")
+
+
+def _cmd_near_miss(args: argparse.Namespace, repository: CalibrationRepository) -> None:
+    """`recall calibration near-miss`: measure or print the near-miss certificate. Never a gate."""
+    from recall.calibration_v2 import load_query_set
+    from recall.near_miss_certificate import CERTIFICATE_POPULATION, describe
+
+    calibration_id = _serving_calibration_id(args, repository)
+    if args.query_file is None:
+        try:
+            report = repository.near_miss_report(calibration_id)
+        except Exception as exc:  # BROAD-CATCH: fail-open, a damaged optional report is reported
+            if args.json:
+                print(json.dumps({"calibration_id": calibration_id, "near_miss_certificate": None,
+                                  "error": type(exc).__name__}, indent=2))
+                return
+            print(f"calibration: {calibration_id}")
+            print(f"near-miss certificate unavailable: the stored report could not be read "
+                  f"({type(exc).__name__})")
+            return
+    else:
+        labels, _digest = load_query_set(args.query_file)
+        report = repository.measure_near_miss(
+            calibration_id, labels, _make_embedder(args.embedder), record=args.record
+        )
+    if args.json:
+        print(json.dumps({"calibration_id": calibration_id, "near_miss_certificate": report},
+                         indent=2, default=str))
+        return
+    print(f"calibration: {calibration_id}")
+    if report is not None:
+        print(f"generation: {report.get('generation_id')}")
+        print(f"near-miss set: {report.get('query_set_digest')}")
+        rate = report.get("false_confirm_rate")
+        if rate is not None:
+            print(f"false confirm at the threshold: {rate:.1%} of {report['in_vocabulary']['n']}")
+        print(f"certificate: {report.get('certification_reason')}")
+    print(describe(report))
+    print(f"the calibration's own certificate: {CERTIFICATE_POPULATION}")
+    if args.query_file is not None:
+        print("recorded in the audit ledger" if args.record else "not recorded (--no-record)")
 
 
 def _cmd_calibrate(args: argparse.Namespace) -> None:

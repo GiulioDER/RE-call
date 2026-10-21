@@ -6,6 +6,7 @@ trusted_search's snapshot, using only the calibration id that search actually se
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from recall.observability import get_logger
@@ -16,6 +17,26 @@ _log = get_logger("support")
 PROVISIONAL_BAR = 0.90
 MIN_PROBES = 10
 CLASSES = ("unknown_entity", "in_vocabulary")
+#: The audit event a PostgreSQL calibration's coverage report is stored as (lite keeps it in meta).
+COVERAGE_EVENT = "calibration_near_miss_coverage"
+
+
+#: The newest audit event of one type bound to one calibration id. Both near-miss reports are read
+#: this way (coverage at each fit, the held-out certificate), so a change to the ordering or the
+#: filter cannot reach one reader and miss the other.
+LATEST_CALIBRATION_EVENT_SQL = (
+    "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+    "AND event_type = %s AND payload->>'calibration_id' = %s "
+    "ORDER BY created_at DESC, event_id DESC LIMIT 1"
+)
+
+
+def latest_calibration_event(
+    conn: Any, tenant: str, event_type: str, calibration_id: str
+) -> dict[str, Any] | None:
+    """The newest `event_type` payload recorded for `calibration_id`, or None. Unvalidated."""
+    row = conn.execute(LATEST_CALIBRATION_EVENT_SQL, (tenant, event_type, calibration_id)).fetchone()
+    return dict(row[0]) if row is not None and isinstance(row[0], Mapping) else None
 
 ELIGIBILITY_NOTE = (
     " Citable passages passed retrieval trust checks; this does not establish that they "
