@@ -82,6 +82,7 @@ from recall.frontmatter import (
     writable_reference,
 )
 from recall.lineage import canonical_sha256
+from recall.lint import describe_cycle, supersession_cycle_closed_by, supersession_graph
 from recall.observability import get_logger
 from recall.promotion import PromotedFact
 from recall.reasoning_proposals.types import InferenceProposal
@@ -719,6 +720,21 @@ def _corpus_proposals(
     return tuple(found)
 
 
+def _refuse_cycle(root: Path, edit_file: str, value: str) -> None:
+    """Refuse a `supersedes:` edge that would close a cycle in the corpus `_resolve` reads.
+
+    Every reviewer path ends here (`recall rewrite apply`, the dashboard's preview and accept),
+    so the plan a reviewer is shown already carries the refusal, rather than `recall lint`
+    reporting the cycle after the write and search abstaining on every memo in it.
+    """
+    chain = supersession_cycle_closed_by(supersession_graph(root), edit_file, value)
+    if chain is not None:
+        raise RewriteRefused(
+            "refusing to write: "
+            + describe_cycle(supersedes_key(edit_file), supersedes_key(value), chain)
+        )
+
+
 def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     """What `apply_rewrite` would do, with no side effect of any kind."""
     checked = _refuse_untrusted(fact)
@@ -736,8 +752,11 @@ def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     value = writable_reference(routed.value)
     _refuse_stand_in_reference(value)
     _refuse_unwritable_value(value)
+    edit_file = _resolve(root, routed.edit_file)
+    if routed.key == SUPERSEDES:
+        _refuse_cycle(root, edit_file, value)
     return RewritePlan(
-        edit_file=_resolve(root, routed.edit_file),
+        edit_file=edit_file,
         key=routed.key,
         value=value,
         block=block,

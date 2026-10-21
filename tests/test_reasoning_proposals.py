@@ -537,3 +537,91 @@ def test_proposal_status_vocabulary_has_a_single_source_of_truth() -> None:
     # The validator must read the shared vocabulary, not a literal set of its own that can
     # drift when the ProposalStatus type grows a member.
     assert "PROPOSAL_STATUSES" in _checked_status.__code__.co_names
+
+
+# --- the direct-reference rule (supersession audit 2026-10-21, finding 25) -----------------------
+
+
+def _direct(chunks: list[Chunk]) -> list[tuple[str, str, str]]:
+    graph = build_reasoning_graph(
+        chunks, tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a", include_text=True
+    )
+    return sorted(
+        (proposal.subject_id, proposal.object_id, proposal.status)
+        for proposal in deterministic_inference_proposals(graph)
+        if proposal.rule_id == "deterministic.direct_textual_reference"
+    )
+
+
+@pytest.mark.parametrize("text", [
+    "This draft never supersedes rollout_v1.md; it only adds context.",
+    "This does not replace rollout_v1.md.",
+    "If the vote passes, this would replace rollout_v1.md.",
+    "This replaces rollout_v1.md if the vote passes.",
+])
+def test_a_negated_or_conditional_reference_proposes_nothing(text: str) -> None:
+    """The cue is named, not asserted.
+
+    Red: baseline, `tests/test_reasoning_proposals.py::test_a_negated_or_conditional_reference_proposes_nothing`
+    failed for the first and the last two cases with a `rollout_v1.md -> rollout_draft.md` proposal
+    (the second, "does not replace", never matched the cue); target
+    `recall.reasoning_proposals._deterministic._direct_reference_proposals`.
+    """
+    assert _direct([
+        _chunk("old", "rollout_v1.md", "decision: rollout. Status: active."),
+        _chunk("draft", "rollout_draft.md", text),
+    ]) == []
+
+
+def test_a_reference_naming_its_own_subject_takes_that_subject_as_the_superseder() -> None:
+    """Meeting notes saying "new_plan.md replaces old_plan.md" do not supersede old_plan.md.
+
+    Red: baseline, `tests/test_reasoning_proposals.py::test_a_reference_naming_its_own_subject_takes_that_subject_as_the_superseder`
+    failed with `('old_plan.md', 'meeting.md', 'candidate')`; target
+    `recall.reasoning_proposals._deterministic._direct_reference_proposals`, which always took
+    the file holding the sentence.
+    """
+    assert _direct([
+        _chunk("old", "old_plan.md", "The old plan."),
+        _chunk("new", "new_plan.md", "The new plan."),
+        _chunk("meeting", "meeting.md", "We agreed new_plan.md replaces old_plan.md next quarter."),
+    ]) == [("old_plan.md", "new_plan.md", "requires_review")]
+
+
+def test_a_reference_whose_subject_resolves_to_nothing_proposes_nothing() -> None:
+    """A named subject that is not one file in the corpus leaves the superseder unknown.
+
+    Red: mutation of `recall.reasoning_proposals._deterministic._named_subject` returning the
+    holder whenever the named subject does not resolve: this test failed with
+    `[('old_plan.md', 'meeting.md', 'candidate')]`.
+    """
+    assert _direct([
+        _chunk("old", "old_plan.md", "The old plan."),
+        _chunk("meeting", "meeting.md", "We agreed ghost_plan.md replaces old_plan.md."),
+    ]) == []
+
+
+def test_an_ambiguous_target_stem_proposes_nothing() -> None:
+    """Two files share the stem `old`, so "supersedes old.md" names neither, as the resolver reads it.
+
+    Red: baseline, `tests/test_reasoning_proposals.py::test_an_ambiguous_target_stem_proposes_nothing`
+    failed with `[('b/old.md', 'new.md', 'candidate')]`, the file that happened to sort last;
+    target the `by_key` map in `_direct_reference_proposals`.
+    """
+    assert _direct([
+        _chunk("a", "a/old.md", "The first old memo."),
+        _chunk("b", "b/old.md", "The second old memo."),
+        _chunk("new", "new.md", "This supersedes old.md."),
+    ]) == []
+
+
+def test_a_plain_direct_reference_is_unchanged() -> None:
+    """The ordinary case keeps its proposal, status and id inputs.
+
+    Passes on master; red by mutation of `_named_subject` returning None when nothing is named:
+    this test then failed with `[] == [('rollout_v1.md', 'rollout_v2.md', 'candidate')]`.
+    """
+    assert _direct([
+        _chunk("a", "rollout_v1.md", "decision: rollout. Status: active."),
+        _chunk("b", "rollout_v2.md", "decision: rollout. Supersedes rollout_v1.md."),
+    ]) == [("rollout_v1.md", "rollout_v2.md", "candidate")]

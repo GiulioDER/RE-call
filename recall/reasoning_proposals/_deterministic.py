@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 import heapq
 from types import MappingProxyType
@@ -13,6 +13,7 @@ from typing import Any
 from recall.frontmatter import supersedes_key
 from recall.lineage import canonical_sha256
 from recall.reasoning_graph import EVIDENCE_TEXT_METADATA_KEY, ReasoningGraphNode, ReasoningGraphProjection
+from recall.supersession_cues import clause_head, unasserted
 from recall.reasoning_proposals.types import (
     DETERMINISTIC_MODEL_ID,
     DETERMINISTIC_PROVIDER_ID,
@@ -142,9 +143,13 @@ _DECISION_SUBJECT_RE = re.compile(
     re.IGNORECASE,
 )
 _DIRECT_REF_RE = re.compile(
-    r"\b(?:replaces|supersedes|deprecates|updates|revises)\s+`?(?P<target>[\w./\-[\]]+)`?",
+    r"\b(?P<cue>replaces|supersedes|deprecates|updates|revises)\s+`?(?P<target>[\w./\-[\]]+)`?",
     re.IGNORECASE,
 )
+#: A document named as the subject before a cue: "new.md replaces old.md", "[[new]] supersedes".
+#: Only explicit forms, because a bare word ("the team replaces ...") would resolve against any
+#: memo that happens to share its stem.
+_SUBJECT_REF_RE = re.compile(r"\[\[(?P<wiki>[^\]\n]+)\]\]|`?(?P<file>[\w./\-]+\.md)\b`?")
 _POSITIVE_VALIDITY_RE = re.compile(r"\b(enabled|active|valid|approved|ship|on)\b", re.IGNORECASE)
 _NEGATIVE_VALIDITY_RE = re.compile(
     r"\b(disabled|inactive|invalid|rejected|blocked|off)\b", re.IGNORECASE
@@ -310,33 +315,86 @@ def _direct_reference_proposals(
     claims: Mapping[str, EvidenceClaim],
     authored: set[tuple[str, str]],
 ) -> list[InferenceProposal]:
-    by_key = {supersedes_key(file): file for file in claims}
+    # A stem two files share names neither of them, as `recall.supersession.resolve_supersession`
+    # reads it: such a reference is skipped. Keeping the last file seen proposed an edge onto
+    # whichever one happened to sort last.
+    by_key: dict[str, list[str]] = defaultdict(list)
+    for file in claims:
+        by_key[supersedes_key(file)].append(file)
+
+    def unique(reference: str) -> str | None:
+        files = by_key.get(supersedes_key(reference), [])
+        return files[0] if len(files) == 1 else None
+
     proposals: list[InferenceProposal] = []
     for file, claim in sorted(claims.items()):
-        for match in _DIRECT_REF_RE.finditer(claim.text[:4000]):
+        text = claim.text[:4000]
+        for match in _DIRECT_REF_RE.finditer(text):
             matched_target = match.group("target").rstrip(".,;:)")
-            target = by_key.get(supersedes_key(matched_target))
-            if target is None or target == file or (target, file) in authored:
+            target_span = (match.start("target"), match.start("target") + len(matched_target))
+            # "This draft never supersedes old.md" names the relation without asserting it.
+            if unasserted(text, match.span("cue"), target_span):
                 continue
+            target = unique(matched_target)
+            if target is None:
+                continue
+            superseder = _named_subject(text, match.start("cue"), target_span, unique, file)
+            if superseder is None or target == superseder or (target, superseder) in authored:
+                continue
+            reported = superseder != file
             proposals.append(
                 _make_proposal(
                     graph=graph,
                     context=context,
-                    source_evidence_ids=(claims[target].evidence_id, claim.evidence_id),
+                    source_evidence_ids=tuple(
+                        sorted({claims[target].evidence_id, claims[superseder].evidence_id, claim.evidence_id})
+                    ),
                     proposed_relation="supersedes",
                     subject_id=target,
-                    object_id=file,
+                    object_id=superseder,
                     explanation=(
-                        f"{file} contains a direct textual reference that appears to replace "
+                        f"{file} says that {superseder} replaces {target}."
+                        if reported
+                        else f"{file} contains a direct textual reference that appears to replace "
                         f"{target}."
                     ),
                     confidence=RULE_CONFIDENCE["deterministic.direct_textual_reference"],
-                    uncertainty=("the reference remains corpus text, not an instruction",),
+                    uncertainty=(
+                        ("the reference remains corpus text, not an instruction",)
+                        + (("the relation is reported by a third document",) if reported else ())
+                    ),
+                    status="requires_review" if reported else "candidate",
                     rule_id="deterministic.direct_textual_reference",
                     metadata={"matched_text": match.group(0).rstrip(".,;:)")},
                 )
             )
     return proposals
+
+
+def _named_subject(
+    text: str,
+    cue_start: int,
+    target_span: tuple[int, int],
+    unique: Callable[[str], str | None],
+    holder: str,
+) -> str | None:
+    """The document that supersedes in a direct reference, or None when it cannot be told.
+
+    The file holding the sentence, unless the clause before the cue names a document: "new.md
+    replaces old.md" in meeting notes is new.md replacing old.md, and taking the notes as the
+    superseder demoted old.md beneath a memo that never claimed it. A named subject that does not
+    resolve to exactly one file, or two named subjects, leave the superseder unknown.
+    """
+    start, end = clause_head(text, cue_start, (target_span,))
+    named = {
+        match.group("wiki") or match.group("file")
+        for match in _SUBJECT_REF_RE.finditer(text, start, end)
+    }
+    if not named:
+        return holder
+    if len(named) > 1:
+        return None
+    return unique(named.pop())
 
 
 def _repeated_decision_subject_proposals(

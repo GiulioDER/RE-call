@@ -732,7 +732,8 @@ def test_lint_fix_apply_finishes_the_run_when_one_memo_cannot_be_named(tmp_path,
     (tmp_path / "zzz_2026-04-01.md").write_bytes(b"the older one\n")
     _superseded_by_new(tmp_path, BAD)
 
-    main(["lint", str(tmp_path), "--fix", "--apply"])
+    selection = ",".join(p.id for p in propose_fixes(tmp_path)[0])
+    main(["lint", str(tmp_path), "--fix", "--apply", selection])
 
     out = capsys.readouterr().out
     assert "wrote 1 edge(s)" in out, "the run ended without saying what it had written"
@@ -794,3 +795,248 @@ def test_the_memo_that_cannot_be_named_still_gains_its_own_edge(tmp_path):
     apply_proposal(tmp_path, proposals[0])
     meta, _ = parse_frontmatter((tmp_path / BAD).read_text(encoding="utf-8-sig"))
     assert meta["supersedes"] == "zzz_2026-04-01"
+
+
+# --- what the sentence asserts, and what a reviewer sees (supersession audit 2026-10-21) --------
+#
+# Red proof for this section, run on VPS2 on 2026-10-21. "Baseline" is master 67ffcce59 with only
+# these tests copied in; a mutation is one edit to the production line named, run alone and then
+# restored. Each failed in the assertion stated, and each passed again once restored.
+
+#: The audit's scratch corpus, verbatim: the first memo negates its cue, the second conditions it.
+#: Applied, both edges demoted a memo that was still current.
+AUDIT_CORPUS = {
+    "bench_note_2026-06-05.md": (
+        "Benchmark note. This never supersedes [[deploy_plan_2026-06-01]]; it only adds numbers.\n"
+    ),
+    "deploy_plan_2026-06-01.md": (
+        "---\nvalid_from: 2026-06-01\n---\n"
+        "Current deploy plan. If the canary fails, this would be replaced by "
+        "[[rollback_plan_2026-07-01]].\n"
+    ),
+    "rollback_plan_2026-07-01.md": "Rollback steps.\n",
+}
+
+
+@pytest.mark.parametrize("body", [
+    "This never supersedes [[deploy_plan_2026-06-01]]; it only adds numbers.",
+    "This is not superseded by [[new_plan_2026-02-02]].",
+    "This isn't superseded by [[new_plan_2026-02-02]].",
+    "This plan no longer supersedes [[old_plan_2026-01-01]].",
+])
+def test_a_negated_cue_proposes_no_edge(body):
+    """Negation in the cue's own clause means the sentence denies the relation.
+
+    Red: baseline, `tests/test_fix.py::test_a_negated_cue_proposes_no_edge` failed on every case
+    with the reference returned as an edge; the target is `recall.fix._accept`, which had no
+    negation check.
+    """
+    assert extract_edges(body) == ([], [])
+
+
+@pytest.mark.parametrize("body", [
+    "If the canary fails, this would be replaced by [[rollback_plan_2026-07-01]].",
+    "If the canary fails, this is replaced by [[rollback_plan_2026-07-01]].",
+    "This is replaced by [[rollback_plan_2026-07-01]] if the canary fails.",
+    "This is replaced by [[rollback_plan_2026-07-01]] unless the vote fails.",
+    "This is replaced by [[rollback_plan_2026-07-01]] should the canary fail.",
+    "This might be superseded by [[new_plan_2026-02-02]].",
+    "This could be replaced by [[new_plan_2026-02-02]].",
+])
+def test_a_conditional_cue_proposes_no_edge(body):
+    """A modal or a condition, before the cue or after its reference, leaves it unasserted.
+
+    Red: baseline, `tests/test_fix.py::test_a_conditional_cue_proposes_no_edge` failed on every
+    case with the reference returned as a passive edge; target `recall.fix._accept`.
+    """
+    assert extract_edges(body) == ([], [])
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("This plan is no longer current, superseded by [[new_plan_2026-02-02]].",
+     ([], ["new_plan_2026-02-02"])),
+    ("Superseded by [[new_plan_2026-02-02]], which you should read first.",
+     ([], ["new_plan_2026-02-02"])),
+    ("Superseded by [[never-again_2026-02-02]].", ([], ["never-again_2026-02-02"])),
+    ("Not used any more. Superseded by [[new_plan_2026-02-02]].", ([], ["new_plan_2026-02-02"])),
+])
+def test_a_negation_outside_the_cue_clause_keeps_the_cue(body, expected):
+    """The refusal must not drop real cues: a negation in an earlier clause or sentence, a modal
+    after the reference's clause, or a negation word inside a memo's own name.
+
+    These pass on master, which refuses nothing, so the red proof is by mutation of
+    `recall.supersession_cues.unasserted`. Judging negation over the whole sentence
+    (`clause_start = sentence_start`) failed the first case with `([], []) == ([],
+    ['new_plan_2026-02-02'])`. Removing the reference mask (`_masked` returning `text`) failed the
+    third the same way.
+    """
+    assert extract_edges(body) == expected
+
+
+def _corpus(root, files):
+    for name, text in files.items():
+        (root / name).write_text(text, encoding="utf-8", newline="\n")
+
+
+def test_the_audit_corpus_proposes_no_edge(tmp_path):
+    """The two sentences that demoted a current memo, as files.
+
+    Red: baseline, `tests/test_fix.py::test_the_audit_corpus_proposes_no_edge` failed with two
+    proposals, onto `deploy_plan_2026-06-01` and `rollback_plan_2026-07-01`; target
+    `recall.fix._accept` through `propose_fixes`.
+    """
+    _corpus(tmp_path, AUDIT_CORPUS)
+    proposals, _ = propose_fixes(tmp_path)
+    assert proposals == []
+
+
+def test_propose_fixes_shows_the_sentence_that_states_the_edge(tmp_path):
+    """`Proposal.evidence` is the sentence, on one line, not the bare reference.
+
+    A reviewer shown `'new_decision_2026'` cannot tell "superseded by X" from "never superseded
+    by X"; the sentence is what they judge.
+
+    Red: baseline, `tests/test_fix.py::test_propose_fixes_shows_the_sentence_that_states_the_edge`
+    failed with `evidence='new_decision_2026'`; target `recall.fix.propose_fixes`, which passed
+    the reference where the field promised the matched phrase.
+    """
+    _corpus(tmp_path, {
+        "old.md": "# old\n\nThe first call. Superseded by\n[[new_decision_2026]] after the review.",
+        "new_decision_2026.md": "# new\n\nthe current decision",
+    })
+    proposals, unfixable = propose_fixes(tmp_path)
+    assert (proposals, unfixable) == ([Proposal(
+        edit_file="new_decision_2026.md",
+        target="old.md",
+        evidence_file="old.md",
+        evidence="Superseded by [[new_decision_2026]] after the review.",
+    )], [])
+
+
+def test_a_proposal_id_names_the_edge_and_the_sentence_a_reviewer_read():
+    """An id from a dry run must not come to select a different edge, nor a changed sentence.
+
+    Red: mutation of `recall.fix.Proposal.id` hashing only `edit_file` and `target`:
+    `tests/test_fix.py::test_a_proposal_id_names_the_edge_and_the_sentence_a_reviewer_read`
+    failed at the last assertion (the two ids were equal).
+    """
+    base = Proposal("new.md", "old", "new.md", "This supersedes [[old]].")
+    assert base.id == Proposal("new.md", "old", "new.md", "This supersedes [[old]].").id
+    assert len(base.id) == 10 and int(base.id, 16) >= 0
+    assert base.id != Proposal("new.md", "older", "new.md", "This supersedes [[old]].").id
+    assert base.id != Proposal("new.md", "old", "new.md", "This never supersedes [[old]].").id
+
+
+def test_apply_proposal_refuses_an_edge_that_closes_a_cycle(tmp_path):
+    """`b supersedes c`, `c supersedes a`; declaring `a supersedes b` would close the loop.
+
+    Lint reported such a cycle only after the write, and search abstains on every member.
+
+    Red: baseline, `tests/test_fix.py::test_apply_proposal_refuses_an_edge_that_closes_a_cycle`
+    failed with `DID NOT RAISE UnreadableMemo` and `a.md` rewritten; target
+    `recall.fix.apply_proposal`, which had no cycle check.
+    """
+    from recall.lint import lint_corpus
+
+    _corpus(tmp_path, {
+        "a.md": "# a\n",
+        "b.md": "---\nsupersedes: c.md\n---\n# b\n",
+        "c.md": "---\nsupersedes: a.md\n---\n# c\n",
+    })
+    before = (tmp_path / "a.md").read_bytes()
+    with pytest.raises(UnreadableMemo, match=r"cycle.*\(b -> c -> a\)"):
+        apply_proposal(tmp_path, Proposal("a.md", "b", "a.md", "This supersedes [[b]]."))
+    assert (tmp_path / "a.md").read_bytes() == before
+    assert not any(i.code == "supersession-cycle" for i in lint_corpus(tmp_path))
+
+
+def _ids(capsys, root):
+    main(["lint", str(root), "--fix"])
+    out = capsys.readouterr().out
+    proposals, _ = propose_fixes(root)
+    return out, {p.edit_file: p.id for p in proposals}
+
+
+def _two_edges(root):
+    _corpus(root, {
+        "aaa_2026-05-01.md": "Supersedes [[zzz_2026-04-01]].\n",
+        "zzz_2026-04-01.md": "the older one\n",
+        "bbb_2026-05-01.md": "Supersedes [[yyy_2026-04-01]].\n",
+        "yyy_2026-04-01.md": "the other older one\n",
+    })
+
+
+def test_lint_fix_dry_run_lists_each_edge_with_its_id_and_writes_nothing(tmp_path, capsys):
+    """Red: mutation printing the proposal line without `[{p.id}]` in
+    `recall.cli_commands.lint_check._cmd_lint`:
+    `tests/test_fix.py::test_lint_fix_dry_run_lists_each_edge_with_its_id_and_writes_nothing`
+    failed at the assertion that the id is on the proposal's line.
+    """
+    _two_edges(tmp_path)
+    before = {p.name: p.read_bytes() for p in tmp_path.glob("*.md")}
+    out, ids = _ids(capsys, tmp_path)
+    for name in ("aaa_2026-05-01.md", "bbb_2026-05-01.md"):
+        assert f"[{ids[name]}] {name}: + supersedes:" in out
+    assert "Supersedes [[zzz_2026-04-01]]." in out, "the sentence is shown, not the bare name"
+    assert {p.name: p.read_bytes() for p in tmp_path.glob("*.md")} == before
+
+
+def test_lint_fix_apply_writes_only_the_selected_edge(tmp_path, capsys):
+    """Red: mutation looping over every proposal rather than the selection in
+    `recall.cli_commands.lint_check._cmd_lint` (`for p in proposals:`):
+    `tests/test_fix.py::test_lint_fix_apply_writes_only_the_selected_edge` failed at the
+    summary line, the run having written both edges.
+    """
+    _two_edges(tmp_path)
+    _out, ids = _ids(capsys, tmp_path)
+    main(["lint", str(tmp_path), "--fix", "--apply", ids["aaa_2026-05-01.md"]])
+    out = capsys.readouterr().out
+    assert "wrote 1 edge(s), skipped 0; 1 not selected." in out
+    meta, _ = parse_frontmatter((tmp_path / "aaa_2026-05-01.md").read_text(encoding="utf-8"))
+    assert meta["supersedes"] == "zzz_2026-04-01"
+    assert "supersedes:" not in (tmp_path / "bbb_2026-05-01.md").read_text(encoding="utf-8")
+
+
+def test_a_bare_apply_writes_nothing(tmp_path, capsys):
+    """`--apply` alone used to write every proposal; now it names nothing, so it is refused.
+
+    Red: baseline, `tests/test_fix.py::test_a_bare_apply_writes_nothing` failed with `DID NOT
+    RAISE SystemExit`, both edges written; target `recall.cli_commands.lint_check._cmd_lint`.
+    """
+    _two_edges(tmp_path)
+    before = {p.name: p.read_bytes() for p in tmp_path.glob("*.md")}
+    with pytest.raises(SystemExit) as exc:
+        main(["lint", str(tmp_path), "--fix", "--apply"])
+    assert exc.value.code == 2
+    assert "Nothing was written" in capsys.readouterr().err
+    assert {p.name: p.read_bytes() for p in tmp_path.glob("*.md")} == before
+
+
+def test_an_unknown_id_writes_nothing_at_all(tmp_path, capsys):
+    """One stale id refuses the whole selection, so no part of it is written.
+
+    Red: mutation dropping unknown ids instead of refusing (`unknown = []`) in
+    `recall.cli_commands.lint_check._cmd_lint`:
+    `tests/test_fix.py::test_an_unknown_id_writes_nothing_at_all` failed with `DID NOT RAISE
+    SystemExit`, `aaa_2026-05-01.md` having been rewritten.
+    """
+    _two_edges(tmp_path)
+    _out, ids = _ids(capsys, tmp_path)
+    before = {p.name: p.read_bytes() for p in tmp_path.glob("*.md")}
+    with pytest.raises(SystemExit) as exc:
+        main(["lint", str(tmp_path), "--fix", "--apply", f"{ids['aaa_2026-05-01.md']},0123456789"])
+    assert exc.value.code == 2
+    assert "no proposal 0123456789" in capsys.readouterr().err
+    assert {p.name: p.read_bytes() for p in tmp_path.glob("*.md")} == before
+
+
+def test_apply_without_fix_is_refused(tmp_path, capsys):
+    """Red: baseline, `tests/test_fix.py::test_apply_without_fix_is_refused` failed with `DID NOT
+    RAISE SystemExit` (a bare `--apply` without `--fix` was ignored); target
+    `recall.cli_commands.lint_check._cmd_lint`.
+    """
+    _two_edges(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        main(["lint", str(tmp_path), "--apply"])
+    assert exc.value.code == 2
+    assert "add --fix" in capsys.readouterr().err

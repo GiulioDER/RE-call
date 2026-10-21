@@ -119,3 +119,34 @@ def test_the_sidecar_and_paths_outside_the_corpus_cannot_be_edited(corpus: Path)
     for name in (".recall/x.md", "../outside.md", str(corpus / "new.md")):
         with pytest.raises(edit.EditRefused):
             edit.plan_edit(corpus, name, status="draft")
+
+
+def test_an_edit_that_closes_a_supersession_cycle_is_refused_in_the_preview(corpus: Path) -> None:
+    """`new.md` supersedes `older.md`; letting `older.md` supersede `new.md` would close a cycle.
+
+    The edit was refused for a self-edge only, so the cycle reached disk and `recall lint`
+    reported it afterwards, while search abstained on both memos.
+
+    Red: baseline, `tests/test_dashboard_edit.py::test_an_edit_that_closes_a_supersession_cycle_is_refused_in_the_preview`
+    failed with `DID NOT RAISE EditRefused`; target `recall.dashboard.edit.plan_edit`, which
+    refused self-edges and not cycles.
+    """
+    before = (corpus / "older.md").read_bytes()
+    with pytest.raises(edit.EditRefused, match=r"cycle.*\(new -> older\)"):
+        edit.plan_edit(corpus, "older.md", add_supersedes=("new.md",))
+    with pytest.raises(edit.EditRefused, match="cycle"):
+        edit.apply_edit(
+            corpus, "older.md", editor="giulio", note="tidy",
+            shown_sha="unused: the plan is refused first", now=NOW, add_supersedes=("new.md",),
+        )
+    assert (corpus / "older.md").read_bytes() == before
+
+
+def test_an_edit_that_closes_no_cycle_is_still_planned(corpus: Path) -> None:
+    """The cycle check must not refuse an ordinary second edge.
+
+    Passes on master; red by mutation of `recall.dashboard.edit._refuse_cycles` raising for every
+    added target: this test then failed with `EditRefused`.
+    """
+    plan = edit.plan_edit(corpus, "old.md", add_supersedes=("older.md",))
+    assert plan.summary == ("supersedes older.md",)

@@ -12,6 +12,20 @@ from recall.lint import DEFAULT_GLOB
 
 from recall.cli_commands._shared import _make_embedder
 
+#: What a bare `--apply` parses to. It used to mean "write every proposal", which put each edge the
+#: dry run listed into the corpus with nobody choosing it; it is refused now, with the new form.
+_NO_SELECTION = ""
+
+
+def _selected_ids(raw: str) -> list[str]:
+    """The proposal ids `--apply` names, in order, each once."""
+    ids: list[str] = []
+    for item in raw.split(","):
+        item = item.strip().lower()
+        if item and item not in ids:
+            ids.append(item)
+    return ids
+
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_lint = sub.add_parser(
@@ -36,8 +50,12 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     p_lint.add_argument(
         "--apply",
-        action="store_true",
-        help="with --fix, actually write the proposed edges to the memo files",
+        nargs="?",
+        const=_NO_SELECTION,
+        default=None,
+        metavar="IDS",
+        help="with --fix, write the edges you reviewed: the comma-separated ids the dry run "
+        "prints, e.g. --apply 3f2a91c0d4,77b1e0a9c2. Every other proposal is left unwritten.",
     )
     p_lint.add_argument(
         "--threshold",
@@ -70,6 +88,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 def _cmd_lint(args: argparse.Namespace) -> None:
     from recall.lint import lint_corpus
 
+    if args.apply is not None and not args.fix:
+        print("recall lint: --apply writes the edges --fix proposes; add --fix", file=sys.stderr)
+        raise SystemExit(2)
     try:
         issues = lint_corpus(args.path, glob=args.glob)
     except FileNotFoundError as exc:
@@ -86,32 +107,59 @@ def _cmd_lint(args: argparse.Namespace) -> None:
     _validated_emb: Embedder | None = None
 
     if args.fix:
-        from recall.fix import apply_proposal, propose_fixes
+        from recall.fix import Proposal, apply_proposal, propose_fixes
 
         proposals, unfixable = propose_fixes(args.path, glob=args.glob)
         print()
         for p in proposals:
-            print(f"  {p.edit_file}: + supersedes: {p.target}")
+            print(f"  [{p.id}] {p.edit_file}: + supersedes: {p.target}")
             print(f"      because {p.evidence_file} says {p.evidence!r}")
         for u in unfixable:
             print(f"  SKIP {u.file}: {u.reason}")
         print(f"\n{len(proposals)} edge(s) proposable, {len(unfixable)} need a human")
-        if args.apply and args.semantic:
+        selected: list[Proposal] = []
+        if args.apply is not None:
+            # Every id is checked before anything is written, so a typo or an id from an older
+            # dry run (the corpus moved, the sentence changed) writes nothing rather than part
+            # of a selection. An id hashes the edge and the sentence the reviewer read, so it
+            # cannot come to mean a different edge.
+            wanted = _selected_ids(args.apply)
+            if not wanted:
+                print(
+                    "recall lint: --apply needs the ids of the edges you reviewed, e.g. "
+                    "--apply <id>,<id> with ids from the list above. Nothing was written.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            by_id = {p.id: p for p in proposals}
+            unknown = [i for i in wanted if i not in by_id]
+            if unknown:
+                print(
+                    f"recall lint: no proposal {', '.join(unknown)} in {args.path} now. Re-run "
+                    f"without --apply and choose from the list it prints. Nothing was written.",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            selected = [by_id[i] for i in wanted]
+        if selected and args.semantic:
             # Resolve the embedder BEFORE writing. `--semantic` needs one, and dropping
             # argparse's `choices=` moved an unknown spelling's failure from "exit 2 before
             # anything happened" to "after apply_proposal has already rewritten the memos".
             # This is the only destructive path that resolved it late.
             _validated_emb = _make_embedder(args.embedder)
-        if not args.apply:
+        if args.apply is None:
             # Dry run by DEFAULT: this edits the user's own documents, and a tool that
             # rewrites your memory the first time you try it has earned distrust.
-            print("dry run — nothing written. Re-run with --apply to write these edges.")
+            print(
+                "dry run — nothing written. Review each edge, then write the ones you accept "
+                "with --apply <id>[,<id>...]."
+            )
         else:
             root = Path(args.path)
             written = 0
-            for p in proposals:
+            for p in selected:
                 try:
-                    apply_proposal(root, p)
+                    apply_proposal(root, p, glob=args.glob)
                 except ValueError as exc:
                     # One memo the writer refuses must not discard the rest of the run. The
                     # loop previously had no guard, so a single undecodable file aborted with
@@ -138,7 +186,10 @@ def _cmd_lint(args: argparse.Namespace) -> None:
                     print(f"  SKIP {p.edit_file}: {exc}")
                     continue
                 written += 1
-            print(f"wrote {written} edge(s), skipped {len(proposals) - written}.")
+            print(
+                f"wrote {written} edge(s), skipped {len(selected) - written}; "
+                f"{len(proposals) - len(selected)} not selected."
+            )
 
     chains = []
     if args.semantic:  # opt-in retrieval-based missing-edge check (needs DB + embedder)

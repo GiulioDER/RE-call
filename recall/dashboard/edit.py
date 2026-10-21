@@ -30,6 +30,7 @@ from pathlib import Path
 from recall.atomic_write import atomic_write_bytes
 from recall.dashboard.review import _DECISION_LOCK, ReviewRefused
 from recall.document import parse_document
+from recall.lint import describe_cycle, supersession_cycle_closed_by, supersession_graph_of
 from recall.frontmatter import (
     SupersedesDeclaresNothing,
     add_supersedes_target,
@@ -109,13 +110,45 @@ def current_values(root: Path, name: str) -> MemoValues:
     )
 
 
+def _corpus_files(root: Path) -> list[Path]:
+    """The memos an edit may name: every ``.md`` file under `root` outside a hidden directory."""
+    return [
+        path
+        for path in sorted(root.rglob("*.md"))
+        if path.is_file() and not any(part.startswith(".") for part in path.relative_to(root).parts)
+    ]
+
+
 def _corpus_names(root: Path) -> dict[str, list[str]]:
     names: dict[str, list[str]] = {}
-    for path in root.rglob("*.md"):
-        relative = path.relative_to(root)
-        if path.is_file() and not any(part.startswith(".") for part in relative.parts):
-            names.setdefault(supersedes_key(path.name), []).append(encodable_name(relative.as_posix()))
+    for path in _corpus_files(root):
+        names.setdefault(supersedes_key(path.name), []).append(encodable_name(path.relative_to(root).as_posix()))
     return names
+
+
+def _refuse_cycles(root: Path, path: Path, after: bytes, added: list[str]) -> None:
+    """Refuse an edit whose new `supersedes:` references would close a cycle.
+
+    Judged on the corpus as it would stand after the edit, this memo's removals included, so the
+    preview refuses what `recall lint` would report as `supersession-cycle` after the write. A
+    cycle makes search abstain on every memo in it.
+    """
+    if not added:
+        return
+    documents: list[tuple[str, dict[str, object]]] = []
+    for other in _corpus_files(root):
+        if other == path:
+            continue
+        try:
+            documents.append((other.name, dict(parse_document(other.read_text(encoding="utf-8-sig")).meta)))
+        except (UnicodeDecodeError, OSError):
+            continue  # lint reports an unreadable memo; it declares no edge anyone can follow
+    documents.append((path.name, dict(parse_document(after.decode("utf-8-sig", errors="replace")).meta)))
+    graph = supersession_graph_of(documents)
+    for target in added:
+        chain = supersession_cycle_closed_by(graph, path.name, target)
+        if chain is not None:
+            raise EditRefused(describe_cycle(supersedes_key(path.name), supersedes_key(target), chain))
 
 
 def _check_date(key: str, value: str) -> str:
@@ -144,6 +177,7 @@ def plan_edit(
     after = before
     summary: list[str] = []
     names = _corpus_names(root)
+    added: list[str] = []
 
     for target in remove_supersedes:
         changed = remove_supersedes_target(after, target)
@@ -170,7 +204,9 @@ def plan_edit(
         if changed is None:
             raise EditRefused(f"{corpus_name} already supersedes {matches[0]}")
         after = changed
+        added.append(matches[0])
         summary.append(f"supersedes {matches[0]}")
+    _refuse_cycles(root, path, after, added)
 
     dates: dict[str, str | None] = {}
     for key, value in (("valid_from", valid_from), ("valid_until", valid_until)):
