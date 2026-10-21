@@ -237,13 +237,16 @@ ANSWER_PROFILES: tuple[str, ...] = ("plain", "dated")
 #: the safety contract (untrusted data, citations, the envelope) still comes first. Library
 #: authored and fixed, like `SYSTEM_PROMPT`: no corpus value is interpolated into either.
 #:
-#: Adapted from vectorize-io/hindsight's reader contract and measured twice before it became the
-#: default, same evidence and model per arm: on 120 LongMemEval-S questions (DeepSeek v4.1 flash)
-#: accuracy rose 0.525 to 0.633 (paired +0.108, 95% CI +0.033 to +0.183), mostly because the plain
-#: prompt declined questions its evidence covered; on 720 LoCoMo questions (Gemini 2.5 Flash) 0.424
-#: to 0.608 (+0.185, CI +0.150 to +0.221), mostly by dating temporal answers (0.12 to 0.51). The
-#: question's date on its own moved nothing measurable, so the date and these instructions ship
-#: together. The text is byte for byte the measured one; change it only with a new measurement.
+#: Adapted from the reader contract of vectorize-io/hindsight
+#: (https://github.com/vectorize-io/hindsight, MIT licence, Copyright (c) 2025 Vectorize AI, Inc.;
+#: credited in THIRD_PARTY_NOTICES.md and docs/PRIOR_ART.md). It was measured twice before it
+#: became the default, same evidence and model per arm: on 120 LongMemEval-S questions (DeepSeek
+#: v4.1 flash) accuracy rose 0.525 to 0.633 (paired +0.108, 95% CI +0.033 to +0.183), mostly because
+#: the plain prompt declined questions its evidence covered; on 720 LoCoMo questions (Gemini 2.5
+#: Flash) 0.424 to 0.608 (+0.185, CI +0.150 to +0.221), mostly by dating temporal answers (0.12 to
+#: 0.51). The question's date on its own moved nothing measurable, so the date and these
+#: instructions ship together. The text is byte for byte the measured one; change it only with a
+#: new measurement.
 DATED_READER_CONTRACT = """
 
 How to read the evidence:

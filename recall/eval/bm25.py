@@ -10,7 +10,8 @@ or whether keyword matching would have got there alone.
 every published number in this repo should not be a package that can silently change its
 scoring between releases. The formula is 40 lines and is written out below.
 
-Scoring — the Lucene/Robertson variant::
+Scoring, the Lucene/Robertson variant (S. Robertson and H. Zaragoza, "The Probabilistic
+Relevance Framework: BM25 and Beyond", Foundations and Trends in Information Retrieval, 2009)::
 
     score(D, Q) = Σ  IDF(q) · f(q,D) · (k1 + 1) / (f(q,D) + k1 · (1 − b + b · |D| / avgdl))
                  q∈Q
