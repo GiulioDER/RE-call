@@ -882,8 +882,8 @@ def test_the_audit_corpus_proposes_no_edge(tmp_path):
     """The two sentences that demoted a current memo, as files.
 
     Red: baseline, `tests/test_fix.py::test_the_audit_corpus_proposes_no_edge` failed with two
-    proposals, onto `deploy_plan_2026-06-01` and `rollback_plan_2026-07-01`; target
-    `recall.fix._accept` through `propose_fixes`.
+    proposals, `bench_note_2026-06-05.md` and `rollback_plan_2026-07-01.md` each gaining
+    `supersedes: deploy_plan_2026-06-01`; target `recall.fix._accept` through `propose_fixes`.
     """
     _corpus(tmp_path, AUDIT_CORPUS)
     proposals, _ = propose_fixes(tmp_path)
