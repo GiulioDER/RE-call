@@ -243,7 +243,9 @@ def init_event(events: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
 def result_event(events: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """Return the terminal ``result`` event."""
 
-    for event in reversed(events):
+    # `events[::-1]` rather than `reversed(events)`: mypy 2.4.0 types the reversed iterator's
+    # items as Any here and refuses returning one (no-any-return); a slice keeps the item type.
+    for event in events[::-1]:
         if event.get("type") == "result":
             return event
     return None
