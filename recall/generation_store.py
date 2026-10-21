@@ -100,6 +100,10 @@ CALIBRATION_RESOLUTION_TTL_S = 30.0
 
 #: How long a search reuses a calibration's near-miss coverage report before reading it again.
 _COVERAGE_TTL_S = 300.0
+#: At most this many index misses per query are confirmed against chunk text. Each confirmation is
+#: an unindexed scan of the generation's text, so the cap bounds a query's cost; a miss beyond it
+#: stays unknown, which is what the index alone answered, so the cap never answers more.
+_CONFIRM_LIMIT = 8
 
 
 class GenerationStore(PgVectorStore):
@@ -672,7 +676,8 @@ class GenerationStore(PgVectorStore):
         (`README.md` is the one lexeme 'readme.md', never 'readm'), so a term that occurs only
         inside one has no lexeme of its own, while the lite tokenizer splits on the punctuation and
         finds it. The confirmation is a case-insensitive whole-word match bounded by any
-        non-alphanumeric character, and it runs only for the few tokens the index could not find.
+        non-alphanumeric character, and it runs only for the tokens the index could not find, at most
+        `_CONFIRM_LIMIT` per query, because each is an unindexed scan of the generation's text.
         Tokens hold letters and digits only (`entity_like_tokens`), so none can carry regex syntax.
         """
         if not tokens:
@@ -715,9 +720,10 @@ class GenerationStore(PgVectorStore):
             )
             ORDER BY t.ord
         """
-        params["tokens"] = missing
+        checked, unchecked = missing[:_CONFIRM_LIMIT], missing[_CONFIRM_LIMIT:]
+        params["tokens"] = checked
         absent = self._with_retry(lambda conn: conn.execute(confirm, params).fetchall())
-        return [str(row[0]) for row in absent]
+        return [str(row[0]) for row in absent] + unchecked
 
     def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
         """The near-miss coverage measured with `calibration_id` (`recall.near_miss`), or None.

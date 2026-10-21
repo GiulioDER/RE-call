@@ -17,6 +17,8 @@ Invariants and the failure each one catches:
 - P7 a term the default parser keeps only inside a compound token (a file name, a host, a dotted
   name) is known, as the lite tokenizer, which splits on the punctuation, finds it.
 - P8 a view bound to another tenant never reads coverage the source store cached.
+- P9 at most `_CONFIRM_LIMIT` index misses per query are confirmed against the text (each is an
+  unindexed scan); a miss beyond the cap stays unknown, as the index alone answered.
 
 Node IDs, all in `tests/test_postgres_near_miss_parity.py`:
 P1 `test_p1_unknown_terms_reads_the_pinned_generation_vocabulary`,
@@ -26,7 +28,8 @@ P4 `test_p4_each_fit_records_lite_shaped_coverage`,
 P5 `test_p5_a_failing_measurement_never_withdraws_the_fit`,
 P6 `test_p6_search_carries_the_fits_coverage`,
 P7 `test_p7_a_term_inside_a_compound_token_is_known`,
-P8 `test_p8_a_tenant_view_starts_with_its_own_coverage_cache`.
+P8 `test_p8_a_tenant_view_starts_with_its_own_coverage_cache`,
+P9 `test_p9_text_confirmation_is_capped_per_query`.
 
 Red proof, 2026-10-21, on a Linux host (not a workstation) against a throwaway pg18 container, each
 mutation alone, the named test failing in the named assertion (exit 1, "1 failed", no error), then
@@ -54,6 +57,9 @@ error), then restored byte for byte and the four files the fixes touch green (30
   confirmation: "a term inside a compound token was reported unknown".
 - FU2 (P8) `_reset_tenant_state` no longer resetting `_coverage_cache`: "a tenant view read another
   tenant's cached coverage".
+- FU9 (P9, same day and host, after a security review of the confirmation's cost) every index miss
+  confirmed (`checked, unchecked = missing, []`): "more index misses were scanned than the cap
+  allows"; restored, this file and the unknown-term files green (25 passed).
 """
 
 from __future__ import annotations
@@ -259,3 +265,19 @@ def test_p8_a_tenant_view_starts_with_its_own_coverage_cache(parity_tenant) -> N
     finally:
         store.close()
         pool.close()
+
+
+@requires_db
+def test_p9_text_confirmation_is_capped_per_query(parity_tenant, monkeypatch) -> None:
+    tenant, manager = parity_tenant
+    embedder = _CarryEmbedder()
+    bodies = {**BODIES, "compound.md": b"see README.md and call api.VoyageAI.com"}
+    generation = _ready(manager, embedder, bodies, "v1")
+    monkeypatch.setattr("recall.generation_store._CONFIRM_LIMIT", 1)
+    store = GenerationStore(TEST_DSN, embedder.dim, tenant=tenant)
+    try:
+        with store.pin_generation(generation):
+            unknown = store.unknown_terms(["README", "VoyageAI", "QX7777"])
+    finally:
+        store.close()
+    assert unknown == ["VoyageAI", "QX7777"], "more index misses were scanned than the cap allows"
