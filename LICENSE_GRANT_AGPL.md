@@ -31,7 +31,8 @@ fixed commits, and naming them removes any doubt about their terms.
 | Agent Memory Leaderboard Cycle 2, Textual Full 1 (tag `aml-c2-full1-textual`) | `3eb447c4ea1f04f41f941ad8f089c9a02106e763` |
 | Agent Memory Leaderboard Cycle 2, Textual Full 1, early build (tag `aml-c2-full1-textual-early`) | `efb79146821ba751bb56694c7f04d55105823c02` |
 | Agent Memory Leaderboard Cycle 2, Full 2 build | `225e7509eedf130314e1eab2b06a412d14dc1aae` |
-| Agent Memory Leaderboard Cycle 2, Full 2 build, Multimodal and Textual (tag `aml-c2-full2-b712ec33`) | `b712ec3304404e6016d02229afb3e3e6df9715f0` |
+| Agent Memory Leaderboard Cycle 2, Full 2 build (tag `aml-c2-full2-b712ec33`) | `b712ec3304404e6016d02229afb3e3e6df9715f0` |
+| Agent Memory Leaderboard Cycle 2, Full 2 build, Multimodal and Textual (tag `aml-c2-full2-625b7138`) | `625b71381c2f5c7de6d34c8dc5b9f45e08370b58` |
 
 The commercial license described in [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) remains
 available for every version.

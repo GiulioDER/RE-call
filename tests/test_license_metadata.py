@@ -97,6 +97,7 @@ POLYFORM_ERA_FIXED_COMMITS = {
     "efb79146821ba751bb56694c7f04d55105823c02": "aml-c2-full1-textual-early",
     "225e7509eedf130314e1eab2b06a412d14dc1aae": "aml-c2-full2 build",
     "b712ec3304404e6016d02229afb3e3e6df9715f0": "aml-c2-full2-b712ec33",
+    "625b71381c2f5c7de6d34c8dc5b9f45e08370b58": "aml-c2-full2-625b7138",
 }
 
 
