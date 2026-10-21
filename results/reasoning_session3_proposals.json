@@ -9,8 +9,7 @@
     "deterministic.contradictory_validity_windows",
     "deterministic.direct_textual_reference",
     "deterministic.explicit_version_naming",
-    "deterministic.repeated_decision_subject",
-    "deterministic.temporal_ordering"
+    "deterministic.repeated_decision_subject"
   ],
   "generation_id": "reasoning-session3-fixture-gen1",
   "pipeline_id": "reasoning-session3-pipeline-v1",
@@ -20,58 +19,12 @@
     "false_positive": 0,
     "precision": 1.0,
     "recall": 1.0,
-    "referral_rate": 0.5714285714285714,
-    "referred_proposals": 4,
+    "referral_rate": 0.4,
+    "referred_proposals": 2,
     "true_positive": 2
   },
-  "proposal_count": 8,
+  "proposal_count": 6,
   "proposals": [
-    {
-      "confidence": 0.64,
-      "explanation": "search_policy_v2.md has a later validity start than search_policy_v1.md for the same normalized entity search policy.",
-      "generation_id": "reasoning-session3-fixture-gen1",
-      "id": "ip_2c622e0e133d8b182d7beab1",
-      "metadata": {},
-      "model_id": "rules",
-      "object_id": "search_policy_v2.md",
-      "pipeline_id": "reasoning-session3-pipeline-v1",
-      "proposed_relation": "supersedes",
-      "provider_id": "recall.deterministic",
-      "provider_revision": "session3-v1",
-      "rule_id": "deterministic.temporal_ordering",
-      "source_evidence_ids": [
-        "rg_node_31f81f0b9c1bca497f2c1f0b",
-        "rg_node_5308fc792c80ebfd795a0998"
-      ],
-      "status": "requires_review",
-      "subject_id": "search_policy_v1.md",
-      "uncertainty": [
-        "temporal ordering alone is insufficient for promotion"
-      ]
-    },
-    {
-      "confidence": 0.64,
-      "explanation": "cache_policy_v2.md has a later validity start than cache_policy_v1.md for the same normalized entity cache policy.",
-      "generation_id": "reasoning-session3-fixture-gen1",
-      "id": "ip_4328a57eb6d5324d3006491f",
-      "metadata": {},
-      "model_id": "rules",
-      "object_id": "cache_policy_v2.md",
-      "pipeline_id": "reasoning-session3-pipeline-v1",
-      "proposed_relation": "supersedes",
-      "provider_id": "recall.deterministic",
-      "provider_revision": "session3-v1",
-      "rule_id": "deterministic.temporal_ordering",
-      "source_evidence_ids": [
-        "rg_node_00a36b44cc116824533b370c",
-        "rg_node_87ae3dd50795f293bae978b8"
-      ],
-      "status": "requires_review",
-      "subject_id": "cache_policy_v1.md",
-      "uncertainty": [
-        "temporal ordering alone is insufficient for promotion"
-      ]
-    },
     {
       "confidence": 0.78,
       "explanation": "cache_policy_v1.md and cache_policy_v2.md discuss cache policy in overlapping validity windows with opposing status language.",

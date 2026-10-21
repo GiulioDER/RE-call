@@ -63,9 +63,11 @@ def test_reasoning_session3_records_control_artifacts() -> None:
     assert artifact["precision_recall"]["recall"] == 1.0
     assert artifact["precision_recall"]["precision"] >= 0.5
     # Referrals are reported beside precision, never folded into it: the three asserted
-    # candidates are what precision is computed over, the four requires_review proposals are not.
+    # candidates are what precision is computed over, the two requires_review proposals are not.
+    # Two, not four, since temporal ordering stopped proposing again the edges the
+    # repeated-subject rule proposes (supersession audit 2026-10-21, finding 25d).
     assert artifact["precision_recall"]["asserted_proposals"] == 3
-    assert artifact["precision_recall"]["referred_proposals"] == 4
+    assert artifact["precision_recall"]["referred_proposals"] == 2
     assert artifact["rejected_proposal_examples"]
     assert artifact["provider_failure_matrix"] == {
         "malformed_output": 1,

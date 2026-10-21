@@ -75,6 +75,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `recall lint`, `recall lint --fix` and the dashboard's triage read at most 2,000 characters
   behind each cue to find its sentence when a sentence end lies within them, instead of the whole
   memo before it, with the same results as before.
+* The deterministic proposal rules behind `recall reasoning proposals` and `recall_rewrite_plan`
+  pair memos by different keys. A `status:` or `verdict:` line names a state, not a decision
+  subject, so two unrelated memos that both say "Status: done" are no longer paired, and a memo
+  whose only such line is a status now takes its file name (without folder or version) as its
+  subject, which the repeated-subject and contradictory-windows rules group by (so `flag_v1.md`
+  "Status: enabled" and `flag_v2.md` "Status: disabled" are now compared). A version is `v` and
+  digits after a separator, so `ipv4.md` and `ipv6.md` are not two versions of one memo. The
+  repeated-subject rule proposes only when both memos are dated and the later one starts strictly
+  later. Temporal ordering now groups by the file name without its version, in its folder, so it
+  pairs a file's versions whose decision lines are worded apart, and it no longer proposes again
+  an edge the repeated-subject rule proposes. The Session 3 control artifact drops its two
+  `temporal_ordering` proposals (referrals 4 to 2), and every other proposal id is unchanged.
 
 * **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
   from this one on are open source under the GNU Affero General Public License v3.0, which permits

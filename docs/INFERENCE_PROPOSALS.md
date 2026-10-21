@@ -74,14 +74,20 @@ demote it beneath the one it replaced.
 
 Session 3 implements high precision non model rules first:
 
-* Explicit version naming, for example `policy_v1.md` to `policy_v2.md`.
+* Explicit version naming, for example `policy_v1.md` to `policy_v2.md`. A version is `v` and
+  digits after a separator or as the whole name, so `ipv4.md` and `ipv6.md` are two names.
 * Direct textual references such as replaces, supersedes, deprecates, updates, or revises. The
   file that holds the sentence is the superseder, unless a document is named right before the cue
   ("new.md replaces old.md" in meeting notes): then the named document is, and the proposal is
   `requires_review`. A negated or conditional cue proposes nothing.
-* Repeated decision subjects with later validity starts.
-* Contradictory validity windows with overlapping windows and opposing status language.
-* Temporal ordering over the same normalized entity.
+* Repeated decision subjects with later validity starts. The subject is what a `decision:`,
+  `decided:`, `choice:` or `policy:` line names (a status or a verdict names a state, not a
+  subject), else the file name without its version; both memos must be dated, the later start
+  strictly later.
+* Contradictory validity windows with overlapping windows and opposing status language, grouped
+  by the same subject as the repeated-subject rule.
+* Temporal ordering over the same normalized entity, the file name without its version, in its
+  folder. An edge the repeated-subject rule already proposes is not proposed again under this rule.
 
 Explicit authored supersession edges remain more authoritative than inferred candidates. If an
 authored edge already exists, deterministic rules do not duplicate it.
