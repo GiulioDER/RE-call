@@ -27,5 +27,5 @@
   "0026_fact_ledger_retraction.sql": "174df1063bbf67bb49c401b35a03a3217be93fca060250ccd4e77d9dc4eb8c25",
   "0027_fact_ledger_gc_retraction.sql": "38ed985cfbe68182e0d0e8d1109a6c8219625a8337652c4d1d6fd2f10f50c8ee",
   "0028_validate_fact_ledger_retraction.sql": "3faefec7858ae66f3024bff0821d380895c3647685908b26218d61d6b2ddd9aa",
-  "0030_fact_current_table.sql": "de7012e9129384ec98dc7831cc7fc769fb81874131289fb0cd4b843556b82ee7"
+  "0030_fact_current_table.sql": "7e812917869f62c8b4ae1f8f92dd9a4787c2afd1389033122e3d2fe0539b8da2"
 }
