@@ -215,9 +215,14 @@ def current_facts_memory(
     failures: list[str] = []
     served = served_sources(store, failures=failures)
     ledger = _fact_backends(store)[0]
-    # One history snapshot serves both the projection and its supporting source names.
-    history = getattr(ledger, "events", None)
-    if history is not None:
+    # One snapshot serves both the projection and its supporting source names: the materialized
+    # current facts and the listed facts' live assertions where the ledger has them
+    # (`recall.fact_current`), else the history replayed.
+    view = getattr(ledger, "current_view", None)
+    history = None if callable(view) else getattr(ledger, "events", None)
+    if callable(view):
+        events, history = view(tenant_id=store.tenant, now=instant, served=served)
+    elif history is not None:
         history = tuple(event for event in history if event.tenant_id == store.tenant)
         events = project_current(history, instant, served)
     else:

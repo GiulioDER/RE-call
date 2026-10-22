@@ -867,9 +867,15 @@ class FactMaterializer(Protocol):
 
     Implementations must be idempotent by ``event.event_id``. The controller may invoke the
     same event again after a materialization failure so recovery never needs a second fact claim.
+    One may name the event types it takes in a ``materializes`` attribute (`reconcile` reads it);
+    without one it takes ``asserted`` events only.
     """
 
     def materialize(self, event: FactEvent) -> None: ...
+
+
+#: The event types `MaterializationRecovery.reconcile` enqueues for a materializer that names none.
+DEFAULT_MATERIALIZED_TYPES = frozenset({"asserted"})
 
 
 class FactMaterializationOutbox(Protocol):
@@ -950,11 +956,12 @@ class MaterializationRecovery:
         """
         if not isinstance(limit, int) or not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
+        wanted = getattr(self.materializer, "materializes", DEFAULT_MATERIALIZED_TYPES)
         ordered = sorted(events, key=lambda event: (_as_utc(event.created_at), event.event_id))
         for event in ordered:
             if event.tenant_id != self.tenant_id:
                 raise ValueError("ledger event tenant mismatch")
-            if event.event_type == "asserted":
+            if event.event_type in wanted:
                 self.outbox.enqueue(event)
         return self.run_once(limit=limit, now=now)
 
@@ -1417,16 +1424,19 @@ class ProvenanceController:
                 old_ids.append(event.fact_id)
         return tuple(old_ids)
 
-    def _in_force(self) -> _ConflictSet:
+    def _in_force(self, claim: AtomicFact) -> _ConflictSet:
         """The tenant's values in force at some instant, with the index that says when.
 
-        From the ledger's own events where it exposes them, as `apply_assertion` reads them;
-        a ledger that exposes only `current` is read through it, so its conflict set is what
-        holds now. `current` is read first in every case: it is the read authorization fails
-        closed on, so a ledger whose `current` cannot answer is refused (pinned by
-        `test_ledger_read_outage_fails_closed_without_asserting` and the provenance evaluation's
-        `ledger_outage` case). One clock reading, and the absent set computed once, inside the
-        fail-closed read; the second was computed outside it (2026-10-21 audit, CODE-004).
+        From the ledger's own events where it exposes them, as `apply_assertion` reads them: the
+        claim's conflict key's history where the ledger offers it (`conflict_history`, answered
+        from the materialized current facts, `recall.fact_current`), since nothing outside that
+        key bears on the claim, else every event. A ledger that exposes only `current` is read
+        through it, so its conflict set is what holds now. `current` is read first in every case:
+        it is the read authorization fails closed on, so a ledger whose `current` cannot answer is
+        refused (pinned by `test_ledger_read_outage_fails_closed_without_asserting` and the
+        provenance evaluation's `ledger_outage` case). One clock reading, and the absent set
+        computed once, inside the fail-closed read; the second was computed outside it
+        (2026-10-21 audit, CODE-004).
         """
         instant = self.now()
         current = (
@@ -1434,7 +1444,11 @@ class ProvenanceController:
             if self.served_sources is None
             else self.ledger.current(tenant_id=self.tenant_id, now=instant, served=self.served_sources)
         )
-        history = getattr(self.ledger, "events", None)
+        reader = getattr(self.ledger, "conflict_history", None)
+        history: object = (
+            reader(tenant_id=self.tenant_id, fact=claim) if callable(reader)
+            else getattr(self.ledger, "events", None)
+        )
         if history is None or not isinstance(history, Sequence):
             return _ConflictSet(current, fact_supersession(current), None, frozenset(), instant)
         events = [event for event in history if event.tenant_id == self.tenant_id]
@@ -1540,7 +1554,7 @@ class ProvenanceController:
             # instant of the claim's window, not only the ones current now. Deriving it from
             # `current` let an expired or future value block an authored correction, because the
             # link that names it was never read (2026-10-21 supersession audit, P2 #12).
-            in_force = self._in_force()
+            in_force = self._in_force(request.claim)
         except Exception as exc:  # BROAD-CATCH: fail-closed
             # The read that establishes the conflict set is part of authorization.  Treating a
             # failed read as an empty set would turn an outage into an authorization bypass, so

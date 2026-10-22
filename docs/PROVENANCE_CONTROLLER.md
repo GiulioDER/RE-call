@@ -118,7 +118,8 @@ claiming is recoverable when the lease expires. The controller enqueues and clai
 calling the materializer, so a successful replay never creates a second fact event.
 
 If a process crashes after the ledger commit but before the outbox insert, a recovery job calls
-`MaterializationRecovery.reconcile(ledger.events)`. It re-enqueues only immutable asserted events in
+`MaterializationRecovery.reconcile(ledger.events)`. It re-enqueues the immutable events of the types
+the materializer names in its `materializes` attribute (asserted events when it names none) in
 canonical order and then runs the same bounded delivery pass. This closes the delivery gap without
 granting the recovery job authority to assert facts.
 
@@ -154,6 +155,30 @@ corpus identity, so changing credentials rewires the deployment without rebuildi
 generations. The interactive question surface offers this as an optional field for existing
 PostgreSQL installs; leaving it blank preserves legacy single-role behavior. Operators can also add
 it to a saved wizard JSON or use the grant CLI for an explicitly managed deployment.
+
+## Materialized current facts
+
+A read used to decode and resolve the tenant's whole history, and a write's conflict check did so
+twice more. Migration 0030 adds three derived tables
+(`recall.fact_current`): `recall_fact_current_events` files every ledger event under the conflict
+key it bears on, `recall_fact_current` holds one row per effective interval of each applied,
+unretracted assertion (its own window less the windows of the successors that hide it, so a
+retroactive correction splits an open-ended fact into two rows), and `recall_fact_current_state`
+marks a tenant whose tables may not answer. They hold ids and hashes only, never a fact value. The
+rows of a key are computed by the ledger's own rule functions over that key's events, so the tables
+are always rebuildable from the ledger.
+
+`current()` and the conflict check (`ProvenanceController` through `conflict_history`, and each
+ledger's `apply_assertion` under the key's lock) read the tables only when, in one snapshot, they
+file every event the ledger holds for the tenant and every id they name still resolves; otherwise
+they replay the history, which is the definition the tables must equal. A lag falls back to replay
+rather than failing closed because the replay can never answer differently, and a lag is routine:
+an older build writing the same database feeds nothing. `PostgresFactLedger` and `LiteFactLedger`
+materialize what each append wrote inside its own transaction, in a savepoint, so a materialization
+failure leaves the tables behind and never fails the append. `recall provenance rebuild` rebuilds a
+tenant from its ledger; `--reconcile` files only what the tables lack (through the outbox and
+`MaterializationRecovery` on PostgreSQL); `--check` reports. An event that names a fact of another
+conflict key, which no write path produces, puts the tenant in replay until a rebuild.
 
 ## Failure behavior
 

@@ -89,7 +89,7 @@ removal.
 | `recall check` | Validate one memo, optionally in strict mode. |
 | `recall calibrate` | Fit an abstention threshold from a labeled query file (legacy single-shot form). |
 | `recall calibration` | Calibration artifact lifecycle (`calibrate`, `carry-forward`, `drift`, `auto`, `list`, `show`, `export`, `import`), the reported near-miss certificate (`near-miss`), and the served versus exact maximum diagnostic (`served-gap`). |
-| `recall provenance` | Apply structured facts through the deterministic provenance controller, or inspect the current fact projection (`apply`, `current`). |
+| `recall provenance` | Apply structured facts through the deterministic provenance controller, inspect the current fact projection, or rebuild the materialized current facts from the ledger (`apply`, `current`, `rebuild`). |
 | `recall backup` | Inspect, create, verify, and restore encrypted Aurora backups through the explicit `status`, `create`, `verify`, and `restore` workflows. |
 | `recall secret` | `verify`: verify that every running ECS task reports the intended nonsecret secret version identifiers. |
 | `recall idempotency` | `reconcile`: record an operator verified mutation result after a replay result was lost. |
