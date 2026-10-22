@@ -55,6 +55,8 @@ the named assertion, then restored and green (`recall_hooks/auditor_brief.py` un
   timeout: the hard stop still cuts the launch, but "the log does not name the slow source".
 - H14 `...::test_budget_enforced_with_slow_matching`: the hard stop's `worker.join()` without a
   timeout: "the hook waited 3.0s on a slow stage".
+- H15 `...::test_warm_command_fills_the_cache`: `warm` mutated to load without `cache_file`: the
+  next launch parses a memo, the stub raises, and "the hook printed nothing".
 The budget has two layers on purpose (the stages' own deadlines, 0.1 s early, and the hard stop),
 so H13 and H14 each prove one; removing either timeout alone leaves the other test green.
 """
