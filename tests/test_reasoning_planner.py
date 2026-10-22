@@ -153,6 +153,11 @@ def test_planner_keeps_contradiction_check_for_relevant_contradiction_proposal()
 
     Red proof: the pre-fix planner recorded all six operations, so the exact relevant schedule
     fails before the fix. The assertion targets the production planner, not a test double.
+
+    The schedule has no `search_missing_intermediate_evidence` since finding 25b of the
+    2026-10-21 supersession audit (commit 1e89417fa): both memos start the same day, so no
+    `supersedes` proposal orders them, and that step runs only for one. Before it, the
+    repeated-subject rule proposed one anyway, its direction chosen by file-name order.
     """
     left = _chunk("left", "feature_left.md", "decision: feature. Status: enabled.")
     right = _chunk("right", "feature_right.md", "decision: feature. Status: disabled.")
@@ -169,7 +174,6 @@ def test_planner_keeps_contradiction_check_for_relevant_contradiction_proposal()
 
     assert [step.operation for step in plan.trace.expansion_steps] == [
         "compare_candidate_memories",
-        "search_missing_intermediate_evidence",
         "check_temporal_consistency",
         "check_contradiction",
     ]
