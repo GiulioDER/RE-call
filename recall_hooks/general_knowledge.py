@@ -26,6 +26,7 @@ one log.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -90,14 +91,21 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     Absent means ENABLED, so installing the corpus is what turns the feature on and
     `enabled: false` is the one switch that turns it off. A value of the wrong type falls back to
     its default rather than raising, for the same fail-open reason as the reader.
+
+    The types are checked, not coerced: `bool("false")` is True, so coercing would turn a
+    quoted `"false"` in a hand-edited config into the opposite of what its author meant. Only a
+    real `bool` sets `enabled`, and only a finite int or float (never a bool, never NaN or
+    infinity) sets `min_score`.
     """
     block = (config or {}).get("general_knowledge")
     block = block if isinstance(block, dict) else {}
-    try:
-        min_score = float(block.get("min_score", 0.0))
-    except (TypeError, ValueError):
+    enabled = block.get("enabled", True)
+    if not isinstance(enabled, bool):
+        enabled = True
+    min_score = block.get("min_score", 0.0)
+    if isinstance(min_score, bool) or not isinstance(min_score, (int, float)) or not math.isfinite(min_score):
         min_score = 0.0
-    return {"enabled": bool(block.get("enabled", True)), "min_score": min_score}
+    return {"enabled": enabled, "min_score": float(min_score)}
 
 
 def load_settings() -> dict[str, Any]:
@@ -133,7 +141,10 @@ def _trigger(raw: Any) -> Trigger | None:
     if kind == "command_regex" and value not in _COMPILED:
         try:
             _COMPILED[value] = re.compile(value)
-        except re.error:
+        except (re.error, OverflowError, RecursionError):
+            # Not only `re.error`: a repeat count past the engine's limit raises OverflowError and
+            # a deeply nested group raises RecursionError. Left to escape they would reach
+            # `load_index`'s outer catch and empty the whole index for one bad trigger.
             return None
     return Trigger(kind, value)
 
