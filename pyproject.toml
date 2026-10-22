@@ -467,6 +467,7 @@ forbidden_modules = ["recall_mcp"]
 ignore_imports = [
     "recall.cli_commands.index_search -> recall_mcp.lifecycle",
     "recall.cli_commands.index_search -> recall_mcp.translation",
+    "recall.cli_commands.calibration_cmd -> recall_mcp.service",
     "recall.cli_commands.provenance_cmd -> recall_mcp.provenance",
     "recall.cli_commands.reasoning_cmd -> recall_mcp.graph_projection",
     "recall.cli_commands.reasoning_cmd -> recall_mcp.reasoning_admin",

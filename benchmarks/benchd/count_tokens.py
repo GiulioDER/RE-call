@@ -7,7 +7,8 @@ Two subcommands, no harness import, stdlib plus optional tiktoken:
 
         Recomputes answerer and judge token usage from the run's traces by re-rendering the
         harness's exact prompt templates (copied verbatim below from
-        benchd_harness/scoring/llm_judge.py, clone of 2026-08-23). Counts with tiktoken's
+        benchd_harness/scoring/llm_judge.py, clone of 2026-08-23 at bd4824fe; benchdai/harness,
+        MIT licence, see benchmarks/benchd/NOTICE.md). Counts with tiktoken's
         o200k_base when installed (the gpt-4o-mini tokenizer), otherwise falls back to the
         harness's own estimator (words * 4 // 3) and says so. Prints totals, per-question means,
         the recall-token distribution that feeds Bench'd's BMI efficiency term, and a linear
@@ -21,6 +22,9 @@ Two subcommands, no harness import, stdlib plus optional tiktoken:
 
 Prices default to gpt-4o-mini list prices in USD per million tokens as of 2026-08-23
 (re-check at openrouter.ai/openai/gpt-4o-mini before trusting a projection).
+
+Prior work: the prompt templates are the Bench'd harness's own (benchdai/harness at bd4824fe,
+MIT, attribution in benchmarks/benchd/NOTICE.md); the token counting around them is new here.
 """
 
 from __future__ import annotations

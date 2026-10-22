@@ -1,4 +1,10 @@
-"""Learned sparse (SPLADE) retrieval: encoder, identity, and pruning."""
+"""Learned sparse (SPLADE) retrieval: encoder, identity, and pruning.
+
+SPLADE is T. Formal, B. Piwowarski and S. Clinchant, "SPLADE: Sparse Lexical and Expansion Model
+for First Stage Ranking", SIGIR 2021, with the revised pooling of T. Formal, C. Lassance,
+B. Piwowarski and S. Clinchant, "SPLADE v2: Sparse Lexical and Expansion Model for Information
+Retrieval", arXiv:2109.10086, 2021.
+"""
 
 from __future__ import annotations
 

@@ -82,6 +82,7 @@ Lite currently requires the source build; the published `0.14.0` wheel predates 
 | [ENTERPRISE_RAG_SUBMISSION.md](ENTERPRISE_RAG_SUBMISSION.md) | EnterpriseRAG-Bench answer artifacts, score summaries, and reproduction steps for leaderboard review. |
 | [AML_CODING_MULTI_VIEW_PLAN.md](AML_CODING_MULTI_VIEW_PLAN.md) | Active plan for a raw-first, typed multi-view Agent Memory Leaderboard Coding experiment sequence. |
 | [RECALL_HOSTED_INTEGRATION.md](RECALL_HOSTED_INTEGRATION.md) | Hosted AML Add/Search contract, including the experimental ordered multimodal variants and model eligibility boundary. |
+| [AML_MULTIMODAL_FULL2_DISCLOSURE.md](AML_MULTIMODAL_FULL2_DISCLOSURE.md) | The version and method disclosure registered for the second AML Multimodal Full run (`625b7138`). |
 | [RAG_TRAINING_STUDY.md](RAG_TRAINING_STUDY.md) | When fine-tuning embeddings helps, and when it does not. |
 | [ENTAILMENT_SUPERSESSION_STUDY.md](ENTAILMENT_SUPERSESSION_STUDY.md) | Near-miss abstention, entailment (historical: the judge was removed), and write-time supersession. |
 | [their-harness-parity.md](their-harness-parity.md) | Running RE-call inside Mem0's benchmark harness. |

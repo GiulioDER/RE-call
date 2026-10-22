@@ -8,7 +8,10 @@ from collections.abc import Callable
 
 from recall.calibration_v2 import CalibrationRepository
 from recall.generations import GenerationManager, NoActiveGeneration
+from recall.observability import get_logger
 from recall.store import PgVectorStore
+
+_log = get_logger("mcp.status")
 
 
 class JobLedger:
@@ -100,10 +103,46 @@ def calibration_status(store: PgVectorStore) -> dict[str, object]:
     if not matching:
         matching = [item for item in records if str(item.get("generation_id")) == generation_id]
     record = repository.show_record(str(matching[0]["calibration_id"])) if matching else {}
+    message = str(record.get("certification_reason", ""))
+    coverage: dict[str, object] = {}
+    if record:
+        from recall.near_miss import coverage_summary
+
+        # The same report, key and message as lite status (`recall.lite.calibration.status_report`);
+        # a calibration measured at no fit (a carried one) reads as unavailable and provisional.
+        report, summary = coverage_summary(repository.near_miss_coverage, str(record["calibration_id"]))
+        coverage = {"near_miss_coverage": report}
+        message += "; " + summary
     return {
         "tenant": store.tenant,
         "generation_id": generation_id,
         "status": resolution,
-        "message": str(record.get("certification_reason", "")),
+        "message": message,
         **record,
+        **coverage,
+        **(_near_miss_status(repository, str(record["calibration_id"])) if record else {}),
+    }
+
+
+def _near_miss_status(
+    repository: CalibrationRepository, calibration_id: str
+) -> dict[str, object]:
+    """The calibration's near-miss certificate, reported beside it. Read only, fail-open.
+
+    `resolution` above is computed before this runs and nothing here can change it: the
+    certificate is a report about the threshold, never a gate on it (`recall.near_miss_certificate`).
+    """
+    from recall.near_miss_certificate import CERTIFICATE_POPULATION, describe
+
+    try:
+        report = repository.near_miss_report(calibration_id)
+        summary = describe(report)
+    except Exception as exc:  # BROAD-CATCH: fail-open, an optional report never fails status
+        _log.warning("Near-miss certificate unavailable (%s)", type(exc).__name__)
+        report = None
+        summary = "near-miss certificate unavailable; provisional for in-vocabulary near-misses"
+    return {
+        "certificate_population": CERTIFICATE_POPULATION,
+        "near_miss_certificate": report,
+        "near_miss_certificate_summary": summary,
     }

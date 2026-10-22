@@ -1,0 +1,321 @@
+[
+  {
+    "name": "plain_function",
+    "source": "import os\n\n\ndef add(a, b):\n    return a + b\n",
+    "expect": [
+      {
+        "symbol": "add",
+        "start_line": 4,
+        "end_line": 5,
+        "sha": "8f75a68646c879fd0cff5c02708c010fb1c01d67ef9930d4e419106feb7897aa"
+      }
+    ],
+    "file_sha": "573d527de9f14490011672cfde4b6f6861fdd3fd5cc26b951e056645b5ef2259",
+    "enclosing": [
+      {
+        "line": 1,
+        "symbol": null
+      },
+      {
+        "line": 5,
+        "symbol": "add"
+      }
+    ]
+  },
+  {
+    "name": "class_with_methods",
+    "source": "class Pool:\n    size = 3\n\n    def lease(self):\n        return 1\n\n    async def release(self):\n        return 2\n",
+    "expect": [
+      {
+        "symbol": "Pool",
+        "start_line": 1,
+        "end_line": 8,
+        "sha": "69f6485a9a27801424f33c7a9fa1afc9e837875cf6b8670c736500a38c1c2fe4"
+      },
+      {
+        "symbol": "Pool.lease",
+        "start_line": 4,
+        "end_line": 5,
+        "sha": "fe61b35a9d9c5074955920e704cf446f913e8814c368f970a8842bedabb4f667"
+      },
+      {
+        "symbol": "Pool.release",
+        "start_line": 7,
+        "end_line": 8,
+        "sha": "f2d54aaa000ec3252e3618a6abc247ff53cde8e2b1ef2275ddbef1cf70ed8c0f"
+      }
+    ],
+    "file_sha": "0dbeaa1a625041b662f49b9bd288714a12d13def14bbb58d2f6f1546336d3911",
+    "enclosing": [
+      {
+        "line": 2,
+        "symbol": "Pool"
+      },
+      {
+        "line": 5,
+        "symbol": "Pool.lease"
+      },
+      {
+        "line": 8,
+        "symbol": "Pool.release"
+      }
+    ]
+  },
+  {
+    "name": "nested_function",
+    "source": "def outer(x):\n    def inner(y):\n        return y * 2\n    return inner(x)\n",
+    "expect": [
+      {
+        "symbol": "outer",
+        "start_line": 1,
+        "end_line": 4,
+        "sha": "4ea06c025910bd64b45e7e7b5f0452838ca5edd441d886455908a556e43f0377"
+      },
+      {
+        "symbol": "outer.inner",
+        "start_line": 2,
+        "end_line": 3,
+        "sha": "83ef6e30275d99061bca0e08d718de072db577787cbd311e012b230e23a4be8c"
+      }
+    ],
+    "file_sha": "6c9d916beebd11ac089af565a1218c44fc74f8ecedeb992cce2e0e046608a1c3",
+    "enclosing": [
+      {
+        "line": 3,
+        "symbol": "outer.inner"
+      },
+      {
+        "line": 4,
+        "symbol": "outer"
+      }
+    ]
+  },
+  {
+    "name": "decorated_function",
+    "source": "import functools\n\n\n@functools.lru_cache(maxsize=None)\n@staticmethod\ndef cached(n):\n    return n\n",
+    "expect": [
+      {
+        "symbol": "cached",
+        "start_line": 4,
+        "end_line": 7,
+        "sha": "2e30ca9e3de0d8f789d85b5997add81ed4108be64000124201a01ff3378a4efe"
+      }
+    ],
+    "file_sha": "b431cd3d1c5d3c1842814c2a3900ccb7660a12db14a1912764add657d8762f1d",
+    "enclosing": [
+      {
+        "line": 4,
+        "symbol": "cached"
+      },
+      {
+        "line": 7,
+        "symbol": "cached"
+      },
+      {
+        "line": 2,
+        "symbol": null
+      }
+    ]
+  },
+  {
+    "name": "property_with_setter",
+    "source": "class Box:\n    @property\n    def value(self):\n        return self._v\n\n    @value.setter\n    def value(self, v):\n        self._v = v\n",
+    "expect": [
+      {
+        "symbol": "Box",
+        "start_line": 1,
+        "end_line": 8,
+        "sha": "85c8a9e77cdafbad55958c3a486a86d47cdcd03e211c7890246704c3d6e066ad"
+      },
+      {
+        "symbol": "Box.value",
+        "start_line": 2,
+        "end_line": 4,
+        "sha": "02756a7b98df8d024d807a3db4dd453042623c4e757692cc58533b853e04dd82"
+      },
+      {
+        "symbol": "Box.value#2",
+        "start_line": 6,
+        "end_line": 8,
+        "sha": "50d2ad046b247e959ce60827511d6f1fed2189969ddddc0cdef10c14daff343d"
+      }
+    ],
+    "file_sha": "bf3298ccaf57edb0472e1de42704fb98c1bd944d5ffd2edf9ac687806ff956d7",
+    "enclosing": [
+      {
+        "line": 3,
+        "symbol": "Box.value"
+      },
+      {
+        "line": 7,
+        "symbol": "Box.value#2"
+      },
+      {
+        "line": 5,
+        "symbol": "Box"
+      }
+    ]
+  },
+  {
+    "name": "conditional_definitions",
+    "source": "import sys\n\nif sys.platform == \"win32\":\n    def path_sep():\n        return \"\\\\\"\nelse:\n    def path_sep():\n        return \"/\"\n",
+    "expect": [
+      {
+        "symbol": "path_sep",
+        "start_line": 4,
+        "end_line": 5,
+        "sha": "7fc2fe980da6b48f3da5e58b47ef6aaeac36b9e432a90ce587071173cf6912f5"
+      },
+      {
+        "symbol": "path_sep#2",
+        "start_line": 7,
+        "end_line": 8,
+        "sha": "1e1cc88d209b8aeb6334d5a46064d86e2a0a3a03caf3a1fa6830f7d7a761b456"
+      }
+    ],
+    "file_sha": "e54907c3cfa12c294d102c7279da07bd2c4253274fbc9b219a341da1bfb61649",
+    "enclosing": [
+      {
+        "line": 5,
+        "symbol": "path_sep"
+      },
+      {
+        "line": 8,
+        "symbol": "path_sep#2"
+      },
+      {
+        "line": 3,
+        "symbol": null
+      }
+    ]
+  },
+  {
+    "name": "no_symbols",
+    "source": "X = 1\nY = 2\n",
+    "expect": [],
+    "file_sha": "e5f54d05467464b395ad307cab1ccd62201ca0c9f020b23e4689cc5f0367d623",
+    "enclosing": [
+      {
+        "line": 1,
+        "symbol": null
+      }
+    ]
+  },
+  {
+    "name": "crlf_line_endings",
+    "source": "class Pool:\r\n    size = 3\r\n\r\n    def lease(self):\r\n        return 1\r\n\r\n    async def release(self):\r\n        return 2\r\n",
+    "expect": [
+      {
+        "symbol": "Pool",
+        "start_line": 1,
+        "end_line": 8,
+        "sha": "69f6485a9a27801424f33c7a9fa1afc9e837875cf6b8670c736500a38c1c2fe4"
+      },
+      {
+        "symbol": "Pool.lease",
+        "start_line": 4,
+        "end_line": 5,
+        "sha": "fe61b35a9d9c5074955920e704cf446f913e8814c368f970a8842bedabb4f667"
+      },
+      {
+        "symbol": "Pool.release",
+        "start_line": 7,
+        "end_line": 8,
+        "sha": "f2d54aaa000ec3252e3618a6abc247ff53cde8e2b1ef2275ddbef1cf70ed8c0f"
+      }
+    ],
+    "file_sha": "0dbeaa1a625041b662f49b9bd288714a12d13def14bbb58d2f6f1546336d3911",
+    "enclosing": [
+      {
+        "line": 2,
+        "symbol": "Pool"
+      },
+      {
+        "line": 5,
+        "symbol": "Pool.lease"
+      },
+      {
+        "line": 8,
+        "symbol": "Pool.release"
+      }
+    ]
+  },
+  {
+    "name": "trailing_whitespace_only",
+    "source": "class Pool:\n    size = 3   \n\n    def lease(self):\n        return 1\t\n\n    async def release(self):\n        return 2\n",
+    "expect": [
+      {
+        "symbol": "Pool",
+        "start_line": 1,
+        "end_line": 8,
+        "sha": "69f6485a9a27801424f33c7a9fa1afc9e837875cf6b8670c736500a38c1c2fe4"
+      },
+      {
+        "symbol": "Pool.lease",
+        "start_line": 4,
+        "end_line": 5,
+        "sha": "fe61b35a9d9c5074955920e704cf446f913e8814c368f970a8842bedabb4f667"
+      },
+      {
+        "symbol": "Pool.release",
+        "start_line": 7,
+        "end_line": 8,
+        "sha": "f2d54aaa000ec3252e3618a6abc247ff53cde8e2b1ef2275ddbef1cf70ed8c0f"
+      }
+    ],
+    "file_sha": "0dbeaa1a625041b662f49b9bd288714a12d13def14bbb58d2f6f1546336d3911",
+    "enclosing": [
+      {
+        "line": 2,
+        "symbol": "Pool"
+      },
+      {
+        "line": 5,
+        "symbol": "Pool.lease"
+      },
+      {
+        "line": 8,
+        "symbol": "Pool.release"
+      }
+    ]
+  },
+  {
+    "name": "body_change",
+    "source": "class Pool:\n    size = 3\n\n    def lease(self):\n        return 10\n\n    async def release(self):\n        return 2\n",
+    "expect": [
+      {
+        "symbol": "Pool",
+        "start_line": 1,
+        "end_line": 8,
+        "sha": "ccb90c3989e49230f61483e1be02ca2132ac479736c5c7815f364775601289d8"
+      },
+      {
+        "symbol": "Pool.lease",
+        "start_line": 4,
+        "end_line": 5,
+        "sha": "02b10afdfe3f502fa025f97677b0b6652753fba241cf7e88602d0059cdcf0866"
+      },
+      {
+        "symbol": "Pool.release",
+        "start_line": 7,
+        "end_line": 8,
+        "sha": "f2d54aaa000ec3252e3618a6abc247ff53cde8e2b1ef2275ddbef1cf70ed8c0f"
+      }
+    ],
+    "file_sha": "7639c08953c9b70d3638227ca43530b3c086aced98c33bfd9ce4b3b20b56a700",
+    "enclosing": [
+      {
+        "line": 2,
+        "symbol": "Pool"
+      },
+      {
+        "line": 5,
+        "symbol": "Pool.lease"
+      },
+      {
+        "line": 8,
+        "symbol": "Pool.release"
+      }
+    ]
+  }
+]

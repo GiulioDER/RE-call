@@ -41,7 +41,10 @@ are all-capital names, or contain an inner capital. Plain words are not checked.
 demotes otherwise `ok` hits to `unknown_term` and abstains. It is a vocabulary heuristic and
 cannot establish that a passage states an answer, resolve aliases, or reject every near-miss.
 
-PostgreSQL lacks the vocabulary capability and reports `unknown_term_check="unavailable"`.
+A PostgreSQL generation store checks the same tokens against the active generation's full-text
+index (`tsv`) with that generation's text configuration. A token the configuration drops entirely
+(a stop word in capitals) is never reported absent. The legacy PostgreSQL route lacks the
+capability and reports `unknown_term_check="unavailable"`.
 Constrained source, folder, facet or authorization searches also report `unavailable` because
 consulting a global vocabulary could disclose excluded sources. Their verdicts stay unchanged.
 Completed, disabled and unreached checks report `checked`, `disabled` and `not_run`, respectively.

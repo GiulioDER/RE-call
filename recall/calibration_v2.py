@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -23,8 +23,11 @@ from recall.embedding_core import profile_lineage_mismatch
 from recall.embeddings import Embedder
 from recall.lineage import PipelineIdentity, canonical_json, canonical_sha256
 from recall.errors import RecallError
+from recall.observability import get_logger
 
 ARTIFACT_VERSION = 2
+
+_log = get_logger("calibration")
 
 
 class CalibrationStatus(StrEnum):
@@ -1070,7 +1073,68 @@ class CalibrationRepository:
                     generation_id,
                     {"reason": runtime.certification_reason},
                 )
-        return self.get(calibration_id)
+        stored = self.get(calibration_id)
+        self._record_near_miss_coverage(stored, labels, embedder)
+        return stored
+
+    def _record_near_miss_coverage(
+        self,
+        artifact: CalibrationArtifactV2,
+        labels: Sequence[Mapping[str, Any]],
+        embedder: Embedder,
+    ) -> None:
+        """Measure near-miss coverage with a fresh fit and append it as an audit event. Fail-open.
+
+        The PostgreSQL side of the lite fit (`recall.lite.calibration.auto_calibrate`): probes are
+        built from this generation's own chunks and the fit's answerable questions
+        (`recall.near_miss.near_miss_probes`), scored at the threshold just fitted with the
+        unknown-term gate (`near_miss_coverage`), and stored by calibration id, counts only. It runs
+        after the artifact is saved and never touches it: certification, lifecycle and threshold
+        are decided before this line. A carried calibration is not measured, as on lite, so it reads
+        as unmeasured and provisional until the next fit.
+        """
+        from recall.generation_store import GenerationStore
+        from recall.near_miss import near_miss_coverage, near_miss_probes
+        from recall.support import COVERAGE_EVENT
+
+        try:
+            with self._connect() as conn:
+                texts = [
+                    str(row[0])
+                    for row in conn.execute(
+                        "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s "
+                        "AND generation_id = %s ORDER BY chunk_id",
+                        (self.tenant_id, artifact.generation_id),
+                    ).fetchall()
+                ]
+            asked = [str(item["query"]) for item in labels if item.get("answerable") is True]
+            probes = near_miss_probes(texts, asked, per_class=len(asked))
+            store = GenerationStore(self.dsn, embedder.dim, tenant=self.tenant_id)
+            try:
+                with store.pin_generation(artifact.generation_id):
+                    report = near_miss_coverage(store, embedder, float(artifact.threshold), probes)
+            finally:
+                store.close()
+            with self._connect() as conn:
+                self._audit(
+                    conn, COVERAGE_EVENT, artifact.calibration_id, artifact.generation_id, report
+                )
+        except Exception as exc:  # BROAD-CATCH: fail-open
+            # The fit is already saved. Optional diagnostics cannot withdraw it, and provider
+            # errors may carry private input or credentials, so log only the type.
+            _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
+
+    def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
+        """The near-miss coverage measured with this calibration's fit, validated, or None.
+
+        Raises ValueError for a stored report that disagrees with the producer's count rules, so a
+        reader can report it unavailable rather than print it.
+        """
+        from recall.support import COVERAGE_EVENT, latest_calibration_event, validated_coverage_report
+
+        with self._connect() as conn:
+            payload = latest_calibration_event(conn, self.tenant_id, COVERAGE_EVENT, calibration_id)
+        return None if payload is None else validated_coverage_report(payload, calibration_id)
 
     def carry_forward(
         self,
@@ -1486,6 +1550,103 @@ class CalibrationRepository:
             if isinstance(item, str):
                 value[key] = _utc_isoformat(datetime.fromisoformat(item))
         return value
+
+    def measure_near_miss(
+        self,
+        calibration_id: str,
+        queries: Sequence[Mapping[str, Any]],
+        embedder: Embedder,
+        *,
+        record: bool = True,
+    ) -> dict[str, Any]:
+        """Score held-out near-miss questions against one calibration; report, never a gate.
+
+        See `recall.near_miss_certificate`. The questions are scored on the calibration's OWN
+        generation by the calibration sampling rule and compared with the answerable scores the
+        artifact stores, at its threshold. With `record`, the report is appended to the audit
+        ledger as one event bound to the calibration id: counts, scores and the set's digest,
+        never a question's text. Nothing that decides serving reads that event.
+        """
+        from recall.near_miss_certificate import EVENT_TYPE, certificate_report
+
+        artifact = self.get(calibration_id)
+        labels, digest = canonical_query_set(queries)
+        if any(item["answerable"] is not False for item in labels):
+            raise CalibrationBindingError(
+                "a near-miss set holds unanswerable questions only (answerable: false); an "
+                "answerable entry would be scored as a near-miss"
+            )
+        with self._connect() as conn:
+            _state, pipeline_raw, _pipeline, _corpus = self._generation(
+                conn, artifact.generation_id
+            )
+        _require_runtime_embedder(PipelineIdentity.from_dict(pipeline_raw), embedder)
+        _answerable, near_miss = self.score_query_set(artifact.generation_id, embedder, labels)
+        report = certificate_report(
+            artifact.scores["answerable"], near_miss, float(artifact.threshold)
+        )
+        report.update(generation_id=artifact.generation_id, query_set_digest=digest)
+        if record:
+            with self._connect() as conn:
+                self._audit(conn, EVENT_TYPE, calibration_id, artifact.generation_id, report)
+        return {"calibration_id": calibration_id, **report}
+
+    def near_miss_report(self, calibration_id: str) -> dict[str, Any] | None:
+        """The newest near-miss certificate recorded for this calibration id, or None.
+
+        Validated against its own stored scores; raises ValueError for a row that disagrees with
+        itself, so a reader can report it unavailable rather than print it.
+        """
+        from recall.near_miss_certificate import EVENT_TYPE, validated_certificate
+        from recall.support import latest_calibration_event
+
+        with self._connect() as conn:
+            payload = latest_calibration_event(conn, self.tenant_id, EVENT_TYPE, calibration_id)
+        return None if payload is None else validated_certificate(payload, calibration_id)
+
+    def served_gap(
+        self,
+        calibration_id: str,
+        embedder: Embedder,
+        search: Callable[[str], tuple[float | None, bool]],
+        *,
+        tolerance: float | None = None,
+    ) -> dict[str, Any]:
+        """Compare served and exact best cosines over this calibration's labelled queries.
+
+        See `recall.served_gap`. `search(query)` runs the search path being measured and returns
+        `(best dense cosine among the hits it served, or None; abstained)`; it must search the
+        calibration's own generation. The exact side is the calibration sampling rule. Read only:
+        nothing is stored, and nothing that decides serving reads the result.
+        """
+        from recall.served_gap import DEFAULT_TOLERANCE, ServedGapRow, served_gap_report
+
+        artifact = self.get(calibration_id)
+        labels, digest = self.stored_query_set(artifact.query_set_digest)
+        if digest != artifact.query_set_digest:
+            raise CalibrationBindingError("stored labelled query set does not match its digest")
+        with self._connect() as conn:
+            _state, pipeline_raw, _pipeline, _corpus = self._generation(
+                conn, artifact.generation_id
+            )
+        _require_runtime_embedder(PipelineIdentity.from_dict(pipeline_raw), embedder)
+        answerable, unanswerable = self.score_query_set(artifact.generation_id, embedder, labels)
+        # `measure_top_cosines` keeps each class in label order, so walking the labels in the same
+        # order pairs every query with its own exact score.
+        exact = {True: iter(answerable), False: iter(unanswerable)}
+        rows = []
+        for item in labels:
+            served, abstained = search(str(item["query"]))
+            rows.append(ServedGapRow(
+                bool(item["answerable"]), next(exact[bool(item["answerable"])]), served, abstained
+            ))
+        report = served_gap_report(
+            rows, float(artifact.threshold),
+            DEFAULT_TOLERANCE if tolerance is None else tolerance,
+        )
+        report.update(calibration_id=calibration_id, generation_id=artifact.generation_id,
+                      query_set_digest=digest)
+        return report
 
     def export_bundle(self, calibration_id: str, path: str | Path) -> Path:
         artifact = self.get(calibration_id)

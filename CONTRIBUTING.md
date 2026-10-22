@@ -153,6 +153,14 @@ python scripts/check_requirements_hashes.py requirements.lock.txt
 uvx pip-audit --requirement requirements.lock.txt --no-deps
 ```
 
+That last command reports the pillow advisories CI accepts while fastembed caps pillow below a
+fixed release. To see exactly what CI ignores, and why, run the script the job runs; it prints its
+decision for each advisory and the `--ignore-vuln` arguments it would pass:
+
+```bash
+uv run --no-project --with packaging==26.2 python scripts/capped_audit_ignores.py requirements.lock.txt --cap pillow:fastembed
+```
+
 `requirements.lock.txt` is gitignored: it is a throwaway on the CI runner, and a committed copy
 would be a second, silently drifting source of truth beside `uv.lock`.
 
