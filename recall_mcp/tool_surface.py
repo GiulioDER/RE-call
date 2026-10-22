@@ -37,6 +37,8 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_current_facts",
         "recall_apply_fact",
         "recall_related",
+        # Exact-key lookup of audit records (`recall.records`); no embedding, read only.
+        "recall_records",
         "recall_current_state",
         "recall_reasoning_query",
         # Added when #516 landed. Absent from this list the tool is not merely

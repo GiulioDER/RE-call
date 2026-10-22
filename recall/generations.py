@@ -22,6 +22,7 @@ from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextu
 from recall.build_progress import BuildCounters, BuildPlan, BuildProgressSink
 from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
+from recall.records import admit_record
 from recall.embeddings import (
     Embedder,
     EmbeddingProfile,
@@ -211,7 +212,11 @@ _MARKDOWN_MEDIA_TYPES = frozenset({"text/markdown", "text/x-markdown"})
 _BODY_RULE_VERSION_KEY = "body_rule_version"
 _BODY_RULE_VERSION = "frontmatter-pairing-2026-08-11"
 _METADATA_RULE_VERSION_KEY = "metadata_rule_version"
-_METADATA_RULE_VERSION = "relative-file-paths-2026-08-29"
+#: Bump whenever the code that derives chunk metadata from a document changes, so sources whose
+#: bytes are unchanged are re-derived instead of reused. "recall-record-2026-10-21": the parser
+#: learned `recall_record` (`recall.records`), the previous value being
+#: "relative-file-paths-2026-08-29".
+_METADATA_RULE_VERSION = "recall-record-2026-10-21"
 
 
 def manifest_relative_paths(manifest: "IndexManifestV1") -> dict[str, str]:
@@ -934,7 +939,7 @@ class GenerationManager:
             # (`recall/cli.py:1209`), so hooking only the index path would leave the one
             # build path that runs in production reading derived blocks as evidence.
             document = parse_document(text)
-            metadata = {**metadata, **document.meta}
+            metadata = {**metadata, **admit_record(document.meta, entry.uri)}
             body = document.human_body
             try:
                 validity_bounds(metadata)

@@ -38,6 +38,8 @@ ORIGINAL_TOOLS = {"recall_search", "recall_index", "recall_forget", "recall_stat
 ALL_TOOLS = ORIGINAL_TOOLS | {
     "recall_evidence",
     "recall_related",
+    # Exact-key lookup of audit records; reads only, no embedding.
+    "recall_records",
     "recall_current_state",
     "recall_reasoning_audit",
     "recall_reasoning_projection",

@@ -3,7 +3,8 @@
 A document may begin with a ``---`` line, followed by ``key: value`` lines, closed by ``---``.
 Only VALIDITY_KEYS and the namespaced ``recall_graph`` JSON object are meaningful to recall;
 the graph object may additionally carry an authored ``authority`` tier and exact source
-``depends_on`` references. Unknown keys are ignored and the returned body always excludes the block. Dates are ISO
+``depends_on`` references. An audit record, ``recall_record``, is one more one-line JSON object,
+returned as written (see `recall.records`). Unknown keys are ignored and the returned body always excludes the block. Dates are ISO
 ``YYYY-MM-DD``, interpreted in UTC: ``valid_from`` starts at 00:00:00 (inclusive),
 ``valid_until`` ends at 23:59:59.999999 (inclusive end of day). ``recall_graph`` must be a
 single line of JSON so this deliberately small parser does not pretend to be a YAML parser.
@@ -26,6 +27,13 @@ VALIDITY_KEYS = ("valid_from", "valid_until", "supersedes")
 #: The one validity key that may hold several values. Read it with `supersedes_targets`.
 SUPERSEDES = "supersedes"
 GRAPH_KEY = "recall_graph"
+#: An audit record: one line of JSON, kept exactly as authored. `recall.records.admit_record`
+#: validates it where metadata is written; this parser only reads it. Metadata, not a truth claim:
+#: it never touches validity, which stays in `valid_from` and `supersedes`.
+RECORD_KEY = "recall_record"
+#: The memo labels a record is returned with. Kept ONLY beside a `recall_record`, so the metadata
+#: of every other document is unchanged by this parser learning them.
+RECORD_LABEL_KEYS = ("name", "description")
 Authority = Literal[
     "policy",
     "user_confirmed_decision",
@@ -297,6 +305,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
         return {}, text
     lines = text.split("\n")
     meta: dict[str, object] = {}
+    labels: dict[str, str] = {}
     targets: list[str] | None = None
     block = lines[1:span]
     index = 0
@@ -342,9 +351,39 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
                     meta[key] = {"__parse_error__": "recall_graph must be one-line JSON"}
                 else:
                     meta[key] = parsed
+            elif key == RECORD_KEY:
+                try:
+                    meta[key] = json.loads(value.strip())
+                except (ValueError, RecursionError):
+                    # Kept as a marker, so the writer of chunk metadata can warn naming the file
+                    # (`recall.records.admit_record`) rather than the record vanishing in silence.
+                    # RecursionError too: a line nested thousands deep is not JSON this code can
+                    # read, and it must not stop the index run or the generation build.
+                    meta[key] = {"__parse_error__": "recall_record must be one line of JSON"}
+            elif key in RECORD_LABEL_KEYS and line[:1].strip():
+                labels[key] = _label_value(value.strip())
     if targets is not None:
         meta[SUPERSEDES] = _supersedes_value(targets)
+    if RECORD_KEY in meta:
+        meta.update(labels)
     return meta, "\n".join(lines[span + 1 :]).lstrip("\n")
+
+
+def _label_value(value: str) -> str:
+    """A `name` or `description` value: a double-quoted one decoded as JSON, else unquoted.
+
+    CCA writes a description as a JSON string literal, which is also a YAML double-quoted scalar,
+    so an escaped quote inside it (``\\"``) reads back as the quote it stands for.
+    """
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(decoded, str):
+                return decoded
+    return _unquote(value)
 
 
 def _flow_items(value: str) -> list[str] | None:

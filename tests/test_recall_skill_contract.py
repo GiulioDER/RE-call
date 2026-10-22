@@ -62,7 +62,7 @@ def test_reference_routes_every_mcp_tool_exactly_once() -> None:
     routed = re.findall(r"^\| `(recall_[a-z_]+)` \|", reference, flags=re.MULTILINE)
     assert len(routed) == len(set(routed)), "a tool appears in more than one routing row"
     assert set(routed) == _tool_names()
-    assert len(routed) == 26
+    assert len(routed) == 27
 
 
 def test_the_skill_asks_for_one_honest_report_after_a_task() -> None:
