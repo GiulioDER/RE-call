@@ -554,6 +554,13 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             return 0
         return user_prompt_submit(payload)
+    if args[0] == "pre-agent":
+        # Same reason as above: only an `Agent` launch pays for git and the memo directory.
+        try:
+            from .auditor_brief import pre_agent
+        except ImportError:
+            return 0
+        return pre_agent(payload)
     return 0
 
 
