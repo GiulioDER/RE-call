@@ -19,6 +19,7 @@ from psycopg.types.json import Jsonb
 from recall.frontmatter import authority_from_metadata, dependencies_from_metadata
 from recall.lineage import canonical_sha256
 from recall.supersession import root_of
+from recall.uploads import in_upload_staging, source_location
 from recall.types import Authority, Chunk, DependencyCause, InvalidationReason
 
 AUTHORITY_VALUES: tuple[Authority, ...] = (
@@ -255,14 +256,12 @@ def build_dependency_projection(
     ``base_states`` and ``asserted_at_by_source`` are keyed the same way. **Own root first.** A
     ``depends_on`` reference names a root-relative path, and resolves to the dependent's own
     root's copy when that root holds one; else to the one copy outside an upload staging root
-    (`recall.stated_facts.in_upload_staging`). Several such copies are ambiguous and none (only
+    (`recall.uploads.in_upload_staging`). Several such copies are ambiguous and none (only
     an upload holds it, or nothing does) is unresolved, and both invalidate the dependent. Merging
     the copies under their path gave either answer for both: a dependent of a copy superseded
     in one root stayed current, or a current copy was refused for its sibling (2026-10-21
     supersession audit, STAKES-004 and BUG-005).
     """
-    from recall.stated_facts import in_upload_staging, source_location
-
     as_of = _utc(as_of)
     known_as_of = _utc(known_as_of)
     chunks_by_source: dict[str, list[Chunk]] = defaultdict(list)
