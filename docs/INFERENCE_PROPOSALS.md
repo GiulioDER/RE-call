@@ -74,20 +74,34 @@ demote it beneath the one it replaced.
 
 Session 3 implements high precision non model rules first:
 
-* Explicit version naming, for example `policy_v1.md` to `policy_v2.md`. A version is `v` and
-  digits after a separator or as the whole name, so `ipv4.md` and `ipv6.md` are two names.
+* Explicit version naming, for example `policy_v1.md` to `policy_v2.md`. A version is `v` or `V`
+  and digits after a separator or as the whole name, so `ipv4.md` and `ipv6.md` are two names. A
+  series is one folder's files sharing a name without the version, so `a/plan_v1.md` and
+  `b/plan_v2.md` are two series. When the dates order two versions oppositely to their numbers,
+  the version proposal is `requires_review` and both it and the date rule's opposite proposal
+  say that the two disagree.
 * Direct textual references such as replaces, supersedes, deprecates, updates, or revises. The
   file that holds the sentence is the superseder, unless a document is named right before the cue
   ("new.md replaces old.md" in meeting notes): then the named document is, and the proposal is
   `requires_review`. A negated or conditional cue proposes nothing.
 * Repeated decision subjects with later validity starts. The subject is what a `decision:`,
   `decided:`, `choice:` or `policy:` line names (a status or a verdict names a state, not a
-  subject), else the file name without its version; both memos must be dated, the later start
-  strictly later.
+  subject), else the file name without its version. A subject is shared only inside one folder,
+  so two teams' `decision: retention` are two decisions. At least one of the two memos must have
+  a decision line (two memos that share only a file name are temporal ordering's), and both must
+  be dated: each memo is paired with every memo of the next later start, so two memos with the
+  same start both get a later third as successor, and are never ordered against each other.
 * Contradictory validity windows with overlapping windows and opposing status language, grouped
-  by the same subject as the repeated-subject rule.
+  by the same subject in the same folder as the repeated-subject rule.
 * Temporal ordering over the same normalized entity, the file name without its version, in its
-  folder. An edge the repeated-subject rule already proposes is not proposed again under this rule.
+  folder, paired by date as the repeated-subject rule pairs. An edge the repeated-subject rule
+  already proposes is not proposed again under this rule.
+
+`DETERMINISTIC_PROVIDER_REVISION` names the revision of these rules. A promoted edge records it,
+and an accepted proposal writes it into the memo's derived block, so it is bumped when a rule
+changes which pairs it proposes, in which direction or at which status, and not for a refactor or
+a reworded explanation. Proposal ids hash it, so a bump changes every id. It is `session3-v2`
+since the folder, same-start and version-against-date changes above.
 
 Explicit authored supersession edges remain more authoritative than inferred candidates. If an
 authored edge already exists, deterministic rules do not duplicate it.

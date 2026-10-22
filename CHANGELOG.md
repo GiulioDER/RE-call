@@ -87,6 +87,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   pairs a file's versions whose decision lines are worded apart, and it no longer proposes again
   an edge the repeated-subject rule proposes. The Session 3 control artifact drops its two
   `temporal_ordering` proposals (referrals 4 to 2), and every other proposal id is unchanged.
+* **The deterministic proposal rules read a folder as the scope of a name.** A version series is
+  one folder's files (`a/plan_v1.md` and `b/plan_v2.md` are no longer two versions of one plan),
+  and a decision subject, or the file name a memo with no decision line falls back to, is shared
+  only inside one folder, so two folders' status-only `decisions.md`, or two teams'
+  `decision: retention`, are neither superseded nor contradicted by each other. Within a folder
+  the rules pair more in two places: `plan_V2.md` is a version, as `plan_v2.md` is, and two memos
+  with the same start now both get a later third as successor instead of one of them. Two memos that share
+  only a file name are proposed by temporal ordering (0.64) rather than as a repeated decision
+  subject (0.72). When the dates order two versions oppositely to their numbers, the version
+  proposal is `requires_review` and both opposite proposals say the two disagree. The rules'
+  revision is now `session3-v2`, which changes every deterministic proposal id; the Session 3
+  control artifact keeps its six proposals and its scores under new ids.
 * **A successor hides what it supersedes only while the successor itself is valid.** A memo
   `supersedes:` another from next month leaves it current until then, an expired time-bounded
   successor gives its predecessor back, and a correction for 2020 to 2022 leaves today's memo alone;
