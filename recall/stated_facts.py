@@ -32,7 +32,9 @@ from recall.evidence import _evidence_links
 from recall.frontmatter import GRAPH_KEY, validity_bounds
 from recall.observability import get_logger
 from recall.provenance_controller import (
+    RETRACTION_REQUEST_PREFIX,
     STATED_POLICY_VERSION,
+    STATED_REQUEST_PREFIX,
     STATED_TRUST_STATE,
     STATED_WRITER,
     DecisionCode,
@@ -275,7 +277,7 @@ def stated_request_id(tenant: str, name: str, content_hash: str, fact: AtomicFac
     """One request per (memo, content, fact), ever: the generation is left out on purpose, so a
     re-run, an unchanged re-index and a new generation of the same content append nothing."""
     key = f"{tenant}\0{name}\0{content_hash}\0{fact_identity(fact)}"
-    return "stated:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+    return STATED_REQUEST_PREFIX + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
 
 
 @dataclass
@@ -381,7 +383,7 @@ def _current_request_ids(events: Sequence[Any]) -> tuple[set[str], set[str]]:
     so its facts never returned. A request whose assertion gc retracted is recorded again under a
     derived id (`_next_request_id`). Forget's retraction (SOURCE_FORGOTTEN) stays final.
     """
-    retraction_prefix = "retraction:"
+    retraction_prefix = RETRACTION_REQUEST_PREFIX
     removed_events = {
         event.request_id[len(retraction_prefix):]
         for event in events
@@ -401,7 +403,7 @@ def _next_request_id(request_id: str, removed: set[str]) -> str:
     """The request id a statement records under now: its own, or, after each gc retraction, the
     next derived one. Deterministic, so a re-run after a return records nothing twice."""
     while request_id in removed:
-        request_id = "stated:" + hashlib.sha256(f"{request_id}\0again".encode()).hexdigest()[:32]
+        request_id = STATED_REQUEST_PREFIX + hashlib.sha256(f"{request_id}\0again".encode()).hexdigest()[:32]
     return request_id
 
 

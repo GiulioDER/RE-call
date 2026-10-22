@@ -776,13 +776,22 @@ def _parse_date(value: str, key: str) -> datetime:
 def validity_bounds(meta: dict) -> tuple[datetime | None, datetime | None]:
     """Interpret a chunk's validity metadata as tz-aware UTC (start, end) bounds.
 
-    Either bound is None when its key is absent. Raises ValueError on a malformed date.
+    Either bound is None when its key is absent. Raises ValueError on a malformed date, and on an
+    empty window (`valid_from` after `valid_until`), which the validity-frontmatter spec 1.0
+    (section 5.2, test vector 4) makes `invalid_metadata`: such a document can never be valid,
+    and reporting it `expired` or `not_yet_valid` gave the wrong reason (its appendix note D).
+    Compared on the bounds, so a one-day window (both keys the same date) stays valid all day.
     """
     start = end = None
     if v := meta.get("valid_from"):
         start = _parse_date(str(v), "valid_from")
     if v := meta.get("valid_until"):
         end = datetime.combine(_parse_date(str(v), "valid_until").date(), time.max, timezone.utc)
+    if start is not None and end is not None and start > end:
+        raise ValueError(
+            f"empty validity window: valid_until {meta.get('valid_until')!s} is before "
+            f"valid_from {meta.get('valid_from')!s}"
+        )
     return start, end
 
 

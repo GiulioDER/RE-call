@@ -61,6 +61,11 @@ class DecisionCode(StrEnum):
     MATERIALIZATION_UNAVAILABLE = "MATERIALIZATION_UNAVAILABLE"
     SOURCE_FORGOTTEN = "SOURCE_FORGOTTEN"
     SOURCE_REMOVED = "SOURCE_REMOVED"
+    #: Two refusals no ledger ever records: the request id already names another application, or
+    #: has a form the ledger mints for its own events (`reserved_request_id`). Recording either
+    #: under that id is impossible or would take the server's slot, so neither is written.
+    REQUEST_ID_REUSED = "REQUEST_ID_REUSED"
+    REQUEST_ID_RESERVED = "REQUEST_ID_RESERVED"
 
 
 def _canonical(value: object) -> object:
@@ -139,6 +144,24 @@ _EARLIEST = datetime.min.replace(tzinfo=UTC)
 _LATEST = datetime.max.replace(tzinfo=UTC)
 #: The request-id suffix of the `superseded` event that follows an applied assertion.
 SUPERSESSION_REQUEST_SUFFIX = ":supersession"
+#: The request-id prefix of a `retracted` event (`recall.fact_ledger.retraction_ids`).
+RETRACTION_REQUEST_PREFIX = "retraction:"
+#: The request-id prefix of a memo's own statement (`recall.stated_facts.stated_request_id`).
+STATED_REQUEST_PREFIX = "stated:"
+
+
+def reserved_request_id(request_id: str) -> bool:
+    """Whether `request_id` has a form the ledger mints for its own events, so no client may send it.
+
+    A request id is unique per tenant, so a client request under `<id>:supersession` or
+    `retraction:<event id>` took the server's slot: PostgreSQL, SQLite and lite answered it
+    DUPLICATE and recorded nothing, while the in-memory ledger, which never registered the
+    supersession id, appended a second row under it (2026-10-21 supersession audit). A `stated:`
+    id is a memo's own statement (`recall.stated_facts`), which a client request would pre-empt.
+    """
+    return request_id.endswith(SUPERSESSION_REQUEST_SUFFIX) or request_id.startswith(
+        (RETRACTION_REQUEST_PREFIX, STATED_REQUEST_PREFIX)
+    )
 
 
 def fact_window(fact: AtomicFact) -> FactWindow:
@@ -447,21 +470,45 @@ def absent_fact_ids(
     """
     if served is None:
         return frozenset()
-    retracted = retracted_keys(events)
-    cards: dict[str, list[EvidenceCard]] = {}
-    for event in events:
-        if (
-            event.event_type == "asserted"
-            and event.fact_id is not None
-            and retraction_key(event) not in retracted
-        ):
-            cards.setdefault(event.fact_id, []).extend(event.evidence_cards)
+    cards = assertion_cards(events)
     names = frozenset(card.source for group in cards.values() for card in group)
     live = card_liveness(served, names, now)
     return frozenset(
         fact_id for fact_id, group in cards.items()
         if group and not any(live(card) for card in group)
     )
+
+
+def assertion_cards(events: Sequence[FactEvent]) -> dict[str, tuple[EvidenceCard, ...]]:
+    """Per fact id, the cards of every application of it not retracted, DUPLICATE ones included.
+
+    In ledger order, each card once. A fact applied from a second memo is recorded DUPLICATE with
+    that memo's card, so the APPLIED event's cards alone name only the first memo: a successor
+    linking the second was refused as a contradiction, and the listing cited the first memo after
+    the store stopped serving it (2026-10-21 supersession audit).
+    """
+    retracted = retracted_keys(events)
+    cards: dict[str, dict[str, EvidenceCard]] = {}
+    for event in events:
+        if event.event_type == "asserted" and event.fact_id is not None and retraction_key(event) not in retracted:
+            group = cards.setdefault(event.fact_id, {})
+            for card in event.evidence_cards:
+                group.setdefault(card.card_id, card)
+    return {fact_id: tuple(group.values()) for fact_id, group in cards.items()}
+
+
+def live_cards(
+    events: Sequence[FactEvent], served: ServedSources | None, now: datetime | None = None
+) -> dict[str, tuple[EvidenceCard, ...]]:
+    """Per fact id, its live cards across its live applications (`assertion_cards`, `card_liveness`).
+
+    What `recall_current_facts` cites as a fact's evidence. `served` None counts every card.
+    """
+    cards = assertion_cards(events)
+    if served is None:
+        return cards
+    live = card_liveness(served, frozenset(card.source for group in cards.values() for card in group), now)
+    return {fact_id: tuple(card for card in group if live(card)) for fact_id, group in cards.items()}
 
 
 def live_sources(
@@ -473,17 +520,9 @@ def live_sources(
     DUPLICATE application counts, since a second memo stating a fact is a second source. `served`
     None counts every card.
     """
-    retracted = retracted_keys(events)
-    cards: dict[str, list[EvidenceCard]] = {}
-    for event in events:
-        if event.event_type == "asserted" and event.fact_id is not None and retraction_key(event) not in retracted:
-            cards.setdefault(event.fact_id, []).extend(event.evidence_cards)
-    if served is None:
-        return {fact_id: tuple(sorted({card.source for card in group})) for fact_id, group in cards.items()}
-    live = card_liveness(served, frozenset(card.source for group in cards.values() for card in group), now)
     return {
-        fact_id: tuple(sorted({card.source for card in group if live(card)}))
-        for fact_id, group in cards.items()
+        fact_id: tuple(sorted({card.source for card in group}))
+        for fact_id, group in live_cards(events, served, now).items()
     }
 
 
@@ -762,6 +801,23 @@ def _consume_permit(
     ):
         raise PermissionError("ledger assertion requires an unused controller permit")
     permit._used = True
+
+
+def replays_request(prior: FactEvent, fact: AtomicFact, cards: Sequence[EvidenceCard]) -> bool:
+    """Whether applying `fact` on `cards` under `prior`'s request id is that request sent again.
+
+    A request id names one application: one fact on one set of cards. Sent again it is answered
+    with the event it recorded (a DUPLICATE). Every ledger answered so whatever the request held,
+    so a reused id with another fact returned allowed DUPLICATE with the old event, recorded
+    nothing, and named the new fact in the decision (2026-10-21 supersession audit, P1 #7). Every
+    ledger refuses that instead (`DecisionCode.REQUEST_ID_REUSED`). Only an assertion replays:
+    an id the ledger minted for a `superseded` or `retracted` event is never a client's request.
+    """
+    return (
+        prior.event_type == "asserted"
+        and prior.fact_id == fact_identity(fact)
+        and {card.card_id for card in prior.evidence_cards} == {card.card_id for card in cards}
+    )
 
 
 class FactLedger(Protocol):
@@ -1111,6 +1167,8 @@ class InMemoryFactLedger:
             )
             prior = self._by_request.get(request_id)
             if prior is not None:
+                if not replays_request(prior, fact, cards):
+                    raise ValueError(DecisionCode.REQUEST_ID_REUSED)
                 return LedgerApplyResult(prior, duplicate=True)
             history = [event for event in self._events if event.tenant_id == tenant_id]
             index = fact_supersession(history)
@@ -1170,6 +1228,9 @@ class InMemoryFactLedger:
                     policy_version=policy_version,
                 )
                 self._events.append(replacement)
+                # Registered as every durable ledger holds it (its id is unique per tenant there),
+                # so a later request under it is refused here too (`reserved_request_id`).
+                self._by_request[replacement.request_id] = replacement
             return LedgerApplyResult(event)
 
     def record_decision(
@@ -1320,23 +1381,32 @@ class ProvenanceController:
         return any(fact_identity(source_fact) == fact_identity(fact) for card in cards for source_fact in card.structured_facts)
 
     @staticmethod
-    def _superseding_fact_ids(fact: AtomicFact, cards: Sequence[EvidenceCard], current: Sequence[FactEvent]) -> tuple[str, ...]:
+    def _superseding_fact_ids(
+        fact: AtomicFact,
+        cards: Sequence[EvidenceCard],
+        current: Sequence[FactEvent],
+        support: Mapping[str, Sequence[EvidenceCard]] | None = None,
+    ) -> tuple[str, ...]:
+        """The facts in `current` that `fact` contradicts and `cards` link to. A link may name any
+        card of any live application of the old fact (`support`, `assertion_cards`), not only the
+        APPLIED event's: a memo that states the fact through a DUPLICATE is one of its sources."""
         old_ids: list[str] = []
         for event in current:
             if event.fact is None or not facts_conflict(event.fact, fact):
                 continue
             if event.fact_id in old_ids:
                 continue
+            evidence = (support or {}).get(event.fact_id or "") or event.evidence_cards
             old_source_ids = {
                 value
-                for card in event.evidence_cards
+                for card in evidence
                 for value in (card.card_id, card.chunk_id, card.source)
             }
             # A memo names what it supersedes by file name, folded to a stem exactly as the
             # store resolves `supersedes:` (`recall.supersession.reference_stem_key`), so a link
             # `User-Drink.md` designates a memo stored as `mem/user-drink.md`. Without this a
             # lite store, which names memos relative to RECALL_INDEX_ROOT, never matched one.
-            old_stems = {reference_stem_key(card.source) for card in event.evidence_cards if card.source}
+            old_stems = {reference_stem_key(card.source) for card in evidence if card.source}
             allowed = any(
                 event.fact_id in card.supersession_links
                 or old_source_ids.intersection(card.supersession_links)
@@ -1400,6 +1470,12 @@ class ProvenanceController:
 
     def apply_fact(self, request: FactApplicationRequest) -> ControllerDecision:
         """Validate and append one fact, with at most one deterministic fresh-search retry."""
+        if reserved_request_id(request.request_id):
+            # Refused before the ledger is read, and not recorded: a refusal under the id would
+            # itself take the slot the ledger keeps for its own event.
+            return self._decision(
+                request, DecisionCode.REQUEST_ID_RESERVED, detail="the ledger mints ids of this form"
+            )
         try:
             prior = self.ledger.request_event(tenant_id=self.tenant_id, request_id=request.request_id)
         except Exception as exc:  # BROAD-CATCH: fail-closed
@@ -1409,6 +1485,14 @@ class ProvenanceController:
                 retried=False,
                 cards=(),
                 detail=type(exc).__name__,
+            )
+        if prior is not None and prior.fact_id != fact_identity(request.claim):
+            # Another fact under a used id. Answering with the prior decision named the new fact
+            # allowed and recorded nothing; the same fact on other cards is refused by the ledger,
+            # which compares the resolved cards (`replays_request`).
+            return self._decision(
+                request, DecisionCode.REQUEST_ID_REUSED, event=prior,
+                detail="request_id already names another fact",
             )
         if prior is not None and prior.decision_code not in {
             DecisionCode.APPLIED,
@@ -1474,7 +1558,10 @@ class ProvenanceController:
             for event in in_force.candidates
             if event.fact and facts_conflict(event.fact, request.claim) and index.overlaps(event, request.claim)
         )
-        supersedes = self._superseding_fact_ids(request.claim, cards, conflicts)
+        supersedes = self._superseding_fact_ids(
+            request.claim, cards, conflicts,
+            None if in_force.history is None else assertion_cards(in_force.history),
+        )
         # Refused on the rule every ledger applies (`unresolved_conflicts`): what the claim
         # contradicts and neither names nor hides through what it names.
         unsettled = (

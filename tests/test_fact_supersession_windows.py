@@ -414,3 +414,24 @@ def test_f13_a_fact_in_force_under_two_assertions_is_listed_once() -> None:
     second = _assertion(1, "Paris", (fact_identity(city("Rome")),), NOW + timedelta(microseconds=1))
     listed = [e.event_id for e in project_current([first, second], NOW)]
     assert listed == ["e0"], f"a fact in force under two assertions was listed twice: {listed}"
+
+
+def test_f14_a_memo_stating_a_fact_through_a_duplicate_can_supersede_it(env: Env) -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f14_a_memo_stating_a_fact_through_a_duplicate_can_supersede_it.
+
+    Invariant: a fact applied from m1 (APPLIED) and then from m2 (DUPLICATE) has both memos as
+    sources, so a new value whose memo links m2 supersedes it, and the fact is listed once
+    beforehand. Re-measured open on master ``52be498cc`` (2026-10-22): links were matched against
+    the APPLIED event's cards only. Red against ``52be498cc`` with this test copied in, every
+    ledger: fails on "a link to the memo behind the DUPLICATE did not supersede"
+    (CONTRADICTION_WITHOUT_SUPERSESSION). Red, mutation of `_superseding_fact_ids`
+    (recall/provenance_controller.py) reading the APPLIED event's cards only: the same line.
+    """
+    assert env.apply(city("Paris"), "m1.md", "r1").code == DecisionCode.APPLIED
+    assert env.apply(city("Paris"), "m2.md", "r2").code == DecisionCode.DUPLICATE
+    assert env.current() == ["Paris"], "a fact applied from two memos was not listed once"
+    decision = env.apply(city("Rome"), "m3.md", "r3", links=("m2.md",))
+    assert decision.code == DecisionCode.APPLIED, (
+        f"a link to the memo behind the DUPLICATE did not supersede: {decision.code}"
+    )
+    assert env.current() == ["Rome"]

@@ -84,6 +84,10 @@ def temporal_bounds(
         start = start.replace(tzinfo=UTC)
     if end is not None and end.tzinfo is None:
         end = end.replace(tzinfo=UTC)
+    if start is not None and end is not None and start > end:
+        # An empty window, which the trust pass verdicts `invalid_metadata`: rejected as invalid,
+        # not as expired or not yet valid by a midnight reading of the bare dates.
+        raise ValueError("empty validity window: valid_from is after valid_until")
     return start, end
 
 

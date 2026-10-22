@@ -44,6 +44,8 @@ from recall.provenance_controller import (
     unresolved_conflicts,
     retracted_keys,
     retraction_key,
+    replays_request,
+    RETRACTION_REQUEST_PREFIX,
     SUPERSESSION_REQUEST_SUFFIX,
     canonical_json,
     evidence_card_from_payload,
@@ -235,7 +237,7 @@ def retraction_ids(tenant_id: str, assertion: FactEvent) -> tuple[str, str]:
     One retraction per assertion, ever: the request id is unique per tenant, and a retracted
     assertion is never planned again, so a forget run twice appends nothing the second time.
     """
-    request_id = "retraction:" + assertion.event_id
+    request_id = RETRACTION_REQUEST_PREFIX + assertion.event_id
     return decision_event_id(tenant_id, request_id, "retracted"), request_id
 
 
@@ -796,6 +798,8 @@ class PostgresFactLedger:
             )
             prior = self._events(conn, request_id=request_id)
             if prior:
+                if not replays_request(prior[0], fact, cards):
+                    raise ValueError(DecisionCode.REQUEST_ID_REUSED)
                 if materialization_outbox is not None:
                     self._enqueue_materialization(conn, materialization_outbox, prior[0])
                 return LedgerApplyResult(prior[0], duplicate=True)

@@ -22,7 +22,7 @@ from recall.provenance_controller import (
     FactEvent,
     FactLedger,
     ProvenanceController,
-    live_sources,
+    live_cards,
     source_digest,
     split_contested,
 )
@@ -227,7 +227,12 @@ def current_facts_memory(
             else ledger.current(tenant_id=store.tenant, now=instant, served=served)
         )
         history = events
-    sources = live_sources(history, served, instant)
+    # Cited from every live application of a fact, as `sources` are, and asked of the store once:
+    # the APPLIED event's own cards named its first memo after the store stopped serving it.
+    evidence = live_cards(history, served, instant)
+    sources = {
+        fact_id: tuple(sorted({card.source for card in group})) for fact_id, group in evidence.items()
+    }
     if security_policy is not None:
         assert access_context is not None
 
@@ -242,7 +247,7 @@ def current_facts_memory(
 
     def card_ids(event: FactEvent) -> list[str]:
         allowed = sources.get(event.fact_id or "", ())
-        return [card.card_id for card in event.evidence_cards
+        return [card.card_id for card in evidence.get(event.fact_id or "", ())
                 if security_policy is None or card.source in allowed]
 
     standing, contested = split_contested(events)
