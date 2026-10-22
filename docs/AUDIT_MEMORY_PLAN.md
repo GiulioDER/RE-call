@@ -64,6 +64,12 @@ its pass, fail and skip counts; any departure from this plan and why.
   pathspec; signed commits; squash merges.
 - Canonical record JSON is `json.dumps(obj, ensure_ascii=False, sort_keys=True,
   separators=(",", ":"))`, on one line.
+  **Amended 2026-10-22 (orchestrator, from cca-audit #87):** in that line U+2028, U+2029 and
+  U+0085 are written as the escapes ` `, ` ` and `\u0085`, because `str.splitlines()`
+  breaks on all three and `json.dumps` with `ensure_ascii=False` does not escape them, so a
+  `splitlines()` reader would split one row in two. The JSON value is unchanged: RE-call's parser
+  decodes the escapes and returns the record equal to the one authored
+  (`tests/test_records_code_tenant.py::test_escaped_line_separators_round_trip`).
 - `recall_record` is returned exactly as authored. No component renames, adds, defaults, normalises
   or drops a field.
 - Serving and tenant changes on the deployment host wait for Session 6.

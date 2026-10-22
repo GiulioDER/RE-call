@@ -354,9 +354,11 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
             elif key == RECORD_KEY:
                 try:
                     meta[key] = json.loads(value.strip())
-                except json.JSONDecodeError:
+                except (ValueError, RecursionError):
                     # Kept as a marker, so the writer of chunk metadata can warn naming the file
                     # (`recall.records.admit_record`) rather than the record vanishing in silence.
+                    # RecursionError too: a line nested thousands deep is not JSON this code can
+                    # read, and it must not stop the index run or the generation build.
                     meta[key] = {"__parse_error__": "recall_record must be one line of JSON"}
             elif key in RECORD_LABEL_KEYS and line[:1].strip():
                 labels[key] = _label_value(value.strip())

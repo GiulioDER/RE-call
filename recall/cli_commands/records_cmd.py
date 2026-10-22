@@ -1,8 +1,8 @@
 """`recall records`: audit records by exact key, the CLI twin of the `recall_records` MCP tool.
 
 `--all` is the full dump CCA's round-trip check compares its ledger against
-(`docs/AUDIT_MEMORY_DESIGN.md`, "Round-trip contract"), so it pages through every record and
-prints one complete envelope, never a truncated one. Served on a lite store (`sqlite:///`) as on
+(`docs/AUDIT_MEMORY_DESIGN.md`, "Round-trip contract"), so it reads every record in one lookup
+and one snapshot and prints one complete envelope, never a truncated one. Served on a lite store (`sqlite:///`) as on
 PostgreSQL; reads no embedder and no vectors.
 """
 
@@ -16,7 +16,7 @@ from typing import Any
 
 from recall.backends import lite_route_refusal, open_legacy_store
 from recall.lite import is_lite_dsn, lite_dsn_path
-from recall.records import MAX_RECORDS, RECORD_KINDS, RecordsQueryError, lookup_records
+from recall.records import RECORD_KINDS, RecordsQueryError, lookup_records
 from recall.runtime_route import RouteConfigurationError, RuntimeRoute, resolve_runtime_route
 from recall.store import DEFAULT_TABLE, PgVectorStore
 from recall.trust import terminal_safe
@@ -70,24 +70,11 @@ def _read_anchors(spec: str) -> Any:
 def _lookup(store: Any, args: argparse.Namespace, anchors: Any) -> dict[str, Any]:
     if not args.all_records:
         return lookup_records(store, repo=args.repo, anchors=anchors, ids=args.ids, kinds=args.kinds)
-    # Every page, so the dump is complete: a round-trip check against a truncated dump would
-    # report every record past the cut as missing.
-    pages: list[dict[str, Any]] = []
-    while True:
-        page = lookup_records(
-            store,
-            repo=args.repo,
-            kinds=args.kinds,
-            all_records=True,
-            limit=MAX_RECORDS,
-            offset=len(pages) * MAX_RECORDS,
-        )
-        pages.append(page)
-        if not page["truncated"]:
-            break
-    if len({page["generation_id"] for page in pages}) != 1:
-        raise SystemExit("recall records: the served generation changed during the dump; run it again")
-    return {**pages[0], "truncated": False, "records": [r for page in pages for r in page["records"]]}
+    # One lookup, one snapshot, every record. Paging by separate calls read a separate snapshot per
+    # page, and a legacy store has no generation id to tell them apart, so an index run landing
+    # between pages duplicated or skipped records with `truncated` still false. A round-trip check
+    # reads every record such a dump lacks as missing.
+    return lookup_records(store, repo=args.repo, kinds=args.kinds, all_records=True, limit=None)
 
 
 def _cmd_records(args: argparse.Namespace) -> None:

@@ -196,8 +196,29 @@ def record_problem(value: Any) -> str | None:
             f"recall_record version {version!r} is not one this RE-call reads "
             f"(it reads version {RECORD_VERSION}); the record was refused, not partly read"
         )
+    if _holds_nul(value):
+        # `\u0000` is valid JSON and decodes to U+0000, which PostgreSQL jsonb refuses: stored,
+        # it would fail the whole index run or generation build on PostgreSQL while a lite store
+        # accepted it. Refused here, so both stores index the memo without it.
+        return "recall_record holds U+0000 (NUL), which PostgreSQL cannot store"
     errors = _errors(value, record_schema(), "")
     return "; ".join(errors[:3]) if errors else None
+
+
+def _holds_nul(value: object) -> bool:
+    """Whether any string in `value`, key or value, contains U+0000. Iterative: no depth limit."""
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            if "\x00" in item:
+                return True
+        elif isinstance(item, dict):
+            stack.extend(item.keys())
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return False
 
 
 def admit_record(meta: Mapping[str, object], source: str) -> dict[str, object]:
@@ -315,7 +336,7 @@ def lookup_records(
     ids: Sequence[str] | None = None,
     kinds: Sequence[str] | None = None,
     all_records: bool = False,
-    limit: int = MAX_RECORDS,
+    limit: int | None = MAX_RECORDS,
     offset: int = 0,
     security_policy: Any = None,
     access_context: Any = None,
@@ -328,12 +349,18 @@ def lookup_records(
 
     More matches than `limit` refuses an anchor or id query (never a silent cut) and pages an
     `all_records` query, with `truncated` true while records remain past `offset + limit`.
+    `limit=None`, with `all_records` only, returns every record from the one snapshot: the full
+    dump a round-trip check needs, which separate paged calls cannot give on a store with no
+    generation id to pin them to.
     Reads one snapshot of the store's active generation when it has one.
     """
     forms = sum(x for x in (anchors is not None, ids is not None, bool(all_records)))
     if forms != 1:
         raise RecordsQueryError("give exactly one of anchors, ids or all_records")
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_RECORDS:
+    if limit is None:
+        if not all_records:
+            raise RecordsQueryError("an unbounded limit is only for an all_records dump")
+    elif isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_RECORDS:
         raise RecordsQueryError(f"limit must be an integer from 1 to {MAX_RECORDS}")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise RecordsQueryError("offset must be a non-negative integer")
@@ -446,9 +473,10 @@ def lookup_records(
     records = [item[2] for item in matched]
     truncated = False
     if all_records:
-        truncated = len(records) > offset + limit
-        records = records[offset : offset + limit]
-    elif len(records) > limit:
+        end = len(records) if limit is None else offset + limit
+        truncated = len(records) > end
+        records = records[offset:end]
+    elif limit is not None and len(records) > limit:
         raise RecordsQueryError(
             f"{len(records)} records match, more than the limit of {limit}: narrow the query "
             "(fewer anchors or ids, or a kinds filter); nothing was truncated"

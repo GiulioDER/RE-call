@@ -15,6 +15,11 @@ Invariants and the failure each one catches:
 - R6 the schema interpreter in `recall.records` agrees with `jsonschema` on every golden record
   and on mutations of them.
 - R7 `name` and `description` are kept only beside a record.
+- R8 a record line nested too deep for `json.loads` (RecursionError, not JSONDecodeError) is
+  warned and dropped; it does not stop the index run.
+- R9 a record holding U+0000 (written by `json.dumps` as the escape `\\u0000`) is refused with a
+  reason on both stores: PostgreSQL jsonb cannot store it, so admitting it failed the whole
+  generation build there while a lite store accepted it (R2's `nul` case is the lite half).
 
 Red proof, recorded 2026-10-21 on the deployment host inside the test bounds, each test failing
 in its own assertion, then restored and green:
@@ -35,6 +40,12 @@ in its own assertion, then restored and green:
   `recall.records._errors`: the unknown-field mutation validates here and not in `jsonschema`.
 - R7 `...::test_labels_are_kept_only_beside_a_record`: the `if RECORD_KEY in meta` guard removed:
   a memo with no record gains `name`.
+- R8 (2026-10-22) `...::test_a_deeply_nested_record_warns_and_does_not_stop_the_run`: the parser
+  catching only `json.JSONDecodeError`: "a deeply nested recall_record stopped the index run".
+- R2[nul] and R9 (2026-10-22) `...::test_invalid_record_warns_and_indexes_without_it[nul]` and
+  `...::test_a_nul_record_does_not_fail_a_postgres_generation_build`: the `_holds_nul` check in
+  `record_problem` disabled: lite stores the record ("an invalid record was stored"), and the
+  PostgreSQL build raises ("a NUL in a recall_record failed the generation build").
 """
 
 from __future__ import annotations
@@ -121,6 +132,12 @@ def _index_one(tmp_path: Path, text: str) -> tuple[LiteStore, Path]:
             "recall_record must be one line of JSON",
             id="truncated-json",
         ),
+        pytest.param(
+            # `json.dumps` writes U+0000 as the escape `\u0000`, which `json.loads` decodes.
+            json.dumps({**EXPECTED["RE-call__0123456789ab__BUG-001.md"], "summary": "before\x00after"}),
+            "U+0000",
+            id="nul",
+        ),
     ],
 )
 def test_invalid_record_warns_and_indexes_without_it(
@@ -145,6 +162,46 @@ def test_unknown_version_refused_with_warning(tmp_path: Path, caplog: pytest.Log
     assert all(RECORD_KEY not in c.metadata for c in store.iter_chunks())
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any(str(memo) in w and "version 2 is not one this RE-call reads" in w for w in warnings), warnings
+
+
+def test_a_deeply_nested_record_warns_and_does_not_stop_the_run(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R8: `json.loads` raises RecursionError, not JSONDecodeError, on a line nested this deep."""
+    depth = 100_000
+    with caplog.at_level(logging.WARNING, logger="recall.records"):
+        try:
+            store, memo = _index_one(tmp_path, _memo_with_record("[" * depth + "]" * depth))
+        except RecursionError as exc:
+            pytest.fail(f"a deeply nested recall_record stopped the index run: {exc!r}")
+    assert all(RECORD_KEY not in c.metadata for c in store.iter_chunks())
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(str(memo) in w and "one line of JSON" in w for w in warnings), warnings
+
+
+@requires_db
+def test_a_nul_record_does_not_fail_a_postgres_generation_build(
+    manager, caplog: pytest.LogCaptureFixture  # noqa: F811  # the imported fixture
+) -> None:
+    """R9: jsonb refuses U+0000, so a record holding one must be refused before PostgreSQL sees it."""
+    record = {**EXPECTED["RE-call__0123456789ab__BUG-001.md"], "summary": "before\x00after"}
+    data = _memo_with_record(json.dumps(record)).encode("utf-8")
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    with caplog.at_level(logging.WARNING, logger="recall.records"):
+        try:
+            generation = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+        except Exception as exc:  # noqa: BLE001  # any failure of the build is the defect
+            pytest.fail(f"a NUL in a recall_record failed the generation build: {exc!r}")
+    with manager._connect() as conn:
+        rows = conn.execute(
+            "SELECT metadata ? 'recall_record' FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (manager.tenant_id, generation),
+        ).fetchall()
+    assert rows and not any(row[0] for row in rows), "the memo must be indexed without its record"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("U+0000" in w for w in warnings), warnings
 
 
 @requires_db
