@@ -16,7 +16,9 @@ import pytest
 
 from recall.cli import main
 from recall.fix import (
+    PROPOSAL_ID_HEX_DIGITS,
     Proposal,
+    SupersessionCycle,
     UnreadableMemo,
     apply_proposal,
     extract_edges,
@@ -929,7 +931,7 @@ def test_a_proposal_id_names_the_edge_and_the_sentence_a_reviewer_read():
     """
     base = Proposal("new.md", "old", "new.md", "This supersedes [[old]].")
     assert base.id == Proposal("new.md", "old", "new.md", "This supersedes [[old]].").id
-    assert len(base.id) == 10 and int(base.id, 16) >= 0
+    assert len(base.id) == PROPOSAL_ID_HEX_DIGITS == 10 and int(base.id, 16) >= 0
     assert base.id != Proposal("new.md", "older", "new.md", "This supersedes [[old]].").id
     assert base.id != Proposal("new.md", "old", "new.md", "This never supersedes [[old]].").id
 
@@ -941,7 +943,10 @@ def test_apply_proposal_refuses_an_edge_that_closes_a_cycle(tmp_path):
 
     Red: baseline, `tests/test_fix.py::test_apply_proposal_refuses_an_edge_that_closes_a_cycle`
     failed with `DID NOT RAISE UnreadableMemo` and `a.md` rewritten; target
-    `recall.fix.apply_proposal`, which had no cycle check.
+    `recall.fix.apply_proposal`, which had no cycle check. The refusal is a `SupersessionCycle`
+    since CCA deferred finding CODE-011: red by mutation of `recall.fix.apply_proposal` raising
+    `UnreadableMemo` for the cycle again, this test failed with that `UnreadableMemo` propagating
+    out of `pytest.raises(SupersessionCycle)`.
     """
     from recall.lint import lint_corpus
 
@@ -951,7 +956,7 @@ def test_apply_proposal_refuses_an_edge_that_closes_a_cycle(tmp_path):
         "c.md": "---\nsupersedes: a.md\n---\n# c\n",
     })
     before = (tmp_path / "a.md").read_bytes()
-    with pytest.raises(UnreadableMemo, match=r"cycle.*\(b -> c -> a\)"):
+    with pytest.raises(SupersessionCycle, match=r"cycle.*\(b -> c -> a\)"):
         apply_proposal(tmp_path, Proposal("a.md", "b", "a.md", "This supersedes [[b]]."))
     assert (tmp_path / "a.md").read_bytes() == before
     assert not any(i.code == "supersession-cycle" for i in lint_corpus(tmp_path))
@@ -1032,10 +1037,11 @@ def test_an_unknown_id_writes_nothing_at_all(tmp_path, capsys):
     _two_edges(tmp_path)
     _out, ids = _ids(capsys, tmp_path)
     before = {p.name: p.read_bytes() for p in tmp_path.glob("*.md")}
+    stale = "0123456789abcdef"[:PROPOSAL_ID_HEX_DIGITS]
     with pytest.raises(SystemExit) as exc:
-        main(["lint", str(tmp_path), "--fix", "--apply", f"{ids['aaa_2026-05-01.md']},0123456789"])
+        main(["lint", str(tmp_path), "--fix", "--apply", f"{ids['aaa_2026-05-01.md']},{stale}"])
     assert exc.value.code == 2
-    assert "no proposal 0123456789" in capsys.readouterr().err
+    assert f"no proposal {stale}" in capsys.readouterr().err
     assert {p.name: p.read_bytes() for p in tmp_path.glob("*.md")} == before
 
 
@@ -1359,3 +1365,280 @@ def test_a_heading_after_the_cue_still_ends_its_sentence():
     assert extract_edges("Superseded by [[new_plan_2026-02-02]]\n## If anything breaks") == (
         [], ["new_plan_2026-02-02"],
     )
+
+
+# --- deferred audit fixes, 2026-10-21 (CCA run 20261021T200057Z) ----------------------------------
+#
+# "Red" below is against 8e10eea6a, the branch head before these fixes, with only the two names
+# this module imports from `recall.fix` added (`PROPOSAL_ID_HEX_DIGITS`, `SupersessionCycle`, no
+# behaviour), unless a mutation is named.
+
+
+def test_an_id_copied_with_its_brackets_selects_the_edge(tmp_path, capsys):
+    """The dry run prints `[id]`, and the id copied with its brackets selects the same edge.
+
+    Red: baseline, `tests/test_fix.py::test_an_id_copied_with_its_brackets_selects_the_edge`
+    failed with `SystemExit: 2` ("no proposal [..."); target
+    `recall.cli_commands.lint_check._selected_ids` (CCA deferred finding ENV-003).
+    """
+    _two_edges(tmp_path)
+    _out, ids = _ids(capsys, tmp_path)
+    main(["lint", str(tmp_path), "--fix", "--apply", f"[{ids['aaa_2026-05-01.md']}]"])
+    assert "wrote 1 edge(s), skipped 0; 1 not selected." in capsys.readouterr().out
+    meta, _ = parse_frontmatter((tmp_path / "aaa_2026-05-01.md").read_text(encoding="utf-8"))
+    assert meta["supersedes"] == "zzz_2026-04-01"
+
+
+def test_a_repeated_apply_writes_nothing(tmp_path, capsys):
+    """`--apply a --apply b` kept only b and wrote it, saying nothing about a.
+
+    Red: baseline, `tests/test_fix.py::test_a_repeated_apply_writes_nothing` failed with `DID NOT
+    RAISE SystemExit`; target the `--apply` option in `recall.cli_commands.lint_check.register`
+    (CCA deferred finding ENV-003).
+    """
+    _two_edges(tmp_path)
+    _out, ids = _ids(capsys, tmp_path)
+    before = {p.name: p.read_bytes() for p in tmp_path.glob("*.md")}
+    with pytest.raises(SystemExit) as exc:
+        main([
+            "lint", str(tmp_path), "--fix",
+            "--apply", ids["aaa_2026-05-01.md"], "--apply", ids["bbb_2026-05-01.md"],
+        ])
+    assert exc.value.code == 2
+    assert "give --apply once" in capsys.readouterr().err
+    assert {p.name: p.read_bytes() for p in tmp_path.glob("*.md")} == before
+
+
+def test_an_id_two_proposals_share_writes_nothing(tmp_path, capsys, monkeypatch):
+    """An id is a 40-bit prefix, so a chosen sentence can give a second proposal the id of a
+    benign one; such an id names no one edge, and the whole selection is refused.
+
+    Red: baseline, `tests/test_fix.py::test_an_id_two_proposals_share_writes_nothing` failed with
+    `DID NOT RAISE SystemExit`; target `recall.cli_commands.lint_check._cmd_lint`, whose id map
+    kept the last proposal (CCA deferred finding SEC-004).
+    """
+    _two_edges(tmp_path)
+    monkeypatch.setattr(Proposal, "id", property(lambda self: "a" * PROPOSAL_ID_HEX_DIGITS))
+    before = {p.name: p.read_bytes() for p in tmp_path.glob("*.md")}
+    with pytest.raises(SystemExit) as exc:
+        main(["lint", str(tmp_path), "--fix", "--apply", "a" * PROPOSAL_ID_HEX_DIGITS])
+    assert exc.value.code == 2
+    assert "names no one edge" in capsys.readouterr().err
+    assert {p.name: p.read_bytes() for p in tmp_path.glob("*.md")} == before
+
+
+@pytest.mark.parametrize("body", [
+    "This is not (as of today) superseded by [[new_plan_2026-02-02]].",
+    "It is not, however, superseded by [[new_plan_2026-02-02]].",
+    "This never (in practice) replaces [[old_plan_2026-01-01]].",
+    "This has not (as of today) been superseded by [[new_plan_2026-02-02]].",
+    "It is not, however, being replaced by [[new_plan_2026-02-02]].",
+    "This would, however, be replaced by [[new_plan_2026-02-02]].",
+])
+def test_an_aside_between_a_negation_and_the_cue_does_not_hide_the_negation(body):
+    """A parenthesis or a short aside between commas does not end the clause it interrupts.
+
+    Red: baseline, `tests/test_fix.py::test_an_aside_between_a_negation_and_the_cue_does_not_hide_the_negation`
+    failed on every case with the reference returned as an edge; target
+    `recall.supersession_cues.unasserted`, whose clause began after the aside's last comma or
+    parenthesis (CCA deferred finding BUG-006). The last three cases, an aside before the `be`,
+    `being` or `been` that leads into the cue, failed in the same way against the first version of
+    the fix, whose `recall.supersession_cues._ASIDE` had to end at the cue itself (architect gate,
+    run 20261021T200057Z).
+    """
+    assert extract_edges(body) == ([], [])
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("This plan is no longer current, superseded by [[new_plan_2026-02-02]].",
+     ([], ["new_plan_2026-02-02"])),
+    ("Decided Monday, after review, this supersedes [[old_plan_2026-01-01]].",
+     (["old_plan_2026-01-01"], [])),
+    ("This (the new plan) supersedes [[old_plan_2026-01-01]].", (["old_plan_2026-01-01"], [])),
+    ("This is no longer current (decided Monday) and is superseded by [[new_plan_2026-02-02]].",
+     ([], ["new_plan_2026-02-02"])),
+])
+def test_a_single_comma_or_an_aside_with_no_negation_keeps_the_cue(body, expected):
+    """A single comma still ends the clause, and an aside with nothing negated refuses nothing.
+
+    Passes at baseline. Red by mutation of `recall.supersession_cues._clause_start` returning the
+    sentence start (`return sentence_start`), so the whole sentence before the cue is judged:
+    `tests/test_fix.py::test_a_single_comma_or_an_aside_with_no_negation_keeps_the_cue` failed on
+    the first case with `([], []) == ([], ['new_plan_2026-02-02'])`. The last case, an aside
+    followed by words other than `be`, `being` or `been`, is red by mutation of `_ASIDE` letting
+    any words follow the aside (`(?:(?:been|being|be)\\s+)?` made `(?:\\w+\\s+)*`).
+    """
+    assert extract_edges(body) == expected
+
+
+def test_apply_proposal_refuses_a_memo_saved_during_the_cycle_check(tmp_path, monkeypatch):
+    """The cycle check reads the whole corpus; a save made meanwhile is not overwritten.
+
+    Red: baseline, `tests/test_fix.py::test_apply_proposal_refuses_a_memo_saved_during_the_cycle_check`
+    failed with `DID NOT RAISE UnreadableMemo`; target `recall.fix.apply_proposal`, which wrote
+    the bytes it read before the scan (CCA deferred finding BUG-011).
+    """
+    import recall.fix as fix
+
+    _corpus(tmp_path, {"a.md": "# a\nThis supersedes [[b]].\n", "b.md": "# b\n"})
+    saved = b"# a\nEdited by someone else while the check ran.\n"
+    real = fix.corpus_frontmatter
+
+    def scan_while_someone_saves(root, glob="**/*.md"):
+        (tmp_path / "a.md").write_bytes(saved)
+        return real(root, glob)
+
+    monkeypatch.setattr(fix, "corpus_frontmatter", scan_while_someone_saves)
+    with pytest.raises(UnreadableMemo, match="changed while its edge was being checked"):
+        apply_proposal(tmp_path, Proposal("a.md", "b", "a.md", "This supersedes [[b]]."))
+    assert (tmp_path / "a.md").read_bytes() == saved
+
+
+def test_apply_proposal_refuses_a_memo_removed_during_the_cycle_check(tmp_path, monkeypatch):
+    """A memo deleted while the corpus is scanned is reported as SKIP, not written back.
+
+    Red: mutation of `recall.fix.apply_proposal` reading the memo again without catching
+    `OSError` (the `try` around `f.read_bytes()` removed):
+    `tests/test_fix.py::test_apply_proposal_refuses_a_memo_removed_during_the_cycle_check` failed
+    with `FileNotFoundError` escaping instead of the `UnreadableMemo` the apply loop reports.
+    """
+    import recall.fix as fix
+
+    _corpus(tmp_path, {"a.md": "# a\nThis supersedes [[b]].\n", "b.md": "# b\n"})
+    real = fix.corpus_frontmatter
+
+    def scan_while_someone_deletes(root, glob="**/*.md"):
+        found = real(root, glob)
+        (tmp_path / "a.md").unlink()
+        return found
+
+    monkeypatch.setattr(fix, "corpus_frontmatter", scan_while_someone_deletes)
+    with pytest.raises(UnreadableMemo, match="could not be read again"):
+        apply_proposal(tmp_path, Proposal("a.md", "b", "a.md", "This supersedes [[b]]."))
+    assert not (tmp_path / "a.md").exists()
+
+
+# --- the readers before a cue are bounded (CCA deferred finding PERF-002) -------------------------
+
+
+def _old_sentence_around(text, start, end):
+    """`recall.lint.sentence_around` as it was before PERF-002, the reference for equality."""
+    from recall.lint import _SENTENCE_END
+
+    left = 0
+    for boundary in _SENTENCE_END.finditer(text, 0, start):
+        left = boundary.end()
+    following = _SENTENCE_END.search(text, end)
+    return text[left: following.start() if following else len(text)]
+
+
+def _old_is_reported_speech(body, marker_start):
+    """`recall.fix._is_reported_speech` as it was before PERF-002."""
+    import recall.fix as fix
+
+    head = body[:marker_start]
+    cut = max((head.rfind(c) for c in fix._CLAUSE_END), default=-1)
+    return bool(fix._OTHER_DOC.search(head[cut + 1:]))
+
+
+def _old_hedged_before(body, marker_start):
+    """The hedge half of `recall.fix._is_hedged` as it was before PERF-002."""
+    import recall.fix as fix
+
+    return bool(fix._HEDGE_BEFORE.search(body[:marker_start]))
+
+
+_PIECES = [
+    "a", "b", "word", "x1", " ", "  ", "\t", "\n", "\n\n", "\n- ", "\n12. ", "\n# ", "\n#", ". ",
+    "! ", "?\" ", ".) ", ".", "-", "—", ";", ":", "*", "#", "1", "22", "[[memo]]", "note",
+    "notes.md", "long_name.md", "partially ", "possibly\n", "effectively  ", "xpartially ",
+    "Mostly\t", "supersedes ", " ", " ",
+]
+
+
+@pytest.mark.parametrize("lookback", [1, 3, 8, 40])
+def test_the_bounded_readers_return_what_the_full_scans_returned(monkeypatch, lookback):
+    """Bounding the reads before a cue changes no result, on any text.
+
+    The window is shrunk so short random texts reach every path: a boundary or clause end inside
+    the window, none there (the fallback to a full scan), and a window that begins inside a run of
+    characters a sentence end can hold. 4,000 texts per window, from a fixed seed.
+
+    Red: mutation of `recall.lint.sentence_around` starting its bounded scan at
+    `start - SENTENCE_LOOKBACK` instead of after a character no sentence end can hold
+    (`first = start - SENTENCE_LOOKBACK`):
+    `tests/test_fix.py::test_the_bounded_readers_return_what_the_full_scans_returned` failed at the
+    `sentence_around` assertion (windows 3, 8 and 40 seen). Red also by mutation of
+    `recall.fix._is_reported_speech` dropping its fallback (`elif lo:` made `elif False:`), failing
+    at the `_is_reported_speech` assertion (windows 1 and 8 seen), and of `recall.fix._hedged_before`
+    searching from the whitespace run itself (`max(0, run - _HEDGE_WORD_MAX)` made `run`), failing
+    at the hedge assertion (windows 8 and 40 seen).
+    """
+    import random
+
+    import recall.fix as fix
+    import recall.lint as lint
+
+    monkeypatch.setattr(lint, "SENTENCE_LOOKBACK", lookback)
+    monkeypatch.setattr(fix, "SENTENCE_LOOKBACK", lookback)
+    rng = random.Random(20261021 + lookback)
+    for _ in range(4000):
+        body = "".join(rng.choice(_PIECES) for _ in range(rng.randint(0, 60)))
+        start = rng.randint(0, len(body))
+        end = rng.randint(start, len(body))
+        assert lint.sentence_around(body, start, end) == _old_sentence_around(body, start, end), (
+            body, start, end,
+        )
+        assert fix._is_reported_speech(body, start) == _old_is_reported_speech(body, start), (
+            body, start,
+        )
+        assert fix._hedged_before(body, start) == _old_hedged_before(body, start), (body, start)
+
+
+class _ReadSpans:
+    """A compiled pattern that records how much text each scan and each search was given."""
+
+    def __init__(self, pattern):
+        self._pattern = pattern
+        self.scans = []
+        self.searches = []
+
+    @staticmethod
+    def _span(string, pos, endpos):
+        return (len(string) if endpos is None else endpos) - pos
+
+    def finditer(self, string, pos=0, endpos=None):
+        self.scans.append(self._span(string, pos, endpos))
+        return self._pattern.finditer(string, pos, len(string) if endpos is None else endpos)
+
+    def search(self, string, pos=0, endpos=None):
+        self.searches.append(self._span(string, pos, endpos))
+        return self._pattern.search(string, pos, len(string) if endpos is None else endpos)
+
+
+def test_the_text_before_each_cue_is_read_within_a_window(monkeypatch):
+    """A memo of many short sentences, each a cue, is read before each cue only within the
+    window: the sentence start and the hedge are looked for behind the cue, not from the start.
+
+    Measured once each on the author's workstation, `extract_edges` on 2,000 and 8,000 such
+    sentences took 9.45 s and 138.7 s before, 2.37 s and 8.96 s after.
+
+    Red: baseline 19965673c, with only the names these tests read added (the two `recall.fix`
+    names this module imports and `recall.lint.SENTENCE_LOOKBACK`, no behaviour),
+    `tests/test_fix.py::test_the_text_before_each_cue_is_read_within_a_window` failed at the
+    `sentence_around` assertion, the longest scan before a cue being the whole text before the
+    last one; target `recall.lint.sentence_around` and `recall.fix._is_hedged`.
+    """
+    import recall.fix as fix
+    import recall.lint as lint
+
+    body = "This supersedes [[alpha_memo_2026-01-01]].\n" * 200
+    sentence_ends = _ReadSpans(lint._SENTENCE_END)
+    hedges = _ReadSpans(fix._HEDGE_BEFORE)
+    monkeypatch.setattr(lint, "_SENTENCE_END", sentence_ends)
+    monkeypatch.setattr(fix, "_HEDGE_BEFORE", hedges)
+    active, _passive = extract_edges(body)
+    assert len(active) == 200
+    # `finditer` is the scan behind a cue; `search` looks forward, to the next sentence end.
+    assert max(sentence_ends.scans) <= lint.SENTENCE_LOOKBACK
+    assert max(hedges.searches) <= 64

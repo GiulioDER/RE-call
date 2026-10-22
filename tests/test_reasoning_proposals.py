@@ -627,11 +627,25 @@ def test_a_plain_direct_reference_is_unchanged() -> None:
 
     Passes on master; red by mutation of `_named_subject` returning None when nothing is named:
     this test then failed with `[] == [('rollout_v1.md', 'rollout_v2.md', 'candidate')]`.
+
+    The evidence ids, which the proposal id hashes, are pinned too (CCA deferred finding
+    CODE-017): red by mutation of `_direct_reference_proposals` leaving the target's claim out of
+    `source_evidence_ids`, this test failed with the target's source id missing from the set.
     """
-    assert _direct([
+    chunks = [
         _chunk("a", "rollout_v1.md", "decision: rollout. Status: active."),
         _chunk("b", "rollout_v2.md", "decision: rollout. Supersedes rollout_v1.md."),
-    ]) == [("rollout_v1.md", "rollout_v2.md", "candidate")]
+    ]
+    assert _direct(chunks) == [("rollout_v1.md", "rollout_v2.md", "candidate")]
+    graph = build_reasoning_graph(
+        chunks, tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a", include_text=True
+    )
+    sources = {node.file: node.id for node in graph.nodes if node.kind == "source"}
+    (proposal,) = [
+        proposal for proposal in deterministic_inference_proposals(graph)
+        if proposal.rule_id == "deterministic.direct_textual_reference"
+    ]
+    assert set(proposal.source_evidence_ids) == {sources["rollout_v1.md"], sources["rollout_v2.md"]}
 
 
 @pytest.mark.parametrize("text,holder", [
@@ -688,3 +702,254 @@ def test_a_long_token_does_not_stall_the_direct_reference_rule() -> None:
     found = _direct([_chunk("x", "x.md", "x"), _chunk("holder", "holder.md", text)])
     assert time.perf_counter() - start < 0.5
     assert found == [("x.md", "holder.md", "candidate")]
+
+
+# --- deferred audit fixes, 2026-10-21 (CCA run 20261021T200057Z) ----------------------------------
+
+
+@pytest.mark.parametrize("sentence, condition", [
+    ("This replaces old_plan.md, pending the board vote next week, unless the canary fails.",
+     "unless"),
+    ("This replaces old_plan.md," + " " * 20 + "should the canary fail.", "should"),
+])
+def test_a_condition_past_the_cue_scan_still_refuses_the_cue(sentence: str, condition: str) -> None:
+    """The cues are read from the first 4,000 characters; the condition is judged past them.
+
+    The reference ends before the cut and the condition word starts after it.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_reasoning_proposals.py::test_a_condition_past_the_cue_scan_still_refuses_the_cue`
+    failed on both cases with `[('old_plan.md', 'holder.md', 'candidate')] == []`; target
+    `recall.reasoning_proposals._deterministic._direct_reference_proposals`, which judged the
+    sliced text (CCA deferred finding BUG-012).
+    """
+    # Lines, not one long line: the cue gate reads from a line start at most 2,000 characters
+    # back, and with no newline it would refuse the cue for that reason alone.
+    pad = "Notes.\n" * 566
+    reference_end = len(pad) + sentence.index("old_plan.md") + len("old_plan.md")
+    assert reference_end < 4000 <= len(pad) + sentence.index(condition)
+    old = _chunk("old", "old_plan.md", "The old plan.")
+    # The same place without the condition is proposed, so the refusal below is the condition's.
+    assert _direct([old, _chunk("holder", "holder.md", pad + "This replaces old_plan.md.")]) == [
+        ("old_plan.md", "holder.md", "candidate"),
+    ]
+    assert _direct([old, _chunk("holder", "holder.md", pad + sentence)]) == []
+
+
+def test_a_superseded_document_naming_its_successor_is_not_called_a_third_document() -> None:
+    """old.md saying "[[new]] supersedes old.md" is a party to the edge, not a third document.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_reasoning_proposals.py::test_a_superseded_document_naming_its_successor_is_not_called_a_third_document`
+    failed with the uncertainty 'the relation is reported by a third document'; target
+    `recall.reasoning_proposals._deterministic._direct_reference_proposals` (CCA deferred finding
+    CODE-013).
+    """
+    graph = build_reasoning_graph(
+        [
+            _chunk("old", "old_plan.md", "[[new_plan]] supersedes old_plan.md."),
+            _chunk("new", "new_plan.md", "The new plan."),
+        ],
+        tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a", include_text=True,
+    )
+    (proposal,) = [
+        proposal for proposal in deterministic_inference_proposals(graph)
+        if proposal.rule_id == "deterministic.direct_textual_reference"
+    ]
+    assert (proposal.subject_id, proposal.object_id, proposal.status) == (
+        "old_plan.md", "new_plan.md", "requires_review",
+    )
+    assert "the superseded document names its successor" in proposal.uncertainty
+    assert not any("third document" in reason for reason in proposal.uncertainty)
+
+
+@pytest.mark.parametrize("text", [
+    "It never, in practice, supersedes rollout_v1.md.",
+    "This never (in practice) replaces rollout_v1.md.",
+])
+def test_an_aside_after_a_negation_still_refuses_the_direct_reference(text: str) -> None:
+    """The deterministic rule shares the cue gate, so an aside hides no negation there either.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_reasoning_proposals.py::test_an_aside_after_a_negation_still_refuses_the_direct_reference`
+    failed on both cases with `[('rollout_v1.md', 'rollout_draft.md', 'candidate')] == []`; target
+    `recall.supersession_cues.unasserted` (CCA deferred finding BUG-006).
+    """
+    assert _direct([
+        _chunk("old", "rollout_v1.md", "decision: rollout. Status: active."),
+        _chunk("draft", "rollout_draft.md", text),
+    ]) == []
+
+
+# --- the date and name rules (supersession audit 2026-10-21, finding 25) --------------------------
+#
+# "Red" below is against c2a325844, the branch head before these fixes, unless a mutation is named.
+
+REPEATED = "deterministic.repeated_decision_subject"
+TEMPORAL = "deterministic.temporal_ordering"
+VERSION = "deterministic.explicit_version_naming"
+
+
+def _supersedes(chunks: list[Chunk], *rules: str) -> list[tuple[str, str, str]]:
+    graph = build_reasoning_graph(
+        chunks, tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a", include_text=True
+    )
+    return sorted(
+        (proposal.subject_id, proposal.object_id, str(proposal.rule_id))
+        for proposal in deterministic_inference_proposals(graph)
+        if proposal.proposed_relation == "supersedes" and (not rules or proposal.rule_id in rules)
+    )
+
+
+def test_a_shared_status_word_is_not_a_shared_subject() -> None:
+    """"Status: done" in two unrelated memos is a state, not one decision taken twice.
+
+    Red: c2a325844, `tests/test_reasoning_proposals.py::test_a_shared_status_word_is_not_a_shared_subject`
+    failed with the repeated-subject and temporal-ordering rules both proposing
+    `('deploy_notes.md', 'garden_log.md')`; target
+    `recall.reasoning_proposals._deterministic._decision_subject`, which read `status:` as a
+    subject (finding 25a).
+    """
+    assert _supersedes([
+        _chunk("deploy", "deploy_notes.md", "Status: done.", valid_from="2026-01-01"),
+        _chunk("garden", "garden_log.md", "Status: done.", valid_from="2026-02-01"),
+    ]) == []
+
+
+def test_a_decision_line_still_names_a_subject_across_file_names() -> None:
+    """Two memos deciding the same subject are paired, whatever their files are called.
+
+    Passes at c2a325844. Red by mutation of `_DECISION_SUBJECT_RE` without `decision`: this test
+    failed with `[] == [('rollout_plan.md', 'launch_notes.md', ...)]`.
+    """
+    assert _supersedes([
+        _chunk("plan", "rollout_plan.md", "decision: rollout. Ship Monday.", valid_from="2026-01-01"),
+        _chunk("notes", "launch_notes.md", "decision: rollout. Ship Tuesday.", valid_from="2026-02-01"),
+    ], REPEATED) == [("rollout_plan.md", "launch_notes.md", REPEATED)]
+
+
+@pytest.mark.parametrize("first, second", [
+    ("2026-01-01", None),
+    ("2026-01-01", "2026-01-01"),
+])
+def test_an_undated_or_same_day_claim_is_never_the_newer(first: str | None, second: str | None) -> None:
+    """Which memo supersedes comes from the dates; with one undated, or both the same, it is not
+    known, and an undated claim sorting last made it the newer one.
+
+    Red: c2a325844, `tests/test_reasoning_proposals.py::test_an_undated_or_same_day_claim_is_never_the_newer`
+    failed in both cases with `[('retention_a.md', 'retention_b.md', ...)] == []`; target
+    `recall.reasoning_proposals._deterministic._repeated_decision_subject_proposals` (finding 25b).
+    """
+    assert _supersedes([
+        _chunk("a", "retention_a.md", "decision: retention. Keep 30 days.", valid_from=first),
+        _chunk("b", "retention_b.md", "decision: retention. Keep 60 days.", valid_from=second),
+    ], REPEATED) == []
+
+
+def test_ipv4_and_ipv6_are_not_versions_of_one_document() -> None:
+    """A `v` and digits inside a word are not a version: ipv4 and ipv6 are two names.
+
+    Red: c2a325844, `tests/test_reasoning_proposals.py::test_ipv4_and_ipv6_are_not_versions_of_one_document`
+    failed with `('ipv4.md', 'ipv6.md')` proposed by the version, repeated-subject and
+    temporal-ordering rules; target `recall.reasoning_proposals._deterministic._VERSION_RE` and the
+    version suffix `_decision_subject` stripped (finding 25c).
+    """
+    assert _supersedes([
+        _chunk("v4", "ipv4.md", "Addressing notes.", valid_from="2026-01-01"),
+        _chunk("v6", "ipv6.md", "Addressing notes.", valid_from="2026-02-01"),
+    ]) == []
+
+
+def test_a_separated_version_is_still_a_version() -> None:
+    """`_v2`, `-v2` and `.v2` name versions, so the version rule keeps them.
+
+    Passes at c2a325844. Red by mutation of `_VERSION_RE` taking a version only as the whole name
+    (`(?:[_\\-. ]|^)` made `(?:^)`): this test failed with `[] == [...]`.
+    """
+    assert _supersedes([
+        _chunk("one", "rollout_v1.md", "First."),
+        _chunk("two", "rollout-v2.md", "Second."),
+        _chunk("three", "rollout.v3.md", "Third."),
+    ], VERSION) == [
+        ("rollout-v2.md", "rollout.v3.md", VERSION),
+        ("rollout_v1.md", "rollout-v2.md", VERSION),
+    ]
+
+
+def test_an_edge_the_date_rules_share_is_proposed_once() -> None:
+    """Two memos deciding the same subject under one file name were one edge under two ids.
+
+    Red: c2a325844, `tests/test_reasoning_proposals.py::test_an_edge_the_date_rules_share_is_proposed_once`
+    failed with the edge listed twice, once per rule; target
+    `recall.reasoning_proposals._deterministic.deterministic_inference_proposals` (finding 25d).
+    """
+    assert _supersedes([
+        _chunk("one", "cache_policy_v1.md", "decision: cache policy.", valid_from="2026-01-01"),
+        _chunk("two", "cache_policy_v2.md", "decision: cache policy.", valid_from="2026-02-01"),
+    ], REPEATED, TEMPORAL) == [("cache_policy_v1.md", "cache_policy_v2.md", REPEATED)]
+
+
+def test_temporal_ordering_still_orders_one_file_whose_decisions_are_worded_apart() -> None:
+    """Temporal ordering keys on the file name, so it still pairs a file's versions whose
+    decision lines word the subject differently, which the repeated-subject rule does not.
+
+    Red: c2a325844, `tests/test_reasoning_proposals.py::test_temporal_ordering_still_orders_one_file_whose_decisions_are_worded_apart`
+    failed with `[] == [('cache_policy_v1.md', 'cache_policy_v2.md', ...)]`: the entity was the
+    decision subject, so the two claims were apart (finding 25d).
+    """
+    assert _supersedes([
+        _chunk("one", "cache_policy_v1.md", "decision: cache.", valid_from="2026-01-01"),
+        _chunk("two", "cache_policy_v2.md", "decision: caching.", valid_from="2026-02-01"),
+    ], REPEATED, TEMPORAL) == [("cache_policy_v1.md", "cache_policy_v2.md", TEMPORAL)]
+
+
+def test_temporal_ordering_does_not_pair_same_named_memos_in_different_folders() -> None:
+    """Two folders' `decisions.md` deciding unrelated things are two memos, not two versions.
+
+    The file entity dropped the directory, so keying temporal ordering on it paired them, where
+    the decision subject had kept them apart. The same folder's versions still pair.
+
+    Red: c2a325844 plus the first version of this change (entity without its folder),
+    `tests/test_reasoning_proposals.py::test_temporal_ordering_does_not_pair_same_named_memos_in_different_folders`
+    failed at the first assertion with `[('team-a/decisions.md', 'team-b/decisions.md', ...)] == []`;
+    target `recall.reasoning_proposals._deterministic._file_entity` (CCA run 20261021T220048Z,
+    BUG-001).
+    """
+    assert _supersedes([
+        _chunk("a", "team-a/decisions.md", "Decision: use Postgres for billing.", valid_from="2026-01-01"),
+        _chunk("b", "team-b/decisions.md", "Decision: adopt Rust for the CLI.", valid_from="2026-02-01"),
+    ], REPEATED, TEMPORAL) == []
+    assert _supersedes([
+        _chunk("one", "notes/cache_policy_v1.md", "decision: cache.", valid_from="2026-01-01"),
+        _chunk("two", "notes/cache_policy_v2.md", "decision: caching.", valid_from="2026-02-01"),
+    ], REPEATED, TEMPORAL) == [("notes/cache_policy_v1.md", "notes/cache_policy_v2.md", TEMPORAL)]
+
+
+def test_a_folder_does_not_change_what_the_subject_rules_pair() -> None:
+    """Only temporal ordering keys on the folder; the subject a memo with no decision line falls
+    back to is its bare file name, so a status-only memo in a folder still meets the decision line
+    that names it, as it does at the root.
+
+    Red: the first folder-keyed version of this change (CCA run 20261021T220048Z, L5.5),
+    `tests/test_reasoning_proposals.py::test_a_folder_does_not_change_what_the_subject_rules_pair`
+    failed with the `contradicts` and repeated-subject proposals missing for the `notes/` pair;
+    target `recall.reasoning_proposals._deterministic._source_claims`, whose subject fallback had
+    taken the folder.
+    """
+    def rules(folder: str) -> list[tuple[str, str, str]]:
+        graph = build_reasoning_graph(
+            [
+                _chunk("one", f"{folder}cache_policy_v1.md", "Status: enabled.",
+                       valid_from="2026-01-01", valid_until="2026-06-01"),
+                _chunk("two", f"{folder}cache_policy_v2.md", "Decision: cache_policy. Status: disabled.",
+                       valid_from="2026-02-01", valid_until="2026-07-01"),
+            ],
+            tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a", include_text=True,
+        )
+        return sorted(
+            (proposal.proposed_relation, str(proposal.rule_id), proposal.status)
+            for proposal in deterministic_inference_proposals(graph)
+        )
+
+    assert ("contradicts", "deterministic.contradictory_validity_windows", "requires_review") in rules("")
+    assert rules("notes/") == rules("")

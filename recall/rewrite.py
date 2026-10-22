@@ -731,7 +731,7 @@ def _refuse_cycle(root: Path, edit_file: str, value: str) -> None:
     if chain is not None:
         raise RewriteRefused(
             "refusing to write: "
-            + describe_cycle(supersedes_key(edit_file), supersedes_key(value), chain)
+            + describe_cycle(edit_file, value, chain)
         )
 
 
@@ -773,8 +773,14 @@ def apply_rewrite(
     *,
     ledger: RejectionLedger | None = None,
     apply: bool = False,
+    plan: RewritePlan | None = None,
 ) -> RewriteResult:
     """Declare `fact` in the corpus file it belongs to, or report why it was not.
+
+    ``plan`` is the `plan_rewrite(root, fact)` a caller has just computed, so the corpus is not
+    read and judged a second time; a plan of another fact is a `RewriteRefused`. Leave it out
+    unless the plan was made under the same lock as this call, because a plan made earlier was
+    judged against the corpus as it stood then.
 
     Two kinds of "no" are distinguished on purpose. A `RewriteRefused` raises: a caller error (an
     unreviewed fact, an unwritable key, an unresolvable reference), or a `supersedes:` edge that
@@ -794,7 +800,15 @@ def apply_rewrite(
     refused, which differs from `fix.apply_proposal`, and is worth knowing if the two are ever
     driven from one call site.
     """
-    plan = plan_rewrite(root, fact)
+    if plan is None:
+        plan = plan_rewrite(root, fact)
+    else:
+        # The trust check is the one part of planning that reads no file, so it is not skipped.
+        checked = _refuse_untrusted(fact)
+        if (plan.fact_id, plan.proposal_id, plan.reviewer_id) != (
+            checked.fact_id, checked.proposal_id, checked.reviewer_id
+        ):
+            raise RewriteRefused(f"the plan given is for fact {plan.fact_id}, not {checked.fact_id}")
     if ledger is not None and ledger.is_rejected(plan.claim):
         return RewriteResult(plan, False, f"claim {plan.claim} was rejected by a reviewer")
 

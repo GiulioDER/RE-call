@@ -7,6 +7,7 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 import heapq
+import posixpath
 from types import MappingProxyType
 from typing import Any
 
@@ -113,13 +114,16 @@ def _source_claims(graph: ReasoningGraphProjection) -> Mapping[str, EvidenceClai
                 for chunk in chunk_nodes
                 for key in ("title", "heading")
             ).strip()
-        subject = _decision_subject(file, text)
         claims[file] = EvidenceClaim(
             id=node.id,
             evidence_id=node.id,
             text=text,
-            entity_id=subject,
-            subject=subject,
+            # Two keys, so the two rules that order claims by date group them differently: the
+            # subject is what a decision line names (the bare file name without its version when
+            # it names nothing, which a decision line elsewhere can name), the entity is the file
+            # name without its version, in its folder.
+            entity_id=_file_entity(file),
+            subject=_decision_subject(text) or _versionless_stem(file),
             valid_from=valid_from,
             valid_until=valid_until,
             metadata={"file": file, "source": node.source},
@@ -137,9 +141,15 @@ def _latest_datetime(values: Iterable[Any]) -> datetime | None:
     return max(dates) if dates else None
 
 
-_VERSION_RE = re.compile(r"^(?P<base>.*?)(?:[_\-. ]?v(?P<version>\d+))(?P<suffix>\.[^.]+)?$")
+#: A version is ``v`` and digits after a separator, or as the whole name: ``plan_v2``, ``v2``.
+#: Written with no separator it is part of a word, so ``ipv4`` and ``ipv6`` are two names, not two
+#: versions of ``ip``.
+_VERSION_RE = re.compile(r"^(?P<base>.*?)(?:[_\-. ]|^)v(?P<version>\d+)(?P<suffix>\.[^.]+)?$")
+_VERSION_SUFFIX_RE = re.compile(r"(?:[_\-. ]|^)v\d+$", re.IGNORECASE)
+#: What a decision line names. A status or a verdict names a state, not a subject: "Status: done"
+#: in two unrelated memos is not one decision taken twice.
 _DECISION_SUBJECT_RE = re.compile(
-    r"(?:decision|decided|choice|policy|status|verdict)\s*[:=\-]\s*(?P<subject>[^\n.;]+)",
+    r"(?:decision|decided|choice|policy)\s*[:=\-]\s*(?P<subject>[^\n.;]+)",
     re.IGNORECASE,
 )
 _DIRECT_REF_RE = re.compile(
@@ -188,12 +198,23 @@ def _version_key(file: str) -> tuple[str, int] | None:
     )
 
 
-def _decision_subject(file: str, text: str) -> str:
+def _decision_subject(text: str) -> str:
+    """The subject a decision line in the first 1,000 characters names, or "" when none does."""
     match = _DECISION_SUBJECT_RE.search(text[:1000])
-    if match:
-        return supersedes_key(match.group("subject"))
-    stem = supersedes_key(file)
-    return re.sub(r"(?:[_\-. ]?v\d+)$", "", stem, flags=re.IGNORECASE)
+    return supersedes_key(match.group("subject")) if match else ""
+
+
+def _versionless_stem(file: str) -> str:
+    """The file's name without its folder or version: ``notes/rollout_v2.md`` is ``rollout``."""
+    return _VERSION_SUFFIX_RE.sub("", supersedes_key(file))
+
+
+def _file_entity(file: str) -> str:
+    """The file's name without its version, in its folder: ``notes/rollout_v2.md`` is
+    ``notes/rollout``. Two folders' ``decisions.md`` are two entities, not versions of one."""
+    stem = _versionless_stem(file)
+    folder = posixpath.dirname(file)
+    return f"{folder}/{stem}" if folder and stem else stem
 
 
 def _authored_supersession_pairs(graph: ReasoningGraphProjection) -> set[tuple[str, str]]:
@@ -270,9 +291,14 @@ def deterministic_inference_proposals(
     proposals: list[InferenceProposal] = []
     proposals.extend(_explicit_version_proposals(graph, context, claims, authored))
     proposals.extend(_direct_reference_proposals(graph, context, claims, authored))
-    proposals.extend(_repeated_decision_subject_proposals(graph, context, claims, authored))
+    repeated = _repeated_decision_subject_proposals(graph, context, claims, authored)
+    proposals.extend(repeated)
     proposals.extend(_contradictory_validity_window_proposals(graph, context, claims))
-    proposals.extend(_temporal_ordering_proposals(graph, context, claims, authored))
+    # Both rules read "the later-dated memo supersedes the earlier one about the same thing", so
+    # an edge the repeated-subject rule proposed is not proposed again, under a second id, by
+    # temporal ordering.
+    already = {(proposal.subject_id, proposal.object_id) for proposal in repeated}
+    proposals.extend(_temporal_ordering_proposals(graph, context, claims, authored | already))
 
     by_id = {proposal.id: proposal for proposal in proposals}
     return tuple(by_id[key] for key in sorted(by_id))
@@ -346,7 +372,11 @@ def _direct_reference_proposals(
             if target is None:
                 continue
             # "This draft never supersedes old.md" names the relation without asserting it.
-            if unasserted(text, match.span("cue"), target_span):
+            # Judged on the whole text, not the 4,000-character slice the cues are read from: a
+            # sentence that crosses the cut would lose a trailing "unless" or ", should".
+            # `unasserted` bounds its own read, and the offsets agree because the slice starts
+            # at 0.
+            if unasserted(claim.text, match.span("cue"), target_span):
                 continue
             superseder = _named_subject(text, match.start("cue"), unique, file)
             if superseder is None or target == superseder or (target, superseder) in authored:
@@ -371,7 +401,7 @@ def _direct_reference_proposals(
                     confidence=RULE_CONFIDENCE["deterministic.direct_textual_reference"],
                     uncertainty=(
                         ("the reference remains corpus text, not an instruction",)
-                        + (("the relation is reported by a third document",) if reported else ())
+                        + ((_reported_by(file, target),) if reported else ())
                     ),
                     status="requires_review" if reported else "candidate",
                     rule_id="deterministic.direct_textual_reference",
@@ -379,6 +409,18 @@ def _direct_reference_proposals(
                 )
             )
     return proposals
+
+
+def _reported_by(holder: str, target: str) -> str:
+    """Why a direct reference whose superseder is not its holder needs a reviewer.
+
+    The holder is either a third document or the superseded one naming its successor
+    ("[[new]] supersedes old.md" written in old.md); calling the second a third document was
+    wrong about who said it.
+    """
+    if holder == target:
+        return "the superseded document names its successor"
+    return "the relation is reported by a third document"
 
 
 def _named_subject(
@@ -435,7 +477,11 @@ def _repeated_decision_subject_proposals(
             newer_file = str(newer.metadata["file"])
             if older_file == newer_file or (older_file, newer_file) in authored:
                 continue
-            if older.valid_from is None and newer.valid_from is None:
+            # The direction comes from the dates. An undated claim sorts last and a tie sorts by
+            # file name, so either would let a sort position name the newer memo.
+            if older.valid_from is None or newer.valid_from is None:
+                continue
+            if older.valid_from >= newer.valid_from:
                 continue
             proposals.append(
                 _make_proposal(
