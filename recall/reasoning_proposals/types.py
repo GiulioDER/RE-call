@@ -18,7 +18,14 @@ from recall.reasoning_graph import ReasoningGraphNode, ReasoningGraphProjection
 PROPOSAL_SCHEMA_VERSION = 2
 DETERMINISTIC_PROVIDER_ID = "recall.deterministic"
 DETERMINISTIC_MODEL_ID = "rules"
-DETERMINISTIC_PROVIDER_REVISION = "session3-v1"
+#: The revision of the deterministic rules. A promoted edge records it as its
+#: `source_model_revision`, and an accepted proposal writes it into the memo's derived block, so
+#: it names the rules that proposed the edge. Bump it when a rule changes which pairs it proposes,
+#: in which direction or at which status; a refactor, a renamed constant or a reworded
+#: explanation does not bump it. Every proposal id is a hash over it, so a bump changes every id.
+#: `session3-v2`: the subject rules group in one folder, a version series is one folder's files,
+#: a same-start pair gets its later successor, and a version order the dates contradict is referred.
+DETERMINISTIC_PROVIDER_REVISION = "session3-v2"
 
 ProposalStatus = Literal["candidate", "rejected", "requires_review"]
 #: Single source of truth for the status vocabulary. `_providers._checked_status` and
