@@ -848,6 +848,16 @@ class LiteStore:
         finally:
             reader.close()
 
+    def record_chunks(self) -> list[Chunk]:
+        """Every chunk carrying an audit record or a code anchor, without passage text: the read behind
+        `recall.records.lookup_records`, the same rows its PostgreSQL query returns."""
+        rows = self._metadata_values(
+            "SELECT id, source, metadata FROM chunks "
+            "WHERE json_type(metadata, '$.recall_record') IS NOT NULL "
+            "OR json_type(metadata, '$.code_anchor') IS NOT NULL ORDER BY id"
+        )
+        return [Chunk(id=cid, source=source, text="", metadata=json.loads(metadata)) for cid, source, metadata in rows]
+
     def chunks_for_source(self, source: str) -> list[Chunk]:
         """One exact source's chunks in ingestion order, `(indexed_at, id)`, as Postgres orders them."""
         if not isinstance(source, str) or not source:

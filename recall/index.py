@@ -32,9 +32,10 @@ from recall.extraction import (
     extract_document,
     strip_nul_from_blocks,
 )
-from recall.frontmatter import legacy_pairing_differs, validity_bounds
+from recall.frontmatter import RECORD_KEY, legacy_pairing_differs, validity_bounds
 from recall.index_lock import single_writer
 from recall.observability import get_logger
+from recall.records import admit_record
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
 from recall.security_policy import AccessContext, SourceSecurityPolicy
@@ -676,10 +677,25 @@ def _body_derivation_hash(raw: str, content_hash: str) -> str:
 
     `content_hash` itself stays truthful and is what lands in chunk metadata. Perturbing the
     stored value would make `source_raw_hashes()` report a hash that is not the file's.
+
+    The same narrow trigger carries the `recall_record` parser (2026-10-21): a memo declaring one
+    re-derives once, so a memo written with a record before this parser was installed gains it
+    on the next run instead of being skipped as unchanged. The generation path's equivalent is
+    `recall.generations._METADATA_RULE_VERSION`.
     """
-    if not legacy_pairing_differs(raw):
-        return content_hash
-    return hashlib.sha256(f"{content_hash}\x00frontmatter-pairing-2026-08-11".encode()).hexdigest()
+    if legacy_pairing_differs(raw):
+        content_hash = hashlib.sha256(
+            f"{content_hash}\x00frontmatter-pairing-2026-08-11".encode()
+        ).hexdigest()
+    if _declares_record(raw):
+        content_hash = hashlib.sha256(f"{content_hash}\x00recall-record-2026-10-21".encode()).hexdigest()
+    return content_hash
+
+
+def _declares_record(raw: str) -> bool:
+    """Whether the front matter declares `recall_record`. A substring test first: this runs on
+    every file of every run, and a full parse of files that cannot match would be waste."""
+    return RECORD_KEY in raw and RECORD_KEY in parse_document(raw).meta
 
 
 def _index_fingerprint(
@@ -1235,7 +1251,7 @@ class Indexer:
             if is_markdown:
                 # `body` is the human authored body. Derived blocks are never evidence.
                 document = parse_document(raw)
-                meta, body = document.meta, document.human_body
+                meta, body = admit_record(document.meta, str(f)), document.human_body
                 try:
                     validity_bounds(meta)
                 except ValueError as exc:

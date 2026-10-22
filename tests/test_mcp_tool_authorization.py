@@ -94,6 +94,7 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     ),
     "recall_current_facts": (SCOPE_READ, "read", {}),
     "recall_related": (SCOPE_READ, "read", {"seed_chunk_id": "c1"}),
+    "recall_records": (SCOPE_READ, "read", {"ids": ["RE-call:x:BUG-1"]}),
     "recall_current_state": (SCOPE_READ, "read", {}),
     "recall_reasoning_query": (SCOPE_READ, "read", {"query": "q"}),
     "recall_query_construction_challenge": (

@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 
 from recall.calibration import Calibration
+from recall.frontmatter import RECORD_KEY
 from recall.lineage import canonical_sha256
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.supersession import EdgeCandidates, SupersessionGraph, store_supersession_graph
@@ -21,7 +22,8 @@ from recall.types import (
     TrustedHit,
 )
 
-RelatedRelation = Literal["source", "ordinal", "supersession"]
+RelatedRelation = Literal["source", "ordinal", "supersession", "caused_by"]
+RELATED_RELATIONS: frozenset[str] = frozenset({"source", "ordinal", "supersession", "caused_by"})
 MAX_RELATED_ITEMS = 50
 
 
@@ -56,6 +58,17 @@ def _file(chunk: Chunk) -> str:
 def _ordinal(chunk: Chunk) -> int | None:
     value = chunk.metadata.get("ord")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _record_edges(chunk: Chunk) -> tuple[str | None, frozenset[str]]:
+    """The chunk's audit record id and the ids its `caused_by` names (`recall.records`)."""
+    record = chunk.metadata.get(RECORD_KEY)
+    if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+        return None, frozenset()
+    causes = record.get("caused_by")
+    if not isinstance(causes, list):
+        return record["id"], frozenset()
+    return record["id"], frozenset(c for c in causes if isinstance(c, str))
 
 
 def _lineage(graph: SupersessionGraph, seed: str) -> frozenset[str]:
@@ -119,8 +132,8 @@ def trusted_related(
         raise ValueError("max_items must be a positive int")
     if max_items > MAX_RELATED_ITEMS:
         raise ValueError(f"max_items must be <= {MAX_RELATED_ITEMS}")
-    if relation not in {"source", "ordinal", "supersession"}:
-        raise ValueError("relation must be source, ordinal, or supersession")
+    if relation not in RELATED_RELATIONS:
+        raise ValueError("relation must be source, ordinal, supersession, or caused_by")
     snapshot = getattr(store, "snapshot", None)
     if _generation_snapshot and callable(snapshot):
         with snapshot():
@@ -203,6 +216,11 @@ def trusted_related(
         linked = _lineage(graph, graph.key(seed_file, seed.source))
         if not linked:
             candidates_iter = ()
+    # `caused_by` is a regression edge between audit records, read both ways: the records the seed
+    # was caused by, and the records the seed's fix caused. A seed with no record has neither.
+    seed_record, seed_causes = _record_edges(seed)
+    if relation == "caused_by" and seed_record is None:
+        candidates_iter = ()
     if candidates_iter is None:
         candidates_iter = store.iter_chunks()
     related: list[ScoredChunk] = []
@@ -216,10 +234,13 @@ def trusted_related(
             seed_ord is not None and ordinal is not None and abs(ordinal - seed_ord) <= 2
         )
         supersession = relation == "supersession" and graph.key(file, chunk.source) in linked
+        record_id, causes = _record_edges(chunk) if relation == "caused_by" else (None, frozenset())
         matches = {
             "source": same_source,
             "ordinal": same_source and adjacent,
             "supersession": supersession,
+            "caused_by": record_id is not None
+            and (record_id in seed_causes or (seed_record is not None and seed_record in causes)),
         }
         if matches[relation]:
             if security_policy is not None:
@@ -299,4 +320,10 @@ def trusted_related(
     )
 
 
-__all__ = ["MAX_RELATED_ITEMS", "RelatedEvidenceResult", "RelatedRelation", "trusted_related"]
+__all__ = [
+    "MAX_RELATED_ITEMS",
+    "RELATED_RELATIONS",
+    "RelatedEvidenceResult",
+    "RelatedRelation",
+    "trusted_related",
+]
