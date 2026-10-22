@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from recall.support import CalibrationCoverage, QuerySupport
 
@@ -48,6 +49,27 @@ def _utc_datetime(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+#: How many values a fact's predicate holds at once: ``single`` (a new value contradicts the old),
+#: ``set`` (a second email is a second email) or ``event`` (a second visit is a second visit).
+FactCardinality = Literal["single", "set", "event"]
+#: The same values as a tuple, derived from the type so the two cannot drift (2026-10-21 audit,
+#: CODE-005).
+FACT_CARDINALITIES: tuple[FactCardinality, ...] = get_args(FactCardinality)
+
+
+def _nfc(value: Any) -> Any:
+    """`value` with every string in it NFC-normalised, containers rebuilt in their own type."""
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value)
+    if isinstance(value, dict):
+        return {_nfc(key): _nfc(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_nfc(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_nfc(item) for item in value)
+    return value
 
 
 def source_content_digest(text: str) -> str:
@@ -104,17 +126,24 @@ class AtomicFact:
     context: dict[str, Any] = field(default_factory=dict)
     valid_from: datetime | None = None
     valid_until: datetime | None = None
+    #: The fact's own `FACT_CARDINALITIES` value; None defers to its predicate's
+    #: (`recall.provenance_controller.predicate_cardinality`). Recorded in the payload only when
+    #: set, so every fact that declares none keeps the identity it always had.
+    cardinality: str | None = None
 
     def __post_init__(self) -> None:
+        # NFC at construction, so every comparison sees one spelling: the identity and the
+        # conflict key already compared NFC forms, and `facts_conflict` compared the raw strings,
+        # so an NFD subject shared a key with its NFC twin and never conflicted with it.
         for name in ("namespace", "subject", "predicate"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
-            object.__setattr__(self, name, value.strip())
-        if not isinstance(self.context, dict):
-            object.__setattr__(self, "context", dict(self.context))
-        else:
-            object.__setattr__(self, "context", dict(self.context))
+            object.__setattr__(self, name, unicodedata.normalize("NFC", value.strip()))
+        object.__setattr__(self, "object", _nfc(self.object))
+        object.__setattr__(self, "context", _nfc(dict(self.context)))
+        if self.cardinality is not None and self.cardinality not in FACT_CARDINALITIES:
+            raise ValueError(f"cardinality must be one of {', '.join(FACT_CARDINALITIES)}")
         valid_from = _utc_datetime(self.valid_from)
         valid_until = _utc_datetime(self.valid_until)
         object.__setattr__(self, "valid_from", valid_from)
@@ -131,6 +160,7 @@ class AtomicFact:
             "context": self.context,
             "valid_from": self.valid_from.isoformat() if self.valid_from else None,
             "valid_until": self.valid_until.isoformat() if self.valid_until else None,
+            **({"cardinality": self.cardinality} if self.cardinality is not None else {}),
         }
 
     @classmethod
@@ -151,6 +181,9 @@ class AtomicFact:
             context=dict(payload.get("context") or {}),
             valid_from=parse_time(payload.get("valid_from")),
             valid_until=parse_time(payload.get("valid_until")),
+            cardinality=(
+                str(payload["cardinality"]) if payload.get("cardinality") is not None else None
+            ),
         )
 
 
@@ -308,7 +341,10 @@ class Validity:
 
     valid_from: datetime | None
     valid_until: datetime | None
-    superseded_by: str | None  # terminal successor file, when superseded
+    #: When superseded, the deepest member of the chain that is valid at the evaluation
+    #: instant (`recall.supersession.successor_path`), which is the terminal successor when every
+    #: window is unknown; an absolute source for a path two roots hold.
+    superseded_by: str | None
 
 
 @dataclass(frozen=True)

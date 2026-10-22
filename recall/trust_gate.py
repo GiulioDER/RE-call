@@ -10,6 +10,7 @@ re-exported from ``recall.trust``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -24,6 +25,12 @@ from recall.dependency_invalidation import (
 from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.observability import METRICS
+from recall.supersession import (
+    SupersessionGraph,
+    Window,
+    as_supersession_graph,
+    resolve_successor,
+)
 from recall.trust_verdicts import abstain_reason, decision_state_for
 from recall.types import (
     Authority,
@@ -50,101 +57,23 @@ def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def resolve_successor(
-    file: str,
-    supersession: dict[str, str],
-    edge_candidates: EdgeCandidates | None = None,
-    known_as_of: datetime | None = None,
-) -> str | None:
-    """Terminal successor of `file` in the supersession chain, or None if it has none.
-
-    A cycle (a.md -> b.md -> a.md) cannot loop: the walk stops on the first revisit and the
-    cycle member resolves to its direct successor. A self-claim (`supersedes:` the file's own
-    name — an authoring mistake) is ignored: a document cannot supersede itself.
-
-    With `known_as_of`, the walk sees only the edges asserted by that instant, so a point-in-time
-    replay resolves to the successor that was current *then*. The filter is applied per STEP
-    rather than to the final answer: in a chain a -> b -> c where only the first edge predates the
-    instant, the answer is `b`. Gating the terminal successor instead would answer `c`, a document
-    that had not yet superseded anything.
-
-    An edge with no recorded date applies, which is the inverse of the rule for hits with no
-    recorded write time at all and deliberately so. Both are fail-closed: hiding a hit of unknown age would
-    silently empty result sets for stores predating the column, while ignoring an edge of unknown
-    age would serve a memory the corpus explicitly marks as stale.
-    """
-
-    def step(cur: str) -> str | None:
-        """The next file in the chain, as it stood at `known_as_of`.
-
-        With no instant to replay, this is `supersession[cur]` and nothing else happens. With one,
-        it is the LIVE claim: of every document claiming to supersede `cur`, those asserted at or
-        before the instant, and among them the one asserted LAST.
-
-        Choosing among candidates is the whole point. `supersession` keeps a single winner per
-        target, picked by scan order, which is a time-independent rule and therefore answers a
-        different question: where two documents supersede one target, the winner today is often
-        not the one live at a past instant, and gating that single winner drops a real edge and
-        reports the stale memory as current.
-
-        ⚠️ **So asking about NOW two ways can give two answers, deliberately.** With fan-in where
-        the later-asserted claim is not the last scan row, a plain search follows `supersession`
-        and answers the scan-order winner, while `known_as_of=<any instant after both>` answers
-        the latest-ASSERTED one. By this function's own argument the replay answer is the better
-        one, but `supersession()` is not changed to match: it is what every existing caller
-        already gets, and silently re-answering it would be the behaviour change this whole branch
-        has been avoiding. Pinned by `test_replay_at_now_may_differ_from_a_plain_search`.
-        """
-        if known_as_of is None or edge_candidates is None:
-            return supersession.get(cur)
-        claims = edge_candidates.get(cur)
-        if claims is None:
-            # ABSENT from the map. Candidates and `supersession` come from one pass, so this means
-            # hand-built, inconsistent input. Fail closed: keep demoting.
-            return supersession.get(cur)
-        if not claims:
-            # PRESENT but empty is a different signal, and conflating the two silently ignored
-            # `known_as_of` for that step. `_resolve_rows` never emits an empty list, so this only
-            # reaches a caller who built one, and the only thing it can mean is "no claim".
-            return None
-        live = [(f, when) for f, when in claims if when is None or when <= known_as_of]
-        if not live:
-            return None
-        best, best_when = live[0]
-        for f, when in live[1:]:
-            # An undated claim is of unknown age and loses to any dated one, so a known assertion
-            # decides the answer where one exists. Ties go to the later scan position, which is
-            # the same rule `supersession`'s single winner uses.
-            if best_when is None or (when is not None and when >= best_when):
-                best, best_when = f, when
-        return best
-
-    first = step(file)
-    if first in (None, file):
-        return None
-    seen = {file}
-    cur = file
-    while True:
-        nxt = step(cur)
-        if nxt is None:
-            return cur
-        if nxt in seen:
-            return first
-        seen.add(nxt)
-        cur = nxt
-
-
 def _verdict(
     hit: ScoredChunk,
-    supersession: dict[str, str],
+    supersession: Mapping[str, str],
     threshold: float,
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
     known_as_of: datetime | None = None,
     edge_candidates: EdgeCandidates | None = None,
+    *,
+    windows: Mapping[str, Window] | None = None,
+    key: str | None = None,
 ) -> tuple[Verdict, Validity]:
+    """One hit's verdict. `key` is the hit's supersession key (its file, or its source where two
+    roots hold that file, `SupersessionGraph.key`); `windows` are the claimants' validity windows,
+    so a successor hides the hit only while the successor itself is valid at `now`."""
     meta = hit.chunk.metadata
-    file = meta.get("file")
+    file = meta.get("file") if key is None else key
     try:
         start, end = validity_bounds(meta)
     except ValueError:
@@ -193,7 +122,11 @@ def _verdict(
             Validity(valid_from=start, valid_until=end, superseded_by=None),
         )
     successor = (
-        resolve_successor(file, supersession, edge_candidates, known_as_of) if file else None
+        resolve_successor(
+            file, supersession, edge_candidates, known_as_of, now=now, windows=windows
+        )
+        if file
+        else None
     )
     validity = Validity(valid_from=start, valid_until=end, superseded_by=successor)
     if successor is not None:
@@ -209,7 +142,7 @@ def _verdict(
 
 def evaluate(
     result: RetrievalResult,
-    supersession: dict[str, str],
+    supersession: Mapping[str, str] | SupersessionGraph,
     calibration: Calibration | None,
     now: datetime,
     unresolved: frozenset[str] = frozenset(),
@@ -236,10 +169,11 @@ def evaluate(
     They compose: ``evaluate(..., now=june, known_as_of=tuesday)`` asks what we believed on Tuesday
     about the state of the world in June. Passing neither leaves behaviour exactly as before.
 
-    **``edge_candidates`` rewinds supersession too**, when supplied. `trusted_search` gets it from
-    `PgVectorStore.supersession_all()` whenever `known_as_of` is set, the store exposes that
-    method and the retrieval returned hits; a store without it logs a warning and rewinds hits
-    only. An edge becomes
+    **The edges' dates rewind supersession too.** A `SupersessionGraph` carries them as its own
+    `candidates`, and `trusted_search` passes the store's graph (`supersession_graph()`) whenever
+    the store has one, dated or not. With a plain edge map they come as ``edge_candidates``:
+    `trusted_search` reads them from `supersession_all()` when `known_as_of` is set and the store
+    has no graph, and a store with neither logs a warning and rewinds hits only. An edge becomes
     assertable when the superseding document is written, so its `indexed_at` dates the edge; a
     chain resolves per step, to the successor current at the instant. Point-in-time replay is
     then honest about which memories existed *and* about which were current.
@@ -253,7 +187,16 @@ def evaluate(
     applies unconditionally, and ``unresolved`` is not rewound, so an ambiguous claim written
     after the instant still forces an abstention at it.
 
-    Omitting ``edge_candidates`` keeps the old behaviour exactly, so no caller changes.
+    With a plain edge map, omitting ``edge_candidates`` keeps the behaviour before edges were
+    dated. With a graph, ``edge_candidates`` must be omitted: its own are used, so one verdict
+    reads one scan, where a caller's from another read could pair one scan's edges with
+    another's dates (2026-10-21 audit, CODE-009).
+
+    **The window rule.** `supersession` may be the store's `SupersessionGraph`
+    (`supersession_graph()`), which carries every claimant's validity window: a successor then
+    hides its predecessor only while the successor is valid at ``now``, so a successor dated from
+    next month, or one that has expired, leaves the predecessor served. A plain edge map carries
+    no windows, and every edge in it applies at every instant, as before.
 
     ``record_metrics=False`` supports a private diagnostic pass over already fetched candidates.
     It changes only counters. Verdicts, ordering, abstention, and returned metadata stay identical.
@@ -269,23 +212,42 @@ def evaluate(
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
+    graph = isinstance(supersession, SupersessionGraph)
+    if graph and edge_candidates is not None:
+        raise ValueError("edge_candidates goes with a plain edge map; a SupersessionGraph has its own")
+    resolved = as_supersession_graph(supersession, unresolved)
+    if graph:
+        edge_candidates = resolved.candidates
     if known_as_of is not None:
         # BOTH operands, and NOT only when `known_as_of` happened to be naive. Nesting the
         # `edge_candidates` half inside that branch left the mirror combination raising: an AWARE
         # `known_as_of` against a naive hand-built date map still hit the comparison, so the more
         # careful caller was the one that crashed. Two rounds of review to get one comment to
-        # match its own code.
+        # match its own code. With no replay instant the dates are never compared.
         known_as_of = _as_utc(known_as_of)
         if edge_candidates:
             edge_candidates = {
                 target: [(f, None if w is None else _as_utc(w)) for f, w in claims]
                 for target, claims in edge_candidates.items()
             }
+    windows = resolved.windows if graph else None
     cal = calibration or _UNCALIBRATED
     trusted: list[TrustedHit] = []
+    keys: list[str | None] = []
     for hit in result.hits:
+        file = hit.chunk.metadata.get("file")
+        key = resolved.key(file, hit.chunk.source) if isinstance(file, str) and file else None
+        keys.append(key)
         verdict, validity = _verdict(
-            hit, supersession, cal.threshold, now, unresolved, known_as_of, edge_candidates
+            hit,
+            resolved.edges,
+            cal.threshold,
+            now,
+            resolved.unresolved,
+            known_as_of,
+            edge_candidates,
+            windows=windows,
+            key=key,
         )
         meta = hit.chunk.metadata
         authority: Authority = "unknown"
@@ -303,7 +265,12 @@ def evaluate(
             and dependency_mode == "enforce"
             and dependency_projection is not None
         ):
-            invalidation = dependency_projection.reason_for(source_file(hit.chunk))
+            # By node, as the projection keys it: a path two roots hold is one node per copy
+            # (`DependencyProjection.key_for`), so a sibling's state never refuses this copy. A
+            # projection without `key_for` (a hand-built one) is keyed by path, as it was.
+            key_for = getattr(dependency_projection, "key_for", None)
+            node = key_for(hit.chunk) if callable(key_for) else source_file(hit.chunk)
+            invalidation = dependency_projection.reason_for(node)
             if invalidation is not None and verdict == "ok":
                 verdict = "dependency_invalidated"
         trusted.append(
@@ -325,19 +292,21 @@ def evaluate(
                 invalidation=invalidation,
             )
         )
-    invalidated_files = {
-        h.provenance.file for h in trusted if h.verdict == "dependency_invalidated"
-    }
     promoted_files = {
         h.validity.superseded_by
         for h in trusted
         if h.verdict == "superseded" and h.cosine >= cal.threshold
-    } - invalidated_files
+    }
+    # Promotion makes a low-scoring successor as good as `ok`, so the dependency invalidation that
+    # demotes an `ok` hit applies to it first: an invalidated successor is never promoted, however
+    # low its own score, and reads `dependency_invalidated` as a high-scoring one would.
     trusted = [
-        replace(h, verdict="ok")
-        if h.verdict == "low_confidence" and h.provenance.file in promoted_files
-        else h
-        for h in trusted
+        (
+            replace(h, verdict="dependency_invalidated" if h.invalidation is not None else "ok")
+            if h.verdict == "low_confidence" and key is not None and key in promoted_files
+            else h
+        )
+        for h, key in zip(trusted, keys, strict=True)
     ]
     ok = [h for h in trusted if h.verdict == "ok"]
     rest = [h for h in trusted if h.verdict != "ok"]

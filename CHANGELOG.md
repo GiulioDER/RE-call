@@ -87,7 +87,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   pairs a file's versions whose decision lines are worded apart, and it no longer proposes again
   an edge the repeated-subject rule proposes. The Session 3 control artifact drops its two
   `temporal_ordering` proposals (referrals 4 to 2), and every other proposal id is unchanged.
-
+* **A successor hides what it supersedes only while the successor itself is valid.** A memo
+  `supersedes:` another from next month leaves it current until then, an expired time-bounded
+  successor gives its predecessor back, and a correction for 2020 to 2022 leaves today's memo alone;
+  a successor whose window cannot be read still applies at every instant. The same rule holds in
+  the fact ledger, where a successor now hides the ASSERTIONS recorded before it, so a value
+  asserted again after its successor (Paris, Rome, Paris) is current again, and in memo-level
+  retirement of stated facts, which also follows the chain search follows. Search,
+  `recall_current_state`, graph expansion, related evidence, the reasoning graph and planner, the
+  semantic graph and the dashboard's corpus page now resolve `supersedes:` with one rule
+  (`recall.supersession.ReferenceIndex`): a reference naming a folder by its root-relative path,
+  any reference by its stem, case-insensitive and NFC, a self-claim dropped, and two roots holding
+  one path kept apart. A bare name is never matched by path, so several files sharing its stem stay
+  ambiguous. Semantic lint folds references the same way but matches by stem alone; `recall lint`
+  and the dashboard's graph and triage pages keep their own matcher. A low-scoring successor whose
+  dependency is invalidated is no longer promoted to `ok`. In dependency invalidation each root's
+  copy of a path is its own document, and a `depends_on` reference resolves to the dependent's own
+  root's copy first, else to the one copy outside an upload staging root; several such copies, or
+  only an upload's, leave it unresolved, which invalidates the dependent. A second value of a set-valued predicate
+  such as `email` is no contradiction, while a fact declaring a cardinality its rival does not share
+  still conflicts; facts are NFC-normalised when built; an authored link can supersede an expired or
+  future value it overlaps; and a value asserted again that names a successor of its earlier
+  assertion is recorded, not dropped as a DUPLICATE. New API: `SupersessionGraph` with each store's
+  `supersession_graph()`, `recall.supersession.store_supersession_graph` and
+  `stored_supersession_graph`, `AtomicFact.cardinality`
+  and `recall.provenance_controller.predicate_cardinality`.
 * **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
   from this one on are open source under the GNU Affero General Public License v3.0, which permits
   commercial use on its conditions; closed source products and proprietary hosted services can

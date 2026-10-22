@@ -25,7 +25,6 @@ from dataclasses import (
 )
 from datetime import (
     datetime,
-    UTC,
 )
 
 from recall.calibration import Calibration
@@ -387,23 +386,11 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
             chunks_by_entity.setdefault(mention.entity_id, set()).add(mention.chunk_id)
             if mention.chunk_id not in validity_by_chunk:
                 try:
-                    valid_from = mention.metadata.get("valid_from")
-                    valid_until = mention.metadata.get("valid_until")
-                    start = (
-                        datetime.fromisoformat(str(valid_from).replace("Z", "+00:00"))
-                        if valid_from
-                        else None
+                    # The trust gate's reading: a bare `valid_until` date runs to the end of its
+                    # day, so a neighbour is not rejected as expired on its last valid day.
+                    validity_by_chunk[mention.chunk_id] = _graph_expansion.temporal_bounds(
+                        mention.metadata.get("valid_from"), mention.metadata.get("valid_until")
                     )
-                    end = (
-                        datetime.fromisoformat(str(valid_until).replace("Z", "+00:00"))
-                        if valid_until
-                        else None
-                    )
-                    if start is not None and start.tzinfo is None:
-                        start = start.replace(tzinfo=UTC)
-                    if end is not None and end.tzinfo is None:
-                        end = end.replace(tzinfo=UTC)
-                    validity_by_chunk[mention.chunk_id] = (start, end)
                 except (TypeError, ValueError):
                     validity_by_chunk[mention.chunk_id] = (None, None)
         for relation_index, relation in enumerate(semantic.relations):

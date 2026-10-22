@@ -6,7 +6,7 @@ changing trust decisions.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol
@@ -18,7 +18,12 @@ from recall.dependency_invalidation import (
 )
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
-from recall.supersession import EdgeCandidates, chunk_supersedes_targets
+from recall.supersession import (
+    EdgeCandidates,
+    SupersessionGraph,
+    chunk_supersedes_targets,
+    store_supersession_graph,
+)
 from recall.types import Chunk
 
 CurrentState = Literal[
@@ -88,43 +93,29 @@ def _file(chunk: Chunk) -> str:
     return value if isinstance(value, str) and value else chunk.source
 
 
-def _direct_successors(
-    target: str, candidates: EdgeCandidates, as_of: datetime
-) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            successor
-            for successor, asserted_at in candidates.get(target, ())
-            if asserted_at is None or _utc(asserted_at) <= as_of
-        )
-    )
-
-
 def _chain(
-    source: str, candidates: EdgeCandidates, as_of: datetime
+    source: str, graph: SupersessionGraph, as_of: datetime, known_as_of: datetime | None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    chain: list[str] = []
-    seen = {source}
-    current = source
-    while True:
-        successors = _direct_successors(current, candidates, as_of)
-        if len(successors) > 1:
-            return tuple(chain), ("multiple_live_successors",)
-        if not successors:
-            return tuple(chain), ()
-        successor = successors[0]
-        if successor in seen:
-            return tuple(chain), ("supersession_cycle",)
-        chain.append(successor)
-        seen.add(successor)
-        current = successor
+    """The successors that hide `source` at `as_of`, by the resolver every reader shares.
+
+    Valid time `as_of` is checked against each successor's own window (the window rule) and
+    transaction time `known_as_of` dates the edges, exactly as the trust gate reads them. This
+    projection adds two fail-closed diagnostics of its own: two claimants valid at once at any
+    step (fan-in the trust gate settles by scan order) and a claim cycle.
+    """
+    chain = graph.successor_path(source, now=as_of, known_as_of=known_as_of)
+    for node in (source, *chain[:-1]):
+        if len(graph.live_claimants(node, now=as_of, known_as_of=known_as_of)) > 1:
+            return (), ("multiple_live_successors",)
+    if chain and graph.on_cycle(source, known_as_of):
+        return chain, ("supersession_cycle",)
+    return chain, ()
 
 
 def _record(
     source: str,
     chunks: list[Chunk],
-    candidates: EdgeCandidates,
-    unresolved: frozenset[str],
+    graph: SupersessionGraph,
     as_of: datetime,
     tenant_id: str,
     generation_id: str,
@@ -155,8 +146,9 @@ def _record(
     if diagnostics:
         state: CurrentState = "invalid"
     else:
-        chain, chain_diagnostics = _chain(source, candidates, as_of)
+        chain, chain_diagnostics = _chain(source, graph, as_of, known_as_of)
         diagnostics.extend(chain_diagnostics)
+        unresolved = graph.unresolved
         if source in unresolved or any(
             supersedes_key(target) in unresolved
             for chunk in chunks
@@ -253,32 +245,54 @@ def _project(
         chunk_rows = timed_reader()
     else:
         chunk_rows = ((chunk, None) for chunk in store.iter_chunks())
+    rows_by_file: dict[str, list[tuple[Chunk, datetime | None]]] = {}
     for chunk, asserted_at in chunk_rows:
-        key = _file(chunk)
-        chunks_by_source.setdefault(key, []).append(chunk)
-        previous = asserted_at_by_source.get(key)
-        if key not in asserted_at_by_source or (
-            asserted_at is not None and (previous is None or asserted_at < previous)
-        ):
-            asserted_at_by_source[key] = asserted_at
-    # `max_records` refuses rather than trims, and which sources it counts is fixed here, so it is
-    # decided before the supersession scan, a record per source and the dependency build. The
-    # predicate is the one the final loop filters on (each record's source is its grouping key).
-    if max_records is not None:
-        matching = sum(
-            1
-            for key, chunks in chunks_by_source.items()
-            if source is None or key == source or any(chunk.source == source for chunk in chunks)
+        rows_by_file.setdefault(_file(chunk), []).append((chunk, asserted_at))
+
+    def group(key_for: Callable[[Chunk], str]) -> None:
+        chunks_by_source.clear()
+        asserted_at_by_source.clear()
+        for rows in rows_by_file.values():
+            for chunk, asserted_at in rows:
+                key = key_for(chunk)
+                chunks_by_source.setdefault(key, []).append(chunk)
+                previous = asserted_at_by_source.get(key)
+                if key not in asserted_at_by_source or (
+                    asserted_at is not None and (previous is None or asserted_at < previous)
+                ):
+                    asserted_at_by_source[key] = asserted_at
+
+    def selected(key: str, chunks: list[Chunk]) -> bool:
+        """The final loop's filter: `source` names the record, its path, or one of its chunks."""
+        return (
+            source is None
+            or key == source
+            or _file(chunks[0]) == source
+            or any(chunk.source == source for chunk in chunks)
         )
-        if matching > max_records:
+
+    def check_bound() -> None:
+        if max_records is not None and sum(
+            1 for key, chunks in chunks_by_source.items() if selected(key, chunks)
+        ) > max_records:
             raise ValueError("current state projection exceeds max_records")
-    _edges, unresolved, candidates = store.supersession_all()
+
+    group(_file)
+    # `max_records` refuses rather than trims, so it is decided before the supersession scan, a
+    # record per source and the dependency build, and again once collided paths are split, which
+    # adds records (2026-10-21 audit, SEC-008).
+    check_bound()
+    graph = store_supersession_graph(store)
+    if graph.collided:
+        # A root-relative path two roots hold is two documents, keyed by source
+        # (`SupersessionGraph.key`); grouped by path they would be one record.
+        group(lambda chunk: graph.key(_file(chunk), chunk.source))
+        check_bound()
     all_records = tuple(
         _record(
             key,
             chunks,
-            candidates,
-            unresolved,
+            graph,
             as_of,
             str(store.tenant),
             generation_id,
@@ -287,6 +301,12 @@ def _project(
         )
         for key, chunks in sorted(chunks_by_source.items())
     )
+    # Keyed as the records are: a path two roots hold is one node per copy in the dependency
+    # projection too (`recall.dependency_invalidation.dependency_key`), each with its own state,
+    # and a `depends_on` reference resolves to the dependent's own root's copy first. Merged under
+    # the path, either rule was wrong for one of them: a dependent of a copy superseded in one root
+    # stayed current, or a current copy was refused for its sibling (2026-10-21 audit, STAKES-004
+    # and BUG-005).
     binding_reader = getattr(store, "generation_binding", None)
     binding = binding_reader() if callable(binding_reader) else {}
     dependency_projection = build_dependency_projection(
@@ -298,12 +318,11 @@ def _project(
         known_as_of=known_as_of,
         asserted_at_by_source=asserted_at_by_source,
         corpus_fingerprint=binding.get("corpus_fingerprint"),
+        collided=graph.collided,
     )
     records_list: list[CurrentStateRecord] = []
     for record in all_records:
-        if source is not None and record.source != source and not any(
-            chunk.source == source for chunk in chunks_by_source[record.source]
-        ):
+        if not selected(record.source, chunks_by_source[record.source]):
             continue
         reason = dependency_projection.reason_for(record.source)
         diagnostics = record.diagnostics

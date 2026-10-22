@@ -457,6 +457,8 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 budget=request.budget,
                 model_calls_used=expansion_model_calls,
                 policy_scope=request.policy_scope,
+                as_of=request.as_of,
+                known_as_of=request.known_as_of,
             )
         else:
             with performance.span("planner_execution_ms"):
@@ -467,6 +469,8 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                     budget=request.budget,
                     model_calls_used=expansion_model_calls,
                     policy_scope=request.policy_scope,
+                    as_of=request.as_of,
+                    known_as_of=request.known_as_of,
                 )
             performance.set("planner_budget_result", plan.outcome)
             performance.set(

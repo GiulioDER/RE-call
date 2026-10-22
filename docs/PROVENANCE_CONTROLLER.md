@@ -21,7 +21,19 @@ an absent or unusable support record as `UNSUPPORTED_CLAIM` before any ledger ap
 
 `cards_from_trusted_result` preserves each `ok` hit's original retrieval rank while omitting hits
 without usable structured support. `recall_current_facts` and `recall provenance current` expose the ledger projection. They return
-only facts that are asserted, not superseded, and valid at the requested point in time.
+only facts that are asserted, valid at the requested point in time, and not hidden by a successor
+then.
+
+A successor hides only the assertions recorded before it (so a value asserted again after its
+successor is current again), and only while the successor's own fact holds: a successor dated
+from next quarter leaves today's value current, and once a bounded successor expires the old value
+is current again (the window rule, owner decision 2026-10-21). What hides a successor hides what
+it hid, each inside its own window. A claim conflicts with a value only where that value is in
+force inside the claim's window, judged as if the claim were already recorded, and the controller
+and every ledger refuse on that one rule (`unresolved_conflicts`). A predicate is single-valued
+unless the fact declares a `cardinality` (`set` or `event`) or the predicate is a known set-valued
+or event predicate (`DEFAULT_PREDICATE_CARDINALITY`, for example `email`); two values of a
+set-valued or event predicate never conflict.
 
 For an offline local corpus, `recall provenance apply --sqlite-path PATH --source-root ROOT`
 uses the SQLite card and fact stores. `--source-root` is mandatory in this mode; each card source
@@ -59,13 +71,19 @@ authorization input.
 ## Conflict policy
 
 Facts are canonicalized with stable JSON and Unicode NFC normalization. Two facts conflict when
-namespace, subject, predicate, and context match, object values differ, and validity intervals
-overlap. Duplicate facts are idempotent. A conflicting fact is accepted only when an authored
-supersession link names the prior fact, prior card, prior chunk, or prior source. Model-inferred
-links are never authorization evidence.
+namespace, subject, predicate, and context match, object values differ, validity intervals
+overlap, and they are not both of one multi-valued cardinality. A fact repeating one already in
+force is a DUPLICATE when it adds nothing; one that names a fact to supersede which the earlier
+assertion did not is recorded anew. A conflicting fact is accepted only when an authored
+supersession link names the prior fact, prior card, prior chunk, or prior source, or when what
+it names already hides the prior value wherever the new fact holds. Model-inferred links are
+never authorization evidence.
 
-Predicates are single-valued by default. A future policy may explicitly allow a multi-valued
-predicate; multiplicity is never inferred from retrieval output.
+Predicates are single-valued by default. A fixed table makes a few multi-valued
+(`DEFAULT_PREDICATE_CARDINALITY`: `email`, `phone`, `alias` and similar are `set`; `visited`,
+`attended` and similar are `event`), and a fact may declare its own `cardinality`. Two values
+conflict unless both are `set` or both are `event`, so declaring `set` cannot slip a second
+value past a single-valued one. Multiplicity is never inferred from retrieval output.
 
 ## Ledger
 

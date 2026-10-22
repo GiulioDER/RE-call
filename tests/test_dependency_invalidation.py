@@ -48,3 +48,61 @@ def test_model_inference_is_not_invalidated_by_temporal_state() -> None:
     assert projection.authorities["inference.md"] == "model_inference"
     assert projection.reason_for("inference.md") is None
     assert dict(projection.invalidations) == {}
+
+
+def _placed(cid: str, file: str, source: str, depends_on: list[str] | None = None) -> Chunk:
+    graph: dict[str, object] = {"authority": "tool_observation"}
+    if depends_on is not None:
+        graph["depends_on"] = depends_on
+    return Chunk(cid, source, file, {"file": file, "recall_graph": graph})
+
+
+def test_a_merged_node_is_classified_by_every_copy_not_the_first() -> None:
+    """Node tests/test_dependency_invalidation.py::test_a_merged_node_is_classified_by_every_copy_not_the_first.
+
+    Invariant: a projection built without `collided` (as the reasoning graph builds one) keeps
+    two roots' copies of `README.md` in one node, and that node is classified by all its copies:
+    it is in the dependent's root because one copy is, and is no upload because one copy is not,
+    whichever chunk sorts first. Red by mutation of
+    `recall.dependency_invalidation.build_dependency_projection` reading a node's root and upload
+    status from its first chunk only (the rule's first version): fails on "an upload sorting
+    first stripped the dependency" (2026-10-22 review of the per-copy rule, R1).
+    """
+    projection = build_dependency_projection(
+        [
+            _placed("a-upload", "README.md", "/m/uploads/tenant/job1/README.md"),
+            _placed("b-memory", "README.md", "/z/README.md"),
+            _placed("c-x", "x.md", "/z/x.md", depends_on=["README.md"]),
+        ],
+        tenant_id="tenant",
+        generation_id="generation",
+    )
+    assert [(e.dependent, e.prerequisite) for e in projection.edges] == [("x.md", "README.md")], (
+        f"an upload sorting first stripped the dependency: {projection.diagnostics}"
+    )
+    assert projection.reason_for("x.md") is None
+
+
+def test_an_escaped_file_uri_stays_in_its_own_root() -> None:
+    """Node tests/test_dependency_invalidation.py::test_an_escaped_file_uri_stays_in_its_own_root.
+
+    Invariant: a node's root is read on the decoded location, so an upload `my notes.md` stored as
+    a percent-escaped `file://` URI shares its job's root with its sibling `base.md` and resolves
+    to it. Red by mutation of `recall.dependency_invalidation.build_dependency_projection` taking
+    the root of the raw source: fails on "an escaped name lost its own root" (the encoded source
+    did not end in the decoded file, so the name was a root of its own and the dependency, held
+    only by an upload, went unresolved; 2026-10-22 review of the per-copy rule, R2).
+    """
+    job = "file:///C:/idx/uploads/tenant/job1"
+    projection = build_dependency_projection(
+        [
+            _placed("base", "base.md", f"{job}/base.md"),
+            _placed("notes", "my notes.md", f"{job}/my%20notes.md", depends_on=["base.md"]),
+        ],
+        tenant_id="tenant",
+        generation_id="generation",
+    )
+    assert projection.reason_for("my notes.md") is None, (
+        f"an escaped name lost its own root: {projection.reason_for('my notes.md')}"
+    )
+    assert [(e.dependent, e.prerequisite) for e in projection.edges] == [("my notes.md", "base.md")]

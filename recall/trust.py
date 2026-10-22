@@ -71,6 +71,7 @@ from recall.retriever import (
 from recall.scope import Scope, coerce_scope
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates, PgVectorStore
+from recall.supersession import SupersessionGraph, stored_supersession_graph
 from recall.support import calibration_coverage
 from recall.unknown_terms import apply_unknown_term_gate, check_unknown_terms
 from recall.trust_policy import (
@@ -648,12 +649,20 @@ def _trusted_search(
     # defensively: `store` is duck-typed in
     # several places (tests and downstream adapters implement only the read surface they need),
     # and a store without the method degrades to exactly the pre-change behaviour.
-    supersession: dict[str, str] = {}
+    #
+    # The GRAPH where the store has one (every shipped store does): the same scan with each
+    # claimant's validity window, so a successor hides its predecessor only while it is itself
+    # valid at the evaluation instant, and with each file keyed by its root as well as its path.
+    supersession: dict[str, str] | SupersessionGraph = {}
     unresolved: frozenset[str] = frozenset()
     edge_candidates: EdgeCandidates | None = None
+    evaluation_now = now or datetime.now(UTC)
     if result.hits:
+        graph = stored_supersession_graph(store)
         fetch_all = getattr(store, "supersession_all", None) if known_as_of is not None else None
-        if fetch_all is not None:
+        if graph is not None:
+            supersession = graph
+        elif fetch_all is not None:
             supersession, unresolved, edge_candidates = fetch_all()
         else:
             if known_as_of is not None:
@@ -672,6 +681,11 @@ def _trusted_search(
             # `superseded` per-hit, so this may fetch for a hit replayed before its own write.
             # That costs one scoped search and cannot change a verdict, which is the right side
             # to err on while the cheaper check is the one that would need the hit dates.
+            if isinstance(supersession, SupersessionGraph):
+                # A file two roots hold names no one document, so there is nothing to fetch.
+                if file in supersession.unresolved or file in supersession.collided:
+                    return None
+                return supersession.successor(file, now=evaluation_now, known_as_of=known_as_of)
             if file in unresolved:
                 return None
             return resolve_successor(file, supersession, edge_candidates, known_as_of)
@@ -685,7 +699,6 @@ def _trusted_search(
         # so graph expansion cannot accidentally treat untrusted evidence as already cleared.
         result = pre_trust_transform(result)
     trust_started = time.perf_counter()
-    evaluation_now = now or datetime.now(UTC)
     trusted = evaluate(
         result,
         supersession,

@@ -32,8 +32,9 @@ from recall.store import (
     PgVectorStore,
     _EXACT_SCAN_GUARDS,
     _HNSW_FILTERED_TUNING_SQL,
-    SUPERSEDES_TARGET_ROWS_SQL,
-    resolve_supersession_candidates,
+    SupersessionGraph,
+    resolve_supersession_graph,
+    supersession_rows_sql,
 )
 from recall.support import COVERAGE_EVENT, latest_calibration_event
 from recall.types import Chunk, ScoredChunk
@@ -1072,37 +1073,36 @@ class GenerationStore(PgVectorStore):
         Callers receive copies because the result is public and graph expansion adds its own
         candidate structures to the returned values.
         """
+        return self.supersession_graph().parts()
+
+    def supersession_graph(self) -> SupersessionGraph:
+        """The resolved graph behind `supersession_all()`, with each claimant's validity window.
+
+        One cache entry per serving identity, as `supersession_all` describes; the three-part
+        accessors are projections of it. Callers receive a copy.
+        """
         identity = self._serving_identity()
         generation_id = identity[0]
         cached = self._supersession_cache
         if cached is not None and cached[0] == identity:
-            edges, unresolved, candidates = cached[1], cached[2], cached[3]
-            return (
-                dict(edges),
-                unresolved,
-                {target: list(claims) for target, claims in candidates.items()},
-            )
+            graph: SupersessionGraph = cached[1]
+            return graph.copy()
 
         rows = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT c.metadata->>'file', t.supersedes, "
-                "min(COALESCE(c.first_indexed_at, c.indexed_at)) "
-                "FROM recall_chunks_v1 AS c "
-                f"CROSS JOIN LATERAL ({SUPERSEDES_TARGET_ROWS_SQL}) AS t "
-                "WHERE c.tenant_id = %s AND c.generation_id = %s "
-                "AND c.metadata ? 'file' GROUP BY 1, 2 ORDER BY 1, 2",
+                supersession_rows_sql(
+                    "recall_chunks_v1",
+                    source_column="source_uri",
+                    scope="c.tenant_id = %s AND c.generation_id = %s",
+                ),
                 (self._tenant, generation_id),
             ).fetchall()
         )
         self._supersession_scans += 1
         METRICS.increment("recall_supersession_scans_total")
-        edges, unresolved, candidates = resolve_supersession_candidates(rows)
-        self._supersession_cache = (identity, edges, unresolved, candidates)
-        return (
-            dict(edges),
-            unresolved,
-            {target: list(claims) for target, claims in candidates.items()},
-        )
+        graph = resolve_supersession_graph(rows)
+        self._supersession_cache = (identity, graph)
+        return graph.copy()
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve erasure identifiers to source URIs, across everything the tenant holds.
