@@ -27,6 +27,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Security
 
+* **`opentelemetry-api` is locked at 1.45.1, up from 1.44.0** (CVE-2026-114603). It reaches RE-call
+  only through `mcp`; the dependency audit refuses 1.44.0 since the advisory was published.
 * **`mcp` is pinned at 2.2.0, up from 2.1.0** (GHSA-84m7-p3x7-pcfv, CVE-2026-59951). In 2.1.0 a
   stateful Streamable HTTP server never reclaimed session state, so a client able to reach the
   endpoint could grow its memory without bound. RE-call's HTTP server runs stateless by default
@@ -34,6 +36,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* **Current facts are materialized, so a read no longer replays the tenant's history.** Migration
+  0030 adds `recall_fact_current` (one row per effective interval of each applied assertion: its own
+  window less the windows of the successors that hide it), `recall_fact_current_events` and
+  `recall_fact_current_state`, on PostgreSQL and in a lite file alike; migration 0031 builds the
+  ledger's `(tenant_id, created_at, event_id)` index CONCURRENTLY for the replay. `current()`, the fact
+  projection `recall_current_facts` serves and the conflict check of `recall_apply_fact` read them
+  whenever they reflect every event of the tenant, and replay the ledger otherwise, so the answer is
+  the same either way; the conflict check reads one conflict key instead of the tenant. Each append
+  materializes what it wrote in its own transaction, and a failure there leaves the tables behind
+  without failing the append. `recall provenance rebuild` rebuilds them from the ledger (`--reconcile`
+  files only what they lack, `--check` reports, and `--check --verify` recomputes every row from the
+  ledger and compares, exiting 1 on a difference, so an edited table is found even when the counts
+  agree), on PostgreSQL and on a `sqlite:///` store. The tables hold ids and hashes, never a fact value. Grants: `recall schema grants --controller` now includes
+  them, and `--strict` serving grants read them only; re-run both after migrating.
 * **The lite store keeps itself current with its memo folder.** The MCP server refreshes a
   `recall setup --lite` store when it starts and, before a search, when the folder changed (at most
   every `RECALL_LITE_REFRESH_INTERVAL` seconds, thirty by default, waiting up to

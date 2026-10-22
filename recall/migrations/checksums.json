@@ -26,5 +26,7 @@
   "0025_allow_supersedes_graph_relations.sql": "ecceec845602b915a35d235edfa3f1f4ab1c51c9ae0f7093589d98ab4351bc80",
   "0026_fact_ledger_retraction.sql": "174df1063bbf67bb49c401b35a03a3217be93fca060250ccd4e77d9dc4eb8c25",
   "0027_fact_ledger_gc_retraction.sql": "38ed985cfbe68182e0d0e8d1109a6c8219625a8337652c4d1d6fd2f10f50c8ee",
-  "0028_validate_fact_ledger_retraction.sql": "3faefec7858ae66f3024bff0821d380895c3647685908b26218d61d6b2ddd9aa"
+  "0028_validate_fact_ledger_retraction.sql": "3faefec7858ae66f3024bff0821d380895c3647685908b26218d61d6b2ddd9aa",
+  "0030_fact_current_table.sql": "a7f4ec10e740f885586be46a10e2a9592dc5f9848d8b76cdd09bb6a39576e5b4",
+  "0031_fact_ledger_order_index.sql": "6910ae31801b6432b2c162e8b97ad29e97ce93f05dbfc36c227fecdc649f9774"
 }

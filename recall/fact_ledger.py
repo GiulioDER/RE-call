@@ -678,9 +678,18 @@ class SQLiteMaterializationOutbox(InMemoryMaterializationOutbox):
 
 
 class PostgresFactLedger:
-    """Production append-only ledger with serializable per-fact application."""
+    """Production append-only ledger with serializable per-fact application.
 
-    def __init__(self, dsn: str, *, tenant_id: str, statement_timeout_ms: int = 15000) -> None:
+    Reads and conflict checks are answered from the materialized current facts
+    (`recall.fact_current`) whenever those reflect every event of the tenant, and replay the
+    history otherwise. With `materialize` (the default) every append also materializes the events
+    it wrote, in its own transaction, so the tables never lag what this ledger appended.
+    `last_read` says which way the latest read went: ``"table"`` or ``"replay"``.
+    """
+
+    def __init__(
+        self, dsn: str, *, tenant_id: str, statement_timeout_ms: int = 15000, materialize: bool = True,
+    ) -> None:
         if not dsn or not tenant_id:
             raise ValueError("dsn and tenant_id must be non-empty")
         if statement_timeout_ms < 1:
@@ -688,6 +697,8 @@ class PostgresFactLedger:
         self.dsn = dsn
         self.tenant_id = tenant_id
         self.statement_timeout_ms = statement_timeout_ms
+        self.materialize = materialize
+        self.last_read: str | None = None
 
     def _connect(self) -> psycopg.Connection:
         conn = psycopg.connect(self.dsn, autocommit=True, connect_timeout=10)
@@ -717,11 +728,58 @@ class PostgresFactLedger:
     def current(
         self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
     ) -> tuple[FactEvent, ...]:
+        return self.current_view(tenant_id=tenant_id, now=now, served=served)[0]
+
+    def current_view(
+        self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
+    ) -> tuple[tuple[FactEvent, ...], tuple[FactEvent, ...]]:
+        """`current`, and the events `live_sources` must read to name the sources of what it lists.
+
+        From the materialized current facts when they reflect the whole ledger (the second item is
+        then each listed fact's live assertions), else from the history replayed (the second item
+        is the history). Either way the answer is `project_current`'s.
+        """
+        from recall.fact_current import pg_current_view
+
         if tenant_id != self.tenant_id:
             raise ValueError("ledger tenant mismatch")
+        events: list[FactEvent] = []
         with self._connect() as conn:
-            events = self._events(conn)
-        return project_current(events, now, served)
+            view = pg_current_view(conn, self.tenant_id, now, served)
+            if view is None:
+                events = self._events(conn)
+        if view is not None:
+            self.last_read = "table"
+            return view.current, view.support
+        self.last_read = "replay"
+        return project_current(events, now, served), tuple(events)
+
+    def conflict_history(self, *, tenant_id: str, fact: AtomicFact) -> tuple[FactEvent, ...]:
+        """The events a conflict check for `fact` must read, in ledger order.
+
+        Its conflict key's events when the materialized current facts reflect the whole ledger,
+        else the tenant's history: every rule the check applies reads only the claim's key
+        (`recall.fact_current.key_history`), so it decides the same on either.
+        """
+        if tenant_id != self.tenant_id:
+            raise ValueError("ledger tenant mismatch")
+        with self._connect() as conn, conn.transaction():
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            return tuple(self._history(conn, fact))
+
+    def _history(self, conn: psycopg.Connection, fact: AtomicFact) -> list[FactEvent]:
+        from recall.fact_current import pg_key_history
+
+        history = pg_key_history(conn, self.tenant_id, fact)
+        self.last_read = "replay" if history is None else "table"
+        return self._events(conn) if history is None else history
+
+    def _materialized(self, conn: psycopg.Connection, events: Sequence[FactEvent]) -> None:
+        """Materialize what this transaction appended (`recall.fact_current`); never raises."""
+        if self.materialize:
+            from recall.fact_current import pg_materialize_appended
+
+            pg_materialize_appended(conn, self.tenant_id, events)
 
     def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None:
         if tenant_id != self.tenant_id:
@@ -803,7 +861,9 @@ class PostgresFactLedger:
                 if materialization_outbox is not None:
                     self._enqueue_materialization(conn, materialization_outbox, prior[0])
                 return LedgerApplyResult(prior[0], duplicate=True)
-            history = self._events(conn)
+            # The claim's conflict key only, when the current facts reflect the whole ledger: under
+            # the key's lock nothing else can change it, and nothing outside it bears on the rules.
+            history = self._history(conn, fact)
             index = fact_supersession(history)
             candidates = project_candidates(history, index=index)
             moment = ordered_after(moment, history, fact)
@@ -820,6 +880,7 @@ class PostgresFactLedger:
                 )
                 if materialization_outbox is not None:
                     self._enqueue_materialization(conn, materialization_outbox, event)
+                self._materialized(conn, (event,))
                 return LedgerApplyResult(event, duplicate=True)
             event = self._insert(
                 conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
@@ -827,17 +888,19 @@ class PostgresFactLedger:
                 request_id=request_id, writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
                 policy_version=policy_version,
             )
+            appended = [event]
             if supersedes_fact_ids:
                 sup_event_id, sup_request_id = supersession_ids(event_id, request_id)
-                self._insert(
+                appended.append(self._insert(
                     conn, event_id=sup_event_id, event_type="superseded",
                     generation_id=generation_id, fact=None, cards=cards,
                     supersedes_fact_ids=supersedes_fact_ids, request_id=sup_request_id,
                     writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
                     policy_version=policy_version,
-                )
+                ))
             if materialization_outbox is not None:
                 self._enqueue_materialization(conn, materialization_outbox, event)
+            self._materialized(conn, appended)
             return LedgerApplyResult(event)
 
     @staticmethod
@@ -891,6 +954,7 @@ class PostgresFactLedger:
                     request_id=request_id, writer=writer,
                     decision_code=decision_code, now=moment,
                 ))
+            self._materialized(conn, written)
             return tuple(written)
 
     def record_decision(
@@ -907,11 +971,13 @@ class PostgresFactLedger:
             prior = self._events(conn, request_id=request_id)
             if prior:
                 return prior[0]
-            return self._insert(
+            event = self._insert(
                 conn, event_id=event_id, event_type=event_type, generation_id=generation_id,
                 fact=fact, cards=cards, request_id=request_id, writer=writer,
                 decision_code=decision_code, supersedes_fact_ids=(), now=moment,
             )
+            self._materialized(conn, (event,))
+            return event
 
 
 class PostgresMaterializationOutbox:
