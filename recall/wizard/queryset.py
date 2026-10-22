@@ -248,7 +248,14 @@ def chunks_from_directory(
             # caller never learned was truncated.
             unreadable.append(f"{file} ({type(exc).__name__})")
             continue
-        chunks.extend(split(body))
+        anchored = getattr(split, "pieces", None)
+        if callable(anchored):
+            # The code chunker splits a `.py` file on its symbols only when it is told the file,
+            # as the generation build tells it. Only the texts are kept: the anchor is index
+            # metadata, and the suffix is all the name decides about the text.
+            chunks.extend(piece for piece, _ in anchored(body, file=file.name, repo=None))
+        else:
+            chunks.extend(split(body))
 
     if unreadable:
         shown = ", ".join(unreadable[:3])

@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any, cast
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -969,6 +969,17 @@ class GenerationManager:
             )
             pieces = [piece for piece, _ in typed_chunks]
             piece_metadata = [chunk_meta for _, chunk_meta in typed_chunks]
+        elif callable(getattr(chunker, "pieces", None)):
+            # The anchored code chunker needs the file and the repository, which the text does
+            # not carry. The path is the one stored as `file` below, decoded, since a manifest URI
+            # is percent-encoded and an anchor names the path as the repository spells it.
+            typed_pieces = chunker.pieces(  # type: ignore[attr-defined]
+                body,
+                file=unquote(relative_paths[entry.uri]),
+                repo=(provenance or {}).get("project"),
+            )
+            pieces = [piece for piece, _ in typed_pieces]
+            piece_metadata = [piece_meta for _, piece_meta in typed_pieces]
         else:
             pieces = chunker(body)
             piece_metadata = [{} for _ in pieces]
