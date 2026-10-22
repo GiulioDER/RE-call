@@ -14,6 +14,8 @@ EMBEDDING_PROFILE = "voyage-code-4-v1"
 BM25_PROFILE = "canonical-bm25-k1-1.5-b0.75-v1"
 WORD_WINDOW_SIZE = 160
 WORD_WINDOW_STRIDE = 120
+#: Okapi BM25 (S. Robertson and H. Zaragoza, "The Probabilistic Relevance Framework: BM25 and
+#: Beyond", Foundations and Trends in Information Retrieval, 2009) with its standard parameters.
 BM25_K1 = 1.5
 BM25_B = 0.75
 

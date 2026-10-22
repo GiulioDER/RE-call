@@ -7,10 +7,11 @@ import stat as stat_module
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
-from pathlib import Path
-from typing import Literal
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal
 from uuid import uuid4
 
+from recall.anchors import code_sha, normalize, resolve_symbols
 from recall.cache import EmbeddingCache, embed_with_cache
 from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.embedding_registry import context_version_for
@@ -325,6 +326,136 @@ def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
     if cur:
         blocks.append("\n".join(cur))
     return _pack(blocks, max_chars)
+
+
+#: The version recorded in the code chunker's `ChunkerIdentity`. Version 2 is the anchored chunker:
+#: a Python file splits on the symbols `ast` reports and every chunk carries a `code_anchor`. The
+#: identity is part of the pipeline fingerprint and generation reuse is keyed on that, so raising
+#: this makes the next build of every code tenant re-chunk every source. Text tenants are untouched.
+CODE_CHUNKER_VERSION = 2
+#: The chunk metadata key holding a Python chunk's anchor, `{"repo", "file", "symbol", "code_sha"}`:
+#: the triple a `recall_record` anchor carries, plus the repository, so a record joins to the
+#: current code by equality (`docs/AUDIT_MEMORY_DESIGN.md`, "Code join").
+CODE_ANCHOR_KEY = "code_anchor"
+
+
+def _code_anchor(repo: str | None, file: str, symbol: str | None, sha: str) -> dict[str, Any]:
+    return {"repo": repo, "file": file, "symbol": symbol, "code_sha": sha}
+
+
+def _pack_lines(owned: list[tuple[int, str]], max_chars: int) -> list[tuple[int, str]]:
+    """One symbol's lines, as pieces of at most max_chars that cut only between lines.
+
+    `owned` is `(line index, line)` in source order. A single line longer than the cap is
+    force-split on whitespace, as `chunk_text` does, because exceeding the cap means the embedder
+    truncates the tail silently. Blank lines never open a piece and never repeat, so the gaps left
+    where another symbol's lines were taken out read as one blank line. Returns
+    `(first line index, piece)`.
+    """
+    pieces: list[tuple[int, str]] = []
+    buf: list[tuple[int, str]] = []
+    size = 0
+
+    def flush() -> None:
+        nonlocal size
+        text = "\n".join(line for _, line in buf).strip("\n")
+        if text:
+            pieces.append((buf[0][0], text))
+        buf.clear()
+        size = 0
+
+    for index, line in owned:
+        if not line and (not buf or not buf[-1][1]):
+            continue
+        if len(line) > max_chars:
+            flush()
+            pieces.extend((index, part) for part in _split_oversized(line, max_chars, 0))
+            continue
+        if buf and size + 1 + len(line) > max_chars:
+            flush()
+        size += len(line) + (1 if buf else 0)
+        buf.append((index, line))
+    flush()
+    return pieces
+
+
+def code_pieces(
+    text: str, *, file: str, repo: str | None, max_chars: int = DEFAULT_MAX_CHARS
+) -> list[tuple[str, dict[str, Any]]]:
+    """The chunks of one source file, each with the metadata it adds to its chunk.
+
+    A file whose name does not end in ``.py`` gets exactly `chunk_code`'s chunks and no metadata.
+
+    A Python file gets one chunk per symbol `recall.anchors.resolve_symbols` reports, plus the
+    module-level lines, and every chunk carries `CODE_ANCHOR_KEY`. Each line belongs to the
+    innermost symbol containing it, so a class's chunk holds its header, docstring and attributes
+    while each method has a chunk of its own, and no line is in two chunks. The anchor's
+    `code_sha` is nonetheless `recall.anchors.symbol_sha` of the WHOLE symbol, methods included:
+    that is the key CCA computes for a finding in the class body, and the key is what has to
+    match, not the chunk text. Module-level lines carry `symbol: None` and the whole-file hash,
+    which is what a `None` symbol means there. A symbol larger than `max_chars` splits into
+    several chunks that all carry the same anchor.
+
+    A ``.py`` file that does not parse keeps `chunk_code`'s chunks, each anchored to the whole
+    file, so a record anchored at file level still finds it unchanged.
+
+    `file` is the repository-relative path with forward slashes, and `repo` the repository's
+    identity, both written into the anchor as given. Neither is derived here.
+    """
+    if PurePosixPath(file).suffix != ".py":
+        return [(piece, {}) for piece in chunk_code(text, max_chars)]
+    try:
+        spans = resolve_symbols(text)
+    except (SyntaxError, ValueError, RecursionError):
+        whole_file = _code_anchor(repo, file, None, code_sha(text))
+        return [
+            (piece, {CODE_ANCHOR_KEY: dict(whole_file)}) for piece in chunk_code(text, max_chars)
+        ]
+    # The same normalised lines `recall.anchors` slices and hashes, so a span's line numbers index
+    # them directly. The chunk text drops a leading byte order mark; the hash does not.
+    lines = normalize(text).split("\n")
+    shown = [lines[0].removeprefix("﻿"), *lines[1:]]
+    owners: list[int | None] = [None] * len(lines)
+    for index, span in enumerate(spans):  # parents precede children, so the innermost one wins
+        owners[span.start_line - 1 : span.end_line] = [index] * (span.end_line - span.start_line + 1)
+    owned: dict[int | None, list[tuple[int, str]]] = {}
+    for index, owner in enumerate(owners):
+        owned.setdefault(owner, []).append((index, shown[index]))
+    placed: list[tuple[int, str, dict[str, Any]]] = []
+    for owner, owner_lines in owned.items():
+        if owner is None:
+            anchor = _code_anchor(repo, file, None, code_sha(text))
+        else:
+            span = spans[owner]
+            body = "\n".join(lines[span.start_line - 1 : span.end_line])
+            anchor = _code_anchor(repo, file, span.symbol, code_sha(body))
+        placed.extend(
+            (first, piece, anchor) for first, piece in _pack_lines(owner_lines, max_chars)
+        )
+    placed.sort(key=lambda item: item[0])
+    return [(piece, {CODE_ANCHOR_KEY: dict(anchor)}) for _, piece, anchor in placed]
+
+
+@dataclass(frozen=True)
+class CodeChunker:
+    """The `code` chunker a generation build binds.
+
+    A class rather than a `functools.partial` of `chunk_code`, because a `Chunker` sees only the
+    text and an anchor needs the file and the repository too. Calling it with the text gives
+    `chunk_code`'s chunks, which is what every caller without a file has always had. `pieces` is
+    the form the generation build uses, and anything that must chunk exactly as the build does
+    (the wizard's query set) has to use it as well, since for a ``.py`` file the two differ.
+    """
+
+    max_chars: int = DEFAULT_MAX_CHARS
+
+    def __call__(self, text: str) -> list[str]:
+        return chunk_code(text, self.max_chars)
+
+    def pieces(
+        self, text: str, *, file: str, repo: str | None
+    ) -> list[tuple[str, dict[str, Any]]]:
+        return code_pieces(text, file=file, repo=repo, max_chars=self.max_chars)
 
 
 def _strip_nul(text: str, source: Path) -> str:

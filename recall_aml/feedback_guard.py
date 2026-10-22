@@ -29,6 +29,18 @@ empties it, which only switches the guard off for what follows, never on. Anythi
 three parts, or whose outcome cannot be read or contradicts itself, is not a feedback record and is
 stored unchanged. Which format AML uses, if any, is not public and its organiser does not answer
 questions about it, so the guard is built so that a wrong guess costs nothing.
+
+References:
+
+- AgentMemoryBench, "Benchmarking Continual Agent Memory for Online Learning, Transfer, and
+  Forgetting", https://github.com/solomoon313/AgentMemoryBench, MIT licence (Copyright (c) 2026
+  Zihang Ma). Read at commit ``9dfda8dede15bf16518524e4614ed89344795413``; only its record shapes
+  are recognised here, none of its code is copied.
+- C.-K. Wu, Z. R. Tam, C.-Y. Lin, Y.-N. Chen and H.-y. Lee, "StreamBench: Towards Benchmarking
+  Continuous Improvement of Language Agents", arXiv:2406.08747, 2024.
+- T. Wei, N. Sachdeva, B. Coleman, Z. He, Y. Bei, X. Ning, M. Ai, Y. Li, J. He, E. H. Chi, C. Wang,
+  S. Chen, F. Pereira, W.-C. Kang and D. Z. Cheng, "Evo-Memory: Benchmarking LLM Agent Test-time
+  Learning with Self-Evolving Memory", arXiv:2511.20857, 2025.
 """
 
 from __future__ import annotations

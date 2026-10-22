@@ -35,6 +35,8 @@ from recall_aml.search_cache import TenantSearchCache
 
 
 CANDIDATE_WIDTH = 100
+#: Reciprocal rank fusion (G. V. Cormack, C. L. A. Clarke and S. Büttcher, SIGIR 2009) and its
+#: standard constant.
 RRF_CONSTANT = 60
 MAX_ITEMS = 12
 CODE_PROFILE = "aml-code-exact-v1"
