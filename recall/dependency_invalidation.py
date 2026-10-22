@@ -261,7 +261,7 @@ def build_dependency_projection(
     in one root stayed current, or a current copy was refused for its sibling (2026-10-21
     supersession audit, STAKES-004 and BUG-005).
     """
-    from recall.stated_facts import in_upload_staging
+    from recall.stated_facts import in_upload_staging, source_location
 
     as_of = _utc(as_of)
     known_as_of = _utc(known_as_of)
@@ -270,19 +270,24 @@ def build_dependency_projection(
         chunks_by_source[dependency_key(chunk, collided)].append(chunk)
     known_sources = set(chunks_by_source)
     nodes_by_file: dict[str, list[str]] = defaultdict(list)
-    node_root: dict[str, str | None] = {}
+    # Every root a node's copies sit under, and whether all of them are uploads: a node holds one
+    # copy when `collided` names its path, and every copy otherwise, so it is classified by all of
+    # them, never by whichever sorts first. A root is read on the decoded location, so an escaped
+    # `file://` source ends in the file it records (2026-10-22 review of this rule, R1 and R2).
+    node_roots: dict[str, frozenset[str | None]] = {}
     node_staged: dict[str, bool] = {}
     for node in sorted(chunks_by_source):
-        first = chunks_by_source[node][0]
-        file = source_file(first)
+        members = chunks_by_source[node]
+        file = source_file(members[0])
         nodes_by_file[file].append(node)
-        node_root[node] = root_of(first.source, file)
-        node_staged[node] = in_upload_staging(first.source, tenant_id)
+        sources = {member.source for member in members}
+        node_roots[node] = frozenset(root_of(source_location(source), file) for source in sources)
+        node_staged[node] = all(in_upload_staging(source, tenant_id) for source in sources)
 
     def resolve(dependent: str, reference: str) -> tuple[str | None, str]:
         """``(node, "")``, or ``(None, why)`` for a reference that names no single document."""
         holders = nodes_by_file.get(reference, [])
-        own = [node for node in holders if node_root[node] == node_root[dependent]]
+        own = [node for node in holders if node_roots[node] & node_roots[dependent]]
         if len(own) == 1:
             return own[0], ""
         eligible = [node for node in holders if not node_staged[node]]
