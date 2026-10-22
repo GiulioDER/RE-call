@@ -193,7 +193,10 @@ differ, and exits 1 on a difference. A strict serving role can only read the tab
 The controller makes at most one fresh search. The query is generated from canonical fact fields,
 not supplied by the model. If refreshed cards still cannot support the write, the controller records
 a stable refusal or abstention code and performs no assertion. Ledger or source-store failure is
-not reported as evidence absence.
+not reported as evidence absence. The ledger read that establishes the conflict set is part of
+authorization: when it cannot answer, the controller refuses with `LEDGER_UNAVAILABLE` before
+minting a permit. On a ledger with a key-scoped read (`conflict_history`) that read is the one, and
+the tenant's `current()` is not read at all; a ledger without one is read through `current()` first.
 
 The existing `PromotedFact` and `apply_rewrite` path remains human reviewed and unchanged. It is a
 separate mechanism for corpus metadata rewrites, not an alternate route to structured fact

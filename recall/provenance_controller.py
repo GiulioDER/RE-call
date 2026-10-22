@@ -1424,6 +1424,12 @@ class ProvenanceController:
                 old_ids.append(event.fact_id)
         return tuple(old_ids)
 
+    def _current(self, instant: datetime) -> tuple[FactEvent, ...]:
+        """The ledger's `current` at `instant`, naming `served` only when the controller has one."""
+        if self.served_sources is None:
+            return self.ledger.current(tenant_id=self.tenant_id, now=instant)
+        return self.ledger.current(tenant_id=self.tenant_id, now=instant, served=self.served_sources)
+
     def _in_force(self, claim: AtomicFact) -> _ConflictSet:
         """The tenant's values in force at some instant, with the index that says when.
 
@@ -1431,25 +1437,28 @@ class ProvenanceController:
         claim's conflict key's history where the ledger offers it (`conflict_history`, answered
         from the materialized current facts, `recall.fact_current`), since nothing outside that
         key bears on the claim, else every event. A ledger that exposes only `current` is read
-        through it, so its conflict set is what holds now. `current` is read first in every case:
-        it is the read authorization fails closed on, so a ledger whose `current` cannot answer is
-        refused (pinned by `test_ledger_read_outage_fails_closed_without_asserting` and the
-        provenance evaluation's `ledger_outage` case). One clock reading, and the absent set
-        computed once, inside the fail-closed read; the second was computed outside it
-        (2026-10-21 audit, CODE-004).
+        through it, so its conflict set is what holds now.
+
+        The first ledger read here is the one authorization fails closed on, so a ledger that
+        cannot answer it is refused. With `conflict_history` that is the key read itself, which
+        reads exactly what the decision rests on, and the tenant's `current` is not read: it
+        decoded every fact current in the tenant only to be discarded (PERF-003, measured
+        2026-10-22 at about 0.3 ms per current fact, 98% of one apply at 10k facts on lite and
+        91% on PostgreSQL). Without it, `current` is read first (pinned by
+        `test_ledger_read_outage_fails_closed_without_asserting` and the provenance evaluation's
+        `ledger_outage` case). One clock reading, and the absent set computed once, inside the
+        fail-closed read; the second was computed outside it (2026-10-21 audit, CODE-004).
         """
         instant = self.now()
-        current = (
-            self.ledger.current(tenant_id=self.tenant_id, now=instant)
-            if self.served_sources is None
-            else self.ledger.current(tenant_id=self.tenant_id, now=instant, served=self.served_sources)
-        )
+        current: tuple[FactEvent, ...] | None = None
         reader = getattr(self.ledger, "conflict_history", None)
-        history: object = (
-            reader(tenant_id=self.tenant_id, fact=claim) if callable(reader)
-            else getattr(self.ledger, "events", None)
-        )
+        if callable(reader):
+            history: object = reader(tenant_id=self.tenant_id, fact=claim)
+        else:
+            current = self._current(instant)
+            history = getattr(self.ledger, "events", None)
         if history is None or not isinstance(history, Sequence):
+            current = self._current(instant) if current is None else current
             return _ConflictSet(current, fact_supersession(current), None, frozenset(), instant)
         events = [event for event in history if event.tenant_id == self.tenant_id]
         index = fact_supersession(events)

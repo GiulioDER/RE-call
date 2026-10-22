@@ -97,6 +97,31 @@ def test_postgres_cards_and_ledger_are_tenant_scoped_and_direct_assertion_is_ref
     assert other_tenant.resolve(card.card_id) is None
 
 
+def test_postgres_apply_fact_never_reads_the_tenants_current_facts():
+    """PERF-003 on PostgreSQL: `apply_fact` decides on the claim's conflict key
+    (`conflict_history`) and never calls `current()`, which decoded every fact current in the
+    tenant to be discarded, at about 0.3 ms per fact.
+
+    Red proof, 2026-10-22: against master `e5d87caba`, whose `ProvenanceController._in_force`
+    read `ledger.current(...)` before `conflict_history`, `current` was called once, failing
+    `assert reads == []`.
+    """
+    tenant, generation, claim, card = _fixture()
+    controller, request = _controller(tenant, generation, claim, card, f"request-{uuid4().hex}")
+    reads = []
+
+    class CountingLedger(PostgresFactLedger):
+        def current(self, **kwargs):
+            reads.append(kwargs)
+            return super().current(**kwargs)
+
+    controller.ledger = CountingLedger(TEST_DSN, tenant_id=tenant)
+    decision = controller.apply_fact(request)
+
+    assert decision.allowed and decision.code == DecisionCode.APPLIED
+    assert reads == []
+
+
 def test_postgres_conflicting_applications_serialize_at_the_ledger():
     tenant, generation, claim, card = _fixture()
     cards = PostgresEvidenceCardStore(TEST_DSN, tenant_id=tenant)

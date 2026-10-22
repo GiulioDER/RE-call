@@ -99,7 +99,7 @@ def measure(ledger: Any, tenant: str, facts: int, probe: Callable[[], Any], samp
     timed_ledger = TimedLedger(ledger)
     cards = EvidenceCardStore()
     controller = ProvenanceController(
-        tenant_id=tenant, generation_id=GEN, cards=cards, ledger=timed_ledger,  # type: ignore[arg-type]
+        tenant_id=tenant, generation_id=GEN, cards=cards, ledger=timed_ledger,
         source_digest_for=lambda _card: "digest", now=lambda: NOW, writer="read-cost",
     )
     totals: list[float] = []
