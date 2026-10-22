@@ -15,6 +15,9 @@ Invariants and the failure each one catches:
   chunk with every chunk in `chunk_ids`; a null `repo` never matches a `repo` query.
 - K9 on PostgreSQL the generation store reads the ACTIVE generation only (DB suite).
 - K10 PostgreSQL and lite return the same records for the same memos (DB suite, through the CLI).
+- K11 the source policy applies before edges are derived: a denied record is not returned, is not
+  named in another record's `caused`, and a denied successor is `<withheld>`, never None (None
+  would present a retracted record as current).
 
 Red proof, recorded 2026-10-21 on the deployment host inside the test bounds, each failing in its
 own assertion, then restored and green:
@@ -38,6 +41,8 @@ own assertion, then restored and green:
   (the forward edge): BUG-001's `caused` is empty.
 - K9 `...::test_reads_active_generation_only`: `GenerationStore.record_chunks` mutated to drop
   its `generation_id` predicate: the ready, unpromoted generation's record is returned too.
+- K11 `...::test_denied_sources_do_not_leak_through_edges`: the policy filter moved back to after
+  the edges are built (the first version): BUG-001's `caused` names the denied BUG-002.
 - K10 `...::test_postgres_and_lite_return_the_same_records`: the legacy PostgreSQL read
   (`recall.records._record_chunks`) mutated to return chunks without their `source`
   (`source=""`): every record's `source` differs between the two stores.
@@ -53,7 +58,7 @@ import pytest
 
 from recall.document import parse_document
 from recall.lite import LiteStore
-from recall.records import RecordsQueryError, lookup_records
+from recall.records import WITHHELD, RecordsQueryError, lookup_records
 from recall.types import Chunk
 from tests.audit_memory_support import EXPECTED, MEMOS, REPO, copy_memos, indexed_lite_store, lite_dsn, memo_name
 from tests.conftest import TEST_DSN, requires_db
@@ -214,6 +219,29 @@ def test_over_200_anchors_refused(store: LiteStore) -> None:
         lookup_records(store, anchors=[_anchor(BUG_001)])
     with pytest.raises(RecordsQueryError, match="unknown kinds"):
         lookup_records(store, all_records=True, kinds=["rumour"])
+
+
+class _DenyPolicy:
+    """A source policy that refuses the named files and allows the rest."""
+
+    def __init__(self, *denied: str) -> None:
+        self.denied = set(denied)
+
+    def decide(self, file: str, context: object) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(allowed=Path(file).name not in self.denied)
+
+
+def test_denied_sources_do_not_leak_through_edges(store: LiteStore) -> None:
+    """K11."""
+    policy = _DenyPolicy("RE-call__abcdef012345__BUG-002.md", "RE-call__fp__run-20261021-9f8e7d__BUG-003~retract.md")
+    found = _by_id(lookup_records(store, all_records=True, security_policy=policy, access_context=object()))
+    assert BUG_002["id"] not in found, "a denied record was returned"
+    assert found[BUG_001["id"]]["caused"] == [], "a denied record was named through `caused`"
+    assert found[P2_4["id"]]["superseded_by"] == WITHHELD
+    assert found[FP["id"]]["superseded_by"] == WITHHELD, "a retracted record read as current"
+    assert found[LESSON["id"]]["superseded_by"] == "RE-call__lesson__6a3ae35062b9~retract.md"
 
 
 class _CodeStore:

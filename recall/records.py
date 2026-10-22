@@ -53,6 +53,8 @@ RECORD_KINDS: frozenset[str] = frozenset(
 )
 MAX_QUERY_ANCHORS = 200
 MAX_RECORDS = 500
+#: `superseded_by` when a successor exists that the caller's source policy does not let it read.
+WITHHELD = "<withheld>"
 
 #: Best first. `anchor_match` is the best of a record's `anchor_matches`.
 MATCH_ORDER: tuple[str, ...] = ("exact", "symbol_changed", "file_only", "none")
@@ -71,7 +73,8 @@ def record_schema() -> dict[str, Any]:
     text = resources.files("recall.schemas").joinpath("recall_record.v1.json").read_text(
         encoding="utf-8"
     )
-    return json.loads(text)
+    schema: dict[str, Any] = json.loads(text)
+    return schema
 
 
 def _type_ok(value: Any, name: str) -> bool:
@@ -131,12 +134,12 @@ def _errors(value: Any, schema: Mapping[str, Any], path: str) -> list[str]:
             return [f"{where}: matches more than one record shape"]
         # Report the branch the record says it is, so the reason names a field, not "oneOf".
         kind = value.get("kind") if isinstance(value, dict) else None
-        for branch, errors in zip(schema["oneOf"], branches):
+        for branch, branch_errors in zip(schema["oneOf"], branches):
             accepted = branch.get("properties", {}).get("kind", {})
             if ("const" in accepted and _equal(accepted["const"], kind)) or any(
                 _equal(k, kind) for k in accepted.get("enum", ())
             ):
-                return errors
+                return branch_errors
         return [f"{where}: kind {kind!r} is not a record kind"]
     if "type" in schema:
         names = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
@@ -372,6 +375,12 @@ def lookup_records(
         else:
             key = ("memo", chunk.source)
         groups.setdefault(key, []).append((chunk, parsed))
+    # The source policy applies BEFORE any edge is derived: a record the caller may not read must
+    # not surface through another record's `caused` list or `superseded_by` either.
+    def allowed(file: str) -> bool:
+        return security_policy is None or bool(security_policy.decide(file, access_context).allowed)
+
+    groups = {key: members for key, members in groups.items() if allowed(_file_of(members[0][0]))}
     by_source = {key: members[0] for key, members in groups.items()}
     chunk_ids = {key: [member.id for member, _parsed in members] for key, members in groups.items()}
 
@@ -391,11 +400,10 @@ def lookup_records(
             continue
         if wanted_ids is not None and record_id not in wanted_ids:
             continue
-        file = chunk.metadata.get("file") if isinstance(chunk.metadata.get("file"), str) else chunk.source
-        if security_policy is not None and not security_policy.decide(file, access_context).allowed:
-            continue
+        file = _file_of(chunk)
+        successor = edges.get(file)
         if query_anchors is not None:
-            anchor_matches = [
+            anchor_matches: list[dict[str, Any]] = [
                 {"anchor": anchor, "match": _best(_match(q, anchor) for q in query_anchors)}
                 for anchor in record_anchors
             ]
@@ -421,7 +429,12 @@ def lookup_records(
                     "chunk_ids": chunk_ids[group],
                     "valid_from": _scalar(meta.get("valid_from")),
                     "supersedes": (list(targets) if len(targets) > 1 else targets[0]) if targets else None,
-                    "superseded_by": edges.get(file),
+                    # A successor the caller may not read is withheld, never reported as None:
+                    # None would present a retracted record as current, and a current false
+                    # positive is one CCA may suppress a finding on.
+                    "superseded_by": (
+                        None if successor is None else successor if allowed(successor) else WITHHELD
+                    ),
                     "valid_until": _scalar(meta.get("valid_until")),
                     "caused": sorted(caused.get(record_id, [])),
                     "anchor_matches": anchor_matches,
@@ -475,6 +488,11 @@ def _record_chunks(store: Any) -> list[Chunk]:
     return [Chunk(id=row[0], source=row[1], text="", metadata=row[2] or {}) for row in rows]
 
 
+def _file_of(chunk: Chunk) -> str:
+    value = chunk.metadata.get("file")
+    return value if isinstance(value, str) and value else chunk.source
+
+
 def _ordinal(chunk: Chunk) -> int:
     value = chunk.metadata.get("ord")
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -488,6 +506,7 @@ __all__ = [
     "RECORD_KINDS",
     "RECORD_VERSION",
     "RecordsQueryError",
+    "WITHHELD",
     "admit_record",
     "lookup_records",
     "record_problem",
