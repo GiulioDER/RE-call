@@ -606,9 +606,9 @@ def test_w18_a_dependent_of_an_expired_path_two_roots_hold_is_invalidated(tmp_pa
     """Node tests/test_supersession_window_rule.py::test_w18_a_dependent_of_an_expired_path_two_roots_hold_is_invalidated.
 
     Invariant: the dependency projection keys a document by its root-relative path, so two
-    roots' copies of `README.md` are one node to it, current when any copy is (w6 keeps the
-    current copy current); a dependent of a README expired in both roots is invalidated with two
-    roots as with one. Red on
+    roots' copies of `README.md` are two nodes, one per copy (w19), and a dependent follows its
+    own root's copy; a dependent of a README expired in both roots is invalidated with two roots
+    as with one. Red on
     ``0f714299d``: fails on "a dependent of an expired collided path read current" (the
     source-keyed state missed the path-keyed lookup, audit STAKES-004).
     """
@@ -631,11 +631,11 @@ def _records(tmp_path: Path, chunks: list[Chunk]) -> dict[str, tuple[str, tuple[
 def test_w20_a_collided_copy_reports_its_dependencies(tmp_path: Path) -> None:
     """Node tests/test_supersession_window_rule.py::test_w20_a_collided_copy_reports_its_dependencies.
 
-    Invariant: the projection keys dependencies and authority by path, and each copy of a path
-    two roots hold reads them by path, so both copies of `guide.md` declare `base.md`, and an
-    expired `base.md` invalidates both through that prerequisite. Red on ``0f714299d``: fails on
-    "a collided copy lost its dependencies" (read by source, they were ``()``, 2026-10-21
-    architect gate, STAKES-004).
+    Invariant: the projection keys dependencies and authority per copy, as the records are keyed,
+    so each copy of `guide.md` reports the `base.md` it declares, and an expired `base.md`
+    invalidates both through that prerequisite. Red on ``0f714299d``: fails on "a collided copy
+    lost its dependencies" (the projection keyed by path and the records by source, so they were
+    ``()``, 2026-10-21 architect gate, STAKES-004).
     """
     guides = [
         _chunk("guide.md", source="/r1/guide.md", recall_graph={"depends_on": ["base.md"]}),
@@ -647,6 +647,122 @@ def test_w20_a_collided_copy_reports_its_dependencies(tmp_path: Path) -> None:
     )
     expired = _records(tmp_path / "b", [_chunk("base.md", source="/r1/base.md", valid_until="2026-08-01"), *guides])
     assert expired["/r1/guide.md"][0] == expired["/r2/guide.md"][0] == "dependency_invalidated"
+
+
+UPLOAD = "/m/uploads/default/job1"
+
+
+def _both(tmp_path: Path, chunks: list[Chunk]) -> tuple[dict[str, str], dict[str, str]]:
+    """``(current_state by record, enforce-mode trust gate by source)`` over one corpus."""
+    with closing(_lite(tmp_path, chunks)) as store:
+        states = {r.source: r.state for r in project_current_state(store, as_of=NOW).records}
+        result = dev_search(store, HashingEmbedder(dim=DIM), QUERY, k=50, now=NOW, dependency_mode="enforce")
+        return states, {h.chunk.source: h.verdict for h in result.hits}
+
+
+def test_w19_a_dependent_follows_its_own_roots_copy(tmp_path: Path) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w19_a_dependent_follows_its_own_roots_copy.
+
+    Invariant: each root's copy of a path is its own dependency node, and a `depends_on`
+    reference resolves to the dependent's own root's copy first. So `notes.md` superseded in
+    root A invalidates root A's dependent while root B's copy stays current and served, and a
+    current upload copy of an expired README cannot keep a dependent current; `current_state`
+    and the enforce-mode trust gate agree on every document. Red on ``0df8b6a1``: fails on "a
+    dependent of a copy superseded in its own root read current" (the copies were one node,
+    current when any was: BUG-005, parked there for the owner).
+    """
+    states, gate = _both(tmp_path / "a", [
+        _chunk("notes.md", source="/rootA/notes.md"),
+        _chunk("notes.md", source="/rootB/notes.md"),
+        _chunk("CHANGES.md", source="/rootA/CHANGES.md", supersedes="notes"),
+        _chunk("dep.md", source="/rootA/dep.md", recall_graph={"depends_on": ["notes.md"]}),
+    ])
+    assert states["dep.md"] == "dependency_invalidated", f"a dependent of a copy superseded in its own root read current: {states}"
+    assert gate["/rootA/dep.md"] == "dependency_invalidated"
+    assert (states["/rootB/notes.md"], gate["/rootB/notes.md"]) == ("current", "ok")
+    states, gate = _both(tmp_path / "b", [
+        _chunk("README.md", source="/m/README.md", valid_until="2026-08-01"),
+        _chunk("README.md", source=f"{UPLOAD}/README.md"),
+        _chunk("x.md", source="/m/x.md", recall_graph={"depends_on": ["README.md"]}),
+    ])
+    assert (states["x.md"], gate["/m/x.md"]) == ("dependency_invalidated", "dependency_invalidated"), (
+        f"an upload's current copy kept a dependent current: {states}"
+    )
+    assert (states[f"{UPLOAD}/README.md"], gate[f"{UPLOAD}/README.md"]) == ("current", "ok")
+
+
+def test_w21_an_upload_never_satisfies_another_roots_dependency(tmp_path: Path) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w21_an_upload_never_satisfies_another_roots_dependency.
+
+    Invariant: outside the dependent's own root, only a copy outside an upload staging root
+    (`uploads/<tenant>/`) can satisfy a `depends_on` reference, so a prerequisite that exists
+    only as an upload leaves the dependent unresolved, which invalidates it; an upload's own
+    document still resolves to the upload's own copy. Red on ``0df8b6a1``: fails on "an upload
+    satisfied another root's dependency" (the upload copy resolved it, so `x.md` read current).
+    The second half, by mutation of `recall.dependency_invalidation.build_dependency_projection`
+    dropping the own-root step: fails on "an upload's own dependency went unresolved".
+    """
+    states, gate = _both(tmp_path / "a", [
+        _chunk("base.md", source=f"{UPLOAD}/base.md"),
+        _chunk("x.md", source="/m/x.md", recall_graph={"depends_on": ["base.md"]}),
+    ])
+    assert (states["x.md"], gate["/m/x.md"]) == ("dependency_invalidated", "dependency_invalidated"), (
+        f"an upload satisfied another root's dependency: {states}"
+    )
+    states, gate = _both(tmp_path / "b", [
+        _chunk("base.md", source=f"{UPLOAD}/base.md"),
+        _chunk("x.md", source=f"{UPLOAD}/x.md", recall_graph={"depends_on": ["base.md"]}),
+    ])
+    assert (states["x.md"], gate[f"{UPLOAD}/x.md"]) == ("current", "ok"), (
+        f"an upload's own dependency went unresolved: {states}"
+    )
+
+
+def test_w22_a_dependency_on_a_path_two_other_roots_hold_is_ambiguous(tmp_path: Path) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w22_a_dependency_on_a_path_two_other_roots_hold_is_ambiguous.
+
+    Invariant: a reference the dependent's own root does not hold, and two other roots do, names
+    no one document, so it is unresolved and invalidates the dependent rather than guessing.
+    Red on ``0df8b6a1``: fails on "a dependency on two roots' copies was guessed" (the merged
+    path node resolved it and `x.md` read current).
+    """
+    states, gate = _both(tmp_path, [
+        _chunk("base.md", source="/r1/base.md"),
+        _chunk("base.md", source="/r2/base.md"),
+        _chunk("x.md", source="/r3/x.md", recall_graph={"depends_on": ["base.md"]}),
+    ])
+    assert (states["x.md"], gate["/r3/x.md"]) == ("dependency_invalidated", "dependency_invalidated"), (
+        f"a dependency on two roots' copies was guessed: {states}"
+    )
+    assert (states["/r1/base.md"], states["/r2/base.md"]) == ("current", "current")
+
+
+def test_w23_a_current_copy_is_never_refused_for_its_sibling(tmp_path: Path) -> None:
+    """Node tests/test_supersession_window_rule.py::test_w23_a_current_copy_is_never_refused_for_its_sibling.
+
+    Invariant: with `dependency_mode="enforce"` the trust gate reads the same per-copy node the
+    projection does, so a current copy is served `ok` whatever another root's copy is, while a
+    copy's own prerequisite still invalidates it. The first half is the control for the
+    regression a merged path node caused (2026-10-21 review, pass 4 of the audit fixes). Red by
+    mutation of `recall.trust_gate.evaluate` looking the reason up by `source_file(hit.chunk)`,
+    the path, as before per-copy nodes: fails on "the gate lost a copy's own invalidated
+    prerequisite".
+    """
+    states, gate = _both(tmp_path / "a", [
+        _chunk("README.md", source="/one/README.md"),
+        _chunk("README.md", source="/two/README.md"),
+        _chunk("CHANGES.md", source="/one/CHANGES.md", supersedes="README"),
+    ])
+    assert gate["/two/README.md"] == "ok", f"a current copy was refused for its sibling: {gate}"
+    assert states["/two/README.md"] == "current"
+    states, gate = _both(tmp_path / "b", [
+        _chunk("guide.md", source="/r1/guide.md", valid_until="2026-08-01", recall_graph={"depends_on": ["base.md"]}),
+        _chunk("guide.md", source="/r2/guide.md", recall_graph={"depends_on": ["base.md"]}),
+        _chunk("base.md", source="/r2/base.md", valid_until="2026-08-01"),
+    ])
+    assert (states["/r2/guide.md"], gate["/r2/guide.md"]) == ("dependency_invalidated", "dependency_invalidated"), (
+        f"the gate lost a copy's own invalidated prerequisite: {gate}"
+    )
 
 
 def test_a_naive_replay_instant_is_read_as_utc() -> None:

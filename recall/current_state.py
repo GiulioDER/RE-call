@@ -278,9 +278,6 @@ def _project(
             raise ValueError("current state projection exceeds max_records")
 
     group(_file)
-    # The dependency projection keys a document by its root-relative path, so it reads the
-    # grouping by path whatever the records are keyed by.
-    asserted_at_by_file = dict(asserted_at_by_source)
     # `max_records` refuses rather than trims, so it is decided before the supersession scan, a
     # record per source and the dependency build, and again once collided paths are split, which
     # adds records (2026-10-21 audit, SEC-008).
@@ -304,37 +301,30 @@ def _project(
         )
         for key, chunks in sorted(chunks_by_source.items())
     )
-    # Two roots' copies of one path are one node to the dependency projection, keyed by the path:
-    # keyed by source, every copy missed the path-keyed lookup and read current, so a dependent of
-    # a README expired in both roots was not invalidated (2026-10-21 audit, STAKES-004). The node
-    # is current when any copy is: a non-current node is an invalidation root, and its reason
-    # would relabel the current copy itself, here and in the trust gate's enforce mode. Whether a
-    # dependent of a path superseded or expired in ONE root should be invalidated is the owner's
-    # call.
-    file_of = {record.source: _file(chunks_by_source[record.source][0]) for record in all_records}
-    base_states: dict[str, CurrentState] = {}
-    for record in all_records:
-        path = file_of[record.source]
-        if path not in base_states or record.state == "current":
-            base_states[path] = record.state
+    # Keyed as the records are: a path two roots hold is one node per copy in the dependency
+    # projection too (`recall.dependency_invalidation.dependency_key`), each with its own state,
+    # and a `depends_on` reference resolves to the dependent's own root's copy first. Merged under
+    # the path, either rule was wrong for one of them: a dependent of a copy superseded in one root
+    # stayed current, or a current copy was refused for its sibling (2026-10-21 audit, STAKES-004
+    # and BUG-005).
     binding_reader = getattr(store, "generation_binding", None)
     binding = binding_reader() if callable(binding_reader) else {}
     dependency_projection = build_dependency_projection(
         [chunk for chunks in chunks_by_source.values() for chunk in chunks],
         tenant_id=str(store.tenant),
         generation_id=generation_id,
-        base_states=base_states,
+        base_states={record.source: record.state for record in all_records},
         as_of=as_of,
         known_as_of=known_as_of,
-        asserted_at_by_source=asserted_at_by_file,
+        asserted_at_by_source=asserted_at_by_source,
         corpus_fingerprint=binding.get("corpus_fingerprint"),
+        collided=graph.collided,
     )
     records_list: list[CurrentStateRecord] = []
     for record in all_records:
         if not selected(record.source, chunks_by_source[record.source]):
             continue
-        path = file_of[record.source]
-        reason = dependency_projection.reason_for(path)
+        reason = dependency_projection.reason_for(record.source)
         diagnostics = record.diagnostics
         state: CurrentState = record.state
         invalidation_chain: tuple[str, ...] = ()
@@ -360,10 +350,8 @@ def _project(
             # failed still reports both facts, with the more actionable one as its state.
             if state == "current":
                 state = "dependency_invalidated"
-        # By path, as the projection keys them: by source, a collided copy reported no
-        # dependencies and an unknown authority (2026-10-21 architect gate, STAKES-004).
-        authority = dependency_projection.authorities.get(path, "unknown")
-        dependencies = dependency_projection.dependencies.get(path, ())
+        authority = dependency_projection.authorities.get(record.source, "unknown")
+        dependencies = dependency_projection.dependencies.get(record.source, ())
         state_id = "state_" + canonical_sha256(
             {
                 "schema_version": CURRENT_STATE_SCHEMA_VERSION,

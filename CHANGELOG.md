@@ -53,7 +53,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   one path kept apart. A bare name is never matched by path, so several files sharing its stem stay
   ambiguous. Semantic lint folds references the same way but matches by stem alone; `recall lint`
   and the dashboard's graph and triage pages keep their own matcher. A low-scoring successor whose
-  dependency is invalidated is no longer promoted to `ok`. A second value of a set-valued predicate
+  dependency is invalidated is no longer promoted to `ok`. In dependency invalidation each root's
+  copy of a path is its own document, and a `depends_on` reference resolves to the dependent's own
+  root's copy first, else to the one copy outside an upload staging root; several such copies, or
+  only an upload's, leave it unresolved, which invalidates the dependent. A second value of a set-valued predicate
   such as `email` is no contradiction, while a fact declaring a cardinality its rival does not share
   still conflicts; facts are NFC-normalised when built; an authored link can supersede an expired or
   future value it overlaps; and a value asserted again that names a successor of its earlier

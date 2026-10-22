@@ -18,6 +18,7 @@ from psycopg.types.json import Jsonb
 
 from recall.frontmatter import authority_from_metadata, dependencies_from_metadata
 from recall.lineage import canonical_sha256
+from recall.supersession import root_of
 from recall.types import Authority, Chunk, DependencyCause, InvalidationReason
 
 AUTHORITY_VALUES: tuple[Authority, ...] = (
@@ -58,6 +59,14 @@ def _utc(value: datetime | None) -> datetime | None:
 def source_file(chunk: Chunk) -> str:
     value = chunk.metadata.get("file")
     return value if isinstance(value, str) and value else chunk.source
+
+
+def dependency_key(chunk: Chunk, collided: frozenset[str]) -> str:
+    """The node a chunk belongs to: its root-relative file, or its absolute source when two roots
+    hold that file (`collided`), so each root's copy is a document of its own, as
+    `recall.supersession.SupersessionGraph.key` keys it."""
+    file = source_file(chunk)
+    return chunk.source if file in collided and file != chunk.source else file
 
 
 @dataclass(frozen=True)
@@ -103,6 +112,8 @@ class DependencyProjection:
     as_of: datetime | None = None
     known_as_of: datetime | None = None
     corpus_fingerprint: str | None = None
+    #: The files two roots hold, each copy its own node (`dependency_key`).
+    collided: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -136,6 +147,10 @@ class DependencyProjection:
 
     def reason_for(self, source: str) -> InvalidationReason | None:
         return self.invalidations.get(source)
+
+    def key_for(self, chunk: Chunk) -> str:
+        """The node `chunk` belongs to in this projection (`dependency_key`)."""
+        return dependency_key(chunk, self.collided)
 
 
 def write_dependency_projection(conn: Any, projection: DependencyProjection) -> None:
@@ -226,6 +241,7 @@ def build_dependency_projection(
     known_as_of: datetime | None = None,
     asserted_at_by_source: Mapping[str, datetime | None] | None = None,
     corpus_fingerprint: str | None = None,
+    collided: frozenset[str] = frozenset(),
 ) -> DependencyProjection:
     """Build an immutable dependency projection from one generation's chunks.
 
@@ -233,13 +249,53 @@ def build_dependency_projection(
     never guesses a state from retrieval scores.  Missing states are treated as current, which
     keeps this pure builder useful for authoring and lint tests while callers that have temporal
     state can provide the complete map.
+
+    **One node per copy.** A file named in `collided` (two roots hold it) is one node per root,
+    keyed by its absolute source (`dependency_key`); every other file is keyed by its path.
+    ``base_states`` and ``asserted_at_by_source`` are keyed the same way. **Own root first.** A
+    ``depends_on`` reference names a root-relative path, and resolves to the dependent's own
+    root's copy when that root holds one; else to the one copy outside an upload staging root
+    (`recall.stated_facts.in_upload_staging`). Several such copies are ambiguous and none (only
+    an upload holds it, or nothing does) is unresolved, and both invalidate the dependent. Merging
+    the copies under their path gave either answer for both: a dependent of a copy superseded
+    in one root stayed current, or a current copy was refused for its sibling (2026-10-21
+    supersession audit, STAKES-004 and BUG-005).
     """
+    from recall.stated_facts import in_upload_staging
+
     as_of = _utc(as_of)
     known_as_of = _utc(known_as_of)
     chunks_by_source: dict[str, list[Chunk]] = defaultdict(list)
     for chunk in chunks:
-        chunks_by_source[source_file(chunk)].append(chunk)
+        chunks_by_source[dependency_key(chunk, collided)].append(chunk)
     known_sources = set(chunks_by_source)
+    nodes_by_file: dict[str, list[str]] = defaultdict(list)
+    node_root: dict[str, str | None] = {}
+    node_staged: dict[str, bool] = {}
+    for node in sorted(chunks_by_source):
+        first = chunks_by_source[node][0]
+        file = source_file(first)
+        nodes_by_file[file].append(node)
+        node_root[node] = root_of(first.source, file)
+        node_staged[node] = in_upload_staging(first.source, tenant_id)
+
+    def resolve(dependent: str, reference: str) -> tuple[str | None, str]:
+        """``(node, "")``, or ``(None, why)`` for a reference that names no single document."""
+        holders = nodes_by_file.get(reference, [])
+        own = [node for node in holders if node_root[node] == node_root[dependent]]
+        if len(own) == 1:
+            return own[0], ""
+        eligible = [node for node in holders if not node_staged[node]]
+        if len(eligible) == 1:
+            return eligible[0], ""
+        if eligible:
+            return None, "dependency names a copy in several roots and none in the dependent's"
+        if holders:
+            return None, "dependency resolves only to an upload outside the dependent's root"
+        return None, "dependency does not resolve to exactly one canonical source"
+
+    #: dependent -> its references, each with the node it resolves to (None: unresolved)
+    resolved: dict[str, tuple[tuple[str, str | None], ...]] = {}
     authorities: dict[str, Authority] = {}
     dependencies: dict[str, tuple[str, ...]] = {}
     diagnostics: list[DependencyDiagnostic] = []
@@ -295,22 +351,18 @@ def build_dependency_projection(
         asserting_chunk = source_chunks[0]
         asserted_at = (asserted_at_by_source or {}).get(source)
         asserted_at = _utc(asserted_at)
-        for prerequisite in unique_dependencies:
+        links: list[tuple[str, str | None]] = []
+        for reference in unique_dependencies:
+            prerequisite, why = resolve(source, reference)
+            links.append((reference, prerequisite))
             if prerequisite == source:
                 diagnostics.append(
-                    DependencyDiagnostic("self_dependency", source, "a source cannot depend on itself", prerequisite)
+                    DependencyDiagnostic("self_dependency", source, "a source cannot depend on itself", reference)
                 )
                 hard_failures[source] = "cycle"
                 continue
-            if prerequisite not in known_sources:
-                diagnostics.append(
-                    DependencyDiagnostic(
-                        "unresolved_dependency",
-                        source,
-                        "dependency does not resolve to exactly one canonical source",
-                        prerequisite,
-                    )
-                )
+            if prerequisite is None:
+                diagnostics.append(DependencyDiagnostic("unresolved_dependency", source, why, reference))
                 continue
             edges.append(
                 DependencyEdge(
@@ -331,9 +383,11 @@ def build_dependency_projection(
                     asserted_at=asserted_at,
                 )
             )
+        resolved[source] = tuple(sorted(links))
 
     adjacency: dict[str, tuple[str, ...]] = {
-        source: tuple(sorted(value)) for source, value in dependencies.items()
+        source: tuple(sorted(node for _reference, node in links if node is not None))
+        for source, links in resolved.items()
     }
     reverse: dict[str, list[str]] = defaultdict(list)
     for edge in edges:
@@ -409,13 +463,13 @@ def build_dependency_projection(
         direct = root_reason(source)
         if direct is not None:
             return direct
-        for prerequisite in adjacency.get(source, ()):
-            if prerequisite not in known_sources:
+        for reference, prerequisite in resolved.get(source, ()):
+            if prerequisite is None:
                 return InvalidationReason(
-                    prerequisite,
+                    reference,
                     "unresolved",
-                    path + (prerequisite,),
-                    authorities.get(prerequisite, "unknown"),
+                    path + (reference,),
+                    authorities.get(reference, "unknown"),
                     generation_id,
                     as_of,
                     known_as_of,
@@ -508,6 +562,7 @@ def build_dependency_projection(
         as_of=as_of,
         known_as_of=known_as_of,
         corpus_fingerprint=corpus_fingerprint,
+        collided=collided,
     )
 
 

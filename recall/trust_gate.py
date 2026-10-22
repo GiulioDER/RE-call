@@ -265,7 +265,12 @@ def evaluate(
             and dependency_mode == "enforce"
             and dependency_projection is not None
         ):
-            invalidation = dependency_projection.reason_for(source_file(hit.chunk))
+            # By node, as the projection keys it: a path two roots hold is one node per copy
+            # (`DependencyProjection.key_for`), so a sibling's state never refuses this copy. A
+            # projection without `key_for` (a hand-built one) is keyed by path, as it was.
+            key_for = getattr(dependency_projection, "key_for", None)
+            node = key_for(hit.chunk) if callable(key_for) else source_file(hit.chunk)
+            invalidation = dependency_projection.reason_for(node)
             if invalidation is not None and verdict == "ok":
                 verdict = "dependency_invalidated"
         trusted.append(

@@ -113,6 +113,12 @@ def _runs_through_uploads(parts: Sequence[str], tenant: str) -> bool:
     )
 
 
+def in_upload_staging(source: str, tenant: str) -> bool:
+    """Whether `source` lies under `uploads/<tenant>/`, where `recall_ingest` stages every upload,
+    read with the one location decoder (`_location`), as `StatingRule.admits` reads it."""
+    return _runs_through_uploads(Path(_location(source)).parts, tenant)
+
+
 @dataclass(frozen=True)
 class StatingRule:
     """Which memos may state facts: the operator's prefixes, else the folders a refresh follows.
