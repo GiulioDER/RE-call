@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from functools import lru_cache
 from importlib import resources
 from typing import Any
@@ -38,6 +39,7 @@ from typing import Any
 from recall.errors import RecallError
 from recall.frontmatter import RECORD_KEY, RECORD_LABEL_KEYS, supersedes_targets
 from recall.observability import get_logger
+from recall.supersession import store_supersession_graph
 from recall.types import Chunk
 
 _log = get_logger("records")
@@ -340,6 +342,7 @@ def lookup_records(
     offset: int = 0,
     security_policy: Any = None,
     access_context: Any = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Records matching `anchors` (with `repo`), or `ids`, or every record; the C5 envelope.
 
@@ -353,6 +356,11 @@ def lookup_records(
     dump a round-trip check needs, which separate paged calls cannot give on a store with no
     generation id to pin them to.
     Reads one snapshot of the store's active generation when it has one.
+
+    `superseded_by` is what hides the record at `now` (default: the current time), read from the
+    store's supersession graph the way the trust gate reads it: a successor hides its predecessor
+    only inside its own validity window, a chain names its deepest valid member, and a path two
+    roots hold is keyed by its source.
     """
     forms = sum(x for x in (anchors is not None, ids is not None, bool(all_records)))
     if forms != 1:
@@ -381,11 +389,14 @@ def lookup_records(
         with snapshot():
             generation_id = _generation_id(store)
             chunks = _record_chunks(store)
-            edges, _unresolved, _candidates = store.supersession_all()
+            graph = store_supersession_graph(store)
     else:
         generation_id = _generation_id(store)
         chunks = _record_chunks(store)
-        edges, _unresolved, _candidates = store.supersession_all()
+        graph = store_supersession_graph(store)
+    instant = now or datetime.now(UTC)
+    if instant.tzinfo is None:
+        instant = instant.replace(tzinfo=UTC)
 
     # One record per document: a memo's chunks all carry its record. In a code tenant several
     # chunks share one anchor (a split symbol, every module-level chunk of a file), so a code
@@ -428,7 +439,7 @@ def lookup_records(
         if wanted_ids is not None and record_id not in wanted_ids:
             continue
         file = _file_of(chunk)
-        successor = edges.get(file)
+        successor = graph.successor(graph.key(file, chunk.source), now=instant)
         if query_anchors is not None:
             anchor_matches: list[dict[str, Any]] = [
                 {"anchor": anchor, "match": _best(_match(q, anchor) for q in query_anchors)}

@@ -167,7 +167,12 @@ def test_unknown_version_refused_with_warning(tmp_path: Path, caplog: pytest.Log
 def test_a_deeply_nested_record_warns_and_does_not_stop_the_run(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """R8: `json.loads` raises RecursionError, not JSONDecodeError, on a line nested this deep."""
+    """R8: a line nested this deep must never stop the run, whatever the interpreter does with it.
+
+    Python 3.12's `json.loads` raises RecursionError on it (not JSONDecodeError); 3.14's parses it
+    into a list, which is then refused as not an object. Either way the memo is indexed without
+    the record and the warning names the file, so the reason is not asserted.
+    """
     depth = 100_000
     with caplog.at_level(logging.WARNING, logger="recall.records"):
         try:
@@ -176,7 +181,7 @@ def test_a_deeply_nested_record_warns_and_does_not_stop_the_run(
             pytest.fail(f"a deeply nested recall_record stopped the index run: {exc!r}")
     assert all(RECORD_KEY not in c.metadata for c in store.iter_chunks())
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any(str(memo) in w and "one line of JSON" in w for w in warnings), warnings
+    assert any(str(memo) in w and "recall_record ignored" in w for w in warnings), warnings
 
 
 @requires_db

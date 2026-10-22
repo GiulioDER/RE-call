@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 336
 Cross package edges: 352
-Source tree fingerprint: `ffe50ecd1bd2e3aa009449e33e278f6ae074fdf5707f7127d577f00b6da83bf3`
+Source tree fingerprint: `0d39c07cb476bab2daf4434e1e19b584299277bb35d8d97b8e0e3f1d1a0e1515`
 
 ## Highest fan in modules
 
@@ -672,7 +672,7 @@ They are observations, not automatic failures.
 | `recall.reasoning_proposals._providers` | 3 | 31 |
 | `recall.reasoning_proposals.types` | 2 | 28 |
 | `recall.reasoning_response` | 7 | 103 |
-| `recall.records` | 5 | 31 |
+| `recall.records` | 6 | 31 |
 | `recall.related` | 8 | 94 |
 | `recall.rerank` | 4 | 15 |
 | `recall.retrieval_plan` | 1 | 1 |

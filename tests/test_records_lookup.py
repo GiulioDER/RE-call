@@ -18,8 +18,10 @@ Invariants and the failure each one catches:
 - K11 the source policy applies before edges are derived: a denied record is not returned, is not
   named in another record's `caused`, and a denied successor is `<withheld>`, never None (None
   would present a retracted record as current).
+- K12 `superseded_by` follows #970's window rule through the store's supersession graph: a
+  successor hides a record only inside its own validity window (the trust gate's reading).
 
-Red proof, recorded 2026-10-21 on the deployment host inside the test bounds, each failing in its
+Red proof, recorded 2026-10-21 (K12 2026-10-22) on the deployment host inside the test bounds, each failing in its
 own assertion, then restored and green:
 - K2 `...::test_multi_anchor_reports_each`: `_best` mutated from `min` to `max` over the match
   order: PERF-001~2 is no longer returned for its exact first anchor (the membership assertion).
@@ -46,11 +48,15 @@ own assertion, then restored and green:
 - K10 `...::test_postgres_and_lite_return_the_same_records`: the legacy PostgreSQL read
   (`recall.records._record_chunks`) mutated to return chunks without their `source`
   (`source=""`): every record's `source` differs between the two stores.
+- K12 `...::test_a_successor_hides_a_record_only_inside_its_own_window`: `superseded_by` read
+  from the raw edge (`graph.edges.get(...)`, the pre-#970 reading) instead of
+  `graph.successor(..., now=...)`: "a successor hid a record before its window".
 """
 
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +85,8 @@ FP = EXPECTED["RE-call__fp__run-20261021-9f8e7d__BUG-003.md"]
 LESSON = EXPECTED["RE-call__lesson__6a3ae35062b9.md"]
 P2_4 = EXPECTED["RE-call__fedcba987654__P2-4.md"]
 OTHER_SHA = "0" * 64
+#: An instant after every golden memo's `valid_from`, so every successor is inside its window.
+AFTER_ALL = datetime(2026, 11, 1, tzinfo=UTC)
 
 
 @pytest.fixture(autouse=True)
@@ -166,7 +174,7 @@ def test_superseded_and_retracted_are_marked_not_hidden(tmp_path: Path) -> None:
     expired = folder / "RE-call__0123456789ab__BUG-001.md"
     expired.write_bytes(expired.read_bytes().replace(b"valid_from: 2026-08-04\n", b"valid_from: 2026-08-04\nvalid_until: 2026-09-01\n"))
     store = indexed_lite_store(tmp_path, memos=folder)
-    found = _by_id(lookup_records(store, repo=REPO, anchors=[_anchor(FP, 0), _anchor(FP, 1)]))
+    found = _by_id(lookup_records(store, repo=REPO, anchors=[_anchor(FP, 0), _anchor(FP, 1)], now=AFTER_ALL))
     hidden = {FP["id"], P2_4["id"], LESSON["id"], BUG_001["id"]} - set(found)
     assert not hidden, f"superseded, retracted or expired records were hidden: {sorted(hidden)}"
     assert found[FP["id"]]["superseded_by"] == "RE-call__fp__run-20261021-9f8e7d__BUG-003~retract.md"
@@ -236,12 +244,27 @@ class _DenyPolicy:
 def test_denied_sources_do_not_leak_through_edges(store: LiteStore) -> None:
     """K11."""
     policy = _DenyPolicy("RE-call__abcdef012345__BUG-002.md", "RE-call__fp__run-20261021-9f8e7d__BUG-003~retract.md")
-    found = _by_id(lookup_records(store, all_records=True, security_policy=policy, access_context=object()))
+    found = _by_id(
+        lookup_records(store, all_records=True, security_policy=policy, access_context=object(), now=AFTER_ALL)
+    )
     assert BUG_002["id"] not in found, "a denied record was returned"
     assert found[BUG_001["id"]]["caused"] == [], "a denied record was named through `caused`"
     assert found[P2_4["id"]]["superseded_by"] == WITHHELD
     assert found[FP["id"]]["superseded_by"] == WITHHELD, "a retracted record read as current"
     assert found[LESSON["id"]]["superseded_by"] == "RE-call__lesson__6a3ae35062b9~retract.md"
+
+
+def test_a_successor_hides_a_record_only_inside_its_own_window(store: LiteStore) -> None:
+    """K12: #970's rule (owner decision 2026-10-21), read the same way the trust gate reads it.
+
+    The lesson's retraction is valid from 2026-10-23. Before that instant the retraction is not
+    yet in force, so the lesson is current; from it on, the lesson is superseded.
+    """
+    retraction = "RE-call__lesson__6a3ae35062b9~retract.md"
+    before = _by_id(lookup_records(store, ids=[LESSON["id"]], now=datetime(2026, 10, 22, tzinfo=UTC)))
+    on = _by_id(lookup_records(store, ids=[LESSON["id"]], now=datetime(2026, 10, 23, 12, tzinfo=UTC)))
+    assert before[LESSON["id"]]["superseded_by"] is None, "a successor hid a record before its window"
+    assert on[LESSON["id"]]["superseded_by"] == retraction
 
 
 class _CodeStore:
