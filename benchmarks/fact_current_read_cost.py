@@ -14,7 +14,7 @@ grows with N while the facts current stay at 100. `flat`: every assertion its ow
 superseded, so everything in the history is current.
 
     python -m benchmarks.fact_current_read_cost --backend lite --out runs/x.json
-    python -m benchmarks.fact_current_read_cost --backend postgres --dsn postgresql://... --out runs/x.json
+    python -m benchmarks.fact_current_read_cost --backend postgres --dsn postgresql://... --migrate --out runs/x.json
 
 Writes one JSON record per (backend, shape, events) with every sample in milliseconds.
 """
@@ -161,11 +161,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--events", nargs="+", type=int, default=[1000, 10000])
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--out", required=True)
+    parser.add_argument(
+        "--migrate", action="store_true", help="apply RE-call's migrations to --dsn first (a throwaway database)"
+    )
     args = parser.parse_args(argv)
     if args.samples < 2:
         parser.error("--samples must be at least 2")
     if args.backend == "postgres" and not args.dsn:
         parser.error("--dsn is required with --backend postgres")
+    if args.migrate and args.dsn:
+        from recall.schema import apply_migrations
+
+        apply_migrations(args.dsn, table="chunks", dim=4)
     records = []
     for shape in args.shapes:
         for events in args.events:
