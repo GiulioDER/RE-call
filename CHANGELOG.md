@@ -27,6 +27,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Security
 
+* **`opentelemetry-api` is locked at 1.45.1, up from 1.44.0** (CVE-2026-114603). It reaches RE-call
+  only through `mcp`; the dependency audit refuses 1.44.0 since the advisory was published.
 * **`mcp` is pinned at 2.2.0, up from 2.1.0** (GHSA-84m7-p3x7-pcfv, CVE-2026-59951). In 2.1.0 a
   stateful Streamable HTTP server never reclaimed session state, so a client able to reach the
   endpoint could grow its memory without bound. RE-call's HTTP server runs stateless by default
