@@ -1,0 +1,297 @@
+{
+  "RE-call__0123456789ab__BUG-001.md": {
+    "anchors": [
+      {
+        "code_sha": "279118d17555dada7c93533ef1fec82b01dc39b01b1df0a59bc6f2633524aabc",
+        "file": "recall/pool.py",
+        "symbol": "Pool._lease"
+      }
+    ],
+    "auditor": "bug-auditor",
+    "bug_id": "RE-call:0123456789ab:BUG-001",
+    "category": "concurrency",
+    "caused_by": [],
+    "date": "2026-08-04",
+    "evidence": {
+      "confirmed_l25": "evidenced",
+      "fixed": "evidenced",
+      "l6_approved": "evidenced",
+      "red_proof": "not_required"
+    },
+    "files": [
+      "recall/pool.py",
+      "tests/test_pool.py"
+    ],
+    "finding_id": "BUG-001",
+    "fix_commit": "0123456789abcdef0123456789abcdef01234567",
+    "id": "RE-call:0123456789ab:BUG-001",
+    "kind": "bug",
+    "ordinal": 1,
+    "project": "RE-call",
+    "repo": "GiulioDER/RE-call",
+    "run_id": "run-20261020-1a2b3c",
+    "severity": "P2",
+    "sources": [
+      "git:0123456789abcdef0123456789abcdef01234567"
+    ],
+    "summary": "The pool returned connections on a worker thread, so the liveness check raced.",
+    "supersedes": null,
+    "tier": "proved",
+    "v": 1
+  },
+  "RE-call__111111111111__SEC-003.md": {
+    "anchors": [
+      {
+        "code_sha": "e33c26a3c6ee863e59f7a508efc9a50ccbf50357adacb38d8139a1f6fbfc7fcf",
+        "file": "recall/frontmatter.py",
+        "symbol": null
+      }
+    ],
+    "auditor": null,
+    "bug_id": "RE-call:111111111111:SEC-003",
+    "category": null,
+    "caused_by": [],
+    "date": "2026-08-06",
+    "evidence": {
+      "confirmed_l25": "evidenced",
+      "fixed": "evidenced",
+      "l6_approved": "evidenced",
+      "red_proof": "not_required"
+    },
+    "files": [
+      "recall/frontmatter.py"
+    ],
+    "finding_id": "SEC-003",
+    "fix_commit": "1111111111111111111111111111111111111111",
+    "id": "RE-call:111111111111:SEC-003",
+    "kind": "bug",
+    "ordinal": 1,
+    "project": "RE-call",
+    "repo": "GiulioDER/RE-call",
+    "run_id": null,
+    "severity": null,
+    "sources": [
+      "git:1111111111111111111111111111111111111111"
+    ],
+    "summary": "Ünïcødé “quotes” and 'single' and \"double\": a key: value pair\n---\nnot a fence; 日本語 and emoji ✅ survive.",
+    "supersedes": null,
+    "tier": "proved",
+    "v": 1
+  },
+  "RE-call__222222222222__PERF-001~2.md": {
+    "anchors": [
+      {
+        "code_sha": "279118d17555dada7c93533ef1fec82b01dc39b01b1df0a59bc6f2633524aabc",
+        "file": "recall/pool.py",
+        "symbol": "Pool._lease"
+      },
+      {
+        "code_sha": "22a27793944ce17ceed388cca7ad06e4d0b75f1fabd81c3ac0140d9c66952d7b",
+        "file": "recall_mcp/oidc.py",
+        "symbol": "OidcTokenVerifier._refresh"
+      }
+    ],
+    "auditor": "bug-auditor",
+    "bug_id": "RE-call:222222222222:PERF-001~2",
+    "category": "concurrency",
+    "caused_by": [],
+    "date": "2026-08-07",
+    "evidence": {
+      "confirmed_l25": "evidenced",
+      "fixed": "evidenced",
+      "l6_approved": "evidenced",
+      "red_proof": "not_required"
+    },
+    "files": [
+      "recall/index.py",
+      "recall/generations.py"
+    ],
+    "finding_id": "PERF-001",
+    "fix_commit": "2222222222222222222222222222222222222222",
+    "id": "RE-call:222222222222:PERF-001~2",
+    "kind": "bug",
+    "ordinal": 2,
+    "project": "RE-call",
+    "repo": "GiulioDER/RE-call",
+    "run_id": "run-20261020-1a2b3c",
+    "severity": "P2",
+    "sources": [
+      "git:2222222222222222222222222222222222222222"
+    ],
+    "summary": "Sentence 0 of a very long finding summary that keeps going. Sentence 1 of a very long finding summary that keeps going. Sentence 2 of a very long finding summary that keeps going. Sentence 3 of a very long finding summary that keeps going. Sentence 4 of a very long finding summary that keeps going. Sentence 5 of a very long finding summary that keeps going. Sentence 6 of a very long finding summary that keeps going. Sentence 7 of a very long finding summary that keeps going. Sentence 8 of a very long finding summary that keeps going. Sentence 9 of a very long finding summary that keeps going. Sentence 10 of a very long finding summary that keeps going. Sentence 11 of a very long finding summary that keeps going. Sentence 12 of a very long finding summary that keeps going. Sentence 13 of a very long finding summary that keeps going. Sentence 14 of a very long finding summary that keeps going. Sentence 15 of a very long finding summary that keeps going. Sentence 16 of a very long finding summary that keeps going. Sentence 17 of a very long finding summary that keeps going. Sentence 18 of a very long finding summary that keeps going. Sentence 19 of a very long finding summary that keeps going. Sentence 20 of a very long finding summary that keeps going. Sentence 21 of a very long finding summary that keeps going. Sentence 22 of a very long finding summary that keeps going. Sentence 23 of a very long finding summary that keeps going. Sentence 24 of a very long finding summary that keeps going. Sentence 25 of a very long finding summary that keeps going. Sentence 26 of a very long finding summary that keeps going. Sentence 27 of a very long finding summary that keeps going. Sentence 28 of a very long finding summary that keeps going. Sentence 29 of a very long finding summary that keeps going. Sentence 30 of a very long finding summary that keeps going. Sentence 31 of a very long finding summary that keeps going. Sentence 32 of a very long finding summary that keeps going. Sentence 33 of a very long finding summary that keeps going. Sentence 34 of a very long finding summary that keeps going. Sentence 35 of a very long finding summary that keeps going. Sentence 36 of a very long finding summary that keeps going. Sentence 37 of a very long finding summary that keeps going. Sentence 38 of a very long finding summary that keeps going. Sentence 39 of a very long finding summary that keeps going. Sentence 40 of a very long finding summary that keeps going. Sentence 41 of a very long finding summary that keeps going. Sentence 42 of a very long finding summary that keeps going. Sentence 43 of a very long finding summary that keeps going. Sentence 44 of a very long finding summary that keeps going. Sentence 45 of a very long finding summary that keeps going. Sentence 46 of a very long finding summary that keeps going. Sentence 47 of a very long finding summary that keeps going. Sentence 48 of a very long finding summary that keeps going. Sentence 49 of a very long finding summary that keeps going. Sentence 50 of a very long finding summary that keeps going. Sentence 51 of a very long finding summary that keeps going. Sentence 52 of a very long finding summary that keeps going. Sentence 53 of a very long finding summary that keeps going. Sentence 54 of a very long finding summary that keeps going. Sentence 55 of a very long finding summary that keeps going. Sentence 56 of a very long finding summary that keeps going. Sentence 57 of a very long finding summary that keeps going. Sentence 58 of a very long finding summary that keeps going. Sentence 59 of a very long finding summary that keeps going. Sentence 60 of a very long finding summary that keeps going. Sentence 61 of a very long finding summary that keeps going. Sentence 62 of a very long finding summary that keeps going. Sentence 63 of a very long finding summary that keeps going. Sentence 64 of a very long finding summary that keeps going. Sentence 65 of a very long finding summary that keeps going. Sentence 66 of a very long finding summary that keeps going. Sentence 67 of a very long finding summary that keeps going. Sentence 68 of a very long finding summary that keeps going. Sentence 69 of a very long finding summary that keeps going. Sentence 70 of a very long finding summary that keeps going. Sentence 71 of a very long finding summary that keeps going. Sentence 72 of a very long finding summary that keeps going. Sentence 73 of a very long finding summary that keeps going. Sentence 74 of a very long finding summary that keeps going. Sentence 75 of a very long finding summary that keeps going. Sentence 76 of a very long finding summary that keeps going. Sentence 77 of a very long finding summary that keeps going. Sentence 78 of a very long finding summary that keeps going. Sentence 79 of a very long finding summary that keeps going. Sentence 80 of a very long finding summary that keeps going. Sentence 81 of a very long finding summary that keeps going. Sentence 82 of a very long finding summary that keeps going. Sentence 83 of a very long finding summary that keeps going. Sentence 84 of a very long finding summary that keeps going. Sentence 85 of a very long finding summary that keeps going. Sentence 86 of a very long finding summary that keeps going. Sentence 87 of a very long finding summary that keeps going. Sentence 88 of a very long finding summary that keeps going. Sentence 89 of a very long finding summary that keeps going. Sentence 90 of a very long finding summary that keeps going. Sentence 91 of a very long finding summary that keeps going. Sentence 92 of a very long finding summary that keeps going. Sentence 93 of a very long finding summary that keeps going. Sentence 94 of a very long finding summary that keeps going. Sentence 95 of a very long finding summary that keeps going. Sentence 96 of a very long finding summary that keeps going. Sentence 97 of a very long finding summary that keeps going. Sentence 98 of a very long finding summary that keeps going. Sentence 99 of a very long finding summary that keeps going. Sentence 100 of a very long finding summary that keeps going. Sentence 101 of a very long finding summary that keeps going. Sentence 102 of a very long finding summary that keeps going. Sentence 103 of a very long finding summary that keeps going. Sentence 104 of a very long finding summary that keeps going. Sentence 105 of a very long finding summary that keeps going. Sentence 106 of a very long finding summary that keeps going. Sentence 107 of a very long finding summary that keeps going. Sentence 108 of a very long finding summary that keeps going. Sentence 109 of a very long finding summary that keeps going. Sentence 110 of a very long finding summary that keeps going. Sentence 111 of a very long finding summary that keeps going. Sentence 112 of a very long finding summary that keeps going. Sentence 113 of a very long finding summary that keeps going. Sentence 114 of a very long finding summary that keeps going. Sentence 115 of a very long finding summary that keeps going. Sentence 116 of a very long finding summary that keeps going. Sentence 117 of a very long finding summary that keeps going. Sentence 118 of a very long finding summary that keeps going. Sentence 119 of a very long finding summary that keeps going. Sentence 120 of a very long finding summary that keeps going. Sentence 121 of a very long finding summary that keeps going. Sentence 122 of a very long finding summary that keeps going. Sentence 123 of a very long finding summary that keeps going. Sentence 124 of a very long finding summary that keeps going. Sentence 125 of a very long finding summary that keeps going. Sentence 126 of a very long finding summary that keeps going. Sentence 127 of a very long finding summary that keeps going. Sentence 128 of a very long finding summary that keeps going. Sentence 129 of a very long finding summary that keeps going. Sentence 130 of a very long finding summary that keeps going. Sentence 131 of a very long finding summary that keeps going. Sentence 132 of a very long finding summary that keeps going. Sentence 133 of a very long finding summary that keeps going. Sentence 134 of a very long finding summary that keeps going. Sentence 135 of a very long finding summary that keeps going. Sentence 136 of a very long finding summary that keeps going. Sentence 137 of a very long finding summary that keeps going. Sentence 138 of a very long finding summary that keeps going. Sentence 139 of a very long finding summary that keeps going. Sentence 140 of a very long finding summary that keeps going. Sentence 141 of a very long finding summary that keeps going. Sentence 142 of a very long finding summary that keeps going. Sentence 143 of a very long finding summary that keeps going. Sentence 144 of a very long finding summary that keeps going. Sentence 145 of a very long finding summary that keeps going. Sentence 146 of a very long finding summary that keeps going. Sentence 147 of a very long finding summary that keeps going. Sentence 148 of a very long finding summary that keeps going. Sentence 149 of a very long finding summary that keeps going. Sentence 150 of a very long finding summary that keeps going. Sentence 151 of a very long finding summary that keeps going. Sentence 152 of a very long finding summary that keeps going. Sentence 153 of a very long finding summary that keeps going. Sentence 154 of a very long finding summary that keeps going. Sentence 155 of a very long finding summary that keeps going. Sentence 156 of a very long finding summary that keeps going. Sentence 157 of a very long finding summary that keeps going. Sentence 158 of a very long finding summary that keeps going. Sentence 159 of a very long finding summary that keeps going. Sentence 160 of a very long finding summary that keeps going. Sentence 161 of a very long finding summary that keeps going. Sentence 162 of a very long finding summary that keeps going. Sentence 163 of a very long finding summary that keeps going. Sentence 164 of a very long finding summary that keeps going. Sentence 165 of a very long finding summary that keeps going. Sentence 166 of a very long finding summary that keeps going. Sentence 167 of a very long finding summary that keeps going. Sentence 168 of a very long finding summary that keeps going. Sentence 169 of a very long finding summary that keeps going. Sentence 170 of a very long finding summary that keeps going. Sentence 171 of a very long finding summary that keeps going. Sentence 172 of a very long finding summary that keeps going. Sentence 173 of a very long finding summary that keeps going. Sentence 174 of a very long finding summary that keeps going. Sentence 175 of a very long finding summary that keeps going. Sentence 176 of a very long finding summary that keeps going. Sentence 177 of a very long finding summary that keeps going. Sentence 178 of a very long finding summary that keeps going. Sentence 179 of a very long finding summary that keeps going. Sentence 180 of a very long finding summary that keeps going. Sentence 181 of a very long finding summary that keeps going. Sentence 182 of a very long finding summary that keeps going. Sentence 183 of a very long finding summary that keeps going. Sentence 184 of a very long finding summary that keeps going. Sentence 185 of a very long finding summary that keeps going. Sentence 186 of a very long finding summary that keeps going. Sentence 187 of a very long finding summary that keeps going. Sentence 188 of a very long finding summary that keeps going. Sentence 189 of a very long finding summary that keeps going. Sentence 190 of a very long finding summary that keeps going. Sentence 191 of a very long finding summary that keeps going. Sentence 192 of a very long finding summary that keeps going. Sentence 193 of a very long finding summary that keeps going. Sentence 194 of a very long finding summary that keeps going. Sentence 195 of a very long finding summary that keeps going. Sentence 196 of a very long finding summary that keeps going. Sentence 197 of a very long finding summary that keeps going. Sentence 198 of a very long finding summary that keeps going. Sentence 199 of a very long finding summary that keeps going. Sentence 200 of a very long finding summary that keeps going. Sentence 201 of a very long finding summary that keeps going. Sentence 202 of a very long finding summary that keeps going. Sentence 203 of a very long finding summary that keeps going. Sentence 204 of a very long finding summary that keeps going. Sentence 205 of a very long finding summary that keeps going. Sentence 206 of a very long finding summary that keeps going. Sentence 207 of a very long finding summary that keeps going. Sentence 208 of a very long finding summary that keeps going. Sentence 209 of a very long finding summary that keeps going. Sentence 210 of a very long finding summary that keeps going. Sentence 211 of a very long finding summary that keeps going. Sentence 212 of a very long finding summary that keeps going. Sentence 213 of a very long finding summary that keeps going. Sentence 214 of a very long finding summary that keeps going. Sentence 215 of a very long finding summary that keeps going. Sentence 216 of a very long finding summary that keeps going. Sentence 217 of a very long finding summary that keeps going. Sentence 218 of a very long finding summary that keeps going. Sentence 219 of a very long finding summary that keeps going.",
+    "supersedes": null,
+    "tier": "proved",
+    "v": 1
+  },
+  "RE-call__abcdef012345__BUG-002.md": {
+    "anchors": [
+      {
+        "code_sha": "966827d6d28e3468e4df8c23952cb1a8c94dcbd0749bca7f92e7979870887f3c",
+        "file": "recall/store.py",
+        "symbol": "Store._with_retry_shared"
+      },
+      {
+        "code_sha": "279118d17555dada7c93533ef1fec82b01dc39b01b1df0a59bc6f2633524aabc",
+        "file": "recall/pool.py",
+        "symbol": "Pool._lease"
+      }
+    ],
+    "auditor": "bug-auditor",
+    "bug_id": "RE-call:abcdef012345:BUG-002",
+    "category": "concurrency",
+    "caused_by": [
+      "RE-call:0123456789ab:BUG-001"
+    ],
+    "date": "2026-08-05",
+    "evidence": {
+      "confirmed_l25": "evidenced",
+      "fixed": "evidenced",
+      "l6_approved": "evidenced",
+      "red_proof": "evidenced"
+    },
+    "files": [
+      "recall/store.py",
+      "recall/pool.py"
+    ],
+    "finding_id": "BUG-002",
+    "fix_commit": "abcdef0123456789abcdef0123456789abcdef01",
+    "id": "RE-call:abcdef012345:BUG-002",
+    "kind": "bug",
+    "ordinal": 1,
+    "project": "RE-call",
+    "repo": "GiulioDER/RE-call",
+    "run_id": "run-20261020-1a2b3c",
+    "severity": "P1",
+    "sources": [
+      "git:abcdef0123456789abcdef0123456789abcdef01"
+    ],
+    "summary": "The liveness verdict is now taken inside the lease; the earlier fix moved the read too late.",
+    "supersedes": "RE-call:fedcba987654:P2-4",
+    "tier": "proved",
+    "v": 1
+  },
+  "RE-call__fedcba987654__P2-4.md": {
+    "anchors": [
+      {
+        "code_sha": "966827d6d28e3468e4df8c23952cb1a8c94dcbd0749bca7f92e7979870887f3c",
+        "file": "recall/store.py",
+        "symbol": "Store._with_retry_shared"
+      }
+    ],
+    "auditor": "bug-auditor",
+    "bug_id": "RE-call:fedcba987654:P2-4",
+    "category": "concurrency",
+    "caused_by": [],
+    "date": "2026-08-03",
+    "evidence": {
+      "confirmed_l25": "claimed",
+      "fixed": "evidenced",
+      "l6_approved": "claimed",
+      "red_proof": "absent"
+    },
+    "files": [
+      "recall/store.py"
+    ],
+    "finding_id": "P2-4",
+    "fix_commit": "fedcba9876543210fedcba9876543210fedcba98",
+    "id": "RE-call:fedcba987654:P2-4",
+    "kind": "bug",
+    "ordinal": 1,
+    "project": "RE-call",
+    "repo": "GiulioDER/RE-call",
+    "run_id": "run-20261020-1a2b3c",
+    "severity": "P2",
+    "sources": [
+      "git:fedcba9876543210fedcba9876543210fedcba98"
+    ],
+    "summary": "The retry read conn.closed after the pool took it back.",
+    "supersedes": null,
+    "tier": "historical",
+    "v": 1
+  },
+  "RE-call__fp__run-20261021-9f8e7d__BUG-003.md": {
+    "anchors": [
+      {
+        "code_sha": "279118d17555dada7c93533ef1fec82b01dc39b01b1df0a59bc6f2633524aabc",
+        "file": "recall/pool.py",
+        "symbol": "Pool._lease"
+      },
+      {
+        "code_sha": "966827d6d28e3468e4df8c23952cb1a8c94dcbd0749bca7f92e7979870887f3c",
+        "file": "recall/store.py",
+        "symbol": "Store._with_retry_shared"
+      }
+    ],
+    "auditor": "bug-auditor",
+    "category": "concurrency",
+    "claim": "Pool._lease can hand the same connection to two callers.",
+    "date": "2026-10-21",
+    "evidence_refs": [
+      "recall/pool.py:88",
+      "recall/store.py:412"
+    ],
+    "finding_id": "BUG-003",
+    "fp_reason": "not_real",
+    "high_stakes": false,
+    "id": "RE-call:fp:run-20261021-9f8e7d:BUG-003",
+    "kind": "false_positive",
+    "priority": "P2",
+    "project": "RE-call",
+    "repo": "GiulioDER/RE-call",
+    "run_id": "run-20261021-9f8e7d",
+    "severity": "P2",
+    "v": 1,
+    "verify_source": "llm"
+  },
+  "RE-call__fp__run-20261021-9f8e7d__BUG-003~retract.md": {
+    "date": "2026-10-22",
+    "id": "RE-call:fp:run-20261021-9f8e7d:BUG-003~retract",
+    "kind": "false_positive_retraction",
+    "project": "RE-call",
+    "reason": "fp-check would have confirmed it on review.",
+    "repo": "GiulioDER/RE-call",
+    "retracted_by": "owner",
+    "target_id": "RE-call:fp:run-20261021-9f8e7d:BUG-003",
+    "v": 1
+  },
+  "RE-call__lesson__6a3ae35062b9.md": {
+    "accepted_at": "2026-10-21",
+    "accepted_by": "owner",
+    "anchors": [
+      {
+        "code_sha": null,
+        "file": "recall/pool.py",
+        "symbol": "Pool._lease"
+      },
+      {
+        "code_sha": null,
+        "file": "recall/store.py",
+        "symbol": null
+      }
+    ],
+    "date": "2026-10-21",
+    "id": "RE-call:lesson:6a3ae35062b9",
+    "kind": "lesson",
+    "members": [
+      "RE-call:0123456789ab:BUG-001",
+      "RE-call:abcdef012345:BUG-002",
+      "RE-call:fedcba987654:P2-4"
+    ],
+    "pattern": "A read of conn.closed or conn.info after the pool may have taken the connection back.",
+    "project": "RE-call",
+    "repo": "GiulioDER/RE-call",
+    "rule": "A connection's liveness must be judged inside the lease that owns it.",
+    "v": 1
+  },
+  "RE-call__lesson__6a3ae35062b9~retract.md": {
+    "date": "2026-10-23",
+    "id": "RE-call:lesson:6a3ae35062b9~retract",
+    "kind": "lesson_retraction",
+    "project": "RE-call",
+    "reason": "The pool was replaced; the rule no longer applies.",
+    "repo": "GiulioDER/RE-call",
+    "retracted_by": "owner",
+    "target_id": "RE-call:lesson:6a3ae35062b9",
+    "v": 1
+  }
+}

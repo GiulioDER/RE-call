@@ -1,6 +1,6 @@
 """MTRAG Tasks B and C: generate answers, in the official submission format.
 
-Prior work (searched before writing, per CLAUDE.md):
+Prior work: searched before writing, per CLAUDE.md.
 `docs_search(source_type='memory', "MTRAG Task B Task C generation RAG answer quality GPT-4o judge
 RL_F RB_llm RB_alg harmonic mean")` returned substantial prior art, and three findings from it bind
 this module rather than merely informing it:
@@ -166,7 +166,8 @@ DEFAULT_MODEL = "openai/gpt-4o"
 #: `neutral` states the task and stops. It does NOT instruct the model to answer regardless, which
 #: would be the same error with the sign flipped; what to do when the passages fall short is left
 #: to the model, which is the behaviour being measured.
-#: ✅ `official` is the BASELINES' OWN PROMPT, quoted from the MTRAG paper (arXiv 2501.03468),
+#: ✅ `official` is the BASELINES' OWN PROMPT, quoted from the MTRAG paper (arXiv 2501.03468,
+#: Katsis et al. 2025, CC BY-SA 4.0; attribution in benchmarks/mtrag/NOTICE.md),
 #: Appendix D.2 "Model invocation": "To evaluate LLMs on MTRAG, for each task we sent to the LLM
 #: the following information: question, preceding turns, passages, and instruction."
 #:

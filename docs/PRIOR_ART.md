@@ -73,6 +73,24 @@ Two further differences, and one deficit:
   refusing a quarter to half of *legitimate* questions. The residual is the entity reasoning the
   bullet above says this library deliberately omits. A measured boundary, not a leaderboard win.
 
+## Text adapted from other projects, and published methods
+
+One text in the shipped packages is adapted from another project. The reading instructions of the
+`dated` reader profile, `DATED_READER_CONTRACT` in `recall/evidence.py`, are adapted from the
+reader contract of [vectorize-io/hindsight](https://github.com/vectorize-io/hindsight) (MIT
+licence, Copyright (c) 2025 Vectorize AI, Inc.). Evaluation prompts copied into the research
+harnesses under `benchmarks/` are recorded in the `NOTICE.md` beside each, and libraries, models
+and hosted services in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
+The retrieval and statistics code implements published methods: Okapi `BM25` (Robertson and
+Zaragoza), reciprocal rank fusion (Cormack, Clarke and Büttcher), SPLADE (Formal, Piwowarski and
+Clinchant), the Wilson score interval, the percentile bootstrap (Efron) and the Holm correction.
+Each is cited where it is implemented, and the full references are in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). The feedback guard of the AML service,
+`recall_aml/feedback_guard.py`, recognises the record shapes of
+[AgentMemoryBench](https://github.com/solomoon313/AgentMemoryBench) (MIT) and rests on findings
+of StreamBench and Evo-Memory; its module docstring gives the full references.
+
 ## Where this comes from
 
 RE-call is extracted from the memory system behind a production trading-research agent whose memory

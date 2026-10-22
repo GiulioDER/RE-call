@@ -227,7 +227,11 @@ def _groups(outcomes: tuple[QuestionOutcome, ...]) -> dict[str, list[QuestionOut
 def stratified_bootstrap_hit5(
     outcomes: tuple[QuestionOutcome, ...], *, samples: int = 10_000, seed: int = 20260803
 ) -> tuple[float, tuple[float, float]]:
-    """Macro paired delta and percentile interval, resampled within each corpus."""
+    """Macro paired delta and percentile interval, resampled within each corpus.
+
+    The percentile bootstrap of B. Efron, "Bootstrap Methods: Another Look at the Jackknife",
+    The Annals of Statistics 7(1), 1979.
+    """
     if samples < 100:
         raise ValueError("bootstrap samples must be at least 100")
     grouped = _groups(outcomes)
@@ -277,6 +281,8 @@ def _paired_sign_p(differences: list[float], seed: int) -> float:
 
 
 def holm_correct(p_values: dict[str, float]) -> dict[str, float]:
+    """Holm adjusted p values (S. Holm, "A Simple Sequentially Rejective Multiple Test
+    Procedure", Scandinavian Journal of Statistics 6, 1979)."""
     ordered = sorted(p_values.items(), key=lambda item: item[1])
     corrected: dict[str, float] = {}
     running = 0.0

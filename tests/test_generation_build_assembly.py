@@ -296,7 +296,7 @@ def test_the_code_chunker_records_no_overlap(
     )["pipeline"].chunker
 
     assert chunker.algorithm == "recall.chunk_code"
-    assert chunker.schema_version == 1
+    assert chunker.schema_version == 2  # the anchored chunker; see `CODE_CHUNKER_VERSION`
     assert dict(chunker.configuration) == {"max_chars": 300}
 
 
