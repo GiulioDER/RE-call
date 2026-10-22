@@ -21,6 +21,8 @@ Invariants and the failure each one catches:
 - H13 a memo source slower than the budget prints nothing, returns within the budget, and the
   log names the source.
 - H14 a stage no inner deadline bounds (here matching) is cut by the hook's hard stop.
+- H15 `python -m recall_hooks warm-auditor-brief` reads no stdin and fills the on-disk cache, so
+  the next launch parses no memo.
 Every case also asserts exit status 0.
 
 Red proof, recorded 2026-10-22 on the test host inside the test bounds, each mutation failing in
@@ -314,6 +316,21 @@ def test_budget_enforced_with_slow_source(repo: Path, env: Path, monkeypatch: py
     assert output is None
     log = env.read_text(encoding="utf-8")
     assert "the memo directory was still being read" in log, f"the log does not name the slow source: {log!r}"
+
+
+def test_warm_command_fills_the_cache(repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """H15: `warm-auditor-brief` reads no stdin and leaves a cache from which the hook parses nothing."""
+    assert recall_hooks.main(["warm-auditor-brief"]) == 0
+    assert "cached 3 record(s)" in capsys.readouterr().out
+
+    records_files._CACHE.clear()  # a new process
+
+    def no_parsing(path: Path, file: str) -> Any:
+        raise AssertionError(f"{path.name} was parsed: the warmed cache was not used")
+
+    monkeypatch.setattr(records_files, "_read", no_parsing)
+    block = _block(_run(_payload(repo), monkeypatch, capsys))
+    assert _bug(1)["id"] in block
 
 
 def test_budget_enforced_with_slow_matching(repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

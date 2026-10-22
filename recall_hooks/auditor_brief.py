@@ -88,6 +88,8 @@ CACHE_NAME = "recall-auditor-brief-memos.json"
 FINISH_RESERVE = 0.15
 #: Seconds by which the stages' own deadlines precede the hook's hard stop.
 INNER_MARGIN = 0.1
+#: What a person runs to fill the memo cache with no deadline.
+WARM_COMMAND = "python -m recall_hooks warm-auditor-brief"
 #: Bounds on what the scope reads, so a huge prompt or diff cannot spend the budget on paths.
 MAX_NAMED_FILES = 50
 MAX_ANCHORS = 200
@@ -257,10 +259,13 @@ def _read_source(path: Path) -> str | None:
 def _python_anchors(file: str, source: str, lines: set[int]) -> list[dict[str, Any]]:
     """One anchor per symbol enclosing a changed line; a module-level line anchors the file.
 
-    `enclosing_symbol`'s rule (the innermost span containing the line) applied over ONE parse of
-    the file, rather than one parse per changed line, which a large diff would make cost seconds.
+    `enclosing_symbol`'s rule (the innermost span containing the line) and `symbol_sha`'s hash
+    (`code_sha` of the span's normalised lines) applied over ONE parse of the file. Calling those
+    two per line and per symbol re-parses the file each time: measured 2026-10-22 on a branch
+    adding two modules, 97 anchors cost about 750 ms, most of the hook's budget.
+    `tests/test_auditor_brief_hook.py` checks the hash against `symbol_sha` itself.
     """
-    from recall.anchors import code_sha, resolve_symbols, symbol_sha
+    from recall.anchors import code_sha, normalize, resolve_symbols
 
     try:
         spans = resolve_symbols(source)
@@ -277,7 +282,16 @@ def _python_anchors(file: str, source: str, lines: set[int]) -> list[dict[str, A
         )
         if symbol not in symbols:
             symbols.append(symbol)
-    return [{"file": file, "symbol": symbol, "code_sha": symbol_sha(source, symbol)} for symbol in symbols]
+    lines_of = normalize(source).split("\n")
+    by_name = {span.symbol: span for span in spans}
+
+    def sha(symbol: str | None) -> str:
+        if symbol is None:
+            return code_sha(source)
+        span = by_name[symbol]
+        return code_sha("\n".join(lines_of[span.start_line - 1 : span.end_line]))
+
+    return [{"file": file, "symbol": symbol, "code_sha": sha(symbol)} for symbol in symbols]
 
 
 def scope(cwd: str, prompt: str, *, deadline: float) -> tuple[str, list[dict[str, Any]]]:
@@ -432,6 +446,8 @@ def build_block(cwd: str, prompt: str, *, deadline: float, now: datetime | None 
             loaded["records"] = records_files.load_memo_records(
                 memo_directory(), cache_file=cache_path(), deadline=deadline - FINISH_RESERVE
             )
+        except TimeoutError as exc:
+            loaded["error"] = TimeoutError(f"{exc}; `{WARM_COMMAND}` fills it with no deadline")
         except BaseException as exc:  # BROAD-CATCH: re-raised on the waiting thread
             loaded["error"] = exc
 
@@ -509,6 +525,28 @@ def pre_agent(payload: dict[str, Any]) -> int:
     except Exception as exc:  # BROAD-CATCH: fail-open, a launch must never wait on this hook
         _log(f"{agent_type}: {type(exc).__name__}: {exc}; prompt left unchanged")
         return 0
+    return 0
+
+
+def warm() -> int:
+    """`python -m recall_hooks warm-auditor-brief`: parse every memo into the on-disk cache.
+
+    A command a person (or an installer) runs, so unlike the hook it has no deadline and fails
+    loudly. It exists because a cold cache warms slowly inside the hook's budget: the first open
+    of a memo file cost about 12 ms on the workstation this was written on (on-access scanning;
+    a second read cost about 1 ms, measured 2026-10-22), so a 700-memo directory whose files were
+    not opened recently gained as few as a dozen memos per launch, and every launch until it is
+    warm leaves its prompt unchanged.
+    """
+    from recall import records_files
+
+    directory = memo_directory()
+    try:
+        loaded = records_files.load_memo_records(directory, cache_file=cache_path())
+    except OSError as exc:
+        print(f"recall: cannot read the memo directory {directory}: {exc}", file=sys.stderr)
+        return 1
+    print(f"recall: cached {len(loaded)} record(s) from {directory}; {len(loaded.skipped)} memo(s) skipped")
     return 0
 
 

@@ -512,6 +512,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args[0] in {"login", "logout", "auth-headers"}:
         return _auth_command(args)
+    if args[0] == "warm-auditor-brief":
+        # A command a person runs, so it is dispatched before the stdin read, like the three above.
+        from .auditor_brief import warm
+
+        return warm()
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
