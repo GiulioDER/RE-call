@@ -56,12 +56,18 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "immutable fact ledger. They are derived state: a read replays the ledger whenever "
             "they lag it, so this changes how fast a read is answered, never what it answers. "
             "--check reports without writing; --reconcile materializes only the ledger events "
-            "the tables lack, through the materialization outbox on PostgreSQL."
+            "the tables lack, through the materialization outbox on PostgreSQL. --check --verify "
+            "also recomputes every row from the ledger and compares, so an edited table is found "
+            "even when the counts agree; it exits 1 on a difference."
         ),
     )
     mode = rebuild.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true", help="report whether the tables are current; write nothing")
     mode.add_argument("--reconcile", action="store_true", help="materialize only the events the tables lack")
+    rebuild.add_argument(
+        "--verify", action="store_true",
+        help="with --check: recompute every row from the ledger and compare; exit 1 on a difference",
+    )
     rebuild.add_argument("--sqlite-path", default=None, metavar="PATH")
 
 
@@ -144,16 +150,16 @@ def _open_lite(args: argparse.Namespace, dim: int) -> LiteStore:
     return cast("LiteStore", store)
 
 
-def _rebuild_postgres(args: argparse.Namespace, action: str) -> tuple[Any, int]:
+def _rebuild_postgres(args: argparse.Namespace, action: str) -> tuple[Any, int, dict[str, object] | None]:
     from recall.fact_current import PostgresCurrentFacts
     from recall.fact_ledger import PostgresMaterializationOutbox
     from recall.provenance_controller import MaterializationRecovery
 
     facts = PostgresCurrentFacts(args.dsn, tenant_id=args.tenant)
     if action == "check":
-        return facts.status(), 0
+        return facts.status(), 0, facts.verify().to_payload() if args.verify else None
     if action == "rebuild":
-        return facts.rebuild(), 0
+        return facts.rebuild(), 0, None
     # Crash recovery: the events the tables lack get outbox rows and are delivered through them,
     # a thousand at a time, until none is left or a batch delivers nothing (its failures are in
     # the outbox's last_error).
@@ -168,10 +174,10 @@ def _rebuild_postgres(args: argparse.Namespace, action: str) -> tuple[Any, int]:
         if not delivered:
             break
         reconciled += delivered
-    return facts.status(), reconciled
+    return facts.status(), reconciled, None
 
 
-def _rebuild_lite(args: argparse.Namespace, action: str) -> tuple[Any, int]:
+def _rebuild_lite(args: argparse.Namespace, action: str) -> tuple[Any, int, dict[str, object] | None]:
     from recall.fact_current import CURRENT_EVENTS_TABLE, CurrentFactsStatus, SQLiteCurrentFacts
     from recall.fact_ledger import FACT_LEDGER_TABLE
     from recall.lite.facts import ensure_fact_tables
@@ -181,24 +187,28 @@ def _rebuild_lite(args: argparse.Namespace, action: str) -> tuple[Any, int]:
         raise SystemExit(f"provenance rebuild: {path} holds tenant {meta.get('tenant')!r}; pass --tenant {meta.get('tenant')}")
     if FACT_LEDGER_TABLE not in tables:
         # No fact was ever applied: nothing to rebuild, and opening the ledger would create it.
-        return CurrentFactsStatus(args.tenant, 0, 0, 0, "table", None), 0
+        empty = {"matches": True, "reason": "no fact was ever applied"} if args.verify else None
+        return CurrentFactsStatus(args.tenant, 0, 0, 0, "table", None), 0, empty
     with _open_lite(args, int(meta["dim"])) as store:
         if action == "check" and CURRENT_EVENTS_TABLE not in tables:
             (count,), = store._metadata_values(
                 "SELECT count(*) FROM recall_fact_ledger_events WHERE tenant_id = ?", (args.tenant,)
             )
             reason = "the file has no current-facts tables yet"
-            return CurrentFactsStatus(args.tenant, int(count), 0, 0, "table", reason), 0
+            # Nothing is created by a check, so there is no row to compare: the tables answer
+            # nothing until a rebuild, and reads replay.
+            missing = {"matches": int(count) == 0, "reason": reason} if args.verify else None
+            return CurrentFactsStatus(args.tenant, int(count), 0, 0, "table", reason), 0, missing
         ensure_fact_tables(store)
         facts = SQLiteCurrentFacts(store._conn, tenant_id=args.tenant, write=store._write)
         if action == "check":
-            return facts.status(), 0
+            return facts.status(), 0, facts.verify().to_payload() if args.verify else None
         if action == "rebuild":
-            return facts.rebuild(), 0
+            return facts.rebuild(), 0, None
         # A lite file has no outbox: its appends materialize in their own transaction, so what
         # the tables lack was written by an older build, and is filed directly.
         reconciled = facts.reconcile()
-        return facts.status(), reconciled
+        return facts.status(), reconciled, None
 
 
 def _cmd_rebuild(args: argparse.Namespace, lite: bool) -> None:
@@ -207,12 +217,16 @@ def _cmd_rebuild(args: argparse.Namespace, lite: bool) -> None:
             "provenance rebuild: the --sqlite-path adapter replays its file in memory and keeps no "
             "current-facts tables; pass the store's DSN instead (PostgreSQL, or a sqlite:/// lite store)"
         )
+    if args.verify and not args.check:
+        raise SystemExit("provenance rebuild: --verify needs --check (it reports and writes nothing)")
     action = "check" if args.check else "reconcile" if args.reconcile else "rebuild"
-    status, reconciled = _rebuild_lite(args, action) if lite else _rebuild_postgres(args, action)
-    print(json.dumps(
-        {"action": action, "reconciled": reconciled, **status.to_payload()},
-        ensure_ascii=False, indent=2, sort_keys=True,
-    ))
+    status, reconciled, verification = _rebuild_lite(args, action) if lite else _rebuild_postgres(args, action)
+    payload: dict[str, object] = {"action": action, "reconciled": reconciled, **status.to_payload()}
+    if verification is not None:
+        payload["verify"] = verification
+    print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+    if verification is not None and not verification["matches"]:
+        raise SystemExit(1)
 
 
 def _cmd_provenance(args: argparse.Namespace) -> None:

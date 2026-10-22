@@ -66,7 +66,7 @@ def test_postgres_tables_answer_as_the_replay_on_any_ledger(ops: list[Op]) -> No
         try:
             check_equivalence(
                 PostgresFactLedger(TEST_DSN, tenant_id=name), LiteFactLedger(replay_store, materialize=False),
-                ops, tenant=name,
+                ops, tenant=name, verify=PostgresCurrentFacts(TEST_DSN, tenant_id=name).verify,
             )
         finally:
             replay_store.close()
@@ -98,6 +98,32 @@ def test_reconcile_through_the_outbox_files_what_an_older_writer_left() -> None:
     for at in (NOW, NOW + 40 * DAY):
         assert ledger.current(tenant_id=name, now=at) == project_current(ledger.events, at)
         assert ledger.last_read == "table"
+
+
+def test_verify_on_postgres_reads_the_bounds_back_and_finds_an_edited_interval() -> None:
+    """`verify` on PostgreSQL: a clean table matches, open bounds included; a moved end does not.
+
+    Red: `PostgresTables.stored` returning the bounds without their zone (`.replace(tzinfo=UTC)`
+    dropped on both) compares naive with aware datetimes, so the clean table reports every
+    interval missing and the first `matches` assertion fails.
+    """
+    name = tenant()
+    ledger = PostgresFactLedger(TEST_DSN, tenant_id=name)
+    apply(ledger, PARIS, "r1", tenant=name)
+    apply(ledger, city("oslo", NOW - 400 * DAY, NOW - 30 * DAY), "r2", supersedes=(PARIS,), tenant=name)
+    facts = PostgresCurrentFacts(TEST_DSN, tenant_id=name)
+    clean = facts.verify()
+    assert clean.matches, clean.to_payload()
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (name,))
+        conn.execute(
+            f"UPDATE {CURRENT_TABLE} SET valid_until = valid_until + interval '1 day' "
+            "WHERE tenant_id = %s AND valid_until < '9000-01-01'",
+            (name,),
+        )
+    assert facts.status().current  # the counts cannot see it
+    edited = facts.verify()
+    assert not edited.matches and edited.intervals_missing and edited.intervals_extra
 
 
 def test_purge_sends_reads_to_replay_and_rebuild_restores_the_tables() -> None:

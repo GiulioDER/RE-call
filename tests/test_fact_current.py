@@ -29,7 +29,7 @@ import pytest
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
-from recall.fact_current import CURRENT_TABLE, SQLiteCurrentFacts
+from recall.fact_current import CURRENT_TABLE, SQLiteCurrentFacts, Verification
 from recall.fact_ledger import GC_RETRACTION_WRITER
 from recall.lite import LiteStore
 from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
@@ -362,9 +362,9 @@ def test_an_event_naming_another_keys_fact_puts_the_tenant_in_replay(tmp_path: P
 def test_rebuild_reproduces_what_materializing_each_event_wrote(tmp_path: Path) -> None:
     """The tables are derived state: a rebuild from the ledger writes the same rows.
 
-    Red: `rebuild_tables` grouping assertions only (mutation: `if key is not None:` to
-    `if key is not None and event.event_type == "asserted":` in its grouping loop) loses the
-    retraction, so Oslo's interval comes back and the row equality fails.
+    Red: `derive_tables` (which `rebuild_tables` writes) grouping assertions only (mutation:
+    `if key is not None:` to `if key is not None and event.event_type == "asserted":` in its
+    grouping loop) loses the retraction, so Oslo's interval comes back and the row equality fails.
     """
     oslo = city("oslo", datetime(2020, 1, 1, tzinfo=UTC), datetime(2022, 1, 1, tzinfo=UTC))
     with lite(tmp_path / "f.db") as (store, ledger):
@@ -392,6 +392,62 @@ def test_rebuild_reproduces_what_materializing_each_event_wrote(tmp_path: Path) 
         assert status.current and status.ledger_events == len(ledger.events) == 7
         facts.materialize(ledger.events[0])  # idempotent by event id
         assert rows() == incremental
+
+
+def test_verify_finds_a_table_edit_the_counts_cannot_see(tmp_path: Path) -> None:
+    """An edited row is found by recomputing from the ledger, though the counts still agree.
+
+    Moving Oslo's filed event to another key would hide it from that key's conflict check, and
+    deleting one of Paris's split rows would hide Paris for those years; neither changes a count.
+
+    Red, each mutation alone in `verify_tables` (`recall/fact_current.py`): comparing filed rows
+    by id only (`have[event_id] != row` to `have[event_id][0] != row[0]`) fails the
+    `events_changed` assertion; dropping the interval comparison (`intervals_missing=()`) fails
+    the `intervals_missing` assertion.
+    """
+    oslo = city("oslo", datetime(2020, 1, 1, tzinfo=UTC), datetime(2022, 1, 1, tzinfo=UTC))
+    with lite(tmp_path / "f.db") as (store, ledger):
+        first = apply(ledger, PARIS, "r1")
+        moved = apply(ledger, oslo, "r2", supersedes=(PARIS,))
+        facts = SQLiteCurrentFacts(store._conn, tenant_id=TENANT, write=store._write)
+        assert facts.verify().matches
+        with store._write():
+            store._conn.execute(
+                "UPDATE recall_fact_current_events SET conflict_key = 'conflict_forged' WHERE event_id = ?",
+                (moved.event_id,),
+            )
+        assert facts.status().current  # the counts cannot see it
+        edited = facts.verify()
+        assert edited.events_changed == (moved.event_id,) and not edited.matches
+        assert facts.rebuild().current and facts.verify().matches
+        with store._write():
+            store._conn.execute(
+                "DELETE FROM recall_fact_current WHERE event_id = ? AND valid_from = ?", (first.event_id, EARLIEST)
+            )
+        removed = facts.verify()
+        assert removed.intervals_missing == (first.event_id,) and not removed.events_changed
+        assert not removed.matches
+
+
+def test_check_verify_on_a_lite_dsn_exits_1_on_an_edited_table(tmp_path: Path) -> None:
+    """`recall provenance rebuild --check --verify` reports a difference and exits 1.
+
+    Red: `_cmd_rebuild` without its `raise SystemExit(1)` on a difference prints the same report
+    and exits 0, and the exit assertion fails.
+    """
+    path = tmp_path / "f.db"
+    with lite(path) as (_store, ledger):
+        apply(ledger, PARIS, "r1")
+    base = ["--dsn", "sqlite:///" + path.as_posix(), "--tenant", TENANT, "provenance", "rebuild"]
+    clean = json.loads(run_cli([*base, "--check", "--verify"]))
+    assert clean["verify"]["matches"] is True and clean["action"] == "check"
+    with lite(path) as (store, _ledger), store._write():
+        store._conn.execute("DELETE FROM recall_fact_current")
+    out = run_cli([*base, "--check", "--verify"])
+    assert out.rstrip().endswith("EXIT: 1"), out
+    report = json.loads(out[: out.rindex("\nEXIT")])
+    assert report["verify"]["intervals"]["missing"]["count"] == 1 and report["current"] is True
+    assert "--verify needs --check" in run_cli([*base, "--verify"])
 
 
 def test_a_refusal_is_filed_so_the_tables_stay_current(tmp_path: Path) -> None:
@@ -538,11 +594,21 @@ def event_view(event: FactEvent) -> tuple[object, ...]:
     )
 
 
-def check_equivalence(table: Any, replay: Any, ops: Sequence[Op], *, tenant: str = TENANT) -> None:
-    """Run `ops` on a materializing ledger and on one that replays; compare everything."""
+def check_equivalence(
+    table: Any, replay: Any, ops: Sequence[Op], *, tenant: str = TENANT,
+    verify: Callable[[], Verification] | None = None,
+) -> None:
+    """Run `ops` on a materializing ledger and on one that replays; compare everything.
+
+    With `verify`, the rows materialized write by write must also be the rows a rebuild from the
+    whole ledger derives (`verify_tables`), before any read is compared.
+    """
     assert run_ops(table, ops, tenant=tenant) == run_ops(replay, ops, tenant=tenant)
     events = table.events
     assert [event_view(e) for e in events] == [event_view(e) for e in replay.events]
+    if verify is not None:
+        verification = verify()
+        assert verification.matches, verification.to_payload()
     for served in served_variants():
         for at in INSTANTS:
             current, support = table.current_view(tenant_id=tenant, now=at, served=served)
@@ -585,8 +651,11 @@ def test_the_tables_answer_as_the_replay_on_any_ledger(ops: list[Op]) -> None:
 
     Red: the `project_key` own-window mutation fails "current == project_current" on the first
     explicit example (a future-dated successor), at the instant the successor starts, and on three
-    other explicit examples.
+    other explicit examples. The verify step: `SQLiteTables.write_key` no longer clearing stale
+    `live` flags (its `SET live = 0` statement removed) leaves the retracted Paris live on the
+    last explicit example, and "verification.matches" fails first.
     """
     with tempfile.TemporaryDirectory() as tmp:
-        with lite(Path(tmp) / "table.db") as (_a, table), lite(Path(tmp) / "replay.db", materialize=False) as (_b, replay):
-            check_equivalence(table, replay, ops)
+        with lite(Path(tmp) / "table.db") as (store, table), lite(Path(tmp) / "replay.db", materialize=False) as (_b, replay):
+            facts = SQLiteCurrentFacts(store._conn, tenant_id=TENANT, write=store._write)
+            check_equivalence(table, replay, ops, verify=facts.verify)

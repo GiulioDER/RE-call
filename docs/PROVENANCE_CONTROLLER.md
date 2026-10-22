@@ -180,6 +180,14 @@ tenant from its ledger; `--reconcile` files only what the tables lack (through t
 `MaterializationRecovery` on PostgreSQL); `--check` reports. An event that names a fact of another
 conflict key, which no write path produces, puts the tenant in replay until a rebuild.
 
+The tables are writable by the role that appends the ledger (the controller role, or the single
+role of a non-strict install), so an edit to them changes what a read returns without leaving a
+trace in the append-only ledger. That grants no new capability: the same role can append any
+assertion through the protected function, which checks an event's shape and not its authorization.
+It does remove tamper evidence, which `recall provenance rebuild --check --verify` restores on
+demand: it recomputes every row from the ledger in one snapshot, compares, reports the ids that
+differ, and exits 1 on a difference. A strict serving role can only read the tables.
+
 ## Failure behavior
 
 The controller makes at most one fresh search. The query is generated from canonical fact fields,

@@ -43,8 +43,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   the same either way; the conflict check reads one conflict key instead of the tenant. Each append
   materializes what it wrote in its own transaction, and a failure there leaves the tables behind
   without failing the append. `recall provenance rebuild` rebuilds them from the ledger (`--reconcile`
-  files only what they lack, `--check` reports), on PostgreSQL and on a `sqlite:///` store. The tables
-  hold ids and hashes, never a fact value. Grants: `recall schema grants --controller` now includes
+  files only what they lack, `--check` reports, and `--check --verify` recomputes every row from the
+  ledger and compares, exiting 1 on a difference, so an edited table is found even when the counts
+  agree), on PostgreSQL and on a `sqlite:///` store. The tables hold ids and hashes, never a fact value. Grants: `recall schema grants --controller` now includes
   them, and `--strict` serving grants read them only; re-run both after migrating.
 * **The lite store keeps itself current with its memo folder.** The MCP server refreshes a
   `recall setup --lite` store when it starts and, before a search, when the folder changed (at most

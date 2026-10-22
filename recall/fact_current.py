@@ -234,6 +234,10 @@ class Tables(Protocol):
         """The ids of the tenant's ledger events the tables do not file, in ledger order."""
         ...
 
+    def stored(self) -> tuple[set[FiledRow], set[StoredInterval], str | None]:
+        """Every row the tables hold for the tenant, as `derive_tables` would write it, and the mode."""
+        ...
+
     def clear(self) -> None: ...
 
     def lock_keys(self, keys: Sequence[str]) -> None: ...
@@ -329,11 +333,39 @@ def materialize_events(tables: Tables, event_ids: Sequence[str]) -> None:
         tables.set_replay(reasons[0])
 
 
-def rebuild_tables(tables: Tables) -> None:
-    """Replace the tenant's rows with ones derived from its whole ledger, under its exclusive lock."""
-    tables.lock_tenant(exclusive=True)
-    tables.clear()
-    events = tables.events(None)
+#: A filed event as the tables hold it: `(event_id, conflict_key, fact_id, event_type, live)`.
+FiledRow = tuple[str, str | None, str | None, str, bool]
+#: An interval as the tables hold it: `(event_id, fact_id, conflict_key, valid_from, valid_until)`;
+#: a bound that cannot be read back is None.
+StoredInterval = tuple[str, str, str, datetime | None, datetime | None]
+
+
+@dataclass(frozen=True)
+class DerivedTables:
+    """What a tenant's whole ledger puts in the tables: what `rebuild_tables` writes."""
+
+    rows: tuple[tuple[str, str | None, str | None, str], ...]
+    projections: Mapping[str, KeyProjection]
+    #: Why the tenant may not be answered from the tables, if it may not (`event_keys`).
+    reasons: tuple[str, ...]
+
+    def filed(self) -> dict[str, FiledRow]:
+        live = {event_id for projection in self.projections.values() for event_id in projection.live}
+        return {
+            event_id: (event_id, key, fact_id, event_type, event_id in live)
+            for event_id, key, fact_id, event_type in self.rows
+        }
+
+    def intervals(self) -> set[StoredInterval]:
+        return {
+            (event_id, fact_id, key, low, high)
+            for key, projection in self.projections.items()
+            for event_id, fact_id, low, high in projection.intervals
+        }
+
+
+def derive_tables(events: Sequence[FactEvent]) -> DerivedTables:
+    """The rows of every conflict key of a tenant, from its events in ledger order. Writes nothing."""
     named: dict[str, str | None] = {}
     for event in events:
         if event.fact is not None and event.fact_id is not None:
@@ -355,11 +387,87 @@ def rebuild_tables(tables: Tables) -> None:
         rows.append((event.event_id, key, event.fact_id, event.event_type))
         if key is not None:
             groups.setdefault(key, []).append(event)
-    tables.file(rows)
-    for key, history in groups.items():
-        tables.write_key(key, project_key(history))
-    if reasons:
-        tables.set_replay(reasons[0])
+    return DerivedTables(
+        tuple(rows), {key: project_key(history) for key, history in groups.items()}, tuple(reasons)
+    )
+
+
+def rebuild_tables(tables: Tables) -> None:
+    """Replace the tenant's rows with ones derived from its whole ledger, under its exclusive lock."""
+    tables.lock_tenant(exclusive=True)
+    tables.clear()
+    derived = derive_tables(tables.events(None))
+    tables.file(derived.rows)
+    for key, projection in derived.projections.items():
+        tables.write_key(key, projection)
+    if derived.reasons:
+        tables.set_replay(derived.reasons[0])
+
+
+@dataclass(frozen=True)
+class Verification:
+    """The tables against what the ledger derives now (`verify_tables`); ids, never values.
+
+    A count can say the tables lag; only this can say they were edited. It proves nothing about
+    the ledger itself, which its triggers and grants keep append-only.
+    """
+
+    tenant_id: str
+    #: Events the ledger derives and the tables do not file, filed with other values, or filed
+    #: but derived by nothing.
+    events_missing: tuple[str, ...]
+    events_changed: tuple[str, ...]
+    events_extra: tuple[str, ...]
+    #: Intervals derived and absent, or stored and not derived (event ids of each, one per interval).
+    intervals_missing: tuple[str, ...]
+    intervals_extra: tuple[str, ...]
+    mode_stored: str
+    mode_derived: str
+
+    @property
+    def matches(self) -> bool:
+        return not (
+            self.events_missing or self.events_changed or self.events_extra
+            or self.intervals_missing or self.intervals_extra
+        ) and self.mode_stored == self.mode_derived
+
+    def to_payload(self, *, examples: int = 20) -> dict[str, object]:
+        def part(ids: tuple[str, ...]) -> dict[str, object]:
+            return {"count": len(ids), "examples": sorted(ids)[:examples]}
+
+        return {
+            "matches": self.matches,
+            "events": {
+                "missing": part(self.events_missing), "changed": part(self.events_changed),
+                "extra": part(self.events_extra),
+            },
+            "intervals": {"missing": part(self.intervals_missing), "extra": part(self.intervals_extra)},
+            "mode": {"stored": self.mode_stored, "derived": self.mode_derived},
+        }
+
+
+def verify_tables(tables: Tables) -> Verification:
+    """Compare every row the tables hold with what the tenant's ledger derives now. Reads only.
+
+    Run it in one snapshot: an append between the two reads would show as a difference.
+    """
+    derived = derive_tables(tables.events(None))
+    expected = derived.filed()
+    filed, stored_intervals, mode = tables.stored()
+    have = {row[0]: row for row in filed}
+    wanted = derived.intervals()
+    return Verification(
+        tenant_id=tables.tenant_id,
+        events_missing=tuple(event_id for event_id in expected if event_id not in have),
+        events_changed=tuple(
+            event_id for event_id, row in expected.items() if event_id in have and have[event_id] != row
+        ),
+        events_extra=tuple(event_id for event_id in have if event_id not in expected),
+        intervals_missing=tuple(interval[0] for interval in wanted - stored_intervals),
+        intervals_extra=tuple(interval[0] for interval in stored_intervals - wanted),
+        mode_stored=mode or "table",
+        mode_derived="replay" if derived.reasons else "table",
+    )
 
 
 def reconcile_tables(tables: Tables, *, limit: int | None = None) -> int:
@@ -375,6 +483,15 @@ def reconcile_tables(tables: Tables, *, limit: int | None = None) -> int:
 def _sqlite_stamp(moment: datetime) -> str:
     """Fixed width and UTC, as the lite ledger stamps its events, so text order is time order."""
     return _as_utc(moment).astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def _parse_stamp(value: object) -> datetime | None:
+    """A stored SQLite stamp back to the aware datetime it was written from; None for a malformed
+    one, which no derived interval equals, so it is reported rather than raised."""
+    try:
+        return _as_utc(datetime.fromisoformat(str(value)))
+    except ValueError:
+        return None
 
 
 def _placeholders(count: int) -> str:
@@ -522,6 +639,23 @@ class SQLiteTables:
             (self.tenant_id,),
         ).fetchall()]
 
+    def stored(self) -> tuple[set[FiledRow], set[StoredInterval], str | None]:
+        filed = {
+            (str(event_id), key, fact_id, str(event_type), bool(live))
+            for event_id, key, fact_id, event_type, live in self._conn.execute(
+                f"SELECT event_id, conflict_key, fact_id, event_type, live FROM {CURRENT_EVENTS_TABLE} "
+                "WHERE tenant_id = ?", (self.tenant_id,),
+            ).fetchall()
+        }
+        intervals = {
+            (str(event_id), str(fact_id), str(key), _parse_stamp(low), _parse_stamp(high))
+            for event_id, fact_id, key, low, high in self._conn.execute(
+                f"SELECT event_id, fact_id, conflict_key, valid_from, valid_until FROM {CURRENT_TABLE} "
+                "WHERE tenant_id = ?", (self.tenant_id,),
+            ).fetchall()
+        }
+        return filed, intervals, self.counts()[2]
+
     def clear(self) -> None:
         for table in (CURRENT_TABLE, CURRENT_EVENTS_TABLE, CURRENT_STATE_TABLE):
             self._conn.execute(f"DELETE FROM {table} WHERE tenant_id = ?", (self.tenant_id,))
@@ -656,6 +790,25 @@ class PostgresTables:
             "AND f.event_id = l.event_id) ORDER BY l.created_at, l.event_id",
             (self.tenant_id,),
         ).fetchall()]
+
+    def stored(self) -> tuple[set[FiledRow], set[StoredInterval], str | None]:
+        filed = {
+            (str(event_id), key, fact_id, str(event_type), bool(live))
+            for event_id, key, fact_id, event_type, live in self._conn.execute(
+                f"SELECT event_id, conflict_key, fact_id, event_type, live FROM {CURRENT_EVENTS_TABLE} "
+                "WHERE tenant_id = %s", (self.tenant_id,),
+            ).fetchall()
+        }
+        # Read in UTC without a zone, so the year 1 and 9999 bounds load in any session time zone.
+        intervals = {
+            (str(event_id), str(fact_id), str(key), low.replace(tzinfo=UTC), high.replace(tzinfo=UTC))
+            for event_id, fact_id, key, low, high in self._conn.execute(
+                "SELECT event_id, fact_id, conflict_key, valid_from AT TIME ZONE 'UTC', "
+                f"valid_until AT TIME ZONE 'UTC' FROM {CURRENT_TABLE} WHERE tenant_id = %s",
+                (self.tenant_id,),
+            ).fetchall()
+        }
+        return filed, intervals, self.counts()[2]
 
     def clear(self) -> None:
         for table in (CURRENT_TABLE, CURRENT_EVENTS_TABLE, CURRENT_STATE_TABLE):
@@ -841,6 +994,12 @@ class PostgresCurrentFacts:
         with self._connect() as conn:
             return self._status(conn)
 
+    def verify(self) -> Verification:
+        """`verify_tables` in one REPEATABLE READ snapshot."""
+        with self._connect() as conn, conn.transaction():
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            return verify_tables(PostgresTables(conn, self.tenant_id))
+
     def _status(self, conn: psycopg.Connection) -> CurrentFactsStatus:
         ledger, filed, mode = PostgresTables(conn, self.tenant_id).counts()
         row = conn.execute(
@@ -892,6 +1051,17 @@ class SQLiteCurrentFacts:
         with self._transaction():
             SQLiteTables(self._conn, self.tenant_id).clear()
 
+    def verify(self) -> Verification:
+        """`verify_tables` in one read transaction (or the caller's, when one is open)."""
+        if self._conn.in_transaction:
+            return verify_tables(SQLiteTables(self._conn, self.tenant_id))
+        self._conn.execute("BEGIN")
+        try:
+            return verify_tables(SQLiteTables(self._conn, self.tenant_id))
+        finally:
+            if self._conn.in_transaction:
+                self._conn.execute("ROLLBACK")
+
     def status(self) -> CurrentFactsStatus:
         ledger, filed, mode = SQLiteTables(self._conn, self.tenant_id).counts()
         row = self._conn.execute(
@@ -919,6 +1089,7 @@ __all__ = [
     "CURRENT_EVENTS_TABLE", "CURRENT_STATE_TABLE", "CURRENT_TABLE", "CurrentFactsStatus",
     "CurrentView", "KeyProjection", "MATERIALIZED_EVENT_TYPES", "PostgresCurrentFacts",
     "PostgresTables", "SQLITE_FACT_CURRENT_DDL", "SQLiteCurrentFacts", "SQLiteTables",
-    "current_view", "event_keys", "key_history", "materialize_events", "project_key",
-    "rebuild_tables", "reconcile_tables", "usable",
+    "DerivedTables", "Verification", "current_view", "derive_tables", "event_keys", "key_history",
+    "materialize_events", "project_key", "rebuild_tables", "reconcile_tables", "usable",
+    "verify_tables",
 ]
