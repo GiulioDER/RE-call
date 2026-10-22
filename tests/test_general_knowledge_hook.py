@@ -305,17 +305,29 @@ def test_settings_ignores_a_block_of_the_wrong_shape():
     assert gk.settings({"general_knowledge": "off"}) == {"enabled": True, "min_score": 0.0}
 
 
-@pytest.mark.parametrize("enabled", ["false", "no", 0, 1, None, []])
-def test_settings_enabled_must_be_a_real_bool(enabled):
-    """Invariant: only a bool sets `enabled`; a quoted "false" must not read as True-by-coercion.
+@pytest.mark.parametrize("enabled", ["false", "no", "true", 0, 1, None, []])
+def test_settings_a_present_enabled_that_is_not_a_bool_disables(enabled):
+    """Invariant: `enabled` fails closed; a present non-bool (even a quoted "true") turns injection OFF.
 
-    Red proof. Node: `tests/test_general_knowledge_hook.py::test_settings_enabled_must_be_a_real_bool`.
-    Mutation: `settings` coerces with `bool(enabled)` instead of the type check. Symbol: `settings`.
-    Seen: the falsy params (`0`, `None`, `[]`) fail, `enabled` came back False. The truthy params
-    (`'false'`, `'no'`, `1`) coerce to True, which equals the default, so they cannot go red; they
-    document that a non-bool never switches the feature off.
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_settings_a_present_enabled_that_is_not_a_bool_disables`.
+    Mutation A: the previous behaviour, the non-bool branch in `settings` sets `enabled = True`
+    (fall back to the default). Seen: every param fails, `assert True is False`. Mutation B: coerce
+    with `bool(enabled)`. Seen: the truthy params (`'false'`, `'no'`, `'true'`, `1`) fail with
+    `assert True is False`. Symbol: `settings`.
     """
-    assert gk.settings({"general_knowledge": {"enabled": enabled}})["enabled"] is True
+    assert gk.settings({"general_knowledge": {"enabled": enabled}})["enabled"] is False
+
+
+def test_settings_enabled_absent_or_a_real_bool_is_taken_as_is():
+    """Invariant: absent means enabled; a real bool is honoured exactly.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_settings_enabled_absent_or_a_real_bool_is_taken_as_is`.
+    Mutation: the non-bool branch in `settings` also applies when the key is absent (default
+    `block.get("enabled", False)`). Seen: `assert False is True` on the absent case. Symbol: `settings`.
+    """
+    assert gk.settings({"general_knowledge": {"min_score": 1.0}})["enabled"] is True
+    assert gk.settings({"general_knowledge": {"enabled": True}})["enabled"] is True
+    assert gk.settings({"general_knowledge": {"enabled": False}})["enabled"] is False
 
 
 @pytest.mark.parametrize("score", ["high", "2.5", True, False, None, float("nan"), float("inf"), -float("inf"), []])

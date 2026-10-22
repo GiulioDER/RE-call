@@ -89,19 +89,20 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """The `general_knowledge` block of the hook config, with defaults. Pure: `None` means `{}`.
 
     Absent means ENABLED, so installing the corpus is what turns the feature on and
-    `enabled: false` is the one switch that turns it off. A value of the wrong type falls back to
-    its default rather than raising, for the same fail-open reason as the reader.
+    `enabled: false` is the one switch that turns it off. A `min_score` of the wrong type falls
+    back to its default rather than raising, for the same fail-open reason as the reader.
 
-    The types are checked, not coerced: `bool("false")` is True, so coercing would turn a
-    quoted `"false"` in a hand-edited config into the opposite of what its author meant. Only a
-    real `bool` sets `enabled`, and only a finite int or float (never a bool, never NaN or
-    infinity) sets `min_score`.
+    **`enabled` fails CLOSED.** A PRESENT value that is not a real `bool` (a quoted `"false"`,
+    `0`, `null`) DISABLES the feature: this is the injection switch, and a hand-edited config that
+    meant "off" must never turn injection on because of its own typo. `bool("false")` is True, so
+    coercing would do exactly that, and falling back to the default would too. Only a real `bool`
+    sets it; only a finite int or float (never a bool, never NaN or infinity) sets `min_score`.
     """
     block = (config or {}).get("general_knowledge")
     block = block if isinstance(block, dict) else {}
     enabled = block.get("enabled", True)
     if not isinstance(enabled, bool):
-        enabled = True
+        enabled = False
     min_score = block.get("min_score", 0.0)
     if isinstance(min_score, bool) or not isinstance(min_score, (int, float)) or not math.isfinite(min_score):
         min_score = 0.0
