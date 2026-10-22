@@ -30,7 +30,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from recall.frontmatter import RECORD_KEY, parse_frontmatter, supersedes_targets
+from recall.document import parse_document
+from recall.frontmatter import RECORD_KEY, supersedes_targets
 from recall.records import (
     RECORD_KINDS,
     RecordCandidate,
@@ -116,7 +117,7 @@ def _read_cache_file(path: Path) -> dict[str, tuple[tuple[int, int], MemoRecord 
             str(key): ((int(stamp[0]), int(stamp[1])), _from_json(entry))
             for key, (stamp, entry) in document["entries"].items()
         }
-    except Exception:  # BROAD-CATCH: a cache that cannot be read is a cold cache, never an error
+    except Exception:  # BROAD-CATCH: fail-open  (an unreadable cache is a cold cache, never an error)
         return {}
 
 
@@ -136,7 +137,7 @@ def _write_cache_file(path: Path, entries: dict[str, tuple[tuple[int, int], Memo
         except BaseException:
             Path(temp).unlink(missing_ok=True)
             raise
-    except Exception:  # BROAD-CATCH: the cache is an optimisation, never a failure
+    except Exception:  # BROAD-CATCH: fail-open  (the cache is an optimisation, never a failure)
         pass
 
 
@@ -152,7 +153,7 @@ def _read(path: Path, file: str) -> MemoRecord | str | None:
         return f"unreadable: {type(exc).__name__}"
     if RECORD_KEY not in text:
         return None
-    meta, _body = parse_frontmatter(text)
+    meta = parse_document(text).meta
     if RECORD_KEY not in meta:
         return None
     admitted = admit_record(meta, str(path))

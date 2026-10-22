@@ -146,7 +146,7 @@ def _log(reason: str) -> None:
         line = " ".join(reason.split())[:500]
         with path.open("a", encoding="utf-8") as handle:
             handle.write(f"{datetime.now(UTC).isoformat(timespec='seconds')} {line}\n")
-    except Exception:  # BROAD-CATCH: fail-open, a log that cannot be written is not a failure
+    except Exception:  # BROAD-CATCH: fail-open  (an unwritable log is not a failure)
         pass
 
 
@@ -448,7 +448,7 @@ def build_block(cwd: str, prompt: str, *, deadline: float, now: datetime | None 
             )
         except TimeoutError as exc:
             loaded["error"] = TimeoutError(f"{exc}; `{WARM_COMMAND}` fills it with no deadline")
-        except BaseException as exc:  # BROAD-CATCH: re-raised on the waiting thread
+        except BaseException as exc:  # BROAD-CATCH: error-translation  (re-raised on the waiting thread)
             loaded["error"] = exc
 
     reader = threading.Thread(target=load, name="recall-auditor-brief-memos", daemon=True)
@@ -501,7 +501,7 @@ def pre_agent(payload: dict[str, Any]) -> int:
                 # The inner bounds fire first, so a slow stage is logged by name; the join below
                 # is the backstop for a stage nothing inside bounds.
                 outcome["block"] = build_block(cwd, prompt, deadline=started + budget - INNER_MARGIN)
-            except BaseException as exc:  # BROAD-CATCH: reported by the waiting thread
+            except BaseException as exc:  # BROAD-CATCH: error-translation  (reported by the waiting thread)
                 outcome["error"] = exc
 
         worker = threading.Thread(target=work, name="recall-auditor-brief", daemon=True)
@@ -522,7 +522,7 @@ def pre_agent(payload: dict[str, Any]) -> int:
         sys.stdout.write(
             json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": updated}})
         )
-    except Exception as exc:  # BROAD-CATCH: fail-open, a launch must never wait on this hook
+    except Exception as exc:  # BROAD-CATCH: fail-open  (a launch must never wait on this hook)
         _log(f"{agent_type}: {type(exc).__name__}: {exc}; prompt left unchanged")
         return 0
     return 0
