@@ -97,6 +97,10 @@ Session 3 implements high precision non model rules first:
   folder, paired by date as the repeated-subject rule pairs. An edge the repeated-subject rule
   already proposes is not proposed again under this rule.
 
+A folder is the scope of a name for the version, subject and entity keys, so a layout that slices
+one document's history into folders by time (`2026-01/decisions.md`, `2026-02/decisions.md`) is
+not paired by these rules; an authored `supersedes:` or a direct textual reference still is.
+
 `DETERMINISTIC_PROVIDER_REVISION` names the revision of these rules. A promoted edge records it,
 and an accepted proposal writes it into the memo's derived block, so it is bumped when a rule
 changes which pairs it proposes, in which direction or at which status, and not for a refactor or
