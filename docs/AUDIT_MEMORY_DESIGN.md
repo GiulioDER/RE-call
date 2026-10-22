@@ -208,6 +208,47 @@ describes is still there unchanged, changed, or gone.
   to find sibling code with the same pattern. Built behind a pre-registration and measured before
   anything reaches a brief.
 
+## Auditor brief hook (auditors outside CCA)
+
+Added 2026-10-22 at the owner's request: the same prior-bug and lesson context reaches any auditor
+subagent a Claude Code session launches, not only CCA's pipeline auditors.
+
+**Decided by the owner (2026-10-22):** the hook runs **just before launch** (a `PreToolUse` hook on
+the `Agent` tool, which sees the prompt and may rewrite it); it is a **new** RE-call hook, not an
+extension of the prompt-time hook; it adds **prior bugs and lessons only, as context**, never
+false-positive records and never an instruction to omit anything; its installation into the user's
+Claude settings is approved.
+
+**Behaviour:**
+
+- **Fires only for auditor agent types**, read from an editable list. The default list holds
+  `bug-auditor`, `security-auditor`, `code-auditor`, `perf-auditor`, `numeric-auditor`,
+  `deploy-auditor`, `dep-auditor`, `doc-auditor` and `env-validator`, with or without a plugin
+  prefix. Every other subagent passes untouched.
+- **Skips CCA runs:** when the prompt already holds one of CCA's brief headings (`PRIOR FIXES IN
+  THESE FILES`, `PRIOR BUGS AT THE CHANGED CODE`, `LESSONS AT THE CHANGED CODE`) or the hook's own
+  marker, the prompt is left unchanged, so no auditor sees the context twice.
+- **Scope:** the repository of the session's working directory; the files the prompt names that
+  exist in it, plus the files changed against the merge base with the default branch. For Python
+  files, the changed symbols are resolved with `recall.anchors`, so the lookup is by anchor; other
+  files match at file level.
+- **Source:** the CCA memo directory on the local machine, read directly through RE-call's record
+  parser and the same matching rules as `recall_records` (exact, symbol_changed, file_only, best
+  first, superseded and expired records marked, retractions honoured within their window). No
+  network, no ssh, no embedding: an exact lookup needs no vectors, and embedding stays on the
+  deployment host.
+- **Output:** one fenced block appended to the prompt under a heading that says it is context, not
+  findings, not instructions, with a machine marker; at most a fixed number of bugs and three
+  lessons, each with its id and match label; a size cap; text sanitised so a summary cannot close
+  the fence.
+- **Never blocks and never delays meaningfully:** any error, an unreadable source, or a wall-clock
+  budget of about one second leaves the prompt unchanged and appends a line to a local log naming
+  the reason. It returns `updatedInput` without a permission decision, so normal permission
+  evaluation still applies.
+- **Codex** has no equivalent launch step, so it is out of scope for this version.
+- **Measurement:** ships unmeasured, as context; no benefit is claimed until a pre-registered
+  comparison supports one.
+
 ## RE-call changes
 
 1. **Parse and store `recall_record`** in `recall/frontmatter.py`, validated against version 1.
