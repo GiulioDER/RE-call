@@ -36,10 +36,11 @@ from recall.embeddings import (
 from recall.extraction import STRUCTURED_DOCUMENT_VERSION
 from recall.generations import BuildStats, GenerationManager
 from recall.index import (
+    CODE_CHUNKER_VERSION,
     DEFAULT_MAX_CHARS,
     DEFAULT_OVERLAP_CHARS,
     ChunkerKind,
-    chunk_code,
+    CodeChunker,
     chunk_text,
     effective_overlap,
     head_commit,
@@ -231,9 +232,12 @@ def chunker_for(request: BuildRequest) -> tuple[Callable[[str], list[str]], Chun
     _validate_request(request.chunker, request.max_chars, request.overlap)
     if request.chunker == "code":
         # `chunk_code` takes no overlap, so recording one would describe a pipeline that never ran.
+        # `CodeChunker` anchors Python chunks; its version is what makes code tenants rebuild.
         return (
-            functools.partial(chunk_code, max_chars=request.max_chars),
-            ChunkerIdentity("recall.chunk_code", 1, {"max_chars": request.max_chars}),
+            CodeChunker(max_chars=request.max_chars),
+            ChunkerIdentity(
+                "recall.chunk_code", CODE_CHUNKER_VERSION, {"max_chars": request.max_chars}
+            ),
         )
     if request.chunker == "text":
         overlap = effective_overlap(request.max_chars, request.overlap)
