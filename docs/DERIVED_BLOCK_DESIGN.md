@@ -203,7 +203,7 @@ isolation.
 | `GenerationManager.build` (`recall/generations.py`) | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused on the production route via `_runtime_route` (`recall/cli_commands/index_search.py:318`), so hooking only the index path leaves the one build path that runs in production uncovered. |
 | `recall/lint.py:244` | The only reader of `derived_text`. |
 | `recall/check.py:53` | `_ANY_REF` over the body would otherwise hand the author the machine's own values back as `supersedes:` candidates. |
-| `recall/semantic_lint.py:126` | Fixes the `is_closed_decision` collision: `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of the block's own `status:` entry. This module reaches the corpus twice — here, and via `Indexer.index_path` at `:138`, which the `index.py` site covers. |
+| `recall/semantic_lint.py:129` | Fixes the `is_closed_decision` collision: `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of the block's own `status:` entry. This module reaches the corpus twice — here, and via `Indexer.index_path` at `:138`, which the `index.py` site covers. |
 
 **The import ban.** A test asserts that within `recall/`, `recall_mcp/` and `recall_interop/`, the
 only module importing `parse_frontmatter` is `recall/document.py`.
@@ -282,7 +282,7 @@ property.
 
 9. a file with a block chunks identically to the same file without one (`chunk_text`, element-wise)
 10. `text_start` / `text_end` identical across that same pair, through `contextual_passages`
-11. `status: superseded` inside a block does not make `is_closed_decision` (`recall/semantic_lint.py:51`)
+11. `status: superseded` inside a block does not make `is_closed_decision` (`recall/semantic_lint.py:53`)
     return True. Paired assertion: the *same* string in ordinary prose still does, otherwise the
     test passes against a function that always returns False.
 12. `recall check` on a file whose block names it does not offer the machine's own filename back as

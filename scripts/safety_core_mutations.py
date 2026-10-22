@@ -187,7 +187,9 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall/provenance_controller.py",
         "contradictions are accepted without authored supersession",
-        b"        if conflicts and len(supersedes) != len(conflicts):",
+        # The controller's refusal moved onto `unresolved_conflicts` with the window rule
+        # (2026-10-21); this was `if conflicts and len(supersedes) != len(conflicts):`.
+        b"        if unsettled:",
         b"        if False:",
         PROVENANCE_TESTS,
     ),

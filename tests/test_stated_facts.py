@@ -353,6 +353,22 @@ def test_s5_a_superseded_memo_states_nothing_until_its_successor_goes(store: Lit
     assert listed(store) == ["4512"], f"forgetting the successor did not restore the fact: {listed(store)}"
 
 
+def test_s5w_a_successor_memo_retires_stated_facts_only_inside_its_window(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s5w_a_successor_memo_retires_stated_facts_only_inside_its_window.
+
+    The window rule on the memo-level path (owner decision, 2026-10-21): a successor memo dated
+    from 2099 retires the old memo's stated fact from then, not now. Red on master ``67ffcce59``
+    (`served_sources` asked the supersession graph with no instant): fails on "a successor memo
+    not yet valid retired a stated fact".
+    """
+    memo(folder, "door-a.md", facts=[DOOR])
+    memo(folder, "note-b.md", body="The front door will be rekeyed.", supersedes="door-a.md", valid_from="2099-01-01")
+    refreshed(store, folder)
+    reconcile(store, folder)
+    assert listed(store) == ["4512"], f"a successor memo not yet valid retired a stated fact: {listed(store)}"
+    assert listed(store, as_of=FUTURE) == [], "the successor memo retires the fact inside its window"
+
+
 def test_s1_a_stated_fact_is_listed_with_its_memo(store: LiteStore, folder: Path) -> None:
     """Node tests/test_stated_facts.py::test_s1_a_stated_fact_is_listed_with_its_memo.
 

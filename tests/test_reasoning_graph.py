@@ -440,8 +440,11 @@ def test_supersession_rows_fallback_is_undated_by_design() -> None:
 
     rows = _supersession_rows(chunks)
 
+    # Since the window rule (2026-10-21) each row also carries the chunk's source and its raw
+    # validity bounds, as the store's scan does, so the shared resolver can tell two roots apart
+    # and read each successor's window. What this test pins is unchanged: no date, ever.
     assert rows == [
-        (None, None, None),
-        ("v1.md", None, None),
-        ("v2.md", "v1.md", None),
+        (None, None, None, "/corpus/x", None, None),
+        ("v1.md", None, None, "/corpus/v1.md", None, None),
+        ("v2.md", "v1.md", None, "/corpus/v2.md", None, None),
     ]

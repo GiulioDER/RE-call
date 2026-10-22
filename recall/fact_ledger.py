@@ -32,16 +32,23 @@ from recall.provenance_controller import (
     FactApplicationPermit,
     _consume_permit,
     _as_utc,
+    FactSupersession,
     ServedSources,
     absent_fact_ids,
     asserts_fact,
+    fact_supersession,
+    ordered_after,
+    project_candidates,
+    project_current,
+    repeats_assertion,
+    unresolved_conflicts,
     retracted_keys,
     retraction_key,
+    SUPERSESSION_REQUEST_SUFFIX,
     canonical_json,
     evidence_card_from_payload,
     fact_conflict_key,
     fact_identity,
-    facts_conflict,
 )
 from recall.schema import FACT_LEDGER_APPEND_FUNCTION, FACT_MATERIALIZATION_APPEND_FUNCTION
 from recall.types import AtomicFact, EvidenceCard
@@ -174,53 +181,6 @@ def decode_ledger_row(row: Sequence[Any]) -> FactEvent:
     return _event_from_row(tuple(values))
 
 
-def project_current(
-    events: Sequence[FactEvent], now: datetime, served: ServedSources | None = None
-) -> tuple[FactEvent, ...]:
-    """The facts in force at `now`: asserted, not superseded or retracted, inside their validity.
-
-    With `served`, a fact none of whose memos the store serves now is left out (`absent_fact_ids`).
-    """
-    superseded = {
-        fact_id
-        for event in events
-        if event.event_type == "superseded"
-        for fact_id in event.supersedes_fact_ids
-    }
-    retracted = retracted_keys(events)
-    absent = absent_fact_ids(events, served)
-    instant = _as_utc(now)
-    return tuple(
-        event for event in events
-        if asserts_fact(event)
-        and event.fact_id not in superseded
-        and event.fact is not None
-        and retraction_key(event) not in retracted
-        and event.fact_id not in absent
-        and (event.fact.valid_from is None or instant >= _as_utc(event.fact.valid_from))
-        and (event.fact.valid_until is None or instant < _as_utc(event.fact.valid_until))
-    )
-
-
-def project_candidates(events: Sequence[FactEvent]) -> tuple[FactEvent, ...]:
-    """Asserted, not superseded or retracted, regardless of time: what a new claim may conflict with."""
-    superseded = {
-        fact_id
-        for event in events
-        if event.event_type == "superseded"
-        for fact_id in event.supersedes_fact_ids
-    }
-    retracted = retracted_keys(events)
-    return tuple(
-        event
-        for event in events
-        if asserts_fact(event)
-        and event.fact_id not in superseded
-        and event.fact is not None
-        and retraction_key(event) not in retracted
-    )
-
-
 #: The writer `recall_forget` records on the retractions it appends.
 RETRACTION_WRITER = "recall_forget"
 #: The writer `generation gc` records when it retracts the facts of a memo no generation holds.
@@ -241,14 +201,15 @@ def plan_retractions(
     A fact is retracted when at least one of its cards names a source this forget erased
     (`touched`) and every card on every live assertion of it, the APPLIED one and any DUPLICATE
     re-application alike, names a source that is gone. One surviving card keeps the fact, so a
-    fact two memos support survives forgetting one of them. Superseded facts are left as they are:
-    forgetting never makes a fact current again.
+    fact two memos support survives forgetting one of them. A value its successors hide over its
+    whole window is left as it is: forgetting never makes a fact current again. One hidden only
+    part of the time (a successor that starts next month) is still in force and is retracted.
     """
-    superseded = {
-        fact_id
+    index = fact_supersession(events)
+    hidden = {
+        event.event_id
         for event in events
-        if event.event_type == "superseded"
-        for fact_id in event.supersedes_fact_ids
+        if asserts_fact(event) and event.fact is not None and not index.in_force(event)
     }
     retracted = retracted_keys(events)
     live: dict[str, list[FactEvent]] = {}
@@ -256,7 +217,7 @@ def plan_retractions(
         if (
             event.event_type == "asserted"
             and event.fact_id is not None
-            and event.fact_id not in superseded
+            and event.event_id not in hidden
             and retraction_key(event) not in retracted
         ):
             live.setdefault(event.fact_id, []).append(event)
@@ -291,7 +252,10 @@ def assertion_is_duplicate(
     supersedes_fact_ids: Sequence[str],
     absent: frozenset[str] = frozenset(),
     *,
+    history: Sequence[FactEvent],
     stated: bool = False,
+    index: FactSupersession | None = None,
+    moment: datetime | None = None,
 ) -> bool:
     """Whether `fact` repeats a current candidate; refuses one it contradicts without superseding.
 
@@ -303,24 +267,25 @@ def assertion_is_duplicate(
     `stated` is the path a memo's own facts take (`recall.stated_facts`): a disagreement is
     recorded, not refused, and the projection lists both values as contested
     (`recall.provenance_controller.split_contested`).
+
+    A repeat is a DUPLICATE only when it adds nothing (`repeats_assertion`). A conflict is judged
+    over `history` as if `fact` were already recorded (`unresolved_conflicts`), the rule the
+    controller refuses on; `index` is that history's supersession index, when the caller has it.
+    The fallback that judged `candidates` alone was unreachable once every ledger passed its
+    history, and was removed (2026-10-21 audit, CODE-003).
     """
-    identity = fact_identity(fact)
-    if any(event.fact_id == identity for event in candidates):
+    if repeats_assertion(candidates, fact, supersedes_fact_ids):
         return True
     if stated:
         return False
-    conflicts = tuple(
-        event for event in candidates
-        if event.fact and event.fact_id not in absent and facts_conflict(event.fact, fact)
-    )
-    if {event.fact_id for event in conflicts} - set(supersedes_fact_ids):
+    if unresolved_conflicts(history, fact, supersedes_fact_ids, absent, moment=moment, index=index):
         raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
     return False
 
 
 def supersession_ids(event_id: str, request_id: str) -> tuple[str, str]:
     """The event id and request id of the `superseded` event that follows an applied assertion."""
-    return event_id + "_sup", request_id + ":supersession"
+    return event_id + "_sup", request_id + SUPERSESSION_REQUEST_SUFFIX
 
 
 def decision_event_type(decision_code: str) -> str:
@@ -835,9 +800,14 @@ class PostgresFactLedger:
                     self._enqueue_materialization(conn, materialization_outbox, prior[0])
                 return LedgerApplyResult(prior[0], duplicate=True)
             history = self._events(conn)
-            candidates = project_candidates(history)
-            absent = absent_fact_ids(history, served)
-            if assertion_is_duplicate(candidates, fact, supersedes_fact_ids, absent, stated=stated):
+            index = fact_supersession(history)
+            candidates = project_candidates(history, index=index)
+            moment = ordered_after(moment, history, fact)
+            absent = absent_fact_ids(history, served, moment)
+            if assertion_is_duplicate(
+                candidates, fact, supersedes_fact_ids, absent, stated=stated, index=index,
+                history=history, moment=moment,
+            ):
                 event = self._insert(
                     conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
                     fact=fact, cards=cards, supersedes_fact_ids=(), request_id=request_id,

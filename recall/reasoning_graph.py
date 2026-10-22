@@ -25,6 +25,7 @@ from recall.semantic_graph import SemanticGraphProjection
 from recall.supersession import (
     EdgeCandidates,
     chunk_supersedes_targets,
+    reference_stem_key,
     resolve_supersession_candidates,
 )
 from recall.types import AtomicFact, Chunk
@@ -233,11 +234,21 @@ class ReasoningGraphProjection:
         )
 
     def authored_supersession_map(self) -> dict[str, str]:
-        return {
-            edge.from_file: edge.to_file
-            for edge in self.authored_edges
-            if edge.kind == "authored_supersedes" and edge.to_file is not None
-        }
+        """Superseded file -> superseding file, one winner per target by the stores' rule.
+
+        Of several claimants of one target, the store's `supersession()` keeps the last scan row,
+        and its scan is ordered by claimant file, so the winner is the greatest claimant. Taking
+        the last EDGE instead depended on how the edges happened to be sorted (by date), so the
+        two answered fan-in differently.
+        """
+        winners: dict[str, str] = {}
+        for edge in self.authored_edges:
+            if edge.kind != "authored_supersedes" or edge.to_file is None:
+                continue
+            current = winners.get(edge.from_file)
+            if current is None or edge.to_file > current:
+                winners[edge.from_file] = edge.to_file
+        return winners
 
 
 def _fingerprint_value(value: Any) -> Any:
@@ -538,13 +549,17 @@ def _chunk_nodes(
     return nodes, diagnostics
 
 
-def _supersession_rows(chunks: list[Chunk]) -> list[tuple[str | None, str | None, datetime | None]]:
+def _supersession_rows(
+    chunks: list[Chunk],
+) -> list[tuple[str | None, str | None, datetime | None, str, object, object]]:
     # This fallback path is undated by design: chunk metadata carries no asserted_at, so
-    # every row it yields is (file, supersedes, None). The store path supplies real
+    # every row it yields is (file, supersedes, None, ...). The store path supplies real
     # asserted_at values, and because asserted_at participates in _edge_id, the two paths
     # hash different edge identities for the same authored data. Populating dates here
     # would silently change every fallback edge id, so the third element must stay None.
-    pairs: dict[tuple[str | None, str | None], None] = {}
+    # The source and the validity bounds ARE carried, as the store's scan carries them, so the
+    # shared resolver tells two roots apart and reads each successor's window the same way.
+    pairs: dict[tuple[str | None, str | None, str], tuple[object, object]] = {}
     for chunk in chunks:
         file = chunk.metadata.get("file")
         if not isinstance(file, str):
@@ -553,9 +568,12 @@ def _supersession_rows(chunks: list[Chunk]) -> list[tuple[str | None, str | None
         # still yields its (file, None) row, because every file must reach the resolver.
         targets = chunk_supersedes_targets(chunk.metadata)
         for supersedes in targets or (None,):
-            pairs.setdefault((file, supersedes), None)
-    ordered = sorted(pairs, key=lambda pair: (pair[0] or "", pair[1] or ""))
-    return [(file, supersedes, None) for file, supersedes in ordered]
+            pairs.setdefault(
+                (file, supersedes, chunk.source),
+                (chunk.metadata.get("valid_from"), chunk.metadata.get("valid_until")),
+            )
+    ordered = sorted(pairs, key=lambda key: (key[0] or "", key[1] or "", key[2]))
+    return [(file, supersedes, None, source, *pairs[(file, supersedes, source)]) for file, supersedes, source in ordered]
 
 
 def _authored_edges(
@@ -571,7 +589,7 @@ def _authored_edges(
         file = chunk.metadata.get("file")
         if isinstance(file, str):
             for supersedes in chunk_supersedes_targets(chunk.metadata):
-                refs_by_claim.setdefault((file, supersedes_key(supersedes)), supersedes)
+                refs_by_claim.setdefault((file, reference_stem_key(supersedes)), supersedes)
 
     edges: list[ReasoningGraphEdge] = []
     diagnostics: list[ReasoningGraphDiagnostic] = []
@@ -593,7 +611,7 @@ def _authored_edges(
                 item[0],
             ),
         ):
-            authored_reference = refs_by_claim.get((superseding, supersedes_key(target)), target)
+            authored_reference = refs_by_claim.get((superseding, reference_stem_key(target)), target)
             valid_from, valid_until = temporal_by_file.get(superseding, (None, None))
             edge_id = _edge_id(
                 tenant_id=tenant_id,
@@ -852,11 +870,14 @@ def _graph_diagnostics(
                 )
             )
 
+    # Grouped the way the resolver matches a reference (case-folded, NFC), so files that collide
+    # for it are reported here too; the reference stays the stem as the first file spells it.
     stems: dict[str, list[str]] = {}
     for node in source_nodes:
         if node.file:
-            stems.setdefault(supersedes_key(node.file), []).append(node.file)
-    for stem, files in sorted(stems.items()):
+            stems.setdefault(reference_stem_key(node.file), []).append(node.file)
+    for files in (stems[key] for key in sorted(stems)):
+        stem = supersedes_key(min(files))
         if len(files) > 1:
             node_ids = tuple(node_by_file[file] for file in sorted(files))
             diagnostics.append(

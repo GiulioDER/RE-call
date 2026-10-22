@@ -50,7 +50,12 @@ from recall.db_constants import DEFAULT_TABLE
 from recall import eval_clock
 from recall.errors import RecallError
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope, group_expression
-from recall.supersession import EdgeCandidates, chunk_supersedes_targets, resolve_supersession_candidates
+from recall.supersession import (
+    EdgeCandidates,
+    SupersessionGraph,
+    chunk_supersedes_targets,
+    resolve_supersession_graph,
+)
 from recall.types import Chunk, ScoredChunk
 
 #: A DSN naming a lite store: ``sqlite:///path/to/memory.db``.
@@ -135,6 +140,13 @@ def _query_terms(text: str) -> list[str]:
             continue
         terms.append(term)
     return terms
+
+
+def _bound_text(value: object) -> str | None:
+    """A validity bound as the PostgreSQL scan's ``metadata->>'key'`` reads it: text or None."""
+    if value is None:
+        return None
+    return value if isinstance(value, str) else json.dumps(value)
 
 
 @dataclass(frozen=True)
@@ -321,7 +333,7 @@ class LiteStore:
         self._calibration_cache: tuple[tuple[int, int, str, str | None, str | None], CalibrationResolution, dict[str, str]] | None = None
         with self._lock:
             self._ensure_query_tables()
-        self._supersession_cache: tuple[int, dict[str, str], frozenset[str], EdgeCandidates] | None = None
+        self._supersession_cache: tuple[int, SupersessionGraph] | None = None
         self._manifest_cache: tuple[int, dict[str, str]] | None = None
 
     @classmethod
@@ -1296,25 +1308,42 @@ class LiteStore:
         The cache is keyed on the corpus version stored in the file, so an edge written by
         another process (`recall index` beside a running server) is seen on the next call.
         """
+        return self.supersession_graph().parts()
+
+    def supersession_graph(self) -> SupersessionGraph:
+        """The resolved graph behind `supersession_all()`, with each claimant's validity window.
+
+        Rows are grouped per (file, claim, source) as the PostgreSQL scan groups them, carrying
+        the first `valid_from` and the last `valid_until` among the group's chunks as written.
+        """
         matrix = self._load()
         cached = self._supersession_cache
         if cached is None or cached[0] != matrix.version:
-            first: dict[tuple[str, str | None], str] = {}
+            first: dict[tuple[str, str | None, str], str] = {}
+            bounds: dict[tuple[str, str | None, str], tuple[str | None, str | None]] = {}
             for row in matrix.rows:
                 file = row.metadata.get("file")
                 if not isinstance(file, str):
                     continue
                 targets: tuple[str | None, ...] = chunk_supersedes_targets(row.metadata) or (None,)
+                valid_from = _bound_text(row.metadata.get("valid_from"))
+                valid_until = _bound_text(row.metadata.get("valid_until"))
                 for target in targets:
-                    key = (file, target)
+                    key = (file, target, row.source)
                     if key not in first or row.first_indexed_at < first[key]:
                         first[key] = row.first_indexed_at
-            rows: list[tuple[str | None, str | None, datetime | None]] = [
-                (file, target, _parse_time(stamp))
-                for (file, target), stamp in sorted(first.items(), key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or ""))
+                    low, high = bounds.get(key, (None, None))
+                    bounds[key] = (
+                        valid_from if low is None or (valid_from is not None and valid_from < low) else low,
+                        valid_until if high is None or (valid_until is not None and valid_until > high) else high,
+                    )
+            rows: list[tuple[str | None, str | None, datetime | None, str, str | None, str | None]] = [
+                (file, target, _parse_time(stamp), source, *bounds[(file, target, source)])
+                for (file, target, source), stamp in sorted(
+                    first.items(),
+                    key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or "", item[0][2]),
+                )
             ]
-            edges, unresolved, candidates = resolve_supersession_candidates(rows)
-            cached = (matrix.version, edges, unresolved, candidates)
+            cached = (matrix.version, resolve_supersession_graph(rows))
             self._supersession_cache = cached
-        _version, edges, unresolved, candidates = cached
-        return dict(edges), unresolved, {target: list(claims) for target, claims in candidates.items()}
+        return cached[1].copy()
