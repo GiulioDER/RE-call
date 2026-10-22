@@ -37,7 +37,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * **Current facts are materialized, so a read no longer replays the tenant's history.** Migration
   0030 adds `recall_fact_current` (one row per effective interval of each applied assertion: its own
   window less the windows of the successors that hide it), `recall_fact_current_events` and
-  `recall_fact_current_state`, on PostgreSQL and in a lite file alike. `current()`, the fact
+  `recall_fact_current_state`, on PostgreSQL and in a lite file alike; migration 0031 builds the
+  ledger's `(tenant_id, created_at, event_id)` index CONCURRENTLY for the replay. `current()`, the fact
   projection `recall_current_facts` serves and the conflict check of `recall_apply_fact` read them
   whenever they reflect every event of the tenant, and replay the ledger otherwise, so the answer is
   the same either way; the conflict check reads one conflict key instead of the tenant. Each append
