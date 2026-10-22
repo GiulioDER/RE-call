@@ -17,6 +17,13 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
 
+from recall.fact_current import (
+    SQLITE_FACT_CURRENT_DDL,
+    SQLiteTables,
+    current_view,
+    key_history,
+    sqlite_materialize_appended,
+)
 from recall.fact_ledger import (
     FACT_LEDGER_TABLE,
     LEDGER_COLUMNS,
@@ -56,6 +63,7 @@ from recall.provenance_controller import (
     fact_identity,
     fact_supersession,
     ordered_after,
+    replays_request,
 )
 from recall.types import AtomicFact, EvidenceCard
 
@@ -85,10 +93,13 @@ def ensure_fact_tables(store: LiteStore) -> None:
     Outside `_write()` on purpose: `executescript` commits any open transaction first, and every
     statement is `IF NOT EXISTS`, so running it on each adapter construction costs a catalog read.
     A ledger table made before `retracted` existed is upgraded in place (`_admit_retraction`).
+    The current-facts tables (`recall.fact_current`) come last, because that upgrade rebuilds the
+    ledger table and drops the index they add to it.
     """
     store.ensure_schema(_SCHEMA)
     if not _admits_retraction(store):
         _admit_retraction(store)
+    store.ensure_schema(SQLITE_FACT_CURRENT_DDL)
 
 
 def _admits_retraction(store: LiteStore) -> bool:
@@ -142,11 +153,18 @@ def _admit_retraction(store: LiteStore) -> None:
 
 
 class LiteFactLedger:
-    """The `FactLedger` protocol on a lite store, with `PostgresFactLedger`'s semantics."""
+    """The `FactLedger` protocol on a lite store, with `PostgresFactLedger`'s semantics.
 
-    def __init__(self, store: LiteStore) -> None:
+    Like it, reads and conflict checks come from the materialized current facts when those reflect
+    every event in the file, and every append materializes what it wrote in its own transaction
+    unless `materialize` is off. `last_read` says which way the latest read went.
+    """
+
+    def __init__(self, store: LiteStore, *, materialize: bool = True) -> None:
         self._store = store
         self.tenant_id = store.tenant
+        self.materialize = materialize
+        self.last_read: str | None = None
         ensure_fact_tables(store)
 
     def _check(self, tenant_id: str) -> None:
@@ -170,8 +188,37 @@ class LiteFactLedger:
     def current(
         self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
     ) -> tuple[FactEvent, ...]:
+        return self.current_view(tenant_id=tenant_id, now=now, served=served)[0]
+
+    def current_view(
+        self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
+    ) -> tuple[tuple[FactEvent, ...], tuple[FactEvent, ...]]:
+        """`PostgresFactLedger.current_view` on the file, in one read snapshot."""
         self._check(tenant_id)
-        return project_current(self._events(), now, served)
+        with self._store.snapshot():
+            view = current_view(SQLiteTables(self._store._conn, self.tenant_id), now, served)
+            events = self._events() if view is None else []
+        if view is not None:
+            self.last_read = "table"
+            return view.current, view.support
+        self.last_read = "replay"
+        return project_current(events, now, served), tuple(events)
+
+    def conflict_history(self, *, tenant_id: str, fact: AtomicFact) -> tuple[FactEvent, ...]:
+        """`PostgresFactLedger.conflict_history` on the file, in one read snapshot."""
+        self._check(tenant_id)
+        with self._store.snapshot():
+            return tuple(self._history(fact))
+
+    def _history(self, fact: AtomicFact) -> list[FactEvent]:
+        history = key_history(SQLiteTables(self._store._conn, self.tenant_id), fact)
+        self.last_read = "replay" if history is None else "table"
+        return self._events() if history is None else history
+
+    def _materialized(self, events: tuple[FactEvent, ...] | list[FactEvent]) -> None:
+        """Materialize what the open write transaction appended; never raises for the tables."""
+        if self.materialize:
+            sqlite_materialize_appended(self._store._conn, self.tenant_id, events)
 
     def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None:
         self._check(tenant_id)
@@ -253,8 +300,10 @@ class LiteFactLedger:
             )
             prior = self._events(request_id=request_id)
             if prior:
+                if not replays_request(prior[0], fact, cards):
+                    raise ValueError(DecisionCode.REQUEST_ID_REUSED)
                 return LedgerApplyResult(prior[0], duplicate=True)
-            history = self._events()
+            history = self._history(fact)
             index = fact_supersession(history)
             candidates = project_candidates(history, index=index)
             moment = ordered_after(moment, history, fact)
@@ -268,6 +317,7 @@ class LiteFactLedger:
                     writer=writer, decision_code=DecisionCode.DUPLICATE, now=moment,
                     policy_version=policy_version,
                 )
+                self._materialized((event,))
                 return LedgerApplyResult(event, duplicate=True)
             event = self._insert(
                 event_id=event_id, event_type="asserted", generation_id=generation_id, fact=fact,
@@ -275,16 +325,18 @@ class LiteFactLedger:
                 writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
                 policy_version=policy_version,
             )
+            appended = [event]
             if supersedes_fact_ids:
                 sup_event_id, sup_request_id = supersession_ids(event_id, request_id)
-                self._insert(
+                appended.append(self._insert(
                     event_id=sup_event_id, event_type="superseded",
                     generation_id=generation_id, fact=None, cards=cards,
                     supersedes_fact_ids=supersedes_fact_ids,
                     request_id=sup_request_id, writer=writer,
                     decision_code=DecisionCode.APPLIED, now=moment,
                     policy_version=policy_version,
-                )
+                ))
+            self._materialized(appended)
             return LedgerApplyResult(event)
 
     def retract_forgotten(
@@ -312,6 +364,7 @@ class LiteFactLedger:
                     supersedes_fact_ids=(str(assertion.fact_id),), request_id=request_id,
                     writer=writer, decision_code=decision_code, now=moment,
                 ))
+            self._materialized(written)
         return tuple(written)
 
     def record_decision(
@@ -333,12 +386,14 @@ class LiteFactLedger:
             prior = self._events(request_id=request_id)
             if prior:
                 return prior[0]
-            return self._insert(
+            event = self._insert(
                 event_id=decision_event_id(self.tenant_id, request_id, event_type),
                 event_type=event_type, generation_id=generation_id, fact=fact, cards=cards,
                 supersedes_fact_ids=(), request_id=request_id, writer=writer,
                 decision_code=decision_code, now=moment,
             )
+            self._materialized((event,))
+            return event
 
 
 class LiteEvidenceCardStore:

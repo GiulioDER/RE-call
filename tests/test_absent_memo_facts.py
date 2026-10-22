@@ -15,6 +15,8 @@ Invariants and the failure each one catches:
   its old memo returns.
 - Z5 on PostgreSQL, a promoted generation that leaves the memo out hides the fact, and
   `generation rollback` to the generation that holds it shows it again.
+- Z6 the listing cites the live cards of every application of a fact (DUPLICATE ones included),
+  so a pruned first memo is no longer cited while the second still is.
 
 Red proof (2026-10-14), each against #931's tip `7a681e4f1` (pre-fix) unless a mutation is named,
 then restored and green; node ids and failure lines in each test's docstring.
@@ -270,3 +272,33 @@ def test_z5_a_generation_without_the_memo_hides_its_fact_and_a_rollback_shows_it
     assert manager.rollback() == first  # type: ignore[attr-defined]
     with GenerationStore(TEST_DSN, 64, tenant=tenant) as store:
         assert _listed(store) == ["4512"], "the rollback did not bring the fact back"
+
+
+def test_z6_the_listing_cites_the_cards_of_every_live_memo(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_absent_memo_facts.py::test_z6_the_listing_cites_the_cards_of_every_live_memo.
+
+    Invariant: a fact's `evidence_card_ids` are the live cards of all its applications, as its
+    `sources` are, so with memo-001 pruned the listing cites memo-002's card, not memo-001's.
+    Re-measured open on master ``52be498cc`` (2026-10-22): the listing cited the APPLIED event's
+    cards. Red against ``52be498cc`` with this test copied in: fails on "the listing does not
+    cite the DUPLICATE memo's card" (only memo-001's card, while both were served). Red, mutation
+    of `current_facts_memory` (recall_mcp/provenance.py) citing the event's own cards: the same line.
+    """
+    _refresh(store, folder)
+    first = _apply(store, DOOR, "memo-001.md", "r1")
+    second = _apply(store, DOOR, "memo-002.md", "r2")
+    assert (first.code, second.code) == (DecisionCode.APPLIED, DecisionCode.DUPLICATE)
+    old, new = first.cards[0], second.cards[0]
+
+    listed = current_facts_memory(store, as_of=NOW)["facts"]  # type: ignore[arg-type]
+    assert [item["evidence_card_ids"] for item in listed] == [[old.card_id, new.card_id]], (
+        f"the listing does not cite the DUPLICATE memo's card: {listed}"
+    )
+    (folder / "memo-001.md").unlink()
+    _refresh(store, folder)
+    listed = current_facts_memory(store, as_of=NOW)["facts"]  # type: ignore[arg-type]
+    assert len(listed) == 1, f"the fact is not listed once: {listed}"
+    assert listed[0]["evidence_card_ids"] == [new.card_id], (
+        f"the listing cites a card of a memo no longer served: {listed[0]['evidence_card_ids']}"
+    )
+    assert listed[0]["sources"] == [new.source]

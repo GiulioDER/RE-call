@@ -268,11 +268,10 @@ def plan_edit(
             summary.append(f"{key} {checked}" if checked else f"{key} cleared")
     meta = parse_document(after.decode("utf-8-sig", errors="replace")).meta
     try:
-        start, end = validity_bounds(meta)
+        # Refuses an empty window too (`valid_from` after `valid_until`).
+        validity_bounds(meta)
     except ValueError as exc:
         raise EditRefused(str(exc)) from exc
-    if start is not None and end is not None and end < start:
-        raise EditRefused("valid_until is before valid_from")
 
     if status is not KEEP:
         if status is not None and status not in STATUS_VOCABULARY:
