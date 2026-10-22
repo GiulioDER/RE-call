@@ -526,6 +526,98 @@ def live_sources(
     }
 
 
+def current_fact_listing(
+    ledger: Any, tenant_id: str, now: datetime, served: ServedSources | None
+) -> tuple[tuple[FactEvent, ...], dict[str, tuple[EvidenceCard, ...]]]:
+    """The facts in force at `now` and, per fact id, the live cards that cite them.
+
+    The one listing rule `recall_current_facts` and `recall provenance current` share, so the two
+    surfaces cannot disagree about one ledger; the CLI printed the APPLIED event's own cards and
+    left out every memo that restated a fact (2026-10-21 supersession audit). One snapshot serves
+    both halves: the materialized current facts and the listed facts' live assertions where the
+    ledger has them (`recall.fact_current`), else the history replayed, else what `current`
+    returns. `served` None reads the ledger alone and counts every card.
+    """
+    view = getattr(ledger, "current_view", None)
+    if callable(view):
+        events, history = view(tenant_id=tenant_id, now=now, served=served)
+    elif (recorded := getattr(ledger, "events", None)) is not None:
+        history = tuple(event for event in recorded if event.tenant_id == tenant_id)
+        events = project_current(history, now, served)
+    else:
+        events = (
+            ledger.current(tenant_id=tenant_id, now=now)
+            if served is None
+            else ledger.current(tenant_id=tenant_id, now=now, served=served)
+        )
+        history = events
+    return tuple(events), live_cards(history, served, now)
+
+
+def listing_payload(
+    events: Sequence[FactEvent],
+    evidence: Mapping[str, tuple[EvidenceCard, ...]],
+    permitted: Callable[[str], bool] | None = None,
+) -> dict[str, list[dict[str, object]]]:
+    """The `facts` and `contested` halves of a current-facts listing, as both surfaces print them.
+
+    A fact lists its memos in `sources` and their cards in `evidence_card_ids`. With `permitted`,
+    a memo it refuses is left out of both, and a fact left with no permitted memo is not listed.
+    Facts that conflict with no supersession between their memos go under `contested`
+    (`split_contested`).
+    """
+    sources = {
+        fact_id: tuple(sorted({card.source for card in group})) for fact_id, group in evidence.items()
+    }
+    if permitted is not None:
+        sources = {fact_id: tuple(name for name in names if permitted(name))
+                   for fact_id, names in sources.items()}
+        events = tuple(event for event in events if sources.get(event.fact_id or ""))
+
+    def card_ids(event: FactEvent) -> list[str]:
+        allowed = sources.get(event.fact_id or "", ())
+        return [card.card_id for card in evidence.get(event.fact_id or "", ())
+                if permitted is None or card.source in allowed]
+
+    def names(event: FactEvent) -> list[str]:
+        return list(sources.get(event.fact_id or "", ()))
+
+    standing, contested = split_contested(events)
+    return {
+        "facts": [
+            {
+                "event_id": event.event_id,
+                "fact_id": event.fact_id,
+                "fact": event.fact.to_payload() if event.fact else None,
+                "evidence_card_ids": card_ids(event),
+                "generation_id": event.generation_id,
+                "writer": event.writer,
+                "asserted_at": event.created_at.isoformat(),
+                "sources": names(event),
+            }
+            for event in standing
+        ],
+        "contested": [
+            {
+                "namespace": group[0].fact.namespace if group[0].fact else None,
+                "subject": group[0].fact.subject if group[0].fact else None,
+                "predicate": group[0].fact.predicate if group[0].fact else None,
+                "context": group[0].fact.context if group[0].fact else {},
+                "values": [
+                    {
+                        "fact": event.fact.to_payload() if event.fact else None,
+                        "fact_id": event.fact_id,
+                        "sources": names(event),
+                        "evidence_card_ids": card_ids(event),
+                    }
+                    for event in group
+                ],
+            }
+            for group in contested
+        ],
+    }
+
+
 def split_contested(
     current: Sequence[FactEvent],
 ) -> tuple[tuple[FactEvent, ...], tuple[tuple[FactEvent, ...], ...]]:
