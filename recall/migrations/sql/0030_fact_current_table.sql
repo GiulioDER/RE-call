@@ -46,10 +46,9 @@ CREATE TABLE IF NOT EXISTS recall_fact_current_state (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
--- No index is added to the ledger itself: a plain CREATE INDEX there would block its writes while
--- it builds, and the table reads join it by primary key. The replay's `ORDER BY created_at,
--- event_id` sorts in memory as it always has; an index for it belongs in a concurrent-index
--- migration of its own, if a measurement asks for one.
+-- No index is added to the ledger itself here: a plain CREATE INDEX inside this transaction would
+-- block its writes while it builds. The table reads join it by primary key; the index the replay's
+-- `ORDER BY created_at, event_id` uses is 0031's, built CONCURRENTLY.
 
 ALTER TABLE recall_fact_current_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE recall_fact_current_events FORCE ROW LEVEL SECURITY;

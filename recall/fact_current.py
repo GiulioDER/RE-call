@@ -106,7 +106,7 @@ CREATE TABLE IF NOT EXISTS {CURRENT_STATE_TABLE} (
     updated_at TEXT NOT NULL
 );
 -- A lite file's ledger is the store's own: indexing it here blocks only the one local writer.
--- PostgreSQL's migration 0030 leaves its ledger unindexed (a plain index would block its writes).
+-- PostgreSQL builds the same index CONCURRENTLY in its own migration, 0031.
 CREATE INDEX IF NOT EXISTS recall_fact_ledger_order_idx
     ON {FACT_LEDGER_TABLE} (tenant_id, created_at, event_id);
 """
