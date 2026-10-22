@@ -25,6 +25,7 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from recall.frontmatter import validity_bounds
 from recall.lite.memo_requests import MEMO_ID, cancel_requests, restore_requests, write_memo
 
 if TYPE_CHECKING:
@@ -101,6 +102,12 @@ class MemoFolder:
                     date.fromisoformat(value)
                 except ValueError:
                     return {"refused": f"{label} must be a date YYYY-MM-DD, got {value!r}"}
+        try:
+            # The reader's own rule, so the refresh never meets a memo it refuses: an empty window
+            # (`valid_from` after `valid_until`) fails the indexer like a malformed date.
+            validity_bounds({"valid_from": valid_from, "valid_until": valid_until})
+        except ValueError as exc:
+            return {"refused": str(exc)}
         graph = None
         if fact is not None:
             from recall.types import AtomicFact

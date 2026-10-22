@@ -55,7 +55,15 @@ The decision code vocabulary is fixed: `APPLIED`, `DUPLICATE`, `CARD_NOT_FOUND`,
 `SOURCE_CHANGED`, `VALIDITY_EXPIRED`, `VALIDITY_NOT_STARTED`, `GENERATION_MISMATCH`,
 `LINEAGE_MISMATCH`, `TRUST_UNAVAILABLE`, `UNSUPPORTED_CLAIM`,
 `CONTRADICTION_WITHOUT_SUPERSESSION`, `FRESH_SEARCH_UNAVAILABLE`, `FRESH_SEARCH_INSUFFICIENT`,
-`LEDGER_UNAVAILABLE`, and `MATERIALIZATION_UNAVAILABLE`.
+`LEDGER_UNAVAILABLE`, `MATERIALIZATION_UNAVAILABLE`, `REQUEST_ID_REUSED` and
+`REQUEST_ID_RESERVED`.
+
+A request id names one application, a fact on a set of cards. Sent again with the same fact and
+cards it is answered with the event it recorded, as `DUPLICATE`; sent with another fact, or the same
+fact on other cards, it is refused `REQUEST_ID_REUSED`. An id of a form the ledger mints for its own
+events (ending `:supersession`, or starting `retraction:` or `stated:`) is refused
+`REQUEST_ID_RESERVED` before the ledger is read. Neither refusal is recorded: the id already names
+another event, or belongs to one the ledger will write.
 
 The MCP request shape is `{claim: AtomicFact, evidence_card_ids: string[], request_id: string,
 writer: string}`. The response shape is `{allowed: boolean, decision_code: string, request_id:

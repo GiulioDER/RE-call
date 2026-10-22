@@ -10,7 +10,8 @@ errors (break the trust layer's correctness):
 - ``dangling-supersedes``  — the edge names a file that does not exist in the corpus
 - ``self-supersedes``      — a document claims to supersede itself
 - ``supersession-cycle``   — following the chain revisits a document
-- ``invalid-date``         — malformed ``valid_from``/``valid_until`` (the Indexer would refuse it)
+- ``invalid-date``         — malformed ``valid_from``/``valid_until``, or an empty window
+  (``valid_from`` after ``valid_until``); the Indexer would refuse it either way
 - ``ambiguous-supersedes-target`` — the edge names a basename carried by MORE than one document,
   so which one is superseded cannot be resolved. An error, not a smell: read-time acts on it —
   `recall.trust` returns the ``ambiguous_supersession`` verdict and abstains rather than guess,

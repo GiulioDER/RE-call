@@ -56,6 +56,7 @@ from recall.provenance_controller import (
     fact_identity,
     fact_supersession,
     ordered_after,
+    replays_request,
 )
 from recall.types import AtomicFact, EvidenceCard
 
@@ -253,6 +254,8 @@ class LiteFactLedger:
             )
             prior = self._events(request_id=request_id)
             if prior:
+                if not replays_request(prior[0], fact, cards):
+                    raise ValueError(DecisionCode.REQUEST_ID_REUSED)
                 return LedgerApplyResult(prior[0], duplicate=True)
             history = self._events()
             index = fact_supersession(history)

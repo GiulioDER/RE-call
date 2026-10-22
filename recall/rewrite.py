@@ -840,6 +840,13 @@ def apply_rewrite(
             return RewriteResult(
                 plan, False, f"{plan.edit_file} already declares {plan.key}: {meta[plan.key]!r}"
             )
+        if plan.key in VALIDITY_CLAIM_KEYS:
+            # The date was checked alone in `route_relation`; beside the memo's other bound it may
+            # make an empty window, which `recall index` refuses for the whole corpus.
+            try:
+                validity_bounds({**meta, plan.key: plan.value})
+            except ValueError as exc:
+                return RewriteResult(plan, False, f"{plan.edit_file}: {exc}")
         updated = insert_frontmatter_line(raw, plan.key, plan.value)
     else:
         if plan.key in SINGLE_VALUED_DERIVED_KEYS:

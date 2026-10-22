@@ -150,6 +150,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **A request id names one application.** A request id already used for another fact, or for the
+  same fact on other cards, was answered allowed `DUPLICATE` with the earlier event and recorded
+  nothing; it is now refused `REQUEST_ID_REUSED` and not recorded, while the same request sent again
+  is still an idempotent `DUPLICATE`. A request id of a form the ledger mints for its own events
+  (`<id>:supersession`, `retraction:<event id>`, `stated:<hash>`) is refused `REQUEST_ID_RESERVED`:
+  PostgreSQL, SQLite and lite answered it `DUPLICATE`, and the in-memory ledger appended a second
+  row under it. Neither code is ever written to the ledger, so no migration is needed.
+* **A memo that states a fact through a DUPLICATE is one of its sources.** A new value whose memo
+  links it now supersedes the fact, where it was refused `CONTRADICTION_WITHOUT_SUPERSESSION`, and
+  `recall_current_facts` cites in `evidence_card_ids` the live cards of every application of a
+  fact, as `sources` already did, so a first memo the store no longer serves is no longer cited.
+* **An empty validity window is invalid metadata.** A memo whose `valid_from` is after its
+  `valid_until` is verdicted `invalid_metadata`, as Validity Frontmatter 1.0 requires (test vector
+  4), where search reported `expired` or `not_yet_valid`. `recall index`, generation builds and the
+  lite refresh refuse it as they refuse a malformed date, `recall lint` reports it as
+  `invalid-date`, and the lite memo writer, `recall rewrite apply` and the dashboard refuse to write
+  one. A one-day window (both keys the same date) stays valid all day.
 * **A fact applied under several requests is listed once.** Applying a fact that is already in
   force records a DUPLICATE event, and `recall_current_facts`, `recall provenance current` and the
   controller's conflict check listed that event beside the original, so the fact appeared once per
