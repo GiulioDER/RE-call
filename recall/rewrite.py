@@ -82,6 +82,7 @@ from recall.frontmatter import (
     writable_reference,
 )
 from recall.lineage import canonical_sha256
+from recall.lint import describe_cycle, supersession_cycle_closed_by, supersession_graph
 from recall.observability import get_logger
 from recall.promotion import PromotedFact
 from recall.reasoning_proposals.types import InferenceProposal
@@ -719,6 +720,21 @@ def _corpus_proposals(
     return tuple(found)
 
 
+def _refuse_cycle(root: Path, edit_file: str, value: str) -> None:
+    """Refuse a `supersedes:` edge that would close a cycle in the corpus `_resolve` reads.
+
+    Every reviewer path ends here (`recall rewrite apply`, the dashboard's preview and accept),
+    so the plan a reviewer is shown already carries the refusal, rather than `recall lint`
+    reporting the cycle after the write and search abstaining on every memo in it.
+    """
+    chain = supersession_cycle_closed_by(supersession_graph(root), edit_file, value)
+    if chain is not None:
+        raise RewriteRefused(
+            "refusing to write: "
+            + describe_cycle(edit_file, value, chain)
+        )
+
+
 def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     """What `apply_rewrite` would do, with no side effect of any kind."""
     checked = _refuse_untrusted(fact)
@@ -736,8 +752,11 @@ def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     value = writable_reference(routed.value)
     _refuse_stand_in_reference(value)
     _refuse_unwritable_value(value)
+    edit_file = _resolve(root, routed.edit_file)
+    if routed.key == SUPERSEDES:
+        _refuse_cycle(root, edit_file, value)
     return RewritePlan(
-        edit_file=_resolve(root, routed.edit_file),
+        edit_file=edit_file,
         key=routed.key,
         value=value,
         block=block,
@@ -754,14 +773,24 @@ def apply_rewrite(
     *,
     ledger: RejectionLedger | None = None,
     apply: bool = False,
+    plan: RewritePlan | None = None,
 ) -> RewriteResult:
     """Declare `fact` in the corpus file it belongs to, or report why it was not.
 
-    Two kinds of "no" are distinguished on purpose. A `RewriteRefused` is a caller error — an
-    unreviewed fact, an unwritable key, an unresolvable reference — and raises. A memo that
-    already declares the key, or a claim a human has already rejected, is a normal outcome of a
-    batch run and comes back as a populated `RewriteResult` with `written=False` and a reason.
-    Neither is silent: a refusal a caller cannot see is indistinguishable from a write.
+    ``plan`` is the `plan_rewrite(root, fact)` a caller has just computed, so the corpus is not
+    read and judged a second time; a plan of another fact is a `RewriteRefused`. Leave it out
+    unless the plan was made under the same lock as this call, because a plan made earlier was
+    judged against the corpus as it stood then.
+
+    Two kinds of "no" are distinguished on purpose. A `RewriteRefused` raises: a caller error (an
+    unreviewed fact, an unwritable key, an unresolvable reference), or a `supersedes:` edge that
+    would close a supersession cycle in the corpus. The cycle is a property of the corpus rather
+    than of the call, and it is judged in `plan_rewrite`, before the rejection ledger and the
+    already-declares checks, so such an edge raises even when its claim was rejected or is already
+    declared. A memo that already declares the key, or a claim a human has already rejected, is
+    otherwise a normal outcome of a batch run and comes back as a populated `RewriteResult` with
+    `written=False` and a reason. Neither is silent: a refusal a caller cannot see is
+    indistinguishable from a write.
 
     ⚠️ **Single writer.** The read, the already-declares check and the swap are three steps with
     no lock between them. `atomic_write_bytes` guarantees the file is never half written, but two
@@ -771,7 +800,15 @@ def apply_rewrite(
     refused, which differs from `fix.apply_proposal`, and is worth knowing if the two are ever
     driven from one call site.
     """
-    plan = plan_rewrite(root, fact)
+    if plan is None:
+        plan = plan_rewrite(root, fact)
+    else:
+        # The trust check is the one part of planning that reads no file, so it is not skipped.
+        checked = _refuse_untrusted(fact)
+        if (plan.fact_id, plan.proposal_id, plan.reviewer_id) != (
+            checked.fact_id, checked.proposal_id, checked.reviewer_id
+        ):
+            raise RewriteRefused(f"the plan given is for fact {plan.fact_id}, not {checked.fact_id}")
     if ledger is not None and ledger.is_rejected(plan.claim):
         return RewriteResult(plan, False, f"claim {plan.claim} was rejected by a reviewer")
 

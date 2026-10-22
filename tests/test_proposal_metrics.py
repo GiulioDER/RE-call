@@ -63,11 +63,14 @@ def _proposal(
 
 
 def _session3_proposals() -> tuple[InferenceProposal, ...]:
-    """The exact relation/status mix pinned in results/reasoning_session3_proposals.json."""
+    """The exact relation/status mix pinned in results/reasoning_session3_proposals.json.
+
+    The two `temporal_ordering` proposals left it when that rule stopped proposing again an edge
+    the repeated-subject rule proposes (supersession audit 2026-10-21, finding 25d).
+    """
 
     return (
         _proposal(*SEARCH_PAIR, status="requires_review", rule_id="repeated_decision_subject"),
-        _proposal(*CACHE_PAIR, status="requires_review", rule_id="temporal_ordering"),
         _proposal(
             *CACHE_PAIR,
             relation="contradicts",
@@ -78,7 +81,6 @@ def _session3_proposals() -> tuple[InferenceProposal, ...]:
         _proposal(*CACHE_PAIR, status="candidate", rule_id="explicit_version_naming"),
         _proposal(*SEARCH_PAIR, status="candidate", rule_id="direct_textual_reference"),
         _proposal(*SEARCH_PAIR, status="candidate", rule_id="explicit_version_naming"),
-        _proposal(*SEARCH_PAIR, status="requires_review", rule_id="temporal_ordering"),
     )
 
 
@@ -227,7 +229,7 @@ def test_count_keys_name_their_unit() -> None:
     metrics = proposal_precision_recall(_session3_proposals(), {SEARCH_PAIR, CACHE_PAIR})
 
     assert metrics["asserted_proposals"] == 3
-    assert metrics["referred_proposals"] == 4
+    assert metrics["referred_proposals"] == 2
     assert "asserted" not in metrics
     assert "referred" not in metrics
 

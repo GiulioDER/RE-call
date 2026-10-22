@@ -468,7 +468,8 @@ def _run_rewrite(args: argparse.Namespace) -> None:
         print("written")
         return
     # Non-zero when nothing was written. Exiting 0 on a refusal left a script unable to tell a
-    # completed declaration from a declined one. 2 stays reserved for caller error.
+    # completed declaration from a declined one. 2 stays reserved for a `RewriteRefused`: a caller
+    # error, or an edge that would close a supersession cycle (see `apply_rewrite`).
     print(f"not written: {result.refusal}")
     raise SystemExit(1)
 

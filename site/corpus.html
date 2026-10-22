@@ -492,7 +492,7 @@ metadata:
             </div>
           </div>
 
-          <p><code>lint</code> looks over a whole corpus for broken or missing supersession edges. <code>--fix</code> proposes the frontmatter edge for each closure it can prove, and it is a dry run by default, printing the plan and changing nothing until you add <code>--apply</code>.</p>
+          <p><code>lint</code> looks over a whole corpus for broken or missing supersession edges. <code>--fix</code> proposes the frontmatter edge for each closure it can prove, and it is a dry run by default, printing the plan with an id beside each edge and changing nothing until you add <code>--apply</code> with the ids of the edges you reviewed, for example <code>--apply 3f2a91c0d4</code>.</p>
 
           <p><code>check</code> is the write time version, and it needs no database at all. You point it at the files you are about to commit and it asks for the supersession edge while you still know the answer. <code>--strict</code> makes it exit with a failure when a memo needs an edge, which is what turns it into a pre-commit hook.</p>
 

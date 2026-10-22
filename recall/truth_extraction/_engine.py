@@ -27,11 +27,14 @@ import re
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
+from recall.supersession_cues import unasserted
 from recall.truth_extraction._prompt import ExtractionPrompt
 
 DETERMINISTIC_EXTRACTION_ENGINE_ID = "recall.truth_extraction.deterministic"
 DETERMINISTIC_EXTRACTION_MODEL_ID = "rules"
-DETERMINISTIC_EXTRACTION_REVISION = "truth-extraction-rules-v1"
+#: v2 (2026-10-21): a negated or conditional supersession cue is no longer a claim
+#: (`recall.supersession_cues`). The extraction cache keys on this, so v1 answers are not reused.
+DETERMINISTIC_EXTRACTION_REVISION = "truth-extraction-rules-v2"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})
@@ -40,7 +43,7 @@ _FALSE = frozenset({"", "0", "false", "no", "off"})
 #: engine cannot find strictly less than the rules it is meant to replace. Looser verbs are
 #: contained by the ladder: the target must still resolve to exactly one corpus file.
 _ACTIVE_SUPERSESSION_RE = re.compile(
-    r"\b(?:replaces|supersedes|supercedes|deprecates|updates|revises)\s+"
+    r"\b(?P<cue>replaces|supersedes|supercedes|deprecates|updates|revises)\s+"
     r"`?(?P<target>[\w./\-[\]]+)`?",
     re.IGNORECASE,
 )
@@ -86,10 +89,16 @@ class DeterministicExtractionEngine:
         body = prompt.human_body
         claims: list[Mapping[str, Any]] = []
         for match in _ACTIVE_SUPERSESSION_RE.finditer(body):
+            superseded = match.group("target").rstrip(".,;:)")
+            target_span = (match.start("target"), match.start("target") + len(superseded))
+            # "This never supersedes old.md" names the relation without asserting it; the same
+            # refusal `recall lint --fix` and the deterministic proposal rule apply.
+            if unasserted(body, match.span("cue"), target_span):
+                continue
             claims.append(
                 {
                     "kind": "supersession",
-                    "superseded": match.group("target").rstrip(".,;:)"),
+                    "superseded": superseded,
                     "quote": _line_of(body, match.start()),
                 }
             )

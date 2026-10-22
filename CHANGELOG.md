@@ -47,6 +47,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* **BREAKING: every tool that writes a `supersedes:` edge is gated, so none demotes a current memo
+  by mistake.** `recall lint --fix`, the deterministic extraction engine behind
+  `recall rewrite plan`, and the deterministic proposal rule behind `recall reasoning proposals`
+  and the MCP `recall_rewrite_plan` tool no longer propose an edge from a cue the sentence does
+  not assert ("this never supersedes X", "nothing replaces X", "if the canary fails, this would be
+  replaced by Y", "if the canary fails; this is replaced by Y"); a cue more than 2,000 characters
+  into an unbroken line is refused rather than judged on part of it. The extraction engine's
+  revision is now `truth-extraction-rules-v2`, so cached extractions are recomputed. The `lint --fix` dry run shows each edge with an id and the sentence
+  it came from, and `--apply` now takes the ids to write, directly after it
+  (`recall lint <path> --fix --apply <id>,<id>`). A bare `--apply`, which wrote every proposal,
+  and `--apply` without `--fix`, which was ignored, now exit 2 and write nothing. The
+  direct-reference rule takes a document named right before the cue as the superseder ("new.md
+  replaces old.md" in meeting notes), proposes it as `requires_review` with that document among
+  its evidence ids, proposes nothing when another document is named elsewhere in the sentence,
+  and skips a stem two files share. `lint --fix --apply`, `rewrite apply` and the dashboard's
+  edit, undo and review actions refuse an edge that would close a supersession cycle in the
+  whole corpus, before the write. A negation is not hidden by an aside right before the cue or its
+  `be`, `being` or `been` ("this has not (as of today) been superseded by Y", "it is not, however,
+  superseded by Y"), and the
+  direct-reference rule judges a condition that falls past the 4,000 characters it reads cues
+  from. `--apply` takes ids copied with the brackets the dry run prints, and refuses a repeated
+  `--apply` and an id two proposals share. `lint --fix --apply` skips a memo saved while its edge
+  was being checked rather than overwrite the save, and `recall.fix.apply_proposal` raises
+  `recall.fix.SupersessionCycle`, a subclass of `UnreadableMemo`, for a cycle. The dashboard
+  judges a memo named in another case, on a filesystem that ignores case, as the file it opens.
+  `recall lint`, `recall lint --fix` and the dashboard's triage read at most 2,000 characters
+  behind each cue to find its sentence when a sentence end lies within them, instead of the whole
+  memo before it, with the same results as before.
+* The deterministic proposal rules behind `recall reasoning proposals` and `recall_rewrite_plan`
+  pair memos by different keys. A `status:` or `verdict:` line names a state, not a decision
+  subject, so two unrelated memos that both say "Status: done" are no longer paired, and a memo
+  whose only such line is a status now takes its file name (without folder or version) as its
+  subject, which the repeated-subject and contradictory-windows rules group by (so `flag_v1.md`
+  "Status: enabled" and `flag_v2.md` "Status: disabled" are now compared). A version is `v` and
+  digits after a separator, so `ipv4.md` and `ipv6.md` are not two versions of one memo. The
+  repeated-subject rule proposes only when both memos are dated and the later one starts strictly
+  later. Temporal ordering now groups by the file name without its version, in its folder, so it
+  pairs a file's versions whose decision lines are worded apart, and it no longer proposes again
+  an edge the repeated-subject rule proposes. The Session 3 control artifact drops its two
+  `temporal_ordering` proposals (referrals 4 to 2), and every other proposal id is unchanged.
 * **A successor hides what it supersedes only while the successor itself is valid.** A memo
   `supersedes:` another from next month leaves it current until then, an expired time-bounded
   successor gives its predecessor back, and a correction for 2020 to 2022 leaves today's memo alone;

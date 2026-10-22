@@ -448,3 +448,32 @@ def test_rewrite_never_opens_the_database(corpus, monkeypatch, capsys):
     monkeypatch.setattr(psycopg, "connect", _forbidden)
     main(["rewrite", "plan", str(corpus)])
     assert "proposal(s)" in capsys.readouterr().out
+
+
+def test_apply_refuses_an_edge_that_would_close_a_cycle(corpus, capsys):
+    """`OLD` already declares that it supersedes `NEW`; the corpus also says NEW supersedes OLD.
+
+    Writing the second edge would leave a cycle that `recall lint` reports only afterwards, and
+    search abstains on every memo in one. The dry run says so too, since both go through
+    `plan_rewrite`.
+
+    Red: baseline, `tests/test_cli_rewrite.py::test_apply_refuses_an_edge_that_would_close_a_cycle`
+    failed with `DID NOT RAISE SystemExit` on the dry run, which promised the write; target
+    `recall.rewrite.plan_rewrite`, which had no cycle check.
+    """
+    (corpus / OLD).write_text(
+        f"---\nsupersedes: {NEW}\n---\n# old\n\nThe original call.\n", encoding="utf-8", newline="\n"
+    )
+    found = [
+        p for p in corpus_proposals(corpus)
+        if p.proposed_relation == "supersedes" and (p.subject_id, p.object_id) == (OLD, NEW)
+    ]
+    assert found, "the corpus still states the reverse supersession"
+    before = (corpus / NEW).read_bytes()
+    for extra in ([], ["--apply"]):
+        with pytest.raises(SystemExit) as exc:
+            main(["rewrite", "apply", str(corpus), "--proposal", found[0].id,
+                  "--reviewer", "gde", "--note", "Read both memos.", *extra])
+        assert exc.value.code == 2
+        assert "supersession cycle" in capsys.readouterr().err
+    assert (corpus / NEW).read_bytes() == before

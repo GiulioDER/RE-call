@@ -230,3 +230,69 @@ def test_lint_echoes_the_authored_form_in_a_dangling_error(tmp_path):
     )
     dangling = [i for i in lint_corpus(tmp_path) if i.code == "dangling-supersedes"]
     assert dangling and "[[ghost]]" in dangling[0].message
+
+
+# --- the cycle check every writer asks before it writes (supersession audit 2026-10-21) ----------
+
+#: b supersedes c, c supersedes a; d stands outside every chain.
+_CHAIN = {"a.md": [], "b.md": ["c.md"], "c.md": ["a.md"], "d.md": []}
+
+
+def _declare(tmp_path, declared: dict[str, list[str]]) -> None:
+    for name, targets in declared.items():
+        head = f"---\nsupersedes: [{', '.join(targets)}]\n---\n" if targets else ""
+        _write(tmp_path, name, f"{head}# {name}")
+
+
+@pytest.mark.parametrize("superseder,target,expected", [
+    ("a.md", "b", ("b", "c", "a")),   # b supersedes c supersedes a: a supersedes b closes it
+    ("a.md", "c", ("c", "a")),
+    ("a.md", "a", ("a",)),            # a self-edge is the shortest cycle
+    ("c.md", "a", None),              # already declared, in the same direction: no new cycle
+    ("d.md", "a", None),              # d is outside every chain
+    ("b.md", "d", None),
+])
+def test_the_cycle_check_agrees_with_what_lint_reports_after_the_write(
+    tmp_path, superseder, target, expected
+):
+    """`supersession_cycle_closed_by` names a chain exactly when writing the edge makes
+    `lint_corpus` report a cycle (or a self-edge) it did not report before.
+
+    Red: mutation of `recall.lint.supersession_cycle_closed_by` searching from the target instead
+    of the superseder (`start, goal = goal, start` after the self-edge check):
+    `tests/test_lint.py::test_the_cycle_check_agrees_with_what_lint_reports_after_the_write`
+    failed for `("a.md", "b", ...)` with `None == ('b', 'c', 'a')`.
+    """
+    from recall.lint import supersession_cycle_closed_by, supersession_graph
+
+    _declare(tmp_path, _CHAIN)
+    assert lint_corpus(tmp_path) == []
+
+    assert supersession_cycle_closed_by(supersession_graph(tmp_path), superseder, target) == expected
+
+    after = {**_CHAIN, superseder: [*_CHAIN[superseder], f"{target}.md"]}
+    _declare(tmp_path, after)
+    codes = _codes(lint_corpus(tmp_path))
+    assert ("supersession-cycle" in codes or "self-supersedes" in codes) == (expected is not None)
+
+
+def test_describe_cycle_keys_its_names_and_says_when_the_chain_is_transitive():
+    """A writer passes `describe_cycle` the names it gave the cycle check, and a chain of three or
+    more is named as reached through the memos between, since the target declares no edge to the
+    superseder itself.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_lint.py::test_describe_cycle_keys_its_names_and_says_when_the_chain_is_transitive`
+    failed at the first assertion with the names printed as given (`a.md`, `[[b]]`); target
+    `recall.lint.describe_cycle` (CCA deferred findings CODE-006 and DOC-012). Red also by mutation
+    dropping the transitive wording (`through = ""`): it failed at the second assertion, the
+    message saying "already supersedes it (b -> c -> a)".
+    """
+    from recall.lint import describe_cycle
+
+    message = describe_cycle("a.md", "[[b]]", ("b", "c", "a"))
+    assert message.startswith("declaring that a supersedes b would close a supersession cycle")
+    assert "because b already supersedes it through c (b -> c -> a)" in message
+    direct = describe_cycle("a.md", "b.md", ("b", "a"))
+    assert "because b already supersedes it (b -> a)" in direct
+    assert describe_cycle("a.md", "a.md", ("a",)) == "a memo cannot supersede itself"

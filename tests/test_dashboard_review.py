@@ -189,3 +189,69 @@ def test_a_rejected_claim_stays_hidden_when_the_arbiter_proposes_it_again(corpus
 def test_a_report_the_memo_already_declares_by_hand_is_hidden(corpus: Path) -> None:
     (corpus / "new.md").write_text(f"---\nsupersedes: old.md\n---\nRelease 0.12.0 {NEW_QUOTE}.\n", encoding="utf-8")
     assert _queue(corpus).items == ()
+
+
+def test_an_accept_that_would_close_a_supersession_cycle_is_refused(corpus: Path) -> None:
+    """`old.md` already declares that it supersedes `new.md`; accepting "new supersedes old"
+    would close a cycle, and search abstains on every memo in one.
+
+    The preview the reviewer sees carries the refusal, and the accept writes nothing.
+
+    Red: baseline, `tests/test_dashboard_review.py::test_an_accept_that_would_close_a_supersession_cycle_is_refused`
+    failed with `DID NOT RAISE ReviewRefused` at the preview; target `recall.rewrite.plan_rewrite`,
+    which every accept goes through and which had no cycle check.
+    """
+    (corpus / "old.md").write_text(
+        f"---\nsupersedes: new.md\n---\nThe release is 0.12.0 and {OLD_QUOTE}.\n", encoding="utf-8"
+    )
+    (item,) = _queue(corpus).items
+    with pytest.raises(review.ReviewRefused, match=r"cycle.*\(old -> new\)"):
+        review.preview(corpus, item, NOW)
+    shown = review.memo_digest(corpus, "new.md")
+    with pytest.raises(review.ReviewRefused, match="cycle"):
+        review.accept(corpus, item, reviewer="giulio", note="confirmed", shown_digest=shown, now=NOW)
+    assert _supersedes(corpus / "new.md") == []
+
+
+def test_an_accept_reads_the_corpus_once(corpus: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The accept plans once and hands that plan to `apply_rewrite`, under the decision lock.
+
+    Planning reads and parses every memo for the cycle check, and the accept used to plan twice,
+    once as a preview and again inside `apply_rewrite`, while every other decision waited.
+
+    Red: baseline 8e10eea6a, `tests/test_dashboard_review.py::test_an_accept_reads_the_corpus_once`
+    failed with `assert 2 == 1`; target `recall.dashboard.review.accept` (CCA deferred finding
+    PERF-006).
+    """
+    import recall.rewrite as rewrite
+
+    (item,) = _queue(corpus).items
+    shown = review.memo_digest(corpus, "new.md")
+    reads = []
+    real = rewrite.supersession_graph
+
+    def counted(*args: object, **kwargs: object) -> dict[str, list[str]]:
+        reads.append(args)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rewrite, "supersession_graph", counted)
+    review.accept(corpus, item, reviewer="giulio", note="confirmed", shown_digest=shown, now=NOW)
+    assert len(reads) == 1
+    assert _supersedes(corpus / "new.md") == ["old.md"]
+
+
+def test_apply_rewrite_refuses_the_plan_of_another_fact(corpus: Path) -> None:
+    """A plan handed to `apply_rewrite` must be the plan of the fact it writes.
+
+    Red: mutation of `recall.rewrite.apply_rewrite` dropping the identity check (its `if`
+    made `if False and ...`), `tests/test_dashboard_review.py::test_apply_rewrite_refuses_the_plan_of_another_fact`
+    failed with `DID NOT RAISE RewriteRefused` (CCA deferred finding PERF-006).
+    """
+    from recall.rewrite import apply_rewrite, plan_rewrite
+
+    (item,) = _queue(corpus).items
+    previewed = review._promoted(item, "preview", "preview only, never written", NOW)
+    reviewed = review._promoted(item, "giulio", "confirmed", NOW)
+    with pytest.raises(RewriteRefused, match="plan given is for fact"):
+        apply_rewrite(corpus, reviewed, apply=True, plan=plan_rewrite(corpus, previewed))
+    assert _supersedes(corpus / "new.md") == []

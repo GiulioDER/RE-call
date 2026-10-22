@@ -22,13 +22,15 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import os
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from recall.atomic_write import atomic_write_bytes
-from recall.dashboard.review import _DECISION_LOCK, ReviewRefused
+from recall.dashboard.review import _DECISION_LOCK, ReviewRefused, memo_files
 from recall.document import parse_document
 from recall.frontmatter import (
     SupersedesDeclaresNothing,
@@ -39,6 +41,12 @@ from recall.frontmatter import (
     supersedes_key,
     supersedes_targets,
     validity_bounds,
+)
+from recall.lint import (
+    corpus_frontmatter,
+    describe_cycle,
+    supersession_cycle_closed_by,
+    supersession_graph_of,
 )
 from recall.rewrite import RewriteRefused, _derived_value, set_derived_status
 from recall.stale_reports import StaleReportRefused, resolve_memo
@@ -90,10 +98,42 @@ class EditRecord:
 
 
 def _memo(root: Path, name: str) -> tuple[str, Path]:
+    root = root.resolve()
     try:
-        return resolve_memo(root.resolve(), name)
+        _corpus_name, path = resolve_memo(root, name)
     except StaleReportRefused as exc:
         raise EditRefused(str(exc)) from exc
+    listed = _as_listed(root, path)
+    return encodable_name(listed.relative_to(root).as_posix()), listed
+
+
+def _as_listed(root: Path, path: Path) -> Path:
+    """`path` spelled as its directories list it.
+
+    On a filesystem that ignores case but keeps it (macOS by default), ``Foo.md`` opens
+    ``foo.md`` and `Path.resolve` keeps the spelling it was given. Keyed by that spelling, the
+    memo being edited is a different name from the corpus entry that is the same file, so the
+    self-supersession and cycle checks compare it with nothing.
+    """
+    listed = root
+    for part in path.relative_to(root).parts:
+        try:
+            entries = os.listdir(listed)
+        except OSError:
+            # A directory that can be passed through but not listed: keep the spelling given,
+            # which `resolve_memo` has already confirmed opens a file in the corpus.
+            return path
+        if part not in entries:
+            same = [
+                entry
+                for entry in entries
+                if entry.casefold() == part.casefold()
+                and os.path.samefile(listed / entry, listed / part)
+            ]
+            if len(same) == 1:
+                part = same[0]
+        listed = listed / part
+    return listed
 
 
 def current_values(root: Path, name: str) -> MemoValues:
@@ -110,12 +150,47 @@ def current_values(root: Path, name: str) -> MemoValues:
 
 
 def _corpus_names(root: Path) -> dict[str, list[str]]:
+    """The memos an edit may name, by key: `memo_files`, which skips hidden directories."""
     names: dict[str, list[str]] = {}
-    for path in root.rglob("*.md"):
-        relative = path.relative_to(root)
-        if path.is_file() and not any(part.startswith(".") for part in relative.parts):
-            names.setdefault(supersedes_key(path.name), []).append(encodable_name(relative.as_posix()))
+    for path in memo_files(root):
+        names.setdefault(supersedes_key(path.name), []).append(
+            encodable_name(path.relative_to(root).as_posix())
+        )
     return names
+
+
+def _refuse_cycles(root: Path, path: Path, after: bytes, added: list[str]) -> None:
+    """Refuse an edit whose new `supersedes:` references would close a cycle.
+
+    Judged on the corpus as it would stand after the edit, this memo's removals included, so the
+    preview refuses what `recall lint` would report as `supersession-cycle` after the write. A
+    cycle makes search abstain on every memo in it. The corpus is the one lint reads
+    (`corpus_frontmatter`), hidden directories included, not the narrower list of memos an edit
+    may name: a cycle through an Obsidian `.trash/` memo is still one lint reports.
+    """
+    if not added:
+        return
+    documents: list[tuple[str, Mapping[str, object]]] = [
+        (other.name, meta) for other, meta in corpus_frontmatter(root) if other != path
+    ]
+    after_meta = dict(parse_document(after.decode("utf-8-sig", errors="replace")).meta)
+    documents.append((path.name, after_meta))
+    graph = supersession_graph_of(documents)
+    for target in added:
+        chain = supersession_cycle_closed_by(graph, path.name, target)
+        if chain is not None:
+            raise EditRefused(describe_cycle(path.name, target, chain))
+
+
+def _restored_targets(before: bytes, after: bytes) -> list[str]:
+    """The `supersedes:` references `before` declares and `after` does not: what an undo adds."""
+
+    def declared(raw: bytes) -> tuple[str, ...]:
+        meta = parse_document(raw.decode("utf-8-sig", errors="replace")).meta
+        return supersedes_targets(meta.get("supersedes"))
+
+    present = {supersedes_key(target) for target in declared(after)}
+    return [target for target in declared(before) if supersedes_key(target) not in present]
 
 
 def _check_date(key: str, value: str) -> str:
@@ -143,7 +218,9 @@ def plan_edit(
     before = path.read_bytes()
     after = before
     summary: list[str] = []
-    names = _corpus_names(root)
+    # Listed only when a reference is added: a date or status edit names no other memo.
+    names = _corpus_names(root) if add_supersedes else {}
+    added: list[str] = []
 
     for target in remove_supersedes:
         changed = remove_supersedes_target(after, target)
@@ -170,7 +247,9 @@ def plan_edit(
         if changed is None:
             raise EditRefused(f"{corpus_name} already supersedes {matches[0]}")
         after = changed
+        added.append(matches[0])
         summary.append(f"supersedes {matches[0]}")
+    _refuse_cycles(root, path, after, added)
 
     dates: dict[str, str | None] = {}
     for key, value in (("valid_from", valid_from), ("valid_until", valid_until)):
@@ -316,6 +395,9 @@ def undo_edit(root: Path, edit_id: int, *, editor: str, note: str, now: datetime
         _corpus_name, path = _memo(root, name)
         if path.read_bytes() != after:
             raise EditRefused(f"{name} changed after edit {edit_id}; undo it by hand or edit it again")
+        # An undo can put back an edge that an edit removed, and another memo may have declared
+        # the reverse since: the same cycle `plan_edit` refuses, reached the other way round.
+        _refuse_cycles(root, path, before, _restored_targets(before, after))
         atomic_write_bytes(path, before)
         ledger.mark_undone(edit_id, editor=editor, at=now)
         ledger.record(

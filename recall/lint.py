@@ -34,6 +34,8 @@ warnings (smells that usually mean a missing or ambiguous edge):
 from __future__ import annotations
 
 import re
+from collections import deque
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -53,7 +55,8 @@ CLOSURE_MARKERS = re.compile(
 )
 
 #: A reference to another memo: a ``[[wikilink]]``, a markdown link to a ``.md`` file, or a bare
-#: ``name.md``. Kept in step with what `recall.fix` can resolve, which reads the same three forms.
+#: ``name.md``. Not `recall.fix`'s grammar, which reads no markdown link and also takes a bare stem
+#: carrying a 20xx year (`recall.fix._REF_FORMS`).
 MEMO_REFERENCE = re.compile(r"\[\[[^\]\n]+\]\]|\]\([^)\s]+\.md\)|\b[\w.-]+\.md\b")
 
 #: Where a sentence ends: terminal punctuation then whitespace, a blank line, a list item or a
@@ -69,10 +72,34 @@ _VERSION_STEM = re.compile(r"^(?P<stem>.+)_v(?P<num>\d+)$")
 Level = Literal["error", "warning"]
 
 
-def _sentence_around(text: str, start: int, end: int) -> str:
+#: How far before a position a reader looks first for the boundary or clause end behind it. Past
+#: it, each reader falls back to reading from the start, so the window bounds the cost and never
+#: the result.
+SENTENCE_LOOKBACK = 2000
+#: A character no `_SENTENCE_END` match can contain. A scan that starts just after one finds the
+#: same boundaries from there as a scan from the start of the text: none of them can begin before
+#: it and end after it, and the pattern never looks behind where it starts.
+_OUTSIDE_SENTENCE_END = re.compile(r"[^\s\d.!?\"')\]*#-]")
+
+
+def sentence_around(text: str, start: int, end: int) -> str:
+    """The sentence of `text` that holds `text[start:end]`, as this module bounds a sentence.
+
+    The boundary before `start` is looked for in the `SENTENCE_LOOKBACK` characters behind it
+    first, from a point where a scan from the start of the text would be in step, so a text of
+    many short sentences costs time linear in its length and the sentence is the one a full scan
+    finds. A text with no boundary in that window is still scanned from its start.
+    """
     left = 0
-    for boundary in _SENTENCE_END.finditer(text, 0, start):
+    first = 0
+    if start > SENTENCE_LOOKBACK:
+        inert = _OUTSIDE_SENTENCE_END.search(text, start - SENTENCE_LOOKBACK, start)
+        first = inert.end() if inert else 0
+    for boundary in _SENTENCE_END.finditer(text, first, start):
         left = boundary.end()
+    if first and not left:
+        for boundary in _SENTENCE_END.finditer(text, 0, start):
+            left = boundary.end()
     following = _SENTENCE_END.search(text, end)
     return text[left: following.start() if following else len(text)]
 
@@ -102,7 +129,7 @@ def closure_marker_naming_a_memo(prose: str) -> re.Match[str] | None:
     for marker in CLOSURE_MARKERS.finditer(prose):
         if any(a <= marker.start() < b for a, b in references):
             continue
-        if MEMO_REFERENCE.search(_sentence_around(prose, marker.start(), marker.end())):
+        if MEMO_REFERENCE.search(sentence_around(prose, marker.start(), marker.end())):
             return marker
     return None
 
@@ -198,6 +225,98 @@ def _find_cycles(graph: dict[str, list[str]]) -> list[frozenset[str]]:
 
 #: Default file pattern — shared with the CLI so the two defaults cannot drift.
 DEFAULT_GLOB = "**/*.md"
+
+
+def supersession_graph_of(documents: Iterable[tuple[str, Mapping[str, object]]]) -> dict[str, list[str]]:
+    """The `supersedes:` edges `lint_corpus` checks for cycles: superseded key -> superseding keys.
+
+    ``documents`` are (file name, frontmatter) pairs. A reference counts only when it names a
+    document in the set, and a self-reference is left out, both as `lint_corpus` reads them.
+    """
+    docs = [(supersedes_key(name), meta) for name, meta in documents]
+    names = {key for key, _meta in docs}
+    graph: dict[str, list[str]] = {}
+    for own, meta in docs:
+        for written in supersedes_targets(meta.get("supersedes")):
+            target = supersedes_key(written)
+            if target != own and target in names:
+                graph.setdefault(target, []).append(own)
+    return graph
+
+
+def corpus_frontmatter(path: str | Path, glob: str = DEFAULT_GLOB) -> list[tuple[Path, dict[str, object]]]:
+    """Every readable file `lint_corpus` would read, with its frontmatter. Unreadable ones are left out."""
+    root = Path(path)
+    files = sorted(root.glob(glob)) if root.is_dir() else [root]
+    found: list[tuple[Path, dict[str, object]]] = []
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8-sig")
+        except (UnicodeDecodeError, OSError):
+            continue
+        found.append((f, dict(parse_document(text).meta)))
+    return found
+
+
+def supersession_graph(path: str | Path, glob: str = DEFAULT_GLOB) -> dict[str, list[str]]:
+    """`supersession_graph_of` for the corpus on disk, read as `lint_corpus` reads it."""
+    return supersession_graph_of((f.name, meta) for f, meta in corpus_frontmatter(path, glob))
+
+
+def supersession_cycle_closed_by(
+    graph: Mapping[str, Sequence[str]], superseder: str, target: str
+) -> tuple[str, ...] | None:
+    """The chain that declaring ``superseder supersedes target`` would close into a cycle, else None.
+
+    The chain runs from ``target`` to ``superseder``, each key superseding the next, so the new
+    edge is what would make it loop; a self-edge is the chain ``(superseder,)``. ``graph`` is in
+    `supersession_graph_of`'s shape and may already hold the new edge.
+
+    Every writer of a `supersedes:` edge asks this before it writes, so an edit cannot leave the
+    corpus with a cycle `lint_corpus` reports afterwards, which search answers by abstaining for
+    every member. It is reachability on the same graph rather than `_find_cycles` over the graph
+    after the edit: `_find_cycles` reports one member set per back edge its search meets, which
+    need not be the cycle through the new edge, so "which cycles are new" cannot be read off it.
+    A new cycle passes through the new edge, and one exists exactly when ``target`` already
+    supersedes ``superseder``, directly or through others.
+    """
+    start, goal = supersedes_key(superseder), supersedes_key(target)
+    if start == goal:
+        return (start,)
+    parent: dict[str, str] = {}
+    queue = deque([start])
+    while queue:
+        node = queue.popleft()
+        for nxt in graph.get(node, ()):
+            if nxt == start or nxt in parent:
+                continue
+            parent[nxt] = node
+            if nxt == goal:
+                chain = [goal]
+                while chain[-1] != start:
+                    chain.append(parent[chain[-1]])
+                return tuple(chain)
+            queue.append(nxt)
+    return None
+
+
+def describe_cycle(superseder: str, target: str, chain: Sequence[str]) -> str:
+    """The sentence a writer refuses a cycle with, naming the chain it would close.
+
+    ``superseder`` and ``target`` are the names `supersession_cycle_closed_by` was given; they are
+    keyed here as the chain is, so a writer passes the same two values to both.
+    """
+    if len(chain) == 1:
+        return "a memo cannot supersede itself"
+    superseder, target = supersedes_key(superseder), supersedes_key(target)
+    # A chain longer than two is transitive: `target` reaches the superseder through the memos
+    # between, and declares no edge to it itself.
+    through = f" through {' -> '.join(chain[1:-1])}" if len(chain) > 2 else ""
+    return (
+        f"declaring that {superseder} supersedes {target} would close a supersession cycle, "
+        f"because {target} already supersedes it{through} ({' -> '.join(chain)}), and search "
+        f"abstains on every memo in a cycle"
+    )
 
 
 def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
