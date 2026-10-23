@@ -70,6 +70,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* **`recall_apply_fact` no longer reads every fact current in the tenant.** On a ledger with a
+  key-scoped read (lite and PostgreSQL), the controller decided on the claim's conflict key but
+  first read and discarded the tenant's whole `current()`, which decoded every current fact. The key
+  read is now the read a write fails closed on, so a ledger that cannot answer it still refuses with
+  `ledger_unavailable` and appends nothing, and an apply no longer grows with the number of facts
+  current. A ledger without a key-scoped read is still read through `current()` first.
 * **BREAKING: every tool that writes a `supersedes:` edge is gated, so none demotes a current memo
   by mistake.** `recall lint --fix`, the deterministic extraction engine behind
   `recall rewrite plan`, and the deterministic proposal rule behind `recall reasoning proposals`

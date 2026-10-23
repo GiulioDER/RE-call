@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from recall import eval_clock
 from recall.evidence import cards_from_trusted_result
-from recall.fact_ledger import PostgresFactLedger, project_current
+from recall.fact_ledger import PostgresFactLedger
 from recall.fact_retraction import served_sources
 from recall.frontmatter import validity_bounds
 from recall.generations import NoActiveGeneration
@@ -19,12 +19,11 @@ from recall_mcp.evidence_cards import register_evidence_cards  # re-exported
 from recall.provenance_controller import (
     EvidenceCardResolver,
     FactApplicationRequest,
-    FactEvent,
     FactLedger,
     ProvenanceController,
-    live_cards,
+    current_fact_listing,
+    listing_payload,
     source_digest,
-    split_contested,
 )
 from recall.trust_policy import TrustPolicy
 from recall.types import AtomicFact, EvidenceCard
@@ -215,92 +214,30 @@ def current_facts_memory(
     failures: list[str] = []
     served = served_sources(store, failures=failures)
     ledger = _fact_backends(store)[0]
-    # One snapshot serves both the projection and its supporting source names: the materialized
-    # current facts and the listed facts' live assertions where the ledger has them
-    # (`recall.fact_current`), else the history replayed.
-    view = getattr(ledger, "current_view", None)
-    history = None if callable(view) else getattr(ledger, "events", None)
-    if callable(view):
-        events, history = view(tenant_id=store.tenant, now=instant, served=served)
-    elif history is not None:
-        history = tuple(event for event in history if event.tenant_id == store.tenant)
-        events = project_current(history, instant, served)
-    else:
-        events = (
-            ledger.current(tenant_id=store.tenant, now=instant)
-            if served is None
-            else ledger.current(tenant_id=store.tenant, now=instant, served=served)
-        )
-        history = events
-    # Cited from every live application of a fact, as `sources` are, and asked of the store once:
-    # the APPLIED event's own cards named its first memo after the store stopped serving it.
-    evidence = live_cards(history, served, instant)
-    sources = {
-        fact_id: tuple(sorted({card.source for card in group})) for fact_id, group in evidence.items()
-    }
+    # The listing rule and its payload are shared with `recall provenance current`
+    # (`recall.provenance_controller.current_fact_listing`), so the two cannot disagree.
+    events, evidence = current_fact_listing(ledger, store.tenant, instant, served)
+    permitted = None
     if security_policy is not None:
         assert access_context is not None
+        policy, context = security_policy, access_context
 
         def permitted(name: str) -> bool:
-            decision = security_policy.decide(name, access_context)
+            decision = policy.decide(name, context)
             # Structured values cannot safely be projected through a text redaction rule.
             return decision.allowed and not decision.redactions
 
-        sources = {fact_id: tuple(name for name in names if permitted(name))
-                   for fact_id, names in sources.items()}
-        events = tuple(event for event in events if sources.get(event.fact_id or ""))
-
-    def card_ids(event: FactEvent) -> list[str]:
-        allowed = sources.get(event.fact_id or "", ())
-        return [card.card_id for card in evidence.get(event.fact_id or "", ())
-                if security_policy is None or card.source in allowed]
-
-    standing, contested = split_contested(events)
     try:
         generation_id: str | None = store.generation_id
     except NoActiveGeneration:
         # The ledger is tenant scoped and answers before any generation is promoted; say there
         # is no serving generation rather than raise or name a generation that does not exist.
         generation_id = None
-
-    def names(event: FactEvent) -> list[str]:
-        return list(sources.get(event.fact_id or "", ()))
-
     return {
         "tenant_id": store.tenant,
         "generation_id": generation_id,
         "as_of": instant.isoformat(),
-        "facts": [
-            {
-                "event_id": event.event_id,
-                "fact_id": event.fact_id,
-                "fact": event.fact.to_payload() if event.fact else None,
-                "evidence_card_ids": card_ids(event),
-                "generation_id": event.generation_id,
-                "writer": event.writer,
-                "asserted_at": event.created_at.isoformat(),
-                "sources": names(event),
-            }
-            for event in standing
-        ],
-        "contested": [
-            {
-                "namespace": group[0].fact.namespace if group[0].fact else None,
-                "subject": group[0].fact.subject if group[0].fact else None,
-                "predicate": group[0].fact.predicate if group[0].fact else None,
-                "context": group[0].fact.context if group[0].fact else {},
-                "values": [
-                    {
-                        "fact": event.fact.to_payload() if event.fact else None,
-                        "fact_id": event.fact_id,
-                        "sources": names(event),
-                        "evidence_card_ids": card_ids(event),
-                    }
-                    for event in group
-                ],
-            }
-            for group in contested
-        ],
+        **listing_payload(events, evidence, permitted),
         "served_state": "unchecked" if served is None else ("degraded" if failures else "ok"),
         "served_lookups_failed": list(failures),
     }
