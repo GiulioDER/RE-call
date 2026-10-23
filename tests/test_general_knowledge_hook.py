@@ -2829,8 +2829,15 @@ def test_text_that_only_resembles_identifying_data_is_kept(line, expected):
         "key" * 1365,
         "a_" * 2048 + "!",
         "a." * 1024 + "@" + "b." * 1024,
+        "a=" * 2048,
+        "=" * 4096,
+        "a" * 4000 + "@b.cd",
+        "@a.b" * 1024,
     ],
-    ids=["keyword-dots", "dotted-run", "keyword-run", "name-run", "at-in-dotted-run"],
+    ids=[
+        "keyword-dots", "dotted-run", "keyword-run", "name-run", "at-in-dotted-run",
+        "pair-run", "equals-run", "long-local-part", "domain-run",
+    ],
 )
 def test_redaction_is_linear_on_adversarial_lines(line):
     """Invariant: no identifying-data pattern backtracks: a signature of one line of the capped
@@ -2840,10 +2847,43 @@ def test_redaction_is_linear_on_adversarial_lines(line):
     Mutation: `_NAME_VALUE` restored to the first version, a credential word between two unbounded
     name runs with no anchored start. Symbol: `_NAME_VALUE`. Seen: 2 failed, 3 passed;
     keyword-dots `assert (13291.88 - 13247.94) < 0.5` (43.9 s for one 4 KB line) and dotted-run
-    1.1 s. The other three params pass under that mutation; they hold the remaining patterns
-    (mailbox, token, fingerprint) to the same bound. Before the fix, measured 2026-10-23, the old
+    1.1 s (measured with the first five params). The other params hold the mailbox, token,
+    fingerprint and the later `=`/`@` scans to the same bound. Before the fix, measured 2026-10-23, the old
     pattern alone took 12.3 s on keyword-dots.
     """
     started = time.perf_counter()
     gk.failure_signature("x", "Exit code 1\n" + line)
     assert time.perf_counter() - started < 0.5
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "error: GET url=https://example.com/x?token=abc123 failed",
+            "git|error: get url=https://example.com/x?token=<redacted> failed",
+        ),
+        (
+            "error: " + "a" * 70 + "_token=sekrit9 rejected",
+            "git|error: " + "a" * 70 + "_token=<redacted> rejected",
+        ),
+        ("error: mail " + "b" * 70 + "@example.com bounced", "git|error: mail <email> bounced"),
+        ("error: mode=fast and api_key=Zx81qq", "git|error: mode=fast and api_key=<redacted>"),
+    ],
+    ids=["nested-in-a-value", "long-credential-name", "long-local-part", "plain-pair-kept"],
+)
+def test_no_credential_or_mailbox_escapes_by_nesting_or_length(line, expected):
+    """Invariant: a credential nested in another pair's value is still redacted (the outer pair
+    does not swallow it), a credential name and a mailbox local part of any length are found, and
+    a pair that is not a credential keeps its value.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_no_credential_or_mailbox_escapes_by_nesting_or_length`.
+    Symbols: `_redact_credential_pairs`, `_redact_emails`. Mutations, one at a time:
+    A: a non-credential pair skips its value (`position = value.end()` when not redacting); seen on
+    nested-in-a-value: `assert '...x?token=abc<n> failed' == '...x?token=<redacted> failed'`.
+    B: a name longer than 64 characters is skipped; seen on long-credential-name:
+    `assert '...a_token=sekrit<n> rejected' == '...a_token=<redacted> rejected'`.
+    C: the local-part walk stops after 64 characters; seen on long-local-part:
+    `assert 'git|error: m...ail> bounced' == 'git|error: m...ail> bounced'` with six `b` left.
+    """
+    assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected
