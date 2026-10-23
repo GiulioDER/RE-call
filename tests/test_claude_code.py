@@ -191,6 +191,43 @@ def test_the_hook_config_states_both_choices_even_when_they_are_the_default(
     assert stored["write_time"] == {"enabled": True, "connection_mode": "relay"}
 
 
+@pytest.mark.parametrize(
+    "block",
+    [{"enabled": False, "min_score": 1.5}, {"enabled": True}, "off"],
+    ids=["explicit-off", "explicit-on", "malformed"],
+)
+def test_reinstalling_keeps_the_general_knowledge_block(
+    tmp_path: Path, monkeypatch: Any, block: Any
+) -> None:
+    """The installer rewrites the hook config from scratch, and an absent `general_knowledge` block
+    means enabled, so dropping the block on reinstall would turn an explicit `enabled: false` back
+    on. The block is the operator's and is carried forward exactly as found, a malformed one too
+    (it means off). A first install, or a file that cannot be parsed, carries nothing.
+
+    Red proof. Node: `tests/test_claude_code.py::test_reinstalling_keeps_the_general_knowledge_block`.
+    Mutation: `if isinstance(previous, dict) and "general_knowledge" in previous:` becomes `if False:`
+    in `recall.claude_code._write_hook_config`. Symbol: `_write_hook_config`. Seen, all three params:
+    `assert None == <the block>` on `stored.get("general_knowledge")`, for example
+    `assert None == {'enabled': False, 'min_score': 1.5}`.
+    """
+    settings = tmp_path / "settings.json"
+    config = tmp_path / "recall-hook.json"
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: config)
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+
+    def install() -> dict[str, Any]:
+        claude_code.install_hooks(dsn="postgresql://u:p@h/db", path=settings, print_fn=lambda *a: None)
+        return json.loads(config.read_text(encoding="utf-8"))
+
+    assert "general_knowledge" not in install()
+    config.write_text(json.dumps({"dsn": "old", "general_knowledge": block}), encoding="utf-8")
+    stored = install()
+    assert stored.get("general_knowledge") == block
+    assert stored["dsn"] == "postgresql://u:p@h/db"
+    config.write_text("{ not json", encoding="utf-8")
+    assert "general_knowledge" not in install()
+
+
 def test_uninstall_removes_the_prompt_time_entry_too(tmp_path: Path, monkeypatch: Any) -> None:
     """`uninstall` walks whatever events are present rather than a hardcoded list, and this is
     what keeps that true as events are added."""

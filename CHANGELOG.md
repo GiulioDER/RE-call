@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Add general knowledge hooks to `recall_hooks`: an operator-curated, prebuilt `index.json` of
+  procedures and warnings is injected as context before a matching `Bash` or `PowerShell` command
+  (`PreToolUse`, trigger keyed) and after a failed one (`PostToolUseFailure`, ranked against the
+  error by lexical BM25). At most two entries per call, each once per session, one event log line per
+  trigger or failure. It is opt-in through the operator's own index: without one the hooks do
+  nothing, and the repository ships no entries. It never denies a call, never raises, loads no
+  embedder and makes no network call. The `general_knowledge` block of `recall-hook.json` switches
+  it off (`enabled: false`); a `recall-hook.json` that cannot be read or parsed (or is not a JSON
+  object), a block that is not an object, or an `enabled` that is not a boolean also disables it,
+  and only a missing file means the enabled default. A reinstall keeps the block as it was. The
+  public installer does not yet register `PowerShell` or `PostToolUseFailure`, so registering
+  those two is manual for now.
 - New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
   subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
   the local CCA memo directory with no network or embedding. Never false positives, never a

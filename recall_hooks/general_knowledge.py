@@ -1,0 +1,1079 @@
+"""General knowledge: owner-curated entries injected by the hooks before a command or after a failure.
+
+**What this module is.** The model and the reader for a small prebuilt index, plus the two hook
+entry points that use it. An entry is a piece of curated procedure or warning (how to run a test
+suite on a given host, which flag a tool needs) that a session cannot derive from the repository.
+The content is the operator's own and is never shipped in this repository; every fixture in the
+tests is invented. With no index the feature does nothing.
+
+**The index.** `<knowledge home>/index.json`, written atomically by the operator's own tooling and
+only ever read here:
+
+    {"schema": 1, "built_at": "<ISO UTC>",
+     "entries": [{"id": ..., "kind": ..., "scope": ...,
+                  "triggers": [{"command": ...} | {"command_regex": ...} | {"host": ...}],
+                  "symptoms": [...], "body": "..."}]}
+
+**Why a prebuilt index and not the entry files.** The matching runs inside a `PreToolUse` process
+that is spawned once per tool call, so every cost is paid on every shell call. Parsing one JSON
+file is cheap and bounded; walking a directory of entry files and parsing front matter is neither.
+Nothing here touches the network, a database or an embedder, and nothing imports the `recall`
+package (see `recall_hooks/__init__.py` for what that import costs).
+
+**Where things live.**
+
+| What | Where | Override |
+|---|---|---|
+| knowledge home | `<project config home>/general-knowledge` | `RECALL_GENERAL_KNOWLEDGE_HOME` |
+| event log | `<project config home>/logs/general-knowledge.jsonl` | `RECALL_GENERAL_KNOWLEDGE_LOG` |
+| switch | `general_knowledge` block of `<project config home>/recall-hook.json`: `{"enabled": bool, "min_score": float}` | no variable of its own |
+
+The project config home is `RECALL_PROJECT_CONFIG_HOME`, else `CLAUDE_CONFIG_DIR`, else
+`~/.claude`, so all three rows move with those two variables as well as with their own.
+
+A MISSING `recall-hook.json`, or one without the block, means enabled with `min_score` 0.0. Every
+other departure from the documented shape means DISABLED: a file that cannot be read or parsed, a
+document that is not an object, a block that is not an object, or an `enabled` that is not a real
+bool. This is the injection switch, so a hand edit that meant "off" may not turn it on by being
+broken. All three resolve from the project config home, never from `recall_hooks.load_config`,
+because the Codex adapter redirects `load_config` to Codex's own directory and Claude and Codex
+must share one corpus, one switch and one log.
+
+**The two events.**
+
+* `PreToolUse` (`pre_tool_use_context`), shell tools only (`Bash`, `PowerShell`). Trigger keyed: an
+  entry fires when a program, a `command_regex` match or a host alias named by one of its
+  triggers appears in the command about to run. No ranking. Logs one `trigger` event whenever any
+  in-scope entry matched, with `ts`, `project`, `session`, `client`, `trigger` (the first trigger
+  that fired per matched entry, as `<kind>:<value>`), `injected` and `suppressed` ids.
+* `PostToolUseFailure` (`post_tool_use_failure`), Claude only, since Codex has no post-tool event.
+  Error keyed: the entries are ranked against the error text by BM25 over their symptoms and
+  bodies (`prompt_time`, lexical, imported only on this path). Logs one `failure` event for every
+  failure, matched or not, with `ts`, `project`, `session`, `client`, `signature` (command family
+  plus the normalised error line), `injected` and `suppressed`: the signatures nothing matched are
+  what shows which entries are worth writing. A user interrupt is not a failure and is skipped.
+
+At most `MAX_PER_CALL` (2) entries are injected per call, and each entry at most once per session.
+
+Two tool calls of one session can run in parallel, and both append to the event log at once. On
+Windows an append is not guaranteed to be atomic, so a line can rarely be lost or interleaved; the
+log is a diagnostic aid, and that loss is accepted rather than paid for with a lock on every call.
+
+**A slow `command_regex` is refused at load, as defence in depth.** A pattern runs against every
+shell command in every project, so one that backtracks catastrophically stalls every tool call.
+`_trigger` therefore drops (never raises on) a `command_regex` longer than `MAX_REGEX_CHARS` (200)
+characters, or one with a quantified group whose body itself holds a quantifier, the nested shape
+of `(a+)+`, `(a*)*` or `(?:x+){2,}`. The scan reads the pattern text only; it cannot see an
+alternation whose branches overlap, such as `(a|aa)+`, which stays. The entry keeps its other
+triggers. The operator's own tooling should also time every regex before it writes the index.
+
+**The contract.** Never deny a tool call, never raise (every path returns 0), never load an
+embedder, never touch the network. A missing, unreadable, corrupt or foreign-schema index is an
+EMPTY index, and one malformed entry costs that entry only: a hook that raises is charged to the
+client, and a hook may never be the reason a tool call does not run. Latency budget: 50 ms median
+added to a `pre-tool-use` process, nothing on a success, at most 800 ms on a failure.
+
+**Measured 2026-10-23** on a Xeon X5690, Python 3.14.6, with a 30 entry fixture index, whole
+process medians (interpreter start included, which is most of the figure):
+
+| Event | Batch | Enabled | Disabled | Added |
+|---|---|---:|---:|---:|
+| `pre-tool-use`, 20 runs per arm, interleaved ABAB | 1 | 333.9 ms | 324.2 ms | +9.7 ms |
+| `pre-tool-use`, 20 runs per arm, interleaved ABAB | 2 | 317.5 ms | 319.1 ms | -1.6 ms |
+| `post-tool-use-failure`, 10 runs | 1 | 300.8 ms | 287.0 ms | +13.8 ms |
+| `post-tool-use-failure`, 10 runs | 2 | 300.8 ms | 283.0 ms | +17.8 ms |
+
+The second pre-tool-use batch came out 1.6 ms faster with the feature on. That is noise, and it is
+the reason both batches are printed: one batch is a sample, not a cost, so budget the range and
+not either end of it. Re-measure by running the hook entry point as a subprocess against a 30
+entry index with the feature on and off, alternating the arms, and compare the medians.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+import tempfile
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, NamedTuple
+
+from . import HOOK_CONFIG_NAME, project_config_home
+
+INDEX_NAME = "index.json"
+INDEX_SCHEMA = 1
+#: The most entries one tool call may inject. Each entry is paid for in the agent's context.
+MAX_PER_CALL = 2
+#: The most command text the matcher analyses, so its cost is bounded by this cap and not by the
+#: input. A command can carry a heredoc body of hundreds of kilobytes, and parsing it costs time on
+#: every `Bash` call (0.39 s for 100 KB of separators) for a program that is named in the first lines. Program extraction and
+#: `command_regex` triggers both see only the first `MAX_COMMAND_CHARS` characters.
+MAX_COMMAND_CHARS = 16384
+#: A per-session state file untouched for this long is deleted by the next claim (opportunistic).
+STATE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+#: The longest session id used as a file name; a longer one is truncated and hash-suffixed.
+_SESSION_ID_MAX = 100
+_SESSION_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+
+#: The three ways an entry can be triggered. A trigger is a one-key object whose key is one of these.
+TRIGGER_KINDS = frozenset({"command", "command_regex", "host"})
+#: The longest `command_regex` accepted at load; a longer one is dropped (see `_risky_regex`).
+MAX_REGEX_CHARS = 200
+#: A counted repeat that is a quantifier: `{m}`, `{m,}`, `{,n}` or `{m,n}`. Anything else after a
+#: `{` is a literal brace to the engine, and so it is to the scan.
+_COUNTED_REPEAT = re.compile(r"\{(\d*)(,?)(\d*)\}")
+
+#: Compiled `command_regex` patterns, keyed by pattern text. Filled at load, so the matcher in the
+#: hot path never compiles; a pattern that failed to compile is never stored, because its trigger
+#: was dropped.
+_COMPILED: dict[str, re.Pattern[str]] = {}
+
+
+@dataclass(frozen=True)
+class Trigger:
+    """One condition under which an entry is relevant. `kind` is a member of `TRIGGER_KINDS`."""
+
+    kind: str
+    value: str
+
+
+@dataclass(frozen=True)
+class Entry:
+    """One curated entry as read from the index. Immutable, so it can be shared across matches."""
+
+    id: str
+    kind: str
+    scope: str
+    triggers: tuple[Trigger, ...]
+    symptoms: tuple[str, ...]
+    body: str
+
+
+def knowledge_home() -> Path:
+    """Where the index lives: `RECALL_GENERAL_KNOWLEDGE_HOME`, else `<project config home>/general-knowledge`."""
+    raw = os.environ.get("RECALL_GENERAL_KNOWLEDGE_HOME", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return project_config_home() / "general-knowledge"
+
+
+def log_path() -> Path:
+    """The event log: `RECALL_GENERAL_KNOWLEDGE_LOG`, else `<project config home>/logs/general-knowledge.jsonl`."""
+    raw = os.environ.get("RECALL_GENERAL_KNOWLEDGE_LOG", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return project_config_home() / "logs" / "general-knowledge.jsonl"
+
+
+def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The `general_knowledge` block of the hook config, with defaults. Pure: `None` means `{}`.
+
+    Absent means ENABLED, so installing the corpus is what turns the feature on and
+    `enabled: false` is the one switch that turns it off. A `min_score` of the wrong type, or one
+    too large for a float, falls back to its default rather than raising, for the same fail-open
+    reason as the reader. A block that is PRESENT but not an object DISABLES (see below).
+
+    **`enabled` fails CLOSED.** A PRESENT value that is not a real `bool` (a quoted `"false"`,
+    `0`, `null`) DISABLES the feature: this is the injection switch, and a hand-edited config that
+    meant "off" must never turn injection on because of its own typo. `bool("false")` is True, so
+    coercing would do exactly that, and falling back to the default would too. Only a real `bool`
+    sets it; only a finite int or float (never a bool, never NaN or infinity) sets `min_score`.
+    """
+    if not isinstance(config, dict):
+        config = {}
+    if "general_knowledge" not in config:
+        return {"enabled": True, "min_score": 0.0}
+    block = config["general_knowledge"]
+    if not isinstance(block, dict):
+        # A PRESENT block of the wrong shape (a string, a list, null) fails closed, for the same
+        # reason `enabled` does: a hand edit that meant "off" must not leave injection on.
+        return {"enabled": False, "min_score": 0.0}
+    enabled = block.get("enabled", True)
+    if not isinstance(enabled, bool):
+        enabled = False
+    min_score = block.get("min_score", 0.0)
+    if isinstance(min_score, bool) or not isinstance(min_score, (int, float)):
+        min_score = 0.0
+    else:
+        try:
+            # `float(10**400)` and `math.isfinite(10**400)` both raise OverflowError: a huge int is
+            # not a usable threshold, and this function may never raise.
+            min_score = float(min_score)
+        except OverflowError:
+            min_score = 0.0
+        if not math.isfinite(min_score):
+            min_score = 0.0
+    return {"enabled": enabled, "min_score": min_score}
+
+
+def load_settings() -> dict[str, Any]:
+    """`settings` over `<project config home>/recall-hook.json`. Never raises.
+
+    Only a MISSING file is the defaults (enabled): that is a machine on which nobody wrote one.
+    Any other failure DISABLES: a file that cannot be read (permissions, a directory in its place,
+    bytes that are not UTF-8), one that does not parse, or a document that is not an object. The
+    reason is the one `settings` gives for `enabled`: a hand edit that meant "off" and broke the
+    file must not switch injection on. The cost is that a corrupt config silences general
+    knowledge until it is fixed, which is the safe direction for an injection switch.
+
+    Deliberately NOT `recall_hooks.load_config()`: see the module docstring. This reads the same
+    file name from the project config home, which Claude and Codex share.
+    """
+    disabled = {"enabled": False, "min_score": 0.0}
+    try:
+        raw = (project_config_home() / HOOK_CONFIG_NAME).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return settings({})
+    except (OSError, ValueError):
+        return disabled
+    try:
+        document = json.loads(raw)
+    except (ValueError, RecursionError):
+        return disabled
+    if not isinstance(document, dict):
+        return disabled
+    return settings(document)
+
+
+def compiled(pattern: str) -> re.Pattern[str] | None:
+    """The compiled form of a `command_regex` value, from the load-time cache; `None` if unknown."""
+    return _COMPILED.get(pattern)
+
+
+def _counted(pattern: str, index: int, *, need_comma: bool) -> bool:
+    """True when a counted repeat starts at `index` (with a comma, when `need_comma`)."""
+    found = _COUNTED_REPEAT.match(pattern, index)
+    if found is None or not (found.group(1) or found.group(3)):
+        return False
+    return bool(found.group(2)) or not need_comma
+
+
+def _risky_regex(pattern: str) -> bool:
+    """True when `pattern` is too long, or nests a quantifier inside a quantified group.
+
+    A conservative scan of the pattern TEXT, not a parse. It tracks group depth and skips escaped
+    characters and character classes, so neither an escaped parenthesis nor a `(` inside `[...]`
+    opens a group. It reports a group whose body holds a `+`, `*`, `?`, or a counted repeat with a
+    comma (`{m,}`, `{m,n}`), when the group itself is followed by `+`, `*` or any counted repeat.
+    That is the shape of `(a+)+` and `(?:x+){2,}`, which backtrack exponentially on a near miss. A
+    quantifier nested deeper counts for every enclosing group. It does NOT see overlapping
+    alternation (`(a|aa)+`), which needs more than a text scan. Never raises: a pattern the scan
+    cannot read is treated as risky, which costs that one trigger only.
+    """
+    try:
+        if len(pattern) > MAX_REGEX_CHARS:
+            return True
+        # One flag per open group, the first for the whole pattern: does its body hold a quantifier?
+        stack: list[bool] = [False]
+        i, n = 0, len(pattern)
+        while i < n:
+            char = pattern[i]
+            if char == "\\":
+                i += 2
+                continue
+            if char == "[":
+                i += 1
+                if i < n and pattern[i] == "^":
+                    i += 1
+                if i < n and pattern[i] == "]":
+                    i += 1  # a `]` first in a class is a literal
+                while i < n and pattern[i] != "]":
+                    i += 2 if pattern[i] == "\\" else 1
+                i += 1
+                continue
+            if char == "(":
+                stack.append(False)
+                i += 1
+                if i < n and pattern[i] == "?":
+                    # A group prefix (`(?:`, `(?P<name>`, `(?<=`, `(?i)`): this `?` is no quantifier.
+                    i += 1
+                    if pattern.startswith("P<", i):
+                        end = pattern.find(">", i)
+                        i = n if end < 0 else end + 1
+                    elif pattern.startswith("#", i):
+                        end = pattern.find(")", i)
+                        i = n if end < 0 else end
+                    else:
+                        while i < n and pattern[i] in "aiLmsux-:=!<>P":
+                            i += 1
+                continue
+            if char == ")":
+                inner = stack.pop() if len(stack) > 1 else False
+                i += 1
+                follower = pattern[i] if i < n else ""
+                if inner and (follower in ("+", "*") or (follower == "{" and _counted(pattern, i, need_comma=False))):
+                    return True
+                if inner:
+                    stack[-1] = True
+                continue
+            if char in "+*?" or (char == "{" and _counted(pattern, i, need_comma=True)):
+                stack[-1] = True
+            i += 1
+        return False
+    except Exception:  # BROAD-CATCH: fail-open for the hook, closed for this one trigger
+        return True
+
+
+def _trigger(raw: Any) -> Trigger | None:
+    """A `Trigger` from `{"<kind>": "<value>"}`, or `None` for anything else.
+
+    Dropped, not raised: a map with more than one key, an unknown kind, a non-string or empty value,
+    a regex that does not compile and a regex `_risky_regex` refuses are all the same case, one bad
+    trigger that must not cost the entry its other triggers.
+    """
+    if not isinstance(raw, dict) or len(raw) != 1:
+        return None
+    ((kind, value),) = raw.items()
+    if kind not in TRIGGER_KINDS or not isinstance(value, str) or not value:
+        return None
+    if kind == "command_regex" and value not in _COMPILED:
+        if _risky_regex(value):
+            # Too slow to run on every shell call. Never cached, so it is refused on every load.
+            return None
+        try:
+            _COMPILED[value] = re.compile(value)
+        except (re.error, OverflowError, RecursionError):
+            # Not only `re.error`: a repeat count past the engine's limit raises OverflowError and
+            # a deeply nested group raises RecursionError. Left to escape they would reach
+            # `load_index`'s outer catch and empty the whole index for one bad trigger.
+            return None
+    return Trigger(kind, value)
+
+
+def _entry(raw: Any) -> Entry | None:
+    """An `Entry` from one index record, or `None` when the record is malformed."""
+    if not isinstance(raw, dict):
+        return None
+    ident, body = raw.get("id"), raw.get("body")
+    if not isinstance(ident, str) or not ident or not isinstance(body, str) or not body:
+        return None
+    raw_triggers, raw_symptoms = raw.get("triggers", []), raw.get("symptoms", [])
+    if not isinstance(raw_triggers, list) or not isinstance(raw_symptoms, list):
+        return None
+    kind, scope = raw.get("kind", "procedure"), raw.get("scope", "global")
+    if not isinstance(kind, str) or not isinstance(scope, str):
+        return None
+    triggers = tuple(t for t in map(_trigger, raw_triggers) if t is not None)
+    symptoms = tuple(s for s in raw_symptoms if isinstance(s, str) and s.strip())
+    return Entry(ident, kind, scope, triggers, symptoms, body)
+
+
+def load_index(home: Path | None = None) -> list[Entry]:
+    """Read `index.json` under `home` (default `knowledge_home()`). Never raises.
+
+    Missing, unreadable, corrupt, not an object, or a schema other than `INDEX_SCHEMA` all give
+    `[]`: a schema this reader does not know is not guessed at. A malformed entry is skipped and the
+    rest are kept.
+    """
+    path = (knowledge_home() if home is None else home) / INDEX_NAME
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("schema") != INDEX_SCHEMA:
+            return []
+        records = document.get("entries")
+        if not isinstance(records, list):
+            return []
+        return [e for e in map(_entry, records) if e is not None]
+    except (OSError, ValueError):
+        return []
+    except Exception:  # BROAD-CATCH: fail-open
+        # A pathologically nested document raises RecursionError, which is neither of the above.
+        # A hook that raises is charged to the client, so an unreadable index is an empty one.
+        return []
+
+
+# ---------------------------------------------------------------------------------------------
+# Project detection and trigger matching. Everything below returns a value for ANY string input:
+# it runs inside the per-tool-call hook process, where an exception is charged to the client.
+# ---------------------------------------------------------------------------------------------
+
+#: Words that precede the real program and are skipped (case-insensitive). Their flags are NOT
+#: understood: `sudo -u root pytest` yields the program `-u`. That is deliberate, a rule that
+#: guessed which flags take an argument would be wrong in the other direction.
+_WRAPPERS = frozenset({"sudo", "env", "time", "nohup"})
+#: A leading `NAME=value` token (also `$env:NAME=value`): never a program, so it is skipped.
+_ASSIGNMENT = re.compile(r"^[^=/\\]+=")
+_PATH_SEPARATOR = re.compile(r"[\\/]")
+_EXE_SUFFIX = re.compile(r"\.exe$", re.IGNORECASE)
+#: Programs whose arguments name a remote host.
+_HOST_PROGRAMS = frozenset({"ssh", "scp", "sftp", "rsync"})
+
+#: One pass over a command. Alternation order matters: `&&` and `||` before the single `&` and `|`,
+#: so they are one separator each. A word is a run of atoms: a double or single quoted string (an
+#: unterminated quote takes the rest of the command, it never raises), a redirection such as `2>&1`
+#: or `&>` (whose `&` is NOT a separator), or plain characters. A backslash is an ordinary
+#: character, because on Windows it separates path components. Anything else (an exotic space) is
+#: skipped by `finditer`, which acts as a token boundary.
+_SCAN = re.compile(
+    r"""(?P<sep>&&|\|\||;|\||\n|\r|&(?!>))
+    |(?P<ws>[ \t\f\v]+)
+    |(?P<word>(?:"[^"]*"?|'[^']*'?|[<>]+&?|&(?=>)|[^\s"'|;&<>]+)+)
+    """,
+    re.VERBOSE,
+)
+#: The pieces of one word: a quoted string (quotes dropped) or an unquoted run.
+_ATOM = re.compile(r"\"([^\"]*)\"?|'([^']*)'?|([^\"']+)")
+
+
+class Segment(NamedTuple):
+    """One simple command of a command line: its program (normalised) and the tokens after it."""
+
+    program: str
+    args: tuple[str, ...]
+
+
+def _unquote(word: str) -> str:
+    return "".join(m.group(m.lastindex or 3) or "" for m in _ATOM.finditer(word))
+
+
+def _program(token: str) -> str:
+    """The basename of `token`, split on both `/` and `\\`, without `.exe`, lowercased."""
+    return _EXE_SUFFIX.sub("", _PATH_SEPARATOR.split(token)[-1]).strip().lower()
+
+
+def _segment(tokens: list[str]) -> Segment | None:
+    for index, token in enumerate(tokens):
+        if token.lower() in _WRAPPERS or _ASSIGNMENT.match(token):
+            continue
+        program = _program(token)
+        return Segment(program, tuple(tokens[index + 1 :])) if program else None
+    return None
+
+
+def parse_command(command: str) -> list[Segment]:
+    """The simple commands of `command`, split on `&&`, `||`, `;`, `|`, a lone `&` and newlines.
+
+    Quote aware: a quoted token holding spaces is one token and its quotes are removed, and a
+    separator inside quotes does not split. Not a shell parser (no escapes, no substitutions, no
+    here documents), and it does not need to be: a trigger names a program, and a wrong guess only
+    costs one injection that did not happen. A segment with no program (`& ` alone, a bare
+    assignment) is dropped. Never raises.
+    """
+    segments: list[Segment] = []
+    tokens: list[str] = []
+    text = command[:MAX_COMMAND_CHARS] if isinstance(command, str) else ""
+    for match in _SCAN.finditer(text):
+        word = match.group("word")
+        if word is not None:
+            tokens.append(_unquote(word))
+        elif match.group("sep") is not None:
+            segment = _segment(tokens)
+            if segment is not None:
+                segments.append(segment)
+            tokens = []
+    segment = _segment(tokens)
+    if segment is not None:
+        segments.append(segment)
+    return segments
+
+
+def command_programs(command: str) -> list[str]:
+    """The program of each simple command in `command`, in order (duplicates kept)."""
+    return [segment.program for segment in parse_command(command)]
+
+
+def repository_name(cwd: str) -> str | None:
+    """The name of the repository `cwd` is inside, or `None`. Never raises.
+
+    Walks up from `cwd` to the FIRST `.git` and stops there. A `.git` directory gives its parent's
+    name. A `.git` FILE is read: `gitdir: <main>/.git/worktrees/<name>` (a linked worktree) gives
+    the name of `<main>`, so every worktree of one repository is one project; any other well-formed
+    `gitdir:` (a submodule, a separate git dir) gives the checkout's own name. A `.git` file that is
+    unreadable or malformed gives `None` rather than a guess from a higher directory. Paths are
+    taken as written, never resolved, so a network path costs no more than the stats it needs.
+    """
+    if not isinstance(cwd, str) or not cwd.strip():
+        return None
+    try:
+        start = Path(os.path.abspath(cwd))  # absolute so '.' has parents; symlinks are not resolved
+        if not start.is_dir():
+            return None
+        for directory in (start, *start.parents):
+            dot_git = directory / ".git"
+            if dot_git.is_dir():
+                return directory.name or None
+            if dot_git.is_file():
+                return _name_from_gitdir_file(directory, dot_git)
+    except (OSError, ValueError):
+        return None
+    except Exception:  # BROAD-CATCH: fail-open
+        return None
+    return None
+
+
+def _name_from_gitdir_file(directory: Path, dot_git: Path) -> str | None:
+    """The repository name a `.git` file points at; the caller catches unreadable and undecodable."""
+    with dot_git.open("rb") as handle:
+        first = handle.read(4096).decode("utf-8").splitlines()[:1]
+    if not first or not first[0].startswith("gitdir:"):
+        return None
+    target = first[0][len("gitdir:") :].strip()
+    if not target:
+        return None
+    if not os.path.isabs(target):
+        target = os.path.normpath(os.path.join(directory, target))
+    parts = [part for part in _PATH_SEPARATOR.split(target) if part]
+    for i in range(len(parts) - 1, 0, -1):
+        if parts[i] == "worktrees" and parts[i - 1] == ".git":
+            return parts[i - 2] if i >= 2 else None
+    return directory.name or None
+
+
+def in_scope(entry: Entry, project: str | None) -> bool:
+    """`global` is always in scope; `project:<name>` only when `name` is the current project."""
+    if entry.scope == "global":
+        return True
+    prefix = "project:"
+    return project is not None and entry.scope.startswith(prefix) and entry.scope[len(prefix) :] == project
+
+
+def _names_host(alias: str, args: tuple[str, ...]) -> bool:
+    """True when an argument is `alias`, `alias:<path>`, or either of those after `user@`.
+
+    `user@` is split off only from the part BEFORE the first colon, so an `@` in the path part
+    (`examplehost:/var/x@1`) neither hides a host nor invents one (`other:/x@examplehost`).
+    """
+    wanted = alias.casefold()
+    return any(arg.partition(":")[0].rpartition("@")[2].casefold() == wanted for arg in args)
+
+
+def matched_trigger(entry: Entry, command: str, segments: list[Segment], project: str | None) -> Trigger | None:
+    """The FIRST trigger of `entry` that matches, or `None` (also `None` when out of scope).
+
+    `segments` is `parse_command(command)`, passed in so a caller matching many entries parses once.
+    The event log reports which trigger fired, and takes it from here instead of re-deriving the
+    rules. Never raises.
+    """
+    if not in_scope(entry, project):
+        return None
+    for trigger in entry.triggers:
+        if trigger.kind == "command":
+            wanted = trigger.value.lower()
+            if any(segment.program == wanted for segment in segments):
+                return trigger
+        elif trigger.kind == "host":
+            if any(s.program in _HOST_PROGRAMS and _names_host(trigger.value, s.args) for s in segments):
+                return trigger
+        elif trigger.kind == "command_regex":
+            pattern = compiled(trigger.value)
+            if pattern is None:
+                continue
+            try:
+                found = pattern.search(command[:MAX_COMMAND_CHARS])
+            except Exception:  # BROAD-CATCH: fail-open
+                continue
+            if found:
+                return trigger
+    return None
+
+
+def match_triggers(entries: list[Entry], command: str, project: str | None) -> list[Entry]:
+    """The entries whose scope and triggers fit `command`, in input order, each id once."""
+    if not isinstance(command, str) or not command.strip():
+        return []
+    command = command[:MAX_COMMAND_CHARS]
+    segments = parse_command(command)
+    matched: list[Entry] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if entry.id in seen:
+            continue
+        if matched_trigger(entry, command, segments, project) is not None:
+            seen.add(entry.id)
+            matched.append(entry)
+    return matched
+
+
+def client() -> str:
+    """Which client wrote an event: `RECALL_HOOK_CLIENT` (the Codex adapter sets it), else `claude`."""
+    return os.environ.get("RECALL_HOOK_CLIENT", "claude")
+
+
+def _session_key(session_id: Any) -> str:
+    """The file stem for a session id, or "" when the payload names no usable session.
+
+    The id comes from the client's payload, so it is untrusted input to a path: only
+    `[A-Za-z0-9_-]` survives. A changed id gets a short hash of the ORIGINAL appended, so that
+    `a/b` and `ab` stay two sessions instead of silently sharing one state file (and one
+    session's first injection being suppressed by the other's). An id with nothing left after
+    sanitising is no session at all.
+    """
+    if not isinstance(session_id, str):
+        return ""
+    cleaned = _SESSION_UNSAFE.sub("", session_id)
+    if not cleaned:
+        return ""
+    if cleaned == session_id and len(cleaned) <= _SESSION_ID_MAX:
+        return cleaned
+    digest = hashlib.sha256(session_id.encode("utf-8", "replace")).hexdigest()[:10]
+    return f"{cleaned[: _SESSION_ID_MAX - 11]}-{digest}"
+
+
+def _read_claimed(path: Path) -> list[str]:
+    """The ids already injected in this session; unreadable, corrupt or foreign-shaped means none."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, str)]
+
+
+def _write_claimed(path: Path, claimed: list[str]) -> None:
+    """Replace the state file atomically (same-directory temp file, then `os.replace`).
+
+    Two tool calls of one session can run in parallel, so a plain `write_text` could be read
+    half-written by the other. Same sequence as `_save_config` in this package, for the same
+    reason. Any failure leaves the old file and cleans the temp: the cost of a lost write is one
+    repeated injection, never an error.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(claimed))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _prune_state(state_dir: Path) -> None:
+    """Delete `*.json` files in `state_dir` not modified for 7 days. One directory listing, never raises.
+
+    Opportunistic: it rides on a claim instead of running on a schedule, and it touches nothing but
+    regular `*.json` files directly inside the state directory.
+    """
+    try:
+        cutoff = time.time() - STATE_MAX_AGE_SECONDS
+        with os.scandir(state_dir) as listing:
+            for item in listing:
+                try:
+                    if (
+                        item.name.endswith(".json")
+                        and item.is_file(follow_symlinks=False)
+                        and item.stat(follow_symlinks=False).st_mtime < cutoff
+                    ):
+                        os.unlink(item.path)
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
+def claim_for_session(session_id: str, entry_ids: list[str], home: Path | None = None) -> list[str]:
+    """The ids of `entry_ids` not yet injected in this session, at most `MAX_PER_CALL`, now recorded.
+
+    The caller's order is kept and duplicates are ignored. With no usable session id nothing can be
+    remembered, so the first `MAX_PER_CALL` ids are returned and NOTHING is written: the cap still
+    holds, only the once-per-session promise does not. State lives in `<home>/state/<id>.json`, one
+    file per session, so concurrent sessions never see each other's claims.
+
+    **Never raises, fails open on delivery.** An unreadable, corrupt or non-list state file counts
+    as nothing claimed yet, and an unwritable state directory still returns the claimable ids; the
+    worst case of either is a repeated injection, whereas a hook that raises is charged to the client.
+    """
+    try:
+        unique = list(dict.fromkeys(i for i in entry_ids if isinstance(i, str)))
+    except TypeError:
+        return []
+    key = _session_key(session_id)
+    if not key:
+        return unique[:MAX_PER_CALL]
+    try:
+        state_dir = (home if home is not None else knowledge_home()) / "state"
+        path = state_dir / f"{key}.json"
+        claimed = _read_claimed(path)
+        taken = set(claimed)
+        fresh = [i for i in unique if i not in taken][:MAX_PER_CALL]
+        if fresh:
+            try:
+                _write_claimed(path, claimed + fresh)
+            except Exception:  # BROAD-CATCH: fail-open
+                pass  # unwritable state: deliver anyway, a repeat injection is the worst case
+        _prune_state(state_dir)
+        return fresh
+    except Exception:  # BROAD-CATCH: fail-open
+        return unique[:MAX_PER_CALL]
+
+
+def log_event(record: dict[str, Any], path: Path | None = None) -> None:
+    """Append `record` plus a UTC `ts` to the event log as one JSON line. Never raises.
+
+    The log is a diagnostic aid; losing a line must never cost a tool call. An unwritable path or a
+    record that cannot be serialised (`OSError`, `TypeError`, `ValueError`) is swallowed.
+    """
+    try:
+        stamped = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        stamped.update((k, v) for k, v in record.items() if k != "ts")
+        line = json.dumps(stamped)
+        target = path if path is not None else log_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(line + "\n")
+    except (OSError, TypeError, ValueError, AttributeError):
+        return
+
+
+# ---------------------------------------------------------------------------------------------
+# Failure side: a signature that groups "the same failure", and a lexical ranking of entries
+# against the error text. Like the matcher above, everything here returns a value for ANY input.
+# ---------------------------------------------------------------------------------------------
+
+#: The most error text the failure path looks at, for both the signature and the ranking. A failed
+#: command can print megabytes; the first few kilobytes hold the failure, and the 800 ms budget of
+#: the failure path (spec 7.3) is only met if the rest is never touched.
+MAX_ERROR_CHARS = 4096
+#: The longest normalised detail line in a signature.
+SIGNATURE_CHARS = 160
+#: The longest command family in a signature. A family is a program name or `ssh:<alias>`, so a
+#: longer one is a pasted blob rather than a program, and it must not make the log line unbounded.
+FAMILY_CHARS = 64
+#: How many times an entry's symptoms are repeated in its ranking document, so that a symptom
+#: phrase outweighs the same words appearing once in the body.
+SYMPTOM_WEIGHT = 3
+
+#: Claude Code prefixes a failed Bash result with `Exit code N` on a line of its own.
+_EXIT_HEADER = re.compile(r"^exit code (-?\d+)\s*$", re.IGNORECASE)
+#: Characters inside a path: not whitespace, quotes, shell metacharacters or `:`, so that
+#: `a.py:42:` leaves its line number to the digit rule instead of being swallowed.
+_PATH_BODY = r"""[^\s"'<>|*?:]"""
+#: A path (other than a Windows one) must START a token: line start, or whitespace, a quote, an
+#: opening bracket, `=` or `,` before it. That keeps `1/2` and `and/or` intact.
+_PATH_START = r"""(?<![^\s"'(=\[,])"""
+#: A Windows path (`c:\a\b` or `c:/a/b`; the text is lowercased first) and a UNC path (`\\host\share`).
+_WINDOWS_PATH = re.compile(r"(?<![a-z0-9])[a-z]:[\\/]" + _PATH_BODY + "*")
+_UNC_PATH = re.compile(r"\\\\" + _PATH_BODY + "+")
+#: A POSIX absolute path (a character must follow the slash, which keeps a bare `/` intact) or `~/x`.
+_POSIX_PATH = re.compile(_PATH_START + "(?:/" + _PATH_BODY + r"+|~[\\/]" + _PATH_BODY + "*)")
+#: Hex runs of 7 or more with at least one digit AND at least one letter a to f, word bounded and
+#: applied after the path rules and before the digit rule: a commit hash or object id has both. An English word made of the letters a to f (`defaced`,
+#: `effaced`) has no digit, and a plain number (`1234567`) has no letter, so it stays for `<n>`.
+_HEX_RUN = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b")
+_DIGITS = re.compile(r"\d+")
+_WHITESPACE = re.compile(r"\s+")
+
+#: ssh options that take a value as the NEXT argument (`-p 22`). `-O` is added to the usual list
+#: because `ssh -O exit host` would otherwise name the host `exit`.
+_SSH_VALUE_OPTIONS = "pilOoFJLRDbceSmWwEBIQ"
+#: `-p`, or a cluster of valueless flags ending in a value option (`-vp`), with the value next.
+#: `-p22` and `-oBatchMode=yes` carry their value attached, so they do not match and consume nothing.
+_SSH_OPTION_WITH_VALUE = re.compile(r"^-[46AaCfGgKkMNnqsTtVvXxY]*[" + _SSH_VALUE_OPTIONS + r"]$")
+
+
+def _ssh_host(args: tuple[str, ...]) -> str:
+    """The destination of an `ssh` invocation: its first non-option argument, as an alias, or ""."""
+    skip = False
+    options_ended = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if not options_ended and arg == "--":
+            options_ended = True
+            continue
+        if not options_ended and arg.startswith("-") and len(arg) > 1:
+            skip = _SSH_OPTION_WITH_VALUE.match(arg) is not None
+            continue
+        host = arg
+        if host.startswith("ssh://"):
+            host = host[len("ssh://") :].partition("/")[0]
+        host = host.rpartition("@")[2]
+        if host.startswith("["):
+            # A bracketed IPv6 destination: the address is everything up to the matching `]`, and
+            # it holds colons, so the port split below would cut it to `[`.
+            return host[1:].partition("]")[0].lower()
+        return host.partition(":")[0].lower()
+    return ""
+
+
+def command_family(command: str) -> str:
+    """The first program of `command`, or `ssh:<alias>` for ssh; "" when there is none. Never raises.
+
+    It reuses `parse_command` (and so its length cap) instead of finding the program a second way:
+    the trigger matcher and the failure signature must agree on what a command is. For `ssh` the
+    alias is part of the family because `ssh hosta` and `ssh hostb` fail for unrelated reasons.
+    """
+    segments = parse_command(command)
+    if not segments:
+        return ""
+    first = segments[0]
+    if first.program == "ssh":
+        host = _ssh_host(first.args)
+        return f"ssh:{host}" if host else "ssh"
+    return first.program
+
+
+def _normalise(line: str) -> str:
+    """Lowercase `line`, then paths, hex runs and digit runs become placeholders and spaces collapse."""
+    line = line.lower()
+    line = _WINDOWS_PATH.sub("<path>", line)
+    line = _UNC_PATH.sub("<path>", line)
+    line = _POSIX_PATH.sub("<path>", line)
+    line = _HEX_RUN.sub("<hex>", line)
+    line = _DIGITS.sub("<n>", line)
+    return _WHITESPACE.sub(" ", line).strip()
+
+
+def failure_signature(command: str, error: str) -> str:
+    """`<family>|<detail>`: the same failure of the same kind of command gives the same string.
+
+    `family` is `command_family(command)` cut to `FAMILY_CHARS`. `detail` is the first non-empty line of the error after a leading `Exit code N` line, normalised
+    by `_normalise` and cut to `SIGNATURE_CHARS`. When no such line exists it is `exit:N` (not
+    normalised) or, with no exit header either, `exit:?`. The error is cut to `MAX_ERROR_CHARS`
+    BEFORE any splitting or matching, so the cost does not depend on how much the command printed.
+    A non-string `command` or `error` counts as empty. Never raises.
+    """
+    family = command_family(command)[:FAMILY_CHARS]
+    text = error[:MAX_ERROR_CHARS] if isinstance(error, str) else ""
+    lines = [line for line in (raw.strip() for raw in text.splitlines()) if line]
+    code: str | None = None
+    if lines:
+        header = _EXIT_HEADER.match(lines[0])
+        if header is not None:
+            code = header.group(1)
+            lines = lines[1:]
+    if lines:
+        return f"{family}|{_normalise(lines[0])[:SIGNATURE_CHARS]}"
+    return f"{family}|exit:{code if code is not None else '?'}"
+
+
+def _without_exit_header(text: str) -> str:
+    """`text` without its leading `Exit code N` line, the one `failure_signature` also skips."""
+    head, _newline, rest = text.lstrip().partition("\n")
+    return rest if _EXIT_HEADER.match(head.strip()) else text
+
+
+def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list[Entry]:
+    """The entries whose symptoms and body best match `error`, best first, at most `MAX_PER_CALL`.
+
+    A lexical BM25 (`prompt_time.rank`, unchanged), never an embedder. Each entry's document is its
+    symptoms repeated `SYMPTOM_WEIGHT` times followed by its body, so a symptom phrase counts for
+    more than the same words in the body. Kept when `score >= min_score`. `prompt_time` is imported
+    here, not at module level, so the `pre-tool-use` path never pays for it. Never raises: a broken
+    entry list or an error that is not text gives `[]`.
+
+    The query is the error WITHOUT a leading `Exit code N` line. Claude Code puts that header on
+    every failed shell result, so leaving it in would add "exit" and "code" to every query, and any
+    entry whose body says how a command exits would match every failure.
+    """
+    try:
+        if not isinstance(error, str) or not entries:
+            return []
+        query = _without_exit_header(error[:MAX_ERROR_CHARS])
+        if not query.strip():
+            return []
+        from . import prompt_time
+
+        by_id: dict[str, Entry] = {}
+        documents: list[tuple[str, str, list[str]]] = []
+        for entry in entries:
+            if entry.id in by_id:
+                continue
+            by_id[entry.id] = entry
+            text = " ".join(list(entry.symptoms) * SYMPTOM_WEIGHT) + " " + entry.body
+            documents.append((entry.id, "", prompt_time.tokenize(text)))
+        ranked = prompt_time.rank(documents, query, k=MAX_PER_CALL)
+        return [by_id[name] for name, _summary, score in ranked if score >= min_score][:MAX_PER_CALL]
+    except Exception:  # BROAD-CATCH: fail-open
+        return []
+
+
+def render(entries: list[Entry]) -> str:
+    """The text injected into the agent's context for `entries`; "" for none."""
+    if not entries:
+        return ""
+    return "General knowledge (owner-approved):\n\n" + "\n\n".join(f"[{e.id}]\n{e.body}" for e in entries)
+
+
+#: The tools whose `command` is matched. `PowerShell` is a shell tool on Windows and carries the
+#: same `tool_input["command"]` as `Bash`.
+SHELL_TOOLS = frozenset({"Bash", "PowerShell"})
+
+
+def pre_tool_use_context(payload: dict[str, Any]) -> str | None:
+    """The general knowledge to inject before the shell command in `payload`, or None.
+
+    Runs for every project, before and independently of the write-time gates: it needs no `dsn`, no
+    `project_root` and no write-time `enabled`. It reads only the shared switch (`load_settings`),
+    so a disabled feature costs one small file read and never touches the index or the log.
+
+    One `"trigger"` event is logged whenever any in-scope entry matched, whether or not it was
+    injected: `injected` holds the ids the session claimed, `suppressed` the matched ids it had
+    already received (or that the per-call cap dropped). `trigger` names, per matched entry and in
+    match order, the first trigger that fired, as `"<kind>:<value>"`.
+
+    **Never raises.** The whole body is fail-open: a hook that raises is charged to the client, and
+    a hook may never be the reason a tool call does not run.
+    """
+    try:
+        if payload.get("tool_name") not in SHELL_TOOLS:
+            return None
+        tool_input = payload.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if not isinstance(command, str) or not command.strip():
+            return None
+        if not load_settings()["enabled"]:
+            return None
+        cwd = payload.get("cwd")
+        project = repository_name(cwd) if isinstance(cwd, str) else None
+        entries = [e for e in load_index() if in_scope(e, project)]
+        if not entries:
+            return None
+        command = command[:MAX_COMMAND_CHARS]
+        segments = parse_command(command)
+        matched: list[Entry] = []
+        triggers: list[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if entry.id in seen:
+                continue
+            fired = matched_trigger(entry, command, segments, project)
+            if fired is not None:
+                seen.add(entry.id)
+                matched.append(entry)
+                triggers.append(f"{fired.kind}:{fired.value}")
+        if not matched:
+            return None
+        session = payload.get("session_id")
+        session = session if isinstance(session, str) else ""
+        claimed_ids = claim_for_session(session, [e.id for e in matched])
+        taken = set(claimed_ids)
+        claimed = [e for e in matched if e.id in taken]
+        log_event(
+            {
+                "event": "trigger",
+                "project": project,
+                "session": session,
+                "client": client(),
+                "trigger": triggers,
+                "injected": [e.id for e in claimed],
+                "suppressed": [e.id for e in matched if e.id not in taken],
+            }
+        )
+        return render(claimed) or None
+    except Exception:  # BROAD-CATCH: fail-open
+        return None
+
+
+def post_tool_use_failure(payload: dict[str, Any]) -> int:
+    """`PostToolUseFailure`: inject the entries a failed shell command's error points at. Always 0.
+
+    Skipped without output or log unless the tool is a shell tool, the failure is not a user
+    interrupt (`is_interrupt` true means the person stopped the command, which says nothing about
+    the command) and `error` is text. Then, with the shared switch on:
+
+    * the signature is computed FIRST, so it is logged even if ranking fails;
+    * in-scope entries are ranked against the error (`rank_for_failure`, lexical, the configured
+      `min_score`) and claimed through the same once-per-session dedupe as `PreToolUse`;
+    * ONE `"failure"` event is logged for EVERY failure, matched or not (spec 8): the signatures of
+      the failures nothing matched are what shows which entries are worth writing. `injected` holds
+      the claimed ids and `suppressed` the ranked ids this session had already claimed (dedupe
+      only: the ranker returns at most `MAX_PER_CALL`, so the cap never drops one here);
+    * the claimed entries are printed as `additionalContext`, after the log line, so a closed
+      stdout can cost the injection but never the record.
+
+    A missing or non-text `command` is the empty command: on this path the error is the evidence,
+    and the signature's family is merely empty. The success path never reaches this function, so a
+    command that works pays nothing; only the process spawned on a failure imports this module's
+    ranker (`prompt_time`, imported inside `rank_for_failure`).
+
+    **Never raises.** Same contract as `pre_tool_use_context`: the whole body is fail-open.
+    """
+    try:
+        if payload.get("tool_name") not in SHELL_TOOLS or payload.get("is_interrupt") is True:
+            return 0
+        error = payload.get("error")
+        if not isinstance(error, str):
+            return 0
+        config = load_settings()
+        if not config["enabled"]:
+            return 0
+        tool_input = payload.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        command = command if isinstance(command, str) else ""
+        cwd = payload.get("cwd")
+        project = repository_name(cwd) if isinstance(cwd, str) else None
+        session = payload.get("session_id")
+        session = session if isinstance(session, str) else ""
+        signature = failure_signature(command, error)
+        ranked_ids: list[str] = []
+        claimed: list[Entry] = []
+        try:
+            entries = [e for e in load_index() if in_scope(e, project)]
+            ranked = rank_for_failure(entries, error, config["min_score"])
+            ranked_ids = [e.id for e in ranked]
+            taken = set(claim_for_session(session, ranked_ids))
+            claimed = [e for e in ranked if e.id in taken]
+        except Exception:  # BROAD-CATCH: fail-open, the signature below is still worth logging
+            ranked_ids, claimed = [], []
+        claimed_ids = {e.id for e in claimed}
+        log_event(
+            {
+                "event": "failure",
+                "project": project,
+                "session": session,
+                "client": client(),
+                "signature": signature,
+                "injected": [e.id for e in claimed],
+                "suppressed": [i for i in ranked_ids if i not in claimed_ids],
+            }
+        )
+        if claimed:
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUseFailure",
+                    "additionalContext": render(claimed),
+                }
+            }))
+    except Exception:  # BROAD-CATCH: fail-open
+        return 0
+    return 0
+
+
+__all__ = [
+    "FAMILY_CHARS",
+    "INDEX_NAME",
+    "INDEX_SCHEMA",
+    "MAX_COMMAND_CHARS",
+    "MAX_ERROR_CHARS",
+    "MAX_PER_CALL",
+    "MAX_REGEX_CHARS",
+    "SIGNATURE_CHARS",
+    "SYMPTOM_WEIGHT",
+    "Entry",
+    "Segment",
+    "STATE_MAX_AGE_SECONDS",
+    "Trigger",
+    "claim_for_session",
+    "client",
+    "command_family",
+    "command_programs",
+    "compiled",
+    "failure_signature",
+    "in_scope",
+    "knowledge_home",
+    "load_index",
+    "load_settings",
+    "log_event",
+    "log_path",
+    "match_triggers",
+    "matched_trigger",
+    "parse_command",
+    "post_tool_use_failure",
+    "pre_tool_use_context",
+    "rank_for_failure",
+    "render",
+    "repository_name",
+    "settings",
+]
