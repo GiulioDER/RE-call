@@ -914,3 +914,276 @@ def test_a_host_alias_survives_an_at_sign_in_the_path_part(tmp_path):
     assert matches("scp deploy@examplehost:/var/x@1 .")
     assert not matches("scp f other:/x@examplehost")
     assert not matches("scp f other:examplehost@x")
+
+
+# ---------------------------------------------------------------------------------------------
+# Task 3: once-per-session state and the event log.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_an_entry_is_claimed_once_per_session(tmp_path):
+    """Invariant: an id already injected in a session is not returned again in that session.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_an_entry_is_claimed_once_per_session`.
+    Mutation: `claim_for_session` does not subtract the claimed ids (`fresh = unique[:MAX_PER_CALL]`).
+    Symbol: `claim_for_session`. Seen: `assert ['a', 'b'] == ['c']` on the second claim.
+    """
+    assert gk.claim_for_session("s1", ["a", "b"], tmp_path) == ["a", "b"]
+    assert gk.claim_for_session("s1", ["a", "b", "c"], tmp_path) == ["c"]
+    assert gk.claim_for_session("s1", ["a", "b", "c"], tmp_path) == []
+
+
+def test_two_sessions_do_not_share_state(tmp_path):
+    """Invariant: two sessions running at once keep independent state, so neither one's claims
+    suppress the other's first injection.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_two_sessions_do_not_share_state`.
+    Mutation: the state file is one shared `shared.json` (`path = state_dir / "shared.json"`).
+    Symbol: `claim_for_session`. Seen: `assert [] == ['a']` for session `s2`.
+    """
+    assert gk.claim_for_session("s1", ["a"], tmp_path) == ["a"]
+    assert gk.claim_for_session("s2", ["a"], tmp_path) == ["a"]
+    assert gk.claim_for_session("s1", ["a"], tmp_path) == []
+    assert gk.claim_for_session("s2", ["a"], tmp_path) == []
+    assert sorted(p.name for p in (tmp_path / "state").iterdir()) == ["s1.json", "s2.json"]
+
+
+@pytest.mark.parametrize("session_id", ["", "///", "  ", None])
+def test_no_session_id_caps_and_writes_nothing(tmp_path, session_id):
+    """Invariant: a payload with no usable session id still injects at most `MAX_PER_CALL` entries and
+    writes no per-session state file (an id that sanitises to empty counts as none).
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_no_session_id_caps_and_writes_nothing`.
+    Mutation: the `if not key` early return is removed, so an empty key falls through to the state
+    path (`<home>/state/.json`). Symbol: `claim_for_session`. Seen: `assert ['c'] == ['a', 'b']` for id `///` (the second call, after the first wrote `state/x.json`).
+    """
+    assert gk.claim_for_session(session_id, ["a", "b", "c"], tmp_path) == ["a", "b"]
+    assert gk.claim_for_session(session_id, ["a", "b", "c"], tmp_path) == ["a", "b"]
+    assert not (tmp_path / "state").exists()
+
+
+def test_a_session_claim_is_capped_and_the_rest_stays_claimable(tmp_path):
+    """Invariant: one call claims at most `MAX_PER_CALL` ids, and an id cut by the cap is NOT recorded,
+    so a later call can still deliver it.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_session_claim_is_capped_and_the_rest_stays_claimable`.
+    Mutation: `fresh` is not sliced (`[... for i in unique if i not in taken]`). Symbol:
+    `claim_for_session`. Seen: `assert ['a', 'b', 'c'] == ['a', 'b']` on the first claim.
+    """
+    assert gk.claim_for_session("s1", ["a", "b", "c"], tmp_path) == ["a", "b"]
+    assert gk.claim_for_session("s1", ["a", "b", "c"], tmp_path) == ["c"]
+
+
+def test_order_is_kept_and_duplicates_are_ignored(tmp_path):
+    """Invariant: the caller's order is preserved and a repeated id counts once.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_order_is_kept_and_duplicates_are_ignored`.
+    Mutation: `unique` is built with `sorted(set(...))` instead of `dict.fromkeys`. Symbol:
+    `claim_for_session`. Seen: `assert ['a', 'b'] == ['b', 'a']`.
+    """
+    assert gk.claim_for_session("s1", ["b", "a", "b"], tmp_path) == ["b", "a"]
+    assert gk.claim_for_session("", ["z", "z", "y", "x"], tmp_path) == ["z", "y"]
+
+
+def test_a_hostile_session_id_cannot_leave_the_state_directory(tmp_path):
+    """Invariant: the session id is untrusted input to a path. It is sanitised to `[A-Za-z0-9_-]`, so a
+    traversal id writes inside `<home>/state/` only, and ids that differ only in the removed
+    characters (`a/b` and `ab`) stay two sessions.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_hostile_session_id_cannot_leave_the_state_directory`.
+    Mutation: `_session_key` returns `session_id` unchanged. Symbol: `_session_key`.
+    Seen: `assert not True` for `(tmp_path / 'evil.json').exists()` (the traversal id escaped `state/`).
+    """
+    home = tmp_path / "home"
+    assert gk.claim_for_session("../../evil", ["a"], home) == ["a"]
+    assert gk.claim_for_session("a/b", ["x"], home) == ["x"]
+    assert gk.claim_for_session("ab", ["x"], home) == ["x"]
+    assert not (tmp_path / "evil.json").exists()
+    assert not (home.parent / "evil.json").exists()
+    names = [p.name for p in (home / "state").iterdir()]
+    assert len(names) == 3
+    assert all(re.fullmatch(r"[A-Za-z0-9_-]+\.json", name) for name in names)
+    # The same hostile id is stable: it finds its own state again.
+    assert gk.claim_for_session("../../evil", ["a"], home) == []
+    # A very long id still gives a usable file name.
+    assert gk.claim_for_session("s" * 500, ["a"], home) == ["a"]
+    assert gk.claim_for_session("s" * 500, ["a"], home) == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{not json", '{"a": 1}', '"a"', "null", "", '["a", 3, null, "b"]'],
+    ids=["garbage", "object", "string", "null", "empty", "mixed-list"],
+)
+def test_a_corrupt_state_file_counts_as_nothing_claimed(tmp_path, content):
+    """Invariant: an unreadable, corrupt or non-list state file never raises and counts as "nothing
+    claimed yet" (only string items of a list count), and the next claim rewrites it as valid JSON.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_corrupt_state_file_counts_as_nothing_claimed`.
+    Mutation: `_read_claimed` returns `["a", "b", "c"]` when the content is not a list (treats foreign
+    state as "everything claimed"). Symbol: `_read_claimed`. Seen: `assert [] == ['a', 'b']` for the `string` case (the claim returned nothing).
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "s1.json").write_text(content, encoding="utf-8")
+    already = ["a", "b"] if content == '["a", 3, null, "b"]' else []
+    expected = [i for i in ["a", "b", "c"] if i not in already][:2]
+    assert gk.claim_for_session("s1", ["a", "b", "c"], tmp_path) == expected
+    rewritten = json.loads((state / "s1.json").read_text(encoding="utf-8"))
+    assert rewritten == already + expected
+
+
+def test_an_unwritable_state_directory_still_delivers(tmp_path):
+    """Invariant: when the state cannot be written (here `<home>/state` is a file) `claim_for_session`
+    does not raise and still returns the claimable ids: fail open on delivery.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_an_unwritable_state_directory_still_delivers`.
+    Mutation: the inner `except Exception` around `_write_claimed` returns `[]` instead of passing. Symbol: `claim_for_session`. Seen: `assert [] == ['a', 'b']` (nothing delivered).
+    """
+    (tmp_path / "state").write_text("not a directory", encoding="utf-8")
+    assert gk.claim_for_session("s1", ["a", "b", "c"], tmp_path) == ["a", "b"]
+    assert gk.claim_for_session("s1", ["a"], tmp_path) == ["a"]
+
+
+def test_a_claim_without_a_home_uses_the_knowledge_home(tmp_path, monkeypatch):
+    """Invariant: with no `home` argument the state lives under `knowledge_home()`.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_claim_without_a_home_uses_the_knowledge_home`.
+    Mutation: the default home is a fixed `Path(".tmp-nohome")` instead of `knowledge_home()`. Symbol:
+    `claim_for_session`. Seen: `assert False` for `(home / 'state' / 's1.json').is_file()`.
+    """
+    home = tmp_path / "elsewhere"
+    monkeypatch.setenv("RECALL_GENERAL_KNOWLEDGE_HOME", str(home))
+    assert gk.claim_for_session("s1", ["a"]) == ["a"]
+    assert (home / "state" / "s1.json").is_file()
+    assert gk.claim_for_session("s1", ["a"]) == []
+
+
+def test_state_files_older_than_seven_days_are_pruned(tmp_path):
+    """Invariant: a claim deletes `*.json` state files untouched for more than 7 days, and nothing else:
+    a recent state file, a non-JSON file and a directory named like a state file all survive.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_state_files_older_than_seven_days_are_pruned`.
+    Mutation A: `_prune_state` is not called. Mutation B: its `.endswith(".json")` test is removed,
+    so the old `.txt` file is deleted too. Symbol: `_prune_state`. Seen: A: `assert [..., 'old.json', ...] == [..., 'recent.json', ...]` (old file kept). B: the `.txt` file was deleted, `'recent.json' != 'notes.txt'` at index 1.
+    """
+    import os
+    import time
+
+    state = tmp_path / "state"
+    state.mkdir()
+    old = time.time() - 8 * 24 * 3600
+    (state / "old.json").write_text("[]", encoding="utf-8")
+    (state / "recent.json").write_text("[]", encoding="utf-8")
+    (state / "notes.txt").write_text("keep", encoding="utf-8")
+    (state / "dir.json").mkdir()
+    for name in ("old.json", "notes.txt", "dir.json"):
+        os.utime(state / name, (old, old))
+    assert gk.claim_for_session("s1", ["a"], tmp_path) == ["a"]
+    assert sorted(p.name for p in state.iterdir()) == ["dir.json", "notes.txt", "recent.json", "s1.json"]
+
+
+def test_a_failing_prune_does_not_break_the_claim(tmp_path, monkeypatch):
+    """Invariant: pruning is best effort; a failure inside it (here `os.scandir` raising) never reaches
+    the caller and the claim still succeeds and is recorded.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_failing_prune_does_not_break_the_claim`.
+    Mutation: `_prune_state` catches `ZeroDivisionError` instead of `OSError`, so the scandir error
+    escapes it and only the outer fallback of `claim_for_session` stops it. Symbol: `_prune_state`.
+    Seen: `assert ['a', 'b'] == ['b']` (the fallback re-delivers the already claimed `a`).
+    """
+    import os
+
+    def boom(*args, **kwargs):
+        raise PermissionError("denied")
+
+    assert gk.claim_for_session("s1", ["a"], tmp_path) == ["a"]
+    monkeypatch.setattr(os, "scandir", boom)
+    assert gk.claim_for_session("s1", ["a", "b"], tmp_path) == ["b"]
+    monkeypatch.undo()
+    assert json.loads((tmp_path / "state" / "s1.json").read_text(encoding="utf-8")) == ["a", "b"]
+
+
+def test_log_event_appends_json_lines(tmp_path):
+    """Invariant: each call appends exactly one parseable JSON line holding the given fields plus a UTC
+    `ts`, earlier lines are kept, and a missing parent directory is created.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_log_event_appends_json_lines`.
+    Mutation: the log is opened with mode `"w"` instead of `"a"`. Symbol: `log_event`.
+    Seen: `assert ['failure'] == ['trigger', 'failure']` (the first line was truncated away).
+    """
+    from datetime import datetime, timedelta
+
+    path = tmp_path / "logs" / "deeper" / "gk.jsonl"
+    gk.log_event({"event": "trigger", "project": "alpha", "injected": ["gk-example-tests"]}, path)
+    gk.log_event({"event": "failure", "signature": "exit:1", "note": "café", "ts": "forged"}, path)
+    raw = path.read_text(encoding="utf-8")
+    assert raw.endswith("\n") and "\r" not in raw
+    rows = [json.loads(line) for line in raw.splitlines()]
+    assert [r["event"] for r in rows] == ["trigger", "failure"]
+    assert rows[0]["injected"] == ["gk-example-tests"] and rows[0]["project"] == "alpha"
+    assert rows[1]["note"] == "café"
+    assert "\\u00e9" in raw  # default ensure_ascii
+    for row in rows:
+        stamp = datetime.fromisoformat(row["ts"])
+        assert stamp.utcoffset() == timedelta(0)
+        assert abs((datetime.now(stamp.tzinfo) - stamp).total_seconds()) < 60
+
+
+def test_log_event_defaults_to_the_log_path(tmp_path, monkeypatch):
+    """Invariant: with no `path` the event goes to `log_path()`.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_log_event_defaults_to_the_log_path`.
+    Mutation: the default target is `Path("general-knowledge.jsonl")` instead of `log_path()`.
+    Symbol: `log_event`. Seen: `FileNotFoundError` on the expected `events.jsonl` (the line went to the cwd instead).
+    """
+    target = tmp_path / "somewhere" / "events.jsonl"
+    monkeypatch.setenv("RECALL_GENERAL_KNOWLEDGE_LOG", str(target))
+    gk.log_event({"event": "trigger"})
+    assert json.loads(target.read_text(encoding="utf-8"))["event"] == "trigger"
+
+
+def test_log_event_never_raises_on_an_unwritable_path(tmp_path):
+    """Invariant: a log line that cannot be written (the path is a directory, or its parent is a file)
+    is dropped silently; `log_event` returns None and never raises.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_log_event_never_raises_on_an_unwritable_path`.
+    Mutation: `except (OSError, ...)` in `log_event` becomes `except (TypeError, ValueError, ...)`.
+    Symbol: `log_event`. Seen: `PermissionError: [Errno 13]` raised out of `log_event` for the directory path.
+    """
+    directory = tmp_path / "a-directory"
+    directory.mkdir()
+    assert gk.log_event({"event": "trigger"}, directory) is None
+    blocker = tmp_path / "blocker"
+    blocker.write_text("file", encoding="utf-8")
+    assert gk.log_event({"event": "trigger"}, blocker / "child" / "log.jsonl") is None
+
+
+def test_log_event_never_raises_on_an_unserialisable_record(tmp_path):
+    """Invariant: a record `json.dumps` rejects (a set, a circular reference) is dropped without raising
+    and without leaving a half line behind.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_log_event_never_raises_on_an_unserialisable_record`.
+    Mutation: `except (OSError, TypeError, ValueError, ...)` loses `TypeError` and `ValueError`.
+    Symbol: `log_event`. Seen: `TypeError: Object of type set is not JSON serializable` raised out of `log_event`.
+    """
+    path = tmp_path / "gk.jsonl"
+    loop: dict[str, Any] = {}
+    loop["self"] = loop
+    assert gk.log_event({"event": "trigger", "injected": {"a"}}, path) is None
+    assert gk.log_event({"event": "trigger", "loop": loop}, path) is None
+    assert not path.exists() or path.read_text(encoding="utf-8") == ""
+    gk.log_event({"event": "trigger"}, path)
+    assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_client_defaults_to_claude_and_follows_the_environment(monkeypatch):
+    """Invariant: `client()` is `claude` unless `RECALL_HOOK_CLIENT` says otherwise (the Codex adapter).
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_client_defaults_to_claude_and_follows_the_environment`.
+    Mutation: `client` returns the constant `"claude"`. Symbol: `client`. Seen: `assert 'claude' == 'codex'`.
+    """
+    monkeypatch.delenv("RECALL_HOOK_CLIENT", raising=False)
+    assert gk.client() == "claude"
+    monkeypatch.setenv("RECALL_HOOK_CLIENT", "codex")
+    assert gk.client() == "codex"

@@ -25,11 +25,15 @@ one log.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
 import re
+import tempfile
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -44,6 +48,11 @@ MAX_PER_CALL = 2
 #: separators) for a program that is named in the first lines. Program extraction and
 #: `command_regex` triggers both see only the first `MAX_COMMAND_CHARS` characters.
 MAX_COMMAND_CHARS = 16384
+#: A per-session state file untouched for this long is deleted by the next claim (opportunistic).
+STATE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
+#: The longest session id used as a file name; a longer one is truncated and hash-suffixed.
+_SESSION_ID_MAX = 100
+_SESSION_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
 
 #: The three ways an entry can be triggered. A trigger is a one-key object whose key is one of these.
 TRIGGER_KINDS = frozenset({"command", "command_regex", "host"})
@@ -416,6 +425,142 @@ def match_triggers(entries: list[Entry], command: str, project: str | None) -> l
     return matched
 
 
+def client() -> str:
+    """Which client wrote an event: `RECALL_HOOK_CLIENT` (the Codex adapter sets it), else `claude`."""
+    return os.environ.get("RECALL_HOOK_CLIENT", "claude")
+
+
+def _session_key(session_id: Any) -> str:
+    """The file stem for a session id, or "" when the payload names no usable session.
+
+    The id comes from the client's payload, so it is untrusted input to a path: only
+    `[A-Za-z0-9_-]` survives. A changed id gets a short hash of the ORIGINAL appended, so that
+    `a/b` and `ab` stay two sessions instead of silently sharing one state file (and one
+    session's first injection being suppressed by the other's). An id with nothing left after
+    sanitising is no session at all.
+    """
+    if not isinstance(session_id, str):
+        return ""
+    cleaned = _SESSION_UNSAFE.sub("", session_id)
+    if not cleaned:
+        return ""
+    if cleaned == session_id and len(cleaned) <= _SESSION_ID_MAX:
+        return cleaned
+    digest = hashlib.sha256(session_id.encode("utf-8", "replace")).hexdigest()[:10]
+    return f"{cleaned[: _SESSION_ID_MAX - 11]}-{digest}"
+
+
+def _read_claimed(path: Path) -> list[str]:
+    """The ids already injected in this session; unreadable, corrupt or foreign-shaped means none."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, str)]
+
+
+def _write_claimed(path: Path, claimed: list[str]) -> None:
+    """Replace the state file atomically (same-directory temp file, then `os.replace`).
+
+    Two tool calls of one session can run in parallel, so a plain `write_text` could be read
+    half-written by the other. Same sequence as `_save_config` in this package, for the same
+    reason. Any failure leaves the old file and cleans the temp: the cost of a lost write is one
+    repeated injection, never an error.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(claimed))
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _prune_state(state_dir: Path) -> None:
+    """Delete `*.json` files in `state_dir` not modified for 7 days. One directory listing, never raises.
+
+    Opportunistic: it rides on a claim instead of running on a schedule, and it touches nothing but
+    regular `*.json` files directly inside the state directory.
+    """
+    try:
+        cutoff = time.time() - STATE_MAX_AGE_SECONDS
+        with os.scandir(state_dir) as listing:
+            for item in listing:
+                try:
+                    if (
+                        item.name.endswith(".json")
+                        and item.is_file(follow_symlinks=False)
+                        and item.stat(follow_symlinks=False).st_mtime < cutoff
+                    ):
+                        os.unlink(item.path)
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
+def claim_for_session(session_id: str, entry_ids: list[str], home: Path | None = None) -> list[str]:
+    """The ids of `entry_ids` not yet injected in this session, at most `MAX_PER_CALL`, now recorded.
+
+    The caller's order is kept and duplicates are ignored. With no usable session id nothing can be
+    remembered, so the first `MAX_PER_CALL` ids are returned and NOTHING is written: the cap still
+    holds, only the once-per-session promise does not. State lives in `<home>/state/<id>.json`, one
+    file per session, so concurrent sessions never see each other's claims.
+
+    **Never raises, fails open on delivery.** An unreadable, corrupt or non-list state file counts
+    as nothing claimed yet, and an unwritable state directory still returns the claimable ids; the
+    worst case of either is a repeated injection, whereas a hook that raises is charged to the client.
+    """
+    try:
+        unique = list(dict.fromkeys(i for i in entry_ids if isinstance(i, str)))
+    except TypeError:
+        return []
+    key = _session_key(session_id)
+    if not key:
+        return unique[:MAX_PER_CALL]
+    try:
+        state_dir = (home if home is not None else knowledge_home()) / "state"
+        path = state_dir / f"{key}.json"
+        claimed = _read_claimed(path)
+        taken = set(claimed)
+        fresh = [i for i in unique if i not in taken][:MAX_PER_CALL]
+        if fresh:
+            try:
+                _write_claimed(path, claimed + fresh)
+            except Exception:  # BROAD-CATCH: fail-open
+                pass  # unwritable state: deliver anyway, a repeat injection is the worst case
+        _prune_state(state_dir)
+        return fresh
+    except Exception:  # BROAD-CATCH: fail-open
+        return unique[:MAX_PER_CALL]
+
+
+def log_event(record: dict[str, Any], path: Path | None = None) -> None:
+    """Append `record` plus a UTC `ts` to the event log as one JSON line. Never raises.
+
+    The log is a diagnostic aid; losing a line must never cost a tool call. An unwritable path or a
+    record that cannot be serialised (`OSError`, `TypeError`, `ValueError`) is swallowed.
+    """
+    try:
+        stamped = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        stamped.update((k, v) for k, v in record.items() if k != "ts")
+        line = json.dumps(stamped)
+        target = path if path is not None else log_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(line + "\n")
+    except (OSError, TypeError, ValueError, AttributeError):
+        return
+
+
 __all__ = [
     "INDEX_NAME",
     "INDEX_SCHEMA",
@@ -423,13 +568,17 @@ __all__ = [
     "MAX_PER_CALL",
     "Entry",
     "Segment",
+    "STATE_MAX_AGE_SECONDS",
     "Trigger",
+    "claim_for_session",
+    "client",
     "command_programs",
     "compiled",
     "in_scope",
     "knowledge_home",
     "load_index",
     "load_settings",
+    "log_event",
     "log_path",
     "match_triggers",
     "matched_trigger",
