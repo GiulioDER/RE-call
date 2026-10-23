@@ -142,6 +142,16 @@ def assistant_memos_from_env(env: Mapping[str, str], *, lite: bool) -> Assistant
     return AssistantMemos(folder, index_root=index_root)
 
 
+def _key_only(fact: object) -> dict[str, Any]:
+    """`fact_key` for a writer who may not read current facts: its own key, and nothing about others."""
+    from recall.types import AtomicFact
+
+    stated = AtomicFact.from_payload(fact) if isinstance(fact, dict) else None
+    key = None if stated is None else {"namespace": stated.namespace, "subject": stated.subject,
+                                       "predicate": stated.predicate, "context": stated.context}
+    return {"key": key, "state": "unchecked", "reason": "reading what else is in force needs the read scope"}
+
+
 class AssistantMemos(MemoFolder):
     """The memo folder (`recall.lite.assistant_memos`) with its lane-held writes and the view that
     names hits by memo id."""
@@ -162,13 +172,15 @@ class AssistantMemos(MemoFolder):
         expected_revision: str | None = None,
         include_receipt: bool = False,
         access_context: Any = None,
+        read_facts: bool = True,
         **refresh_kwargs: Any,
     ) -> dict[str, Any]:
         """`write` then `refresh`, both under the store's write lane.
 
         A receipt for a memo that states a `fact` also says, under `fact_key`, which key the fact
         went under, what is in force for that key now, and any edge rule R(a') proposes
-        (`recall.declared_keys.key_receipt`), read with the caller's `access_context`.
+        (`recall.declared_keys.key_receipt`), read with the caller's `access_context`. With
+        `read_facts` false (a caller without the read scope) it names the key only.
         """
         with write_session(store, "remember"):
             result = self.write(
@@ -196,7 +208,9 @@ class AssistantMemos(MemoFolder):
                     except Exception as exc:  # BROAD-CATCH: fail-closed readiness, keep verified indexing state
                         receipt.update(calibration_status="unavailable", retrieval_ready=False,
                                        error_type=type(exc).__name__)
-                    if fact is not None and indexed:
+                    if fact is not None and indexed and not read_facts:
+                        receipt["fact_key"] = _key_only(fact)
+                    elif fact is not None and indexed:
                         receipt["fact_key"] = self._fact_key(
                             store, result["memo_id"], fact, access_context, refresh_kwargs.get("security_policy"),
                         )

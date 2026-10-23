@@ -363,3 +363,47 @@ def test_current_facts_can_be_looked_up_by_subject(envs: tuple[dict[str, str], d
             "the compact view without a subject changed"
 
     _serve_both(envs, body)
+
+
+def test_a_writer_without_the_read_scope_gets_its_own_key_and_nothing_else(
+    envs: tuple[dict[str, str], dict[str, str]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A10. `recall_remember` needs only the write scope, so its receipt must not report what
+    `recall_current_facts` would serve under the read scope: for a caller without it, `fact_key`
+    names the caller's own key, `unchecked`, with no value in force, no other memo and no proposal
+    (security review of PR 990).
+
+    Red by mutation, 2026-10-23 on the remote test host: `read_facts=_caller_may_read(state)`
+    written as `read_facts=True` in `recall_mcp.server`'s `recall_remember`; this test failed at its
+    equality assertion with pref-0001's value and id in `in_force`.
+    """
+    monkeypatch.setattr(srv, "_caller_may_read", lambda state: False)
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await a("recall_remember", text="The user drink tea, every morning.", kind="pref", fact=TEA,
+                valid_from="2026-01-01")
+        answer = json.loads(await a("recall_remember", text="The user drink coffee now.", kind="pref",
+                                    fact={**TEA, "object": "coffee"}, valid_from="2026-02-01", include_receipt=True))
+        assert answer["receipt"]["fact_key"] == {
+            "key": {"namespace": "memory", "subject": "user", "predicate": "drink", "context": {}},
+            "state": "unchecked", "reason": "reading what else is in force needs the read scope",
+        }, answer["receipt"]
+
+    _serve_both(envs, body)
+
+
+def test_the_read_scope_is_decided_as_the_tools_decide_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A11. `_caller_may_read`: an unauthenticated stdio server's one caller may read; an
+    authenticated caller only with the read scope; no token, no read.
+
+    Red by mutation, 2026-10-23 on the remote test host: `SCOPE_READ` replaced by `SCOPE_WRITE` in
+    `recall_mcp.server._caller_may_read`'s `authorize` call; this test failed at the write-only
+    token's assertion (`True is False`).
+    """
+    assert srv._caller_may_read({}) is True
+    stores = {"stores": object()}
+    for scopes, expected in (([srv.SCOPE_WRITE], False), ([srv.SCOPE_READ], True), ([srv.SCOPE_READ, srv.SCOPE_WRITE], True)):
+        monkeypatch.setattr(srv, "get_access_token", lambda scopes=scopes: SimpleNamespace(scopes=scopes, claims={"tenant": "t"}))
+        assert srv._caller_may_read(stores) is expected, scopes
+    monkeypatch.setattr(srv, "get_access_token", lambda: None)
+    assert srv._caller_may_read(stores) is False

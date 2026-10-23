@@ -3195,6 +3195,25 @@ class _HeldTools:
         return getattr(self._mcp, item)
 
 
+def _caller_may_read(state: dict) -> bool:
+    """Whether this call's caller holds SCOPE_READ, decided as `_require` decides it, debiting nothing.
+
+    `recall_remember` needs only SCOPE_WRITE, while its receipt's `fact_key` reports values and memos
+    `recall_current_facts` would serve under SCOPE_READ, so a writer without it gets its own key and
+    no more (security review of PR 990). An unauthenticated stdio server has one local caller.
+    """
+    if state.get("stores") is None:
+        return True
+    token = get_access_token()
+    if token is None:
+        return False
+    try:
+        authorize(token.scopes, token.claims, SCOPE_READ)
+    except PermissionError:
+        return False
+    return True
+
+
 def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools) -> None:
     """The assistant surface: `recall_remember`, `recall_forget_memo`, and the compact forms.
 
@@ -3256,6 +3275,7 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
                     expected_revision=expected_revision or None,
                     include_receipt=include_receipt,
                     access_context=_access_context(state, store),
+                    read_facts=_caller_may_read(state),
                     **_policy(state, store),
                 )
             )
