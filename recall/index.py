@@ -1558,7 +1558,7 @@ class Indexer:
         indexed in several roots; pruning everything absent from THIS glob would delete the
         others' rows on every run.
 
-        A pruned memo counts as forgotten for supersession (owner decision, 2026-10-22): the
+        A pruned memo counts as forgotten for supersession (owner decision, 2026-10-23): the
         delete leaves its `SupersessionRecord`, so what it superseded stays retired while its file
         is gone, and a restored file decides again with its own claims.
 

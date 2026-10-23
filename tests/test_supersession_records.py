@@ -281,8 +281,8 @@ def test_r1_a_record_stands_only_while_no_memo_by_its_name_is_indexed(corpus: Co
 def test_p1_the_indexer_prune_counts_as_a_forget(backend: str, tmp_path: Path) -> None:
     """Node tests/test_supersession_records.py::test_p1_the_indexer_prune_counts_as_a_forget.
 
-    A memo deleted from disk is pruned by the next index (owner's question, decided 2026-10-23:
-    a forget, so deleting the Rome memo by hand keeps Paris retired). Restoring the file brings the
+    A memo deleted from disk is pruned by the next index (owner decision, 2026-10-23: a forget,
+    so deleting the Rome memo by hand keeps Paris retired). Restoring the file brings the
     memo back, and it decides again with its own claims.
     Red on master, both backends: fails on "the prune revived the predecessor".
     """

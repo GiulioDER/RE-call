@@ -134,6 +134,8 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     # because it produces a draft and changes nothing served.
     "recall_calibration_publish": (SCOPE_ADMIN, "admin", {"calibration_id": "cal-1"}),
     "recall_forget": (SCOPE_FORGET, "forget", {"sources": ["f.md"]}),
+    # FORGET, as recall_forget: it erases the memo first, and only then differs in what it gives back.
+    "recall_withdraw": (SCOPE_FORGET, "forget", {"sources": ["f.md"]}),
 }
 CASES = [pytest.param(name, id=name) for name in TOOLS]
 
@@ -158,7 +160,7 @@ _OTHER = "globex"
 #: dual-write). Deliberately a fixed anchor rather than a derivation — see assertion (b) in
 #: `test_a_tool_resolves_every_store_it_touches_for_the_callers_own_tenant` for why a derived version
 #: cannot catch the deletion it exists to catch.
-_DUAL_WRITING_TOOLS = {"recall_index", "recall_forget"}
+_DUAL_WRITING_TOOLS = {"recall_index", "recall_forget", "recall_withdraw"}
 
 
 def _service_entry_points() -> tuple[str, ...]:

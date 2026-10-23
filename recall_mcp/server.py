@@ -105,6 +105,7 @@ from recall_mcp.indexing import IndexPreflightError, index_memory
 from recall_mcp.lifecycle import (
     current_state_memory,
     forget_memory,
+    withdraw_memory,
     memory_inventory,
     memory_stats,
 )
@@ -2953,7 +2954,9 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         with them, so `recall_current_facts` stops listing it; a fact with evidence in a memo
         that survives stays. Retraction is not erasure: a retracted fact's value, and the
         evidence cards that cited these sources, stay in the append-only fact ledger as its
-        audit trail. Only the chunks (and staged upload files) are deleted.
+        audit trail. Only the chunks (and staged upload files) are deleted. Whatever a forgotten
+        memory superseded stays retired; for a memory that was a mistake, and should give back
+        what it replaced, use `recall_withdraw` instead.
 
         Args:
             sources: one or more source values to forget, exactly as they appear in
@@ -2986,6 +2989,84 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             with METRICS.timer("recall_tool_latency_ms", tool="forget"):
                 payload = await _to_thread(
                     lambda: forget_memory(
+                        store,
+                        sources,
+                        shadow,
+                        control,
+                        security_policy=state.get("source_security_policy"),
+                        security_context=_access_context(state, store),
+                    ).model_dump_json(indent=2)
+                )
+        except LiteWriterBusy:
+            # Refused before the lite store's write lane was held, so nothing was deleted.
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
+        await _record_mutation_result(
+            state,
+            store.tenant,
+            idempotency_key,
+            payload,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
+        return payload
+
+    @mcp.tool(
+        name="recall_withdraw",
+        annotations=ToolAnnotations(
+            title="Withdraw a mistaken memory",
+            read_only_hint=False,
+            destructive_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_withdraw(
+        sources: list[str], ctx: Context[dict, object], idempotency_key: str | None = None
+    ) -> str:
+        """Withdraw memory that was a MISTAKE, and give back what it replaced. IRREVERSIBLE.
+
+        Use this, not `recall_forget`, when a memory should never have been believed: a wrong
+        correction, a mistaken "this replaces that". It erases the memory exactly as
+        `recall_forget` does, and then the two differ in one thing. `recall_forget` keeps retired
+        whatever the forgotten memory superseded (forgetting "moved to Rome" does not make Paris
+        current again); `recall_withdraw` voids its `supersedes:` claims, so what it replaced is
+        current again, and whatever superseded IT now supersedes what it replaced instead (in
+        A -> B -> C, withdrawing B leaves A retired by C). In the fact ledger, each fact it alone
+        supported is withdrawn, which also undoes the supersession that fact made. A memory
+        forgotten earlier can be withdrawn by the name it had. Scoped to this server's tenant.
+
+        Args:
+            sources: one or more source values to withdraw, exactly as they appear in
+                `recall_search` hits (the `source` field).
+
+        Returns:
+            JSON of {chunks_removed, sources_withdrawn, sources_not_found, message,
+            facts_withdrawn}.
+        """
+        state = _state(ctx)
+        operation = "recall_withdraw"
+        fingerprint = _mutation_fingerprint(operation, {"sources": sources})
+        store, replay = await _require_mutation(
+            SCOPE_FORGET,
+            ctx,
+            idempotency_key=idempotency_key,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
+        if replay is not None:
+            return replay
+        assert store is not None
+        registry: StoreRegistry | None = state.get("stores")
+        tenant = _current_tenant(state)
+        shadow = (
+            registry.get_shadow(tenant) if registry is not None and tenant is not None else None
+        )
+        control = registry.control_plane if registry is not None else None
+        try:
+            with METRICS.timer("recall_tool_latency_ms", tool="withdraw"):
+                payload = await _to_thread(
+                    lambda: withdraw_memory(
                         store,
                         sources,
                         shadow,

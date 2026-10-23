@@ -63,6 +63,8 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_calibration_run",
         "recall_calibration_publish",
         "recall_forget",
+        # Erases as recall_forget does, then gives back what the memo superseded; same scope.
+        "recall_withdraw",
         "recall_inventory",
         "recall_stats",
         # The assistant surface (`recall_mcp.assistant`): registered only on a lite server whose

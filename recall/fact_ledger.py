@@ -47,6 +47,8 @@ from recall.provenance_controller import (
     replays_request,
     RETRACTION_REQUEST_PREFIX,
     SUPERSESSION_REQUEST_SUFFIX,
+    WITHDRAWAL_REQUEST_PREFIX,
+    withdrawn_event_ids,
     canonical_json,
     evidence_card_from_payload,
     fact_conflict_key,
@@ -64,7 +66,7 @@ CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
     event_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
     generation_id TEXT NOT NULL,
-    event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained', 'retracted')),
+    event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained', 'retracted', 'withdrawn')),
     fact_id TEXT,
     fact TEXT,
     evidence_cards TEXT NOT NULL,
@@ -76,8 +78,8 @@ CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
     controller_version INTEGER NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE (tenant_id, request_id),
-    -- PostgreSQL's recall_fact_ledger_fact_shape (migrations 0018 and 0026); a table made before it lacks it.
-    CHECK ((event_type IN ('asserted', 'rejected') AND fact IS NOT NULL) OR event_type IN ('superseded', 'abstained', 'retracted'))
+    -- PostgreSQL's recall_fact_ledger_fact_shape (migrations 0018, 0026 and 0032); a table made before it lacks it.
+    CHECK ((event_type IN ('asserted', 'rejected') AND fact IS NOT NULL) OR event_type IN ('superseded', 'abstained', 'retracted', 'withdrawn'))
 );
 CREATE INDEX IF NOT EXISTS recall_fact_ledger_current_idx
     ON {FACT_LEDGER_TABLE} (tenant_id, fact_id, created_at);
@@ -229,6 +231,60 @@ def plan_retractions(
         if cards and any(touched(card) for card in cards) and all(gone(card) for card in cards):
             planned.extend(assertions)
     return tuple(planned)
+
+
+#: The writer `recall_withdraw` records on the withdrawals it appends.
+WITHDRAWAL_WRITER = "recall_withdraw"
+
+
+def plan_withdrawals(
+    events: Sequence[FactEvent],
+    *,
+    touched: Callable[[EvidenceCard], bool],
+    gone: Callable[[EvidenceCard], bool],
+) -> tuple[FactEvent, ...]:
+    """The assertions a withdrawal of memos takes back (owner decision, 2026-10-22).
+
+    An application is withdrawn when one of its cards names a memo this withdrawal names or
+    erases (`touched`) and every one of its cards is gone, and no live application of the same
+    fact still has a card that is not: a fact another memo still states stays, and so does the
+    supersession it made. Unlike `plan_retractions`, an application its successors hide, or one an
+    earlier forget retracted, is withdrawn too, since withdrawing is what undoes the supersession
+    it made (`fact_supersession`): withdrawing the middle of a chain, or a memo forgotten earlier,
+    must reach it. An application of another memo that was forgotten, not withdrawn, keeps its
+    supersession. One already withdrawn is never planned again.
+    """
+    withdrawn = withdrawn_event_ids(events)
+    retracted = retracted_keys(events)
+    by_fact: dict[str, list[FactEvent]] = {}
+    for event in events:
+        if event.event_type == "asserted" and event.fact_id is not None and event.event_id not in withdrawn:
+            by_fact.setdefault(event.fact_id, []).append(event)
+    planned: list[FactEvent] = []
+    for applications in by_fact.values():
+        if any(
+            retraction_key(event) not in retracted and not all(gone(card) for card in event.evidence_cards)
+            for event in applications
+        ):
+            continue
+        planned.extend(
+            event
+            for event in applications
+            if event.evidence_cards
+            and any(touched(card) for card in event.evidence_cards)
+            and all(gone(card) for card in event.evidence_cards)
+        )
+    return tuple(planned)
+
+
+def withdrawal_ids(tenant_id: str, assertion: FactEvent) -> tuple[str, str]:
+    """The event id and request id of the `withdrawn` event for `assertion`, on every backend.
+
+    The request id names the assertion's event id (`WITHDRAWAL_REQUEST_PREFIX`), which is how
+    the event identifies what it takes back without carrying the assertion's cards.
+    """
+    request_id = WITHDRAWAL_REQUEST_PREFIX + assertion.event_id
+    return decision_event_id(tenant_id, request_id, "withdrawn"), request_id
 
 
 def retraction_ids(tenant_id: str, assertion: FactEvent) -> tuple[str, str]:
@@ -953,6 +1009,38 @@ class PostgresFactLedger:
                     cards=assertion.evidence_cards, supersedes_fact_ids=(str(assertion.fact_id),),
                     request_id=request_id, writer=writer,
                     decision_code=decision_code, now=moment,
+                ))
+            self._materialized(conn, written)
+            return tuple(written)
+
+    def withdraw_forgotten(
+        self, *, tenant_id: str, touched: Callable[[EvidenceCard], bool],
+        gone: Callable[[EvidenceCard], bool], writer: str = WITHDRAWAL_WRITER,
+        now: datetime | None = None,
+    ) -> tuple[FactEvent, ...]:
+        """Append a `withdrawn` event for each assertion `plan_withdrawals` selects; return them.
+
+        Planned twice under the per-fact locks, as `retract_forgotten` is. A withdrawn event
+        carries no fact and no card: its request id names the assertion (`withdrawal_ids`).
+        """
+        if tenant_id != self.tenant_id:
+            raise ValueError("ledger tenant mismatch")
+        moment = _as_utc(now or datetime.now(UTC))
+        with self._connect() as conn, conn.transaction():
+            first = plan_withdrawals(self._events(conn), touched=touched, gone=gone)
+            for key in sorted({fact_conflict_key(event.fact) for event in first if event.fact}):
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"fact\x1f{self.tenant_id}\x1f{key}",),
+                )
+            written: list[FactEvent] = []
+            for assertion in plan_withdrawals(self._events(conn), touched=touched, gone=gone):
+                event_id, request_id = withdrawal_ids(self.tenant_id, assertion)
+                written.append(self._insert(
+                    conn, event_id=event_id, event_type="withdrawn",
+                    generation_id=assertion.generation_id, fact=None, cards=(),
+                    supersedes_fact_ids=(str(assertion.fact_id),), request_id=request_id,
+                    writer=writer, decision_code=DecisionCode.WITHDRAWN, now=moment,
                 ))
             self._materialized(conn, written)
             return tuple(written)
