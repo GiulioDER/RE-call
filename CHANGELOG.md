@@ -15,7 +15,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   trigger or failure. It is opt-in through the operator's own index: without one the hooks do
   nothing, and the repository ships no entries. It never denies a call, never raises, loads no
   embedder and makes no network call. The `general_knowledge` block of `recall-hook.json` switches
-  it off (`enabled: false`), and a malformed block disables it. The public installer does not yet
+  it off (`enabled: false`); a `recall-hook.json` that cannot be read or parsed (or is not a JSON
+  object), a block that is not an object, or an `enabled` that is not a boolean also disables it,
+  and only a missing file means the enabled default. A reinstall keeps the block as it was. The
+  public installer does not yet
   register `PowerShell` or `PostToolUseFailure`, so registering those two is manual for now.
 - Search and evidence now report unchecked semantic query support separately from retrieval
   eligibility, and carry calibration-bound synthetic near-miss coverage when available. Missing
