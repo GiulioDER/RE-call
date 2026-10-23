@@ -18,6 +18,16 @@ Invariants and the failure each one catches:
   hidden file, no symlink out of the directory; a nested memo is read.
 - F10 (CCA PERF-001) a load under a deadline only appends to the cache, never rewrites it whole.
 - A control test pins the restated excluded-directory set to the indexer's.
+- F11 (CCA DAT-004, deferred run 20261023T102301Z) a cached record's `file` key follows the root
+  it is loaded under.
+- F12 (CCA DAT-005) a memo with an empty validity window is skipped, as the indexer refuses it.
+- A second control test (CODE-013) pins the markdown suffix set to the indexer's.
+
+Red proof for F11 and F12, recorded 2026-10-23 on the workstation, restored byte for byte:
+- F11 `...::test_cached_file_key_follows_the_root`: the re-derivation mutated to `if False:`: "a
+  cached record kept the file key of the root it was first read under".
+- F12 `...::test_an_empty_validity_window_is_skipped`: `validity_bounds(admitted)` replaced by
+  `pass`: "an empty validity window was admitted".
 
 Red proof, recorded 2026-10-22 on the test host inside the test bounds, each mutation of
 `recall/records_files.py` failing in the named assertion, then restored and green:
@@ -316,3 +326,37 @@ def test_a_deadline_load_only_appends(tmp_path: Path, monkeypatch: pytest.Monkey
     loaded = load_memo_records(memos, cache_file=cache, deadline=time.monotonic() + 60)
     assert reads == [], "what the first call parsed was not kept"
     assert len(loaded) == len(EXPECTED)
+
+
+def test_cached_file_key_follows_the_root(tmp_path: Path) -> None:
+    """F11 (CCA DAT-004): a memo cached while loading one root gets the `file` key of the root it is
+    loaded under next, the key supersession references resolve against."""
+    outer = tmp_path / "outer"
+    memos = copy_memos(outer / "memos")
+    first = {Path(m.source).name: m.file for m in load_memo_records(memos)}
+    assert first["RE-call__0123456789ab__BUG-001.md"] == "RE-call__0123456789ab__BUG-001.md"
+    second = {Path(m.source).name: m.file for m in load_memo_records(outer)}
+    assert second["RE-call__0123456789ab__BUG-001.md"] == "memos/RE-call__0123456789ab__BUG-001.md", (
+        "a cached record kept the file key of the root it was first read under"
+    )
+
+
+def test_an_empty_validity_window_is_skipped(tmp_path: Path) -> None:
+    """F12 (CCA DAT-005): a memo whose validity window the indexer refuses (here `valid_until` before
+    `valid_from`) is skipped and listed, never returned."""
+    memos = copy_memos(tmp_path / "memos")
+    target = memos / "RE-call__0123456789ab__BUG-001.md"
+    raw = target.read_bytes()
+    assert b"valid_from: 2026-08-04\n" in raw
+    target.write_bytes(raw.replace(b"valid_from: 2026-08-04\n", b"valid_from: 2026-08-04\nvalid_until: 2026-08-01\n"))
+    loaded = load_memo_records(memos)
+    assert target.name not in {Path(m.source).name for m in loaded}, "an empty validity window was admitted"
+    assert any(Path(source).name == target.name and "validity window" in why for source, why in loaded.skipped)
+
+
+def test_memo_suffixes_match_the_indexer() -> None:
+    """Control, not a behaviour test (CCA CODE-013): the restated suffix set equals the indexer's
+    markdown family, so the walk reads the same documents."""
+    from recall.supersession import _DOCUMENT_EXTENSIONS
+
+    assert records_files._MEMO_SUFFIXES == frozenset(_DOCUMENT_EXTENSIONS)

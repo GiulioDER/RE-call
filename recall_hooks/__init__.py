@@ -503,9 +503,10 @@ def _auth_command(args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves.
 
-    Also carries the three subcommands a person runs rather than a hook: `login`, `logout` and
-    `auth-headers`. See `_auth_command` for why they are dispatched before stdin is read and why
-    they fail loudly where an event stays silent.
+    Also carries the four subcommands a person runs rather than a hook: `login`, `logout`,
+    `auth-headers` and `warm-auditor-brief`. All four are dispatched before stdin is read, and fail
+    loudly where an event stays silent; see `_auth_command` for why. `warm-auditor-brief`'s import
+    is not guarded, so a copy of this package without the auditor brief hook says so.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
