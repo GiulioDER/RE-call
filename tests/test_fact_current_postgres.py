@@ -41,10 +41,11 @@ def tenant() -> str:
 
 
 # Its own budget, as `pyproject.toml` asks of a test with a reason to pass 120s: one run is 15
-# random ledgers and 6 explicit ones, each applied on PostgreSQL and replayed on lite, and measured
-# about 136s on the remote test host at CPUQuota=200% with a one-CPU database (2026-10-23, 40
-# seeds, all green). 400s is about three times that; under load the global 120s cut it off as a
-# timeout that read like a broken equivalence.
+# random ledgers and 6 explicit ones, each applied on PostgreSQL and replayed on lite, and the
+# database does most of the work. On the remote test host with a one-CPU database it took 97 to
+# 119s (2026-10-23, seeds 1 to 4); with the database at half a CPU, as when two xdist workers share
+# it, the global 120s cut it off as a timeout that read like a broken equivalence, while under this
+# budget it passed in 127s. 400s is about three times that.
 @pytest.mark.timeout(400)
 @settings(
     max_examples=15, deadline=None,
