@@ -295,14 +295,38 @@ def test_settings_defaults_and_overrides():
     }
 
 
-def test_settings_ignores_a_block_of_the_wrong_shape():
-    """Invariant: a block that is not an object gives the defaults.
+@pytest.mark.parametrize("block", ["off", "false", [], [1], None, 0, 1, True])
+def test_settings_a_present_block_that_is_not_an_object_disables(block):
+    """Invariant: a PRESENT `general_knowledge` block of the wrong shape fails closed (ruling R9).
 
-    Red proof. Node: `tests/test_general_knowledge_hook.py::test_settings_ignores_a_block_of_the_wrong_shape`.
-    Mutation: `settings` drops the `isinstance(block, dict)` normalisation. Symbol: `settings`.
-    Seen: `AttributeError: 'str' object has no attribute 'get'`.
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_settings_a_present_block_that_is_not_an_object_disables`.
+    Mutation: the previous behaviour, `settings` normalises a non-dict block to `{}` (defaults, so enabled).
+    Symbol: `settings`. Seen: every param fails, `assert {'enabled': True, 'min_score': 0.0} == {'enabled': False, 'min_score': 0.0}`.
     """
-    assert gk.settings({"general_knowledge": "off"}) == {"enabled": True, "min_score": 0.0}
+    assert gk.settings({"general_knowledge": block}) == {"enabled": False, "min_score": 0.0}
+
+
+def test_settings_an_absent_block_is_still_the_enabled_default():
+    """Invariant: only a PRESENT malformed block disables; an absent one (or a config without it) is the default.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_settings_an_absent_block_is_still_the_enabled_default`.
+    Mutation: `settings` treats a missing key like a malformed block (`block = config.get(...)`, then
+    `if not isinstance(block, dict): return disabled`). Symbol: `settings`.
+    Seen: `assert {'enabled': False, ...} == {'enabled': True, ...}`.
+    """
+    assert gk.settings({"other": 1}) == {"enabled": True, "min_score": 0.0}
+    assert gk.settings({"general_knowledge": {}}) == {"enabled": True, "min_score": 0.0}
+
+
+@pytest.mark.parametrize("score", [10**400, -(10**400), 10**309])
+def test_settings_never_raises_on_an_int_too_large_for_a_float(score):
+    """Invariant: `settings` never raises; an int no float can hold falls back to the default min_score.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_settings_never_raises_on_an_int_too_large_for_a_float`.
+    Mutation: the previous code, `not math.isfinite(min_score)` evaluated on the raw int with no
+    `float()` guard. Symbol: `settings`. Seen: `OverflowError: int too large to convert to float`.
+    """
+    assert gk.settings({"general_knowledge": {"min_score": score}}) == {"enabled": True, "min_score": 0.0}
 
 
 @pytest.mark.parametrize("enabled", ["false", "no", "true", 0, 1, None, []])
