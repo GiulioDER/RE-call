@@ -39,6 +39,11 @@ INDEX_NAME = "index.json"
 INDEX_SCHEMA = 1
 #: The most entries one tool call may inject. Each entry is paid for in the agent's context.
 MAX_PER_CALL = 2
+#: The most command text the matcher analyses (ruling R12). A command can carry a heredoc body of
+#: hundreds of kilobytes, and parsing it costs time on every `Bash` call (0.39 s for 100 KB of
+#: separators) for a program that is named in the first lines. Program extraction and
+#: `command_regex` triggers both see only the first `MAX_COMMAND_CHARS` characters.
+MAX_COMMAND_CHARS = 16384
 
 #: The three ways an entry can be triggered. A trigger is a one-key object whose key is one of these.
 TRIGGER_KINDS = frozenset({"command", "command_regex", "host"})
@@ -99,7 +104,8 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     coercing would do exactly that, and falling back to the default would too. Only a real `bool`
     sets it; only a finite int or float (never a bool, never NaN or infinity) sets `min_score`.
     """
-    config = config or {}
+    if not isinstance(config, dict):
+        config = {}
     if "general_knowledge" not in config:
         return {"enabled": True, "min_score": 0.0}
     block = config["general_knowledge"]
@@ -277,7 +283,8 @@ def parse_command(command: str) -> list[Segment]:
     """
     segments: list[Segment] = []
     tokens: list[str] = []
-    for match in _SCAN.finditer(command if isinstance(command, str) else ""):
+    text = command[:MAX_COMMAND_CHARS] if isinstance(command, str) else ""
+    for match in _SCAN.finditer(text):
         word = match.group("word")
         if word is not None:
             tokens.append(_unquote(word))
@@ -310,7 +317,7 @@ def repository_name(cwd: str) -> str | None:
     if not isinstance(cwd, str) or not cwd.strip():
         return None
     try:
-        start = Path(cwd)
+        start = Path(os.path.abspath(cwd))  # absolute so '.' has parents; symlinks are not resolved
         if not start.is_dir():
             return None
         for directory in (start, *start.parents):
@@ -353,13 +360,13 @@ def in_scope(entry: Entry, project: str | None) -> bool:
 
 
 def _names_host(alias: str, args: tuple[str, ...]) -> bool:
-    """True when an argument is `alias`, `alias:<path>`, or either of those after `user@`."""
+    """True when an argument is `alias`, `alias:<path>`, or either of those after `user@`.
+
+    `user@` is split off only from the part BEFORE the first colon, so an `@` in the path part
+    (`examplehost:/var/x@1`) neither hides a host nor invents one (`other:/x@examplehost`).
+    """
     wanted = alias.casefold()
-    for arg in args:
-        reference = arg.rpartition("@")[2].casefold()
-        if reference == wanted or reference.startswith(wanted + ":"):
-            return True
-    return False
+    return any(arg.partition(":")[0].rpartition("@")[2].casefold() == wanted for arg in args)
 
 
 def matched_trigger(entry: Entry, command: str, segments: list[Segment], project: str | None) -> Trigger | None:
@@ -384,7 +391,7 @@ def matched_trigger(entry: Entry, command: str, segments: list[Segment], project
             if pattern is None:
                 continue
             try:
-                found = pattern.search(command)
+                found = pattern.search(command[:MAX_COMMAND_CHARS])
             except Exception:  # BROAD-CATCH: fail-open
                 continue
             if found:
@@ -396,6 +403,7 @@ def match_triggers(entries: list[Entry], command: str, project: str | None) -> l
     """The entries whose scope and triggers fit `command`, in input order, each id once."""
     if not isinstance(command, str) or not command.strip():
         return []
+    command = command[:MAX_COMMAND_CHARS]
     segments = parse_command(command)
     matched: list[Entry] = []
     seen: set[str] = set()
@@ -411,6 +419,7 @@ def match_triggers(entries: list[Entry], command: str, project: str | None) -> l
 __all__ = [
     "INDEX_NAME",
     "INDEX_SCHEMA",
+    "MAX_COMMAND_CHARS",
     "MAX_PER_CALL",
     "Entry",
     "Segment",

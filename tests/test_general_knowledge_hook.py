@@ -534,8 +534,9 @@ def test_hostile_strings_never_raise(tmp_path, command):
     """Invariant: every public function of the matching layer returns a value for any string.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_hostile_strings_never_raise`.
-    Mutation: `_unquote` reads `m.group(1)` instead of `m.group(m.lastindex or 3)`, so a single quoted
-    or unquoted word yields `None` to `"".join`. Symbol: `_unquote`. Seen: `IndexError: list index out of range` at `_program`, on every param.
+    Mutation: `_program` indexes `_PATH_SEPARATOR.split(token)[1]` instead of `[-1]`. Symbol: `_program`.
+    Seen: `IndexError: list index out of range` raised from `_program`, on the params that hold a word
+    without a path separator.
     """
     entries = loaded(
         tmp_path,
@@ -633,7 +634,12 @@ def test_a_regex_trigger_uses_the_load_time_cache_and_never_compiles(tmp_path, m
 
 
 def test_an_entry_whose_regex_is_not_cached_does_not_match_and_does_not_raise():
-    """Invariant: a hand-built entry with an uncached regex is a non-match, not an exception."""
+    """Invariant: a hand-built entry with an uncached regex is a non-match, not an exception.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_an_entry_whose_regex_is_not_cached_does_not_match_and_does_not_raise`.
+    Mutation: `matched_trigger` reads `_COMPILED[trigger.value]` instead of `compiled(trigger.value)`.
+    Symbol: `matched_trigger`. Seen: `KeyError: 'never-cached-\\d'`.
+    """
     entry = gk.Entry("gk-example-x", "procedure", "global", (gk.Trigger("command_regex", "never-cached-\\d"),), (), "b")
     assert gk.match_triggers([entry], "never-cached-1", None) == []
 
@@ -642,9 +648,10 @@ def test_project_scope_filters_entries(tmp_path):
     """Invariant: `global` is always in scope; `project:<name>` only for exactly that project.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_project_scope_filters_entries`.
-    Mutations, symbol `in_scope`. A: always `True` (`assert ['gk-example-...xample-alpha'] == ['gk-example-global']`). B: compare `startswith` instead of equality,
-    so `project:alp` also fits `alpha` is not tested; instead B drops the `project is not None` guard
-    and the prefix check, comparing `entry.scope[8:] == project` (`assert not True` on the `projekt:alpha` entry).
+    Mutations, symbol `in_scope`. A: always `True`; seen `assert ['gk-example-global', 'gk-example-alpha'] ==
+    ['gk-example-global']` for project `beta`. B: the `startswith(prefix)` test is dropped, so the check is
+    `entry.scope[len(prefix):] == project`; seen `assert not True` on the `projekt:alpha` entry (same length
+    prefix, different word).
     """
     entries = loaded(
         tmp_path,
@@ -815,3 +822,95 @@ def test_repository_name_is_none_for_empty_missing_or_file_cwd(tmp_path):
     assert gk.repository_name(str(repo / "missing" / "deeper")) is None
     assert gk.repository_name(str(repo / "f.txt")) is None
     assert gk.repository_name("\x00") is None
+
+
+@pytest.mark.parametrize("config", [5, 1.5, True, "text", ["general_knowledge"], (1,)])
+def test_settings_a_config_that_is_not_an_object_is_the_defaults(config):
+    """Invariant: `settings` never raises; a non-dict config means "no block", i.e. the defaults.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_settings_a_config_that_is_not_an_object_is_the_defaults`.
+    Mutation: the `isinstance(config, dict)` guard in `settings` is replaced by `config = config or {}`.
+    Symbol: `settings`. Seen: `TypeError: argument of type 'int' is not iterable` (and the same for
+    `float` and `bool`) on the first three params.
+    """
+    assert gk.settings(config) == {"enabled": True, "min_score": 0.0}
+
+
+def test_the_analysed_command_is_capped(tmp_path):
+    """Invariant (ruling R12): program extraction and `command_regex` triggers see only the first
+    `MAX_COMMAND_CHARS` characters, so a program or a pattern hit that exists only past the cap does
+    not match, and one inside it still does.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_analysed_command_is_capped`.
+    Mutations, symbols `parse_command` / `matched_trigger` / `match_triggers`. A: `parse_command` scans
+    the whole string (`text = command`); seen `assert 'pytest' not in ['xxxx...', 'pytest']`. B: the regex
+    runs on `command` and `match_triggers` no longer truncates; seen `assert [Entry(id='gk-example-r', ...)]
+    == []` (the hit past the cap matched).
+    """
+    cap = gk.MAX_COMMAND_CHARS
+    filler = "x" * (cap - 10)
+    inside = filler + " ; pytest"
+    late = filler + " " * 20 + " ; pytest"
+    assert gk.command_programs(inside)[-1] == "pytest"
+    assert "pytest" not in gk.command_programs(late)
+    entries = loaded(
+        tmp_path,
+        example_entry(id="gk-example-c", triggers=[{"command": "pytest"}]),
+        example_entry(id="gk-example-r", triggers=[{"command_regex": r"LATEMARK"}]),
+    )
+    assert [e.id for e in gk.match_triggers(entries, inside, None)] == ["gk-example-c"]
+    assert gk.match_triggers(entries, late, None) == []
+    assert [e.id for e in gk.match_triggers(entries, "LATEMARK " + filler, None)] == ["gk-example-r"]
+    late_regex = filler + " " * 20 + "LATEMARK"
+    assert gk.match_triggers(entries, late_regex, None) == []
+    assert gk.matched_trigger(entries[1], late_regex, [], None) is None
+
+
+def test_a_megabyte_command_is_analysed_within_a_time_bound(tmp_path):
+    """Invariant (ruling R12): analysing a 1 MB command is bounded by the cap, not by its length.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_megabyte_command_is_analysed_within_a_time_bound`.
+    Mutation: both truncations are removed (`parse_command` reads `text = command` and `match_triggers`
+    drops `command = command[:MAX_COMMAND_CHARS]`). Symbols: `parse_command`, `match_triggers`.
+    Seen: `assert (… - …) < 1.0`, the uncapped 1 MB `parse_command` took 3.55 s. Each bound (1.0 s) is more than ten times the capped cost.
+    """
+    import time
+
+    entries = loaded(tmp_path, example_entry(triggers=[{"command": "pytest"}, {"command_regex": r"zzz-\d+"}]))
+    command = "a | " * 262_144
+    for call in (lambda: gk.parse_command(command), lambda: gk.match_triggers(entries, command, None)):
+        started = time.perf_counter()
+        call()
+        assert time.perf_counter() - started < 1.0
+
+
+def test_repository_name_accepts_a_relative_cwd(tmp_path, monkeypatch):
+    """Invariant: a relative `cwd` (`.`, `sub`) is made absolute first, so a checkout root named `.` still
+    finds its own `.git` directory and its name.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_repository_name_accepts_a_relative_cwd`.
+    Mutation: `repository_name` builds `Path(cwd)` without `os.path.abspath`. Symbol: `repository_name`.
+    Seen: `assert None == 'alpha'` for `repository_name('.')`.
+    """
+    repo = _git_dir(tmp_path, "alpha")
+    (repo / "src").mkdir()
+    monkeypatch.chdir(repo)
+    assert gk.repository_name(".") == "alpha"
+    assert gk.repository_name("src") == "alpha"
+    assert gk.repository_name("../alpha/src") == "alpha"
+
+
+def test_a_host_alias_survives_an_at_sign_in_the_path_part(tmp_path):
+    """Invariant: `user@` is split off only from the part before the first colon, so an `@` in the path
+    neither hides the alias nor lets a path name one.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_host_alias_survives_an_at_sign_in_the_path_part`.
+    Mutation: `_names_host` goes back to `arg.rpartition("@")[2]` over the whole argument. Symbol:
+    `_names_host`. Seen: `assert False` for `scp examplehost:/var/x@1 .`.
+    """
+    entries = loaded(tmp_path, example_entry(triggers=[{"host": "examplehost"}]))
+    matches = lambda command: bool(gk.match_triggers(entries, command, None))  # noqa: E731
+    assert matches("scp examplehost:/var/x@1 .")
+    assert matches("scp deploy@examplehost:/var/x@1 .")
+    assert not matches("scp f other:/x@examplehost")
+    assert not matches("scp f other:examplehost@x")
