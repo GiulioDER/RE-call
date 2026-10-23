@@ -923,13 +923,18 @@ def command_family(command: str) -> str:
 _FINGERPRINT = re.compile(
     r"\bsha(?:1|256|384|512):[a-z0-9+/=]{16,}|(?<![0-9a-f:])(?:[0-9a-f]{2}:){7,}[0-9a-f]{2}(?![0-9a-f:])"
 )
-#: A mailbox address.
-_EMAIL = re.compile(r"[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+")
-#: `name=value` where the name says it holds a credential: the name stays, the value goes.
-_SECRET_PAIR = re.compile(
-    r"\b([a-z0-9_.-]*(?:token|secret|password|passwd|key|auth)[a-z0-9_.-]*)="
+#: A mailbox address. The local part may only START where a run of its characters starts, and
+#: is at most 64 long, so a long run with no `@` is scanned once instead of once per position
+#: (that was 33 ms for 4 KB; the credential pattern below, unanchored, took 12 s).
+_EMAIL = re.compile(r"(?<![a-z0-9._%+-])[a-z0-9._%+-]{1,64}@[a-z0-9-]+(?:\.[a-z0-9-]+)+")
+#: `name=value`: a name of at most 64 name characters starting where such a run starts, then `=`
+#: and the value. Whether the name holds a credential word is decided in `_secret_or_text`, not by
+#: the pattern, because a keyword between two unbounded name runs backtracks catastrophically.
+_NAME_VALUE = re.compile(
+    r"(?<![a-z0-9_.-])([a-z0-9_.-]{1,64})="
     r"(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)"
 )
+_CREDENTIAL_NAME = re.compile(r"token|secret|password|passwd|key|auth")
 #: IPv4, and IPv6 candidates (checked by `_ipv6_or_text`, so a time such as `12:30:45` stays).
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d]|\.\d)")
 _IPV6 = re.compile(r"(?<![\w:])[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?![\w:])")
@@ -948,11 +953,17 @@ def _ipv6_or_text(match: re.Match[str]) -> str:
     return value
 
 
+def _secret_or_text(match: re.Match[str]) -> str:
+    """`name=<redacted>` when the name holds a credential word, else the pair as it was."""
+    name = match.group(1)
+    return f"{name}=<redacted>" if _CREDENTIAL_NAME.search(name) else match.group(0)
+
+
 def _redact(line: str) -> str:
     """`line` (lower case) with fingerprints, mailboxes, credential values and addresses replaced."""
     line = _FINGERPRINT.sub("<fingerprint>", line)
     line = _EMAIL.sub("<email>", line)
-    line = _SECRET_PAIR.sub(r"\1=<redacted>", line)
+    line = _NAME_VALUE.sub(_secret_or_text, line)
     line = _IPV6.sub(_ipv6_or_text, line)
     return _IPV4.sub("<ip>", line)
 

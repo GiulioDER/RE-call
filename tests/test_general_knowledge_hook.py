@@ -2819,3 +2819,31 @@ def test_text_that_only_resembles_identifying_data_is_kept(line, expected):
     `assert 'git|error: <token> failed' == 'git|error: test_the_signature_names_the_program failed'`.
     """
     assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "token." * (4096 // 6),
+        "a." * 2048,
+        "key" * 1365,
+        "a_" * 2048 + "!",
+        "a." * 1024 + "@" + "b." * 1024,
+    ],
+    ids=["keyword-dots", "dotted-run", "keyword-run", "name-run", "at-in-dotted-run"],
+)
+def test_redaction_is_linear_on_adversarial_lines(line):
+    """Invariant: no identifying-data pattern backtracks: a signature of one line of the capped
+    length (`MAX_ERROR_CHARS`) built to defeat them takes well under the 800 ms failure budget.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_redaction_is_linear_on_adversarial_lines`.
+    Mutation: `_NAME_VALUE` restored to the first version, a credential word between two unbounded
+    name runs with no anchored start. Symbol: `_NAME_VALUE`. Seen: 2 failed, 3 passed;
+    keyword-dots `assert (13291.88 - 13247.94) < 0.5` (43.9 s for one 4 KB line) and dotted-run
+    1.1 s. The other three params pass under that mutation; they hold the remaining patterns
+    (mailbox, token, fingerprint) to the same bound. Before the fix, measured 2026-10-23, the old
+    pattern alone took 12.3 s on keyword-dots.
+    """
+    started = time.perf_counter()
+    gk.failure_signature("x", "Exit code 1\n" + line)
+    assert time.perf_counter() - started < 0.5
