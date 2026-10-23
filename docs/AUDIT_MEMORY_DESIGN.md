@@ -258,6 +258,16 @@ Claude settings is approved.
   budget of about one second leaves the prompt unchanged and appends a line to a local log naming
   the reason. It returns `updatedInput` without a permission decision, so normal permission
   evaluation still applies.
+- **Configuration and files** (as built, 2026-10-23). `RECALL_AUDITOR_TYPES` (comma separated,
+  matched case-insensitively; a value naming no type falls back to the default list and logs),
+  `RECALL_AUDITOR_MEMOS`, `CCA_BUGS_DIR` (read exactly as CCA reads it), and
+  `RECALL_AUDITOR_BRIEF_BUDGET` (seconds, default 1, at most 30; an invalid value is logged and
+  replaced). The log is `<config home>/logs/recall-auditor-brief.log` and the parsed-memo cache
+  `<config home>/cache/recall-auditor-brief-memos-<hash of the memo directory>.json`, one per
+  directory, where the config home is `RECALL_HOOK_CONFIG_HOME`, else `CLAUDE_CONFIG_DIR`, else
+  `~/.claude`. `python -m recall_hooks warm-auditor-brief` fills the cache with no deadline; run it
+  with the hook's own interpreter and `PYTHONPATH` (the hook's timeout log prints the exact
+  command), because a cache written by another copy of RE-call is ignored.
 - **Codex** has no equivalent launch step, so it is out of scope for this version.
 - **Measurement:** ships unmeasured, as context; no benefit is claimed until a pre-registered
   comparison supports one.

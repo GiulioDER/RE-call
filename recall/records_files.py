@@ -11,11 +11,15 @@ Currency follows the store's rule too: the memos' `supersedes` claims and validi
 resolved by `recall.supersession.resolve_supersession_graph`, so a successor hides a record only
 inside its own window, and a retraction dated in the future does not hide its target yet.
 
-Two differences from a store, both stated rather than left to be found:
+The differences from a store, stated rather than left to be found:
 
-- A file has no chunk, so a record's `chunk_id` is None and its `chunk_ids` empty.
+- A file has no chunk, so a record's `chunk_id` is None and its `chunk_ids` empty, and its `meta`
+  is the five front matter fields an entry reports, not a chunk's whole metadata.
 - Only memos holding an admitted record take part in the supersession graph. A memo whose record
   was refused still declares its `supersedes` edge to an indexed store; here it declares nothing.
+- `match_memo_records` answers an anchor query only, with no result limit (`lookup_records`
+  refuses more than `MAX_RECORDS` matches) and no source policy (so a successor is never
+  `<withheld>`), and returns the list of C5 record entries, not the envelope around them.
 """
 from __future__ import annotations
 
@@ -28,18 +32,19 @@ import sys
 import tempfile
 import time
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from recall.document import parse_document
-from recall.frontmatter import RECORD_KEY, supersedes_targets
+from recall.frontmatter import RECORD_KEY, supersedes_targets, validity_bounds
 from recall.records import (
     RecordCandidate,
     admit_record,
     as_utc,
     match_candidates,
+    record_parts,
     record_schema,
     validated_anchor_query,
     validated_kinds,
@@ -81,7 +86,7 @@ class LoadedMemoRecords(list[MemoRecord]):
 #: str(path) -> ((mtime_ns, size), a record, a refusal reason, or None for a memo without one).
 _CACHE: dict[str, tuple[tuple[int, int], MemoRecord | str | None]] = {}
 #: Bumped whenever what a cache entry holds, or how a memo is read into one, changes.
-_CACHE_FORMAT = 2
+_CACHE_FORMAT = 3
 #: The modules that decide what a memo parses into. Their files' stamps are part of the cache tag,
 #: so changing how a memo is parsed or admitted re-reads every memo, not only a schema change.
 _READER_MODULES = ("recall.document", "recall.frontmatter", "recall.records", "recall.records_files")
@@ -291,6 +296,12 @@ def _read(path: Path, file: str) -> MemoRecord | str | None:
     record = admitted.get(RECORD_KEY)
     if not isinstance(record, dict):
         return "recall_record refused (see the warning naming this file)"
+    try:
+        # The indexer refuses a malformed or empty validity window and the whole memo with it
+        # (`recall.index`, `recall.generations`), so no store holds such a record; nor does this.
+        validity_bounds(admitted)
+    except ValueError as exc:
+        return f"invalid validity window: {exc}"
     return MemoRecord(
         source=str(path),
         record=record,
@@ -343,6 +354,11 @@ def load_memo_records(
             cached = persisted.get(key)
         if cached is not None and cached[0] == stamp:
             parsed = cached[1]
+            relative = path.relative_to(root).as_posix()
+            if isinstance(parsed, MemoRecord) and parsed.file != relative:
+                # The cache is keyed on the absolute path, but `file` is relative to the root the
+                # memo was first read under; a load from a parent or child root re-derives it.
+                parsed = replace(parsed, file=relative)
         else:
             if deadline is not None and time.monotonic() > deadline:
                 if cache_file is not None:
@@ -385,7 +401,7 @@ def memo_supersession_graph(records: Sequence[MemoRecord]) -> SupersessionGraph:
 
 def _candidate(memo: MemoRecord) -> RecordCandidate:
     record = memo.record
-    anchors = record.get("anchors")
+    record_id, kind, anchors = record_parts(record)
     meta = {
         "name": memo.name,
         "description": memo.description,
@@ -394,10 +410,10 @@ def _candidate(memo: MemoRecord) -> RecordCandidate:
         "supersedes": list(memo.supersedes),
     }
     return RecordCandidate(
-        id=str(record.get("id")),
+        id=record_id,
         record=record,
-        kind=str(record.get("kind")),
-        anchors=[a for a in anchors if isinstance(a, dict)] if isinstance(anchors, list) else [],
+        kind=kind,
+        anchors=anchors,
         meta=meta,
         source=memo.source,
         file=_file(memo),

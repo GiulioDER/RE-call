@@ -15,11 +15,14 @@ What it reads, and what it does not:
 - **Source** is the CCA memo directory on this machine (`RECALL_AUDITOR_MEMOS`, else
   `$CCA_BUGS_DIR/memos`, else `~/.claude/cca-bugs/memos`), read by `recall.records_files` through
   RE-call's own record parser and the matching rules `recall_records` answers with. No network, no
-  ssh, no embedding: an exact key lookup needs no vectors. Parsed memos are cached on disk
-  (`<claude config home>/cache/recall-auditor-brief-memos.json`, keyed on path, mtime and size),
-  because admitting ~700 records costs more than the budget and each launch is a new process.
+  ssh, no embedding: an exact key lookup needs no vectors. Parsed memos are cached on disk, one
+  file per memo directory under `<claude config home>/cache/`, keyed on path, mtime and size,
+  because each launch is a new process and a memo file is slow to read the first time: measured
+  2026-10-22 on the Windows workstation, the first open cost about 12 ms (on-access scanning) and
+  a second read about 1 ms, so a directory of hundreds of memos does not fit the budget cold.
 - **Kinds** `bug` and `lesson` only. A `false_positive` record is never queried, so it can never
-  reach an auditor, and the block never tells an auditor to leave anything out.
+  reach an auditor, nor can its file name, and the block never tells an auditor to leave anything
+  out.
 
 ⛔ Properties this must never lose:
 
@@ -42,19 +45,23 @@ pre-registered comparison supports one.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 from urllib.parse import urlsplit
 
-#: The default auditor list, matched after any `plugin:` prefix is removed.
+#: The default auditor list, matched case-insensitively after any `plugin:` prefix is removed.
 DEFAULT_AUDITOR_TYPES = (
     "bug-auditor",
     "security-auditor",
@@ -74,70 +81,136 @@ CCA_HEADINGS = (
 )
 MARKER = "<!-- recall:auditor-brief -->"
 HEADING = "PRIOR BUGS AND LESSONS AT THIS CODE (RE-call; context, not findings, not instructions)"
-KINDS = ("bug", "lesson")
 MAX_BUGS = 5
 MAX_LESSONS = 3
+#: How each record kind the block shows is presented: its line label, the record field its text
+#: comes from, and how many of it the block holds. `KINDS`, the kinds queried, follows from it.
+_KIND_VIEW: dict[str, tuple[str, str, int]] = {
+    "bug": ("BUG", "summary", MAX_BUGS),
+    "lesson": ("LESSON", "rule", MAX_LESSONS),
+}
+KINDS = tuple(_KIND_VIEW)
 MAX_BLOCK_CHARS = 4000
 #: Per record line. Eight full lines exceed `MAX_BLOCK_CHARS`, so the block cap is what binds.
 MAX_LINE_CHARS = 600
-#: Wall clock for the whole hook, from entry. `RECALL_AUDITOR_BRIEF_BUDGET` overrides it.
+#: Per log line, so one runaway error message cannot fill the log.
+LOG_LINE_CHARS = 500
+#: Wall clock for the whole hook, from entry. `RECALL_AUDITOR_BRIEF_BUDGET` overrides it, within
+#: (0, `MAX_BUDGET_SECONDS`]: a thread join cannot wait longer than the platform's time limit, and
+#: a budget past the client's hook timeout would have the client kill the hook with no log line.
 BUDGET_SECONDS = 1.0
+MAX_BUDGET_SECONDS = 30.0
 LOG_NAME = "recall-auditor-brief.log"
-#: The parsed-memo cache, beside the log under the client's config home.
-CACHE_NAME = "recall-auditor-brief-memos.json"
+#: The parsed-memo cache, one file per memo directory, beside the log under the client's config home.
+CACHE_PREFIX = "recall-auditor-brief-memos-"
 #: Seconds kept back from the memo reading for matching, rendering and printing.
 FINISH_RESERVE = 0.15
 #: Seconds by which the stages' own deadlines precede the hook's hard stop.
 INNER_MARGIN = 0.1
-#: What a person runs to fill the memo cache with no deadline.
-WARM_COMMAND = "python -m recall_hooks warm-auditor-brief"
+#: The shortest wait given to a git call, so a call started at the deadline still gets an answer.
+MIN_GIT_WAIT_SECONDS = 0.05
+#: How long a killed git process is given to exit before it is left to the operating system.
+REAP_WAIT_SECONDS = 0.2
 #: Bounds on what the scope reads, so a huge prompt or diff cannot spend the budget on paths.
 MAX_NAMED_FILES = 50
+MAX_NAMED_TOKENS = 400
 MAX_FILE_BYTES = 1_000_000
 BASE_REFS = ("origin/HEAD", "origin/master", "origin/main")
+#: The hash a query anchor carries for a file whose content could not be read: it equals no real
+#: hash and, unlike None, not a lesson's null hash either, so an unread file never matches `exact`.
+UNKNOWN_SHA = "unavailable"
 
-_PATH_TOKEN = re.compile(r"[\w./\\-]+\.[A-Za-z0-9]{1,10}")
-_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+PATH_TOKEN_RE = re.compile(r"[\w./\\-]+\.[A-Za-z0-9]{1,10}")
+HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+BINARY_RE = re.compile(r'^Binary files ("?a/.+|/dev/null) and ("?b/.+|/dev/null) differ$')
 #: `[user@]host:path`; the host needs two characters, so a Windows drive path is not read as one.
-_SCP_REMOTE = re.compile(r"^(?:[\w.-]+@)?[\w.-]{2,}:(?!//)(.+)$")
-_DRIVE = re.compile(r"^[A-Za-z]:")
+SCP_REMOTE_RE = re.compile(r"^(?:[\w.-]+@)?[\w.-]{2,}:(?!//)(.+)$")
+DRIVE_RE = re.compile(r"^[A-Za-z]:")
+#: git's C-quoting of a path (`core.quotepath=off` still quotes quotes, backslashes and controls).
+_C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+
+T = TypeVar("T")
 
 
 def _bare(agent_type: str) -> str:
-    """`agent_type` without a `plugin:` prefix."""
-    return agent_type.rsplit(":", 1)[-1].strip()
+    """`agent_type` without a `plugin:` prefix, case-folded."""
+    return agent_type.rsplit(":", 1)[-1].strip().casefold()
 
 
 def auditor_types() -> frozenset[str]:
-    """The auditor list: `RECALL_AUDITOR_TYPES` (comma separated) when set, else the default."""
+    """The auditor list: `RECALL_AUDITOR_TYPES` (comma separated) when it names one, else the default.
+
+    A value that names no type (``,``) falls back to the default and says so, rather than switching
+    the hook off in silence.
+    """
     raw = os.environ.get("RECALL_AUDITOR_TYPES", "")
-    names = [_bare(name) for name in raw.split(",")] if raw.strip() else list(DEFAULT_AUDITOR_TYPES)
-    return frozenset(name for name in names if name)
+    if raw.strip():
+        names = frozenset(name for name in (_bare(part) for part in raw.split(",")) if name)
+        if names:
+            return names
+        _log(f"RECALL_AUDITOR_TYPES={raw!r} names no agent type; using the default list")
+    return frozenset(DEFAULT_AUDITOR_TYPES)
 
 
 def memo_directory() -> Path:
-    """Where the CCA memos are read from."""
+    """Where the CCA memos are read from.
+
+    `CCA_BUGS_DIR` is read exactly as CCA reads it (`cca_checks.bugs.store`: the raw value), so the
+    two always name the same directory.
+    """
     explicit = os.environ.get("RECALL_AUDITOR_MEMOS", "").strip()
     if explicit:
         return Path(explicit).expanduser()
-    bugs = os.environ.get("CCA_BUGS_DIR", "").strip()
+    bugs = os.environ.get("CCA_BUGS_DIR")
     if bugs:
-        return Path(bugs).expanduser() / "memos"
+        return Path(bugs) / "memos"
     return Path.home() / ".claude" / "cca-bugs" / "memos"
 
 
 def _budget() -> float:
-    try:
-        value = float(os.environ.get("RECALL_AUDITOR_BRIEF_BUDGET", "") or BUDGET_SECONDS)
-    except ValueError:
+    """The budget in seconds: `RECALL_AUDITOR_BRIEF_BUDGET` within (0, `MAX_BUDGET_SECONDS`], else
+    the default, logging any value it did not use as given."""
+    raw = os.environ.get("RECALL_AUDITOR_BRIEF_BUDGET", "").strip()
+    if not raw:
         return BUDGET_SECONDS
-    return value if value > 0 else BUDGET_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        _log(f"RECALL_AUDITOR_BRIEF_BUDGET={raw!r} is not a positive number of seconds; using {BUDGET_SECONDS}")
+        return BUDGET_SECONDS
+    if value > MAX_BUDGET_SECONDS:
+        _log(f"RECALL_AUDITOR_BRIEF_BUDGET={raw!r} is above {MAX_BUDGET_SECONDS} s; using {MAX_BUDGET_SECONDS}")
+        return MAX_BUDGET_SECONDS
+    return value
 
 
 def log_path() -> Path:
+    """The hook's log: `<claude config home>/logs/recall-auditor-brief.log`."""
     from recall_hooks import claude_config_home
 
     return claude_config_home() / "logs" / LOG_NAME
+
+
+def cache_path(directory: Path) -> Path:
+    """The parsed-memo cache for `directory`: one file per memo directory, so two configurations
+    reading different directories never evict each other."""
+    from recall_hooks import claude_config_home
+
+    try:
+        key = str(Path(directory).resolve())
+    except OSError:
+        key = str(directory)
+    digest = hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+    return claude_config_home() / "cache" / f"{CACHE_PREFIX}{digest}.json"
+
+
+def warm_command() -> str:
+    """The warm command as the hook itself runs: this interpreter, `-P`, and this copy of
+    `recall_hooks` on `PYTHONPATH`, so it imports the code (and so writes the cache) the hook reads."""
+    package_parent = Path(__file__).resolve().parent.parent
+    return f'PYTHONPATH="{package_parent}" "{sys.executable}" -P -m recall_hooks warm-auditor-brief'
 
 
 def _log(reason: str) -> None:
@@ -145,11 +218,39 @@ def _log(reason: str) -> None:
     try:
         path = log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        line = " ".join(reason.split())[:500]
+        line = " ".join(reason.split())[:LOG_LINE_CHARS]
         with path.open("a", encoding="utf-8") as handle:
             handle.write(f"{datetime.now(UTC).isoformat(timespec='seconds')} {line}\n")
     except Exception:  # BROAD-CATCH: fail-open  (an unwritable log is not a failure)
         pass
+
+
+class _Background(Generic[T]):
+    """`fn` on a daemon thread, waited for with a bound: the shape both the hook's hard stop and
+    the memo reader use. A thread still running at the bound is abandoned, never joined again."""
+
+    def __init__(self, fn: Callable[[], T], name: str) -> None:
+        self._value: T | None = None
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, args=(fn,), name=name, daemon=True)
+        self._thread.start()
+
+    def _run(self, fn: Callable[[], T]) -> None:
+        try:
+            self._value = fn()
+        except BaseException as exc:  # BROAD-CATCH: error-translation  (re-raised by `value`)
+            self._error = exc
+
+    def wait(self, timeout: float) -> bool:
+        """Whether `fn` finished within `timeout` seconds."""
+        self._thread.join(max(0.0, timeout))
+        return not self._thread.is_alive()
+
+    def value(self) -> T:
+        """`fn`'s result, or its exception re-raised. Call only after `wait` returned True."""
+        if self._error is not None:
+            raise self._error
+        return self._value  # type: ignore[return-value]  # set by `_run` before `wait` returned True
 
 
 # --- scope: the repository, the named files, the changed code -----------------------------------
@@ -178,9 +279,11 @@ _GIT_SAFE_ENV = {
 }
 _GIT_UNSAFE_ENV = ("GIT_EXTERNAL_DIFF", "GIT_DIFF_OPTS")
 #: The diff options every scope diff uses: commit to commit, no driver, fixed prefixes (a user's
-#: `diff.noprefix` or `diff.mnemonicPrefix` would otherwise leave every header unparseable).
+#: `diff.noprefix` or `diff.mnemonicPrefix` would otherwise leave every header unparseable), and no
+#: rename detection, so a renamed file arrives as a deletion and an addition, each with a header.
 _DIFF_OPTIONS = (
-    "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=0", "--src-prefix=a/", "--dst-prefix=b/",
+    "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0",
+    "--src-prefix=a/", "--dst-prefix=b/",
 )
 
 
@@ -207,7 +310,9 @@ def _start_git(cwd: str, *args: str, stdin: bool = False) -> subprocess.Popen[by
 def _finish_git(process: subprocess.Popen[bytes], deadline: float, data: bytes | None = None) -> bytes:
     """The output of a started git call. Raises `CalledProcessError` on failure, timeout past `deadline`."""
     try:
-        out, err = process.communicate(input=data, timeout=max(deadline - time.monotonic(), 0.05))
+        out, err = process.communicate(
+            input=data, timeout=max(deadline - time.monotonic(), MIN_GIT_WAIT_SECONDS)
+        )
     except subprocess.TimeoutExpired:
         process.kill()
         process.communicate()
@@ -223,7 +328,7 @@ def _stop(processes: list[subprocess.Popen[bytes]]) -> None:
         if process.poll() is None:
             process.kill()
             try:
-                process.communicate(timeout=0.2)
+                process.communicate(timeout=REAP_WAIT_SECONDS)
             except (subprocess.TimeoutExpired, OSError):
                 pass
 
@@ -232,7 +337,7 @@ def repo_identity(url: str) -> str | None:
     """`owner/name` from a remote URL (https, ssh, or scp-like with or without a user), or None."""
     url = url.strip().rstrip("/")
     url = url.removesuffix(".git")
-    scp = _SCP_REMOTE.match(url)
+    scp = SCP_REMOTE_RE.match(url)
     if "://" in url:
         path = urlsplit(url).path
     elif scp:
@@ -251,20 +356,24 @@ def named_files(prompt: str, root: Path) -> list[str]:
     authenticates to that host, which could send the user's credentials anywhere. An absolute
     token counts only when it spells out a path under `root` (case-insensitively on Windows). A
     path that passes is then resolved, so a symlink out of the repository is refused and the
-    name is the one git and the records use, in the file system's own case.
+    name is the one git and the records use, in the file system's own case. At most
+    `MAX_NAMED_TOKENS` distinct tokens reach the file system, so a prompt that pastes a long
+    listing cannot spend the budget on it (measured 2026-10-22: 4000 tokens cost 6.6 s).
     """
     found: list[str] = []
     seen: set[str] = set()
     fold = str.casefold if os.name == "nt" else str
-    root_text = fold(_DRIVE.sub("", root.as_posix()).rstrip("/"))
+    root_text = fold(DRIVE_RE.sub("", root.as_posix()).rstrip("/"))
     try:
         resolved_root = root.resolve()
     except OSError:
         return found
-    for token in _PATH_TOKEN.findall(prompt):
+    for token in PATH_TOKEN_RE.findall(prompt):
         token = token.replace("\\", "/")
         if token in seen:
             continue
+        if len(seen) >= MAX_NAMED_TOKENS:
+            break
         seen.add(token)
         if token.startswith("/"):
             if not root_text or not fold(token).startswith(root_text + "/"):
@@ -286,37 +395,93 @@ def named_files(prompt: str, root: Path) -> list[str]:
     return found
 
 
+def _unquote_c(text: str) -> str:
+    """A git C-quoted path's inside, unescaped: `\\"`, `\\\\`, the control escapes, and octal bytes."""
+    out = bytearray()
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and index + 1 < len(text):
+            following = text[index + 1]
+            if following in _C_ESCAPES:
+                out.append(_C_ESCAPES[following])
+                index += 2
+                continue
+            octal = text[index + 1 : index + 4]
+            if len(octal) == 3 and all(digit in "01234567" for digit in octal):
+                out.append(int(octal, 8))
+                index += 4
+                continue
+        out.extend(char.encode("utf-8"))
+        index += 1
+    return out.decode("utf-8", "replace")
+
+
+def _header_path(raw: str, prefix: str) -> str | None:
+    """The path a `---`/`+++`/`Binary files` side names, without `prefix`, or None for `/dev/null`.
+
+    git ends a header path holding a space with a tab, and C-quotes a path holding a quote, a
+    backslash or a control character; both forms are read back to the plain path.
+    """
+    name = raw.removesuffix("\t")
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        name = _unquote_c(name[1:-1])
+    return name[len(prefix) :] if name.startswith(prefix) else None
+
+
+def _mode_only_path(rest: str) -> str | None:
+    """The path of a `diff --git a/P b/P` line, when both sides name the same unquoted path."""
+    if not rest.startswith("a/") or (len(rest) - 5) % 2:
+        return None
+    half = (len(rest) - 5) // 2
+    path = rest[2 : 2 + half]
+    return path if path and rest == f"a/{path} b/{path}" else None
+
+
 def changed_lines(diff: str) -> dict[str, set[int] | None]:
     """Each file a `git diff --unified=0` touches, with its changed new-side lines (None: deleted).
 
     Headers are read only between `diff --git` and the first hunk, so a removed line whose text
-    starts with `-- ` is never mistaken for a file header.
+    starts with `-- ` is never mistaken for a file header. A file whose change has no text hunks
+    (a binary file, a mode change) is listed with no lines, so it is still in scope at file level.
     """
     changes: dict[str, set[int] | None] = {}
     in_header = False
     old: str | None = None
     current: str | None = None
+    pending: str | None = None  # a mode-only path, kept only if its block names no other path
+
+    def flush() -> None:
+        if pending is not None and current is None:
+            changes.setdefault(pending, set())
+
     for line in diff.splitlines():
         if line.startswith("diff --git "):
+            flush()
             in_header, old, current = True, None, None
+            pending = _mode_only_path(line[len("diff --git ") :])
         elif in_header and line.startswith("--- "):
-            name = line[4:]
-            old = name[2:] if name.startswith("a/") else None
+            old = _header_path(line[4:], "a/")
         elif in_header and line.startswith("+++ "):
-            name = line[4:]
-            new = name[2:] if name.startswith("b/") else None
+            new = _header_path(line[4:], "b/")
             current = new or old
+            if current is not None:
+                changes.setdefault(current, set() if new else None)
+        elif in_header and (binary := BINARY_RE.match(line)):
+            new = _header_path(binary.group(2), "b/")
+            current = new or _header_path(binary.group(1), "a/")
             if current is not None:
                 changes.setdefault(current, set() if new else None)
         elif line.startswith("@@"):
             in_header = False
-            match = _HUNK.match(line)
+            match = HUNK_RE.match(line)
             lines = changes.get(current) if current is not None else None
             if match is None or lines is None:
                 continue
             start, count = int(match.group(1)), int(match.group(2) or 1)
             # A pure deletion (count 0) sits after line `start`; that line is where it happened.
             lines.update(range(start, start + count) if count else {max(start, 1)})
+    flush()
     return changes
 
 
@@ -329,6 +494,21 @@ def _read_source(path: Path) -> str | None:
         return None
 
 
+def _innermost_symbols(spans: list[Any], line_count: int) -> list[str | None]:
+    """For each line 1..`line_count`, `enclosing_symbol`'s answer, from one pass over the spans.
+
+    Spans are painted largest first, so a smaller span overwrites the one around it, and among
+    spans of one size the later start is painted last: `enclosing_symbol`'s tie-break (the
+    smallest span, then the latest start). One table instead of a scan of every span per line,
+    which a large new module made cost hundreds of milliseconds.
+    """
+    owner: list[str | None] = [None] * (line_count + 1)
+    for span in sorted(spans, key=lambda s: (-(s.end_line - s.start_line), s.start_line)):
+        for line in range(max(span.start_line, 1), min(span.end_line, line_count) + 1):
+            owner[line] = span.symbol
+    return owner
+
+
 def _python_anchors(file: str, source: str, lines: set[int]) -> list[dict[str, Any]]:
     """One anchor per symbol enclosing a changed line; a module-level line anchors the file.
 
@@ -336,7 +516,8 @@ def _python_anchors(file: str, source: str, lines: set[int]) -> list[dict[str, A
     (`code_sha` of the span's normalised lines) applied over ONE parse of the file. Calling those
     two per line and per symbol re-parses the file each time: measured 2026-10-22 on a branch
     adding two modules, 97 anchors cost about 750 ms, most of the hook's budget.
-    `tests/test_auditor_brief_hook.py` checks the hash against `symbol_sha` itself.
+    `tests/test_auditor_brief_hook.py` checks the hash against `symbol_sha` and the symbol against
+    `enclosing_symbol` itself.
     """
     from recall.anchors import code_sha, normalize, resolve_symbols
 
@@ -345,17 +526,11 @@ def _python_anchors(file: str, source: str, lines: set[int]) -> list[dict[str, A
     except SyntaxError:
         # A file mid-edit: no symbols to resolve, so the file is anchored as a whole.
         return [{"file": file, "symbol": None, "code_sha": code_sha(source)}]
-    symbols: list[str | None] = []
-    for line in sorted(lines):
-        containing = [s for s in spans if s.start_line <= line <= s.end_line]
-        symbol = (
-            min(containing, key=lambda s: (s.end_line - s.start_line, -s.start_line)).symbol
-            if containing
-            else None
-        )
-        if symbol not in symbols:
-            symbols.append(symbol)
     lines_of = normalize(source).split("\n")
+    owner = _innermost_symbols(spans, len(lines_of))
+    symbols: dict[str | None, None] = {}
+    for line in sorted(lines):
+        symbols.setdefault(owner[line] if 0 < line < len(owner) else None, None)
     by_name = {span.symbol: span for span in spans}
 
     def sha(symbol: str | None) -> str:
@@ -392,7 +567,7 @@ def _small(path: Path) -> bool:
 
     A missing copy is not small: a changed file deleted from the work tree, or outside a sparse
     checkout, still exists at HEAD, and its blob would be streamed whole. Like the pre-fix work-tree
-    read, such a file is anchored at file level with no hash.
+    read, such a file is anchored at file level, with the hash `UNKNOWN_SHA`.
     """
     try:
         return path.stat().st_size <= MAX_FILE_BYTES
@@ -440,6 +615,119 @@ def start_scope(cwd: str) -> dict[str, subprocess.Popen[bytes]]:
     return started
 
 
+@dataclass
+class _GitScope:
+    """What git told the scope: the repository, the merge base and its diff, and the blobs."""
+
+    root: Path
+    repo: str
+    named: list[str]
+    base: str | None = None
+    changes: dict[str, set[int] | None] = field(default_factory=dict)
+    blobs: dict[str, bytes | None] = field(default_factory=dict)
+
+
+def _base_and_diff(
+    started: dict[str, subprocess.Popen[bytes]], cwd: str, deadline: float, processes: list[subprocess.Popen[bytes]]
+) -> tuple[str | None, str | None]:
+    """The merge base and the commit-to-commit diff against the first of `BASE_REFS` that has one."""
+    for index, ref in enumerate(BASE_REFS):
+        if index == 0:
+            pair = (started["base"], started["diff"])
+        else:
+            first = _start_git(cwd, "merge-base", "HEAD", ref)
+            processes.append(first)
+            second = _start_git(cwd, *_DIFF_OPTIONS, "--merge-base", ref, "HEAD", "--")
+            processes.append(second)
+            pair = (first, second)
+        try:
+            base = _finish_git(pair[0], deadline).decode("ascii", "replace").strip() or None
+            return base, _finish_git(pair[1], deadline).decode("utf-8", "replace")
+        except subprocess.CalledProcessError:
+            continue  # no such ref, or no merge base with it: try the next
+    _log(f"no base ref among {', '.join(BASE_REFS)} has a merge base with HEAD; scope is the named files only")
+    return None, None
+
+
+def _collect(
+    started: dict[str, subprocess.Popen[bytes]], cwd: str, prompt: str, deadline: float
+) -> _GitScope:
+    """Finish the started git calls and fetch, in one `cat-file --batch`, every blob the anchors need."""
+    from recall.records import MAX_QUERY_ANCHORS
+
+    processes = list(started.values())
+    try:
+        root_text = _finish_git(started["root"], deadline).decode("utf-8", "replace").strip()
+        if not root_text:
+            raise RuntimeError(f"{cwd} is not inside a git work tree")
+        root = Path(root_text)
+        repo = repo_identity(_finish_git(started["url"], deadline).decode("utf-8", "replace"))
+        if repo is None:
+            raise RuntimeError("the origin remote names no owner/name repository")
+        base, diff = _base_and_diff(started, cwd, deadline, processes)
+        found = _GitScope(root=root, repo=repo, named=named_files(prompt, root), base=base)
+        found.changes = changed_lines(diff) if diff is not None else {}
+        # One batch for every copy git must supply: a named Python file's merge-base copy (its
+        # uncommitted change is found against it) and a changed file's HEAD copy (the commit diff's
+        # line numbers count that copy's lines, not the work tree's).
+        # `cat-file` streams a blob whole, so a file whose work-tree copy is over `MAX_FILE_BYTES`,
+        # or absent, is not requested at all (the pre-fix code skipped it on the same stat); it is
+        # anchored at file level with `UNKNOWN_SHA`, which never matches a hash exactly.
+        specs = [f"{base}:{file}" for file in found.named if base and file.endswith(".py") and _small(root / file)]
+        specs += [
+            f"HEAD:{file}"
+            for file, lines in found.changes.items()
+            if lines is not None and file not in found.named and _small(root / file)
+        ]
+        specs = [spec for spec in specs if "\n" not in spec][: len(found.named) + MAX_QUERY_ANCHORS]
+        if specs:
+            batch = _start_git(cwd, "cat-file", "--batch", stdin=True)
+            processes.append(batch)
+            request = "".join(f"{spec}\n" for spec in specs).encode("utf-8")
+            found.blobs = _parse_batch(_finish_git(batch, deadline, request), specs)
+        return found
+    finally:
+        _stop(processes)
+
+
+def _anchors(found: _GitScope, deadline: float) -> tuple[list[dict[str, Any]], bool]:
+    """The query anchors for `found`, named files first, and whether the limit or deadline cut them."""
+    from recall.anchors import code_sha
+    from recall.records import MAX_QUERY_ANCHORS
+
+    anchors: list[dict[str, Any]] = []
+    # Named files first: the prompt asked for them, so the cap below never drops one for a diff entry.
+    for file in found.named:
+        if time.monotonic() > deadline:
+            return anchors, True
+        source = _read_source(found.root / file)
+        if source is None:
+            anchors.append({"file": file, "symbol": None, "code_sha": UNKNOWN_SHA})
+            continue
+        lines: set[int] = set()
+        if found.base and file.endswith(".py"):
+            blob = found.blobs.get(f"{found.base}:{file}")
+            if blob is None or len(blob) <= MAX_FILE_BYTES:
+                lines = _changed_since(blob.decode("utf-8", "replace") if blob is not None else None, source)
+        if lines:
+            anchors.extend(_python_anchors(file, source, lines))
+        else:
+            anchors.append({"file": file, "symbol": None, "code_sha": code_sha(source)})
+    for file, changed in found.changes.items():
+        if file in found.named:
+            continue
+        if len(anchors) >= MAX_QUERY_ANCHORS or time.monotonic() > deadline:
+            return anchors, True  # the rest would not be queried, or there is no time left to read it
+        source = _blob_text(found.blobs.get(f"HEAD:{file}")) if changed is not None else None
+        if source is None:
+            anchors.append({"file": file, "symbol": None, "code_sha": UNKNOWN_SHA})
+        elif file.endswith(".py") and changed:
+            anchors.extend(_python_anchors(file, source, changed))
+        else:
+            anchors.append({"file": file, "symbol": None, "code_sha": code_sha(source)})
+    return anchors, False
+
+
 def finish_scope(
     started: dict[str, subprocess.Popen[bytes]], cwd: str, prompt: str, *, deadline: float
 ) -> tuple[str, list[dict[str, Any]]]:
@@ -450,100 +738,16 @@ def finish_scope(
     from disk against the merge-base copy from `git cat-file --batch`, so their uncommitted changes
     count too. An uncommitted change in a file the prompt does not name is not in scope.
     """
-    processes = list(started.values())
-    try:
-        root_text = _finish_git(started["root"], deadline).decode("utf-8", "replace").strip()
-        if not root_text:
-            raise RuntimeError(f"{cwd} is not inside a git work tree")
-        root = Path(root_text)
-        repo = repo_identity(_finish_git(started["url"], deadline).decode("utf-8", "replace"))
-        if repo is None:
-            raise RuntimeError("the origin remote names no owner/name repository")
-        base: str | None = None
-        diff: str | None = None
-        for index, ref in enumerate(BASE_REFS):
-            if index == 0:
-                pair = (started["base"], started["diff"])
-            else:
-                pair = (
-                    _start_git(cwd, "merge-base", "HEAD", ref),
-                    _start_git(cwd, *_DIFF_OPTIONS, "--merge-base", ref, "HEAD", "--"),
-                )
-                processes.extend(pair)
-            try:
-                base = _finish_git(pair[0], deadline).decode("ascii", "replace").strip() or None
-                diff = _finish_git(pair[1], deadline).decode("utf-8", "replace")
-                break
-            except subprocess.CalledProcessError:
-                base, diff = None, None  # no such ref, or no merge base with it: try the next
-        named = named_files(prompt, root)
-        changes = changed_lines(diff) if diff is not None else {}
-        from recall.records import MAX_QUERY_ANCHORS
+    from recall.records import MAX_QUERY_ANCHORS
 
-        # One batch for every copy git must supply: a named Python file's merge-base copy (its
-        # uncommitted change is found against it) and a changed file's HEAD copy (the commit diff's
-        # line numbers count that copy's lines, not the work tree's).
-        # `cat-file` streams a blob whole, so a file whose work-tree copy is over `MAX_FILE_BYTES`,
-        # or absent, is not requested at all (the pre-fix code skipped it on the same stat); it is
-        # anchored at file level with no hash, as `_read_source` would have left it.
-        specs = [f"{base}:{file}" for file in named if base and file.endswith(".py") and _small(root / file)]
-        specs += [
-            f"HEAD:{file}"
-            for file, lines in changes.items()
-            if lines is not None and file not in named and _small(root / file)
-        ]
-        specs = [spec for spec in specs if "\n" not in spec][: len(named) + MAX_QUERY_ANCHORS]
-        blobs: dict[str, bytes | None] = {}
-        if specs:
-            batch = _start_git(cwd, "cat-file", "--batch", stdin=True)
-            processes.append(batch)
-            request = "".join(f"{spec}\n" for spec in specs).encode("utf-8")
-            blobs = _parse_batch(_finish_git(batch, deadline, request), specs)
-    finally:
-        _stop(processes)
-
-    from recall.anchors import code_sha
-
-    anchors: list[dict[str, Any]] = []
-    cut = False
-    # Named files first: the prompt asked for them, so the cap below never drops one for a diff entry.
-    for file in named:
-        if time.monotonic() > deadline:
-            cut = True
-            break
-        source = _read_source(root / file)
-        if source is None:
-            anchors.append({"file": file, "symbol": None, "code_sha": None})
-            continue
-        lines: set[int] = set()
-        if base and file.endswith(".py"):
-            blob = blobs.get(f"{base}:{file}")
-            if blob is None or len(blob) <= MAX_FILE_BYTES:
-                lines = _changed_since(blob.decode("utf-8", "replace") if blob is not None else None, source)
-        if lines:
-            anchors.extend(_python_anchors(file, source, lines))
-        else:
-            anchors.append({"file": file, "symbol": None, "code_sha": code_sha(source)})
-    for file, changed in changes.items():
-        if file in named or cut:
-            continue
-        if len(anchors) >= MAX_QUERY_ANCHORS or time.monotonic() > deadline:
-            cut = True  # the rest would not be queried, or there is no time left to read it
-            break
-        source = _blob_text(blobs.get(f"HEAD:{file}")) if changed is not None else None
-        if source is None:
-            anchors.append({"file": file, "symbol": None, "code_sha": None})
-        elif file.endswith(".py") and changed:
-            anchors.extend(_python_anchors(file, source, changed))
-        else:
-            anchors.append({"file": file, "symbol": None, "code_sha": code_sha(source)})
-
+    found = _collect(started, cwd, prompt, deadline)
+    anchors, cut = _anchors(found, deadline)
     unique: dict[tuple[str, str | None], dict[str, Any]] = {}
     for anchor in anchors:
         unique.setdefault((anchor["file"], anchor["symbol"]), anchor)
     if cut or len(unique) > MAX_QUERY_ANCHORS:
         _log(f"scope cut to at most {MAX_QUERY_ANCHORS} anchors (the query limit) or by the deadline")
-    return repo, list(unique.values())[:MAX_QUERY_ANCHORS]
+    return found.repo, list(unique.values())[:MAX_QUERY_ANCHORS]
 
 
 def scope(cwd: str, prompt: str, *, deadline: float) -> tuple[str, list[dict[str, Any]]]:
@@ -554,13 +758,13 @@ def scope(cwd: str, prompt: str, *, deadline: float) -> tuple[str, list[dict[str
 # --- the block ---------------------------------------------------------------------------------
 
 
-def _clean(value: object, limit: int = MAX_LINE_CHARS) -> str:
+def _clean(value: object) -> str:
     """`value` on one line with no backtick, so it can never open or close the block's fence."""
     text = str(value).replace("`", "'")
     # `str.split()` with no argument splits on every Unicode line break as well as whitespace
     # (U+2028, U+0085, the ASCII separators), so the joined text is one line.
     text = "".join(ch for ch in " ".join(text.split()) if ch.isprintable())
-    return text if len(text) <= limit else text[: limit - 3] + "..."
+    return text if len(text) <= MAX_LINE_CHARS else text[: MAX_LINE_CHARS - 3] + "..."
 
 
 def _best_anchor(entry: dict[str, Any]) -> dict[str, Any]:
@@ -571,8 +775,12 @@ def _best_anchor(entry: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str]) -> str | None:
-    """One record as one line, or None when a retraction in force hides it."""
+def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unnamed_files: set[str]) -> str | None:
+    """One record as one line, or None when a retraction in force hides it.
+
+    A successor in `unnamed_files` (a false-positive memo) is reported as "superseded" without its
+    name: no false-positive record may reach an auditor, its file name included.
+    """
     from recall.supersession import parse_window, window_contains
 
     successor = entry.get("superseded_by")
@@ -580,27 +788,35 @@ def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str]) -> s
         return None
     record = entry["recall_record"]
     anchor = _best_anchor(entry)
-    label = "BUG" if entry["kind"] == "bug" else "LESSON"
-    text = record.get("summary") if entry["kind"] == "bug" else record.get("rule")
+    label, text_field, _cap = _KIND_VIEW[entry["kind"]]
+    text = record.get(text_field)
     where = f"{anchor.get('file')} {anchor.get('symbol') or '(module)'}"
     notes = []
     if successor is not None:
-        notes.append(f"superseded by {successor}")
+        notes.append("superseded" if successor in unnamed_files else f"superseded by {successor}")
     if not window_contains(parse_window(entry.get("valid_from"), entry.get("valid_until")), now):
         notes.append("outside its validity window")
     suffix = f" ({'; '.join(notes)})" if notes else ""
     return _clean(f"{label} {entry['id']} [{entry['anchor_match']}] {where}: {text or ''}{suffix}")
 
 
-def render(entries: list[dict[str, Any]], *, now: datetime, retraction_files: set[str]) -> str:
+def render(
+    entries: list[dict[str, Any]],
+    *,
+    now: datetime,
+    retraction_files: set[str],
+    unnamed_files: frozenset[str] = frozenset(),
+) -> str:
     """The block for `entries` (best match first), or "" when none is shown. At most `MAX_BLOCK_CHARS`."""
-    bugs: list[str] = []
-    lessons: list[str] = []
+    buckets: dict[str, list[str]] = {kind: [] for kind in _KIND_VIEW}
     for entry in entries:
-        bucket, cap = (bugs, MAX_BUGS) if entry.get("kind") == "bug" else (lessons, MAX_LESSONS)
-        if len(bucket) < cap and (line := _line(entry, now, retraction_files)) is not None:
+        kind = entry.get("kind")
+        if kind not in _KIND_VIEW:
+            continue
+        bucket, cap = buckets[kind], _KIND_VIEW[kind][2]
+        if len(bucket) < cap and (line := _line(entry, now, retraction_files, set(unnamed_files))) is not None:
             bucket.append(line)
-    lines = bugs + lessons
+    lines = [line for kind in _KIND_VIEW for line in buckets[kind]]
     if not lines:
         return ""
     head = [
@@ -612,8 +828,10 @@ def render(entries: list[dict[str, Any]], *, now: datetime, retraction_files: se
     ]
     tail = "```"
     note = "({} more not shown: size cap)"
-    # Room for the fence's last line and for the note, whatever its count (at most two digits).
-    budget = MAX_BLOCK_CHARS - len("\n".join(head)) - len(tail) - len(note.format(99)) - 2
+    # Room for the fence's last line and for the note at its longest (every line but none shown),
+    # and for the two line breaks that join the head, the shown lines and the tail.
+    joins = 2
+    budget = MAX_BLOCK_CHARS - len("\n".join(head)) - len(tail) - len(note.format(len(lines))) - joins
     shown: list[str] = []
     used = 0
     for line in lines:
@@ -626,12 +844,6 @@ def render(entries: list[dict[str, Any]], *, now: datetime, retraction_files: se
     return "\n".join([*head, *shown, tail])
 
 
-def cache_path() -> Path:
-    from recall_hooks import claude_config_home
-
-    return claude_config_home() / "cache" / CACHE_NAME
-
-
 def build_block(cwd: str, prompt: str, *, deadline: float, now: datetime | None = None) -> str:
     """The block for an auditor launched in `cwd` with `prompt`, or "" when nothing matches.
 
@@ -640,42 +852,57 @@ def build_block(cwd: str, prompt: str, *, deadline: float, now: datetime | None 
     before `deadline`, keeping what it parsed in the on-disk cache.
     """
     started = start_scope(cwd)
-    loaded: dict[str, Any] = {}
+    directory = memo_directory()
 
-    def load() -> None:
+    def load() -> Any:
+        from recall import records_files
+
         try:
-            from recall import records_files
-
-            loaded["records"] = records_files.load_memo_records(
-                memo_directory(), cache_file=cache_path(), deadline=deadline - FINISH_RESERVE
+            return records_files.load_memo_records(
+                directory, cache_file=cache_path(directory), deadline=deadline - FINISH_RESERVE
             )
         except TimeoutError as exc:
-            loaded["error"] = TimeoutError(f"{exc}; `{WARM_COMMAND}` fills it with no deadline")
-        except BaseException as exc:  # BROAD-CATCH: error-translation  (re-raised on the waiting thread)
-            loaded["error"] = exc
+            raise TimeoutError(f"{exc}; run `{warm_command()}` with the hook's environment to fill it") from exc
 
-    reader = threading.Thread(target=load, name="recall-auditor-brief-memos", daemon=True)
-    reader.start()
+    reader: _Background[Any] = _Background(load, "recall-auditor-brief-memos")
     repo, anchors = finish_scope(started, cwd, prompt, deadline=deadline)
-    reader.join(max(0.0, deadline - time.monotonic()))
-    if reader.is_alive():
+    if not reader.wait(deadline - time.monotonic()):
         raise TimeoutError("the memo directory was still being read at the deadline")
-    if "error" in loaded:
-        raise loaded["error"]
+    records = reader.value()
     if not anchors:
         return ""
     from recall import records_files
+    from recall.records import RECORD_KINDS
 
     instant = now or datetime.now(UTC)
-    records = loaded["records"]
     entries = records_files.match_memo_records(records, repo=repo, anchors=anchors, kinds=list(KINDS), now=instant)
-    retractions = {
-        memo.file for memo in records if str(memo.record.get("kind", "")).endswith("_retraction")
-    }
-    return render(entries, now=instant, retraction_files=retractions)
+    retraction_kinds = {kind for kind in RECORD_KINDS if kind.endswith("_retraction")}
+    retractions = {memo.file for memo in records if memo.record.get("kind") in retraction_kinds}
+    unnamed = frozenset(memo.file for memo in records if memo.record.get("kind") == "false_positive")
+    return render(entries, now=instant, retraction_files=retractions, unnamed_files=unnamed)
 
 
 # --- the event ---------------------------------------------------------------------------------
+
+
+def _eligible(payload: dict[str, Any]) -> tuple[dict[str, Any], str, str, str] | None:
+    """``(tool_input, agent_type, prompt, cwd)`` when this launch is one to brief, else None.
+
+    Not briefed: another tool, an agent type outside the auditor list, a prompt that is not text or
+    already holds a CCA brief heading or this hook's marker. `cwd` may be empty; the caller logs it.
+    """
+    if payload.get("tool_name") != "Agent":
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    agent_type = str(tool_input.get("subagent_type") or "")
+    if _bare(agent_type) not in auditor_types():
+        return None
+    prompt = tool_input.get("prompt")
+    if not isinstance(prompt, str) or MARKER in prompt or any(h in prompt for h in CCA_HEADINGS):
+        return None
+    return tool_input, agent_type, prompt, str(payload.get("cwd") or "")
 
 
 def pre_agent(payload: dict[str, Any]) -> int:
@@ -683,43 +910,27 @@ def pre_agent(payload: dict[str, Any]) -> int:
     started = time.monotonic()
     agent_type = "?"
     try:
-        if payload.get("tool_name") != "Agent":
+        eligible = _eligible(payload)
+        if eligible is None:
             return 0
-        tool_input = payload.get("tool_input")
-        if not isinstance(tool_input, dict):
-            return 0
-        agent_type = str(tool_input.get("subagent_type") or "")
-        if _bare(agent_type) not in auditor_types():
-            return 0
-        prompt = tool_input.get("prompt")
-        if not isinstance(prompt, str) or MARKER in prompt or any(h in prompt for h in CCA_HEADINGS):
-            return 0
-        cwd = str(payload.get("cwd") or "")
+        tool_input, agent_type, prompt, cwd = eligible
         if not cwd:
             _log(f"{agent_type}: the event carries no cwd; prompt left unchanged")
             return 0
         budget = _budget()
-        outcome: dict[str, Any] = {}
-
-        def work() -> None:
-            try:
-                # The inner bounds fire first, so a slow stage is logged by name; the join below
-                # is the backstop for a stage nothing inside bounds.
-                outcome["block"] = build_block(cwd, prompt, deadline=started + budget - INNER_MARGIN)
-            except BaseException as exc:  # BROAD-CATCH: error-translation  (reported by the waiting thread)
-                outcome["error"] = exc
-
-        worker = threading.Thread(target=work, name="recall-auditor-brief", daemon=True)
-        worker.start()
-        worker.join(max(0.0, started + budget - time.monotonic()))
-        if worker.is_alive():
+        # The inner bounds fire first, so a slow stage is logged by name; the wait below is the
+        # backstop for a stage nothing inside bounds.
+        worker: _Background[str] = _Background(
+            lambda: build_block(cwd, prompt, deadline=started + budget - INNER_MARGIN), "recall-auditor-brief"
+        )
+        if not worker.wait(started + budget - time.monotonic()):
             _log(f"{agent_type}: budget of {budget:.2f}s exceeded; prompt left unchanged")
             return 0
-        if "error" in outcome:
-            error = outcome["error"]
+        try:
+            block = worker.value()
+        except BaseException as error:  # BROAD-CATCH: fail-open  (logged; the prompt is left as it was)
             _log(f"{agent_type}: {type(error).__name__}: {error}; prompt left unchanged")
             return 0
-        block = outcome.get("block") or ""
         if not block:
             return 0
         updated = {**tool_input, "prompt": f"{prompt.rstrip()}\n\n{block}\n"}
@@ -741,17 +952,22 @@ def warm() -> int:
     of a memo file cost about 12 ms on the workstation this was written on (on-access scanning;
     a second read cost about 1 ms, measured 2026-10-22), so a 700-memo directory whose files were
     not opened recently gained as few as a dozen memos per launch, and every launch until it is
-    warm leaves its prompt unchanged.
+    warm leaves its prompt unchanged. Run it the way the hook runs (`warm_command()`): another
+    interpreter or copy of `recall` writes a cache tagged for that copy, which the hook ignores.
     """
     from recall import records_files
 
     directory = memo_directory()
+    cache = cache_path(directory)
     try:
-        loaded = records_files.load_memo_records(directory, cache_file=cache_path())
+        loaded = records_files.load_memo_records(directory, cache_file=cache)
     except OSError as exc:
         print(f"recall: cannot read the memo directory {directory}: {exc}", file=sys.stderr)
         return 1
-    print(f"recall: cached {len(loaded)} record(s) from {directory}; {len(loaded.skipped)} memo(s) skipped")
+    print(
+        f"recall: cached {len(loaded)} record(s) from {directory} in {cache}; "
+        f"{len(loaded.skipped)} memo(s) skipped"
+    )
     return 0
 
 
@@ -760,10 +976,13 @@ __all__ = [
     "DEFAULT_AUDITOR_TYPES",
     "HEADING",
     "MARKER",
+    "UNKNOWN_SHA",
     "auditor_types",
     "build_block",
+    "cache_path",
     "changed_lines",
     "finish_scope",
+    "log_path",
     "memo_directory",
     "named_files",
     "pre_agent",
@@ -771,4 +990,6 @@ __all__ = [
     "repo_identity",
     "scope",
     "start_scope",
+    "warm",
+    "warm_command",
 ]

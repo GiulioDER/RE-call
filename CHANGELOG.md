@@ -8,6 +8,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
+  subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
+  the local CCA memo directory with no network or embedding. Never false positives, never a
+  permission decision, fails open within about a second. Settings: `RECALL_AUDITOR_TYPES`,
+  `RECALL_AUDITOR_MEMOS`, `CCA_BUGS_DIR`, `RECALL_AUDITOR_BRIEF_BUDGET`; the command
+  `python -m recall_hooks warm-auditor-brief` fills its memo cache. See
+  `docs/AUDIT_MEMORY_DESIGN.md`, "Auditor brief hook".
 - Search and evidence now report unchecked semantic query support separately from retrieval
   eligibility, and carry calibration-bound synthetic near-miss coverage when available. Missing
   measurements remain unmeasured and report failures are unavailable. Existing retrieval decisions,

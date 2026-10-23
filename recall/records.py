@@ -8,12 +8,16 @@ so the object a caller wrote and the object `lookup_records` returns compare equ
 That equality is what lets CCA rebuild a ledger row from RE-call's answer
 (`docs/AUDIT_MEMORY_DESIGN.md`, "Round-trip contract").
 
-Two halves:
+Three parts:
 
 - `admit_record` runs where a document's front matter becomes chunk metadata (`recall.index` and
-  `recall.generations`). A record that does not validate, or names a version this code does not
-  read, is dropped from the metadata with a warning naming the file and the reason; the document
-  is indexed without it. Never partially read.
+  `recall.generations`), and where `recall.records_files` reads a memo directory directly. A
+  record that does not validate, or names a version this code does not read, is dropped from the
+  metadata with a warning naming the file and the reason; the document is indexed without it.
+  Never partially read.
+- `match_candidates` is the match, best-of, reverse `caused` edge and ordering rule every records
+  reader shares: `lookup_records` over a store's chunks, and
+  `recall.records_files.match_memo_records` over a memo directory, so the two cannot disagree.
 - `lookup_records` answers by key, with no embedding, no calibration and no abstention: an exact
   key match is not a relevance claim. Superseded and expired records are returned and marked,
   never hidden. In a code tenant a chunk carrying `code_anchor` (its file, symbol and hash) is a
@@ -245,18 +249,24 @@ def admit_record(meta: Mapping[str, object], source: str) -> dict[str, object]:
 # --- the lookup ------------------------------------------------------------------------------
 
 
+def record_parts(record: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
+    """``(id, kind, anchors)`` of an admitted `recall_record`: the one reading every records reader
+    uses, so a store's chunk and a memo file present a record identically."""
+    anchors = record.get("anchors")
+    return (
+        str(record.get("id")),
+        str(record.get("kind")),
+        [a for a in anchors if isinstance(a, dict)] if isinstance(anchors, list) else [],
+    )
+
+
 def _record_of(chunk: Chunk) -> tuple[str, dict[str, Any], str, list[dict[str, Any]]] | None:
     """``(id, recall_record, kind, anchors)`` for a record or code chunk, else None."""
     meta = chunk.metadata
     record = meta.get(RECORD_KEY)
     if isinstance(record, dict) and isinstance(record.get("id"), str):
-        anchors = record.get("anchors")
-        return (
-            record["id"],
-            record,
-            str(record.get("kind")),
-            [a for a in anchors if isinstance(a, dict)] if isinstance(anchors, list) else [],
-        )
+        record_id, kind, anchors = record_parts(record)
+        return record_id, record, kind, anchors
     anchor = meta.get(CODE_ANCHOR_KEY)
     if isinstance(anchor, dict) and isinstance(anchor.get("file"), str):
         return chunk.id, anchor, "code", [
@@ -651,6 +661,7 @@ __all__ = [
     "as_utc",
     "lookup_records",
     "match_candidates",
+    "record_parts",
     "record_problem",
     "record_schema",
     "validated_anchor_query",
