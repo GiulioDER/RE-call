@@ -246,7 +246,7 @@ class AssistantMemos(MemoFolder):
                                            access_context=access_context)
             return key_receipt(listing, path.relative_to(self.index_root).as_posix(), AtomicFact.from_payload(fact),
                                name_of=name_of)
-        except Exception as exc:  # BROAD-CATCH: the memo is written and indexed; only the key report is missing
+        except Exception as exc:  # BROAD-CATCH: fail-open; the memo is written and indexed, only the key report is missing
             return {"state": "unchecked", "error_type": type(exc).__name__}
 
     def forget(
