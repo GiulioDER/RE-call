@@ -40,6 +40,12 @@ def tenant() -> str:
     return f"current-{uuid4().hex}"
 
 
+# Its own budget, as `pyproject.toml` asks of a test with a reason to pass 120s: one run is 15
+# random ledgers and 6 explicit ones, each applied on PostgreSQL and replayed on lite, and measured
+# about 136s on the remote test host at CPUQuota=200% with a one-CPU database (2026-10-23, 40
+# seeds, all green). 400s is about three times that; under load the global 120s cut it off as a
+# timeout that read like a broken equivalence.
+@pytest.mark.timeout(400)
 @settings(
     max_examples=15, deadline=None,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
