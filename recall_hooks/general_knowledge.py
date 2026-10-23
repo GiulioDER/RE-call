@@ -589,9 +589,10 @@ _WINDOWS_PATH = re.compile(r"(?<![a-z0-9])[a-z]:[\\/]" + _PATH_BODY + "*")
 _UNC_PATH = re.compile(r"\\\\" + _PATH_BODY + "+")
 #: A POSIX absolute path (a character must follow the slash, which keeps a bare `/` intact) or `~/x`.
 _POSIX_PATH = re.compile(_PATH_START + "(?:/" + _PATH_BODY + r"+|~[\\/]" + _PATH_BODY + "*)")
-#: Hex runs of 7 or more with at least one digit (ruling R5): a commit hash or object id has digits,
-#: and an English word made of the letters a to f (`defaced`, `effaced`) does not.
-_HEX_RUN = re.compile(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,}\b")
+#: Hex runs of 7 or more with at least one digit AND at least one letter a to f (rulings R5 and R17):
+#: a commit hash or object id has both. An English word made of the letters a to f (`defaced`,
+#: `effaced`) has no digit, and a plain number (`1234567`) has no letter, so it stays for `<n>`.
+_HEX_RUN = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b")
 _DIGITS = re.compile(r"\d+")
 _WHITESPACE = re.compile(r"\s+")
 
@@ -620,7 +621,12 @@ def _ssh_host(args: tuple[str, ...]) -> str:
         host = arg
         if host.startswith("ssh://"):
             host = host[len("ssh://") :].partition("/")[0]
-        return host.rpartition("@")[2].partition(":")[0].lower()
+        host = host.rpartition("@")[2]
+        if host.startswith("["):
+            # A bracketed IPv6 destination: the address is everything up to the matching `]`, and
+            # it holds colons, so the port split below would cut it to `[`.
+            return host[1:].partition("]")[0].lower()
+        return host.partition(":")[0].lower()
     return ""
 
 

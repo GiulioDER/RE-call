@@ -1259,6 +1259,31 @@ def test_a_hex_run_needs_a_digit_so_english_words_survive():
     assert gk.failure_signature("make", error) == "make|object defaced at <hex>"
 
 
+def test_a_plain_number_is_a_number_and_a_hash_with_a_letter_is_hex():
+    """Invariant (ruling R17): a run of 7 or more digits is `<n>`, not `<hex>`; a hex id needs a digit AND
+    a letter a to f; a word with no digit (`defaced`) is untouched.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_plain_number_is_a_number_and_a_hash_with_a_letter_is_hex`.
+    Mutation: `_HEX_RUN` loses its second lookahead `(?=[0-9a-f]*[a-f])`. Symbol: `_HEX_RUN`.
+    Seen: `assert 'make|line <hex>' == 'make|line <n>'`.
+    """
+    assert gk.failure_signature("make", "Exit code 1\nline 1234567") == "make|line <n>"
+    assert gk.failure_signature("make", "Exit code 1\nhash 9f3c2ab1e") == "make|hash <hex>"
+    assert gk.failure_signature("make", "Exit code 1\nobject defaced") == "make|object defaced"
+
+
+def test_the_error_is_cut_before_the_detail_line_is_looked_for():
+    """Invariant (review focus 2, deterministic form): only the first `MAX_ERROR_CHARS` characters are read,
+    so a detail line that starts after them does not exist. An implementation that cut late would find it.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_error_is_cut_before_the_detail_line_is_looked_for`.
+    Mutation: `text = error[:MAX_ERROR_CHARS] ...` becomes `text = error ...` in `failure_signature`.
+    Symbol: `failure_signature`. Seen: `assert 'make|boom' == 'make|exit:1'`.
+    """
+    error = "Exit code 1\n" + "\n" * 5000 + "boom"
+    assert gk.failure_signature("make", error) == "make|exit:1"
+
+
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
@@ -1294,6 +1319,8 @@ def test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code(erro
         ("ssh -p22 examplehost", "ssh:examplehost"),
         ("ssh -tt examplehost", "ssh:examplehost"),
         ("ssh -O exit examplehost", "ssh:examplehost"),
+        ("ssh -l bob [::1]", "ssh:::1"),
+        ("ssh bob@[fe80::1]:22 uptime", "ssh:fe80::1"),
         ("ssh -- examplehost uptime", "ssh:examplehost"),
         ("ssh -J jumphost examplehost uptime", "ssh:examplehost"),
         ("ssh ExampleHost", "ssh:examplehost"),
@@ -1314,7 +1341,8 @@ def test_command_family_is_the_program_and_for_ssh_the_alias(command, expected):
     `ssh:2222`, `ssh:jumphost`, `ssh:key.pem`, `ssh:22`, `ssh:exit`; (b) `.rpartition("@")[2]` removed: the
     `alice@examplehost` case gives `ssh:alice@examplehost`; (c) the alias dropped (`return "ssh"`): ten
     cases fail; (d) `O` removed from `_SSH_VALUE_OPTIONS`: only `ssh -O exit examplehost` fails
-    (`ssh:exit`). Symbols: `_ssh_host`, `command_family`.
+    (`ssh:exit`); (e) the bracketed-IPv6 branch (`if host.startswith("[")`) disabled: the two `[...]`
+    cases fail (`ssh:[` and `ssh:[fe80`). Symbols: `_ssh_host`, `command_family`.
     """
     assert gk.command_family(command) == expected
 
