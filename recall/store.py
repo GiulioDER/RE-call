@@ -33,6 +33,7 @@ from recall.supersession import (  # noqa: F401  # re-exported: public names of 
 )
 from recall.supersession_records import (
     PG_RECORD_COUNT_SQL,
+    erasure_subjects,
     pg_record_removals,
     pg_records,
     records_matching,
@@ -3063,6 +3064,37 @@ class PgVectorStore:
             return {}
         records = self._with_retry(lambda conn: pg_records(conn, self._tenant, self.record_scope))
         return records_matching(records, identifiers)
+
+    def erasure_subjects(self, sources: list[str], *, recorded: bool = False) -> dict[str, set[str]]:
+        """`{source: {name, ...}}`: every name a source security policy decides `sources` by
+        (`recall.supersession_records.erasure_subjects` states the rule).
+
+        What an erasure must authorize after `sources_for_identifiers` resolved the names it was
+        asked for: a name matches a row by its `file` OR its `source`, so the rows it reaches can
+        be authorized by names the caller never gave. With `recorded`, the names of the
+        `SupersessionRecord`s standing for `sources` count too, as a withdrawal reaches them.
+        """
+        if not sources:
+            return {}
+        rows = self._erasure_subject_rows(sources)
+        records = (
+            self._with_retry(lambda conn: pg_records(conn, self._tenant, self.record_scope, sources))
+            if recorded
+            else []
+        )
+        return erasure_subjects(rows, records)
+
+    def _erasure_subject_rows(self, sources: list[str]) -> list[tuple[Any, ...]]:
+        """`(source, file)` for every row of `sources` in this tenant."""
+        return list(
+            self._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT DISTINCT source, metadata->>'file' FROM {self._table} "
+                    "WHERE tenant_id = %s AND source = ANY(%s)",
+                    (self._tenant, sources),
+                ).fetchall()
+            )
+        )
 
     def served_identifiers(self, identifiers: list[str]) -> set[str]:
         """The identifiers (a row's `file` or its `source`) this store serves now.

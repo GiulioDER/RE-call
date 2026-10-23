@@ -1154,6 +1154,20 @@ class GenerationStore(PgVectorStore):
                 resolved[identifier] = [identifier]
         return resolved
 
+    def _erasure_subject_rows(self, sources: list[str]) -> list[tuple[Any, ...]]:
+        """`(source, file)` for `sources` across everything the tenant holds, as
+        `sources_for_identifiers` resolves: every generation and the adopted v0.8 table."""
+        rows: list[tuple[Any, ...]] = list(
+            self._with_retry(
+                lambda conn: conn.execute(
+                    "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
+                    "WHERE tenant_id = %s AND source_uri = ANY(%s)",
+                    (self._tenant, sources),
+                ).fetchall()
+            )
+        )
+        return rows + self._legacy_rows_for_identifiers(sources)
+
     def record_chunks(self) -> list[Chunk]:
         """Every chunk of the served generation carrying an audit record or a code anchor, without
         passage text: the read behind `recall.records.lookup_records`."""

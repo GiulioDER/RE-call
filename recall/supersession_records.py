@@ -159,6 +159,23 @@ def records_matching(
     return resolved
 
 
+def erasure_subjects(
+    rows: Sequence[Sequence[Any]], records: Sequence[SupersessionRecord] = ()
+) -> dict[str, set[str]]:
+    """`{source: {name, ...}}` from `(source, file)` rows and the records standing for sources:
+    the names a source security policy decides each source by.
+
+    A row is authorized by its root-relative `file`, or by its `source` when it has none (the
+    prefix arm of `recall.scope.Scope.sql`), and a record by the same rule. One source can carry
+    several `file` values (indexed from two roots, or across generations), so every one counts.
+    """
+    subjects: dict[str, set[str]] = {}
+    for source, file in [*rows, *((record.source, record.file) for record in records)]:
+        name = file if isinstance(file, str) and file else source
+        subjects.setdefault(str(source), set()).add(str(name))
+    return subjects
+
+
 def sqlite_records(conn: sqlite3.Connection, scope: str, sources: Sequence[str] | None = None) -> list[SupersessionRecord]:
     """`pg_records` for a lite file's `audit_events`."""
     if sources is not None and not sources:
@@ -202,6 +219,7 @@ __all__ = [
     "FORGET_ACTOR",
     "PG_RECORD_COUNT_SQL",
     "WITHDRAW_ACTOR",
+    "erasure_subjects",
     "pending_records",
     "pg_record_count",
     "pg_record_removals",
