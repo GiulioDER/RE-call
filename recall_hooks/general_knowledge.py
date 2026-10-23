@@ -31,7 +31,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from . import HOOK_CONFIG_NAME, project_config_home
 
@@ -208,16 +208,223 @@ def load_index(home: Path | None = None) -> list[Entry]:
         return []
 
 
+# ---------------------------------------------------------------------------------------------
+# Project detection and trigger matching. Everything below returns a value for ANY string input:
+# it runs inside the per-tool-call hook process, where an exception is charged to the client.
+# ---------------------------------------------------------------------------------------------
+
+#: Words that precede the real program and are skipped (case-insensitive). Their flags are NOT
+#: understood: `sudo -u root pytest` yields the program `-u`. That is deliberate, a rule that
+#: guessed which flags take an argument would be wrong in the other direction.
+_WRAPPERS = frozenset({"sudo", "env", "time", "nohup"})
+#: A leading `NAME=value` token (also `$env:NAME=value`): never a program, so it is skipped.
+_ASSIGNMENT = re.compile(r"^[^=/\\]+=")
+_PATH_SEPARATOR = re.compile(r"[\\/]")
+_EXE_SUFFIX = re.compile(r"\.exe$", re.IGNORECASE)
+#: Programs whose arguments name a remote host.
+_HOST_PROGRAMS = frozenset({"ssh", "scp", "sftp", "rsync"})
+
+#: One pass over a command. Alternation order matters: `&&` and `||` before the single `&` and `|`,
+#: so they are one separator each. A word is a run of atoms: a double or single quoted string (an
+#: unterminated quote takes the rest of the command, it never raises), a redirection such as `2>&1`
+#: or `&>` (whose `&` is NOT a separator), or plain characters. A backslash is an ordinary
+#: character, because on Windows it separates path components. Anything else (an exotic space) is
+#: skipped by `finditer`, which acts as a token boundary.
+_SCAN = re.compile(
+    r"""(?P<sep>&&|\|\||;|\||\n|\r|&(?!>))
+    |(?P<ws>[ \t\f\v]+)
+    |(?P<word>(?:"[^"]*"?|'[^']*'?|[<>]+&?|&(?=>)|[^\s"'|;&<>]+)+)
+    """,
+    re.VERBOSE,
+)
+#: The pieces of one word: a quoted string (quotes dropped) or an unquoted run.
+_ATOM = re.compile(r"\"([^\"]*)\"?|'([^']*)'?|([^\"']+)")
+
+
+class Segment(NamedTuple):
+    """One simple command of a command line: its program (normalised) and the tokens after it."""
+
+    program: str
+    args: tuple[str, ...]
+
+
+def _unquote(word: str) -> str:
+    return "".join(m.group(m.lastindex or 3) or "" for m in _ATOM.finditer(word))
+
+
+def _program(token: str) -> str:
+    """The basename of `token`, split on both `/` and `\\`, without `.exe`, lowercased."""
+    return _EXE_SUFFIX.sub("", _PATH_SEPARATOR.split(token)[-1]).strip().lower()
+
+
+def _segment(tokens: list[str]) -> Segment | None:
+    for index, token in enumerate(tokens):
+        if token.lower() in _WRAPPERS or _ASSIGNMENT.match(token):
+            continue
+        program = _program(token)
+        return Segment(program, tuple(tokens[index + 1 :])) if program else None
+    return None
+
+
+def parse_command(command: str) -> list[Segment]:
+    """The simple commands of `command`, split on `&&`, `||`, `;`, `|`, a lone `&` and newlines.
+
+    Quote aware: a quoted token holding spaces is one token and its quotes are removed, and a
+    separator inside quotes does not split. Not a shell parser (no escapes, no substitutions, no
+    here documents), and it does not need to be: a trigger names a program, and a wrong guess only
+    costs one injection that did not happen. A segment with no program (`& ` alone, a bare
+    assignment) is dropped. Never raises.
+    """
+    segments: list[Segment] = []
+    tokens: list[str] = []
+    for match in _SCAN.finditer(command if isinstance(command, str) else ""):
+        word = match.group("word")
+        if word is not None:
+            tokens.append(_unquote(word))
+        elif match.group("sep") is not None:
+            segment = _segment(tokens)
+            if segment is not None:
+                segments.append(segment)
+            tokens = []
+    segment = _segment(tokens)
+    if segment is not None:
+        segments.append(segment)
+    return segments
+
+
+def command_programs(command: str) -> list[str]:
+    """The program of each simple command in `command`, in order (duplicates kept)."""
+    return [segment.program for segment in parse_command(command)]
+
+
+def repository_name(cwd: str) -> str | None:
+    """The name of the repository `cwd` is inside, or `None`. Never raises.
+
+    Walks up from `cwd` to the FIRST `.git` and stops there. A `.git` directory gives its parent's
+    name. A `.git` FILE is read: `gitdir: <main>/.git/worktrees/<name>` (a linked worktree) gives
+    the name of `<main>`, so every worktree of one repository is one project; any other well-formed
+    `gitdir:` (a submodule, a separate git dir) gives the checkout's own name. A `.git` file that is
+    unreadable or malformed gives `None` rather than a guess from a higher directory. Paths are
+    taken as written, never resolved, so a network path costs no more than the stats it needs.
+    """
+    if not isinstance(cwd, str) or not cwd.strip():
+        return None
+    try:
+        start = Path(cwd)
+        if not start.is_dir():
+            return None
+        for directory in (start, *start.parents):
+            dot_git = directory / ".git"
+            if dot_git.is_dir():
+                return directory.name or None
+            if dot_git.is_file():
+                return _name_from_gitdir_file(directory, dot_git)
+    except (OSError, ValueError):
+        return None
+    except Exception:  # BROAD-CATCH: fail-open
+        return None
+    return None
+
+
+def _name_from_gitdir_file(directory: Path, dot_git: Path) -> str | None:
+    """The repository name a `.git` file points at; the caller catches unreadable and undecodable."""
+    with dot_git.open("rb") as handle:
+        first = handle.read(4096).decode("utf-8").splitlines()[:1]
+    if not first or not first[0].startswith("gitdir:"):
+        return None
+    target = first[0][len("gitdir:") :].strip()
+    if not target:
+        return None
+    if not os.path.isabs(target):
+        target = os.path.normpath(os.path.join(directory, target))
+    parts = [part for part in _PATH_SEPARATOR.split(target) if part]
+    for i in range(len(parts) - 1, 0, -1):
+        if parts[i] == "worktrees" and parts[i - 1] == ".git":
+            return parts[i - 2] if i >= 2 else None
+    return directory.name or None
+
+
+def in_scope(entry: Entry, project: str | None) -> bool:
+    """`global` is always in scope; `project:<name>` only when `name` is the current project."""
+    if entry.scope == "global":
+        return True
+    prefix = "project:"
+    return project is not None and entry.scope.startswith(prefix) and entry.scope[len(prefix) :] == project
+
+
+def _names_host(alias: str, args: tuple[str, ...]) -> bool:
+    """True when an argument is `alias`, `alias:<path>`, or either of those after `user@`."""
+    wanted = alias.casefold()
+    for arg in args:
+        reference = arg.rpartition("@")[2].casefold()
+        if reference == wanted or reference.startswith(wanted + ":"):
+            return True
+    return False
+
+
+def matched_trigger(entry: Entry, command: str, segments: list[Segment], project: str | None) -> Trigger | None:
+    """The FIRST trigger of `entry` that matches, or `None` (also `None` when out of scope).
+
+    `segments` is `parse_command(command)`, passed in so a caller matching many entries parses once.
+    The event log reports which trigger fired, and takes it from here instead of re-deriving the
+    rules. Never raises.
+    """
+    if not in_scope(entry, project):
+        return None
+    for trigger in entry.triggers:
+        if trigger.kind == "command":
+            wanted = trigger.value.lower()
+            if any(segment.program == wanted for segment in segments):
+                return trigger
+        elif trigger.kind == "host":
+            if any(s.program in _HOST_PROGRAMS and _names_host(trigger.value, s.args) for s in segments):
+                return trigger
+        elif trigger.kind == "command_regex":
+            pattern = compiled(trigger.value)
+            if pattern is None:
+                continue
+            try:
+                found = pattern.search(command)
+            except Exception:  # BROAD-CATCH: fail-open
+                continue
+            if found:
+                return trigger
+    return None
+
+
+def match_triggers(entries: list[Entry], command: str, project: str | None) -> list[Entry]:
+    """The entries whose scope and triggers fit `command`, in input order, each id once."""
+    if not isinstance(command, str) or not command.strip():
+        return []
+    segments = parse_command(command)
+    matched: list[Entry] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if entry.id in seen:
+            continue
+        if matched_trigger(entry, command, segments, project) is not None:
+            seen.add(entry.id)
+            matched.append(entry)
+    return matched
+
+
 __all__ = [
     "INDEX_NAME",
     "INDEX_SCHEMA",
     "MAX_PER_CALL",
     "Entry",
+    "Segment",
     "Trigger",
+    "command_programs",
     "compiled",
+    "in_scope",
     "knowledge_home",
     "load_index",
     "load_settings",
     "log_path",
+    "match_triggers",
+    "matched_trigger",
+    "parse_command",
+    "repository_name",
     "settings",
 ]
