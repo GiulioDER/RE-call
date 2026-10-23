@@ -4,13 +4,20 @@ One scripted sequence runs against each backend with the same tenant, generation
 the two transcripts must be equal step by step, with nothing normalised: decision codes, event
 ids, card ids, fact payloads, the current projection at three instants, the full event stream,
 and the receipt replay and conflict answers. Invariant: a client of `recall_apply_fact` and
-`recall_current_facts` cannot tell the backends apart.
+`recall_current_facts` cannot tell the backends apart. On each backend, too, `current` answered
+from the materialized current facts (`recall.fact_current`) equals `project_current` replayed over
+the same events at every instant the scenario reads, and the tables answered it.
 
 Red proof (2026-10-12), each mutation alone, then restored and green:
 - `LiteFactLedger.apply_assertion` minting `assertion_event_id(...) + "x"`: fails at step
   "apply tea" (the event id differs).
 - the lite `superseded` event written with `fact=fact` (the shape `SQLiteFactLedger` inherits from
   the in-memory ledger): fails at step "events".
+
+Red proof of the table check (2026-10-22, remote test host): `recall.fact_current.project_key`
+writing no row for an assertion with a `valid_from` (mutation: `... and event.fact.valid_from is
+None`) drops the trip on both backends alike, which the cross-backend transcript cannot see, and
+"postgres during trip: table != replay" fails.
 """
 
 from __future__ import annotations
@@ -27,7 +34,7 @@ from recall.fact_ledger import PostgresFactLedger
 from recall.lite import LiteStore
 from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
 from recall.provenance_cards import PostgresEvidenceCardStore
-from recall.provenance_controller import FactApplicationRequest, ProvenanceController
+from recall.provenance_controller import FactApplicationRequest, ProvenanceController, project_current
 from recall.store import PgVectorStore
 from recall.types import AtomicFact, EvidenceCard
 from tests.conftest import TEST_DSN, requires_db
@@ -94,9 +101,7 @@ def scenario(b: Backend) -> list[tuple[str, Any]]:
     out.append(("future trip", apply(TRIP, (trip.card_id,), "r5")))
     out.append(("unknown card", apply(TEA, ("card-missing",), "r6")))
     ledger = b.ledger()
-    for label, at in (
-        ("now", NOW), ("during trip", NOW + timedelta(days=3)), ("after trip", NOW + timedelta(days=10)),
-    ):
+    for label, at in INSTANTS:
         out.append((f"current {label}", [_event_view(e) for e in ledger.current(tenant_id=b.tenant, now=at)]))
     out.append(("events", [_event_view(e) for e in ledger.events]))
     out.append(("request r3", _event_view(ledger.request_event(tenant_id=b.tenant, request_id="r3"))))
@@ -119,6 +124,19 @@ def scenario(b: Backend) -> list[tuple[str, Any]]:
     return out
 
 
+INSTANTS = (("now", NOW), ("during trip", NOW + timedelta(days=3)), ("after trip", NOW + timedelta(days=10)))
+
+
+def table_matches_replay(name: str, b: Backend) -> None:
+    """`current` from the materialized current facts equals the replay over the same events."""
+    ledger = b.ledger()
+    events = ledger.events
+    for label, at in INSTANTS:
+        table = ledger.current(tenant_id=b.tenant, now=at)
+        assert ledger.last_read == "table", f"{name} {label}: the read replayed"
+        assert table == project_current(events, at), f"{name} {label}: table != replay"
+
+
 def test_postgres_and_lite_answer_the_same(tmp_path: Path, make_store: Callable[[int], PgVectorStore]) -> None:
     tenant = f"parity-{uuid4().hex}"
     table_store = make_store(4)  # a migrated throwaway table, dropped after the test
@@ -138,3 +156,5 @@ def test_postgres_and_lite_answer_the_same(tmp_path: Path, make_store: Callable[
     steps = dict(expected)
     assert steps["apply tea"][1] == "APPLIED" and steps["contradiction"][1] == "CONTRADICTION_WITHOUT_SUPERSESSION"
     assert steps["supersede"][0] is True and [v[3]["object"] for v in steps["current now"]] == ["coffee"]
+    table_matches_replay("postgres", postgres)
+    table_matches_replay("lite", lite)

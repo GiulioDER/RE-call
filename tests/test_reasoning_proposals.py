@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import re
 from typing import Any
 
 import pytest
@@ -926,9 +928,10 @@ def test_temporal_ordering_does_not_pair_same_named_memos_in_different_folders()
 
 
 def test_a_folder_does_not_change_what_the_subject_rules_pair() -> None:
-    """Only temporal ordering keys on the folder; the subject a memo with no decision line falls
-    back to is its bare file name, so a status-only memo in a folder still meets the decision line
-    that names it, as it does at the root.
+    """The subject a memo with no decision line falls back to is its bare file name, and the
+    subject rules group subjects in one folder, so a status-only memo in a folder still meets the
+    decision line in that folder that names it, as it does at the root. Two folders are kept
+    apart by `test_two_folders_same_named_status_memos_are_not_one_subject`.
 
     Red: the first folder-keyed version of this change (CCA run 20261021T220048Z, L5.5),
     `tests/test_reasoning_proposals.py::test_a_folder_does_not_change_what_the_subject_rules_pair`
@@ -953,3 +956,159 @@ def test_a_folder_does_not_change_what_the_subject_rules_pair() -> None:
 
     assert ("contradicts", "deterministic.contradictory_validity_windows", "requires_review") in rules("")
     assert rules("notes/") == rules("")
+
+
+# --- the deferred findings of CCA run 20261021T220048Z (deferred pass 20261022T104116Z) -----------
+#
+# "Red" below is against 69969f509, master before these fixes, unless a mutation is named.
+
+
+def _proposals(chunks: list[Chunk]) -> list[InferenceProposal]:
+    graph = build_reasoning_graph(
+        chunks, tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a", include_text=True
+    )
+    return list(deterministic_inference_proposals(graph))
+
+
+def test_two_memos_with_no_decision_line_are_ordered_as_one_file_not_as_one_decision() -> None:
+    """With no decision line in either memo, the pair shares a file name and nothing else, so it
+    is temporal ordering's (0.64, "same normalized entity"), not the repeated-subject rule's.
+
+    Red: 69969f509, `tests/test_reasoning_proposals.py::test_two_memos_with_no_decision_line_are_ordered_as_one_file_not_as_one_decision`
+    failed with the pair under REPEATED where TEMPORAL was expected; target
+    `recall.reasoning_proposals._deterministic._repeated_decision_subject_proposals`
+    (deferred DEF-1, CODE-002).
+    """
+    assert _supersedes([
+        _chunk("one", "flag_v1.md", "Status: enabled.", valid_from="2026-01-01"),
+        _chunk("two", "flag_v2.md", "Status: disabled.", valid_from="2026-02-01"),
+    ], REPEATED, TEMPORAL) == [("flag_v1.md", "flag_v2.md", TEMPORAL)]
+
+
+def test_an_upper_case_v_is_a_version() -> None:
+    """`plan_V2` is a version for the version rule, as it already was for the file entity.
+
+    Red: 69969f509, `tests/test_reasoning_proposals.py::test_an_upper_case_v_is_a_version` failed
+    with `[] == [('plan_V1.md', 'plan_V2.md', VERSION)]`; target
+    `recall.reasoning_proposals._deterministic._VERSION_RE`, case-sensitive beside the
+    case-insensitive `_VERSION_SUFFIX_RE` (deferred DEF-3, CODE-004).
+    """
+    assert _supersedes([
+        _chunk("one", "plan_V1.md", "First."),
+        _chunk("two", "plan_V2.md", "Second."),
+    ], VERSION) == [("plan_V1.md", "plan_V2.md", VERSION)]
+
+
+def test_version_numbers_against_the_dates_send_both_edges_to_a_reviewer() -> None:
+    """`plan_v2.md` dated before `plan_v1.md`: the version rule and temporal ordering propose
+    opposite edges, so neither is asserted, and both say why.
+
+    Red: 69969f509, `tests/test_reasoning_proposals.py::test_version_numbers_against_the_dates_send_both_edges_to_a_reviewer`
+    failed with the version proposal still `candidate`; target
+    `recall.reasoning_proposals._deterministic.deterministic_inference_proposals` (deferred DEF-8,
+    BUG-002).
+    """
+    proposals = {
+        (p.subject_id, p.object_id, p.rule_id): p
+        for p in _proposals([
+            _chunk("one", "plan_v1.md", "decision: alpha.", valid_from="2026-02-01"),
+            _chunk("two", "plan_v2.md", "decision: beta.", valid_from="2026-01-01"),
+        ])
+        if p.proposed_relation == "supersedes"
+    }
+    version = proposals[("plan_v1.md", "plan_v2.md", VERSION)]
+    dated = proposals[("plan_v2.md", "plan_v1.md", TEMPORAL)]
+    assert version.status == "requires_review"
+    assert any("disagree" in note for note in version.uncertainty)
+    assert any("disagree" in note for note in dated.uncertainty)
+
+
+@pytest.mark.parametrize("files, texts, rule", [
+    (("a.md", "b.md", "c.md"), ("decision: retention.",) * 3, REPEATED),
+    (("x_v1.md", "x-v2.md", "x_v3.md"), ("decision: a.", "decision: b.", "decision: c."), TEMPORAL),
+])
+def test_two_memos_of_one_day_both_get_the_later_successor(
+    files: tuple[str, str, str], texts: tuple[str, str, str], rule: str
+) -> None:
+    """Two memos start the same day and a third later: the third is later than both, so both
+    get it as successor. Pairing neighbours in date order skipped the tie and stranded one.
+
+    Red: 69969f509, `tests/test_reasoning_proposals.py::test_two_memos_of_one_day_both_get_the_later_successor`
+    failed in both cases with one of the two edges missing; target
+    `recall.reasoning_proposals._deterministic._repeated_decision_subject_proposals` and
+    `_temporal_ordering_proposals` (deferred DEF-9, BUG-003).
+    """
+    first, second, third = files
+    assert _supersedes([
+        _chunk("one", first, texts[0], valid_from="2026-01-01"),
+        _chunk("two", second, texts[1], valid_from="2026-01-01"),
+        _chunk("three", third, texts[2], valid_from="2026-02-01"),
+    ], rule) == sorted([(first, third, rule), (second, third, rule)])
+
+
+def test_two_folders_same_named_status_memos_are_not_one_subject() -> None:
+    """`a/decisions.md` and `b/decisions.md` saying only a status share a file name, not a
+    subject: no supersedes and no contradiction between them.
+
+    Red: 69969f509, `tests/test_reasoning_proposals.py::test_two_folders_same_named_status_memos_are_not_one_subject`
+    failed with a repeated-subject `supersedes` and a `contradicts` proposal between the two;
+    target `recall.reasoning_proposals._deterministic._source_claims`, whose subject fallback
+    dropped the folder (deferred DEF-10, the architect's P3 of run 20261021T220048Z).
+    """
+    assert _proposals([
+        _chunk("a", "a/decisions.md", "Status: enabled.", valid_from="2026-01-01", valid_until="2026-06-01"),
+        _chunk("b", "b/decisions.md", "Status: disabled.", valid_from="2026-02-01", valid_until="2026-07-01"),
+    ]) == []
+
+
+def test_a_decision_line_names_a_subject_within_its_folder() -> None:
+    """Two teams' "decision: retention" are two decisions; one folder's two memos are one.
+
+    Red: 69969f509, `tests/test_reasoning_proposals.py::test_a_decision_line_names_a_subject_within_its_folder`
+    failed at the first assertion with the cross-folder pair proposed under REPEATED; target
+    `recall.reasoning_proposals._deterministic._repeated_decision_subject_proposals`, which
+    grouped by the subject alone (deferred DEF-10).
+    """
+    assert _supersedes([
+        _chunk("a", "team-a/retention.md", "decision: retention. Keep 30 days.", valid_from="2026-01-01"),
+        _chunk("b", "team-b/policy.md", "decision: retention. Keep 60 days.", valid_from="2026-02-01"),
+    ], REPEATED) == []
+    assert _supersedes([
+        _chunk("a", "team-a/retention.md", "decision: retention. Keep 30 days.", valid_from="2026-01-01"),
+        _chunk("b", "team-a/policy.md", "decision: retention. Keep 60 days.", valid_from="2026-02-01"),
+    ], REPEATED) == [("team-a/retention.md", "team-a/policy.md", REPEATED)]
+
+
+def test_versions_in_two_folders_are_two_series() -> None:
+    """`a/plan_v1.md` and `b/plan_v2.md` are not one version series; one folder's are.
+
+    Red: 69969f509, `tests/test_reasoning_proposals.py::test_versions_in_two_folders_are_two_series`
+    failed at the first assertion with the cross-folder pair proposed under VERSION; target
+    `recall.reasoning_proposals._deterministic._version_key`, which read the file name without its
+    folder (deferred DEF-10).
+    """
+    assert _supersedes([
+        _chunk("one", "a/plan_v1.md", "First."),
+        _chunk("two", "b/plan_v2.md", "Second."),
+    ], VERSION) == []
+    assert _supersedes([
+        _chunk("one", "a/plan_v1.md", "First."),
+        _chunk("two", "a/plan_v2.md", "Second."),
+    ], VERSION) == [("a/plan_v1.md", "a/plan_v2.md", VERSION)]
+
+
+def test_every_rule_id_this_module_names_is_a_rule() -> None:
+    """A rule id written here that no rule emits would turn every `== []` filtered on it into a
+    test of nothing, so each one must be a key of `RULE_CONFIDENCE`.
+
+    Red by mutation: `deterministic.temporal_ordering` renamed `deterministic.temporal_order` in
+    `recall.reasoning_proposals._deterministic.RULE_CONFIDENCE` (the module attribute replaced in
+    memory before the test ran); this test failed with
+    `{'deterministic.temporal_ordering'} == set()` (deferred DEF-7, ENV-004).
+    """
+    from recall.reasoning_proposals._deterministic import RULE_CONFIDENCE
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    named = set(re.findall(r"[\"'](deterministic\.[a-z_]+)[\"']", source))
+    assert named
+    assert named - set(RULE_CONFIDENCE) == set()

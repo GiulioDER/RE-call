@@ -27,6 +27,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Security
 
+* **`opentelemetry-api` is locked at 1.45.1, up from 1.44.0** (CVE-2026-114603). It reaches RE-call
+  only through `mcp`; the dependency audit refuses 1.44.0 since the advisory was published.
 * **`mcp` is pinned at 2.2.0, up from 2.1.0** (GHSA-84m7-p3x7-pcfv, CVE-2026-59951). In 2.1.0 a
   stateful Streamable HTTP server never reclaimed session state, so a client able to reach the
   endpoint could grow its memory without bound. RE-call's HTTP server runs stateless by default
@@ -34,6 +36,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Added
 
+* **Current facts are materialized, so a read no longer replays the tenant's history.** Migration
+  0030 adds `recall_fact_current` (one row per effective interval of each applied assertion: its own
+  window less the windows of the successors that hide it), `recall_fact_current_events` and
+  `recall_fact_current_state`, on PostgreSQL and in a lite file alike; migration 0031 builds the
+  ledger's `(tenant_id, created_at, event_id)` index CONCURRENTLY for the replay. `current()`, the fact
+  projection `recall_current_facts` serves and the conflict check of `recall_apply_fact` read them
+  whenever they reflect every event of the tenant, and replay the ledger otherwise, so the answer is
+  the same either way; the conflict check reads one conflict key instead of the tenant. Each append
+  materializes what it wrote in its own transaction, and a failure there leaves the tables behind
+  without failing the append. `recall provenance rebuild` rebuilds them from the ledger (`--reconcile`
+  files only what they lack, `--check` reports, and `--check --verify` recomputes every row from the
+  ledger and compares, exiting 1 on a difference, so an edited table is found even when the counts
+  agree), on PostgreSQL and on a `sqlite:///` store. The tables hold ids and hashes, never a fact value. Grants: `recall schema grants --controller` now includes
+  them, and `--strict` serving grants read them only; re-run both after migrating.
 * **The lite store keeps itself current with its memo folder.** The MCP server refreshes a
   `recall setup --lite` store when it starts and, before a search, when the folder changed (at most
   every `RECALL_LITE_REFRESH_INTERVAL` seconds, thirty by default, waiting up to
@@ -87,6 +103,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   pairs a file's versions whose decision lines are worded apart, and it no longer proposes again
   an edge the repeated-subject rule proposes. The Session 3 control artifact drops its two
   `temporal_ordering` proposals (referrals 4 to 2), and every other proposal id is unchanged.
+* **The deterministic proposal rules read a folder as the scope of a name.** A version series is
+  one folder's files (`a/plan_v1.md` and `b/plan_v2.md` are no longer two versions of one plan),
+  and a decision subject, or the file name a memo with no decision line falls back to, is shared
+  only inside one folder, so two folders' status-only `decisions.md`, or two teams'
+  `decision: retention`, are neither superseded nor contradicted by each other. Within a folder
+  the rules pair more in two places: `plan_V2.md` is a version, as `plan_v2.md` is, and two
+  memos with the same start now both get a later third as successor instead of one of them.
+  Two memos that share only a file name are proposed by temporal ordering (0.64) rather than as a
+  repeated decision subject (0.72). When the dates order two versions oppositely to their
+  numbers, the version proposal is `requires_review` and both opposite proposals say the two
+  disagree. The rules' revision is now `session3-v2`, which changes every deterministic proposal
+  id; the Session 3 control artifact keeps its six proposals and its scores under new ids.
 * **A successor hides what it supersedes only while the successor itself is valid.** A memo
   `supersedes:` another from next month leaves it current until then, an expired time-bounded
   successor gives its predecessor back, and a correction for 2020 to 2022 leaves today's memo alone;

@@ -26,17 +26,40 @@
   "proposal_count": 6,
   "proposals": [
     {
+      "confidence": 0.72,
+      "explanation": "search_policy_v1.md and search_policy_v2.md repeat decision subject search policy, with the latter having the later validity start.",
+      "generation_id": "reasoning-session3-fixture-gen1",
+      "id": "ip_264273e76acef9e5c761c7da",
+      "metadata": {},
+      "model_id": "rules",
+      "object_id": "search_policy_v2.md",
+      "pipeline_id": "reasoning-session3-pipeline-v1",
+      "proposed_relation": "supersedes",
+      "provider_id": "recall.deterministic",
+      "provider_revision": "session3-v2",
+      "rule_id": "deterministic.repeated_decision_subject",
+      "source_evidence_ids": [
+        "rg_node_31f81f0b9c1bca497f2c1f0b",
+        "rg_node_5308fc792c80ebfd795a0998"
+      ],
+      "status": "requires_review",
+      "subject_id": "search_policy_v1.md",
+      "uncertainty": [
+        "same subject is inferred from text and file names"
+      ]
+    },
+    {
       "confidence": 0.78,
       "explanation": "cache_policy_v1.md and cache_policy_v2.md discuss cache policy in overlapping validity windows with opposing status language.",
       "generation_id": "reasoning-session3-fixture-gen1",
-      "id": "ip_65e6046096d0b712cb4a59d3",
+      "id": "ip_3a7c44204907dfdf109f472c",
       "metadata": {},
       "model_id": "rules",
       "object_id": "cache_policy_v2.md",
       "pipeline_id": "reasoning-session3-pipeline-v1",
       "proposed_relation": "contradicts",
       "provider_id": "recall.deterministic",
-      "provider_revision": "session3-v1",
+      "provider_revision": "session3-v2",
       "rule_id": "deterministic.contradictory_validity_windows",
       "source_evidence_ids": [
         "rg_node_00a36b44cc116824533b370c",
@@ -52,7 +75,7 @@
       "confidence": 0.9,
       "explanation": "search_policy_v2.md contains a direct textual reference that appears to replace search_policy_v1.md.",
       "generation_id": "reasoning-session3-fixture-gen1",
-      "id": "ip_6be7f393bb198cecf880de6e",
+      "id": "ip_9c41207fa688c63a03739187",
       "metadata": {
         "matched_text": "updates search_policy_v1.md"
       },
@@ -61,7 +84,7 @@
       "pipeline_id": "reasoning-session3-pipeline-v1",
       "proposed_relation": "supersedes",
       "provider_id": "recall.deterministic",
-      "provider_revision": "session3-v1",
+      "provider_revision": "session3-v2",
       "rule_id": "deterministic.direct_textual_reference",
       "source_evidence_ids": [
         "rg_node_31f81f0b9c1bca497f2c1f0b",
@@ -75,16 +98,39 @@
     },
     {
       "confidence": 0.86,
+      "explanation": "The source names form an explicit increasing version sequence for search_policy: search_policy_v1.md before search_policy_v2.md.",
+      "generation_id": "reasoning-session3-fixture-gen1",
+      "id": "ip_a96a3de0c2e657b4c379d4a1",
+      "metadata": {},
+      "model_id": "rules",
+      "object_id": "search_policy_v2.md",
+      "pipeline_id": "reasoning-session3-pipeline-v1",
+      "proposed_relation": "supersedes",
+      "provider_id": "recall.deterministic",
+      "provider_revision": "session3-v2",
+      "rule_id": "deterministic.explicit_version_naming",
+      "source_evidence_ids": [
+        "rg_node_31f81f0b9c1bca497f2c1f0b",
+        "rg_node_5308fc792c80ebfd795a0998"
+      ],
+      "status": "candidate",
+      "subject_id": "search_policy_v1.md",
+      "uncertainty": [
+        "version naming is structural, not authored metadata"
+      ]
+    },
+    {
+      "confidence": 0.86,
       "explanation": "The source names form an explicit increasing version sequence for cache_policy: cache_policy_v1.md before cache_policy_v2.md.",
       "generation_id": "reasoning-session3-fixture-gen1",
-      "id": "ip_783ff69b214c7ce4d386f79e",
+      "id": "ip_ca81f20fac5052447b9ca475",
       "metadata": {},
       "model_id": "rules",
       "object_id": "cache_policy_v2.md",
       "pipeline_id": "reasoning-session3-pipeline-v1",
       "proposed_relation": "supersedes",
       "provider_id": "recall.deterministic",
-      "provider_revision": "session3-v1",
+      "provider_revision": "session3-v2",
       "rule_id": "deterministic.explicit_version_naming",
       "source_evidence_ids": [
         "rg_node_00a36b44cc116824533b370c",
@@ -98,62 +144,16 @@
     },
     {
       "confidence": 0.72,
-      "explanation": "search_policy_v1.md and search_policy_v2.md repeat decision subject search policy, with the latter having the later validity start.",
-      "generation_id": "reasoning-session3-fixture-gen1",
-      "id": "ip_7fc73c89be169f349feecf17",
-      "metadata": {},
-      "model_id": "rules",
-      "object_id": "search_policy_v2.md",
-      "pipeline_id": "reasoning-session3-pipeline-v1",
-      "proposed_relation": "supersedes",
-      "provider_id": "recall.deterministic",
-      "provider_revision": "session3-v1",
-      "rule_id": "deterministic.repeated_decision_subject",
-      "source_evidence_ids": [
-        "rg_node_31f81f0b9c1bca497f2c1f0b",
-        "rg_node_5308fc792c80ebfd795a0998"
-      ],
-      "status": "requires_review",
-      "subject_id": "search_policy_v1.md",
-      "uncertainty": [
-        "same subject is inferred from text and file names"
-      ]
-    },
-    {
-      "confidence": 0.86,
-      "explanation": "The source names form an explicit increasing version sequence for search_policy: search_policy_v1.md before search_policy_v2.md.",
-      "generation_id": "reasoning-session3-fixture-gen1",
-      "id": "ip_c3dcdee97b35a73d96b34621",
-      "metadata": {},
-      "model_id": "rules",
-      "object_id": "search_policy_v2.md",
-      "pipeline_id": "reasoning-session3-pipeline-v1",
-      "proposed_relation": "supersedes",
-      "provider_id": "recall.deterministic",
-      "provider_revision": "session3-v1",
-      "rule_id": "deterministic.explicit_version_naming",
-      "source_evidence_ids": [
-        "rg_node_31f81f0b9c1bca497f2c1f0b",
-        "rg_node_5308fc792c80ebfd795a0998"
-      ],
-      "status": "candidate",
-      "subject_id": "search_policy_v1.md",
-      "uncertainty": [
-        "version naming is structural, not authored metadata"
-      ]
-    },
-    {
-      "confidence": 0.72,
       "explanation": "cache_policy_v1.md and cache_policy_v2.md repeat decision subject cache policy, with the latter having the later validity start.",
       "generation_id": "reasoning-session3-fixture-gen1",
-      "id": "ip_d54d81b068bc261163c392a7",
+      "id": "ip_dada95c0a3f776d7c924eab7",
       "metadata": {},
       "model_id": "rules",
       "object_id": "cache_policy_v2.md",
       "pipeline_id": "reasoning-session3-pipeline-v1",
       "proposed_relation": "supersedes",
       "provider_id": "recall.deterministic",
-      "provider_revision": "session3-v1",
+      "provider_revision": "session3-v2",
       "rule_id": "deterministic.repeated_decision_subject",
       "source_evidence_ids": [
         "rg_node_00a36b44cc116824533b370c",

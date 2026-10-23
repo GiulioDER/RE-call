@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import datetime, timezone
 import heapq
+from itertools import groupby
 import posixpath
 from types import MappingProxyType
 from typing import Any
@@ -114,19 +115,21 @@ def _source_claims(graph: ReasoningGraphProjection) -> Mapping[str, EvidenceClai
                 for chunk in chunk_nodes
                 for key in ("title", "heading")
             ).strip()
+        decided = _decision_subject(text)
         claims[file] = EvidenceClaim(
             id=node.id,
             evidence_id=node.id,
             text=text,
             # Two keys, so the two rules that order claims by date group them differently: the
             # subject is what a decision line names (the bare file name without its version when
-            # it names nothing, which a decision line elsewhere can name), the entity is the file
-            # name without its version, in its folder.
+            # it names nothing, which a decision line in the same folder can name), the entity is
+            # the file name without its version, in its folder. The subject rules group by the
+            # subject in its folder (`_subject_key`).
             entity_id=_file_entity(file),
-            subject=_decision_subject(text) or _versionless_stem(file),
+            subject=decided or _versionless_stem(file),
             valid_from=valid_from,
             valid_until=valid_until,
-            metadata={"file": file, "source": node.source},
+            metadata={"file": file, "source": node.source, "decision_line": bool(decided)},
         )
     return MappingProxyType(claims)
 
@@ -141,11 +144,19 @@ def _latest_datetime(values: Iterable[Any]) -> datetime | None:
     return max(dates) if dates else None
 
 
-#: A version is ``v`` and digits after a separator, or as the whole name: ``plan_v2``, ``v2``.
-#: Written with no separator it is part of a word, so ``ipv4`` and ``ipv6`` are two names, not two
-#: versions of ``ip``.
-_VERSION_RE = re.compile(r"^(?P<base>.*?)(?:[_\-. ]|^)v(?P<version>\d+)(?P<suffix>\.[^.]+)?$")
+#: A version is ``v`` or ``V`` and digits after a separator, or as the whole name: ``plan_v2``,
+#: ``plan_V2``, ``v2``. Written with no separator it is part of a word, so ``ipv4`` and ``ipv6``
+#: are two names, not two versions of ``ip``. Both patterns ignore case, so a name the version
+#: rule reads as a version is the one the file entity strips the version from.
+_VERSION_RE = re.compile(
+    r"^(?P<base>.*?)(?:[_\-. ]|^)v(?P<version>\d+)(?P<suffix>\.[^.]+)?$", re.IGNORECASE
+)
 _VERSION_SUFFIX_RE = re.compile(r"(?:[_\-. ]|^)v\d+$", re.IGNORECASE)
+#: How much of a memo the decision line is looked for in, and how much the direct references are
+#: read from: a decision line opens a memo, and a reference past the first pages is rarely the
+#: memo's own claim.
+_DECISION_SUBJECT_WINDOW = 1000
+_DIRECT_REFERENCE_WINDOW = 4000
 #: What a decision line names. A status or a verdict names a state, not a subject: "Status: done"
 #: in two unrelated memos is not one decision taken twice.
 _DECISION_SUBJECT_RE = re.compile(
@@ -188,19 +199,29 @@ RULE_CONFIDENCE: Mapping[str, float] = MappingProxyType(
 )
 
 
+def _in_folder(file: str, name: str) -> str:
+    """``name`` keyed in the folder of ``file``: ``notes/`` and ``rollout`` give
+    ``notes/rollout``. A name never holds a ``/``, so the key cannot be read two ways."""
+    folder = posixpath.dirname(file)
+    return f"{folder}/{name}" if folder and name else name
+
+
 def _version_key(file: str) -> tuple[str, int] | None:
+    """The series a versioned file belongs to, and its version: ``notes/plan_v2.md`` is
+    ``("notes/plan", 2)``. A series is one folder's files sharing a name without the version, so
+    ``a/plan_v1.md`` and ``b/plan_v2.md`` are two series, not two versions of one plan."""
     stem = file.rsplit("/", 1)[-1]
     match = _VERSION_RE.match(stem)
     if not match:
         return None
-    return supersedes_key(f"{match.group('base')}{match.group('suffix') or ''}"), int(
-        match.group("version")
-    )
+    base = supersedes_key(f"{match.group('base')}{match.group('suffix') or ''}")
+    return _in_folder(file, base), int(match.group("version"))
 
 
 def _decision_subject(text: str) -> str:
-    """The subject a decision line in the first 1,000 characters names, or "" when none does."""
-    match = _DECISION_SUBJECT_RE.search(text[:1000])
+    """The subject a decision line in the first `_DECISION_SUBJECT_WINDOW` characters names, or
+    "" when none does."""
+    match = _DECISION_SUBJECT_RE.search(text[:_DECISION_SUBJECT_WINDOW])
     return supersedes_key(match.group("subject")) if match else ""
 
 
@@ -212,9 +233,38 @@ def _versionless_stem(file: str) -> str:
 def _file_entity(file: str) -> str:
     """The file's name without its version, in its folder: ``notes/rollout_v2.md`` is
     ``notes/rollout``. Two folders' ``decisions.md`` are two entities, not versions of one."""
-    stem = _versionless_stem(file)
-    folder = posixpath.dirname(file)
-    return f"{folder}/{stem}" if folder and stem else stem
+    return _in_folder(file, _versionless_stem(file))
+
+
+def _subject_key(claim: EvidenceClaim) -> tuple[str, str]:
+    """What the subject rules group by: the claim's subject in its file's folder.
+
+    Two teams' "decision: retention" are two decisions, and two folders' status-only
+    ``decisions.md`` are two memos, so a subject is shared only inside one folder. A tuple, not a
+    joined string, because a decision line's subject may itself hold a ``/``.
+    """
+    return posixpath.dirname(str(claim.metadata["file"])), claim.subject or ""
+
+
+def _date_successors(
+    claims: Iterable[EvidenceClaim],
+) -> Iterator[tuple[EvidenceClaim, EvidenceClaim]]:
+    """Each dated claim with every claim of the next later start: the pairs a date rule orders.
+
+    Undated claims and claims with the same start are never ordered against each other, since a
+    sort position would then name the newer memo. Pairing neighbours in a sorted list skipped
+    such a tie and stranded one of the two: with A and B starting together and C later, only B
+    to C was proposed. Grouping by start gives both A to C and B to C.
+    """
+    dated = sorted(
+        (claim for claim in claims if claim.valid_from is not None),
+        key=lambda claim: (claim.valid_from, str(claim.metadata.get("file"))),
+    )
+    groups = [list(group) for _day, group in groupby(dated, key=lambda claim: claim.valid_from)]
+    for earlier, later in zip(groups, groups[1:], strict=False):
+        for older in earlier:
+            for newer in later:
+                yield older, newer
 
 
 def _authored_supersession_pairs(graph: ReasoningGraphProjection) -> set[tuple[str, str]]:
@@ -289,19 +339,70 @@ def deterministic_inference_proposals(
     claims = _source_claims(graph)
     authored = _authored_supersession_pairs(graph)
     proposals: list[InferenceProposal] = []
-    proposals.extend(_explicit_version_proposals(graph, context, claims, authored))
+    versions = _explicit_version_proposals(graph, context, claims, authored)
     proposals.extend(_direct_reference_proposals(graph, context, claims, authored))
     repeated = _repeated_decision_subject_proposals(graph, context, claims, authored)
-    proposals.extend(repeated)
     proposals.extend(_contradictory_validity_window_proposals(graph, context, claims))
     # Both rules read "the later-dated memo supersedes the earlier one about the same thing", so
     # an edge the repeated-subject rule proposed is not proposed again, under a second id, by
     # temporal ordering.
     already = {(proposal.subject_id, proposal.object_id) for proposal in repeated}
-    proposals.extend(_temporal_ordering_proposals(graph, context, claims, authored | already))
+    temporal = _temporal_ordering_proposals(graph, context, claims, authored | already)
+    versions, dated = _refer_disagreements(graph, context, versions, repeated + temporal)
+    proposals.extend(versions)
+    proposals.extend(dated)
 
     by_id = {proposal.id: proposal for proposal in proposals}
     return tuple(by_id[key] for key in sorted(by_id))
+
+
+#: Said on both of two opposite edges when the version rule and a date rule disagree.
+_DISAGREEMENT = "the version numbers and the validity dates disagree on which memo is newer"
+
+
+def _refer_disagreements(
+    graph: ReasoningGraphProjection,
+    context: ProposalContext,
+    versions: list[InferenceProposal],
+    dated: list[InferenceProposal],
+) -> tuple[list[InferenceProposal], list[InferenceProposal]]:
+    """Send both edges to a reviewer where the version numbers and the dates order two memos
+    oppositely (``plan_v2.md`` dated before ``plan_v1.md``).
+
+    Each rule is right by its own signal and one of them is wrong about these two memos, so the
+    version proposal is no longer asserted (`requires_review`, a new id, since the status is
+    hashed into it) and both proposals name the disagreement. The date rules' proposals already
+    require review, so only their uncertainty changes and their ids stay.
+    """
+    version_pairs = {(proposal.subject_id, proposal.object_id) for proposal in versions}
+    dated_pairs = {(proposal.subject_id, proposal.object_id) for proposal in dated}
+
+    def refer(proposal: InferenceProposal) -> InferenceProposal:
+        return _make_proposal(
+            graph=graph,
+            context=context,
+            source_evidence_ids=proposal.source_evidence_ids,
+            proposed_relation=proposal.proposed_relation,
+            subject_id=proposal.subject_id,
+            object_id=proposal.object_id,
+            explanation=proposal.explanation,
+            confidence=proposal.confidence,
+            uncertainty=(*proposal.uncertainty, _DISAGREEMENT),
+            status="requires_review",
+            rule_id=proposal.rule_id,
+            metadata=proposal.metadata,
+        )
+
+    return (
+        [
+            refer(proposal) if (proposal.object_id, proposal.subject_id) in dated_pairs else proposal
+            for proposal in versions
+        ],
+        [
+            refer(proposal) if (proposal.object_id, proposal.subject_id) in version_pairs else proposal
+            for proposal in dated
+        ],
+    )
 
 
 def _explicit_version_proposals(
@@ -362,7 +463,7 @@ def _direct_reference_proposals(
 
     proposals: list[InferenceProposal] = []
     for file, claim in sorted(claims.items()):
-        text = claim.text[:4000]
+        text = claim.text[:_DIRECT_REFERENCE_WINDOW]
         for match in _DIRECT_REF_RE.finditer(text):
             matched_target = match.group("target").rstrip(".,;:)")
             target_span = (match.start("target"), match.start("target") + len(matched_target))
@@ -458,30 +559,23 @@ def _repeated_decision_subject_proposals(
     claims: Mapping[str, EvidenceClaim],
     authored: set[tuple[str, str]],
 ) -> list[InferenceProposal]:
-    by_subject: dict[str, list[EvidenceClaim]] = defaultdict(list)
+    by_subject: dict[tuple[str, str], list[EvidenceClaim]] = defaultdict(list)
     for claim in claims.values():
         if claim.subject:
-            by_subject[claim.subject].append(claim)
+            by_subject[_subject_key(claim)].append(claim)
     proposals: list[InferenceProposal] = []
-    for subject, subject_claims in sorted(by_subject.items()):
-        ordered = sorted(
-            subject_claims,
-            key=lambda claim: (
-                claim.valid_from is None,
-                claim.valid_from or datetime.min,
-                str(claim.metadata.get("file")),
-            ),
-        )
-        for older, newer in zip(ordered, ordered[1:], strict=False):
+    for (_folder, subject), subject_claims in sorted(by_subject.items()):
+        # The direction comes from the dates (`_date_successors`).
+        for older, newer in _date_successors(subject_claims):
             older_file = str(older.metadata["file"])
             newer_file = str(newer.metadata["file"])
-            if older_file == newer_file or (older_file, newer_file) in authored:
+            if (older_file, newer_file) in authored:
                 continue
-            # The direction comes from the dates. An undated claim sorts last and a tie sorts by
-            # file name, so either would let a sort position name the newer memo.
-            if older.valid_from is None or newer.valid_from is None:
-                continue
-            if older.valid_from >= newer.valid_from:
+            # With no decision line in either memo the two share a file name in one folder and
+            # nothing else, so both are memos of one entity, which temporal ordering orders by
+            # date under its own label and confidence (through any memo of that entity dated
+            # between them). This rule claims only a subject a decision line names.
+            if not (older.metadata["decision_line"] or newer.metadata["decision_line"]):
                 continue
             proposals.append(
                 _make_proposal(
@@ -510,11 +604,11 @@ def _contradictory_validity_window_proposals(
     claims: Mapping[str, EvidenceClaim],
 ) -> list[InferenceProposal]:
     proposals: list[InferenceProposal] = []
-    claims_by_subject: dict[str, list[EvidenceClaim]] = defaultdict(list)
+    claims_by_subject: dict[tuple[str, str], list[EvidenceClaim]] = defaultdict(list)
     for claim in claims.values():
         if claim.subject:
-            claims_by_subject[claim.subject].append(claim)
-    for subject, subject_claims in sorted(claims_by_subject.items()):
+            claims_by_subject[_subject_key(claim)].append(claim)
+    for (_folder, subject), subject_claims in sorted(claims_by_subject.items()):
         # Sweep claims by interval start. The active polarity maps make disjoint windows cheap,
         # while still visiting every genuinely contradictory pair that must be returned. The old
         # combinations loop paid an overlap check for every pair, including pairs whose windows
@@ -590,30 +684,20 @@ def _temporal_ordering_proposals(
     graph: ReasoningGraphProjection,
     context: ProposalContext,
     claims: Mapping[str, EvidenceClaim],
-    authored: set[tuple[str, str]],
+    skip: set[tuple[str, str]],
 ) -> list[InferenceProposal]:
+    """Later-dated memos of one file entity supersede earlier ones. ``skip`` holds the pairs not
+    to propose: authored edges, and the edges the repeated-subject rule already proposes."""
     proposals: list[InferenceProposal] = []
     by_entity: dict[str, list[EvidenceClaim]] = defaultdict(list)
     for claim in claims.values():
         if claim.entity_id:
             by_entity[claim.entity_id].append(claim)
     for entity_id, entity_claims in sorted(by_entity.items()):
-        ordered = sorted(
-            entity_claims,
-            key=lambda claim: (
-                claim.valid_from is None,
-                claim.valid_from or datetime.min,
-                str(claim.metadata.get("file")),
-            ),
-        )
-        for older, newer in zip(ordered, ordered[1:], strict=False):
+        for older, newer in _date_successors(entity_claims):
             older_file = str(older.metadata["file"])
             newer_file = str(newer.metadata["file"])
-            if older_file == newer_file or (older_file, newer_file) in authored:
-                continue
-            if older.valid_from is None or newer.valid_from is None:
-                continue
-            if older.valid_from >= newer.valid_from:
+            if (older_file, newer_file) in skip:
                 continue
             proposals.append(
                 _make_proposal(
