@@ -1,26 +1,75 @@
 """General knowledge: owner-curated entries injected by the hooks before a command or after a failure.
 
-**What this module is.** The model and the reader for a small prebuilt index. An entry is a piece of
-curated procedure or warning (how to run a test suite on a given host, which flag a tool needs) that
-a session cannot derive from the repository. Later layers match an entry to the command about to
-run, or to the failure that just happened, and inject its body. This layer only turns
-`<knowledge home>/index.json` into `Entry` objects.
+**What this module is.** The model and the reader for a small prebuilt index, plus the two hook
+entry points that use it. An entry is a piece of curated procedure or warning (how to run a test
+suite on a given host, which flag a tool needs) that a session cannot derive from the repository.
+The content is the operator's own and is never shipped in this repository; every fixture in the
+tests is invented. With no index the feature does nothing.
+
+**The index.** `<knowledge home>/index.json`, written atomically by the operator's own tooling and
+only ever read here:
+
+    {"schema": 1, "built_at": "<ISO UTC>",
+     "entries": [{"id": ..., "kind": ..., "scope": ...,
+                  "triggers": [{"command": ...} | {"command_regex": ...} | {"host": ...}],
+                  "symptoms": [...], "body": "..."}]}
 
 **Why a prebuilt index and not the entry files.** The matching runs inside a `PreToolUse` process
-that is spawned once per tool call, so every cost is paid on every `Bash` call. Parsing one JSON
+that is spawned once per tool call, so every cost is paid on every shell call. Parsing one JSON
 file is cheap and bounded; walking a directory of entry files and parsing front matter is neither.
-The index is written by a build step (a later task) and read here, and nothing here touches the
-network, a database or an embedder, and nothing here imports the `recall` package (see
-`recall_hooks/__init__.py` for what that import costs).
+Nothing here touches the network, a database or an embedder, and nothing imports the `recall`
+package (see `recall_hooks/__init__.py` for what that import costs).
 
-**Fail-open, always.** A missing, unreadable, corrupt or foreign-schema index is an EMPTY index, not
-an error: a hook that raises is charged to the client, and a hook may never be the reason a tool
-call or a session does not start. One malformed entry costs that entry only.
+**Where things live.**
 
-**One corpus for both clients.** The home, the log and the switch are resolved from the project
-config home (`project_config_home`), never from `load_config`: the Codex adapter redirects
-`load_config` to Codex's own directory, and Claude and Codex must share one corpus, one switch and
-one log.
+| What | Where | Override |
+|---|---|---|
+| knowledge home | `<project config home>/general-knowledge` | `RECALL_GENERAL_KNOWLEDGE_HOME` |
+| event log | `<project config home>/logs/general-knowledge.jsonl` | `RECALL_GENERAL_KNOWLEDGE_LOG` |
+| switch | `general_knowledge` block of `recall-hook.json`: `{"enabled": bool, "min_score": float}` | none |
+
+Absent block means enabled with `min_score` 0.0; a PRESENT block of the wrong shape, or an
+`enabled` that is not a real bool, means DISABLED (this is the injection switch, so a hand edit
+that meant "off" may not turn it on). All three resolve from the project config home, never from
+`recall_hooks.load_config`, because the Codex adapter redirects `load_config` to Codex's own
+directory and Claude and Codex must share one corpus, one switch and one log.
+
+**The two events.**
+
+* `PreToolUse` (`pre_tool_use_context`), shell tools only (`Bash`, `PowerShell`). Trigger keyed: an
+  entry fires when a program, a `command_regex` match or a host alias named by one of its
+  triggers appears in the command about to run. No ranking. Logs one `trigger` event whenever any
+  in-scope entry matched, with `ts`, `project`, `session`, `client`, `trigger` (the first trigger
+  that fired per matched entry, as `<kind>:<value>`), `injected` and `suppressed` ids.
+* `PostToolUseFailure` (`post_tool_use_failure`), Claude only, since Codex has no post-tool event.
+  Error keyed: the entries are ranked against the error text by BM25 over their symptoms and
+  bodies (`prompt_time`, lexical, imported only on this path). Logs one `failure` event for every
+  failure, matched or not, with `ts`, `project`, `session`, `client`, `signature` (command family
+  plus the normalised error line), `injected` and `suppressed`: the signatures nothing matched are
+  what shows which entries are worth writing. A user interrupt is not a failure and is skipped.
+
+At most `MAX_PER_CALL` (2) entries are injected per call, and each entry at most once per session.
+
+**The contract.** Never deny a tool call, never raise (every path returns 0), never load an
+embedder, never touch the network. A missing, unreadable, corrupt or foreign-schema index is an
+EMPTY index, and one malformed entry costs that entry only: a hook that raises is charged to the
+client, and a hook may never be the reason a tool call does not run. Latency budget: 50 ms median
+added to a `pre-tool-use` process, nothing on a success, at most 800 ms on a failure.
+
+**Measured 2026-10-23** on a Xeon X5690, Python 3.14.6, with a 30 entry fixture index, whole
+process medians (interpreter start included, which is most of the figure):
+
+| Event | Batch | Enabled | Disabled | Added |
+|---|---|---:|---:|---:|
+| `pre-tool-use`, 20 runs per arm, interleaved ABAB | 1 | 333.9 ms | 324.2 ms | +9.7 ms |
+| `pre-tool-use`, 20 runs per arm, interleaved ABAB | 2 | 317.5 ms | 319.1 ms | -1.6 ms |
+| `post-tool-use-failure`, 10 runs | 1 | 300.8 ms | 283 to 287 ms | 14 to 18 ms |
+| `post-tool-use-failure`, 10 runs | 2 | 300.8 ms | 283 to 287 ms | 14 to 18 ms |
+
+The second pre-tool-use batch came out 1.6 ms faster with the feature on. That is noise, and it is
+the reason both batches are printed: one batch is a sample, not a cost, so budget the range and
+not either end of it. Re-measure by running the hook entry point as a subprocess against a 30
+entry index with the feature on and off, alternating the arms, and compare the medians.
 """
 
 from __future__ import annotations

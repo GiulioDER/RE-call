@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Add general knowledge hooks to `recall_hooks`: an operator-curated, prebuilt `index.json` of
+  procedures and warnings is injected as context before a matching `Bash` or `PowerShell` command
+  (`PreToolUse`, trigger keyed) and after a failed one (`PostToolUseFailure`, ranked against the
+  error by lexical BM25). At most two entries per call, each once per session, one event log line per
+  trigger or failure. It is opt-in through the operator's own index: without one the hooks do
+  nothing, and the repository ships no entries. It never denies a call, never raises, loads no
+  embedder and makes no network call. The `general_knowledge` block of `recall-hook.json` switches
+  it off (`enabled: false`), and a malformed block disables it. The public installer does not yet
+  register `PowerShell` or `PostToolUseFailure`, so registering those two is manual for now.
 - Search and evidence now report unchecked semantic query support separately from retrieval
   eligibility, and carry calibration-bound synthetic near-miss coverage when available. Missing
   measurements remain unmeasured and report failures are unavailable. Existing retrieval decisions,
