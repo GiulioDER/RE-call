@@ -194,6 +194,35 @@ def withdraw_memory(
     )
 
 
+def _authorize_erasure(
+    store: PgVectorStore,
+    shadow_store: PgVectorStore | None,
+    to_delete: list[str],
+    security_policy: SourceSecurityPolicy,
+    security_context: AccessContext,
+    *,
+    withdraw: bool,
+) -> None:
+    """Refuse an erasure unless the policy allows every name the sources about to go are
+    authorized by, before anything is deleted.
+
+    Allowing the names a caller asked for is not enough: a name resolves to every source whose
+    `file` or `source` it matches, and each of those rows is authorized by its own `file` (or its
+    `source` without one), which can be a name the policy denies. A source with no row and no
+    record (resolved from a build's manifest) is decided by its own name, which is a requested one.
+    """
+    subjects: dict[str, set[str]] = {}
+    for target in (store, shadow_store):
+        if target is None:
+            continue
+        for source, names in target.erasure_subjects(to_delete, recorded=withdraw).items():
+            subjects.setdefault(source, set()).update(names)
+    for source in to_delete:
+        for name in sorted(subjects.get(source) or {source}):
+            if not security_policy.decide(name, security_context).allowed:
+                raise PermissionError(f"source {name!r} is not authorized for erasure")
+
+
 def _forget_memory_unlocked(
     store: PgVectorStore,
     sources: list[str],
@@ -242,6 +271,11 @@ def _forget_memory_unlocked(
     found = [source for source in requested if source in resolved]
     not_found = [source for source in requested if source not in resolved]
     to_delete = sorted({source for identifier in found for source in resolved[identifier]})
+    if security_policy is not None:
+        assert security_context is not None
+        _authorize_erasure(
+            store, shadow_store, to_delete, security_policy, security_context, withdraw=withdraw
+        )
     facts_retracted = 0
     retract: Callable[[], int] | None = None
     try:

@@ -53,10 +53,16 @@ from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern
 from recall.supersession import (
     EdgeCandidates,
     SupersessionGraph,
+    SupersessionRecord,
     chunk_supersedes_targets,
     resolve_supersession_graph,
 )
-from recall.supersession_records import records_matching, sqlite_record_removals, sqlite_records
+from recall.supersession_records import (
+    erasure_subjects,
+    records_matching,
+    sqlite_record_removals,
+    sqlite_records,
+)
 from recall.types import Chunk, ScoredChunk
 
 #: A DSN naming a lite store: ``sqlite:///path/to/memory.db``.
@@ -805,6 +811,23 @@ class LiteStore:
         with self._lock:
             records = sqlite_records(self._conn, self._table)
         return records_matching(records, identifiers)
+
+    def erasure_subjects(self, sources: list[str], *, recorded: bool = False) -> dict[str, set[str]]:
+        """`PgVectorStore.erasure_subjects`: every name a source security policy decides `sources`
+        by, from their rows and, with `recorded`, from the records standing for them."""
+        if not sources:
+            return {}
+        rows = self._metadata_values(
+            "SELECT DISTINCT source, CASE WHEN json_type(metadata, '$.file') = 'text' "
+            "THEN json_extract(metadata, '$.file') END FROM chunks "
+            "WHERE source IN (SELECT value FROM json_each(?))",
+            (json.dumps(list(dict.fromkeys(sources))),),
+        )
+        records: list[SupersessionRecord] = []
+        if recorded:
+            with self._lock:
+                records = sqlite_records(self._conn, self._table, sources)
+        return erasure_subjects(rows, records)
 
     def served_identifiers(self, identifiers: list[str]) -> set[str]:
         """The identifiers this file serves now: every row is served, as `PgVectorStore`'s."""
