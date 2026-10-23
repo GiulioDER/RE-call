@@ -1142,21 +1142,47 @@ async def later():
 '''
 
 
-@pytest.mark.parametrize("source_file", ["synthetic", "recall/records.py"])
+@pytest.mark.parametrize("source_file", ["synthetic", "stdlib functools"])
 def test_innermost_symbol_matches_enclosing_symbol(source_file: str) -> None:
-    """D11 (CCA PERF-006): the one-pass innermost-span table gives `enclosing_symbol`'s answer for
-    every line."""
+    """D11 (CCA PERF-006): the one-pass innermost-span table gives `enclosing_symbol`'s answer.
+
+    The synthetic source is checked at every line. The real-world source is the standard library's
+    `functools`, checked at every symbol boundary (the line before, first, middle, last and the
+    line after each span), because `enclosing_symbol` re-parses the file per call.
+
+    It used to read `recall/records.py` from the repository and check every line. Under mutmut that
+    file is the mutated copy, several times longer, so the per-line re-parse ran past pytest's 120 s
+    timeout and aborted the mutation job's stats run on PR 988 (reproduced on the test host
+    2026-10-23). A file mutmut never rewrites keeps the check meaningful and bounded.
+    """
+    import functools
+
     from recall.anchors import enclosing_symbol, normalize, resolve_symbols
 
     if source_file == "synthetic":
         source = INNERMOST_SOURCE
     else:
-        source = (Path(__file__).resolve().parents[1] / source_file).read_text(encoding="utf-8")
+        source = Path(functools.__file__).read_text(encoding="utf-8")
     count = len(normalize(source).split("\n"))
-    owner = auditor_brief._innermost_symbols(resolve_symbols(source), count)
-    mismatched = [
-        line for line in range(1, count + 1) if owner[line] != enclosing_symbol(source, line)
-    ]
+    spans = resolve_symbols(source)
+    owner = auditor_brief._innermost_symbols(spans, count)
+    if source_file == "synthetic":
+        lines = range(1, count + 1)
+    else:
+        boundaries = {
+            line
+            for span in spans
+            for line in (
+                span.start_line - 1,
+                span.start_line,
+                (span.start_line + span.end_line) // 2,
+                span.end_line,
+                span.end_line + 1,
+            )
+        }
+        lines = sorted(line for line in boundaries if 1 <= line <= count)
+        assert any(span.symbol.count(".") >= 2 for span in spans), "fixture lost its nesting"
+    mismatched = [line for line in lines if owner[line] != enclosing_symbol(source, line)]
     assert mismatched == [], f"innermost symbol differs from enclosing_symbol at {mismatched[:10]}"
 
 
