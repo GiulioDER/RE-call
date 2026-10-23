@@ -18,7 +18,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|BashOutput",
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|BashOutput|PowerShell",
         "hooks": [
           {
             "type": "command",
@@ -28,6 +28,22 @@
             ],
             "timeout": 5,
             "statusMessage": "Checking memory before writing"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-hooks",
+            "args": [
+              "post-tool-use-failure"
+            ],
+            "timeout": 5,
+            "statusMessage": "Checking general knowledge after a failure"
           }
         ]
       }
