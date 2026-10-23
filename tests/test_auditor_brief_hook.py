@@ -110,7 +110,10 @@ H15 were re-run against the fixed code and stayed red under their mutations:
   and `GIT_ALLOW_PROTOCOL` removed from `_GIT_SAFE_ENV`: the `ext::` remote runs, "the
   repository's remote command ran through a lazy fetch". Run on the workstation (git 2.55); with
   either entry removed alone the test stays green, so each layer suffices (the second covers a
-  git older than 2.45, which ignores `GIT_NO_LAZY_FETCH`).
+  git older than 2.45, which ignores `GIT_NO_LAZY_FETCH`). The test pins the clone's
+  `origin/HEAD` to the moved base: without that, a git whose default branch is `main` pointed it
+  at HEAD and the test passed with the fix removed (CCA architect gate). Re-proved with
+  `init.defaultBranch=main`: green with the fix, "the repository's remote command ran" without.
 The budget has two layers on purpose (the stages' own deadlines, 0.1 s early, and the hard stop),
 so H13 and H14 each prove one; removing either timeout alone leaves the other test green.
 """
@@ -677,6 +680,9 @@ def test_partial_clone_never_fetches_through_the_repository_remote(tmp_path: Pat
         capture_output=True,
     )
     _git(victim, "update-ref", "refs/remotes/origin/master", "HEAD~1")
+    # The scope tries origin/HEAD first. A clone points it at the source's default branch, which is
+    # HEAD itself when git's default is not `master`, and an empty diff would make this test vacuous.
+    _git(victim, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
     missing = subprocess.run(
         ["git", "-C", str(victim), "rev-list", "--objects", "--missing=print", "HEAD"],
         check=True,
