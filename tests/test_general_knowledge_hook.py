@@ -2549,3 +2549,77 @@ def test_codex_does_not_handle_the_failure_event(hook, tmp_path, monkeypatch, ca
     hook.index(example_entry())
     assert codex_run(monkeypatch, capsys, failure(), FAILURE_EVENT) == ""
     assert hook.events() == []
+
+
+#: The PowerShell error for an unknown command, as the live PowerShell tool delivered it on
+#: 2026-10-23: SGR colour codes around the message, their ESC byte already gone.
+POWERSHELL_UNKNOWN_COMMAND = (
+    "Exit code 1\n"
+    "[31;1mgkprobe: [31;1mThe term 'gkprobe' is not recognized as a name of a cmdlet, function, "
+    "script file, or executable program.[0m"
+)
+POWERSHELL_SIGNATURE = (
+    "gkprobe|gkprobe: the term 'gkprobe' is not recognized as a name of a cmdlet, function, "
+    "script file, or executable program."
+)
+
+
+@pytest.mark.parametrize("escape", ["", "\x1b"], ids=["esc-already-dropped", "full-sequence"])
+def test_terminal_colour_codes_never_reach_a_failure_signature(escape):
+    """Invariant: colour codes in an error (PowerShell's, observed live without their ESC byte,
+    and the full ESC sequence) are removed before the signature is built, so a coloured and a
+    plain copy of one failure get one signature, and no `[<n>;<n>m` residue appears.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_terminal_colour_codes_never_reach_a_failure_signature`.
+    Mutation: `failure_signature` uses `error[:MAX_ERROR_CHARS]` without `_without_ansi`. Symbol:
+    `failure_signature`. Seen, both params: `assert "gkprobe|[<n>;<n>mgkprobe: [<n>;<n>mthe term
+    'gkprobe' is not recognized as a name of a cmdlet, function, script file, or executable
+    program.[<n>m" == "gkprobe|gkprobe: the term ..."` (with the ESC param the residue starts
+    with the ESC byte).
+    """
+    error = POWERSHELL_UNKNOWN_COMMAND.replace("[", escape + "[")
+    assert gk.failure_signature("gkprobe", error) == POWERSHELL_SIGNATURE
+
+
+def test_text_that_only_looks_like_a_colour_code_is_kept():
+    """Invariant: the bare-code rule needs a digit, so text such as `array[m]` survives; an OSC
+    title sequence (ESC `]` ... BEL) is removed whole.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_text_that_only_looks_like_a_colour_code_is_kept`.
+    Mutation: the bare-code alternative (`[`, one to three digits, more `;digits`, `m`) loosened
+    to any run of digits and semicolons, none required, in `_ANSI_ESCAPE`. Symbol: `_ANSI_ESCAPE`. Seen: `assert 'x|array] is fine' == 'x|array[m] is fine'`.
+    """
+    error = "Exit code 1\narray[m] is \x1b]0;window title\x07fine"
+    assert gk.failure_signature("x", error) == "x|array[m] is fine"
+
+
+def test_colour_codes_do_not_break_the_failure_ranking():
+    """Invariant: the ranking query has colour codes removed too. Left in, each code glues onto
+    the word after it (`[31;1mdatabase` tokenises as `mdatabase`), so an entry whose symptom is
+    exactly the coloured words would never match.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_colour_codes_do_not_break_the_failure_ranking`.
+    Mutation: `rank_for_failure` builds its query without `_without_ansi`. Symbol:
+    `rank_for_failure`. Seen: `assert [] == ['gk-example-db']`.
+    """
+    entry = gk.Entry(
+        id="gk-example-db",
+        kind="procedure",
+        scope="global",
+        triggers=(),
+        symptoms=("database connection refused",),
+        body="Start the example database before running the suite.",
+    )
+    other = gk.Entry(
+        id="gk-example-other",
+        kind="fact",
+        scope="global",
+        triggers=(),
+        symptoms=("disk quota exceeded",),
+        body="Clean the example cache directory.",
+    )
+    error = (
+        "Exit code 1\n"
+        "\x1b[31;1mdatabase\x1b[0m \x1b[31;1mconnection\x1b[0m \x1b[31;1mrefused\x1b[0m"
+    )
+    assert [e.id for e in gk.rank_for_failure([entry, other], error, 0.0)] == ["gk-example-db"]

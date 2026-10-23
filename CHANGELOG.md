@@ -20,7 +20,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   and only a missing file means the enabled default. A reinstall keeps the block as it was, and
   over a file it cannot read it writes the block as off. `recall setup` and the plugin register
   `PowerShell` in the `PreToolUse` matcher and a `PostToolUseFailure` hook for `Bash` and
-  `PowerShell`.
+  `PowerShell`. Terminal colour codes (which PowerShell puts in its error text) are removed before
+  a failure is signed or ranked.
 - New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
   subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
   the local CCA memo directory with no network or embedding. Never false positives, never a

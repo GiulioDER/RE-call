@@ -786,6 +786,21 @@ SYMPTOM_WEIGHT = 3
 
 #: Claude Code prefixes a failed Bash result with `Exit code N` on a line of its own.
 _EXIT_HEADER = re.compile(r"^exit code (-?\d+)\s*$", re.IGNORECASE)
+#: Terminal escape sequences, which PowerShell puts in its error text (observed live on
+#: 2026-10-23: the error for an unknown command arrived wrapped in SGR colour codes). A full
+#: sequence is ESC then either a CSI (`[`, parameters, a final byte), an OSC (`]` up to BEL or
+#: ESC backslash) or one more character. The ESC itself was already gone in the live payload,
+#: leaving `[31;1m`, so a bare SGR (`[` digits and semicolons `m`, at least one digit) goes too;
+#: requiring a digit keeps text such as `array[m]` intact.
+_ANSI_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])"
+    r"|\[\d{1,3}(?:;\d{1,3})*m"
+)
+
+
+def _without_ansi(text: str) -> str:
+    """`text` with terminal escape sequences removed, so colour never changes a signature."""
+    return _ANSI_ESCAPE.sub("", text)
 #: Characters inside a path: not whitespace, quotes, shell metacharacters or `:`, so that
 #: `a.py:42:` leaves its line number to the digit rule instead of being swallowed.
 _PATH_BODY = r"""[^\s"'<>|*?:]"""
@@ -879,7 +894,7 @@ def failure_signature(command: str, error: str) -> str:
     A non-string `command` or `error` counts as empty. Never raises.
     """
     family = command_family(command)[:FAMILY_CHARS]
-    text = error[:MAX_ERROR_CHARS] if isinstance(error, str) else ""
+    text = _without_ansi(error[:MAX_ERROR_CHARS]) if isinstance(error, str) else ""
     lines = [line for line in (raw.strip() for raw in text.splitlines()) if line]
     code: str | None = None
     if lines:
@@ -914,7 +929,7 @@ def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list
     try:
         if not isinstance(error, str) or not entries:
             return []
-        query = _without_exit_header(error[:MAX_ERROR_CHARS])
+        query = _without_exit_header(_without_ansi(error[:MAX_ERROR_CHARS]))
         if not query.strip():
             return []
         from . import prompt_time
