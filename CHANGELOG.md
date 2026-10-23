@@ -17,9 +17,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   embedder and makes no network call. The `general_knowledge` block of `recall-hook.json` switches
   it off (`enabled: false`); a `recall-hook.json` that cannot be read or parsed (or is not a JSON
   object), a block that is not an object, or an `enabled` that is not a boolean also disables it,
-  and only a missing file means the enabled default. A reinstall keeps the block as it was. The
-  public installer does not yet register `PowerShell` or `PostToolUseFailure`, so registering
-  those two is manual for now.
+  and only a missing file means the enabled default. A reinstall keeps the block as it was, and
+  over a file it cannot read it writes the block as off. `recall setup` and the plugin register
+  `PowerShell` in the `PreToolUse` matcher and a `PostToolUseFailure` hook for `Bash` and
+  `PowerShell`. Terminal colour codes (which PowerShell puts in its error text) are removed before
+  a failure is signed or ranked.
 - New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
   subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
   the local CCA memo directory with no network or embedding. Never false positives, never a

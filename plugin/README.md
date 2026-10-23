@@ -98,13 +98,14 @@ can never be retrieved beside your real memory from the same database.
 **An MCP server** exposing `recall_search` and the rest of the tool surface, so Claude can query
 memory as a tool.
 
-**Five hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
+**Six hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
 
 | Event | What it does |
 |---|---|
 | `SessionStart` | Injects a short digest of project memory before the first turn |
 | `UserPromptSubmit` | Searches the project's memo files with your prompt and names prior records that bear on it |
 | `PreToolUse` | Searches memory with the text Claude is about to write, on every write |
+| `PostToolUseFailure` | After a failed shell command, offers the operator's general knowledge entries that match the error (only with an operator index) |
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
 | `SessionEnd` | Closes this session's owned MCP transports, then indexes the session so the next one can find it |
 
