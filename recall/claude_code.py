@@ -780,6 +780,18 @@ def _write_hook_config(
         # over the network with the draft; `prompt_time` reads local memo files with the prompt.
         "prompt_time": {"enabled": bool(prompt_time)},
     }
+    # The `general_knowledge` block is the operator's, not the installer's: no install option sets
+    # it, and an absent block means ENABLED, so rewriting the file without it would turn an explicit
+    # `enabled: false` back on at the next install or upgrade. Carry it forward exactly as found
+    # (even malformed, since a malformed block also means off); a file that is missing or cannot be
+    # read carries nothing.
+    previous: Any = None
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        previous = None
+    if isinstance(previous, dict) and "general_knowledge" in previous:
+        config["general_knowledge"] = previous["general_knowledge"]
     _write_json(path, config)
     try:
         path.chmod(0o600)
