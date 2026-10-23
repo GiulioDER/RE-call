@@ -1549,8 +1549,8 @@ def test_the_family_part_of_a_signature_is_capped():
         ("ssh -p22 examplehost", "ssh:examplehost"),
         ("ssh -tt examplehost", "ssh:examplehost"),
         ("ssh -O exit examplehost", "ssh:examplehost"),
-        ("ssh -l bob [::1]", "ssh:::1"),
-        ("ssh bob@[fe80::1]:22 uptime", "ssh:fe80::1"),
+        ("ssh -l bob [::1]", "ssh:<host>"),
+        ("ssh bob@[fe80::1]:22 uptime", "ssh:<host>"),
         ("ssh -- examplehost uptime", "ssh:examplehost"),
         ("ssh -J jumphost examplehost uptime", "ssh:examplehost"),
         ("ssh ExampleHost", "ssh:examplehost"),
@@ -1572,8 +1572,10 @@ def test_command_family_is_the_program_and_for_ssh_the_alias(command, expected):
     `ssh:2222`, `ssh:jumphost`, `ssh:key.pem`, `ssh:22`, `ssh:exit`; (b) `.rpartition("@")[2]` removed: the
     `alice@examplehost` case gives `ssh:alice@examplehost`; (c) the alias dropped (`return "ssh"`): ten
     cases fail; (d) `O` removed from `_SSH_VALUE_OPTIONS`: only `ssh -O exit examplehost` fails
-    (`ssh:exit`); (e) the bracketed-IPv6 branch (`if host.startswith("[")`) disabled: the two `[...]`
-    cases fail (`ssh:[` and `ssh:[fe80`); (f) the `-m` branch of `command_family` disabled: the
+    (`ssh:exit`); (e) the bracketed-IPv6 branch (`if host.startswith("[")`) disabled: before
+    addresses were masked the two `[...]` cases failed (`ssh:[`, `ssh:[fe80`); both now give
+    `ssh:<host>` either way, so that branch is proved on `_ssh_host` in
+    `test_a_host_that_is_not_an_alias_is_masked_in_the_family`; (f) the `-m` branch of `command_family` disabled: the
     `FOO=1 python -m pytest` case fails (`assert 'python' == 'pytest'`). Symbols: `_ssh_host`,
     `command_family`.
     """
@@ -2721,3 +2723,99 @@ def test_command_family_skips_shell_preamble_and_wrappers(command, expected):
     C: the `-m` branch removed; seen `assert 'python' == 'ruff'`.
     """
     assert gk.command_family(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("ssh admin@192.0.2.10 uptime", "ssh:<host>"),
+        ("ssh host.example.com ls", "ssh:<host>"),
+        ("ssh -l bob [2001:db8::1]", "ssh:<host>"),
+        ("ssh bob@[fe80::1]:22 uptime", "ssh:<host>"),
+        ("ssh examplehost ls", "ssh:examplehost"),
+        ("ssh deploy@example-host-2 ls", "ssh:example-host-2"),
+    ],
+)
+def test_a_host_that_is_not_an_alias_is_masked_in_the_family(command, expected):
+    """Invariant: the signature is logged and reported, so an ssh destination that identifies a
+    machine (an IPv4 or IPv6 address, or a dotted host name) is `ssh:<host>`; a configured alias
+    (letters, digits, `-`) stays, and `user@` is still stripped. The bracketed-IPv6 parse in
+    `_ssh_host` is proved directly, since the mask hides it in the family.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_host_that_is_not_an_alias_is_masked_in_the_family`.
+    Symbols: `command_family`, `_ssh_host`. Mutations, one at a time:
+    A: `_BARE_ALIAS.match(host)` replaced by `True`; seen on the four address params, e.g.
+    `assert 'ssh:192.0.2.10' == 'ssh:<host>'`.
+    B: the bracketed-IPv6 branch of `_ssh_host` disabled; seen on every param (the direct
+    `_ssh_host` assertion): `assert '[2001' == '2001:db8::1'`.
+    """
+    assert gk.command_family(command) == expected
+    assert gk._ssh_host(("-l", "bob", "[2001:db8::1]")) == "2001:db8::1"
+
+
+#: An invented OpenSSH-style fingerprint, built at run time so the source never holds one.
+INVENTED_FINGERPRINT = "SHA256:" + "Ab3x" * 11
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            'Good "git" signature for dev@example.com with key ' + INVENTED_FINGERPRINT,
+            'git|good "git" signature for <email> with key <fingerprint>',
+        ),
+        ("fatal: unable to connect to 192.0.2.10 port 22", "git|fatal: unable to connect to <ip> port <n>"),
+        ("connect to 2001:db8::1 port 22: Connection refused", "git|connect to <ip> port <n>: connection refused"),
+        (
+            'error: rejected api_token=Zx81qq and PASSWORD="two words"',
+            "git|error: rejected api_token=<redacted> and password=<redacted>",
+        ),
+        (
+            "error: host key aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99 changed",
+            "git|error: host key <fingerprint> changed",
+        ),
+        ("error: bearer AbCdEf123456GhIjKl7890xyz rejected", "git|error: bearer <token> rejected"),
+    ],
+    ids=["mailbox-and-fingerprint", "ipv4", "ipv6", "credential-pair", "colon-hex", "token"],
+)
+def test_identifying_values_never_reach_a_signature(line, expected):
+    """Invariant: mailboxes, SSH fingerprints (`SHA256:` or colon hex), `name=value` credentials,
+    IPv4 and IPv6 addresses and long credential-like tokens are placeholders in a signature, which
+    is written to the event log and into reports. All values here are invented.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_identifying_values_never_reach_a_signature`.
+    Symbol: `_redact`, `_normalise`. Each substitution removed alone; seen only on its own params:
+    `_FINGERPRINT` (mailbox-and-fingerprint, colon-hex), `_EMAIL` (mailbox-and-fingerprint),
+    `_SECRET_PAIR` (credential-pair), `_IPV6` (ipv6), `_IPV4` (ipv4), `_TOKEN` (token); each run
+    failed exactly the params named (2, 1, 1, 1, 1, 1 failures). E.g. without `_IPV4`:
+    `assert 'git|fatal: u....<n> port <n>' == 'git|fatal: u...<ip> port <n>'`; without `_TOKEN`:
+    `assert 'git|error: b...>xyz rejected' == 'git|error: b...ken> rejected'`.
+    """
+    assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("error: deadline 12:30:45 passed", "git|error: deadline <n>:<n>:<n> passed"),
+        ("error: std::io failed", "git|error: std::io failed"),
+        ("error: version 1.2.3 is too old", "git|error: version <n>.<n>.<n> is too old"),
+        ("error: commit 9f3c2ab1e9f3c2ab1e9f3c2ab1e is missing", "git|error: commit <hex> is missing"),
+        ("error: test_the_signature_names_the_program failed", "git|error: test_the_signature_names_the_program failed"),
+    ],
+    ids=["time", "scope-operator", "version", "hex-id", "long-identifier"],
+)
+def test_text_that_only_resembles_identifying_data_is_kept(line, expected):
+    """Invariant: the redaction is narrow: a time, a `::` scope operator, a three-part version, a
+    pure hex id (still `<hex>`) and a long identifier with no digit keep their shape.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_text_that_only_resembles_identifying_data_is_kept`.
+    Symbols: `_ipv6_or_text`, `_TOKEN`. Mutations, one at a time:
+    A: `_ipv6_or_text` always returns `<ip>`; seen on time only:
+    `assert 'git|error: deadline <ip> passed' == 'git|error: deadline <n>:<n>:<n> passed'`. The
+    scope-operator param passes under A because `_IPV6` itself cannot start inside a word, so it
+    guards that boundary rather than `_ipv6_or_text`.
+    B: the digit lookahead removed from `_TOKEN`; seen on long-identifier:
+    `assert 'git|error: <token> failed' == 'git|error: test_the_signature_names_the_program failed'`.
+    """
+    assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected

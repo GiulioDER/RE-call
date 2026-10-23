@@ -23,7 +23,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `PowerShell`. Terminal colour codes (which PowerShell puts in its error text) are removed before
   a failure is signed or ranked. A failure signature names the program a command runs (past `cd`,
   `export`, `source` and the like, `timeout`, and `python -m`) and the line that says what failed
-  (a traceback's exception line, else the last line with an error word), not the first line.
+  (a traceback's exception line, else the last line with an error word), not the first line. It
+  keeps no identifying data: an ssh host that is an address or a dotted name is `ssh:<host>`, and
+  addresses, mailboxes, key fingerprints, credential values and long tokens become placeholders.
 - New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
   subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
   the local CCA memo directory with no network or embedding. Never false positives, never a

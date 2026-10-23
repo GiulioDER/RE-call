@@ -856,14 +856,18 @@ def _ssh_host(args: tuple[str, ...]) -> str:
 
 
 #: Programs that only set up the shell for the command after them. An agent's command line
-#: mostly starts with one (`cd repo && pytest`): measured over 662 failed shell calls in 8 weeks of
-#: transcripts (2026-08-28 to 2026-10-23), 255 began with `cd`, so the first program named the
+#: mostly starts with one (`cd repo && pytest`): measured over 663 failed shell calls in 8 weeks of
+#: transcripts (2026-08-28 to 2026-10-23), 256 began with `cd`, so the first program named the
 #: setup step instead of the thing that failed.
 _PREAMBLE_PROGRAMS = frozenset(
     {"cd", "pushd", "export", "set", "source", ".", "set-location", "push-location"}
 )
 #: `timeout` options whose value is the next argument (`timeout -k 5 60 make`).
 _TIMEOUT_VALUE_OPTIONS = frozenset({"-k", "-s", "--kill-after", "--signal"})
+#: An ssh destination that is a configured alias (letters, digits, `-`). Anything else, an IPv4 or
+#: IPv6 address or a dotted host name, identifies a machine, and the signature is written to a
+#: log and into reports, so it is shown as `ssh:<host>`.
+_BARE_ALIAS = re.compile(r"^[a-z0-9-]+$")
 #: Interpreters whose `-m <module>` names the real program (`python -m ruff` is ruff).
 _MODULE_RUNNERS = frozenset({"python", "python3", "py", "pythonw"})
 
@@ -907,17 +911,61 @@ def command_family(command: str) -> str:
             return _program(args[index + 1])
     if program == "ssh":
         host = _ssh_host(args)
-        return f"ssh:{host}" if host else "ssh"
+        if not host:
+            return "ssh"
+        return f"ssh:{host}" if _BARE_ALIAS.match(host) else "ssh:<host>"
     return program
 
 
+#: Identifying values in an error line, replaced before anything else because a signature is
+#: written to `general-knowledge.jsonl` and into reports. An SSH key fingerprint (`SHA256:...`, or
+#: colon-separated hex pairs).
+_FINGERPRINT = re.compile(
+    r"\bsha(?:1|256|384|512):[a-z0-9+/=]{16,}|(?<![0-9a-f:])(?:[0-9a-f]{2}:){7,}[0-9a-f]{2}(?![0-9a-f:])"
+)
+#: A mailbox address.
+_EMAIL = re.compile(r"[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+")
+#: `name=value` where the name says it holds a credential: the name stays, the value goes.
+_SECRET_PAIR = re.compile(
+    r"\b([a-z0-9_.-]*(?:token|secret|password|passwd|key|auth)[a-z0-9_.-]*)="
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)"
+)
+#: IPv4, and IPv6 candidates (checked by `_ipv6_or_text`, so a time such as `12:30:45` stays).
+_IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d]|\.\d)")
+_IPV6 = re.compile(r"(?<![\w:])[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?![\w:])")
+#: A long credential-like token: 20 or more base64 or URL-safe characters holding both a digit and
+#: a letter. Applied after the hex rule, so a pure hex id stays `<hex>`.
+_TOKEN = re.compile(
+    r"(?<![\w<+/=-])(?=[a-z0-9+/_=-]*\d)(?=[a-z0-9+/_=-]*[a-z])[a-z0-9+/_-]{20,}={0,2}(?![\w+/=-])"
+)
+
+
+def _ipv6_or_text(match: re.Match[str]) -> str:
+    """`<ip>` for an IPv6 address (it holds a digit and either `::` or eight groups), else as is."""
+    value = match.group(0)
+    if any(c.isdigit() for c in value) and ("::" in value or value.count(":") == 7):
+        return "<ip>"
+    return value
+
+
+def _redact(line: str) -> str:
+    """`line` (lower case) with fingerprints, mailboxes, credential values and addresses replaced."""
+    line = _FINGERPRINT.sub("<fingerprint>", line)
+    line = _EMAIL.sub("<email>", line)
+    line = _SECRET_PAIR.sub(r"\1=<redacted>", line)
+    line = _IPV6.sub(_ipv6_or_text, line)
+    return _IPV4.sub("<ip>", line)
+
+
 def _normalise(line: str) -> str:
-    """Lowercase `line`; paths, hex runs and digit runs become placeholders; spaces collapse."""
-    line = line.lower()
+    """Lowercase `line`; identifying values, paths, hex runs, long tokens and digit runs become
+    placeholders; spaces collapse."""
+    line = _redact(line.lower())
     line = _WINDOWS_PATH.sub("<path>", line)
     line = _UNC_PATH.sub("<path>", line)
     line = _POSIX_PATH.sub("<path>", line)
     line = _HEX_RUN.sub("<hex>", line)
+    line = _TOKEN.sub("<token>", line)
     line = _DIGITS.sub("<n>", line)
     return _WHITESPACE.sub(" ", line).strip()
 
@@ -938,13 +986,12 @@ _BANNER = re.compile(r"^=+ .* =+$")
 #: Three letters in a row: a line with fewer, once paths, hex ids and numbers are placeholders, is
 #: a bare number or path (`8`, `/tmp/x`) and says nothing about the failure.
 _WORD = re.compile(r"[a-z]{3}")
+_PLACEHOLDER = re.compile(r"<[a-z]+>")
 
 
 def _informative(line: str) -> bool:
-    """Whether `line` still holds a word once its paths, hex ids and numbers are placeholders."""
-    bare = _normalise(line)
-    for placeholder in ("<path>", "<hex>", "<n>"):
-        bare = bare.replace(placeholder, " ")
+    """Whether `line` still holds a word once every placeholder (`<path>`, `<n>`...) is removed."""
+    bare = _PLACEHOLDER.sub(" ", _normalise(line))
     return _WORD.search(bare) is not None
 
 
