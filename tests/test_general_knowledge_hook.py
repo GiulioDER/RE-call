@@ -168,13 +168,18 @@ def test_an_invalid_regex_trigger_is_dropped_not_raised(tmp_path):
 
 
 @pytest.mark.parametrize("pattern", ["a{4294967296}", "(?:" * 5000 + ")" * 5000])
-def test_a_regex_the_engine_cannot_compile_costs_one_trigger_not_the_index(tmp_path, pattern):
+def test_a_regex_the_engine_cannot_compile_costs_one_trigger_not_the_index(tmp_path, monkeypatch, pattern):
     """Invariant: OverflowError and RecursionError from `re.compile` drop the trigger only.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_regex_the_engine_cannot_compile_costs_one_trigger_not_the_index`.
     Mutation: `_trigger` catches only `re.error` (drop `OverflowError, RecursionError`). Symbol: `_trigger`.
     Seen, both params: `assert [] == ['gk-example-tests', 'gk-example-second']` (index emptied).
+
+    The nested param is 20,000 characters, so the load-time length guard would drop it before
+    `re.compile` ever ran; the guard is lifted here so that this test keeps exercising the compiler's
+    own exceptions, which a short pattern past the engine's limits can still raise.
     """
+    monkeypatch.setattr(gk, "MAX_REGEX_CHARS", 10**6)
     write_index(
         tmp_path,
         [
@@ -185,6 +190,82 @@ def test_a_regex_the_engine_cannot_compile_costs_one_trigger_not_the_index(tmp_p
     entries = gk.load_index(tmp_path)
     assert [e.id for e in entries] == ["gk-example-tests", "gk-example-second"]
     assert entries[0].triggers == (gk.Trigger("command", "pytest"),)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [r"(a+)+$", r"(a*)*", r"(?:x+){2,}", r"((a+))+", r"(?P<word>a+)*", r"(a{2,})+", "a" * 201],
+    ids=["plus-plus", "star-star", "counted", "deeper", "named", "inner-counted", "too-long"],
+)
+def test_a_slow_regex_is_dropped_at_load_and_the_entry_kept(tmp_path, pattern):
+    """Invariant: a `command_regex` with a quantifier nested inside a quantified group, or longer
+    than `MAX_REGEX_CHARS`, loses its trigger at load (it would run on every shell call and can
+    backtrack exponentially); the entry and its other triggers stay, and nothing is cached.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_slow_regex_is_dropped_at_load_and_the_entry_kept`.
+    Symbol: `_trigger` and `_risky_regex`. Mutations, one at a time:
+    A: the `if _risky_regex(value):` guard in `_trigger` becomes `if False:`; seen, all seven params:
+    `assert (Trigger(kind...lue='pytest')) == (Trigger(kind...ue='pytest'),)`, at index 0
+    `Trigger(kind='command_regex', value=<the pattern>) != Trigger(kind='command', value='pytest')`.
+    B: `len(pattern) > MAX_REGEX_CHARS` becomes `len(pattern) > 10**9` in `_risky_regex`; seen the
+    same assertion for `too-long` only, the other six green.
+    """
+    write_index(tmp_path, [example_entry(triggers=[{"command_regex": pattern}, {"command": "pytest"}])])
+    entries = gk.load_index(tmp_path)
+    assert [e.id for e in entries] == ["gk-example-tests"]
+    assert entries[0].triggers == (gk.Trigger("command", "pytest"),)
+    assert gk.compiled(pattern) is None
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        r"\(a+\)+",
+        r"[(a+)+]",
+        r"(?:ab)+",
+        r"(a+)",
+        r"(a+)?",
+        r"(a{2})+",
+        r"(?i)make\s+test",
+        r"^(sudo\s+)?docker\s+compose\s+up",
+        r"\bpytest\b.*-n\s*\d+",
+        r"(a|aa)+",
+        "a" * 200,
+    ],
+    ids=["escaped", "class", "prefix", "unquantified", "optional", "exact", "flags", "optional-word",
+         "plain", "alternation", "at-limit"],
+)
+def test_a_safe_regex_is_kept(tmp_path, pattern):
+    """Invariant: the slow-regex scan reads escapes, character classes and group prefixes correctly,
+    so an ordinary pattern keeps its trigger. `(a|aa)+` is kept too: overlapping alternation is the
+    documented limit of a text scan, not a pattern it understands to be safe.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_safe_regex_is_kept`.
+    Symbol: `_risky_regex`. Mutations, one at a time, each seen as `assert () ==
+    (Trigger(kind...<pattern>),)` for its own param only, the other ten green:
+    A: delete the backslash branch (`if char == "\\\\": i += 2; continue`); seen for `escaped`.
+    B: the character class branch `if char == "[":` becomes `if False:`; seen for `class`.
+    C: the group prefix test `if i < n and pattern[i] == "?":` becomes `if False:`; seen for `prefix`.
+    """
+    write_index(tmp_path, [example_entry(triggers=[{"command_regex": pattern}])])
+    (entry,) = gk.load_index(tmp_path)
+    assert entry.triggers == (gk.Trigger("command_regex", pattern),)
+
+
+def test_a_catastrophic_regex_in_the_index_does_not_stall_pre_tool_use(hook):
+    """Invariant: `(a+)+$` in the index cannot make a shell call slow. Unguarded, `re.search` on
+    `"echo " + "a" * 26 + "!"` backtracks for seconds (0.64 s at 22 characters, doubling per
+    character, measured 2026-10-23), and the hook runs on every shell call.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_catastrophic_regex_in_the_index_does_not_stall_pre_tool_use`.
+    Mutation: the `if _risky_regex(value):` guard in `_trigger` becomes `if False:`. Symbol: `_trigger`.
+    Seen: `AssertionError: pre_tool_use_context took 11.31 s` (`assert 11.3086... < 1.0`).
+    """
+    hook.index(example_entry(triggers=[{"command_regex": r"(a+)+$"}]))
+    started = time.perf_counter()
+    gk.pre_tool_use_context(shell("echo " + "a" * 26 + "!"))
+    elapsed = time.perf_counter() - started
+    assert elapsed < 1.0, f"pre_tool_use_context took {elapsed:.2f} s"
 
 
 def test_a_regex_trigger_is_compiled_once_across_loads(tmp_path, monkeypatch):
@@ -306,7 +387,8 @@ def test_settings_defaults_and_overrides():
 
 @pytest.mark.parametrize("block", ["off", "false", [], [1], None, 0, 1, True])
 def test_settings_a_present_block_that_is_not_an_object_disables(block):
-    """Invariant: a PRESENT `general_knowledge` block of the wrong shape fails closed (ruling R9).
+    """Invariant: a PRESENT `general_knowledge` block of the wrong shape fails closed: this is the
+    injection switch, so a hand edit that meant "off" must not leave injection on.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_settings_a_present_block_that_is_not_an_object_disables`.
     Mutation: the previous behaviour, `settings` normalises a non-dict block to `{}` (defaults, so enabled).
@@ -420,20 +502,49 @@ def test_load_settings_does_not_follow_the_hook_config_home(monkeypatch, tmp_pat
     assert gk.load_settings() == {"enabled": True, "min_score": 0.0}
 
 
-@pytest.mark.parametrize("content", [None, "{", "[1, 2]"])
-def test_load_settings_is_default_for_missing_corrupt_or_non_dict(monkeypatch, tmp_path, content):
-    """Invariant: a missing, corrupt or non-object hook config gives the defaults.
+def test_load_settings_is_the_enabled_default_only_for_a_missing_file(monkeypatch, tmp_path):
+    """Invariant: a MISSING `recall-hook.json` is the enabled default (nobody wrote one).
 
-    Red proof. Node: `tests/test_general_knowledge_hook.py::test_load_settings_is_default_for_missing_corrupt_or_non_dict`.
-    Mutations, symbol `load_settings`. A: catch only `OSError`; seen `json.decoder.JSONDecodeError` for the
-    `'{'` param. B: pass the parsed document to `settings` without the dict check; seen
-    `AttributeError: 'list' object has no attribute 'get'` for the `'[1, 2]'` param. The missing-file
-    param was not mutated.
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_load_settings_is_the_enabled_default_only_for_a_missing_file`.
+    Mutation: the `except FileNotFoundError:` branch of `load_settings` returns `disabled` instead of
+    `settings({})`. Symbol: `load_settings`. Seen: `assert {'enabled': F...n_score': 0.0} ==
+    {'enabled': T...n_score': 0.0}`, differing item `{'enabled': False} != {'enabled': True}`.
     """
     monkeypatch.setenv("RECALL_PROJECT_CONFIG_HOME", str(tmp_path))
-    if content is not None:
-        (tmp_path / "recall-hook.json").write_text(content, encoding="utf-8")
+    assert not (tmp_path / "recall-hook.json").exists()
     assert gk.load_settings() == {"enabled": True, "min_score": 0.0}
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["{", "", "[1, 2]", '"on"', "null", b"\xff\xfe{}", "[" * 100_000, "directory"],
+    ids=["truncated", "empty", "list", "string", "null", "not-utf8", "too-deep", "directory"],
+)
+def test_load_settings_disables_for_an_unreadable_corrupt_or_non_object_file(monkeypatch, tmp_path, content):
+    """Invariant: a `recall-hook.json` that EXISTS but cannot be read, does not parse, or is not an
+    object DISABLES general knowledge: a hand edit meant as "off" that broke the file must not turn
+    injection on. `directory` puts a directory where the file should be, which is an `OSError` other
+    than `FileNotFoundError` on every platform.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_load_settings_disables_for_an_unreadable_corrupt_or_non_object_file`.
+    Symbol: `load_settings`. Mutations, one at a time:
+    A: the read's `except (OSError, ValueError):` returns `settings({})`; seen `assert {'enabled': T...
+    n_score': 0.0} == {'enabled': F...n_score': 0.0}` (`{'enabled': True} != {'enabled': False}`) for
+    `not-utf8` and `directory`, the other six green.
+    B: the parse's `except (ValueError, RecursionError):` returns `settings({})`; seen the same
+    assertion for `truncated`, `empty` and `too-deep` only.
+    C: `if not isinstance(document, dict): return disabled` becomes `return settings({})`; seen the
+    same assertion for `list`, `string` and `null` only.
+    """
+    monkeypatch.setenv("RECALL_PROJECT_CONFIG_HOME", str(tmp_path))
+    target = tmp_path / "recall-hook.json"
+    if content == "directory":
+        target.mkdir()
+    elif isinstance(content, bytes):
+        target.write_bytes(content)
+    else:
+        target.write_text(content, encoding="utf-8")
+    assert gk.load_settings() == {"enabled": False, "min_score": 0.0}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -846,9 +957,10 @@ def test_settings_a_config_that_is_not_an_object_is_the_defaults(config):
 
 
 def test_the_analysed_command_is_capped(tmp_path):
-    """Invariant (ruling R12): program extraction and `command_regex` triggers see only the first
+    """Invariant: program extraction and `command_regex` triggers see only the first
     `MAX_COMMAND_CHARS` characters, so a program or a pattern hit that exists only past the cap does
-    not match, and one inside it still does.
+    not match, and one inside it still does. A heredoc body can be hundreds of kilobytes, and the
+    matcher runs on every shell call.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_analysed_command_is_capped`.
     Mutations, symbols `parse_command` / `matched_trigger` / `match_triggers`. A: `parse_command` scans
@@ -876,7 +988,8 @@ def test_the_analysed_command_is_capped(tmp_path):
 
 
 def test_a_megabyte_command_is_analysed_within_a_time_bound(tmp_path):
-    """Invariant (ruling R12): analysing a 1 MB command is bounded by the cap, not by its length.
+    """Invariant: analysing a 1 MB command is bounded by the cap, not by its length, because the
+    matcher runs on every shell call.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_megabyte_command_is_analysed_within_a_time_bound`.
     Mutation: both truncations are removed (`parse_command` reads `text = command` and `match_triggers`
@@ -963,8 +1076,10 @@ def test_no_session_id_caps_and_writes_nothing(tmp_path, session_id):
     writes no per-session state file (an id that sanitises to empty counts as none).
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_no_session_id_caps_and_writes_nothing`.
-    Mutation: the `if not key` early return is removed, so an empty key falls through to the state
-    path (`<home>/state/.json`). Symbol: `claim_for_session`. Seen: `assert ['c'] == ['a', 'b']` for id `///` (the second call, after the first wrote `state/x.json`).
+    Mutation: the `if not key: return unique[:MAX_PER_CALL]` early return is deleted, so an empty key
+    falls through to the state path `<home>/state/.json`. Symbol: `claim_for_session`. Seen, for all
+    four params: `assert ['c'] == ['a', 'b']` on the SECOND call, because the first call had claimed
+    `a` and `b` into `state/.json` (re-run 2026-10-23).
     """
     assert gk.claim_for_session(session_id, ["a", "b", "c"], tmp_path) == ["a", "b"]
     assert gk.claim_for_session(session_id, ["a", "b", "c"], tmp_path) == ["a", "b"]
@@ -1253,8 +1368,9 @@ def test_failure_signature_replaces_paths_but_not_ratios_or_a_bare_slash(detail,
 
 
 def test_a_hex_run_needs_a_digit_so_english_words_survive():
-    """Invariant (ruling R5): a run of 7 or more hex characters is `<hex>` only when it holds a digit.
-    `defaced` and `effaced` are words made of the letters a to f.
+    """Invariant: a run of 7 or more hex characters is `<hex>` only when it holds a digit, because a
+    commit hash or object id has digits and an English word does not: `defaced` and `effaced` are
+    words made of the letters a to f.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_hex_run_needs_a_digit_so_english_words_survive`.
     Mutation: `_HEX_RUN` loses its lookahead (`\\b[0-9a-f]{7,}\\b`). Symbol: `_HEX_RUN`.
@@ -1265,8 +1381,9 @@ def test_a_hex_run_needs_a_digit_so_english_words_survive():
 
 
 def test_a_plain_number_is_a_number_and_a_hash_with_a_letter_is_hex():
-    """Invariant (ruling R17): a run of 7 or more digits is `<n>`, not `<hex>`; a hex id needs a digit AND
-    a letter a to f; a word with no digit (`defaced`) is untouched.
+    """Invariant: a run of 7 or more digits is `<n>`, not `<hex>`, because a plain number is a count
+    or a line, not an object id; a hex id needs a digit AND a letter a to f; a word with no digit
+    (`defaced`) is untouched.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_plain_number_is_a_number_and_a_hash_with_a_letter_is_hex`.
     Mutation: `_HEX_RUN` loses its second lookahead `(?=[0-9a-f]*[a-f])`. Symbol: `_HEX_RUN`.
@@ -1278,7 +1395,7 @@ def test_a_plain_number_is_a_number_and_a_hash_with_a_letter_is_hex():
 
 
 def test_the_error_is_cut_before_the_detail_line_is_looked_for():
-    """Invariant (review focus 2, deterministic form): only the first `MAX_ERROR_CHARS` characters are read,
+    """Invariant (the deterministic form of the 2 MB test): only the first `MAX_ERROR_CHARS` characters are read,
     so a detail line that starts after them does not exist. An implementation that cut late would find it.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_error_is_cut_before_the_detail_line_is_looked_for`.
@@ -1304,7 +1421,8 @@ def test_the_error_is_cut_before_the_detail_line_is_looked_for():
 )
 def test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code(error, expected):
     """Invariant: the leading `Exit code N` line is not the detail (any case, any padding); with no detail
-    the line is `exit:N` unnormalised, and `exit:?` when there is no header either (ruling R6).
+    the line is `exit:N` unnormalised, and `exit:?` when there is no header either, so a failure that
+    printed nothing still groups by its exit code.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code`.
     Mutations: (a) the `lines = lines[1:]` that drops the header is removed: the five cases that start
@@ -1312,6 +1430,21 @@ def test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code(erro
     the last two cases fail (`make|exit:`). Symbol: `failure_signature`.
     """
     assert gk.failure_signature("make test", error) == expected
+
+
+def test_the_family_part_of_a_signature_is_capped():
+    """Invariant: the family part of a signature is at most `FAMILY_CHARS` (64) characters, so a
+    pasted blob in program position cannot make the logged signature unbounded.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_family_part_of_a_signature_is_capped`.
+    Mutation: `family = command_family(command)[:FAMILY_CHARS]` loses its slice in `failure_signature`.
+    Symbol: `failure_signature`. Seen: `assert 'xxxxxxxxxxxx...xxxxxxxxxxxxx' == 'xxxxxxxxxxxx...xxxxxxxxxxxxx'`,
+    the left side 300 characters long against 64.
+    """
+    family, _bar, detail = gk.failure_signature("x" * 300 + " --flag", "Exit code 1\nboom").partition("|")
+    assert family == "x" * gk.FAMILY_CHARS
+    assert detail == "boom"
+    assert gk.failure_signature("ssh " + "h" * 300, "Exit code 255").partition("|")[0] == ("ssh:" + "h" * 300)[:64]
 
 
 @pytest.mark.parametrize(
@@ -1372,7 +1505,7 @@ def test_a_non_string_command_or_error_does_not_raise():
     ids=["one-long-word", "two-million-chars-of-numbers"],
 )
 def test_a_two_megabyte_error_is_bounded(payload):
-    """Invariant (review focus 2): a 2 MB error costs no more than a 4 KB one. The signature is cut to
+    """Invariant: a 2 MB error costs no more than a 4 KB one. The signature is cut to
     `MAX_ERROR_CHARS` before any splitting or matching, and its line part is at most `SIGNATURE_CHARS`.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_two_megabyte_error_is_bounded`.
@@ -1433,9 +1566,32 @@ def test_rank_for_failure_returns_the_entry_whose_symptoms_match():
     assert [e.id for e in found] == ["gk-example-memory"]
 
 
+def test_the_exit_header_is_not_part_of_the_ranking_query():
+    """Invariant: the leading `Exit code N` line is removed from the ranking query, as it is from
+    the signature. Claude Code puts it on every failed shell result, so with it left in, an entry
+    whose body says how a command exits ("exit", "code") would match every unrelated failure.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_exit_header_is_not_part_of_the_ranking_query`.
+    Mutation: `query = _without_exit_header(error[:MAX_ERROR_CHARS])` becomes
+    `query = error[:MAX_ERROR_CHARS]` in `rank_for_failure`. Symbol: `rank_for_failure`.
+    Seen: `assert [Entry(id='gk...er is down.')] == []` on the unrelated failure (the header's
+    "exit" and "code" matched the body).
+    """
+    exits = entry(
+        id="gk-example-exits",
+        symptoms=["database connection refused"],
+        body="The migration script exits with a non-zero code when the server is down.",
+    )
+    assert gk.rank_for_failure([exits], "Exit code 2\nmake: totally unrelated thing happened", 0.0) == []
+    # The header is all that is removed: the entry still answers its own symptom.
+    found = gk.rank_for_failure([exits], "Exit code 2\nerror: database connection refused by server", 0.0)
+    assert [e.id for e in found] == ["gk-example-exits"]
+    assert gk.rank_for_failure([exits], "Exit code 2\n", 0.0) == []
+
+
 @pytest.mark.parametrize("order", [(0, 1), (1, 0)], ids=["body-first", "symptom-first"])
 def test_rank_for_failure_prefers_the_symptom_match_over_the_same_words_in_a_body(order):
-    """Invariant (ruling R4): an entry that lists the error's words as a symptom outranks one that has
+    """Invariant: an entry that lists the error's words as a symptom outranks one that has
     them once in its body, whichever comes first in the list. Without the weight the order flips.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_rank_for_failure_prefers_the_symptom_match_over_the_same_words_in_a_body`.
@@ -1601,6 +1757,7 @@ def shell(command: str, session: str | None = "s1", tool: str = "Bash", cwd: Any
 
 
 def injected_text(output: str) -> str:
+    assert output.strip(), "pre-tool-use printed nothing"
     document = json.loads(output)
     assert document["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
     return document["hookSpecificOutput"]["additionalContext"]
@@ -1715,8 +1872,8 @@ def test_a_powershell_command_is_matched(hook):
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_powershell_command_is_matched`.
     Mutation: `SHELL_TOOLS = frozenset({"Bash"})`. Symbol: `SHELL_TOOLS`. Seen:
-    `json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)` from `injected_text`,
-    because nothing was printed.
+    `AssertionError: pre-tool-use printed nothing` from `injected_text`
+    (re-run 2026-10-23 after the helper gained its empty-output assertion).
     """
     hook.index(example_entry())
     assert "[gk-example-tests]" in injected_text(hook.run(shell("pytest -q", tool="PowerShell")))
@@ -1815,7 +1972,7 @@ def test_general_knowledge_needs_no_write_time_configuration(hook):
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_general_knowledge_needs_no_write_time_configuration`.
     Mutation: the dispatcher returns 0 first when `load_config().get("dsn")` is falsy. Symbol:
-    `recall_hooks._pre_tool_use`. Seen: `json.decoder.JSONDecodeError` from `injected_text` (no output).
+    `recall_hooks._pre_tool_use`. Seen: `AssertionError: pre-tool-use printed nothing` from `injected_text` (re-run 2026-10-23).
     """
     hook.index(example_entry())
     assert not (hook.config_home / "recall-hook.json").exists()
@@ -1844,8 +2001,8 @@ def test_a_project_scoped_entry_fires_only_in_that_repository(hook, tmp_path):
     else, and the logged `project` is the repository name.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_project_scoped_entry_fires_only_in_that_repository`.
-    Mutation: (a) `project = None` in `pre_tool_use_context`: the in-repo call is silent, `JSONDecodeError`
-    on the last injection assertion. (b) `project = "alpha"` constant: the `beta` call injects,
+    Mutation: (a) `project = None` in `pre_tool_use_context`: the in-repo call is silent,
+    `AssertionError: pre-tool-use printed nothing` from `injected_text` on the last injection assertion (re-run 2026-10-23). (b) `project = "alpha"` constant: the `beta` call injects,
     `assert '{"hookSpecif...ry here."}}\n' == ''`. Symbol: `pre_tool_use_context`.
     """
     alpha = tmp_path / "alpha"
@@ -1883,6 +2040,7 @@ def failure(command: str = "pytest -q", error: Any = MATCHING_ERROR, session: st
 
 
 def failure_text(output: str) -> str:
+    assert output.strip(), "post-tool-use-failure printed nothing"
     document = json.loads(output)
     assert document["hookSpecificOutput"]["hookEventName"] == "PostToolUseFailure"
     return document["hookSpecificOutput"]["additionalContext"]
@@ -1893,9 +2051,10 @@ def test_failure_injects_and_logs(hook):
     `PostToolUseFailure` context and logs one `"failure"` event holding the signature and the id.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_failure_injects_and_logs`.
-    Baseline: the tree before this task, where `main` has no `post-tool-use-failure` branch and
-    returns 0 with no output. Symbol: `recall_hooks.main`. Seen: `json.decoder.JSONDecodeError` from
-    `failure_text` (empty stdout) on the first assertion.
+    Baseline: the tree before the failure path existed, where `main` has no `post-tool-use-failure`
+    branch and returns 0 with no output. Re-run 2026-10-23 as the mutation that stands for that
+    baseline: `main`'s `if args[0] == "post-tool-use-failure":` names an event nothing sends.
+    Symbol: `recall_hooks.main`. Seen: `AssertionError: post-tool-use-failure printed nothing` from `failure_text` on the first assertion.
     """
     hook.index(example_entry())
     command = "pytest -q"
@@ -1906,6 +2065,52 @@ def test_failure_injects_and_logs(hook):
     assert event["signature"] == gk.failure_signature(command, MATCHING_ERROR)
     assert event["signature"].startswith("pytest|")
     assert (event["injected"], event["suppressed"]) == (["gk-example-tests"], [])
+
+
+def test_the_documented_failure_payload_gives_a_stable_signature(hook, tmp_path):
+    """Invariant: the `PostToolUseFailure` example payload of the Claude Code hooks reference
+    (https://code.claude.com/docs/en/hooks, read 2026-10-23), used verbatim apart from `cwd`, logs
+    the signature `npm|error: cannot find module 'express'`: the `Exit code 1` header is skipped and
+    the first output line is the detail. The same page says long output is middle-truncated with a
+    `... [N characters truncated] ...` line and that Claude Code may insert a line such as
+    `Command timed out after 2m 0s`; when either is the first detail line it must not crash, and
+    its numbers become `<n>`, so two occurrences with different counts share one signature.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_documented_failure_payload_gives_a_stable_signature`.
+    Symbol: `failure_signature` and `_normalise`. Mutations, one at a time:
+    A: `lines = lines[1:]` (the header skip) deleted in `failure_signature`; seen
+    `assert 'npm|exit code <n>' == "npm|error: c...ule 'express'"` on the documented payload.
+    B: `line = _DIGITS.sub("<n>", line)` deleted in `_normalise`; seen
+    `assert 'npm|... [123...runcated] ...' == 'npm|... [<n>...runcated] ...'` on the truncation marker.
+    """
+    checkout = tmp_path / "alpha"
+    (checkout / ".git").mkdir(parents=True)
+    documented = {
+        "session_id": "abc123",
+        "cwd": str(checkout),
+        "hook_event_name": "PostToolUseFailure",
+        "tool_name": "Bash",
+        "tool_input": {"command": "npm test", "description": "Run test suite"},
+        "tool_use_id": "toolu_01ABC123",
+        "error": "Exit code 1\nError: Cannot find module 'express'",
+        "is_interrupt": False,
+        "duration_ms": 4187,
+    }
+    assert hook.run(documented, FAILURE_EVENT) == ""
+    (event,) = hook.events()
+    assert (event["project"], event["session"]) == ("alpha", "abc123")
+    assert event["signature"] == "npm|error: cannot find module 'express'"
+
+    def signature_of(error: str) -> str:
+        hook.run({**documented, "error": error}, FAILURE_EVENT)
+        return hook.events()[-1]["signature"]
+
+    truncated = "Exit code 1\n... [{} characters truncated] ...\nError: Cannot find module 'express'"
+    assert signature_of(truncated.format(1234)) == "npm|... [<n> characters truncated] ..."
+    assert signature_of(truncated.format(98765)) == signature_of(truncated.format(1234))
+    timed_out = "Exit code 143\nCommand timed out after {}\nnpm ERR! lifecycle"
+    assert signature_of(timed_out.format("2m 0s")) == "npm|command timed out after <n>m <n>s"
+    assert signature_of(timed_out.format("10m 30s")) == signature_of(timed_out.format("2m 0s"))
 
 
 def test_a_repeated_failure_is_suppressed_not_reinjected(hook):
@@ -2014,8 +2219,8 @@ def test_a_powershell_failure_is_analysed(hook):
     """Invariant: `PowerShell` carries the same `command` and is a shell tool.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_powershell_failure_is_analysed`.
-    Mutation: `SHELL_TOOLS = frozenset({"Bash"})`. Symbol: `SHELL_TOOLS`. Seen: `JSONDecodeError` from
-    `failure_text` (empty stdout).
+    Mutation: `SHELL_TOOLS = frozenset({"Bash"})`. Symbol: `SHELL_TOOLS`. Seen:
+    `AssertionError: post-tool-use-failure printed nothing` from `failure_text` (re-run 2026-10-23).
     """
     hook.index(example_entry())
     assert "[gk-example-tests]" in failure_text(hook.run(failure(tool="PowerShell"), FAILURE_EVENT))
@@ -2119,7 +2324,7 @@ def test_a_failure_with_no_command_text_is_still_analysed(hook, tool_input):
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_failure_with_no_command_text_is_still_analysed`.
     Mutation: `post_tool_use_failure` returns 0 `if not command`. Symbol: `post_tool_use_failure`.
-    Seen: `JSONDecodeError` from `failure_text` (empty stdout) for every parameter.
+    Seen: `AssertionError: post-tool-use-failure printed nothing` from `failure_text` for every parameter (re-run 2026-10-23).
     """
     hook.index(example_entry())
     payload = failure()
@@ -2208,7 +2413,7 @@ def codex_run(monkeypatch, capsys, payload: dict[str, Any], event: str = "pre-to
 
 def test_codex_adapter_marks_the_client(hook, tmp_path, monkeypatch, capsys):
     """Invariant: a hook run through the Codex adapter logs `client == "codex"`, writes to the SAME
-    log and knowledge home as a Claude run (ruling R1: one corpus, one log, one switch even though
+    log and knowledge home as a Claude run (one corpus, one log, one switch for both clients, even though
     the adapter redirects `RECALL_HOOK_CONFIG_HOME`), obeys the shared switch, and leaves
     `RECALL_HOOK_CLIENT` exactly as it found it (absent, then a preset value).
 

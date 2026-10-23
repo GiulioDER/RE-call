@@ -26,13 +26,18 @@ package (see `recall_hooks/__init__.py` for what that import costs).
 |---|---|---|
 | knowledge home | `<project config home>/general-knowledge` | `RECALL_GENERAL_KNOWLEDGE_HOME` |
 | event log | `<project config home>/logs/general-knowledge.jsonl` | `RECALL_GENERAL_KNOWLEDGE_LOG` |
-| switch | `general_knowledge` block of `recall-hook.json`: `{"enabled": bool, "min_score": float}` | none |
+| switch | `general_knowledge` block of `<project config home>/recall-hook.json`: `{"enabled": bool, "min_score": float}` | no variable of its own |
 
-Absent block means enabled with `min_score` 0.0; a PRESENT block of the wrong shape, or an
-`enabled` that is not a real bool, means DISABLED (this is the injection switch, so a hand edit
-that meant "off" may not turn it on). All three resolve from the project config home, never from
-`recall_hooks.load_config`, because the Codex adapter redirects `load_config` to Codex's own
-directory and Claude and Codex must share one corpus, one switch and one log.
+The project config home is `RECALL_PROJECT_CONFIG_HOME`, else `CLAUDE_CONFIG_DIR`, else
+`~/.claude`, so all three rows move with those two variables as well as with their own.
+
+A MISSING `recall-hook.json`, or one without the block, means enabled with `min_score` 0.0. Every
+other departure from the documented shape means DISABLED: a file that cannot be read or parsed, a
+document that is not an object, a block that is not an object, or an `enabled` that is not a real
+bool. This is the injection switch, so a hand edit that meant "off" may not turn it on by being
+broken. All three resolve from the project config home, never from `recall_hooks.load_config`,
+because the Codex adapter redirects `load_config` to Codex's own directory and Claude and Codex
+must share one corpus, one switch and one log.
 
 **The two events.**
 
@@ -50,6 +55,18 @@ directory and Claude and Codex must share one corpus, one switch and one log.
 
 At most `MAX_PER_CALL` (2) entries are injected per call, and each entry at most once per session.
 
+Two tool calls of one session can run in parallel, and both append to the event log at once. On
+Windows an append is not guaranteed to be atomic, so a line can rarely be lost or interleaved; the
+log is a diagnostic aid, and that loss is accepted rather than paid for with a lock on every call.
+
+**A slow `command_regex` is refused at load, as defence in depth.** A pattern runs against every
+shell command in every project, so one that backtracks catastrophically stalls every tool call.
+`_trigger` therefore drops (never raises on) a `command_regex` longer than `MAX_REGEX_CHARS` (200)
+characters, or one with a quantified group whose body itself holds a quantifier, the nested shape
+of `(a+)+`, `(a*)*` or `(?:x+){2,}`. The scan reads the pattern text only; it cannot see an
+alternation whose branches overlap, such as `(a|aa)+`, which stays. The entry keeps its other
+triggers. The operator's own tooling should also time every regex before it writes the index.
+
 **The contract.** Never deny a tool call, never raise (every path returns 0), never load an
 embedder, never touch the network. A missing, unreadable, corrupt or foreign-schema index is an
 EMPTY index, and one malformed entry costs that entry only: a hook that raises is charged to the
@@ -63,8 +80,8 @@ process medians (interpreter start included, which is most of the figure):
 |---|---|---:|---:|---:|
 | `pre-tool-use`, 20 runs per arm, interleaved ABAB | 1 | 333.9 ms | 324.2 ms | +9.7 ms |
 | `pre-tool-use`, 20 runs per arm, interleaved ABAB | 2 | 317.5 ms | 319.1 ms | -1.6 ms |
-| `post-tool-use-failure`, 10 runs | 1 | 300.8 ms | 283 to 287 ms | 14 to 18 ms |
-| `post-tool-use-failure`, 10 runs | 2 | 300.8 ms | 283 to 287 ms | 14 to 18 ms |
+| `post-tool-use-failure`, 10 runs | 1 | 300.8 ms | 287.0 ms | +13.8 ms |
+| `post-tool-use-failure`, 10 runs | 2 | 300.8 ms | 283.0 ms | +17.8 ms |
 
 The second pre-tool-use batch came out 1.6 ms faster with the feature on. That is noise, and it is
 the reason both batches are printed: one batch is a sample, not a cost, so budget the range and
@@ -92,9 +109,9 @@ INDEX_NAME = "index.json"
 INDEX_SCHEMA = 1
 #: The most entries one tool call may inject. Each entry is paid for in the agent's context.
 MAX_PER_CALL = 2
-#: The most command text the matcher analyses (ruling R12). A command can carry a heredoc body of
-#: hundreds of kilobytes, and parsing it costs time on every `Bash` call (0.39 s for 100 KB of
-#: separators) for a program that is named in the first lines. Program extraction and
+#: The most command text the matcher analyses, so its cost is bounded by this cap and not by the
+#: input. A command can carry a heredoc body of hundreds of kilobytes, and parsing it costs time on
+#: every `Bash` call (0.39 s for 100 KB of separators) for a program that is named in the first lines. Program extraction and
 #: `command_regex` triggers both see only the first `MAX_COMMAND_CHARS` characters.
 MAX_COMMAND_CHARS = 16384
 #: A per-session state file untouched for this long is deleted by the next claim (opportunistic).
@@ -105,6 +122,11 @@ _SESSION_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
 
 #: The three ways an entry can be triggered. A trigger is a one-key object whose key is one of these.
 TRIGGER_KINDS = frozenset({"command", "command_regex", "host"})
+#: The longest `command_regex` accepted at load; a longer one is dropped (see `_risky_regex`).
+MAX_REGEX_CHARS = 200
+#: A counted repeat that is a quantifier: `{m}`, `{m,}`, `{,n}` or `{m,n}`. Anything else after a
+#: `{` is a literal brace to the engine, and so it is to the scan.
+_COUNTED_REPEAT = re.compile(r"\{(\d*)(,?)(\d*)\}")
 
 #: Compiled `command_regex` patterns, keyed by pattern text. Filled at load, so the matcher in the
 #: hot path never compiles; a pattern that failed to compile is never stored, because its trigger
@@ -190,16 +212,32 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def load_settings() -> dict[str, Any]:
-    """`settings` over `<project config home>/recall-hook.json`; a missing or corrupt file is `{}`.
+    """`settings` over `<project config home>/recall-hook.json`. Never raises.
+
+    Only a MISSING file is the defaults (enabled): that is a machine on which nobody wrote one.
+    Any other failure DISABLES: a file that cannot be read (permissions, a directory in its place,
+    bytes that are not UTF-8), one that does not parse, or a document that is not an object. The
+    reason is the one `settings` gives for `enabled`: a hand edit that meant "off" and broke the
+    file must not switch injection on. The cost is that a corrupt config silences general
+    knowledge until it is fixed, which is the safe direction for an injection switch.
 
     Deliberately NOT `recall_hooks.load_config()`: see the module docstring. This reads the same
     file name from the project config home, which Claude and Codex share.
     """
+    disabled = {"enabled": False, "min_score": 0.0}
     try:
-        document = json.loads((project_config_home() / HOOK_CONFIG_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        raw = (project_config_home() / HOOK_CONFIG_NAME).read_text(encoding="utf-8")
+    except FileNotFoundError:
         return settings({})
-    return settings(document if isinstance(document, dict) else {})
+    except (OSError, ValueError):
+        return disabled
+    try:
+        document = json.loads(raw)
+    except (ValueError, RecursionError):
+        return disabled
+    if not isinstance(document, dict):
+        return disabled
+    return settings(document)
 
 
 def compiled(pattern: str) -> re.Pattern[str] | None:
@@ -207,12 +245,86 @@ def compiled(pattern: str) -> re.Pattern[str] | None:
     return _COMPILED.get(pattern)
 
 
+def _counted(pattern: str, index: int, *, need_comma: bool) -> bool:
+    """True when a counted repeat starts at `index` (with a comma, when `need_comma`)."""
+    found = _COUNTED_REPEAT.match(pattern, index)
+    if found is None or not (found.group(1) or found.group(3)):
+        return False
+    return bool(found.group(2)) or not need_comma
+
+
+def _risky_regex(pattern: str) -> bool:
+    """True when `pattern` is too long, or nests a quantifier inside a quantified group.
+
+    A conservative scan of the pattern TEXT, not a parse. It tracks group depth and skips escaped
+    characters and character classes, so neither an escaped parenthesis nor a `(` inside `[...]`
+    opens a group. It reports a group whose body holds a `+`, `*`, `?`, or a counted repeat with a
+    comma (`{m,}`, `{m,n}`), when the group itself is followed by `+`, `*` or any counted repeat.
+    That is the shape of `(a+)+` and `(?:x+){2,}`, which backtrack exponentially on a near miss. A
+    quantifier nested deeper counts for every enclosing group. It does NOT see overlapping
+    alternation (`(a|aa)+`), which needs more than a text scan. Never raises: a pattern the scan
+    cannot read is treated as risky, which costs that one trigger only.
+    """
+    try:
+        if len(pattern) > MAX_REGEX_CHARS:
+            return True
+        # One flag per open group, the first for the whole pattern: does its body hold a quantifier?
+        stack: list[bool] = [False]
+        i, n = 0, len(pattern)
+        while i < n:
+            char = pattern[i]
+            if char == "\\":
+                i += 2
+                continue
+            if char == "[":
+                i += 1
+                if i < n and pattern[i] == "^":
+                    i += 1
+                if i < n and pattern[i] == "]":
+                    i += 1  # a `]` first in a class is a literal
+                while i < n and pattern[i] != "]":
+                    i += 2 if pattern[i] == "\\" else 1
+                i += 1
+                continue
+            if char == "(":
+                stack.append(False)
+                i += 1
+                if i < n and pattern[i] == "?":
+                    # A group prefix (`(?:`, `(?P<name>`, `(?<=`, `(?i)`): this `?` is no quantifier.
+                    i += 1
+                    if pattern.startswith("P<", i):
+                        end = pattern.find(">", i)
+                        i = n if end < 0 else end + 1
+                    elif pattern.startswith("#", i):
+                        end = pattern.find(")", i)
+                        i = n if end < 0 else end
+                    else:
+                        while i < n and pattern[i] in "aiLmsux-:=!<>P":
+                            i += 1
+                continue
+            if char == ")":
+                inner = stack.pop() if len(stack) > 1 else False
+                i += 1
+                follower = pattern[i] if i < n else ""
+                if inner and (follower in ("+", "*") or (follower == "{" and _counted(pattern, i, need_comma=False))):
+                    return True
+                if inner:
+                    stack[-1] = True
+                continue
+            if char in "+*?" or (char == "{" and _counted(pattern, i, need_comma=True)):
+                stack[-1] = True
+            i += 1
+        return False
+    except Exception:  # BROAD-CATCH: fail-open for the hook, closed for this one trigger
+        return True
+
+
 def _trigger(raw: Any) -> Trigger | None:
     """A `Trigger` from `{"<kind>": "<value>"}`, or `None` for anything else.
 
-    Dropped, not raised: a map with more than one key, an unknown kind, a non-string or empty value
-    and a regex that does not compile are all the same case, one bad trigger that must not cost the
-    entry its other triggers.
+    Dropped, not raised: a map with more than one key, an unknown kind, a non-string or empty value,
+    a regex that does not compile and a regex `_risky_regex` refuses are all the same case, one bad
+    trigger that must not cost the entry its other triggers.
     """
     if not isinstance(raw, dict) or len(raw) != 1:
         return None
@@ -220,6 +332,9 @@ def _trigger(raw: Any) -> Trigger | None:
     if kind not in TRIGGER_KINDS or not isinstance(value, str) or not value:
         return None
     if kind == "command_regex" and value not in _COMPILED:
+        if _risky_regex(value):
+            # Too slow to run on every shell call. Never cached, so it is refused on every load.
+            return None
         try:
             _COMPILED[value] = re.compile(value)
         except (re.error, OverflowError, RecursionError):
@@ -621,6 +736,9 @@ def log_event(record: dict[str, Any], path: Path | None = None) -> None:
 MAX_ERROR_CHARS = 4096
 #: The longest normalised detail line in a signature.
 SIGNATURE_CHARS = 160
+#: The longest command family in a signature. A family is a program name or `ssh:<alias>`, so a
+#: longer one is a pasted blob rather than a program, and it must not make the log line unbounded.
+FAMILY_CHARS = 64
 #: How many times an entry's symptoms are repeated in its ranking document, so that a symptom
 #: phrase outweighs the same words appearing once in the body.
 SYMPTOM_WEIGHT = 3
@@ -638,8 +756,8 @@ _WINDOWS_PATH = re.compile(r"(?<![a-z0-9])[a-z]:[\\/]" + _PATH_BODY + "*")
 _UNC_PATH = re.compile(r"\\\\" + _PATH_BODY + "+")
 #: A POSIX absolute path (a character must follow the slash, which keeps a bare `/` intact) or `~/x`.
 _POSIX_PATH = re.compile(_PATH_START + "(?:/" + _PATH_BODY + r"+|~[\\/]" + _PATH_BODY + "*)")
-#: Hex runs of 7 or more with at least one digit AND at least one letter a to f (rulings R5 and R17):
-#: a commit hash or object id has both. An English word made of the letters a to f (`defaced`,
+#: Hex runs of 7 or more with at least one digit AND at least one letter a to f, word bounded and
+#: applied after the path rules and before the digit rule: a commit hash or object id has both. An English word made of the letters a to f (`defaced`,
 #: `effaced`) has no digit, and a plain number (`1234567`) has no letter, so it stays for `<n>`.
 _HEX_RUN = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b")
 _DIGITS = re.compile(r"\d+")
@@ -710,13 +828,13 @@ def _normalise(line: str) -> str:
 def failure_signature(command: str, error: str) -> str:
     """`<family>|<detail>`: the same failure of the same kind of command gives the same string.
 
-    `detail` is the first non-empty line of the error after a leading `Exit code N` line, normalised
+    `family` is `command_family(command)` cut to `FAMILY_CHARS`. `detail` is the first non-empty line of the error after a leading `Exit code N` line, normalised
     by `_normalise` and cut to `SIGNATURE_CHARS`. When no such line exists it is `exit:N` (not
     normalised) or, with no exit header either, `exit:?`. The error is cut to `MAX_ERROR_CHARS`
     BEFORE any splitting or matching, so the cost does not depend on how much the command printed.
     A non-string `command` or `error` counts as empty. Never raises.
     """
-    family = command_family(command)
+    family = command_family(command)[:FAMILY_CHARS]
     text = error[:MAX_ERROR_CHARS] if isinstance(error, str) else ""
     lines = [line for line in (raw.strip() for raw in text.splitlines()) if line]
     code: str | None = None
@@ -730,6 +848,12 @@ def failure_signature(command: str, error: str) -> str:
     return f"{family}|exit:{code if code is not None else '?'}"
 
 
+def _without_exit_header(text: str) -> str:
+    """`text` without its leading `Exit code N` line, the one `failure_signature` also skips."""
+    head, _newline, rest = text.lstrip().partition("\n")
+    return rest if _EXIT_HEADER.match(head.strip()) else text
+
+
 def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list[Entry]:
     """The entries whose symptoms and body best match `error`, best first, at most `MAX_PER_CALL`.
 
@@ -738,9 +862,16 @@ def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list
     more than the same words in the body. Kept when `score >= min_score`. `prompt_time` is imported
     here, not at module level, so the `pre-tool-use` path never pays for it. Never raises: a broken
     entry list or an error that is not text gives `[]`.
+
+    The query is the error WITHOUT a leading `Exit code N` line. Claude Code puts that header on
+    every failed shell result, so leaving it in would add "exit" and "code" to every query, and any
+    entry whose body says how a command exits would match every failure.
     """
     try:
-        if not isinstance(error, str) or not error.strip() or not entries:
+        if not isinstance(error, str) or not entries:
+            return []
+        query = _without_exit_header(error[:MAX_ERROR_CHARS])
+        if not query.strip():
             return []
         from . import prompt_time
 
@@ -752,7 +883,7 @@ def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list
             by_id[entry.id] = entry
             text = " ".join(list(entry.symptoms) * SYMPTOM_WEIGHT) + " " + entry.body
             documents.append((entry.id, "", prompt_time.tokenize(text)))
-        ranked = prompt_time.rank(documents, error[:MAX_ERROR_CHARS], k=MAX_PER_CALL)
+        ranked = prompt_time.rank(documents, query, k=MAX_PER_CALL)
         return [by_id[name] for name, _summary, score in ranked if score >= min_score][:MAX_PER_CALL]
     except Exception:  # BROAD-CATCH: fail-open
         return []
@@ -847,7 +978,8 @@ def post_tool_use_failure(payload: dict[str, Any]) -> int:
       `min_score`) and claimed through the same once-per-session dedupe as `PreToolUse`;
     * ONE `"failure"` event is logged for EVERY failure, matched or not (spec 8): the signatures of
       the failures nothing matched are what shows which entries are worth writing. `injected` holds
-      the claimed ids and `suppressed` the ranked ids the session already had or the cap dropped;
+      the claimed ids and `suppressed` the ranked ids this session had already claimed (dedupe
+      only: the ranker returns at most `MAX_PER_CALL`, so the cap never drops one here);
     * the claimed entries are printed as `additionalContext`, after the log line, so a closed
       stdout can cost the injection but never the record.
 
@@ -910,11 +1042,13 @@ def post_tool_use_failure(payload: dict[str, Any]) -> int:
 
 
 __all__ = [
+    "FAMILY_CHARS",
     "INDEX_NAME",
     "INDEX_SCHEMA",
     "MAX_COMMAND_CHARS",
     "MAX_ERROR_CHARS",
     "MAX_PER_CALL",
+    "MAX_REGEX_CHARS",
     "SIGNATURE_CHARS",
     "SYMPTOM_WEIGHT",
     "Entry",
