@@ -502,6 +502,37 @@ class ForgetResult(BaseModel):
     )
 
 
+class WithdrawResult(BaseModel):
+    chunks_removed: int = Field(
+        description="Number of chunks permanently deleted, across every matched source."
+    )
+    sources_withdrawn: list[str] = Field(
+        description="Requested sources that were withdrawn: indexed ones are deleted, and one "
+        "already forgotten or pruned has its record turned into a withdrawal."
+    )
+    sources_not_found: list[str] = Field(
+        default_factory=list,
+        description="Requested sources that matched no chunk and no record of a removed memo for "
+        "this tenant: a typo, or a source never indexed here.",
+    )
+    message: str = Field(description="Human-readable summary of what was withdrawn.")
+    outbox_events_scrubbed: int = Field(
+        default=0,
+        description="As recall_forget's: pending migration-outbox records scrubbed of these "
+        "sources; -1 means the scrub FAILED and must be re-run before the next replay.",
+    )
+    staged_files_removed: int = Field(
+        default=0,
+        description="Staged upload files removed after erasure; -1 means cleanup failed.",
+    )
+    facts_withdrawn: int = Field(
+        default=0,
+        description="Facts in the fact ledger withdrawn because every piece of their evidence was "
+        "in these sources: no longer listed, and what they superseded is current again. -1 means "
+        "the withdrawal FAILED and this withdraw must be re-run with the same source names.",
+    )
+
+
 class MemoryStatsResult(BaseModel):
     chunks: int = Field(description="Total chunks currently in memory.")
     newest_indexed_at: str | None = Field(

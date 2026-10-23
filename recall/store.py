@@ -31,6 +31,13 @@ from recall.supersession import (  # noqa: F401  # re-exported: public names of 
     SUPERSEDES_TARGET_ROWS_SQL,
     resolve_supersession_candidates,
 )
+from recall.supersession_records import (
+    PG_RECORD_COUNT_SQL,
+    pg_record_removals,
+    pg_records,
+    records_matching,
+)
+from recall.supersession import SUPERSESSION_RECORD_TYPES
 from recall.db_constants import (  # noqa: F401  # re-exported: public names of this module
     _PG_MAX_INT,
     DEFAULT_SCHEMA_LOCK_TIMEOUT_MS,
@@ -2629,10 +2636,15 @@ class PgVectorStore:
         self._with_retry(_op)
         return len(chunks)
 
-    def delete_sources(self, sources: list[str]) -> int:
+    def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
         """Delete every chunk belonging to the given `source` values; returns rows removed.
 
         Standalone removal API (the Indexer uses the atomic `replace_sources` instead).
+
+        A memo that declared `supersedes:` leaves a `SupersessionRecord` in the same transaction
+        (`recall.supersession_records`): a forget keeps retired what it retired, and `withdraw`
+        gives that back instead and splices its chain. `withdraw` also covers a source with no
+        rows left that a record stands in for.
 
         ⚠️ The returned count can UNDERCOUNT after a reconnect-retry. The delete and its sidecar
         scrub now share a transaction whose COMMIT runs inside the retried op, so a connection
@@ -2651,6 +2663,7 @@ class PgVectorStore:
         # within `with self._pool.connection()`, so nothing from the cursor may escape it.
         def _op(conn: "psycopg.Connection") -> int:
             with conn.transaction():
+                self._record_removals_in(conn, self._table, sources, withdraw=withdraw)
                 rows = conn.execute(
                     f"DELETE FROM {self._table} "
                     f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
@@ -2661,8 +2674,29 @@ class PgVectorStore:
 
         return self._with_retry(_op)
 
-    def delete_sources_across(self, tables: list[str], sources: list[str]) -> int:
-        """Atomically erase tenant sources from active and shadow generation tables."""
+    def _record_removals_in(
+        self, conn: "psycopg.Connection", table: str, sources: list[str], *, withdraw: bool
+    ) -> int:
+        """The `SupersessionRecord`s removing `sources` from `table` owes, appended in `conn`'s
+        transaction before the rows go."""
+        return pg_record_removals(
+            conn,
+            tenant=self._tenant,
+            table=table,
+            source_column="source",
+            scope="c.tenant_id = %s AND c.source = ANY(%s)",
+            params=(self._tenant, list(sources)),
+            sources=sources,
+            withdraw=withdraw,
+        )
+
+    def delete_sources_across(
+        self, tables: list[str], sources: list[str], *, withdraw: bool = False
+    ) -> int:
+        """Atomically erase tenant sources from active and shadow generation tables.
+
+        Each table keeps its own `SupersessionRecord`s, as `delete_sources` does.
+        """
         if not sources:
             return 0
         from recall.sql_identifiers import validate_table_name
@@ -2683,6 +2717,7 @@ class PgVectorStore:
             removed = 0
             with conn.transaction():
                 for table in unique_tables:
+                    self._record_removals_in(conn, table, sources, withdraw=withdraw)
                     rows = conn.execute(
                         f"DELETE FROM {table} "
                         f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
@@ -2853,9 +2888,12 @@ class PgVectorStore:
         """
 
         def _op(conn: "psycopg.Connection") -> SupersessionGraph:
+            # The record count rides in the same statement: a withdrawal of a memo already gone
+            # writes a record and deletes no row, so the table's own fingerprint would not move.
             fingerprint = conn.execute(
-                f"SELECT max(indexed_at), count(*) FROM {self._table} WHERE tenant_id = %s",
-                (self._tenant,),
+                f"SELECT max(indexed_at), count(*), ({PG_RECORD_COUNT_SQL}) "
+                f"FROM {self._table} WHERE tenant_id = %s",
+                (self._tenant, list(SUPERSESSION_RECORD_TYPES), self._tenant),
             ).fetchone()
             cached = self._supersession_cache
             if cached is not None and cached[0] == fingerprint:
@@ -2867,7 +2905,7 @@ class PgVectorStore:
             ).fetchall()
             self._supersession_scans += 1
             METRICS.increment("recall_supersession_scans_total")
-            graph = resolve_supersession_graph(rows)
+            graph = resolve_supersession_graph(rows, pg_records(conn, self._tenant, self.record_scope))
             self._supersession_cache = (fingerprint, graph)
             return graph
 
@@ -3010,6 +3048,21 @@ class PgVectorStore:
                 if source not in bucket:
                     bucket.append(source)
         return resolved
+
+    #: The chunk table a `SupersessionRecord` of this store is scoped to.
+    @property
+    def record_scope(self) -> str:
+        return self._table
+
+    def recorded_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """`sources_for_identifiers` for memos that are no longer indexed but that a
+        `SupersessionRecord` still stands for: what a withdrawal of a memo forgotten or pruned
+        earlier names. Matches every record's `file` or `source`; a memo indexed again under
+        the same name is found by `sources_for_identifiers` as well."""
+        if not identifiers:
+            return {}
+        records = self._with_retry(lambda conn: pg_records(conn, self._tenant, self.record_scope))
+        return records_matching(records, identifiers)
 
     def served_identifiers(self, identifiers: list[str]) -> set[str]:
         """The identifiers (a row's `file` or its `source`) this store serves now.

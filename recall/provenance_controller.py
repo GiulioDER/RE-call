@@ -61,6 +61,9 @@ class DecisionCode(StrEnum):
     MATERIALIZATION_UNAVAILABLE = "MATERIALIZATION_UNAVAILABLE"
     SOURCE_FORGOTTEN = "SOURCE_FORGOTTEN"
     SOURCE_REMOVED = "SOURCE_REMOVED"
+    #: A `withdrawn` event: the memo behind an assertion was withdrawn as a mistake
+    #: (`recall_withdraw`), so the assertion is no longer listed and supersedes nothing.
+    WITHDRAWN = "WITHDRAWN"
     #: Two refusals no ledger ever records: the request id already names another application, or
     #: has a form the ledger mints for its own events (`reserved_request_id`). Recording either
     #: under that id is impossible or would take the server's slot, so neither is written.
@@ -127,12 +130,34 @@ def retraction_key(event: FactEvent) -> RetractionKey:
 
 
 def retracted_keys(events: Iterable[FactEvent]) -> frozenset[RetractionKey]:
-    """The `retraction_key` of every assertion that a `retracted` event in `events` retracts."""
-    return frozenset(
+    """The `retraction_key` of every assertion that a `retracted` or `withdrawn` event in `events`
+    takes away.
+
+    A withdrawal names its assertion by event id (`withdrawn_event_ids`) and carries no cards, so
+    no copy of a value is written to withdraw it; its key is read from the assertion itself, which
+    the same history holds. Every projection hides a withdrawn assertion as it hides a retracted
+    one; `fact_supersession` is where the two differ.
+    """
+    history = tuple(events)
+    withdrawn = withdrawn_event_ids(history)
+    keys: set[RetractionKey] = {
         (fact_id, event.generation_id, frozenset(card.card_id for card in event.evidence_cards))
-        for event in events
+        for event in history
         if event.event_type == "retracted"
         for fact_id in event.supersedes_fact_ids
+    }
+    if withdrawn:
+        keys.update(retraction_key(event) for event in history if event.event_id in withdrawn)
+    return frozenset(keys)
+
+
+def withdrawn_event_ids(events: Iterable[FactEvent]) -> frozenset[str]:
+    """The ids of the assertions a `withdrawn` event in `events` names (`WITHDRAWAL_REQUEST_PREFIX`)."""
+    width = len(WITHDRAWAL_REQUEST_PREFIX)
+    return frozenset(
+        event.request_id[width:]
+        for event in events
+        if event.event_type == "withdrawn" and event.request_id.startswith(WITHDRAWAL_REQUEST_PREFIX)
     )
 
 
@@ -146,6 +171,8 @@ _LATEST = datetime.max.replace(tzinfo=UTC)
 SUPERSESSION_REQUEST_SUFFIX = ":supersession"
 #: The request-id prefix of a `retracted` event (`recall.fact_ledger.retraction_ids`).
 RETRACTION_REQUEST_PREFIX = "retraction:"
+#: The request-id prefix of a `withdrawn` event: the rest is the withdrawn assertion's event id.
+WITHDRAWAL_REQUEST_PREFIX = "withdrawal:"
 #: The request-id prefix of a memo's own statement (`recall.stated_facts.stated_request_id`).
 STATED_REQUEST_PREFIX = "stated:"
 
@@ -160,7 +187,7 @@ def reserved_request_id(request_id: str) -> bool:
     id is a memo's own statement (`recall.stated_facts`), which a client request would pre-empt.
     """
     return request_id.endswith(SUPERSESSION_REQUEST_SUFFIX) or request_id.startswith(
-        (RETRACTION_REQUEST_PREFIX, STATED_REQUEST_PREFIX)
+        (RETRACTION_REQUEST_PREFIX, WITHDRAWAL_REQUEST_PREFIX, STATED_REQUEST_PREFIX)
     )
 
 
@@ -236,7 +263,11 @@ class FactSupersession:
     correction leaves the open-ended present alone. **Chains**: what hides a successor hides what
     it hid, each inside its own window, so a value superseded by a temporary one and then by its
     replacement stays hidden while either holds. Whether a successor is still live does not
-    matter: forgetting a successor removes its value and gives nothing back.
+    matter: forgetting a successor removes its value and gives nothing back. **Withdrawal** is
+    the one way back (owner decision, 2026-10-22): a withdrawn successor (`withdrawn_event_ids`)
+    hides nothing in its own window but still passes on what hides IT, so in A, then B superseding
+    A, then C superseding B, withdrawing B leaves A hidden by C alone (the chain is spliced), and
+    withdrawing the head B of A, B makes A current again.
 
     `hidden` holds, per assertion event, the union of every such window as sorted disjoint
     intervals. A union, not a list: a value asserted again keeps its fact id, so each later
@@ -283,6 +314,23 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
     the interpreter's limit at about a thousand links, after which every read and write of the
     tenant failed (2026-10-21 supersession audit, SEC-002).
     """
+    withdrawn = withdrawn_event_ids(events)
+
+    def withdrawn_for(successor: FactEvent) -> str | None:
+        """The withdrawn assertion `successor` is, or speaks for, else None.
+
+        A `superseded` event speaks for its assertion (`<assertion id>_sup`). It is only ever a
+        successor of its own when that assertion carries no fact, which is what erasing a value
+        leaves (PR 950's redaction); withdrawn, it must then be withdrawn with it.
+        """
+        if successor.event_id in withdrawn:
+            return successor.event_id
+        if successor.event_type == "superseded" and successor.event_id.endswith("_sup"):
+            holder = successor.event_id[: -len("_sup")]
+            if holder in withdrawn:
+                return holder
+        return None
+
     by_fact: dict[str, list[FactEvent]] = {}
     successors: list[tuple[FactEvent, FactWindow | None]] = []
     paired: set[str] = set()
@@ -315,9 +363,13 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
             if ready:
                 spans: list[Interval] = []
                 for successor, window in direct.get(event_id, ()):
-                    spans.append(_span(window))
+                    holder = withdrawn_for(successor)
+                    if holder is None:
+                        spans.append(_span(window))
                     if successor.event_type == "asserted":
                         spans.extend(resolved.get(successor.event_id, ()))
+                    elif holder is not None:
+                        spans.extend(resolved.get(holder, ()))
                 resolved[event_id] = _merge(spans)
                 visiting.discard(event_id)
                 continue
@@ -326,8 +378,9 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
             visiting.add(event_id)
             stack.append((event_id, True))
             for successor, _window in reversed(direct.get(event_id, ())):
-                if successor.event_type == "asserted" and successor.event_id not in resolved:
-                    stack.append((successor.event_id, False))
+                child = successor.event_id if successor.event_type == "asserted" else withdrawn_for(successor)
+                if child is not None and child not in resolved:
+                    stack.append((child, False))
     return FactSupersession(resolved)
 
 

@@ -35,7 +35,7 @@ from recall.types import TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
 from recall.security_policy import access_context_from_environment, load_source_policy
 from recall.control_plane import ControlPlane
-from recall_mcp.lifecycle import forget_memory
+from recall_mcp.lifecycle import forget_memory, withdraw_memory
 from recall._env import env_is_production
 
 from recall.cli_commands._shared import (
@@ -136,7 +136,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "erased and NOT tombstoned rather than acted on. What is erased is the chunks: a fact "
             "the fact ledger holds whose only evidence was in these sources is retracted, so it is "
             "no longer listed, but its value stays in the append-only fact ledger and evidence "
-            "cards, the audit trail, which nothing deletes."
+            "cards, the audit trail, which nothing deletes. Whatever a forgotten memo superseded "
+            "stays retired: to give it back, because the memo was a mistake, use `recall withdraw`."
         ),
         help="permanently delete indexed memory for the given source(s) — irreversible",
     )
@@ -155,6 +156,34 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "and changes nothing — this command is the right-to-erasure path, it is "
         "irreversible, and it is also invoked from scripts, so a typo or an unattended "
         "run must not silently wipe a corpus. Re-run with --yes once the preview looks right.",
+    )
+
+    p_withdraw = sub.add_parser(
+        "withdraw",
+        description=(
+            "Withdraw memory that was a MISTAKE: erase the named source(s) exactly as `recall "
+            "forget` does (IRREVERSIBLE, tombstoned under RECALL_ENV=production), and give back "
+            "what they superseded. `forget` keeps retired whatever a memo superseded; `withdraw` "
+            "voids its `supersedes:` claims, so what it replaced is current again, and whatever "
+            "superseded it now supersedes what it replaced (in a -> b -> c, withdrawing b leaves a "
+            "retired by c). In the fact ledger each fact it alone supported is withdrawn, which "
+            "also undoes the supersession that fact made. A memo forgotten or pruned earlier can "
+            "be withdrawn by the name it had."
+        ),
+        help="erase memory that was a mistake and bring back what it replaced — irreversible",
+    )
+    p_withdraw.set_defaults(_opens_db=True, func=_cmd_withdraw)
+    p_withdraw.add_argument(
+        "sources",
+        nargs="+",
+        help="source value(s) to withdraw, exactly as stored (see the `source` field in "
+        "`recall search` output)",
+    )
+    p_withdraw.add_argument(
+        "--yes",
+        action="store_true",
+        help="actually withdraw. Without this flag, withdraw only PREVIEWS what it would do and "
+        "changes nothing, for the reason `recall forget --yes` gives.",
     )
 
     p_search = sub.add_parser(
@@ -387,7 +416,7 @@ def _cmd_index(args: argparse.Namespace) -> None:
             raise SystemExit(str(exc)) from exc
 
 
-def _check_lite_forget_target(dsn: str, tenant: str) -> None:
+def _check_lite_forget_target(dsn: str, tenant: str, command: str = "forget") -> None:
     """Refuse a lite file forget must not open, checked without writing to it.
 
     Opening a `LiteStore` creates the file, its directories and its schema, and stamps a tenant and
@@ -400,21 +429,31 @@ def _check_lite_forget_target(dsn: str, tenant: str) -> None:
 
     path = Path(dsn[len(LITE_DSN_PREFIX):])
     if not path.exists():
-        raise SystemExit(f"forget: {path} does not exist; nothing deleted or created")
+        raise SystemExit(f"{command}: {path} does not exist; nothing deleted or created")
     meta = lite_file_meta(path)
     if meta is None or "dim" not in meta:
-        raise SystemExit(f"forget: {path} is not a lite store (it has no RE-call meta table); nothing deleted or written")
+        raise SystemExit(f"{command}: {path} is not a lite store (it has no RE-call meta table); nothing deleted or written")
     if meta.get("tenant") != tenant:
         raise SystemExit(
-            f"forget: {path} holds tenant {meta.get('tenant')!r}, not {tenant!r}; pass --tenant "
+            f"{command}: {path} holds tenant {meta.get('tenant')!r}, not {tenant!r}; pass --tenant "
             f"{meta.get('tenant')}; nothing deleted"
         )
 
 
 def _cmd_forget(args: argparse.Namespace) -> None:
+    _cmd_remove(args, withdraw=False)
+
+
+def _cmd_withdraw(args: argparse.Namespace) -> None:
+    _cmd_remove(args, withdraw=True)
+
+
+def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
+    """`recall forget`, or with `withdraw`, `recall withdraw`: one preview-then-erase flow."""
     from recall.generation_store import GenerationStore
     from recall.generations import NoActiveGeneration
 
+    command = "withdraw" if withdraw else "forget"
     route = _runtime_route(args)
     security_policy = load_source_policy()
     security_context = (
@@ -426,7 +465,7 @@ def _cmd_forget(args: argparse.Namespace) -> None:
     if (refusal := lite_route_refusal(args.dsn, route)) is not None:
         raise SystemExit(refusal)
     if is_lite_dsn(args.dsn):
-        _check_lite_forget_target(args.dsn, args.tenant)
+        _check_lite_forget_target(args.dsn, args.tenant, command)
     # After the refusals: building an embedder loads a model or sends a billed probe, and erasure
     # embeds nothing; a refused command must not pay for it.
     embedder = _make_embedder(args.embedder)
@@ -448,7 +487,7 @@ def _cmd_forget(args: argparse.Namespace) -> None:
         # per-source loop, and printed nothing at all.
         if any(not source.strip() for source in requested):
             raise SystemExit(
-                "forget: empty source argument (an unset shell variable?); nothing deleted"
+                f"{command}: empty source argument (an unset shell variable?); nothing deleted"
             )
         if security_policy is not None:
             assert security_context is not None
@@ -458,7 +497,7 @@ def _cmd_forget(args: argparse.Namespace) -> None:
                 if not security_policy.decide(source, security_context).allowed
             ]
             if denied:
-                raise SystemExit("forget: source authorization denied for " + ", ".join(denied))
+                raise SystemExit(f"{command}: source authorization denied for " + ", ".join(denied))
         if gen_store is not None:
             # Widen the existence check, do not drop it, and ask the right question.
             # `source_content_hashes()` is scoped to ONE generation, so FILTERING on it
@@ -478,6 +517,10 @@ def _cmd_forget(args: argparse.Namespace) -> None:
                 | gen_store.manifest_uris_matching(list(requested))
                 | gen_store.sources_in_legacy_table()
             )
+            if withdraw:
+                # A memo every generation lost (forgotten, or left out of a promotion) is still
+                # withdrawable by the name its record keeps.
+                known |= set(gen_store.recorded_sources_for_identifiers(list(requested)))
             targets = [s for s in requested if s in known]
             unseen = [s for s in requested if s not in known]
             unseen_note = (
@@ -495,12 +538,14 @@ def _cmd_forget(args: argparse.Namespace) -> None:
                 visible_now = present(requested) if present is not None else set(store.source_content_hashes())
             except NoActiveGeneration:
                 visible_now = set()
+            if withdraw:
+                visible_now = set(visible_now) | set(store.recorded_sources_for_identifiers(requested))
             targets = [s for s in requested if s in visible_now]
             unseen = [s for s in requested if s not in visible_now]
             unseen_note = f"not found (check for typos): {', '.join(unseen)}"
         if not args.yes:
             print(
-                f"DRY RUN: would forget {len(targets)} source(s): "
+                f"DRY RUN: would {command} {len(targets)} source(s): "
                 f"{', '.join(targets) if targets else '(none)'}"
             )
             if unseen:
@@ -511,14 +556,18 @@ def _cmd_forget(args: argparse.Namespace) -> None:
             # so a failure part way through leaves the earlier ones erased. Reporting from
             # a finally means a partial erasure is never silent.
             if targets:
-                receipt = forget_memory(
-                    store,
-                    targets,
-                    control_plane=ControlPlane(args.dsn) if gen_store is not None else None,
-                    security_policy=security_policy,
-                    security_context=security_context,
-                )
-                print(receipt.message[:1].lower() + receipt.message[1:])
+                control_plane = ControlPlane(args.dsn) if gen_store is not None else None
+                if withdraw:
+                    message = withdraw_memory(
+                        store, targets, control_plane=control_plane,
+                        security_policy=security_policy, security_context=security_context,
+                    ).message
+                else:
+                    message = forget_memory(
+                        store, targets, control_plane=control_plane,
+                        security_policy=security_policy, security_context=security_context,
+                    ).message
+                print(message[:1].lower() + message[1:])
             if unseen:
                 print(unseen_note)
 
