@@ -37,7 +37,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
@@ -56,6 +56,7 @@ from recall.supersession import (
     chunk_supersedes_targets,
     resolve_supersession_graph,
 )
+from recall.supersession_records import records_matching, sqlite_record_removals, sqlite_records
 from recall.types import Chunk, ScoredChunk
 
 #: A DSN naming a lite store: ``sqlite:///path/to/memory.db``.
@@ -140,6 +141,39 @@ def _query_terms(text: str) -> list[str]:
             continue
         terms.append(term)
     return terms
+
+
+def _supersession_rows(
+    entries: Iterable[tuple[Mapping[str, Any], str, str]],
+) -> list[tuple[str | None, str | None, datetime | None, str, str | None, str | None]]:
+    """The PostgreSQL scan's rows (`recall.supersession.supersession_rows_sql`) from chunk
+    ``(metadata, first_indexed_at, source)`` entries: one per (file, claim, source), with its
+    earliest first write and the first `valid_from` and last `valid_until` among its chunks."""
+    first: dict[tuple[str, str | None, str], str] = {}
+    bounds: dict[tuple[str, str | None, str], tuple[str | None, str | None]] = {}
+    for metadata, first_indexed_at, source in entries:
+        file = metadata.get("file")
+        if not isinstance(file, str):
+            continue
+        targets: tuple[str | None, ...] = chunk_supersedes_targets(metadata) or (None,)
+        valid_from = _bound_text(metadata.get("valid_from"))
+        valid_until = _bound_text(metadata.get("valid_until"))
+        for target in targets:
+            key = (file, target, source)
+            if key not in first or first_indexed_at < first[key]:
+                first[key] = first_indexed_at
+            low, high = bounds.get(key, (None, None))
+            bounds[key] = (
+                valid_from if low is None or (valid_from is not None and valid_from < low) else low,
+                valid_until if high is None or (valid_until is not None and valid_until > high) else high,
+            )
+    return [
+        (file, target, _parse_time(stamp), source, *bounds[(file, target, source)])
+        for (file, target, source), stamp in sorted(
+            first.items(),
+            key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or "", item[0][2]),
+        )
+    ]
 
 
 def _bound_text(value: object) -> str | None:
@@ -585,29 +619,47 @@ class LiteStore:
             self._bump()
         return len(chunks)
 
-    def delete_sources(self, sources: list[str]) -> int:
+    def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
         """Delete every row of `sources`; the delete and the version bump commit together or not at all.
 
         Apart, a failed bump would leave the rows gone and every cache keyed on the version (the
         matrix, the supersession map) still serving them, and a retry finds nothing left to delete,
         so nothing would ever move the version.
+
+        A memo that declared `supersedes:` leaves a `SupersessionRecord` in the same transaction,
+        as `PgVectorStore.delete_sources` does: a forget keeps retired what it retired, `withdraw`
+        gives it back and splices its chain (also for a source a record stands in for).
         """
         if not sources:
             return 0
+        wanted = json.dumps(sources)
         with self._write():
+            entries = self._conn.execute(
+                "SELECT source, metadata, first_indexed_at FROM chunks "
+                "WHERE source IN (SELECT value FROM json_each(?)) ORDER BY rowid",
+                (wanted,),
+            ).fetchall()
+            sqlite_record_removals(
+                self._conn,
+                _supersession_rows((json.loads(metadata), first, source) for source, metadata, first in entries),
+                scope=self._table,
+                sources=sources,
+                withdraw=withdraw,
+                created_at=_now(),
+            )
             removed = self._conn.execute(
-                "DELETE FROM chunks WHERE source IN (SELECT value FROM json_each(?))", (json.dumps(sources),)
+                "DELETE FROM chunks WHERE source IN (SELECT value FROM json_each(?))", (wanted,)
             ).rowcount
             self._bump()
         return int(removed)
 
-    def delete_sources_across(self, tables: list[str], sources: list[str]) -> int:
+    def delete_sources_across(self, tables: list[str], sources: list[str], *, withdraw: bool = False) -> int:
         if sources and not tables:
             raise ValueError("tables must not be empty")
         unknown = [t for t in dict.fromkeys(tables) if t != self._table]
         if unknown:
             raise LiteStoreError(f"a lite store has one table ({self._table!r}); cannot erase sources in {unknown}")
-        return self.delete_sources(sources)
+        return self.delete_sources(sources, withdraw=withdraw)
 
     def analyze_if_stale(self, modified: int) -> bool:
         """SQLite needs no planner statistics refresh for these queries; nothing to do."""
@@ -744,6 +796,15 @@ class LiteStore:
                 if source not in bucket:
                     bucket.append(source)
         return resolved
+
+    def recorded_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """`PgVectorStore.recorded_sources_for_identifiers`: the memos a `SupersessionRecord`
+        stands for, by `file` or `source`."""
+        if not identifiers:
+            return {}
+        with self._lock:
+            records = sqlite_records(self._conn, self._table)
+        return records_matching(records, identifiers)
 
     def served_identifiers(self, identifiers: list[str]) -> set[str]:
         """The identifiers this file serves now: every row is served, as `PgVectorStore`'s."""
@@ -1329,31 +1390,11 @@ class LiteStore:
         matrix = self._load()
         cached = self._supersession_cache
         if cached is None or cached[0] != matrix.version:
-            first: dict[tuple[str, str | None, str], str] = {}
-            bounds: dict[tuple[str, str | None, str], tuple[str | None, str | None]] = {}
-            for row in matrix.rows:
-                file = row.metadata.get("file")
-                if not isinstance(file, str):
-                    continue
-                targets: tuple[str | None, ...] = chunk_supersedes_targets(row.metadata) or (None,)
-                valid_from = _bound_text(row.metadata.get("valid_from"))
-                valid_until = _bound_text(row.metadata.get("valid_until"))
-                for target in targets:
-                    key = (file, target, row.source)
-                    if key not in first or row.first_indexed_at < first[key]:
-                        first[key] = row.first_indexed_at
-                    low, high = bounds.get(key, (None, None))
-                    bounds[key] = (
-                        valid_from if low is None or (valid_from is not None and valid_from < low) else low,
-                        valid_until if high is None or (valid_until is not None and valid_until > high) else high,
-                    )
-            rows: list[tuple[str | None, str | None, datetime | None, str, str | None, str | None]] = [
-                (file, target, _parse_time(stamp), source, *bounds[(file, target, source)])
-                for (file, target, source), stamp in sorted(
-                    first.items(),
-                    key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or "", item[0][2]),
-                )
-            ]
-            cached = (matrix.version, resolve_supersession_graph(rows))
+            rows = _supersession_rows((row.metadata, row.first_indexed_at, row.source) for row in matrix.rows)
+            # A record is written in the transaction that bumps the corpus version, so this cache
+            # keys the records too.
+            with self._lock:
+                records = sqlite_records(self._conn, self._table)
+            cached = (matrix.version, resolve_supersession_graph(rows, records))
             self._supersession_cache = cached
         return cached[1].copy()

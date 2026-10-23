@@ -1558,6 +1558,10 @@ class Indexer:
         indexed in several roots; pruning everything absent from THIS glob would delete the
         others' rows on every run.
 
+        A pruned memo counts as forgotten for supersession (owner decision, 2026-10-22): the
+        delete leaves its `SupersessionRecord`, so what it superseded stays retired while its file
+        is gone, and a restored file decides again with its own claims.
+
         "Gone from disk" is checked against the disk, not inferred from absence from `files`.
         Those are different questions: `files` is what THIS run's glob matched, and the glob
         varies between runs on one root (`--glob '**/*.py'` for code, the default for markdown,
