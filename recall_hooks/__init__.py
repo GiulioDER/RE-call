@@ -574,6 +574,17 @@ def main(argv: list[str] | None = None) -> int:
     # stops the cwd being prepended, and point `PYTHONPATH` at the copy you mean to run.
     if args[0] == "pre-tool-use":
         return _pre_tool_use(payload)
+    if args[0] == "post-tool-use-failure":
+        # Its own guarded import AND its own `try`, like `_pre_tool_use`: an older install that
+        # lacks the module, or a hook that raises, is silence and exit 0, never a failed hook. The
+        # module is imported here only, so a command that SUCCEEDS (`pre-tool-use` alone) never pays
+        # for the failure path, and neither does any other event.
+        try:
+            from .general_knowledge import post_tool_use_failure
+
+            return post_tool_use_failure(payload)
+        except Exception:  # BROAD-CATCH: fail-open (ImportError from an older checkout included)
+            return 0
     if args[0] == "write-time-relay":
         from .relay import main as relay_main
 

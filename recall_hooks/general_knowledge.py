@@ -786,6 +786,80 @@ def pre_tool_use_context(payload: dict[str, Any]) -> str | None:
         return None
 
 
+def post_tool_use_failure(payload: dict[str, Any]) -> int:
+    """`PostToolUseFailure`: inject the entries a failed shell command's error points at. Always 0.
+
+    Skipped without output or log unless the tool is a shell tool, the failure is not a user
+    interrupt (`is_interrupt` true means the person stopped the command, which says nothing about
+    the command) and `error` is text. Then, with the shared switch on:
+
+    * the signature is computed FIRST, so it is logged even if ranking fails;
+    * in-scope entries are ranked against the error (`rank_for_failure`, lexical, the configured
+      `min_score`) and claimed through the same once-per-session dedupe as `PreToolUse`;
+    * ONE `"failure"` event is logged for EVERY failure, matched or not (spec 8): the signatures of
+      the failures nothing matched are what shows which entries are worth writing. `injected` holds
+      the claimed ids and `suppressed` the ranked ids the session already had or the cap dropped;
+    * the claimed entries are printed as `additionalContext`, after the log line, so a closed
+      stdout can cost the injection but never the record.
+
+    A missing or non-text `command` is the empty command: on this path the error is the evidence,
+    and the signature's family is merely empty. The success path never reaches this function, so a
+    command that works pays nothing; only the process spawned on a failure imports this module's
+    ranker (`prompt_time`, imported inside `rank_for_failure`).
+
+    **Never raises.** Same contract as `pre_tool_use_context`: the whole body is fail-open.
+    """
+    try:
+        if payload.get("tool_name") not in SHELL_TOOLS or payload.get("is_interrupt") is True:
+            return 0
+        error = payload.get("error")
+        if not isinstance(error, str):
+            return 0
+        config = load_settings()
+        if not config["enabled"]:
+            return 0
+        tool_input = payload.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        command = command if isinstance(command, str) else ""
+        cwd = payload.get("cwd")
+        project = repository_name(cwd) if isinstance(cwd, str) else None
+        session = payload.get("session_id")
+        session = session if isinstance(session, str) else ""
+        signature = failure_signature(command, error)
+        ranked_ids: list[str] = []
+        claimed: list[Entry] = []
+        try:
+            entries = [e for e in load_index() if in_scope(e, project)]
+            ranked = rank_for_failure(entries, error, config["min_score"])
+            ranked_ids = [e.id for e in ranked]
+            taken = set(claim_for_session(session, ranked_ids))
+            claimed = [e for e in ranked if e.id in taken]
+        except Exception:  # BROAD-CATCH: fail-open, the signature below is still worth logging
+            ranked_ids, claimed = [], []
+        claimed_ids = {e.id for e in claimed}
+        log_event(
+            {
+                "event": "failure",
+                "project": project,
+                "session": session,
+                "client": client(),
+                "signature": signature,
+                "injected": [e.id for e in claimed],
+                "suppressed": [i for i in ranked_ids if i not in claimed_ids],
+            }
+        )
+        if claimed:
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUseFailure",
+                    "additionalContext": render(claimed),
+                }
+            }))
+    except Exception:  # BROAD-CATCH: fail-open
+        return 0
+    return 0
+
+
 __all__ = [
     "INDEX_NAME",
     "INDEX_SCHEMA",
@@ -813,6 +887,7 @@ __all__ = [
     "match_triggers",
     "matched_trigger",
     "parse_command",
+    "post_tool_use_failure",
     "pre_tool_use_context",
     "rank_for_failure",
     "render",

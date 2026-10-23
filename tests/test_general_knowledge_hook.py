@@ -1,5 +1,6 @@
-"""General knowledge hook, tasks 1 to 5: the index model, its fail-open reader, project detection, trigger matching, the
-session dedupe, the event log, failure signatures, failure ranking and the PreToolUse integration.
+"""General knowledge hook, tasks 1 to 6: the index model, its fail-open reader, project detection, trigger matching, the
+session dedupe, the event log, failure signatures, failure ranking, the PreToolUse integration, the
+PostToolUseFailure integration and the Codex adapter.
 
 Only invented entries appear here (ids `gk-example-...`, host `examplehost`). The conftest autouse
 fixture `_confine_general_knowledge` points the corpus and the log at a per-test directory, so no
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1580,10 +1582,10 @@ def hook(tmp_path, monkeypatch, capsys):
                 return []
             return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
 
-        def run(self, payload: dict[str, Any]) -> str:
+        def run(self, payload: dict[str, Any], event: str = "pre-tool-use") -> str:
             monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
             capsys.readouterr()
-            assert recall_hooks.main(["pre-tool-use"]) == 0
+            assert recall_hooks.main([event]) == 0
             return capsys.readouterr().out
 
     return Env()
@@ -1857,3 +1859,399 @@ def test_a_project_scoped_entry_fires_only_in_that_repository(hook, tmp_path):
     assert "[gk-example-alpha-only]" in injected_text(hook.run(shell("pytest -q", session="s3", cwd=alpha)))
     (event,) = hook.events()
     assert event["project"] == "alpha"
+
+
+# ---------------------------------------------------------------------------------------------
+# PostToolUseFailure integration and the Codex adapter (task 6).
+# ---------------------------------------------------------------------------------------------
+
+#: An error with well over three content words, four of them shared with the symptoms of
+#: `example_entry` ("collection error import failure"), which is what `prompt_time.rank` gates on.
+MATCHING_ERROR = "Exit code 2\nERROR collection error: import failure while collecting tests"
+#: An error that shares no word with any invented symptom or body.
+UNRELATED_ERROR = "Exit code 3\nsomething completely unrelated happened yesterday afternoon"
+FAILURE_EVENT = "post-tool-use-failure"
+
+
+def failure(command: str = "pytest -q", error: Any = MATCHING_ERROR, session: str | None = "s1",
+            tool: str = "Bash", **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {"tool_name": tool, "tool_input": {"command": command}, "error": error}
+    if session is not None:
+        payload["session_id"] = session
+    payload.update(extra)
+    return payload
+
+
+def failure_text(output: str) -> str:
+    document = json.loads(output)
+    assert document["hookSpecificOutput"]["hookEventName"] == "PostToolUseFailure"
+    return document["hookSpecificOutput"]["additionalContext"]
+
+
+def test_failure_injects_and_logs(hook):
+    """Invariant: a failed command whose error matches an entry's symptoms injects that entry as
+    `PostToolUseFailure` context and logs one `"failure"` event holding the signature and the id.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_failure_injects_and_logs`.
+    Baseline: the tree before this task, where `main` has no `post-tool-use-failure` branch and
+    returns 0 with no output. Symbol: `recall_hooks.main`. Seen: `json.decoder.JSONDecodeError` from
+    `failure_text` (empty stdout) on the first assertion.
+    """
+    hook.index(example_entry())
+    command = "pytest -q"
+    out = hook.run(failure(command), FAILURE_EVENT)
+    assert "[gk-example-tests]" in failure_text(out)
+    (event,) = hook.events()
+    assert event["event"] == "failure"
+    assert event["signature"] == gk.failure_signature(command, MATCHING_ERROR)
+    assert event["signature"].startswith("pytest|")
+    assert (event["injected"], event["suppressed"]) == (["gk-example-tests"], [])
+
+
+def test_a_repeated_failure_is_suppressed_not_reinjected(hook):
+    """Invariant: the once-per-session dedupe is shared with the failure path: the second identical
+    failure prints nothing and logs the id as `suppressed`.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_repeated_failure_is_suppressed_not_reinjected`.
+    Mutation: in `post_tool_use_failure` replace `set(claim_for_session(session, ranked_ids))` with
+    `set(ranked_ids[:MAX_PER_CALL])` (no dedupe). Symbol: `post_tool_use_failure`. Seen: the second run printed
+    the injection again, `assert '{"hookSpecif...ry here."}}\n' == ''`.
+    """
+    hook.index(example_entry())
+    assert "[gk-example-tests]" in failure_text(hook.run(failure(), FAILURE_EVENT))
+    assert hook.run(failure(), FAILURE_EVENT) == ""
+    first, second = hook.events()
+    assert (first["injected"], first["suppressed"]) == (["gk-example-tests"], [])
+    assert (second["injected"], second["suppressed"]) == ([], ["gk-example-tests"])
+
+
+def test_unmatched_failure_is_logged_without_output(hook):
+    """Invariant: EVERY failure is logged (spec 8), matched or not: an unmatched one prints nothing
+    and logs its signature with empty `injected` and `suppressed`.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_unmatched_failure_is_logged_without_output`.
+    Mutation: in `post_tool_use_failure` the `log_event` call is guarded by `if ranked_ids:` (log only when
+    something matched). Symbol: `post_tool_use_failure`. Seen: `ValueError: not enough values to unpack
+    (expected 1, got 0)` on `(event,) = hook.events()`.
+    """
+    hook.index(example_entry())
+    assert hook.run(failure(error=UNRELATED_ERROR), FAILURE_EVENT) == ""
+    (event,) = hook.events()
+    assert event["event"] == "failure"
+    assert event["signature"] == gk.failure_signature("pytest -q", UNRELATED_ERROR)
+    assert (event["injected"], event["suppressed"]) == ([], [])
+
+
+def test_a_failure_with_no_index_is_still_logged(hook):
+    """Invariant: no index at all is not a reason to drop the event; it is the case the log is for.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_failure_with_no_index_is_still_logged`.
+    Mutation: `post_tool_use_failure` returns early `if not entries:` before logging. Symbol:
+    `post_tool_use_failure`. Seen: `ValueError: not enough values to unpack (expected 1, got 0)`.
+    """
+    assert hook.run(failure(), FAILURE_EVENT) == ""
+    (event,) = hook.events()
+    assert (event["event"], event["injected"], event["suppressed"]) == ("failure", [], [])
+
+
+def test_interrupt_is_ignored(hook):
+    """Invariant: a user interrupt is not a failure of the command: no output and no log line, while
+    `is_interrupt: false` is an ordinary failure.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_interrupt_is_ignored`.
+    Mutation: remove the `payload.get("is_interrupt") is True` skip in `post_tool_use_failure`. Symbol:
+    `post_tool_use_failure`. Seen: `assert '{"hookSpecif...ry here."}}\n' == ''`.
+    """
+    hook.index(example_entry())
+    assert hook.run(failure(is_interrupt=True), FAILURE_EVENT) == ""
+    assert hook.events() == []
+    assert "[gk-example-tests]" in failure_text(hook.run(failure(is_interrupt=False), FAILURE_EVENT))
+
+
+@pytest.mark.parametrize("error", [None, 3, ["Exit code 1"], {"text": "x"}])
+def test_a_non_string_error_is_ignored(hook, error):
+    """Invariant: an `error` that is not text is not analysed: no output, no log line.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_non_string_error_is_ignored`.
+    Mutation: replace the `if not isinstance(error, str):` skip in `post_tool_use_failure` with `if False:`.
+    Symbol: `post_tool_use_failure`. Seen: one `"failure"` event was logged (first parameter `None`, `-x`),
+    `assert [{'ts': ..., 'event': 'failure', ...}] == []`.
+    """
+    hook.index(example_entry())
+    assert hook.run(failure(error=error), FAILURE_EVENT) == ""
+    assert hook.events() == []
+
+
+def test_a_failure_without_an_error_field_is_ignored(hook):
+    """Invariant: a payload with no `error` key at all is skipped like a non-text one.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_failure_without_an_error_field_is_ignored`.
+    Mutation: `error = payload.get("error", "")` in `post_tool_use_failure`. Symbol: `post_tool_use_failure`.
+    Seen: `assert [{'ts': ..., 'event': 'failure', ...}] == []`.
+    """
+    hook.index(example_entry())
+    payload = failure()
+    del payload["error"]
+    assert hook.run(payload, FAILURE_EVENT) == ""
+    assert hook.events() == []
+
+
+@pytest.mark.parametrize("tool", ["Write", "Read", "Edit", "Task"])
+def test_a_failure_of_a_non_shell_tool_is_ignored(hook, tool):
+    """Invariant: only `Bash` and `PowerShell` failures are analysed.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_failure_of_a_non_shell_tool_is_ignored`.
+    Mutation: remove the `tool_name not in SHELL_TOOLS` skip in `post_tool_use_failure`. Symbol:
+    `post_tool_use_failure`. Seen: one `"failure"` event was logged for every tool,
+    `assert [{'ts': ..., 'event': 'failure', ...}] == []`.
+    """
+    hook.index(example_entry())
+    assert hook.run(failure(tool=tool), FAILURE_EVENT) == ""
+    assert hook.events() == []
+
+
+def test_a_powershell_failure_is_analysed(hook):
+    """Invariant: `PowerShell` carries the same `command` and is a shell tool.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_powershell_failure_is_analysed`.
+    Mutation: `SHELL_TOOLS = frozenset({"Bash"})`. Symbol: `SHELL_TOOLS`. Seen: `JSONDecodeError` from
+    `failure_text` (empty stdout).
+    """
+    hook.index(example_entry())
+    assert "[gk-example-tests]" in failure_text(hook.run(failure(tool="PowerShell"), FAILURE_EVENT))
+
+
+def test_a_disabled_hook_logs_nothing_on_failure(hook, monkeypatch):
+    """Invariant: `enabled: false` means no output, no log line, no state and no index read, even
+    for a failure that would match.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_disabled_hook_logs_nothing_on_failure`.
+    Mutation 1: replace the `if not config["enabled"]:` gate in `post_tool_use_failure` with `if False:`.
+    Mutation 2: call `load_index()` ahead of the gate. Symbol: `post_tool_use_failure`. Seen: (1)
+    `assert '{"hookSpecif...ry here."}}\n' == ''`; (2) `assert ['read'] == []`.
+    """
+    hook.index(example_entry())
+    hook.config(enabled=False)
+    reads: list[str] = []
+    real_load = gk.load_index
+    monkeypatch.setattr(gk, "load_index", lambda *a, **k: reads.append("read") or real_load(*a, **k))
+    assert hook.run(failure(), FAILURE_EVENT) == ""
+    assert hook.events() == []
+    assert reads == []
+    assert not (hook.home / "state").exists()
+
+
+def test_the_failure_record_has_exactly_the_documented_fields(hook, monkeypatch):
+    """Invariant: a `"failure"` event carries `event`, `project`, `session`, `client`, `signature`,
+    `injected` and `suppressed`, plus the logger's `ts`, and nothing else; `client` follows
+    `RECALL_HOOK_CLIENT` and `project` is the repository name.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_failure_record_has_exactly_the_documented_fields`.
+    Mutation 1: the logged record gains `"trigger": []` (the trigger event's shape). Mutation 2:
+    `"client": "claude"` as a constant. Mutation 3: `"project": None`. Symbol: `post_tool_use_failure`.
+    Seen: (1) the key set differs by `'trigger'`; (2) `assert ('s9', 'claude', 'alpha') == ('s9', 'codex', 'alpha')`;
+    (3) `assert ('s9', 'codex', None) == ('s9', 'codex', 'alpha')`.
+    """
+    monkeypatch.setenv("RECALL_HOOK_CLIENT", "codex")
+    alpha = hook.config_home.parent / "alpha"
+    (alpha / ".git").mkdir(parents=True)
+    hook.index(example_entry())
+    out = hook.run(failure(session="s9", cwd=str(alpha)), FAILURE_EVENT)
+    assert "[gk-example-tests]" in failure_text(out)
+    (event,) = hook.events()
+    assert set(event) == {"ts", "event", "project", "session", "client", "signature", "injected", "suppressed"}
+    assert (event["session"], event["client"], event["project"]) == ("s9", "codex", "alpha")
+
+
+def test_a_project_scoped_entry_is_not_ranked_outside_its_repository(hook, tmp_path):
+    """Invariant: failure ranking only sees entries in scope for the failing command's repository.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_project_scoped_entry_is_not_ranked_outside_its_repository`.
+    Mutation: in `post_tool_use_failure` the entry list drops the `in_scope(e, project)` filter. Symbol:
+    `post_tool_use_failure`. Seen: the `beta` run injected, `assert '{"hookSpecif...ry here."}}\n' == ''`.
+    """
+    alpha = tmp_path / "alpha"
+    (alpha / ".git").mkdir(parents=True)
+    beta = tmp_path / "beta"
+    (beta / ".git").mkdir(parents=True)
+    hook.index(example_entry(scope="project:alpha"))
+    assert hook.run(failure(session="a", cwd=str(beta)), FAILURE_EVENT) == ""
+    assert "[gk-example-tests]" in failure_text(hook.run(failure(session="b", cwd=str(alpha)), FAILURE_EVENT))
+
+
+def test_min_score_from_the_config_applies_to_failures(hook):
+    """Invariant: `general_knowledge.min_score` is passed to the ranker: a score floor above any real
+    BM25 score injects nothing, but the failure is still logged.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_min_score_from_the_config_applies_to_failures`.
+    Mutation: `post_tool_use_failure` passes `0.0` instead of `config["min_score"]` to `rank_for_failure`.
+    Symbol: `post_tool_use_failure`. Seen: `assert '{"hookSpecif...ry here."}}\n' == ''`.
+    """
+    hook.index(example_entry())
+    hook.config(enabled=True, min_score=1000.0)
+    assert hook.run(failure(), FAILURE_EVENT) == ""
+    (event,) = hook.events()
+    assert (event["injected"], event["suppressed"]) == ([], [])
+
+
+def test_a_failure_without_a_session_id_caps_and_writes_no_state(hook):
+    """Invariant: no session id means at most `MAX_PER_CALL` entries are injected (three entries match,
+    the ranker's own cap keeps two) and no `state/` directory is created.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_failure_without_a_session_id_caps_and_writes_no_state`.
+    Mutation: `post_tool_use_failure` uses `"anonymous"` instead of `""` for a missing `session_id`.
+    Symbol: `post_tool_use_failure`. Seen: `assert 'anonymous' == ''` on the logged session (a state file
+    would follow).
+    """
+    hook.index(*(example_entry(id=f"gk-example-{n}") for n in "abc"))
+    text = failure_text(hook.run(failure(session=None), FAILURE_EVENT))
+    assert text.count("[gk-example-") == gk.MAX_PER_CALL
+    (event,) = hook.events()
+    assert event["session"] == ""
+    assert len(event["injected"]) == gk.MAX_PER_CALL
+    assert not (hook.home / "state").exists()
+
+
+@pytest.mark.parametrize("tool_input", [None, {}, {"command": 3}, "pytest"])
+def test_a_failure_with_no_command_text_is_still_analysed(hook, tool_input):
+    """Invariant: a missing or non-text `command` is the empty command, not a reason to skip: the
+    error is what matters on this path, and the logged signature has the empty family.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_failure_with_no_command_text_is_still_analysed`.
+    Mutation: `post_tool_use_failure` returns 0 `if not command`. Symbol: `post_tool_use_failure`.
+    Seen: `JSONDecodeError` from `failure_text` (empty stdout) for every parameter.
+    """
+    hook.index(example_entry())
+    payload = failure()
+    payload["tool_input"] = tool_input
+    assert "[gk-example-tests]" in failure_text(hook.run(payload, FAILURE_EVENT))
+    (event,) = hook.events()
+    assert event["signature"] == gk.failure_signature("", MATCHING_ERROR)
+
+
+def test_ranking_raising_still_logs_the_signature(hook, monkeypatch):
+    """Invariant: the signature is computed and logged even when ranking fails; the hook is silent
+    and returns 0.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_ranking_raising_still_logs_the_signature`.
+    Mutation: narrow the inner `except Exception` around `rank_for_failure` to `except ZeroDivisionError`,
+    so the outer guard swallows the error before `log_event` runs. Symbol: `post_tool_use_failure`. Seen: `ValueError: not enough values to unpack
+    (expected 1, got 0)` on `(event,) = hook.events()`.
+    """
+    hook.index(example_entry())
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("ranking exploded")
+
+    monkeypatch.setattr(gk, "rank_for_failure", explode)
+    assert hook.run(failure(), FAILURE_EVENT) == ""
+    (event,) = hook.events()
+    assert event["signature"] == gk.failure_signature("pytest -q", MATCHING_ERROR)
+    assert (event["injected"], event["suppressed"]) == ([], [])
+
+
+def test_the_failure_path_never_raises(hook, monkeypatch):
+    """Invariant: a settings reader that explodes is silence and exit 0, from the function and
+    through `main`.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_failure_path_never_raises`.
+    Mutation: narrow the outer `except Exception` of `post_tool_use_failure` to `except KeyError`.
+    Symbol: `post_tool_use_failure`. Seen: `RuntimeError: settings exploded` at the direct call.
+    """
+    hook.index(example_entry())
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("settings exploded")
+
+    monkeypatch.setattr(gk, "load_settings", explode)
+    assert gk.post_tool_use_failure(failure()) == 0
+    assert hook.run(failure(), FAILURE_EVENT) == ""
+
+
+def test_main_survives_a_raising_failure_hook(hook, monkeypatch):
+    """Invariant: if `post_tool_use_failure` itself raises, `main` still returns 0 and prints nothing.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_main_survives_a_raising_failure_hook`.
+    Mutation: narrow the dispatch's `except Exception` in `recall_hooks.main` to `except KeyError`.
+    Symbol: `recall_hooks.main`. Seen: `RuntimeError: hook exploded` escaped `main`.
+    """
+    hook.index(example_entry())
+
+    def explode(payload: dict[str, Any]) -> int:
+        raise RuntimeError("hook exploded")
+
+    monkeypatch.setattr(gk, "post_tool_use_failure", explode)
+    assert hook.run(failure(), FAILURE_EVENT) == ""
+
+
+def test_main_survives_a_missing_general_knowledge_module(hook, monkeypatch):
+    """Invariant: an install without the module (an older checkout) degrades to silence and exit 0.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_main_survives_a_missing_general_knowledge_module`.
+    Mutation: the dispatch narrows its guard to `except RuntimeError`, so the import failure of the
+    missing module is not caught. Symbol: `recall_hooks.main`. Seen: `ModuleNotFoundError: import of
+    recall_hooks.general_knowledge halted; None in sys.modules` escaped `main`.
+    """
+    hook.index(example_entry())
+    monkeypatch.setitem(sys.modules, "recall_hooks.general_knowledge", None)
+    assert hook.run(failure(), FAILURE_EVENT) == ""
+
+
+def codex_run(monkeypatch, capsys, payload: dict[str, Any], event: str = "pre-tool-use") -> str:
+    from recall_hooks import codex
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+    capsys.readouterr()
+    assert codex.main([event]) == 0
+    return capsys.readouterr().out
+
+
+def test_codex_adapter_marks_the_client(hook, tmp_path, monkeypatch, capsys):
+    """Invariant: a hook run through the Codex adapter logs `client == "codex"`, writes to the SAME
+    log and knowledge home as a Claude run (ruling R1: one corpus, one log, one switch even though
+    the adapter redirects `RECALL_HOOK_CONFIG_HOME`), obeys the shared switch, and leaves
+    `RECALL_HOOK_CLIENT` exactly as it found it (absent, then a preset value).
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_codex_adapter_marks_the_client`.
+    Mutation 1: remove the `os.environ["RECALL_HOOK_CLIENT"] = "codex"` line in `recall_hooks.codex.main`.
+    Mutation 2: delete the `RECALL_HOOK_CLIENT` restore branches of the `finally`. Symbol:
+    `recall_hooks.codex.main`. Seen: (1) `assert ['claude', 'claude'] == ['claude', 'codex']`;
+    (2) `assert 'RECALL_HOOK_CLIENT' not in environ(...)`.
+    """
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    hook.index(example_entry())
+    # A Claude run first, then a Codex run: one file, two clients.
+    assert "[gk-example-tests]" in injected_text(hook.run(shell("pytest -q", session="claude-s")))
+    out = codex_run(monkeypatch, capsys, shell("pytest -q", session="codex-s"))
+    assert "[gk-example-tests]" in injected_text(out)
+    events = hook.events()
+    assert [e["client"] for e in events] == ["claude", "codex"]
+    assert [e["session"] for e in events] == ["claude-s", "codex-s"]
+    assert sorted(p.name for p in (hook.home / "state").iterdir()) == ["claude-s.json", "codex-s.json"]
+    assert "RECALL_HOOK_CLIENT" not in os.environ
+
+    # The shared switch lives on the Claude side and governs Codex too.
+    hook.config(enabled=False)
+    assert codex_run(monkeypatch, capsys, shell("pytest -q", session="codex-t")) == ""
+    assert len(hook.events()) == 2
+
+    # A value that was there before the run is put back, not removed.
+    hook.config(enabled=True)
+    monkeypatch.setenv("RECALL_HOOK_CLIENT", "preset")
+    codex_run(monkeypatch, capsys, shell("pytest -q", session="codex-u"))
+    assert os.environ["RECALL_HOOK_CLIENT"] == "preset"
+    assert hook.events()[-1]["client"] == "codex"
+
+
+def test_codex_does_not_handle_the_failure_event(hook, tmp_path, monkeypatch, capsys):
+    """Invariant: Codex has no post-tool event, so its adapter does not accept `post-tool-use-failure`:
+    it exits 0 with no output and no log line even for a matching failure.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_codex_does_not_handle_the_failure_event`.
+    Mutation: add `"post-tool-use-failure"` to the event set in `recall_hooks.codex.main`. Symbol:
+    `recall_hooks.codex.main`. Seen: `assert '{"hookSpecif...ry here."}}\n' == ''`.
+    """
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    hook.index(example_entry())
+    assert codex_run(monkeypatch, capsys, failure(), FAILURE_EVENT) == ""
+    assert hook.events() == []
