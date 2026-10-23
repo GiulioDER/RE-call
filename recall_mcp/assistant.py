@@ -31,11 +31,11 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from recall.backends import write_session
 from recall.errors import RecallError
-from recall.lite.assistant_memos import MemoFolder
+from recall.lite.assistant_memos import MEMO_ID, MemoFolder
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -69,6 +69,9 @@ REMEMBER_DESCRIPTION = (
     "as expected_revision. Reuse request_id only to retry the same write. include_receipt returns "
     "write, indexing and calibration readiness separately; old calls still return only memo_id. "
     "A correction target that already has a successor is refused."
+    " Before stating a fact, look its subject up with recall_current_facts(subject=...) and repeat an "
+    "existing subject and predicate exactly; the receipt's fact_key says which key the fact went "
+    "under, what else is in force for it, and any supersession left to settle."
 )
 FORGET_DESCRIPTION = (
     "Delete one memo from long-term memory by memo_id. A fact it alone supported is retracted, "
@@ -158,9 +161,15 @@ class AssistantMemos(MemoFolder):
         request_id: str | None = None,
         expected_revision: str | None = None,
         include_receipt: bool = False,
+        access_context: Any = None,
         **refresh_kwargs: Any,
     ) -> dict[str, Any]:
-        """`write` then `refresh`, both under the store's write lane."""
+        """`write` then `refresh`, both under the store's write lane.
+
+        A receipt for a memo that states a `fact` also says, under `fact_key`, which key the fact
+        went under, what is in force for that key now, and any edge rule R(a') proposes
+        (`recall.declared_keys.key_receipt`), read with the caller's `access_context`.
+        """
         with write_session(store, "remember"):
             result = self.write(
                 text, kind, valid_from, valid_until, supersedes, fact, author=author,
@@ -187,7 +196,44 @@ class AssistantMemos(MemoFolder):
                     except Exception as exc:  # BROAD-CATCH: fail-closed readiness, keep verified indexing state
                         receipt.update(calibration_status="unavailable", retrieval_ready=False,
                                        error_type=type(exc).__name__)
+                    if fact is not None and indexed:
+                        receipt["fact_key"] = self._fact_key(
+                            store, result["memo_id"], fact, access_context, refresh_kwargs.get("security_policy"),
+                        )
             return result
+
+    def _fact_key(
+        self, store: LiteStore, memo_id: str, fact: object, access_context: Any, security_policy: Any,
+    ) -> dict[str, Any]:
+        """The receipt's `fact_key`: `key_receipt` over the current facts as the caller may read them.
+
+        It reads the whole current-facts projection, inside the write lane, so its cost grows with
+        the ledger; only a receipt asked for, of a memo stating a fact, pays it.
+        """
+        from recall.declared_keys import key_receipt
+        from recall.types import AtomicFact
+        from recall_mcp.provenance import current_facts_memory
+
+        path = self.path_of(memo_id)
+        if path is None or not isinstance(fact, dict):  # `write` refuses both before a memo exists
+            return {"state": "unchecked", "error_type": "ValueError"}
+        folder = self.folder.relative_to(self.index_root).as_posix()
+        folder = "" if folder == "." else folder
+
+        def name_of(name: str) -> str:
+            # A memo of this folder by its id, as the surface names it everywhere; any other by its name.
+            parent, _, file = name.rpartition("/")
+            stem = file.removesuffix(".md")
+            return stem if parent == folder and MEMO_ID.match(stem) else name
+
+        try:
+            # Typed for PgVectorStore, it reads a lite store as the held `recall_current_facts` does.
+            listing = current_facts_memory(cast(Any, store), security_policy=security_policy,
+                                           access_context=access_context)
+            return key_receipt(listing, path.relative_to(self.index_root).as_posix(), AtomicFact.from_payload(fact),
+                               name_of=name_of)
+        except Exception as exc:  # BROAD-CATCH: the memo is written and indexed; only the key report is missing
+            return {"state": "unchecked", "error_type": type(exc).__name__}
 
     def forget(
         self,
@@ -327,4 +373,5 @@ class AssistantMemos(MemoFolder):
             "contested": payload.get("contested", []),
             "served_state": payload.get("served_state"),
             "served_lookups_failed": payload.get("served_lookups_failed", []),
+            **({"similar_subjects": payload["similar_subjects"]} if "similar_subjects" in payload else {}),
         }

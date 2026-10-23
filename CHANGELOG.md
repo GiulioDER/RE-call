@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
+  answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
+  a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for
+  a memo stating a `fact` gains `fact_key`: the key, its state, the values in force and the
+  supersession left to settle. The new deterministic rule `deterministic.stated_key_successor`
+  (`recall.declared_keys.successor_pairs`) proposes, for review only, that of the memos stating one
+  single-valued key each supersedes the one of the latest earlier `valid_from`, whatever the value;
+  it never writes an edge.
+
 - New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
   subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
   the local CCA memo directory with no network or embedding. Never false positives, never a
