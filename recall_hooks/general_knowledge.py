@@ -855,21 +855,60 @@ def _ssh_host(args: tuple[str, ...]) -> str:
     return ""
 
 
+#: Programs that only set up the shell for the command after them. An agent's command line
+#: mostly starts with one (`cd repo && pytest`): measured over 662 failed shell calls in 8 weeks of
+#: transcripts (2026-08-28 to 2026-10-23), 255 began with `cd`, so the first program named the
+#: setup step instead of the thing that failed.
+_PREAMBLE_PROGRAMS = frozenset(
+    {"cd", "pushd", "export", "set", "source", ".", "set-location", "push-location"}
+)
+#: `timeout` options whose value is the next argument (`timeout -k 5 60 make`).
+_TIMEOUT_VALUE_OPTIONS = frozenset({"-k", "-s", "--kill-after", "--signal"})
+#: Interpreters whose `-m <module>` names the real program (`python -m ruff` is ruff).
+_MODULE_RUNNERS = frozenset({"python", "python3", "py", "pythonw"})
+
+
 def command_family(command: str) -> str:
-    """The first program of `command`, or `ssh:<alias>` for ssh; "" for none. Never raises.
+    """The program a command runs, or `ssh:<alias>` for ssh; "" for none. Never raises.
+
+    The first segment whose program is not a shell preamble (`cd`, `pushd`, `export`, `set`,
+    `source`, `.`, and PowerShell's `Set-Location`, `Push-Location`); assignments are already
+    dropped by `parse_command`. When every segment is preamble, the first one. Two wrappers are
+    looked through: `timeout [options] <duration> <program>` names `<program>`, and
+    `python -m <module>` (also `python3`, `py`) names `<module>`, so a failing `ruff` and a failing
+    `pytest` are not both `python`.
 
     It reuses `parse_command` (and so its length cap) instead of finding the program a second way:
     the trigger matcher and the failure signature must agree on what a command is. For `ssh` the
     alias is part of the family because `ssh hosta` and `ssh hostb` fail for unrelated reasons.
+    Known limit: in a chain (`python a.py && python -m ruff check`) the failing segment cannot be
+    told from the command text, so the family is the first program even when a later one failed.
     """
     segments = parse_command(command)
     if not segments:
         return ""
-    first = segments[0]
-    if first.program == "ssh":
-        host = _ssh_host(first.args)
+    chosen = next((s for s in segments if s.program not in _PREAMBLE_PROGRAMS), segments[0])
+    program, args = chosen.program, chosen.args
+    if program == "timeout":
+        positional: list[int] = []
+        index = 0
+        while index < len(args):
+            if args[index] in _TIMEOUT_VALUE_OPTIONS:
+                index += 2
+                continue
+            if not args[index].startswith("-"):
+                positional.append(index)
+            index += 1
+        if len(positional) >= 2:
+            program, args = _program(args[positional[1]]), args[positional[1] + 1 :]
+    if program in _MODULE_RUNNERS and "-m" in args:
+        index = args.index("-m")
+        if index + 1 < len(args) and args[index + 1]:
+            return _program(args[index + 1])
+    if program == "ssh":
+        host = _ssh_host(args)
         return f"ssh:{host}" if host else "ssh"
-    return first.program
+    return program
 
 
 def _normalise(line: str) -> str:
@@ -883,28 +922,88 @@ def _normalise(line: str) -> str:
     return _WHITESPACE.sub(" ", line).strip()
 
 
+#: Words that mark the line of an error that says what went wrong, rather than progress, a
+#: banner or a summary of counts.
+_ERRORISH = re.compile(
+    r"\b(error|errors|fatal|failed|failure|denied|not found|no such|cannot|can't|unable|refused|"
+    r"timed out|timeout|exception|invalid|missing|not recognized|unrecognized|abort|aborted|"
+    r"killed|panic)\b",
+    re.IGNORECASE,
+)
+#: The last line of a Python traceback: `ValueError: ...`, `json.decoder.JSONDecodeError: ...`.
+_EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Warning|Failure)\b")
+_TRACEBACK = re.compile(r"^traceback \(most recent call last\)", re.IGNORECASE)
+#: A pytest-style `===== 1 failed, 2 passed in 3.1s =====` banner: error-ish words, no content.
+_BANNER = re.compile(r"^=+ .* =+$")
+#: Three letters in a row: a line with fewer, once paths, hex ids and numbers are placeholders, is
+#: a bare number or path (`8`, `/tmp/x`) and says nothing about the failure.
+_WORD = re.compile(r"[a-z]{3}")
+
+
+def _informative(line: str) -> bool:
+    """Whether `line` still holds a word once its paths, hex ids and numbers are placeholders."""
+    bare = _normalise(line)
+    for placeholder in ("<path>", "<hex>", "<n>"):
+        bare = bare.replace(placeholder, " ")
+    return _WORD.search(bare) is not None
+
+
+def _error_lines(text: str) -> list[str]:
+    """The non-empty, stripped lines of `text` with a leading `Exit code N` line removed."""
+    lines = [line for line in (raw.strip() for raw in text.splitlines()) if line]
+    if lines and _EXIT_HEADER.match(lines[0]):
+        lines = lines[1:]
+    return lines
+
+
+def _detail_line(error: str) -> str | None:
+    """The line of a failure that says what went wrong, or None when the error has no lines.
+
+    The FIRST line after `Exit code N`, which an earlier version took, is mostly boilerplate in
+    agent commands: measured over 662 failed shell calls (2026-08-28 to 2026-10-23), 177 held a
+    Python traceback, whose first line is `Traceback (most recent call last):` in every one of
+    them, and a chain of checks prints its passing steps first (`All checks passed!`). The rule,
+    applied to the last `MAX_ERROR_CHARS` characters of the error (where the failure is printed),
+    over lines that still hold a word once numbers and paths are placeholders:
+
+    1. In a Python traceback, its last `ExceptionType: message` line.
+    2. Else the last line with an error word (`error`, `fatal`, `failed`, `denied`, `not found`,
+       `no such`, `cannot`, `refused`, `timed out`, ...) that is not a `=== ... ===` banner.
+    3. Else the last such line; else the first non-empty line of the error's start.
+    """
+    tail = _error_lines(_without_ansi(error[-MAX_ERROR_CHARS:]))
+    lines = [line for line in tail if _informative(line)]
+    if any(_TRACEBACK.match(line) for line in lines):
+        for line in reversed(lines):
+            if _EXCEPTION_LINE.match(line):
+                return line
+    for line in reversed(lines):
+        if _ERRORISH.search(line) and not _BANNER.match(line):
+            return line
+    if lines:
+        return lines[-1]
+    head = _error_lines(_without_ansi(error[:MAX_ERROR_CHARS]))
+    return head[0] if head else None
+
+
 def failure_signature(command: str, error: str) -> str:
     """`<family>|<detail>`: the same failure of the same kind of command gives the same string.
 
-    `family` is `command_family(command)` cut to `FAMILY_CHARS`. `detail` is the first non-empty
-    line of the error after a leading `Exit code N` line, normalised by `_normalise` and cut to
-    `SIGNATURE_CHARS`. When no such line exists it is `exit:N` (not
-    normalised) or, with no exit header either, `exit:?`. The error is cut to `MAX_ERROR_CHARS`
+    `family` is `command_family(command)` cut to `FAMILY_CHARS`. `detail` is the line
+    `_detail_line` chooses, normalised by `_normalise` and cut to `SIGNATURE_CHARS`. When the
+    error has no line besides the header it is `exit:N` (not normalised) or, with no exit header
+    either, `exit:?`. The error is read only in its first and last `MAX_ERROR_CHARS` characters,
     BEFORE any splitting or matching, so the cost does not depend on how much the command printed.
     A non-string `command` or `error` counts as empty. Never raises.
     """
     family = command_family(command)[:FAMILY_CHARS]
-    text = _without_ansi(error[:MAX_ERROR_CHARS]) if isinstance(error, str) else ""
-    lines = [line for line in (raw.strip() for raw in text.splitlines()) if line]
-    code: str | None = None
-    if lines:
-        header = _EXIT_HEADER.match(lines[0])
-        if header is not None:
-            code = header.group(1)
-            lines = lines[1:]
-    if lines:
-        return f"{family}|{_normalise(lines[0])[:SIGNATURE_CHARS]}"
-    return f"{family}|exit:{code if code is not None else '?'}"
+    error = error if isinstance(error, str) else ""
+    detail = _detail_line(error)
+    if detail is not None:
+        return f"{family}|{_normalise(detail)[:SIGNATURE_CHARS]}"
+    first = _without_ansi(error[:MAX_ERROR_CHARS]).lstrip().partition("\n")[0].strip()
+    header = _EXIT_HEADER.match(first)
+    return f"{family}|exit:{header.group(1) if header is not None else '?'}"
 
 
 def _without_exit_header(text: str) -> str:

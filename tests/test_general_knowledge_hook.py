@@ -1484,14 +1484,15 @@ def test_a_plain_number_is_a_number_and_a_hash_with_a_letter_is_hex():
 
 
 def test_the_error_is_cut_before_the_detail_line_is_looked_for():
-    """Invariant (the deterministic form of the 2 MB test): only the first `MAX_ERROR_CHARS` characters are read,
-    so a detail line that starts after them does not exist. An implementation that cut late would find it.
+    """Invariant (the deterministic form of the 2 MB test): only the first and the last
+    `MAX_ERROR_CHARS` characters are read, so a line in the middle of a long error does not exist
+    for the signature. An implementation that read the whole error would find it.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_error_is_cut_before_the_detail_line_is_looked_for`.
-    Mutation: `text = error[:MAX_ERROR_CHARS] ...` becomes `text = error ...` in `failure_signature`.
-    Symbol: `failure_signature`. Seen: `assert 'make|boom' == 'make|exit:1'`.
+    Mutation: `error[-MAX_ERROR_CHARS:]` becomes `error` in `_detail_line`. Symbol: `_detail_line`.
+    Seen: `assert 'make|boom' == 'make|exit:1'`.
     """
-    error = "Exit code 1\n" + "\n" * 5000 + "boom"
+    error = "Exit code 1\n" + "\n" * 5000 + "boom" + "\n" * 5000
     assert gk.failure_signature("make", error) == "make|exit:1"
 
 
@@ -1500,7 +1501,7 @@ def test_the_error_is_cut_before_the_detail_line_is_looked_for():
     [
         ("Exit code 2\nboom happened", "make|boom happened"),
         ("EXIT CODE 137   \n\n   killed by signal", "make|killed by signal"),
-        ("boom happened\nsecond line", "make|boom happened"),
+        ("boom happened\nsecond line", "make|second line"),
         ("Exit code 1\n", "make|exit:1"),
         ("Exit code -1", "make|exit:-1"),
         ("Exit code 3\n   \n\t\n", "make|exit:3"),
@@ -1514,9 +1515,11 @@ def test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code(erro
     printed nothing still groups by its exit code.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code`.
-    Mutations: (a) the `lines = lines[1:]` that drops the header is removed: the five cases that start
-    with a header fail (the detail becomes `exit code <n>`); (b) the `'?'` fallback is replaced by `''`:
-    the last two cases fail (`make|exit:`). Symbol: `failure_signature`.
+    Mutations: (a) the header drop in `_error_lines` is removed: the three cases holding nothing but
+    a header fail (`assert 'make|exit code <n>' == 'make|exit:1'`, likewise `exit:3`, `exit:-1`); a
+    case with a later line still passes, because the detail is now read from the end; (b) the `'?'`
+    fallback is replaced by `''`: the last two cases fail (`make|exit:`). Symbols: `_error_lines`,
+    `failure_signature`.
     """
     assert gk.failure_signature("make test", error) == expected
 
@@ -1554,14 +1557,15 @@ def test_the_family_part_of_a_signature_is_capped():
         ("ssh", "ssh"),
         ("ssh -v", "ssh"),
         ("pytest -q tests/", "pytest"),
-        ("FOO=1 python -m pytest", "python"),
+        ("FOO=1 python -m pytest", "pytest"),
         ("", ""),
         ("   ", ""),
     ],
 )
 def test_command_family_is_the_program_and_for_ssh_the_alias(command, expected):
-    """Invariant: the family is the first segment's program, and `ssh:<alias>` for ssh, skipping options
-    and the values of the options that take one.
+    """Invariant: the family is the command's program (the module for `python -m`), and
+    `ssh:<alias>` for ssh, skipping options and the values of the options that take one. Shell
+    preamble and wrappers are covered by `test_command_family_skips_shell_preamble_and_wrappers`.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_command_family_is_the_program_and_for_ssh_the_alias`.
     Mutations: (a) `_ssh_host` never skips an option's value (`skip = False`): five cases fail, e.g.
@@ -1569,7 +1573,9 @@ def test_command_family_is_the_program_and_for_ssh_the_alias(command, expected):
     `alice@examplehost` case gives `ssh:alice@examplehost`; (c) the alias dropped (`return "ssh"`): ten
     cases fail; (d) `O` removed from `_SSH_VALUE_OPTIONS`: only `ssh -O exit examplehost` fails
     (`ssh:exit`); (e) the bracketed-IPv6 branch (`if host.startswith("[")`) disabled: the two `[...]`
-    cases fail (`ssh:[` and `ssh:[fe80`). Symbols: `_ssh_host`, `command_family`.
+    cases fail (`ssh:[` and `ssh:[fe80`); (f) the `-m` branch of `command_family` disabled: the
+    `FOO=1 python -m pytest` case fails (`assert 'python' == 'pytest'`). Symbols: `_ssh_host`,
+    `command_family`.
     """
     assert gk.command_family(command) == expected
 
@@ -2159,18 +2165,18 @@ def test_failure_injects_and_logs(hook):
 def test_the_documented_failure_payload_gives_a_stable_signature(hook, tmp_path):
     """Invariant: the `PostToolUseFailure` example payload of the Claude Code hooks reference
     (https://code.claude.com/docs/en/hooks, read 2026-10-23), used verbatim apart from `cwd`, logs
-    the signature `npm|error: cannot find module 'express'`: the `Exit code 1` header is skipped and
-    the first output line is the detail. The same page says long output is middle-truncated with a
-    `... [N characters truncated] ...` line and that Claude Code may insert a line such as
-    `Command timed out after 2m 0s`; when either is the first detail line it must not crash, and
-    its numbers become `<n>`, so two occurrences with different counts share one signature.
+    the signature `npm|error: cannot find module 'express'`. The same page says long output is
+    middle-truncated with a `... [N characters truncated] ...` line and that Claude Code may insert
+    a line such as `Command timed out after 2m 0s`. The marker is not the detail when an error line
+    follows it, and an inserted timeout line, the only line with an error word, is the detail with
+    its numbers as `<n>`, so two occurrences with different durations share one signature.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_documented_failure_payload_gives_a_stable_signature`.
-    Symbol: `failure_signature` and `_normalise`. Mutations, one at a time:
-    A: `lines = lines[1:]` (the header skip) deleted in `failure_signature`; seen
-    `assert 'npm|exit code <n>' == "npm|error: c...ule 'express'"` on the documented payload.
+    Symbol: `_detail_line` and `_normalise`. Mutations, one at a time:
+    A: `_detail_line` returns `lines[0]` instead of walking back from the end; seen
+    `assert 'npm|... [<n>...runcated] ...' == "npm|error: c...ule 'express'"` on the truncated error.
     B: `line = _DIGITS.sub("<n>", line)` deleted in `_normalise`; seen
-    `assert 'npm|... [123...runcated] ...' == 'npm|... [<n>...runcated] ...'` on the truncation marker.
+    `assert 'npm|command ...t after 2m 0s' == 'npm|command ...ter <n>m <n>s'`.
     """
     checkout = tmp_path / "alpha"
     (checkout / ".git").mkdir(parents=True)
@@ -2195,7 +2201,7 @@ def test_the_documented_failure_payload_gives_a_stable_signature(hook, tmp_path)
         return hook.events()[-1]["signature"]
 
     truncated = "Exit code 1\n... [{} characters truncated] ...\nError: Cannot find module 'express'"
-    assert signature_of(truncated.format(1234)) == "npm|... [<n> characters truncated] ..."
+    assert signature_of(truncated.format(1234)) == "npm|error: cannot find module 'express'"
     assert signature_of(truncated.format(98765)) == signature_of(truncated.format(1234))
     timed_out = "Exit code 143\nCommand timed out after {}\nnpm ERR! lifecycle"
     assert signature_of(timed_out.format("2m 0s")) == "npm|command timed out after <n>m <n>s"
@@ -2623,3 +2629,95 @@ def test_colour_codes_do_not_break_the_failure_ranking():
         "\x1b[31;1mdatabase\x1b[0m \x1b[31;1mconnection\x1b[0m \x1b[31;1mrefused\x1b[0m"
     )
     assert [e.id for e in gk.rank_for_failure([entry, other], error, 0.0)] == ["gk-example-db"]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            "Exit code 1\nTraceback (most recent call last):\n  File \"x.py\", line 3, in <module>\n"
+            "    main()\nValueError: example value is out of range",
+            "python|valueerror: example value is out of range",
+        ),
+        (
+            "Exit code 1\nTraceback (most recent call last):\n  File \"x.py\", line 9\n"
+            "json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)\n",
+            "python|json.decoder.jsondecodeerror: expecting value: line <n> column <n> (char <n>)",
+        ),
+    ],
+    ids=["value-error", "dotted-exception"],
+)
+def test_a_python_traceback_is_signed_by_its_exception_line(error, expected):
+    """Invariant: a Python traceback is signed by its last `ExceptionType: message` line, never by
+    `Traceback (most recent call last):`, which every traceback starts with.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_python_traceback_is_signed_by_its_exception_line`.
+    Mutation: `_detail_line` returns the first informative line (`lines[0]`). Symbol:
+    `_detail_line`. Seen, both params: `assert 'python|traceback (most recent call last):' == ...`.
+    """
+    assert gk.failure_signature("python x.py", error) == expected
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            "Exit code 1\nAll checks passed!\nexample.py:3: error: Name \"x\" is not defined\n"
+            "Found 1 error in 1 file (checked 9 source files)",
+            "mypy|found <n> error in <n> file (checked <n> source files)",
+        ),
+        (
+            "Exit code 1\ncollected 4 items\nFAILED tests/test_x.py::test_y - AssertionError: no\n"
+            "===== 1 failed, 3 passed in 0.52s =====",
+            "mypy|failed tests/test_x.py::test_y - assertionerror: no",
+        ),
+        ("Exit code 255\nConnection to example closed.\n8", "mypy|connection to example closed."),
+        ("Exit code 2\nfatal: not a git repository\n  (or any parent)", "mypy|fatal: not a git repository"),
+    ],
+    ids=["last-error-line", "banner-skipped", "bare-number-skipped", "last-error-not-last-line"],
+)
+def test_the_detail_is_the_last_line_that_says_what_failed(error, expected):
+    """Invariant: without a traceback, the detail is the last line with an error word that is not
+    a `=== ... ===` banner; lines that are only a number or a path once normalised never count;
+    and with no error word at all, the last informative line.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_detail_is_the_last_line_that_says_what_failed`.
+    Symbol: `_detail_line`, `_informative`, `_BANNER`. Mutations, one at a time:
+    A: the `and not _BANNER.match(line)` condition removed; seen on `banner-skipped`:
+    `assert 'mypy|===== <n> failed...in <n>.<n>s =====' == 'mypy|failed tests/...rtionerror: no'`.
+    B: the `_informative` filter removed (`lines = list(tail)`); seen on `bare-number-skipped`:
+    `assert 'mypy|<n>' == 'mypy|connection to example closed.'`.
+    C: the error-word pass removed (straight to `lines[-1]`); seen on `last-error-not-last-line`:
+    `assert 'mypy|(or any parent)' == 'mypy|fatal: not a git repository'`.
+    """
+    assert gk.failure_signature("mypy .", error) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("cd repo && pytest -q", "pytest"),
+        ("export FOO=1; cd a; make test", "make"),
+        ("source .venv/bin/activate && python -m ruff check .", "ruff"),
+        ("pushd x && . env.sh && npm test", "npm"),
+        ('Set-Location "C:\\example dir"; npm test', "npm"),
+        ("timeout 600 python -m pytest tests -q", "pytest"),
+        ("timeout -k 5 60s make check", "make"),
+        ("cd x && ssh examplehost uptime", "ssh:examplehost"),
+        ("cd only/here", "cd"),
+        ("python3 -m", "python3"),
+    ],
+)
+def test_command_family_skips_shell_preamble_and_wrappers(command, expected):
+    """Invariant: the family is the program the command runs: leading `cd`, `pushd`, `export`,
+    `set`, `source`, `.` and PowerShell's `Set-Location` are skipped, `timeout <duration>` and
+    `python -m <module>` are looked through, and the ssh alias rule still holds. A line of only
+    preamble keeps its first program; a dangling `-m` keeps the interpreter.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_command_family_skips_shell_preamble_and_wrappers`.
+    Symbol: `command_family`. Mutations, one at a time:
+    A: `chosen = segments[0]` (no preamble skip); seen `assert 'cd' == 'pytest'`.
+    B: the `timeout` branch removed; seen `assert 'timeout' == 'pytest'`.
+    C: the `-m` branch removed; seen `assert 'python' == 'ruff'`.
+    """
+    assert gk.command_family(command) == expected
