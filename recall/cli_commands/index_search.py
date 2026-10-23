@@ -547,11 +547,12 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
             # The names checked above are the sources' own; their rows are authorized by their
             # `file` (`PgVectorStore.erasure_subjects`), which the policy may deny.
             assert security_context is not None
+            subjects = store.erasure_subjects(targets, recorded=withdraw)
             denied = sorted(
                 {
                     name
-                    for names in store.erasure_subjects(targets, recorded=withdraw).values()
-                    for name in names
+                    for source in targets
+                    for name in subjects.get(source, ())
                     if not security_policy.decide(name, security_context).allowed
                 }
             )
