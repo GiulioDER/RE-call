@@ -541,7 +541,7 @@
       "readOnlyHint": false,
       "title": "Forget agent memory"
     },
-    "description": "Permanently delete indexed memory for the given source(s). IRREVERSIBLE.\n\nThis is the right-to-erasure path: use it to make the agent forget a memory that should\nno longer be recalled (e.g. it indexed something it should not have retained). Deletion\nis scoped to this server's own tenant and cannot reach another tenant's memory. A source\nthat does not exist is reported in `sources_not_found` rather than silently counted as\n\"removed\" — check that list before assuming a name was actually forgotten. A fact\napplied with `recall_apply_fact` whose only evidence was in these sources is retracted\nwith them, so `recall_current_facts` stops listing it; a fact with evidence in a memo\nthat survives stays. Retraction is not erasure: a retracted fact's value, and the\nevidence cards that cited these sources, stay in the append-only fact ledger as its\naudit trail. Only the chunks (and staged upload files) are deleted.\n\nArgs:\n    sources: one or more source values to forget, exactly as they appear in\n        `recall_search` hits (the `source` field).\n\nReturns:\n    JSON of {chunks_removed, sources_removed, sources_not_found, message,\n    facts_retracted}.",
+    "description": "Permanently delete indexed memory for the given source(s). IRREVERSIBLE.\n\nThis is the right-to-erasure path: use it to make the agent forget a memory that should\nno longer be recalled (e.g. it indexed something it should not have retained). Deletion\nis scoped to this server's own tenant and cannot reach another tenant's memory. A source\nthat does not exist is reported in `sources_not_found` rather than silently counted as\n\"removed\" — check that list before assuming a name was actually forgotten. A fact\napplied with `recall_apply_fact` whose only evidence was in these sources is retracted\nwith them, so `recall_current_facts` stops listing it; a fact with evidence in a memo\nthat survives stays. Retraction is not erasure: a retracted fact's value, and the\nevidence cards that cited these sources, stay in the append-only fact ledger as its\naudit trail. Only the chunks (and staged upload files) are deleted. Whatever a forgotten\nmemory superseded stays retired; for a memory that was a mistake, and should give back\nwhat it replaced, use `recall_withdraw` instead.\n\nArgs:\n    sources: one or more source values to forget, exactly as they appear in\n        `recall_search` hits (the `source` field).\n\nReturns:\n    JSON of {chunks_removed, sources_removed, sources_not_found, message,\n    facts_retracted}.",
     "inputSchema": {
       "properties": {
         "idempotency_key": {
@@ -1650,6 +1650,58 @@
         "result"
       ],
       "title": "recall_tenantsOutput",
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+      "title": "Withdraw a mistaken memory"
+    },
+    "description": "Withdraw memory that was a MISTAKE, and give back what it replaced. IRREVERSIBLE.\n\nUse this, not `recall_forget`, when a memory should never have been believed: a wrong\ncorrection, a mistaken \"this replaces that\". It erases the memory exactly as\n`recall_forget` does, and then the two differ in one thing. `recall_forget` keeps retired\nwhatever the forgotten memory superseded (forgetting \"moved to Rome\" does not make Paris\ncurrent again); `recall_withdraw` voids its `supersedes:` claims, so what it replaced is\ncurrent again, and whatever superseded IT now supersedes what it replaced instead (in\nA -> B -> C, withdrawing B leaves A retired by C). In the fact ledger, each fact it alone\nsupported is withdrawn, which also undoes the supersession that fact made. A memory\nforgotten earlier can be withdrawn by the name it had. Scoped to this server's tenant.\n\nArgs:\n    sources: one or more source values to withdraw, exactly as they appear in\n        `recall_search` hits (the `source` field).\n\nReturns:\n    JSON of {chunks_removed, sources_withdrawn, sources_not_found, message,\n    facts_withdrawn}.",
+    "inputSchema": {
+      "properties": {
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
+        },
+        "sources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "title": "recall_withdrawArguments",
+      "type": "object"
+    },
+    "name": "recall_withdraw",
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "title": "Result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "recall_withdrawOutput",
       "type": "object"
     }
   }

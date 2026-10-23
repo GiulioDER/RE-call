@@ -24,6 +24,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - `recall calibration near-miss` scores a held-out near-miss question set against a calibration and
   reports a certificate (`near_miss_certificate` in status); `recall calibration served-gap`
   compares the served top-k maximum with the exact maximum calibration sampled. Both report only.
+- **Forgetting a memo keeps retired what it superseded, in the document graph as in the fact
+  ledger; the new `recall withdraw` / `recall_withdraw` gives it back** (owner decision,
+  2026-10-22). A delete used to remove a memo's `supersedes:` claim with its chunks, so the memo it
+  replaced was served as current again (a privacy forget of "moved to Rome" brought Paris back, and
+  forgetting the middle of a chain left two current versions), while the fact ledger already kept
+  it retired. Every delete now writes a supersession record (names and dates, no text) to the audit
+  ledger in the same transaction: `recall_forget`, `recall forget`, the lite memo tools, `recall
+  generation forget`, the indexer's prune of a file gone from disk, and a source a promoted
+  generation leaves out all keep the memo's claims standing as a ghost while no memo by its name
+  is indexed. Withdraw voids them and splices the chain; in the ledger it appends a `withdrawn`
+  event (migrations 0032 and 0033) that also undoes the supersession the fact made. **Deploying
+  needs `--with-migrations`.**
 
 ### Security
 

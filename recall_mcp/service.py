@@ -211,6 +211,7 @@ from recall_mcp.lifecycle import (
     forget_memory,  # noqa: F401  # legacy public import
     memory_inventory,  # noqa: F401  # legacy public import
     memory_stats,  # noqa: F401  # legacy public import
+    withdraw_memory,  # noqa: F401  # on the service hub beside forget_memory
 )
 from recall_mcp.indexing import (
     DEFAULT_MAX_INDEX_BYTES,  # noqa: F401  # legacy public import

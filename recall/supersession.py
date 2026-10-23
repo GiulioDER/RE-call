@@ -98,6 +98,117 @@ def supersession_rows_sql(table: str, *, source_column: str, scope: str) -> str:
     """  # noqa: S608
 
 
+#: The audit-ledger event types a supersession record is kept under (`SupersessionRecord`).
+FORGOTTEN_RECORD = "supersession_forgotten"
+WITHDRAWN_RECORD = "supersession_withdrawn"
+SUPERSESSION_RECORD_TYPES = (FORGOTTEN_RECORD, WITHDRAWN_RECORD)
+
+#: One claim a removed memo declared: ``(supersedes, first_indexed, valid_from, valid_until)``,
+#: the four values its scan row carried beside its file and source.
+RecordClaim = tuple[str, "datetime | None", object, object]
+
+
+@dataclass(frozen=True)
+class SupersessionRecord:
+    """What a removed memo's ``supersedes:`` claims were, kept so removing it decides their fate.
+
+    Two decisions remove a memo, and they differ only here (owner decision, 2026-10-22):
+
+    - **Forget** (`FORGOTTEN_RECORD`; also the indexer's prune and a source a promoted generation
+      left out) keeps retired what the memo retired. Its claims stand in for it as a GHOST: the
+      predecessor stays hidden inside the same window as before, and a successor that named the
+      forgotten memo still hides the predecessor through it (A -> B -> C, forget B: C hides A).
+    - **Withdraw** (`WITHDRAWN_RECORD`, "this memo was a mistake") voids its claims and splices:
+      whatever superseded it supersedes what it superseded instead (A -> B -> C, withdraw B: C
+      hides A; A -> B, withdraw B: A is current again). Never two current versions in one line.
+
+    A record stands in for its memo only while no memo by that name is indexed: neither its
+    `source` nor its root-relative `file` has live rows. A restored file, a re-indexed memo or a
+    rollback brings the live claims back, and they decide again.
+
+    Names and dates only, never memo text: a record is the memo's own scan rows (`claims`), which
+    the resolver matches again on every read by the one rule (`_resolve_rows`).
+    """
+
+    kind: str
+    file: str
+    source: str
+    claims: tuple[RecordClaim, ...] = ()
+
+    def payload(self, scope: str) -> dict[str, object]:
+        """The audit event payload; `scope` is the chunk table the memo was removed from."""
+        return {
+            "scope": scope,
+            "file": self.file,
+            "claims": [
+                [target, None if first is None else first.isoformat(), valid_from, valid_until]
+                for target, first, valid_from, valid_until in self.claims
+            ],
+        }
+
+    @classmethod
+    def from_event(cls, kind: str, source: object, payload: object) -> SupersessionRecord | None:
+        """A record from its audit event, or None when the event is not one this module wrote."""
+        if kind not in SUPERSESSION_RECORD_TYPES or not isinstance(source, str) or not source:
+            return None
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("file"), str):
+            return None
+        claims: list[RecordClaim] = []
+        for item in payload.get("claims") or ():
+            if not isinstance(item, Sequence) or isinstance(item, str) or len(item) != 4:
+                continue
+            target, first, valid_from, valid_until = item
+            if not isinstance(target, str) or not target:
+                continue
+            when = None
+            if isinstance(first, str):
+                try:
+                    when = _aware(datetime.fromisoformat(first))
+                except ValueError:
+                    when = None
+            claims.append((target, when, valid_from, valid_until))
+        return cls(kind, str(payload["file"]), source, tuple(claims))
+
+
+def records_from_rows(kind: str, rows: Sequence[SupersessionRow]) -> list[SupersessionRecord]:
+    """One record per source among `rows` that declares a claim, in source order.
+
+    `rows` are the scan rows (`supersession_rows_sql`'s shape) of the memos being removed, read
+    before their chunks go. A memo that claims nothing retired nothing, so it gets no record.
+    """
+    files: dict[str, str] = {}
+    claims: dict[str, list[RecordClaim]] = {}
+    for row in rows:
+        file, supersedes, first_indexed, source, valid_from, valid_until, _has = _row_parts(row)
+        if not file or not source:
+            continue
+        files.setdefault(source, file)
+        if supersedes:
+            claims.setdefault(source, []).append((supersedes, first_indexed, valid_from, valid_until))
+    return [
+        SupersessionRecord(kind, files[source], source, tuple(found))
+        for source, found in sorted(claims.items())
+    ]
+
+
+def latest_records(
+    events: Iterable[tuple[object, object, object]], scope: str
+) -> dict[str, SupersessionRecord]:
+    """Per source, the last record among ``(event_type, source_uri, payload)`` events for `scope`.
+
+    `events` in the order they were written: the last decision about a memo is the one that
+    stands, so withdrawing a memo forgotten earlier replaces the forget.
+    """
+    latest: dict[str, SupersessionRecord] = {}
+    for kind, source, payload in events:
+        if not isinstance(payload, Mapping) or payload.get("scope") != scope:
+            continue
+        record = SupersessionRecord.from_event(str(kind), source, payload)
+        if record is not None:
+            latest[record.source] = record
+    return latest
+
+
 def _basename(file: str) -> str:
     """Stem of a root-relative (posix) file identifier — the key a `supersedes:` target resolves
     to. A stem rather than a full basename so `name`, `name.md`, `[name]` and `[[name]]` all
@@ -577,9 +688,15 @@ def _row_parts(
     )
 
 
-def resolve_supersession_graph(rows: Sequence[SupersessionRow]) -> SupersessionGraph:
-    """The one resolution pass every store and reader goes through; see `_resolve_rows`."""
-    return _resolve_rows(rows)
+def resolve_supersession_graph(
+    rows: Sequence[SupersessionRow], records: Iterable[SupersessionRecord] = ()
+) -> SupersessionGraph:
+    """The one resolution pass every store and reader goes through; see `_resolve_rows`.
+
+    `records` are the store's latest `SupersessionRecord` per removed memo; each one counts only
+    while no memo by its name is among `rows`.
+    """
+    return _resolve_rows(rows, records)
 
 
 def resolve_supersession_candidates(
@@ -622,9 +739,20 @@ class ReferenceIndex:
 
     Built from ``(file, source)`` pairs. A root-relative `file` that two roots hold is in
     `collided`, and each of those is keyed by its `source`; every other file by its path.
+
+    `ghosts` are pairs of memos that are no longer indexed and stand in through a
+    `SupersessionRecord`. A reference that matches an indexed document and a ghost names the
+    indexed one: a memo moved to another folder leaves a ghost under its old path, and its stem
+    must keep naming the moved file rather than turn ambiguous.
     """
 
-    def __init__(self, files: Iterable[tuple[str, str | None]]) -> None:
+    def __init__(
+        self,
+        files: Iterable[tuple[str, str | None]],
+        ghosts: Iterable[tuple[str, str | None]] = (),
+    ) -> None:
+        ghost_pairs = set(ghosts)
+        files = [*files, *ghost_pairs]
         # Each distinct pair is rooted once and each file folded once: a store's scan has a row
         # per chunk, and doing both per row made a cache miss several times slower (2026-10-21
         # audit, PERF-004).
@@ -639,6 +767,8 @@ class ReferenceIndex:
         self.nodes: dict[str, tuple[str, str | None, str | None]] = {}
         for (file, source), root in pairs.items():
             self.nodes.setdefault(self.key(file, source), (file, root, source))
+        #: The keys that stand for a removed memo (`ghosts`) rather than an indexed one.
+        self.ghosts = frozenset(self.key(file, source) for file, source in ghost_pairs)
         self._by_path: dict[str, list[str]] = {}
         self._by_stem: dict[str, list[str]] = {}
         folded: dict[str, str] = {}
@@ -661,7 +791,7 @@ class ReferenceIndex:
         # `archive/notes.md`, which then read `ok` (2026-10-21 supersession audit, SEC-001).
         if "/" in path:
             found = self._by_path.get(path, [])
-            others = [key for key in found if key != claimant]
+            others = self._indexed_first([key for key in found if key != claimant])
             if others:
                 return self._pick(others, claimant_root)
             if found:
@@ -670,12 +800,19 @@ class ReferenceIndex:
         if not stem:
             return "dangling", []
         found = self._by_stem.get(stem, [])
-        others = [key for key in found if key != claimant]
+        others = self._indexed_first([key for key in found if key != claimant])
         if others:
             return self._pick(others, claimant_root)
         if found and claimant_file is not None and path == reference_path_key(claimant_file):
             return "self", []
         return "dangling", []
+
+    def _indexed_first(self, keys: list[str]) -> list[str]:
+        """`keys` less its ghosts, unless every one of them is a ghost."""
+        if not self.ghosts:
+            return keys
+        indexed = [key for key in keys if key not in self.ghosts]
+        return indexed or keys
 
     def _pick(self, others: list[str], claimant_root: str | None) -> tuple[str, list[str]]:
         """One candidate, or the claimant's own root's copy of one path; else ambiguous."""
@@ -688,7 +825,9 @@ class ReferenceIndex:
         return "ambiguous", others
 
 
-def _resolve_rows(rows: Sequence[SupersessionRow]) -> SupersessionGraph:
+def _resolve_rows(
+    rows: Sequence[SupersessionRow], records: Iterable[SupersessionRecord] = ()
+) -> SupersessionGraph:
     """The one resolution pass. Every store, `resolve_supersession` and every reader come here.
 
     Deriving the maps separately is what made an earlier version wrong twice: two functions
@@ -716,12 +855,39 @@ def _resolve_rows(rows: Sequence[SupersessionRow]) -> SupersessionGraph:
     `winner` is last-row-wins over the rows in scan order, including the case where one file
     claims the same target twice, so a corpus whose names were already unique and exact sees the
     same winner it always did.
+
+    **Removed memos** (`records`, see `SupersessionRecord`). A record whose memo is still
+    indexed under its source or its file is ignored. A forgotten memo's claims are read as rows
+    of a ghost, window and date as they were, ahead of the indexed rows. A withdrawn memo is a node
+    whose own claims are void: each document claiming it is spliced onto what it claimed, through
+    withdrawn targets in turn, dated by that document's claim on it.
     """
     parsed = [_row_parts(row) for row in rows]
-    index = ReferenceIndex((file, source) for file, _s, _w, source, _vf, _vu, _h in parsed if file)
+    live_sources = {source for _f, _s, _w, source, _vf, _vu, _h in parsed if source}
+    live_files = {file for file, _s, _w, _src, _vf, _vu, _h in parsed if file}
+    standing = [
+        record
+        for record in records
+        if record.source not in live_sources and record.file not in live_files
+    ]
+    ghost_rows: list[tuple[str | None, str | None, datetime | None, str | None, object, object, bool]] = []
+    for record in standing:
+        windowed = record.kind == FORGOTTEN_RECORD
+        if not record.claims:
+            ghost_rows.append((record.file, None, None, record.source, None, None, False))
+        for target, first, valid_from, valid_until in record.claims:
+            ghost_rows.append((record.file, target, first, record.source, valid_from, valid_until, windowed))
+    index = ReferenceIndex(
+        ((file, source) for file, _s, _w, source, _vf, _vu, _h in parsed if file),
+        ghosts=((record.file, record.source) for record in standing),
+    )
+    # First, so an indexed claim on the same target is the later row and wins the primary.
+    parsed = [*ghost_rows, *parsed]
     identity = index.key
     match = index.match
     collided = index.collided
+    withdrawn = {identity(r.file, r.source) for r in standing if r.kind == WITHDRAWN_RECORD}
+    withdrawn_targets: dict[str, list[str]] = {}
 
     windows: dict[str, Window] = {}
     unknown: set[str] = set()
@@ -745,6 +911,11 @@ def _resolve_rows(rows: Sequence[SupersessionRow]) -> SupersessionGraph:
                 windows[claimant] = window
         kind, found = match(supersedes, claimant)
         if kind == "self":
+            continue
+        if claimant in withdrawn:
+            # Void: what it claimed is kept only as where its own claimants are spliced to.
+            if kind == "resolved":
+                withdrawn_targets.setdefault(claimant, []).append(found[0])
             continue
         if kind == "ambiguous":
             # Ambiguous: don't guess, but don't stay silent either. Dropping the edge alone would
@@ -781,6 +952,7 @@ def _resolve_rows(rows: Sequence[SupersessionRow]) -> SupersessionGraph:
         else:
             when[pair] = first_indexed
 
+    _splice_withdrawn(withdrawn, withdrawn_targets, winner, order, when)
     candidates: EdgeCandidates = {
         target: [(f, when[(target, f)]) for f in claimants] for target, claimants in order.items()
     }
@@ -799,6 +971,50 @@ def _resolve_rows(rows: Sequence[SupersessionRow]) -> SupersessionGraph:
         collided,
         {claimant: tuple(refs) for claimant, refs in ambiguous_claims.items()},
     )
+
+
+def _splice_withdrawn(
+    withdrawn: set[str],
+    targets: Mapping[str, list[str]],
+    winner: dict[str, str],
+    order: dict[str, list[str]],
+    when: dict[tuple[str, str], datetime | None],
+) -> None:
+    """Move every claim on a withdrawn memo onto what that memo claimed, in place.
+
+    In A -> B -> C with B withdrawn, C claimed B, so C now claims A, dated by its claim on B. A
+    withdrawn memo's targets are followed through other withdrawn ones (withdrawing B and C in
+    A -> B -> C -> D leaves D claiming A), without recursion and without looping on a cycle. A
+    claimant that already claims the target keeps its own claim and date.
+    """
+    for key in sorted(withdrawn):
+        claimants = order.pop(key, [])
+        winner.pop(key, None)
+        if not claimants:
+            continue
+        resolved: list[str] = []
+        seen = {key}
+        stack = list(reversed(targets.get(key, ())))
+        while stack:
+            target = stack.pop()
+            if target in seen:
+                continue
+            seen.add(target)
+            if target in withdrawn:
+                stack.extend(reversed(targets.get(target, ())))
+            else:
+                resolved.append(target)
+        for target in resolved:
+            slot = order.setdefault(target, [])
+            for claimant in claimants:
+                if claimant == target or claimant in slot:
+                    continue
+                slot.append(claimant)
+                when[(target, claimant)] = when.get((key, claimant))
+            if slot:
+                winner[target] = slot[-1]
+            else:
+                order.pop(target, None)
 
 
 def resolve_supersession(

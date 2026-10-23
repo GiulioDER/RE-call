@@ -68,7 +68,9 @@ CURRENT_STATE_TABLE = "recall_fact_current_state"
 #: Every event type the tables file. A refusal or an abstention changes no interval, but it is
 #: part of its key's history (`ordered_after` reads it), so a key's history from the tables must
 #: hold it, and the ledger's event count is only matched when every event is filed.
-MATERIALIZED_EVENT_TYPES = frozenset({"asserted", "superseded", "rejected", "abstained", "retracted"})
+MATERIALIZED_EVENT_TYPES = frozenset(
+    {"asserted", "superseded", "rejected", "abstained", "retracted", "withdrawn"}
+)
 #: The types whose filing cannot change a key's intervals or its `live` flags.
 _INERT = frozenset({"rejected", "abstained"})
 _log = get_logger("fact_current")

@@ -17,6 +17,7 @@ from recall_mcp.models import (
     CurrentStateResult,
     ForgetResult,
     InventoryEntry,
+    WithdrawResult,
     InventoryResult,
     MemoryStatsResult,
 )
@@ -115,8 +116,10 @@ def _forget_retractions(
     shadow_store: PgVectorStore | None,
     requested: list[str],
     to_delete: list[str],
+    withdraw: bool = False,
 ) -> Callable[[], int] | None:
-    """Prepare, before any chunk is deleted, the retraction this forget owes the fact ledger.
+    """Prepare, before any chunk is deleted, the retraction this forget owes the fact ledger
+    (with `withdraw`, the withdrawal this withdraw owes it).
 
     None for a store with no ledger; otherwise `recall.fact_retraction.prepare_retraction`, which
     states the rule.
@@ -124,7 +127,9 @@ def _forget_retractions(
     ledger = _fact_ledger_for(store)
     if ledger is None:
         return None
-    return prepare_retraction(ledger, store, shadow_store, named=requested, erased=to_delete)
+    return prepare_retraction(
+        ledger, store, shadow_store, named=requested, erased=to_delete, withdraw=withdraw
+    )
 
 
 def forget_memory(
@@ -152,6 +157,43 @@ def forget_memory(
         )
 
 
+def withdraw_memory(
+    store: PgVectorStore,
+    sources: list[str],
+    shadow_store: PgVectorStore | None = None,
+    control_plane: ControlPlane | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
+) -> WithdrawResult:
+    """Withdraw memos that were a mistake: erase them as `forget_memory` does, and give back what
+    they superseded (owner decision, 2026-10-22).
+
+    Forgetting keeps retired what a memo retired; withdrawing does not. At the document layer the
+    memo's `supersedes:` claims become void and whatever superseded it supersedes what it
+    superseded instead (`recall.supersession.SupersessionRecord`); in the fact ledger each fact
+    it alone supported gets a `withdrawn` event, which also undoes the supersession it made
+    (`recall.fact_ledger.plan_withdrawals`). Withdrawing the head of a line makes its predecessor
+    current, withdrawing the middle splices the chain, and a memo forgotten or pruned earlier can
+    be withdrawn by the name it had.
+    """
+    from recall.backends import write_session
+
+    with write_session(store, "forget"):
+        result = _forget_memory_unlocked(
+            store, sources, shadow_store, control_plane, security_policy, security_context,
+            withdraw=True,
+        )
+    return WithdrawResult(
+        chunks_removed=result.chunks_removed,
+        sources_withdrawn=result.sources_removed,
+        sources_not_found=result.sources_not_found,
+        message=result.message,
+        outbox_events_scrubbed=result.outbox_events_scrubbed,
+        staged_files_removed=result.staged_files_removed,
+        facts_withdrawn=result.facts_retracted,
+    )
+
+
 def _forget_memory_unlocked(
     store: PgVectorStore,
     sources: list[str],
@@ -159,14 +201,18 @@ def _forget_memory_unlocked(
     control_plane: ControlPlane | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
+    *,
+    withdraw: bool = False,
 ) -> ForgetResult:
-    """`forget_memory` without the lite store's write lane; call `forget_memory`."""
+    """`forget_memory` (or with `withdraw`, `withdraw_memory`) without the lite store's write
+    lane; call one of those."""
+    verb, did = ("withdrawal", "Withdrew") if withdraw else ("deletion", "Forgot")
     if not sources:
         raise ValueError("sources must be a non-empty list")
     if len(sources) > MAX_FORGET_SOURCES:
         raise ValueError(
             f"{len(sources)} sources requested, over the {MAX_FORGET_SOURCES} limit for one "
-            f"call. Deletion is irreversible; split the request so each one stays reviewable."
+            f"call. A {verb} is irreversible; split the request so each one stays reviewable."
         )
     requested = list(dict.fromkeys(sources))
     if security_policy is not None:
@@ -183,13 +229,23 @@ def _forget_memory_unlocked(
         for identifier, values in shadow_resolved.items():
             bucket = resolved.setdefault(identifier, [])
             bucket.extend(value for value in values if value not in bucket)
+    if withdraw:
+        # A memo forgotten or pruned earlier has no rows left, only the record that keeps what it
+        # retired retired; withdrawing it by the name it had is how that is undone.
+        for target in (store, shadow_store):
+            recorded = getattr(target, "recorded_sources_for_identifiers", None)
+            if target is None or not callable(recorded):
+                continue
+            for identifier, values in recorded(requested).items():
+                bucket = resolved.setdefault(identifier, [])
+                bucket.extend(value for value in values if value not in bucket)
     found = [source for source in requested if source in resolved]
     not_found = [source for source in requested if source not in resolved]
     to_delete = sorted({source for identifier in found for source in resolved[identifier]})
     facts_retracted = 0
     retract: Callable[[], int] | None = None
     try:
-        retract = _forget_retractions(store, shadow_store, requested, to_delete)
+        retract = _forget_retractions(store, shadow_store, requested, to_delete, withdraw)
     except Exception:  # BROAD-CATCH: error-translation
         _log.exception(
             "fact retraction plan failed before chunk deletion for tenant %r",
@@ -199,9 +255,11 @@ def _forget_memory_unlocked(
         # irrecoverable. A preparation failure therefore leaves the chunks in place.
         raise
     if to_delete and shadow_store is not None:
-        chunks_removed = store.delete_sources_across([store.table, shadow_store.table], to_delete)
+        chunks_removed = store.delete_sources_across(
+            [store.table, shadow_store.table], to_delete, withdraw=withdraw
+        )
     else:
-        chunks_removed = store.delete_sources(to_delete) if to_delete else 0
+        chunks_removed = store.delete_sources(to_delete, withdraw=withdraw) if to_delete else 0
     outbox_events_scrubbed = 0
     if control_plane is not None:
         try:
@@ -229,11 +287,11 @@ def _forget_memory_unlocked(
         staged_files_removed = -1
     if found and not_found:
         message = (
-            f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s); "
+            f"{did} {chunks_removed} chunk(s) from {len(found)} source(s); "
             f"{len(not_found)} source(s) not found: {', '.join(not_found)}."
         )
     elif found:
-        message = f"Forgot {chunks_removed} chunk(s) from {len(found)} source(s)."
+        message = f"{did} {chunks_removed} chunk(s) from {len(found)} source(s)."
     else:
         message = f"No matching source(s) found — nothing deleted: {', '.join(not_found)}."
     if outbox_events_scrubbed < 0:
@@ -243,11 +301,18 @@ def _forget_memory_unlocked(
         )
     elif outbox_events_scrubbed:
         message += f" Scrubbed {outbox_events_scrubbed} pending replay record(s)."
-    if facts_retracted < 0:
+    if facts_retracted < 0 and withdraw:
+        message += (
+            " WARNING: withdrawing the facts these sources supported failed; re-run this "
+            "withdraw with the same source names, or recall_current_facts keeps their state."
+        )
+    elif facts_retracted < 0:
         message += (
             " WARNING: retracting the facts these sources supported failed; re-run this forget "
             "with the same source names, or recall_current_facts keeps listing them."
         )
+    elif facts_retracted and withdraw:
+        message += f" Withdrew {facts_retracted} fact(s) that had no other evidence."
     elif facts_retracted:
         message += f" Retracted {facts_retracted} fact(s) that had no other evidence."
     if staged_files_removed < 0:
