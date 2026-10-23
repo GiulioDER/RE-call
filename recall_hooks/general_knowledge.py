@@ -561,19 +561,173 @@ def log_event(record: dict[str, Any], path: Path | None = None) -> None:
         return
 
 
+# ---------------------------------------------------------------------------------------------
+# Failure side: a signature that groups "the same failure", and a lexical ranking of entries
+# against the error text. Like the matcher above, everything here returns a value for ANY input.
+# ---------------------------------------------------------------------------------------------
+
+#: The most error text the failure path looks at, for both the signature and the ranking. A failed
+#: command can print megabytes; the first few kilobytes hold the failure, and the 800 ms budget of
+#: the failure path (spec 7.3) is only met if the rest is never touched.
+MAX_ERROR_CHARS = 4096
+#: The longest normalised detail line in a signature.
+SIGNATURE_CHARS = 160
+#: How many times an entry's symptoms are repeated in its ranking document, so that a symptom
+#: phrase outweighs the same words appearing once in the body.
+SYMPTOM_WEIGHT = 3
+
+#: Claude Code prefixes a failed Bash result with `Exit code N` on a line of its own.
+_EXIT_HEADER = re.compile(r"^exit code (-?\d+)\s*$", re.IGNORECASE)
+#: Characters inside a path: not whitespace, quotes, shell metacharacters or `:`, so that
+#: `a.py:42:` leaves its line number to the digit rule instead of being swallowed.
+_PATH_BODY = r"""[^\s"'<>|*?:]"""
+#: A path (other than a Windows one) must START a token: line start, or whitespace, a quote, an
+#: opening bracket, `=` or `,` before it. That keeps `1/2` and `and/or` intact.
+_PATH_START = r"""(?<![^\s"'(=\[,])"""
+#: A Windows path (`c:\a\b` or `c:/a/b`; the text is lowercased first) and a UNC path (`\\host\share`).
+_WINDOWS_PATH = re.compile(r"(?<![a-z0-9])[a-z]:[\\/]" + _PATH_BODY + "*")
+_UNC_PATH = re.compile(r"\\\\" + _PATH_BODY + "+")
+#: A POSIX absolute path (a character must follow the slash, which keeps a bare `/` intact) or `~/x`.
+_POSIX_PATH = re.compile(_PATH_START + "(?:/" + _PATH_BODY + r"+|~[\\/]" + _PATH_BODY + "*)")
+#: Hex runs of 7 or more with at least one digit (ruling R5): a commit hash or object id has digits,
+#: and an English word made of the letters a to f (`defaced`, `effaced`) does not.
+_HEX_RUN = re.compile(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,}\b")
+_DIGITS = re.compile(r"\d+")
+_WHITESPACE = re.compile(r"\s+")
+
+#: ssh options that take a value as the NEXT argument (`-p 22`). `-O` is added to the usual list
+#: because `ssh -O exit host` would otherwise name the host `exit`.
+_SSH_VALUE_OPTIONS = "pilOoFJLRDbceSmWwEBIQ"
+#: `-p`, or a cluster of valueless flags ending in a value option (`-vp`), with the value next.
+#: `-p22` and `-oBatchMode=yes` carry their value attached, so they do not match and consume nothing.
+_SSH_OPTION_WITH_VALUE = re.compile(r"^-[46AaCfGgKkMNnqsTtVvXxY]*[" + _SSH_VALUE_OPTIONS + r"]$")
+
+
+def _ssh_host(args: tuple[str, ...]) -> str:
+    """The destination of an `ssh` invocation: its first non-option argument, as an alias, or ""."""
+    skip = False
+    options_ended = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if not options_ended and arg == "--":
+            options_ended = True
+            continue
+        if not options_ended and arg.startswith("-") and len(arg) > 1:
+            skip = _SSH_OPTION_WITH_VALUE.match(arg) is not None
+            continue
+        host = arg
+        if host.startswith("ssh://"):
+            host = host[len("ssh://") :].partition("/")[0]
+        return host.rpartition("@")[2].partition(":")[0].lower()
+    return ""
+
+
+def command_family(command: str) -> str:
+    """The first program of `command`, or `ssh:<alias>` for ssh; "" when there is none. Never raises.
+
+    It reuses `parse_command` (and so its length cap) instead of finding the program a second way:
+    the trigger matcher and the failure signature must agree on what a command is. For `ssh` the
+    alias is part of the family because `ssh hosta` and `ssh hostb` fail for unrelated reasons.
+    """
+    segments = parse_command(command)
+    if not segments:
+        return ""
+    first = segments[0]
+    if first.program == "ssh":
+        host = _ssh_host(first.args)
+        return f"ssh:{host}" if host else "ssh"
+    return first.program
+
+
+def _normalise(line: str) -> str:
+    """Lowercase `line`, then paths, hex runs and digit runs become placeholders and spaces collapse."""
+    line = line.lower()
+    line = _WINDOWS_PATH.sub("<path>", line)
+    line = _UNC_PATH.sub("<path>", line)
+    line = _POSIX_PATH.sub("<path>", line)
+    line = _HEX_RUN.sub("<hex>", line)
+    line = _DIGITS.sub("<n>", line)
+    return _WHITESPACE.sub(" ", line).strip()
+
+
+def failure_signature(command: str, error: str) -> str:
+    """`<family>|<detail>`: the same failure of the same kind of command gives the same string.
+
+    `detail` is the first non-empty line of the error after a leading `Exit code N` line, normalised
+    by `_normalise` and cut to `SIGNATURE_CHARS`. When no such line exists it is `exit:N` (not
+    normalised) or, with no exit header either, `exit:?`. The error is cut to `MAX_ERROR_CHARS`
+    BEFORE any splitting or matching, so the cost does not depend on how much the command printed.
+    A non-string `command` or `error` counts as empty. Never raises.
+    """
+    family = command_family(command)
+    text = error[:MAX_ERROR_CHARS] if isinstance(error, str) else ""
+    lines = [line for line in (raw.strip() for raw in text.splitlines()) if line]
+    code: str | None = None
+    if lines:
+        header = _EXIT_HEADER.match(lines[0])
+        if header is not None:
+            code = header.group(1)
+            lines = lines[1:]
+    if lines:
+        return f"{family}|{_normalise(lines[0])[:SIGNATURE_CHARS]}"
+    return f"{family}|exit:{code if code is not None else '?'}"
+
+
+def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list[Entry]:
+    """The entries whose symptoms and body best match `error`, best first, at most `MAX_PER_CALL`.
+
+    A lexical BM25 (`prompt_time.rank`, unchanged), never an embedder. Each entry's document is its
+    symptoms repeated `SYMPTOM_WEIGHT` times followed by its body, so a symptom phrase counts for
+    more than the same words in the body. Kept when `score >= min_score`. `prompt_time` is imported
+    here, not at module level, so the `pre-tool-use` path never pays for it. Never raises: a broken
+    entry list or an error that is not text gives `[]`.
+    """
+    try:
+        if not isinstance(error, str) or not error.strip() or not entries:
+            return []
+        from . import prompt_time
+
+        by_id: dict[str, Entry] = {}
+        documents: list[tuple[str, str, list[str]]] = []
+        for entry in entries:
+            if entry.id in by_id:
+                continue
+            by_id[entry.id] = entry
+            text = " ".join(list(entry.symptoms) * SYMPTOM_WEIGHT) + " " + entry.body
+            documents.append((entry.id, "", prompt_time.tokenize(text)))
+        ranked = prompt_time.rank(documents, error[:MAX_ERROR_CHARS], k=MAX_PER_CALL)
+        return [by_id[name] for name, _summary, score in ranked if score >= min_score][:MAX_PER_CALL]
+    except Exception:  # BROAD-CATCH: fail-open
+        return []
+
+
+def render(entries: list[Entry]) -> str:
+    """The text injected into the agent's context for `entries`; "" for none."""
+    if not entries:
+        return ""
+    return "General knowledge (owner-approved):\n\n" + "\n\n".join(f"[{e.id}]\n{e.body}" for e in entries)
+
+
 __all__ = [
     "INDEX_NAME",
     "INDEX_SCHEMA",
     "MAX_COMMAND_CHARS",
+    "MAX_ERROR_CHARS",
     "MAX_PER_CALL",
+    "SIGNATURE_CHARS",
+    "SYMPTOM_WEIGHT",
     "Entry",
     "Segment",
     "STATE_MAX_AGE_SECONDS",
     "Trigger",
     "claim_for_session",
     "client",
+    "command_family",
     "command_programs",
     "compiled",
+    "failure_signature",
     "in_scope",
     "knowledge_home",
     "load_index",
@@ -583,6 +737,8 @@ __all__ = [
     "match_triggers",
     "matched_trigger",
     "parse_command",
+    "rank_for_failure",
+    "render",
     "repository_name",
     "settings",
 ]

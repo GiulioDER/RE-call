@@ -1,4 +1,5 @@
-"""General knowledge hook, tasks 1 and 2: the index model, its fail-open reader, project detection and trigger matching.
+"""General knowledge hook, tasks 1 to 4: the index model, its fail-open reader, project detection, trigger matching, the
+session dedupe, the event log, failure signatures and failure ranking.
 
 Only invented entries appear here (ids `gk-example-...`, host `examplehost`). The conftest autouse
 fixture `_confine_general_knowledge` points the corpus and the log at a per-test directory, so no
@@ -9,6 +10,9 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -1187,3 +1191,319 @@ def test_client_defaults_to_claude_and_follows_the_environment(monkeypatch):
     assert gk.client() == "claude"
     monkeypatch.setenv("RECALL_HOOK_CLIENT", "codex")
     assert gk.client() == "codex"
+
+
+# ---------------------------------------------------------------------------------------------
+# Task 4: failure signature and failure ranking.
+# ---------------------------------------------------------------------------------------------
+
+
+def entry(**overrides: Any) -> gk.Entry:
+    """An `Entry` built from the same invented record `example_entry` gives, without an index round trip."""
+    record = example_entry(**overrides)
+    triggers = tuple(gk.Trigger(*next(iter(t.items()))) for t in record["triggers"])
+    return gk.Entry(record["id"], record["kind"], record["scope"], triggers, tuple(record["symptoms"]), record["body"])
+
+
+def test_failure_signature_normalises_paths_numbers_and_hex():
+    """Invariant: a path, a hex run and a number in the detail line become placeholders, so two
+    occurrences of one failure share a signature.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_failure_signature_normalises_paths_numbers_and_hex`.
+    Mutation: `_normalise` drops the `_DIGITS.sub("<n>", line)` line. Symbol: `_normalise`.
+    Seen: `assert 'pytest|error: file <path> line 42 hash <hex> not found' == 'pytest|error: file <path> line <n> hash <hex> not found'`.
+    """
+    error = "Exit code 2\nERROR: file C:\\Users\\x\\proj\\a.py line 42 hash 9f3c2ab1e not found"
+    assert gk.failure_signature("pytest -q", error) == "pytest|error: file <path> line <n> hash <hex> not found"
+
+
+@pytest.mark.parametrize(
+    ("detail", "expected"),
+    [
+        ("cannot open C:\\Users\\x\\proj\\a.py now", "cannot open <path> now"),
+        ("cannot open c:/a/b/c.txt now", "cannot open <path> now"),
+        ("cannot open \\\\examplehost\\share\\x.txt now", "cannot open <path> now"),
+        ("no such file /a/b/c.py here", "no such file <path> here"),
+        ("no such file ~/x/y here", "no such file <path> here"),
+        ("no such file '/a/b' here", "no such file '<path>' here"),
+        ("failed at c:\\a\\b.py:42: bad thing", "failed at <path>:<n>: bad thing"),
+        ("checked 1/2 and and/or / root", "checked <n>/<n> and and/or / root"),
+    ],
+)
+def test_failure_signature_replaces_paths_but_not_ratios_or_a_bare_slash(detail, expected):
+    """Invariant: Windows, UNC and POSIX paths (and `~/x`) become `<path>`; `1/2`, `and/or` and a lone
+    `/` do not, because they are not paths.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_failure_signature_replaces_paths_but_not_ratios_or_a_bare_slash`.
+    Mutations, one per group, each applied alone and each seen red in the named parameter:
+    (a) the `_WINDOWS_PATH.sub` line removed: the three `c:` cases fail, e.g.
+    `failed at c:\\a\\b.py:<n>: bad thing` instead of `failed at <path>:<n>: bad thing`;
+    (b) the `_UNC_PATH.sub` line removed: the `\\\\examplehost\\share` case keeps its text;
+    (c) `_PATH_START = ""` (no lookbehind): `checked <n><path> and and<path> / root` instead of
+    `checked <n>/<n> and and/or / root`, the ratio case only;
+    (d) the `~[\\\\/]` alternative of `_POSIX_PATH` removed: `no such file ~/x/y here` is not replaced.
+    Symbols: `_WINDOWS_PATH`, `_UNC_PATH`, `_POSIX_PATH`, `_PATH_START`.
+    """
+    assert gk.failure_signature("make", "Exit code 1\n" + detail) == "make|" + expected
+
+
+def test_a_hex_run_needs_a_digit_so_english_words_survive():
+    """Invariant (ruling R5): a run of 7 or more hex characters is `<hex>` only when it holds a digit.
+    `defaced` and `effaced` are words made of the letters a to f.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_hex_run_needs_a_digit_so_english_words_survive`.
+    Mutation: `_HEX_RUN` loses its lookahead (`\\b[0-9a-f]{7,}\\b`). Symbol: `_HEX_RUN`.
+    Seen: `assert 'make|object <hex> at <hex>' == 'make|object defaced at <hex>'`.
+    """
+    error = "Exit code 1\nobject defaced at 0a1b2c3d4e5f"
+    assert gk.failure_signature("make", error) == "make|object defaced at <hex>"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        ("Exit code 2\nboom happened", "make|boom happened"),
+        ("EXIT CODE 137   \n\n   killed by signal", "make|killed by signal"),
+        ("boom happened\nsecond line", "make|boom happened"),
+        ("Exit code 1\n", "make|exit:1"),
+        ("Exit code -1", "make|exit:-1"),
+        ("Exit code 3\n   \n\t\n", "make|exit:3"),
+        ("", "make|exit:?"),
+        ("  \n \n", "make|exit:?"),
+    ],
+)
+def test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code(error, expected):
+    """Invariant: the leading `Exit code N` line is not the detail (any case, any padding); with no detail
+    the line is `exit:N` unnormalised, and `exit:?` when there is no header either (ruling R6).
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code`.
+    Mutations: (a) the `lines = lines[1:]` that drops the header is removed: the five cases that start
+    with a header fail (the detail becomes `exit code <n>`); (b) the `'?'` fallback is replaced by `''`:
+    the last two cases fail (`make|exit:`). Symbol: `failure_signature`.
+    """
+    assert gk.failure_signature("make test", error) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("ssh examplehost 'uptime'", "ssh:examplehost"),
+        ("ssh -p 2222 examplehost uptime", "ssh:examplehost"),
+        ("ssh -i key.pem -o StrictHostKeyChecking=no alice@examplehost uptime", "ssh:examplehost"),
+        ("ssh -vp 22 examplehost", "ssh:examplehost"),
+        ("ssh -p22 examplehost", "ssh:examplehost"),
+        ("ssh -tt examplehost", "ssh:examplehost"),
+        ("ssh -O exit examplehost", "ssh:examplehost"),
+        ("ssh -- examplehost uptime", "ssh:examplehost"),
+        ("ssh -J jumphost examplehost uptime", "ssh:examplehost"),
+        ("ssh ExampleHost", "ssh:examplehost"),
+        ("ssh", "ssh"),
+        ("ssh -v", "ssh"),
+        ("pytest -q tests/", "pytest"),
+        ("FOO=1 python -m pytest", "python"),
+        ("", ""),
+        ("   ", ""),
+    ],
+)
+def test_command_family_is_the_program_and_for_ssh_the_alias(command, expected):
+    """Invariant: the family is the first segment's program, and `ssh:<alias>` for ssh, skipping options
+    and the values of the options that take one.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_command_family_is_the_program_and_for_ssh_the_alias`.
+    Mutations: (a) `_ssh_host` never skips an option's value (`skip = False`): five cases fail, e.g.
+    `ssh:2222`, `ssh:jumphost`, `ssh:key.pem`, `ssh:22`, `ssh:exit`; (b) `.rpartition("@")[2]` removed: the
+    `alice@examplehost` case gives `ssh:alice@examplehost`; (c) the alias dropped (`return "ssh"`): ten
+    cases fail; (d) `O` removed from `_SSH_VALUE_OPTIONS`: only `ssh -O exit examplehost` fails
+    (`ssh:exit`). Symbols: `_ssh_host`, `command_family`.
+    """
+    assert gk.command_family(command) == expected
+
+
+def test_a_non_string_command_or_error_does_not_raise():
+    """Invariant: the failure path takes whatever the payload holds. A non-string is empty text.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_non_string_command_or_error_does_not_raise`.
+    Mutation: `failure_signature` slices `error[:MAX_ERROR_CHARS]` without the `isinstance` guard.
+    Symbol: `failure_signature`. Seen: `TypeError: 'NoneType' object is not subscriptable`.
+    """
+    assert gk.failure_signature(None, None) == "|exit:?"  # type: ignore[arg-type]
+    assert gk.failure_signature(["pytest"], {"error": "x"}) == "|exit:?"  # type: ignore[arg-type]
+    assert gk.failure_signature("pytest", 7) == "pytest|exit:?"  # type: ignore[arg-type]
+    assert gk.command_family(None) == ""  # type: ignore[arg-type]
+    assert gk.rank_for_failure([entry()], None, 0.0) == []  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    ["x" * 2_000_000, "1 " * 1_000_000],
+    ids=["one-long-word", "two-million-chars-of-numbers"],
+)
+def test_a_two_megabyte_error_is_bounded(payload):
+    """Invariant (review focus 2): a 2 MB error costs no more than a 4 KB one. The signature is cut to
+    `MAX_ERROR_CHARS` before any splitting or matching, and its line part is at most `SIGNATURE_CHARS`.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_two_megabyte_error_is_bounded`.
+    Mutations: (a) `text = error[:MAX_ERROR_CHARS]` becomes `text = error`: the numbers payload runs the
+    digit and hex rules over 2 MB and fails the time assertion (`assert (5625.89 - 5624.58) < 0.4`, 1.3 s;
+    the `x` payload alone does NOT catch this, which is why the numbers payload exists); (b) the
+    `[:SIGNATURE_CHARS]` slice removed: both payloads fail the length assertion (`4091 <= 167`,
+    `5454 <= 167`). Symbol: `failure_signature`.
+    """
+    error = "Exit code 1\n" + payload
+    started = time.perf_counter()
+    signature = gk.failure_signature("pytest", error)
+    gk.rank_for_failure([entry()], error, 0.0)
+    assert time.perf_counter() - started < 0.4  # half the 800 ms budget; measured about 5 ms
+    assert signature.startswith("pytest|")
+    assert len(signature) <= len("pytest|") + gk.SIGNATURE_CHARS
+
+
+def test_a_huge_command_is_bounded_through_the_capped_parse():
+    """Invariant: the family is read from the capped parse, so an `ssh` whose host sits megabytes into the
+    command line is `ssh`, and finding that out is fast.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_huge_command_is_bounded_through_the_capped_parse`.
+    Mutation: `MAX_COMMAND_CHARS = 10**9` (the cap `parse_command` applies; `command_family` must keep
+    going through it). Symbol: `command_family` over `parse_command`.
+    Seen: `assert 'ssh:examplehost' == 'ssh'`.
+    """
+    command = "ssh " + "-v " * 1_000_000 + "examplehost"
+    started = time.perf_counter()
+    family = gk.command_family(command)
+    elapsed = time.perf_counter() - started
+    assert family == "ssh"
+    assert elapsed < 0.8
+    assert gk.failure_signature(command, "Exit code 1\nboom").startswith("ssh|")
+
+
+def test_rank_for_failure_returns_the_entry_whose_symptoms_match():
+    """Invariant: an error that contains an entry's symptom phrase brings that entry back, and an
+    entry about something else does not.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_rank_for_failure_returns_the_entry_whose_symptoms_match`.
+    Mutation: the final `return [by_id[name] ... if score >= min_score][:MAX_PER_CALL]` of
+    `rank_for_failure` becomes `return []`. Symbol: `rank_for_failure`.
+    Seen: `assert [] == ['gk-example-memory']`.
+    """
+    unrelated = entry(
+        id="gk-example-network",
+        symptoms=["connection refused by remote host", "network unreachable timeout"],
+        body="Check the tunnel before retrying the deploy script.",
+    )
+    memory = entry(
+        id="gk-example-memory",
+        symptoms=["worker crashed out of memory during collection"],
+        body="Run the focused file on the build host.",
+    )
+    error = "Exit code 1\nworker crashed with an out of memory failure during collection of tests"
+    found = gk.rank_for_failure([unrelated, memory], error, 0.0)
+    assert [e.id for e in found] == ["gk-example-memory"]
+
+
+@pytest.mark.parametrize("order", [(0, 1), (1, 0)], ids=["body-first", "symptom-first"])
+def test_rank_for_failure_prefers_the_symptom_match_over_the_same_words_in_a_body(order):
+    """Invariant (ruling R4): an entry that lists the error's words as a symptom outranks one that has
+    them once in its body, whichever comes first in the list. Without the weight the order flips.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_rank_for_failure_prefers_the_symptom_match_over_the_same_words_in_a_body`.
+    Mutation: `SYMPTOM_WEIGHT = 1`. Symbol: `rank_for_failure` (the `* SYMPTOM_WEIGHT` repeat).
+    Seen, in both parameters: the list comes back with `gk-example-body` first instead of
+    `gk-example-symptom` (scores 1.12 against 1.07 unweighted, 1.59 against 1.30 weighted).
+    """
+    in_body = entry(
+        id="gk-example-body",
+        symptoms=[],
+        body="Worker memory allocation failure during collection: crashed. Reduce parallelism on the build host.",
+    )
+    in_symptoms = entry(
+        id="gk-example-symptom",
+        symptoms=["worker crashed memory allocation failure during collection"],
+        body="Run the focused file on the build host.",
+    )
+    error = "worker crashed after memory allocation failure during collection of tests"
+    found = gk.rank_for_failure([[in_body, in_symptoms][i] for i in order], error, 0.0)
+    assert [e.id for e in found] == ["gk-example-symptom", "gk-example-body"]
+
+
+def test_min_score_filters_weak_matches_and_keeps_an_equal_one():
+    """Invariant: an entry scoring below `min_score` is dropped; one scoring exactly `min_score` stays
+    (`>=`). The threshold is taken from the ranker itself, so the test names no magic number.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_min_score_filters_weak_matches_and_keeps_an_equal_one`.
+    Mutations: (a) the filter `if score >= min_score` becomes `if True`: the `score + 1e-9` call returns
+    the entry (`assert [Entry(...)] == []`); (b) `>=` becomes `>`: the equal-score call returns `[]`
+    (`assert [] == ['gk-example-memory']`). Symbol: `rank_for_failure`.
+    """
+    from recall_hooks import prompt_time
+
+    memory = entry(
+        id="gk-example-memory",
+        symptoms=["worker crashed out of memory during collection"],
+        body="Run the focused file on the build host.",
+    )
+    error = "worker crashed with an out of memory failure during collection of tests"
+    document = (memory.id, "", prompt_time.tokenize(" ".join(list(memory.symptoms) * gk.SYMPTOM_WEIGHT) + " " + memory.body))
+    (_, _, score) = prompt_time.rank([document], error, k=gk.MAX_PER_CALL)[0]
+    assert score > 0
+    assert [e.id for e in gk.rank_for_failure([memory], error, score)] == ["gk-example-memory"]
+    assert gk.rank_for_failure([memory], error, score + 1e-9) == []
+    assert [e.id for e in gk.rank_for_failure([memory], error, 0.0)] == ["gk-example-memory"]
+
+
+def test_rank_for_failure_returns_at_most_the_per_call_cap_and_never_raises():
+    """Invariant: at most `MAX_PER_CALL` entries come back, a duplicate id counts once, and a broken
+    entry list or an empty error gives `[]` rather than an exception.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_rank_for_failure_returns_at_most_the_per_call_cap_and_never_raises`.
+    Mutations: (a) `k=MAX_PER_CALL` becomes `k=10` AND the trailing `[:MAX_PER_CALL]` is removed (each
+    alone survives, the two are redundant on purpose): `assert 3 == 2`; (b) `except Exception` narrowed to
+    `except ZeroDivisionError`: the broken-list call raises `AttributeError: 'dict' object has no
+    attribute 'id'`; (c) the final return replaced by `[]`: `assert 0 == 2`. Symbol: `rank_for_failure`.
+    """
+    symptoms = ["worker crashed out of memory during collection"]
+    entries = [
+        entry(id=f"gk-example-{n}", symptoms=symptoms, body="Run the focused file on the build host.") for n in range(3)
+    ]
+    error = "worker crashed with an out of memory failure during collection of tests"
+    assert len(gk.rank_for_failure(entries, error, 0.0)) == gk.MAX_PER_CALL
+    assert len(gk.rank_for_failure([entries[0], entries[0]], error, 0.0)) <= 1
+    assert gk.rank_for_failure([example_entry()], error, 0.0) == []  # type: ignore[list-item]
+    assert gk.rank_for_failure(entries, "   \n", 0.0) == []
+    assert gk.rank_for_failure([], error, 0.0) == []
+
+
+def test_importing_the_module_does_not_import_prompt_time_until_a_failure_is_ranked():
+    """Invariant: the `pre-tool-use` path never pays for `prompt_time`; only `rank_for_failure` imports it.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_importing_the_module_does_not_import_prompt_time_until_a_failure_is_ranked`.
+    Mutation: `from . import prompt_time` at module level of `recall_hooks/general_knowledge.py`.
+    Symbol: `rank_for_failure`. Seen: `assert ['True', 'True'] == ['False', 'True']`.
+    """
+    code = (
+        "import sys\n"
+        "import recall_hooks.general_knowledge as gk\n"
+        "before = 'recall_hooks.prompt_time' in sys.modules\n"
+        "e = gk.Entry('gk-example-x', 'procedure', 'global', (), ('worker crashed',), 'body words here')\n"
+        "gk.rank_for_failure([e], 'worker crashed with a failure', 0.0)\n"
+        "print(before, 'recall_hooks.prompt_time' in sys.modules)\n"
+    )
+    root = Path(__file__).resolve().parents[1]
+    done = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, timeout=120)
+    assert done.stdout.split() == ["False", "True"], done.stderr
+
+
+def test_render_formats_each_entry_with_its_id_and_separates_them_with_a_blank_line():
+    """Invariant: the injected text is the header, then `[id]` and the body per entry, blank line between,
+    and nothing for no entries.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_render_formats_each_entry_with_its_id_and_separates_them_with_a_blank_line`.
+    Mutation: the separator `"\\n\\n"` in `render` becomes `"\\n"`. Symbol: `render`.
+    Seen: the two entries come back separated by one newline instead of a blank line (`...body a\\n[gk-example-b]...`).
+    """
+    first = entry(id="gk-example-a", body="body a")
+    second = entry(id="gk-example-b", body="body b")
+    assert gk.render([first, second]) == (
+        "General knowledge (owner-approved):\n\n[gk-example-a]\nbody a\n\n[gk-example-b]\nbody b"
+    )
+    assert gk.render([first]) == "General knowledge (owner-approved):\n\n[gk-example-a]\nbody a"
+    assert gk.render([]) == ""
