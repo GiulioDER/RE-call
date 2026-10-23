@@ -61,6 +61,9 @@ class DecisionCode(StrEnum):
     MATERIALIZATION_UNAVAILABLE = "MATERIALIZATION_UNAVAILABLE"
     SOURCE_FORGOTTEN = "SOURCE_FORGOTTEN"
     SOURCE_REMOVED = "SOURCE_REMOVED"
+    #: A `withdrawn` event: the memo behind an assertion was withdrawn as a mistake
+    #: (`recall_withdraw`), so the assertion is no longer listed and supersedes nothing.
+    WITHDRAWN = "WITHDRAWN"
     #: Two refusals no ledger ever records: the request id already names another application, or
     #: has a form the ledger mints for its own events (`reserved_request_id`). Recording either
     #: under that id is impossible or would take the server's slot, so neither is written.
@@ -127,12 +130,34 @@ def retraction_key(event: FactEvent) -> RetractionKey:
 
 
 def retracted_keys(events: Iterable[FactEvent]) -> frozenset[RetractionKey]:
-    """The `retraction_key` of every assertion that a `retracted` event in `events` retracts."""
-    return frozenset(
+    """The `retraction_key` of every assertion that a `retracted` or `withdrawn` event in `events`
+    takes away.
+
+    A withdrawal names its assertion by event id (`withdrawn_event_ids`) and carries no cards, so
+    no copy of a value is written to withdraw it; its key is read from the assertion itself, which
+    the same history holds. Every projection hides a withdrawn assertion as it hides a retracted
+    one; `fact_supersession` is where the two differ.
+    """
+    history = tuple(events)
+    withdrawn = withdrawn_event_ids(history)
+    keys: set[RetractionKey] = {
         (fact_id, event.generation_id, frozenset(card.card_id for card in event.evidence_cards))
-        for event in events
+        for event in history
         if event.event_type == "retracted"
         for fact_id in event.supersedes_fact_ids
+    }
+    if withdrawn:
+        keys.update(retraction_key(event) for event in history if event.event_id in withdrawn)
+    return frozenset(keys)
+
+
+def withdrawn_event_ids(events: Iterable[FactEvent]) -> frozenset[str]:
+    """The ids of the assertions a `withdrawn` event in `events` names (`WITHDRAWAL_REQUEST_PREFIX`)."""
+    width = len(WITHDRAWAL_REQUEST_PREFIX)
+    return frozenset(
+        event.request_id[width:]
+        for event in events
+        if event.event_type == "withdrawn" and event.request_id.startswith(WITHDRAWAL_REQUEST_PREFIX)
     )
 
 
@@ -146,6 +171,8 @@ _LATEST = datetime.max.replace(tzinfo=UTC)
 SUPERSESSION_REQUEST_SUFFIX = ":supersession"
 #: The request-id prefix of a `retracted` event (`recall.fact_ledger.retraction_ids`).
 RETRACTION_REQUEST_PREFIX = "retraction:"
+#: The request-id prefix of a `withdrawn` event: the rest is the withdrawn assertion's event id.
+WITHDRAWAL_REQUEST_PREFIX = "withdrawal:"
 #: The request-id prefix of a memo's own statement (`recall.stated_facts.stated_request_id`).
 STATED_REQUEST_PREFIX = "stated:"
 
@@ -160,7 +187,7 @@ def reserved_request_id(request_id: str) -> bool:
     id is a memo's own statement (`recall.stated_facts`), which a client request would pre-empt.
     """
     return request_id.endswith(SUPERSESSION_REQUEST_SUFFIX) or request_id.startswith(
-        (RETRACTION_REQUEST_PREFIX, STATED_REQUEST_PREFIX)
+        (RETRACTION_REQUEST_PREFIX, WITHDRAWAL_REQUEST_PREFIX, STATED_REQUEST_PREFIX)
     )
 
 
@@ -236,7 +263,11 @@ class FactSupersession:
     correction leaves the open-ended present alone. **Chains**: what hides a successor hides what
     it hid, each inside its own window, so a value superseded by a temporary one and then by its
     replacement stays hidden while either holds. Whether a successor is still live does not
-    matter: forgetting a successor removes its value and gives nothing back.
+    matter: forgetting a successor removes its value and gives nothing back. **Withdrawal** is
+    the one way back (owner decision, 2026-10-22): a withdrawn successor (`withdrawn_event_ids`)
+    hides nothing in its own window but still passes on what hides IT, so in A, then B superseding
+    A, then C superseding B, withdrawing B leaves A hidden by C alone (the chain is spliced), and
+    withdrawing the head B of A, B makes A current again.
 
     `hidden` holds, per assertion event, the union of every such window as sorted disjoint
     intervals. A union, not a list: a value asserted again keeps its fact id, so each later
@@ -283,6 +314,23 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
     the interpreter's limit at about a thousand links, after which every read and write of the
     tenant failed (2026-10-21 supersession audit, SEC-002).
     """
+    withdrawn = withdrawn_event_ids(events)
+
+    def withdrawn_for(successor: FactEvent) -> str | None:
+        """The withdrawn assertion `successor` is, or speaks for, else None.
+
+        A `superseded` event speaks for its assertion (`<assertion id>_sup`). It is only ever a
+        successor of its own when that assertion carries no fact, which is what erasing a value
+        leaves (PR 950's redaction); withdrawn, it must then be withdrawn with it.
+        """
+        if successor.event_id in withdrawn:
+            return successor.event_id
+        if successor.event_type == "superseded" and successor.event_id.endswith("_sup"):
+            holder = successor.event_id[: -len("_sup")]
+            if holder in withdrawn:
+                return holder
+        return None
+
     by_fact: dict[str, list[FactEvent]] = {}
     successors: list[tuple[FactEvent, FactWindow | None]] = []
     paired: set[str] = set()
@@ -315,9 +363,13 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
             if ready:
                 spans: list[Interval] = []
                 for successor, window in direct.get(event_id, ()):
-                    spans.append(_span(window))
+                    holder = withdrawn_for(successor)
+                    if holder is None:
+                        spans.append(_span(window))
                     if successor.event_type == "asserted":
                         spans.extend(resolved.get(successor.event_id, ()))
+                    elif holder is not None:
+                        spans.extend(resolved.get(holder, ()))
                 resolved[event_id] = _merge(spans)
                 visiting.discard(event_id)
                 continue
@@ -326,8 +378,9 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
             visiting.add(event_id)
             stack.append((event_id, True))
             for successor, _window in reversed(direct.get(event_id, ())):
-                if successor.event_type == "asserted" and successor.event_id not in resolved:
-                    stack.append((successor.event_id, False))
+                child = successor.event_id if successor.event_type == "asserted" else withdrawn_for(successor)
+                if child is not None and child not in resolved:
+                    stack.append((child, False))
     return FactSupersession(resolved)
 
 
@@ -523,6 +576,98 @@ def live_sources(
     return {
         fact_id: tuple(sorted({card.source for card in group}))
         for fact_id, group in live_cards(events, served, now).items()
+    }
+
+
+def current_fact_listing(
+    ledger: Any, tenant_id: str, now: datetime, served: ServedSources | None
+) -> tuple[tuple[FactEvent, ...], dict[str, tuple[EvidenceCard, ...]]]:
+    """The facts in force at `now` and, per fact id, the live cards that cite them.
+
+    The one listing rule `recall_current_facts` and `recall provenance current` share, so the two
+    surfaces cannot disagree about one ledger; the CLI printed the APPLIED event's own cards and
+    left out every memo that restated a fact (2026-10-21 supersession audit). One snapshot serves
+    both halves: the materialized current facts and the listed facts' live assertions where the
+    ledger has them (`recall.fact_current`), else the history replayed, else what `current`
+    returns. `served` None reads the ledger alone and counts every card.
+    """
+    view = getattr(ledger, "current_view", None)
+    if callable(view):
+        events, history = view(tenant_id=tenant_id, now=now, served=served)
+    elif (recorded := getattr(ledger, "events", None)) is not None:
+        history = tuple(event for event in recorded if event.tenant_id == tenant_id)
+        events = project_current(history, now, served)
+    else:
+        events = (
+            ledger.current(tenant_id=tenant_id, now=now)
+            if served is None
+            else ledger.current(tenant_id=tenant_id, now=now, served=served)
+        )
+        history = events
+    return tuple(events), live_cards(history, served, now)
+
+
+def listing_payload(
+    events: Sequence[FactEvent],
+    evidence: Mapping[str, tuple[EvidenceCard, ...]],
+    permitted: Callable[[str], bool] | None = None,
+) -> dict[str, list[dict[str, object]]]:
+    """The `facts` and `contested` halves of a current-facts listing, as both surfaces print them.
+
+    A fact lists its memos in `sources` and their cards in `evidence_card_ids`. With `permitted`,
+    a memo it refuses is left out of both, and a fact left with no permitted memo is not listed.
+    Facts that conflict with no supersession between their memos go under `contested`
+    (`split_contested`).
+    """
+    sources = {
+        fact_id: tuple(sorted({card.source for card in group})) for fact_id, group in evidence.items()
+    }
+    if permitted is not None:
+        sources = {fact_id: tuple(name for name in names if permitted(name))
+                   for fact_id, names in sources.items()}
+        events = tuple(event for event in events if sources.get(event.fact_id or ""))
+
+    def card_ids(event: FactEvent) -> list[str]:
+        allowed = sources.get(event.fact_id or "", ())
+        return [card.card_id for card in evidence.get(event.fact_id or "", ())
+                if permitted is None or card.source in allowed]
+
+    def names(event: FactEvent) -> list[str]:
+        return list(sources.get(event.fact_id or "", ()))
+
+    standing, contested = split_contested(events)
+    return {
+        "facts": [
+            {
+                "event_id": event.event_id,
+                "fact_id": event.fact_id,
+                "fact": event.fact.to_payload() if event.fact else None,
+                "evidence_card_ids": card_ids(event),
+                "generation_id": event.generation_id,
+                "writer": event.writer,
+                "asserted_at": event.created_at.isoformat(),
+                "sources": names(event),
+            }
+            for event in standing
+        ],
+        "contested": [
+            {
+                "namespace": group[0].fact.namespace if group[0].fact else None,
+                "subject": group[0].fact.subject if group[0].fact else None,
+                "predicate": group[0].fact.predicate if group[0].fact else None,
+                "context": group[0].fact.context if group[0].fact else {},
+                "values": [
+                    {
+                        "fact": event.fact.to_payload() if event.fact else None,
+                        "fact_id": event.fact_id,
+                        "sources": names(event),
+                        "evidence_card_ids": card_ids(event),
+                    }
+                    for event in group
+                ],
+            }
+            for group in contested
+        ],
     }
 
 
@@ -1424,6 +1569,12 @@ class ProvenanceController:
                 old_ids.append(event.fact_id)
         return tuple(old_ids)
 
+    def _current(self, instant: datetime) -> tuple[FactEvent, ...]:
+        """The ledger's `current` at `instant`, naming `served` only when the controller has one."""
+        if self.served_sources is None:
+            return self.ledger.current(tenant_id=self.tenant_id, now=instant)
+        return self.ledger.current(tenant_id=self.tenant_id, now=instant, served=self.served_sources)
+
     def _in_force(self, claim: AtomicFact) -> _ConflictSet:
         """The tenant's values in force at some instant, with the index that says when.
 
@@ -1431,25 +1582,28 @@ class ProvenanceController:
         claim's conflict key's history where the ledger offers it (`conflict_history`, answered
         from the materialized current facts, `recall.fact_current`), since nothing outside that
         key bears on the claim, else every event. A ledger that exposes only `current` is read
-        through it, so its conflict set is what holds now. `current` is read first in every case:
-        it is the read authorization fails closed on, so a ledger whose `current` cannot answer is
-        refused (pinned by `test_ledger_read_outage_fails_closed_without_asserting` and the
-        provenance evaluation's `ledger_outage` case). One clock reading, and the absent set
-        computed once, inside the fail-closed read; the second was computed outside it
-        (2026-10-21 audit, CODE-004).
+        through it, so its conflict set is what holds now.
+
+        The first ledger read here is the one authorization fails closed on, so a ledger that
+        cannot answer it is refused. With `conflict_history` that is the key read itself, which
+        reads exactly what the decision rests on, and the tenant's `current` is not read: it
+        decoded every fact current in the tenant only to be discarded (PERF-003, measured
+        2026-10-22 at about 0.3 ms per current fact, 98% of one apply at 10k facts on lite and
+        91% on PostgreSQL). Without it, `current` is read first (pinned by
+        `test_ledger_read_outage_fails_closed_without_asserting` and the provenance evaluation's
+        `ledger_outage` case). One clock reading, and the absent set computed once, inside the
+        fail-closed read; the second was computed outside it (2026-10-21 audit, CODE-004).
         """
         instant = self.now()
-        current = (
-            self.ledger.current(tenant_id=self.tenant_id, now=instant)
-            if self.served_sources is None
-            else self.ledger.current(tenant_id=self.tenant_id, now=instant, served=self.served_sources)
-        )
+        current: tuple[FactEvent, ...] | None = None
         reader = getattr(self.ledger, "conflict_history", None)
-        history: object = (
-            reader(tenant_id=self.tenant_id, fact=claim) if callable(reader)
-            else getattr(self.ledger, "events", None)
-        )
+        if callable(reader):
+            history: object = reader(tenant_id=self.tenant_id, fact=claim)
+        else:
+            current = self._current(instant)
+            history = getattr(self.ledger, "events", None)
         if history is None or not isinstance(history, Sequence):
+            current = self._current(instant) if current is None else current
             return _ConflictSet(current, fact_supersession(current), None, frozenset(), instant)
         events = [event for event in history if event.tenant_id == self.tenant_id]
         index = fact_supersession(events)

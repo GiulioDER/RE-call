@@ -93,6 +93,14 @@ Outcomes are distinct:
 2. `abstained`
 3. `needs_clarification`
 4. `needs_review`
+5. `corrected`, only under the opt-in `dated-premise` answer profile
+   (`RECALL_REASONING_ANSWER_PROFILE=dated-premise`): the question assumed something the evidence
+   shows is no longer current. `premise_correction` says what and what the evidence says instead,
+   with citations; `answer` may be null. When the question retrieved a superseded memory whose
+   successor is in the evidence, the response's `diagnostics.premise_notice` names that successor's
+   chunks; they are given to the reader and, when the reader leaves a correction uncited, become its
+   citations (`diagnostics.premise_citations_from_notice`). A correction that cites nothing is
+   refused like an uncited answer.
 
 Policies:
 

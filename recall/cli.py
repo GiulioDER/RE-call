@@ -87,7 +87,7 @@ _COMMAND_REGISTRATIONS: tuple[tuple[frozenset[str], str, str], ...] = (
     (frozenset({"generation"}), "recall.cli_commands.generation_cmd", "register"),
     (frozenset({"graph"}), "recall.cli_commands.graph_cmd", "register"),
     (
-        frozenset({"index", "forget", "search", "scopes"}),
+        frozenset({"index", "forget", "withdraw", "search", "scopes"}),
         "recall.cli_commands.index_search",
         "register",
     ),

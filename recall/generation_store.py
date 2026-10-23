@@ -36,6 +36,8 @@ from recall.store import (
     resolve_supersession_graph,
     supersession_rows_sql,
 )
+from recall.supersession import SupersessionRecord
+from recall.supersession_records import pg_record_count, pg_records
 from recall.support import COVERAGE_EVENT, latest_calibration_event
 from recall.types import Chunk, ScoredChunk
 from recall.errors import RecallError
@@ -1081,15 +1083,19 @@ class GenerationStore(PgVectorStore):
         One cache entry per serving identity, as `supersession_all` describes; the three-part
         accessors are projections of it. Callers receive a copy.
         """
-        identity = self._serving_identity()
+        # The tenant's record count is part of the key: a withdrawal of a memo every generation
+        # has already lost writes a record and erases nothing, so the corpus fingerprint stays.
+        # One indexed count; the records themselves are read only when the key moves.
+        records_seen = self._with_retry(lambda conn: pg_record_count(conn, self._tenant))
+        identity = (*self._serving_identity(), records_seen)
         generation_id = identity[0]
         cached = self._supersession_cache
         if cached is not None and cached[0] == identity:
             graph: SupersessionGraph = cached[1]
             return graph.copy()
 
-        rows = self._with_retry(
-            lambda conn: conn.execute(
+        def _scan(conn: psycopg.Connection) -> tuple[list[Any], list[SupersessionRecord]]:
+            rows = conn.execute(
                 supersession_rows_sql(
                     "recall_chunks_v1",
                     source_column="source_uri",
@@ -1097,12 +1103,19 @@ class GenerationStore(PgVectorStore):
                 ),
                 (self._tenant, generation_id),
             ).fetchall()
-        )
+            return rows, pg_records(conn, self._tenant, self.record_scope)
+
+        rows, records = self._with_retry(_scan)
         self._supersession_scans += 1
         METRICS.increment("recall_supersession_scans_total")
-        graph = resolve_supersession_graph(rows)
+        graph = resolve_supersession_graph(rows, records)
         self._supersession_cache = (identity, graph)
         return graph.copy()
+
+    @property
+    def record_scope(self) -> str:
+        """Every generation of the tenant shares one set of `SupersessionRecord`s."""
+        return "recall_chunks_v1"
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve erasure identifiers to source URIs, across everything the tenant holds.
@@ -1457,7 +1470,9 @@ class GenerationStore(PgVectorStore):
     ) -> int:
         raise ImmutableGenerationError("active generations are read only")
 
-    def delete_sources(self, sources: list[str]) -> int:
+    def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
+        """Erase `sources` through `GenerationManager.forget`, which tombstones each one and
+        writes its `SupersessionRecord` (`withdraw`: a withdrawal rather than a forget)."""
         from recall.generations import GenerationManager
 
         manager = GenerationManager(
@@ -1466,7 +1481,9 @@ class GenerationStore(PgVectorStore):
             actor="generation-store-forget",
         )
         return sum(
-            manager.forget(source, legacy_table=self._migration_target).chunks_removed
+            manager.forget(
+                source, legacy_table=self._migration_target, withdraw=withdraw
+            ).chunks_removed
             for source in sources
         )
 
@@ -1488,7 +1505,9 @@ class GenerationStore(PgVectorStore):
             "generation rows are removed by `recall generation forget` and `generation gc`"
         )
 
-    def delete_sources_across(self, tables: list[str], sources: list[str]) -> int:
+    def delete_sources_across(
+        self, tables: list[str], sources: list[str], *, withdraw: bool = False
+    ) -> int:
         raise ImmutableGenerationError(
             "erase generation sources through `delete_sources`, which runs GenerationManager.forget"
         )

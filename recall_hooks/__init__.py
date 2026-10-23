@@ -542,18 +542,30 @@ def _pre_tool_use(payload: dict[str, Any]) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves.
 
-    Also carries the three subcommands a person runs rather than a hook: `login`, `logout` and
-    `auth-headers`. See `_auth_command` for why they are dispatched before stdin is read and why
-    they fail loudly where an event stays silent.
+    Also carries the four subcommands a person runs rather than a hook: `login`, `logout`,
+    `auth-headers` and `warm-auditor-brief`. All four are dispatched before stdin is read, and fail
+    loudly where an event stays silent; see `_auth_command` for why. `warm-auditor-brief`'s import
+    is not guarded, so a copy of this package without the auditor brief hook says so.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         return 0
     if args[0] in {"login", "logout", "auth-headers"}:
         return _auth_command(args)
+    if args[0] == "warm-auditor-brief":
+        # A command a person runs, so it is dispatched before the stdin read, like the three above.
+        from .auditor_brief import warm
+
+        return warm()
     try:
-        payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
+        # Bytes, decoded as UTF-8, which is what the client writes. `json.load(sys.stdin)` decoded
+        # with the console code page (cp1252 on Windows), and `pre-agent` writes the prompt back,
+        # so every non-ASCII character came back as mojibake. A stream with no byte buffer (a
+        # test's StringIO) is read as text.
+        buffer = getattr(sys.stdin, "buffer", None)
+        raw = buffer.read().decode("utf-8-sig") if buffer is not None else sys.stdin.read()
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):  # UnicodeDecodeError is a ValueError
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
@@ -597,6 +609,13 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             return 0
         return user_prompt_submit(payload)
+    if args[0] == "pre-agent":
+        # Same reason as above: only an `Agent` launch pays for git and the memo directory.
+        try:
+            from .auditor_brief import pre_agent
+        except ImportError:
+            return 0
+        return pre_agent(payload)
     return 0
 
 

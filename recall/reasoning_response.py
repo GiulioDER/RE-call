@@ -47,7 +47,10 @@ from recall.reasoning_proposals import (
 from recall.types import AtomicFact, DecisionState, EvidenceCard
 from recall.support import CalibrationCoverage, QuerySupport, validated_coverage_report
 
-ReasoningOutcome = Literal["answered", "abstained", "needs_clarification", "needs_review"]
+#: ``corrected`` only under the opt-in ``dated-premise`` answer profile: the question assumed
+#: something the evidence shows is no longer current; `ReasoningResponse.premise_correction` says
+#: what, and ``answer`` may be None.
+ReasoningOutcome = Literal["answered", "abstained", "needs_clarification", "needs_review", "corrected"]
 GraphExpansionMode = Literal["off", "one_hop"]
 
 
@@ -97,6 +100,10 @@ class ReasoningDiagnostics:
     #: Which answer prompt produced the answer, so an audit of a response can tell the profiles apart.
     #: ``plain`` when unrecorded: every response serialized before this field existed was plain.
     answer_profile: str = "plain"
+    #: ``dated-premise`` only: the evidence chunk ids `recall.evidence.stale_premise_notice` handed
+    #: the reader, and whether they became the citations of a correction the reader left uncited.
+    premise_notice: tuple[str, ...] = ()
+    premise_citations_from_notice: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,6 +131,8 @@ class ReasoningResponse:
     trust_state: str
     refusal_reason: str | None
     diagnostics: ReasoningDiagnostics
+    #: Set only with outcome ``corrected`` (the ``dated-premise`` profile); None otherwise.
+    premise_correction: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return cast(dict[str, object], _to_json_value(self))
@@ -251,6 +260,8 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         answer_profile=_checked_literal(
             diagnostics_payload.get("answer_profile", "plain"), ANSWER_PROFILES, "answer_profile"
         ),
+        premise_notice=tuple(str(item) for item in _sequence(diagnostics_payload.get("premise_notice", ()))),
+        premise_citations_from_notice=bool(diagnostics_payload.get("premise_citations_from_notice", False)),
     )
     return ReasoningResponse(
         schema_version=_required_int(payload["schema_version"]),
@@ -276,6 +287,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         trust_state=trust_state,
         refusal_reason=refusal_reason,
         diagnostics=diagnostics,
+        premise_correction=_optional_str(payload.get("premise_correction")),
     )
 
 

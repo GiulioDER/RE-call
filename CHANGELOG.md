@@ -18,8 +18,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   it off (`enabled: false`); a `recall-hook.json` that cannot be read or parsed (or is not a JSON
   object), a block that is not an object, or an `enabled` that is not a boolean also disables it,
   and only a missing file means the enabled default. A reinstall keeps the block as it was. The
-  public installer does not yet
-  register `PowerShell` or `PostToolUseFailure`, so registering those two is manual for now.
+  public installer does not yet register `PowerShell` or `PostToolUseFailure`, so registering
+  those two is manual for now.
+- New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
+  subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
+  the local CCA memo directory with no network or embedding. Never false positives, never a
+  permission decision, fails open within about a second. Settings: `RECALL_AUDITOR_TYPES`,
+  `RECALL_AUDITOR_MEMOS`, `CCA_BUGS_DIR`, `RECALL_AUDITOR_BRIEF_BUDGET`; the command
+  `python -m recall_hooks warm-auditor-brief` fills its memo cache. See
+  `docs/AUDIT_MEMORY_DESIGN.md`, "Auditor brief hook".
+- Add the opt-in `dated-premise` answer profile for `recall_reasoning_query`
+  (`RECALL_REASONING_ANSWER_PROFILE=dated-premise`): when a question assumes something the evidence
+  shows is no longer current, the response has outcome `corrected` and a cited `premise_correction`
+  instead of an answer built on the old state or an abstention. Whether a superseded memory matched
+  the question is decided structurally and its successor's evidence is named to the reader
+  (`diagnostics.premise_notice`). The default `dated` profile, its prompt and its three-key envelope
+  are unchanged.
 - Search and evidence now report unchecked semantic query support separately from retrieval
   eligibility, and carry calibration-bound synthetic near-miss coverage when available. Missing
   measurements remain unmeasured and report failures are unavailable. Existing retrieval decisions,
@@ -36,6 +50,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 - `recall calibration near-miss` scores a held-out near-miss question set against a calibration and
   reports a certificate (`near_miss_certificate` in status); `recall calibration served-gap`
   compares the served top-k maximum with the exact maximum calibration sampled. Both report only.
+- **Forgetting a memo keeps retired what it superseded, in the document graph as in the fact
+  ledger; the new `recall withdraw` / `recall_withdraw` gives it back** (owner decision,
+  2026-10-22). A delete used to remove a memo's `supersedes:` claim with its chunks, so the memo it
+  replaced was served as current again (a privacy forget of "moved to Rome" brought Paris back, and
+  forgetting the middle of a chain left two current versions), while the fact ledger already kept
+  it retired. Every delete now writes a supersession record (names and dates, no text) to the audit
+  ledger in the same transaction: `recall_forget`, `recall forget`, the lite memo tools, `recall
+  generation forget`, the indexer's prune of a file gone from disk, and a source a promoted
+  generation leaves out all keep the memo's claims standing as a ghost while no memo by its name
+  is indexed. Withdraw voids them and splices the chain; in the ledger it appends a `withdrawn`
+  event (migrations 0032 and 0033) that also undoes the supersession the fact made. **Deploying
+  needs `--with-migrations`.**
 
 ### Security
 
@@ -75,6 +101,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Changed
 
+* **`recall_apply_fact` no longer reads every fact current in the tenant.** On a ledger with a
+  key-scoped read (lite and PostgreSQL), the controller decided on the claim's conflict key but
+  first read and discarded the tenant's whole `current()`, which decoded every current fact. The key
+  read is now the read a write fails closed on, so a ledger that cannot answer it still refuses with
+  `ledger_unavailable` and appends nothing, and an apply no longer grows with the number of facts
+  current. A ledger without a key-scoped read is still read through `current()` first.
 * **BREAKING: every tool that writes a `supersedes:` edge is gated, so none demotes a current memo
   by mistake.** `recall lint --fix`, the deterministic extraction engine behind
   `recall rewrite plan`, and the deterministic proposal rule behind `recall reasoning proposals`

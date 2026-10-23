@@ -716,8 +716,11 @@ def test_supersession_map_cache_invalidated_by_writes(make_store):
         [[0.0, 1.0, 0.0]],
     )
     assert store.supersession_map() == {"v1.md": "v2.md"}  # upsert invalidated the cache
-    store.delete_sources(["v2.md"])
-    assert store.supersession_map() == {}  # delete invalidated it too
+    # A delete is a forget, which keeps the edge (owner decision, 2026-10-22); a withdrawal is the
+    # write that removes it. Changed 2026-10-23; red, mutation of `record_kind`
+    # (recall/supersession_records.py) answering FORGOTTEN_RECORD: fails on the next line.
+    store.delete_sources(["v2.md"], withdraw=True)
+    assert store.supersession_map() == {}  # the withdrawal invalidated it too
 
 
 @requires_db

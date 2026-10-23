@@ -232,6 +232,7 @@ def _cmd_rebuild(args: argparse.Namespace, lite: bool) -> None:
 def _cmd_provenance(args: argparse.Namespace) -> None:
     from recall.backends import is_lite_dsn
     from recall.fact_ledger import PostgresFactLedger, SQLiteFactLedger
+    from recall.provenance_controller import current_fact_listing, listing_payload
 
     # A `sqlite:///` DSN is a lite store: its own fact ledger and cards, the same output as
     # PostgreSQL. `--sqlite-path` stays the separate local adapter it always was.
@@ -247,7 +248,7 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         )
         if args.sqlite_path:
             with SQLiteFactLedger(args.sqlite_path, tenant_id=args.tenant) as ledger:
-                events = ledger.current(tenant_id=args.tenant, now=instant)
+                listing = current_fact_listing(ledger, args.tenant, instant, None)
         elif lite:
             from recall.fact_ledger import FACT_LEDGER_TABLE
             from recall.lite.facts import LiteFactLedger
@@ -257,31 +258,24 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
             if meta.get("tenant") != args.tenant:
                 # As on PostgreSQL, a tenant with no rows reads no facts; a lite file holds one.
                 print(f"{path} holds tenant {meta.get('tenant')!r}; pass --tenant {meta.get('tenant')} to read it", file=sys.stderr)
-                events = ()
+                listing = ((), {})
             elif FACT_LEDGER_TABLE not in tables:
-                events = ()  # no fact was ever applied; opening the ledger would create its tables
+                listing = ((), {})  # no fact was ever applied; opening the ledger would create its tables
             else:
                 with _open_lite(args, int(meta["dim"])) as lite_store:
-                    events = LiteFactLedger(lite_store).current(tenant_id=args.tenant, now=instant)
+                    listing = current_fact_listing(LiteFactLedger(lite_store), args.tenant, instant, None)
         else:
-            events = PostgresFactLedger(args.dsn, tenant_id=args.tenant).current(
-                tenant_id=args.tenant, now=instant
+            listing = current_fact_listing(
+                PostgresFactLedger(args.dsn, tenant_id=args.tenant), args.tenant, instant, None
             )
+        # The listing `recall_current_facts` prints, read from the ledger alone: the CLI has no
+        # store to ask which memos are served, so it says `unchecked`, as the MCP tool does for
+        # a store with no lookup.
         print(json.dumps({
             "tenant_id": args.tenant,
             "as_of": instant.isoformat(),
-            "facts": [
-                {
-                    "event_id": event.event_id,
-                    "fact_id": event.fact_id,
-                    "fact": event.fact.to_payload() if event.fact else None,
-                    "evidence_card_ids": [card.card_id for card in event.evidence_cards],
-                    "generation_id": event.generation_id,
-                    "writer": event.writer,
-                    "asserted_at": event.created_at.isoformat(),
-                }
-                for event in events
-            ],
+            **listing_payload(*listing),
+            "served_state": "unchecked",
         }, ensure_ascii=False, indent=2, sort_keys=True))
         return
 

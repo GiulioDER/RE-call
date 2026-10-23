@@ -8,12 +8,16 @@ so the object a caller wrote and the object `lookup_records` returns compare equ
 That equality is what lets CCA rebuild a ledger row from RE-call's answer
 (`docs/AUDIT_MEMORY_DESIGN.md`, "Round-trip contract").
 
-Two halves:
+Three parts:
 
 - `admit_record` runs where a document's front matter becomes chunk metadata (`recall.index` and
-  `recall.generations`). A record that does not validate, or names a version this code does not
-  read, is dropped from the metadata with a warning naming the file and the reason; the document
-  is indexed without it. Never partially read.
+  `recall.generations`), and where `recall.records_files` reads a memo directory directly. A
+  record that does not validate, or names a version this code does not read, is dropped from the
+  metadata with a warning naming the file and the reason; the document is indexed without it.
+  Never partially read.
+- `match_candidates` is the match, best-of, reverse `caused` edge and ordering rule every records
+  reader shares: `lookup_records` over a store's chunks, and
+  `recall.records_files.match_memo_records` over a memo directory, so the two cannot disagree.
 - `lookup_records` answers by key, with no embedding, no calibration and no abstention: an exact
   key match is not a relevance claim. Superseded and expired records are returned and marked,
   never hidden. In a code tenant a chunk carrying `code_anchor` (its file, symbol and hash) is a
@@ -30,7 +34,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from importlib import resources
@@ -244,18 +249,24 @@ def admit_record(meta: Mapping[str, object], source: str) -> dict[str, object]:
 # --- the lookup ------------------------------------------------------------------------------
 
 
+def record_parts(record: Mapping[str, Any]) -> tuple[str, str, list[dict[str, Any]]]:
+    """``(id, kind, anchors)`` of an admitted `recall_record`: the one reading every records reader
+    uses, so a store's chunk and a memo file present a record identically."""
+    anchors = record.get("anchors")
+    return (
+        str(record.get("id")),
+        str(record.get("kind")),
+        [a for a in anchors if isinstance(a, dict)] if isinstance(anchors, list) else [],
+    )
+
+
 def _record_of(chunk: Chunk) -> tuple[str, dict[str, Any], str, list[dict[str, Any]]] | None:
     """``(id, recall_record, kind, anchors)`` for a record or code chunk, else None."""
     meta = chunk.metadata
     record = meta.get(RECORD_KEY)
     if isinstance(record, dict) and isinstance(record.get("id"), str):
-        anchors = record.get("anchors")
-        return (
-            record["id"],
-            record,
-            str(record.get("kind")),
-            [a for a in anchors if isinstance(a, dict)] if isinstance(anchors, list) else [],
-        )
+        record_id, kind, anchors = record_parts(record)
+        return record_id, record, kind, anchors
     anchor = meta.get(CODE_ANCHOR_KEY)
     if isinstance(anchor, dict) and isinstance(anchor.get("file"), str):
         return chunk.id, anchor, "code", [
@@ -316,6 +327,36 @@ def _string_list(value: object, name: str) -> list[str]:
     return list(value)
 
 
+def validated_anchor_query(repo: object, anchors: object) -> list[dict[str, Any]]:
+    """`anchors` checked as the anchors of a query in `repo`; raises `RecordsQueryError` otherwise.
+
+    The one statement of what an anchor query accepts, so `lookup_records` and
+    `recall.records_files.match_memo_records` refuse the same queries with the same words.
+    """
+    if repo is not None and (not isinstance(repo, str) or not repo):
+        raise RecordsQueryError("repo must be a non-empty string")
+    query_anchors = _validated_anchors(anchors)
+    if repo is None:
+        raise RecordsQueryError("an anchor query needs `repo`: anchors are paths inside one repository")
+    return query_anchors
+
+
+def validated_kinds(kinds: object) -> set[str] | None:
+    """`kinds` as a set of known record kinds, or None for every kind; raises on an unknown one."""
+    if kinds is None:
+        return None
+    wanted = set(_string_list(kinds, "kinds"))
+    if unknown := wanted - RECORD_KINDS:
+        raise RecordsQueryError(f"unknown kinds {sorted(unknown)}; known: {sorted(RECORD_KINDS)}")
+    return wanted
+
+
+def as_utc(now: datetime | None) -> datetime:
+    """`now` (default: the current time) as an aware instant, a naive one read as UTC."""
+    instant = now or datetime.now(UTC)
+    return instant if instant.tzinfo is not None else instant.replace(tzinfo=UTC)
+
+
 def _generation_id(store: object) -> str:
     reader = getattr(store, "generation_binding", None)
     if callable(reader):
@@ -328,6 +369,111 @@ def _generation_id(store: object) -> str:
 def _scalar(value: object) -> object:
     """A front matter value as the envelope reports it: None when absent or empty."""
     return None if value in (None, "") else value
+
+
+@dataclass(frozen=True)
+class RecordCandidate:
+    """One record as the matcher sees it, read from a store's chunks or from a memo file.
+
+    `meta` is the document's front matter as chunk metadata carries it; `file` is the key the
+    supersession graph knows the document by. A memo read from disk has no chunk, so its
+    `chunk_id` is None and `chunk_ids` is empty.
+    """
+
+    id: str
+    record: dict[str, Any]
+    kind: str
+    anchors: list[dict[str, Any]]
+    meta: Mapping[str, Any]
+    source: str
+    file: str
+    chunk_id: str | None
+    chunk_ids: list[str]
+
+
+def match_candidates(
+    candidates: Sequence[RecordCandidate],
+    *,
+    query_anchors: list[dict[str, Any]] | None,
+    repo: str | None,
+    wanted_ids: set[str] | None,
+    wanted_kinds: set[str] | None,
+    superseded_by: Callable[[RecordCandidate], str | None],
+) -> list[dict[str, Any]]:
+    """The C5 record entries for `candidates`, best match first: the rule every records reader shares.
+
+    `lookup_records` calls it with a store's records and `recall.records_files.match_memo_records`
+    with a memo directory's, so the two cannot disagree on a match, a best-of, the reverse
+    `caused` edge or the order. `superseded_by` answers the currency question for one candidate,
+    because the two read their supersession graph from different places. `caused` is built over
+    every candidate before any filter applies, so a record's reverse edge does not depend on the
+    query that returned it.
+    """
+    caused: dict[str, list[str]] = {}
+    for candidate in candidates:
+        causes = candidate.record.get("caused_by")
+        if isinstance(causes, list):
+            for cause in causes:
+                if isinstance(cause, str):
+                    caused.setdefault(cause, []).append(candidate.id)
+
+    # A query anchor for another file can only ever meet a record anchor as "none", which is
+    # `_best`'s default, so each record anchor is compared with its own file's queries alone:
+    # the same answer, without comparing every record anchor with every query anchor.
+    by_file: dict[str, list[dict[str, Any]]] = {}
+    for query in query_anchors or ():
+        by_file.setdefault(query["file"], []).append(query)
+
+    def queries_for(anchor: Mapping[str, Any]) -> list[dict[str, Any]]:
+        file = anchor.get("file")
+        return by_file.get(file, []) if isinstance(file, str) else []
+
+    matched: list[tuple[int, str, dict[str, Any]]] = []
+    for candidate in candidates:
+        record_id, record, kind, meta = candidate.id, candidate.record, candidate.kind, candidate.meta
+        if wanted_kinds is not None and kind not in wanted_kinds:
+            continue
+        if repo is not None and _repo_of(record) != repo:
+            continue
+        if wanted_ids is not None and record_id not in wanted_ids:
+            continue
+        successor = superseded_by(candidate)
+        if query_anchors is not None:
+            anchor_matches: list[dict[str, Any]] = [
+                {"anchor": anchor, "match": _best(_match(q, anchor) for q in queries_for(anchor))}
+                for anchor in candidate.anchors
+            ]
+        else:
+            anchor_matches = [{"anchor": anchor, "match": "none"} for anchor in candidate.anchors]
+        best = _best(m["match"] for m in anchor_matches)
+        if query_anchors is not None and best == "none":
+            continue
+        targets = supersedes_targets(meta.get("supersedes"))
+        matched.append(
+            (
+                MATCH_ORDER.index(best),
+                record_id,
+                {
+                    "id": record_id,
+                    "kind": kind,
+                    "recall_record": record,
+                    "name": _scalar(meta.get("name")) if kind != "code" else None,
+                    "description": _scalar(meta.get("description")) if kind != "code" else None,
+                    "source": candidate.source,
+                    "chunk_id": candidate.chunk_id,
+                    "chunk_ids": candidate.chunk_ids,
+                    "valid_from": _scalar(meta.get("valid_from")),
+                    "supersedes": (list(targets) if len(targets) > 1 else targets[0]) if targets else None,
+                    "superseded_by": successor,
+                    "valid_until": _scalar(meta.get("valid_until")),
+                    "caused": sorted(caused.get(record_id, [])),
+                    "anchor_matches": anchor_matches,
+                    "anchor_match": best,
+                },
+            )
+        )
+    matched.sort(key=lambda item: (item[0], item[1]))
+    return [item[2] for item in matched]
 
 
 def lookup_records(
@@ -374,13 +520,9 @@ def lookup_records(
         raise RecordsQueryError("offset must be a non-negative integer")
     if repo is not None and (not isinstance(repo, str) or not repo):
         raise RecordsQueryError("repo must be a non-empty string")
-    query_anchors = _validated_anchors(anchors) if anchors is not None else None
-    if query_anchors is not None and repo is None:
-        raise RecordsQueryError("an anchor query needs `repo`: anchors are paths inside one repository")
+    query_anchors = validated_anchor_query(repo, anchors) if anchors is not None else None
     wanted_ids = set(_string_list(ids, "ids")) if ids is not None else None
-    wanted_kinds = set(_string_list(kinds, "kinds")) if kinds is not None else None
-    if wanted_kinds is not None and (unknown := wanted_kinds - RECORD_KINDS):
-        raise RecordsQueryError(f"unknown kinds {sorted(unknown)}; known: {sorted(RECORD_KINDS)}")
+    wanted_kinds = validated_kinds(kinds)
     if security_policy is not None and access_context is None:
         raise RecordsQueryError("access_context is required when security_policy is configured")
 
@@ -394,9 +536,7 @@ def lookup_records(
         generation_id = _generation_id(store)
         chunks = _record_chunks(store)
         graph = store_supersession_graph(store)
-    instant = now or datetime.now(UTC)
-    if instant.tzinfo is None:
-        instant = instant.replace(tzinfo=UTC)
+    instant = as_utc(now)
 
     # One record per document: a memo's chunks all carry its record. In a code tenant several
     # chunks share one anchor (a split symbol, every module-level chunk of a file), so a code
@@ -422,66 +562,36 @@ def lookup_records(
     by_source = {key: members[0] for key, members in groups.items()}
     chunk_ids = {key: [member.id for member, _parsed in members] for key, members in groups.items()}
 
-    caused: dict[str, list[str]] = {}
-    for _chunk, (record_id, record, _kind, _anchors) in by_source.values():
-        causes = record.get("caused_by")
-        if isinstance(causes, list):
-            for cause in causes:
-                if isinstance(cause, str):
-                    caused.setdefault(cause, []).append(record_id)
-
-    matched: list[tuple[int, str, dict[str, Any]]] = []
-    for group, (chunk, (record_id, record, kind, record_anchors)) in by_source.items():
-        if wanted_kinds is not None and kind not in wanted_kinds:
-            continue
-        if repo is not None and _repo_of(record) != repo:
-            continue
-        if wanted_ids is not None and record_id not in wanted_ids:
-            continue
-        file = _file_of(chunk)
-        successor = graph.successor(graph.key(file, chunk.source), now=instant)
-        if query_anchors is not None:
-            anchor_matches: list[dict[str, Any]] = [
-                {"anchor": anchor, "match": _best(_match(q, anchor) for q in query_anchors)}
-                for anchor in record_anchors
-            ]
-        else:
-            anchor_matches = [{"anchor": anchor, "match": "none"} for anchor in record_anchors]
-        best = _best(m["match"] for m in anchor_matches)
-        if query_anchors is not None and best == "none":
-            continue
-        meta = chunk.metadata
-        targets = supersedes_targets(meta.get("supersedes"))
-        matched.append(
-            (
-                MATCH_ORDER.index(best),
-                record_id,
-                {
-                    "id": record_id,
-                    "kind": kind,
-                    "recall_record": record,
-                    "name": _scalar(meta.get("name")) if kind != "code" else None,
-                    "description": _scalar(meta.get("description")) if kind != "code" else None,
-                    "source": chunk.source,
-                    "chunk_id": chunk.id,
-                    "chunk_ids": chunk_ids[group],
-                    "valid_from": _scalar(meta.get("valid_from")),
-                    "supersedes": (list(targets) if len(targets) > 1 else targets[0]) if targets else None,
-                    # A successor the caller may not read is withheld, never reported as None:
-                    # None would present a retracted record as current, and a current false
-                    # positive is one CCA may suppress a finding on.
-                    "superseded_by": (
-                        None if successor is None else successor if allowed(successor) else WITHHELD
-                    ),
-                    "valid_until": _scalar(meta.get("valid_until")),
-                    "caused": sorted(caused.get(record_id, [])),
-                    "anchor_matches": anchor_matches,
-                    "anchor_match": best,
-                },
-            )
+    candidates = [
+        RecordCandidate(
+            id=record_id,
+            record=record,
+            kind=kind,
+            anchors=record_anchors,
+            meta=chunk.metadata,
+            source=chunk.source,
+            file=_file_of(chunk),
+            chunk_id=chunk.id,
+            chunk_ids=chunk_ids[group],
         )
-    matched.sort(key=lambda item: (item[0], item[1]))
-    records = [item[2] for item in matched]
+        for group, (chunk, (record_id, record, kind, record_anchors)) in by_source.items()
+    ]
+
+    def superseded_by(candidate: RecordCandidate) -> str | None:
+        successor = graph.successor(graph.key(candidate.file, candidate.source), now=instant)
+        # A successor the caller may not read is withheld, never reported as None: None would
+        # present a retracted record as current, and a current false positive is one CCA may
+        # suppress a finding on.
+        return None if successor is None else successor if allowed(successor) else WITHHELD
+
+    records = match_candidates(
+        candidates,
+        query_anchors=query_anchors,
+        repo=repo,
+        wanted_ids=wanted_ids,
+        wanted_kinds=wanted_kinds,
+        superseded_by=superseded_by,
+    )
     truncated = False
     if all_records:
         end = len(records) if limit is None else offset + limit
@@ -544,10 +654,16 @@ __all__ = [
     "MAX_RECORDS",
     "RECORD_KINDS",
     "RECORD_VERSION",
+    "RecordCandidate",
     "RecordsQueryError",
     "WITHHELD",
     "admit_record",
+    "as_utc",
     "lookup_records",
+    "match_candidates",
+    "record_parts",
     "record_problem",
     "record_schema",
+    "validated_anchor_query",
+    "validated_kinds",
 ]

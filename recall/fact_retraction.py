@@ -69,8 +69,13 @@ def prepare_retraction(
     *,
     named: Collection[str],
     erased: Collection[str],
+    withdraw: bool = False,
 ) -> Callable[[], int]:
     """Prepare, before any chunk is deleted, the retraction a deletion owes the fact ledger.
+
+    With `withdraw` it is a withdrawal instead (`recall_withdraw`): the facts are taken back with
+    `withdrawn` events, which also undo the supersessions they made
+    (`recall.fact_ledger.plan_withdrawals`), on the same names.
 
     Returns a callable that appends it and answers how many facts it retracted. A card names its
     memo by the root-relative file a search hit shows, while deletion keys on the absolute
@@ -130,7 +135,8 @@ def prepare_retraction(
         def gone(card: EvidenceCard) -> bool:
             return card.source in known and not remaining.get(card.source)
 
-        written = ledger.retract_forgotten(tenant_id=store.tenant, touched=touched, gone=gone)
+        append = ledger.withdraw_forgotten if withdraw else ledger.retract_forgotten
+        written = append(tenant_id=store.tenant, touched=touched, gone=gone)
         return len({fact_id for event in written for fact_id in event.supersedes_fact_ids})
 
     return retract

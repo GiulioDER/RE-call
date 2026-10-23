@@ -500,7 +500,7 @@ VALUES = {"city": ("paris", "rome", "oslo"), "email": ("a@x.org", "b@x.org")}
 
 @dataclass(frozen=True)
 class Op:
-    kind: str  # "assert", "refuse" or "retract"
+    kind: str  # "assert", "refuse", "retract" or "withdraw"
     predicate: str = "city"
     value: int = 0
     window: tuple[int | None, int | None] = (None, None)
@@ -526,6 +526,7 @@ OPS = st.one_of(
     ),
     st.builds(Op, kind=st.just("refuse"), value=st.integers(0, 2)),
     st.builds(Op, kind=st.just("retract"), source=st.integers(0, 2)),
+    st.builds(Op, kind=st.just("withdraw"), source=st.integers(0, 2)),
 )
 
 
@@ -569,7 +570,8 @@ def run_ops(ledger: Any, ops: Sequence[Op], *, tenant: str = TENANT) -> list[obj
                 outcomes.append((event.event_id, event.event_type))
             else:
                 gone = SOURCES[op.source]
-                written = ledger.retract_forgotten(
+                append = ledger.withdraw_forgotten if op.kind == "withdraw" else ledger.retract_forgotten
+                written = append(
                     tenant_id=tenant, touched=lambda c, gone=gone: c.source == gone,
                     gone=lambda c, gone=gone: c.source == gone, now=NOW,
                 )
@@ -623,7 +625,8 @@ def check_equivalence(
 
 # The window-rule cases, each guaranteed rather than left to the search: a future-dated
 # successor, an expired bounded successor, a retroactive correction, a value flipped back, a
-# set-valued predicate, and a retraction of a split fact.
+# set-valued predicate, a retraction of a split fact, and the withdrawal of the middle of a chain
+# (Paris, then Rome for a while, then Oslo from day 30 superseding Rome; Rome withdrawn).
 CASES = (
     [Op("assert"), Op("assert", value=1, window=(30, None), supersede=1)],
     [Op("assert"), Op("assert", value=1, window=(30, 60), supersede=1)],
@@ -631,6 +634,10 @@ CASES = (
     [Op("assert"), Op("assert", value=1, supersede=1), Op("assert", value=0, supersede=1)],
     [Op("assert", predicate="email"), Op("assert", predicate="email", value=1)],
     [Op("assert"), Op("assert", value=2, window=(-400, -30), supersede=1, source=1), Op("retract")],
+    [
+        Op("assert"), Op("assert", value=1, window=(-30, 60), supersede=1, source=1),
+        Op("assert", value=2, window=(30, None), supersede=1, source=2), Op("withdraw", source=1),
+    ],
 )
 
 
@@ -645,9 +652,15 @@ CASES = (
 @example(CASES[3])
 @example(CASES[4])
 @example(CASES[5])
+@example(CASES[6])
 def test_the_tables_answer_as_the_replay_on_any_ledger(ops: list[Op]) -> None:
     """Random ledgers: every write decides the same with and without the tables, and every read
     from them equals the replay at sixteen instants and five served sets.
+
+    Withdrawals added 2026-10-23 (an op and the last explicit example). Red, mutation of
+    `project_key` (recall/fact_current.py) reading retractions without the withdrawals: the
+    tables keep the withdrawn Rome and drop the splice, and "current == project_current" fails
+    on the last explicit example.
 
     Red: the `project_key` own-window mutation fails "current == project_current" on the first
     explicit example (a future-dated successor), at the instant the successor starts, and on three

@@ -40,6 +40,13 @@ def tenant() -> str:
     return f"current-{uuid4().hex}"
 
 
+# Its own budget, as `pyproject.toml` asks of a test with a reason to pass 120s: one run is 15
+# random ledgers and 6 explicit ones, each applied on PostgreSQL and replayed on lite, and the
+# database does most of the work. On the remote test host with a one-CPU database it took 97 to
+# 119s (2026-10-23, seeds 1 to 4); with the database at half a CPU, as when two xdist workers share
+# it, the global 120s cut it off as a timeout that read like a broken equivalence, while under this
+# budget it passed in 127s. 400s is about three times that.
+@pytest.mark.timeout(400)
 @settings(
     max_examples=15, deadline=None,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
@@ -51,6 +58,7 @@ def tenant() -> str:
 @example(CASES[3])
 @example(CASES[4])
 @example(CASES[5])
+@example(CASES[6])
 def test_postgres_tables_answer_as_the_replay_on_any_ledger(ops: list[Op]) -> None:
     """Random ledgers on PostgreSQL: writes decide as on a replaying lite file, and every table
     read equals the replay.
@@ -98,6 +106,33 @@ def test_reconcile_through_the_outbox_files_what_an_older_writer_left() -> None:
     for at in (NOW, NOW + 40 * DAY):
         assert ledger.current(tenant_id=name, now=at) == project_current(ledger.events, at)
         assert ledger.last_read == "table"
+
+
+def test_reconcile_through_the_outbox_files_a_withdrawal() -> None:
+    """Node tests/test_fact_current_postgres.py::test_reconcile_through_the_outbox_files_a_withdrawal.
+
+    A withdrawal appended without materializing is delivered by `MaterializationRecovery` like
+    every other event, and the tables then answer Paris, the value Rome had hidden.
+    Red, mutation of `MATERIALIZED_EVENT_TYPES` (recall/fact_current.py) without `withdrawn`:
+    `reconcile` leaves the withdrawal out of the outbox, delivers 3 rather than 4, and that
+    assertion fails.
+    """
+    name = tenant()
+    old = PostgresFactLedger(TEST_DSN, tenant_id=name, materialize=False)
+    apply(old, PARIS, "r1", tenant=name, source="paris.md")
+    apply(old, city("rome"), "r2", supersedes=(PARIS,), tenant=name, source="rome.md")
+    written = old.withdraw_forgotten(
+        tenant_id=name, touched=lambda c: c.source == "rome.md", gone=lambda c: c.source == "rome.md", now=NOW,
+    )
+    assert [event.event_type for event in written] == ["withdrawn"]
+    facts = PostgresCurrentFacts(TEST_DSN, tenant_id=name)
+    outbox = PostgresMaterializationOutbox(TEST_DSN, tenant_id=name)
+    recovery = MaterializationRecovery(tenant_id=name, outbox=outbox, materializer=facts)
+    assert recovery.reconcile(facts.unfiled_events(), now=NOW) == 4
+    assert facts.status().current
+    ledger = PostgresFactLedger(TEST_DSN, tenant_id=name)
+    listed = ledger.current(tenant_id=name, now=NOW)
+    assert ledger.last_read == "table" and [e.fact.object for e in listed if e.fact] == ["paris"]
 
 
 def test_verify_on_postgres_reads_the_bounds_back_and_finds_an_edited_interval() -> None:

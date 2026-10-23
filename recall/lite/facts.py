@@ -29,6 +29,7 @@ from recall.fact_ledger import (
     LEDGER_COLUMNS,
     RETRACTION_CODES,
     RETRACTION_WRITER,
+    WITHDRAWAL_WRITER,
     SQLITE_FACT_LEDGER_DDL,
     assertion_event_id,
     assertion_is_duplicate,
@@ -36,9 +37,11 @@ from recall.fact_ledger import (
     decision_event_type,
     decode_ledger_row,
     plan_retractions,
+    plan_withdrawals,
     project_candidates,
     project_current,
     retraction_ids,
+    withdrawal_ids,
     supersession_ids,
 )
 from recall.lite.store import LiteStore
@@ -92,7 +95,8 @@ def ensure_fact_tables(store: LiteStore) -> None:
 
     Outside `_write()` on purpose: `executescript` commits any open transaction first, and every
     statement is `IF NOT EXISTS`, so running it on each adapter construction costs a catalog read.
-    A ledger table made before `retracted` existed is upgraded in place (`_admit_retraction`).
+    A ledger table made before `retracted` or `withdrawn` existed is upgraded in place
+    (`_admit_retraction`).
     The current-facts tables (`recall.fact_current`) come last, because that upgrade rebuilds the
     ledger table and drops the index they add to it.
     """
@@ -106,7 +110,8 @@ def _admits_retraction(store: LiteStore) -> bool:
     rows = store._metadata_values(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (FACT_LEDGER_TABLE,)
     )
-    return not rows or "'retracted'" in str(rows[0][0])
+    # `withdrawn` is the newest type the CHECK admits; a table that admits it admits `retracted`.
+    return not rows or "'withdrawn'" in str(rows[0][0])
 
 
 def _ledger_statements() -> list[str]:
@@ -122,7 +127,8 @@ def _ledger_statements() -> list[str]:
 
 
 def _admit_retraction(store: LiteStore) -> None:
-    """Rebuild a ledger table whose CHECK predates `retracted`, in one transaction, keeping its rows.
+    """Rebuild a ledger table whose CHECK predates `retracted` or `withdrawn`, in one transaction,
+    keeping its rows.
 
     SQLite cannot alter a CHECK, so the table is renamed, recreated from the current DDL, refilled
     and the old one dropped; the append-only triggers are recreated with it. A row the current
@@ -363,6 +369,31 @@ class LiteFactLedger:
                     fact=None, cards=assertion.evidence_cards,
                     supersedes_fact_ids=(str(assertion.fact_id),), request_id=request_id,
                     writer=writer, decision_code=decision_code, now=moment,
+                ))
+            self._materialized(written)
+        return tuple(written)
+
+    def withdraw_forgotten(
+        self,
+        *,
+        tenant_id: str,
+        touched: Callable[[EvidenceCard], bool],
+        gone: Callable[[EvidenceCard], bool],
+        writer: str = WITHDRAWAL_WRITER,
+        now: datetime | None = None,
+    ) -> tuple[FactEvent, ...]:
+        """`PostgresFactLedger.withdraw_forgotten` on the file: plan and append in one transaction."""
+        self._check(tenant_id)
+        moment = _as_utc(now or datetime.now(UTC))
+        written: list[FactEvent] = []
+        with self._store._write():
+            for assertion in plan_withdrawals(self._events(), touched=touched, gone=gone):
+                event_id, request_id = withdrawal_ids(self.tenant_id, assertion)
+                written.append(self._insert(
+                    event_id=event_id, event_type="withdrawn", generation_id=assertion.generation_id,
+                    fact=None, cards=(), supersedes_fact_ids=(str(assertion.fact_id),),
+                    request_id=request_id, writer=writer, decision_code=DecisionCode.WITHDRAWN,
+                    now=moment,
                 ))
             self._materialized(written)
         return tuple(written)

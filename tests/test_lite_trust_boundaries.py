@@ -82,15 +82,22 @@ def test_source_policy_filters_the_public_lite_trust_path(tmp_path: Path, case: 
         assert {h.chunk.id for h in result.hits} == expected, "source policy returned denied content"
 
 
-@pytest.mark.parametrize("write", ["add_successor", "delete_successor"])
+@pytest.mark.parametrize("write", ["add_successor", "withdraw_successor"])
 @pytest.mark.parametrize("dated", [False, True])
 def test_retrieval_and_graph_share_one_corpus_view(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: str, dated: bool,
 ) -> None:
-    """FIX003: a real second writer cannot change this request's supersession view."""
+    """FIX003: a real second writer cannot change this request's supersession view.
+
+    Changed 2026-10-23 for the owner's decision of 2026-10-22: deleting the successor is a forget
+    now, which keeps the predecessor retired, so the write that takes the edge away is a
+    WITHDRAWAL (`delete_sources(..., withdraw=True)`). Re-proved red the same day by removing the
+    snapshot hook in `recall.trust._trusted_search`: both `withdraw_successor` parameters fail on
+    "trust mixed retrieval and graph revisions".
+    """
     with closing(LiteStore(tmp_path / "m.db", dim=DIM)) as store, closing(LiteStore(store.path, dim=DIM)) as writer:
         chunks = [_chunk("a.md")]
-        if write == "delete_successor":
+        if write == "withdraw_successor":
             chunks.append(_chunk("b.md", supersedes="a.md"))
         _put(store, chunks)
         # `supersession_graph`: the one read trusted search makes now, dated or not (it carries
@@ -102,8 +109,8 @@ def test_retrieval_and_graph_share_one_corpus_view(
         original = getattr(store, method)
 
         def fetch() -> Any:
-            if write == "delete_successor":
-                writer.delete_sources(["b.md"])
+            if write == "withdraw_successor":
+                writer.delete_sources(["b.md"], withdraw=True)
             else:
                 _put(writer, [_chunk("b.md", supersedes="a.md")])
             return original()
@@ -114,11 +121,11 @@ def test_retrieval_and_graph_share_one_corpus_view(
             known_as_of=datetime(2100, 1, 1, tzinfo=UTC) if dated else None,
         )
         predecessor = next(h for h in result.hits if h.provenance.file == "a.md")
-        expected = "superseded" if write == "delete_successor" else "ok"
+        expected = "superseded" if write == "withdraw_successor" else "ok"
         assert predecessor.verdict == expected, "trust mixed retrieval and graph revisions"
         assert {h.chunk.id for h in result.hits} == {c.id for c in chunks}
         monkeypatch.setattr(store, method, original)
-        expected_graph = {} if write == "delete_successor" else {"a.md": "b.md"}
+        expected_graph = {} if write == "withdraw_successor" else {"a.md": "b.md"}
         assert store.supersession()[0] == expected_graph, "the next reader did not see the committed write"
 
 

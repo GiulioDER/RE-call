@@ -99,7 +99,13 @@ def test_a_stale_memory_is_not_served_as_ok_after_another_process_supersedes_it(
 @requires_db
 def test_a_withdrawn_edge_is_also_noticed(shared_table):
     """Staleness in the other direction: a supersession removed elsewhere must stop applying,
-    or the reader keeps demoting a memory that is current again."""
+    or the reader keeps demoting a memory that is current again.
+
+    Changed 2026-10-23 for the owner's decision of 2026-10-22: a delete is a forget now, and a
+    forget keeps what the memo retired retired (pinned by the next test), so the removal that
+    makes the edge stop applying is a WITHDRAWAL (`delete_sources(..., withdraw=True)`). The
+    invariant this test exists for, that the reader notices a removal made elsewhere, is unchanged.
+    """
     emb = HashingEmbedder(dim=DIM)
     reader = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
     writer = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
@@ -114,10 +120,40 @@ def test_a_withdrawn_edge_is_also_noticed(shared_table):
         )
         assert reader.supersession_map() == {"limits_v1.md": "limits_v2.md"}
 
-        # the successor is deleted elsewhere — the edge no longer exists
-        writer.delete_sources(["limits_v2.md"])
+        # the successor is withdrawn elsewhere: the edge no longer exists
+        writer.delete_sources(["limits_v2.md"], withdraw=True)
 
         assert reader.supersession_map() == {}
+    finally:
+        reader.close()
+        writer.close()
+
+
+@requires_db
+def test_a_forgotten_successor_keeps_the_edge_for_another_reader(shared_table):
+    """Node tests/test_supersession_freshness.py::test_a_forgotten_successor_keeps_the_edge_for_another_reader.
+
+    Forgetting the successor elsewhere leaves its record, so the reader keeps demoting the memory
+    it replaced (owner decision, 2026-10-22). Red on master (`e5d87caba`): fails on the map
+    being ``{}``, the removal reviving the superseded memory for every reader.
+    """
+    emb = HashingEmbedder(dim=DIM)
+    reader = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    writer = PgVectorStore(TEST_DSN, dim=DIM, table=shared_table)
+    try:
+        reader.ensure_schema()
+        writer.upsert(
+            [
+                _chunk("v1", "limits_v1.md", "the rate limit is 100 rps"),
+                _chunk("v2", "limits_v2.md", "revised ceiling", "limits_v1.md"),
+            ],
+            emb.embed(["the rate limit is 100 rps", "revised ceiling"]),
+        )
+        assert reader.supersession_map() == {"limits_v1.md": "limits_v2.md"}
+
+        writer.delete_sources(["limits_v2.md"])
+
+        assert reader.supersession_map() == {"limits_v1.md": "limits_v2.md"}
     finally:
         reader.close()
         writer.close()

@@ -154,6 +154,13 @@ ambiguous.
 The system found contradictions, likely supersession, security sensitive ambiguity, stale corpus
 state, or another condition that should be handled by a human before the answer is trusted.
 
+`corrected` (opt-in, the `dated-premise` answer profile):
+
+The question takes for granted something the certified evidence shows is no longer current. The
+system says so and states what the newest evidence says, with citations, instead of answering as if
+the premise held or only abstaining. Whether a superseded memory matched the question is decided
+structurally (its declared successor is in the evidence), not by the model.
+
 ## Invariants
 
 Every reasoning output must distinguish authored evidence from inferred structure.

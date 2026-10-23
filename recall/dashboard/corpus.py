@@ -37,6 +37,7 @@ from psycopg import sql
 from recall.dashboard.db import DashboardDB
 from recall.db_constants import TENANT_GUC
 from recall.supersession import SupersessionGraph, resolve_supersession_graph, supersession_rows_sql
+from recall.supersession_records import pg_records
 
 __all__ = ["HUB_LINKS", "SHARE_MAX_FILES", "SHARE_PER_FILE", "assemble_graph", "corpus_graph", "resolve_imports", "source_detail"]
 
@@ -76,9 +77,10 @@ def _generation(c: Any, tenant: str) -> str | None:
 
 
 def _winners(c: Any, tenant: str, generation: str) -> SupersessionGraph:
-    """The generation's supersession graph, resolved and windowed as search resolves it."""
+    """The generation's supersession graph, resolved and windowed as search resolves it, with the
+    records of forgotten and withdrawn memos (`recall.supersession.SupersessionRecord`)."""
     rows = c.execute(_SUPERSESSION_ROWS, (tenant, generation)).fetchall()
-    return resolve_supersession_graph(rows)
+    return resolve_supersession_graph(rows, pg_records(c, tenant, "recall_chunks_v1"))
 
 
 #: A Python import line: `from MODULE import NAMES` or `import MODULE`. Matched inside Postgres
