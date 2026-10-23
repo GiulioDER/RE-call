@@ -543,6 +543,21 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
             targets = [s for s in requested if s in visible_now]
             unseen = [s for s in requested if s not in visible_now]
             unseen_note = f"not found (check for typos): {', '.join(unseen)}"
+        if security_policy is not None and targets:
+            # The names checked above are the sources' own; their rows are authorized by their
+            # `file` (`PgVectorStore.erasure_subjects`), which the policy may deny.
+            assert security_context is not None
+            subjects = store.erasure_subjects(targets, recorded=withdraw)
+            denied = sorted(
+                {
+                    name
+                    for source in targets
+                    for name in subjects.get(source, ())
+                    if not security_policy.decide(name, security_context).allowed
+                }
+            )
+            if denied:
+                raise SystemExit(f"{command}: source authorization denied for " + ", ".join(denied))
         if not args.yes:
             print(
                 f"DRY RUN: would {command} {len(targets)} source(s): "
