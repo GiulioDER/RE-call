@@ -2728,6 +2728,77 @@ def test_command_family_skips_shell_preamble_and_wrappers(command, expected):
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
+        ("python tool.py -m sk-SECRETVALUE", "python"),
+        ('python -c "import sys; print(sys.argv)" -m x', "python"),
+        ("python -Ic pass -m x", "python"),
+        ("python - -m x", "python"),
+        ("python -- -m x", "python"),
+        ("python -m sk-SECRETVALUE", "python"),
+        ("python -m ./tools/x", "python"),
+        ("python --unknown -m x", "python"),
+    ],
+)
+def test_a_script_argument_is_never_taken_for_the_module(command, expected):
+    """Invariant: the family is written to `general-knowledge.jsonl` and into reports unscrubbed,
+    so `-m` names a module only as the interpreter's own option: before the first positional
+    argument (the script), before `-c`, `-` and `--`, and with a module name after it
+    (`^[A-Za-z_][\\w.]*$`). Anything else keeps the interpreter's name, the safe direction.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_script_argument_is_never_taken_for_the_module`.
+    Symbols: `_python_module`, `command_family`. Mutations, one at a time:
+    A: `command_family`'s `-m` branch restored to the pre-fix `"-m" in args` / `args.index("-m")`
+    form (master `aae9f2818`); seen on all eight params, e.g. `python tool.py -m sk-SECRETVALUE`:
+    `assert 'sk-secretvalue' == 'python'`, and the five `... -m x` params and `./tools/x`:
+    `assert 'x' == 'python'`.
+    B: the final `return ""` of `_python_module`'s loop replaced by `index += 1; continue` (scan
+    past positionals and `-c`); seen on the five `... -m x` params: `assert 'x' == 'python'`.
+    (`python tool.py -m sk-SECRETVALUE` stays green under B alone, because the module-name check
+    still refuses that value: the two lines guard it twice.)
+    C: `_MODULE_NAME.match(module)` replaced by `module`; seen on `python -m sk-SECRETVALUE`:
+    `assert 'sk-secretvalue' == 'python'`, and `python -m ./tools/x`: `assert './tools/x' == 'python'`.
+    """
+    assert gk.command_family(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("python -m pytest -q", "pytest"),
+        ("python -X utf8 -m ruff check", "ruff"),
+        ("python -Xutf8 -m ruff check", "ruff"),
+        ("python -W ignore -m mypy", "mypy"),
+        ("python -B -u -m pytest", "pytest"),
+        ("python -Im pytest", "pytest"),
+        ("py -3.12 -m ruff check", "ruff"),
+        ("python3 -m pip._internal install x", "pip._internal"),
+    ],
+)
+def test_the_interpreters_own_options_are_looked_through_to_the_module(command, expected):
+    """Invariant: the guard above must not cost the real case, `python [its own options] -m
+    <module>` still names `<module>`: valueless flags alone or clustered, `-X`/`-W` with the value
+    next or attached, a cluster ending in `m`, and the `py` launcher's version selector.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_interpreters_own_options_are_looked_through_to_the_module`.
+    Symbols: `_python_module`, `command_family`. Mutations, one at a time:
+    A: `_python_module`'s module return replaced by `return ""`; seen on all eight params, e.g.
+    `assert 'python' == 'pytest'`, `assert 'py' == 'ruff'`.
+    B: the `_PYTHON_OPTION_WITH_VALUE` branch removed; seen on `python -X utf8 -m ruff check`:
+    `assert 'python' == 'ruff'`, and `-W ignore`: `assert 'python' == 'mypy'`.
+    C: `_PYTHON_OPTION_ATTACHED` removed from the continue condition; seen on `-Xutf8`:
+    `assert 'python' == 'ruff'`.
+    D: `_PYTHON_FLAG_CLUSTER` removed from the continue condition; seen on `python -B -u -m
+    pytest`: `assert 'python' == 'pytest'`.
+    E: `_PYTHON_MODULE_OPTION` narrowed to `^-m$`; seen on `python -Im pytest`:
+    `assert 'python' == 'pytest'`.
+    F: the `_PY_LAUNCHER_VERSION` clause removed; seen on `py -3.12 -m ruff check`:
+    `assert 'py' == 'ruff'`.
+    """
+    assert gk.command_family(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
         ("ssh admin@192.0.2.10 uptime", "ssh:<host>"),
         ("ssh host.example.com ls", "ssh:<host>"),
         ("ssh -l bob [2001:db8::1]", "ssh:<host>"),

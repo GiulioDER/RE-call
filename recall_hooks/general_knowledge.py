@@ -870,6 +870,50 @@ _TIMEOUT_VALUE_OPTIONS = frozenset({"-k", "-s", "--kill-after", "--signal"})
 _BARE_ALIAS = re.compile(r"^[a-z0-9-]+$")
 #: Interpreters whose `-m <module>` names the real program (`python -m ruff` is ruff).
 _MODULE_RUNNERS = frozenset({"python", "python3", "py", "pythonw"})
+#: The interpreter's valueless one-letter flags, which may be clustered (`-Bm`, `-Iu`).
+_PYTHON_FLAGS = "bBdEiIOPqRsSuvx"
+#: `-m`, alone or ending a cluster of valueless flags (`-Im`); the module is the next argument.
+_PYTHON_MODULE_OPTION = re.compile(r"^-[" + _PYTHON_FLAGS + r"]*m$")
+#: Valueless flags only (`-u`, `-OO`, `-Bq`).
+_PYTHON_FLAG_CLUSTER = re.compile(r"^-[" + _PYTHON_FLAGS + r"]+$")
+#: `-X` or `-W` with its value next (`-X utf8`), after any valueless flags.
+_PYTHON_OPTION_WITH_VALUE = re.compile(r"^-[" + _PYTHON_FLAGS + r"]*[XW]$")
+#: `-X` or `-W` with its value attached (`-Xutf8`, `-Wignore`).
+_PYTHON_OPTION_ATTACHED = re.compile(r"^-[" + _PYTHON_FLAGS + r"]*[XW].")
+#: The `py` launcher's own version selector (`py -3.12 -m ruff`, `py -V:3.12 -m ruff`).
+_PY_LAUNCHER_VERSION = re.compile(r"^-(?:\d[\w.\-]*|V:\S+)$")
+#: What a module name can be. Anything else is not a module, and since the family is logged it is
+#: never taken for one: `python -m <value>` with an odd `<value>` keeps the interpreter's name.
+_MODULE_NAME = re.compile(r"^[A-Za-z_][\w.]*$", re.ASCII)
+
+
+def _python_module(program: str, args: tuple[str, ...]) -> str:
+    """The module of `<interpreter> [options] -m <module>`, or "" when it does not run one.
+
+    Only the interpreter's own options are read: the scan stops at the first positional argument
+    (a script, whose arguments are its own, so `python tool.py -m <value>` runs no module), at
+    `-c` (whose code is the next argument and every one after it is the code's), at `-` and `--`,
+    and at any option it does not know, since stopping keeps the interpreter's name and that is
+    the safe direction for a value that is logged.
+    """
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if _PYTHON_MODULE_OPTION.match(arg):
+            module = args[index + 1] if index + 1 < len(args) else ""
+            return module.lower() if _MODULE_NAME.match(module) else ""
+        if _PYTHON_OPTION_WITH_VALUE.match(arg) or arg == "--check-hash-based-pycs":
+            index += 2
+            continue
+        if (
+            _PYTHON_FLAG_CLUSTER.match(arg)
+            or _PYTHON_OPTION_ATTACHED.match(arg)
+            or (program == "py" and index == 0 and _PY_LAUNCHER_VERSION.match(arg))
+        ):
+            index += 1
+            continue
+        return ""
+    return ""
 
 
 def command_family(command: str) -> str:
@@ -880,7 +924,9 @@ def command_family(command: str) -> str:
     dropped by `parse_command`. When every segment is preamble, the first one. Two wrappers are
     looked through: `timeout [options] <duration> <program>` names `<program>`, and
     `python -m <module>` (also `python3`, `py`) names `<module>`, so a failing `ruff` and a failing
-    `pytest` are not both `python`.
+    `pytest` are not both `python`. That `-m` must be the interpreter's own option and `<module>` a
+    module name (`_python_module`): `python tool.py -m <value>` is `python`, because the family is
+    written to a log and `<value>` is the script's argument, not a program.
 
     It reuses `parse_command` (and so its length cap) instead of finding the program a second way:
     the trigger matcher and the failure signature must agree on what a command is. For `ssh` the
@@ -905,10 +951,10 @@ def command_family(command: str) -> str:
             index += 1
         if len(positional) >= 2:
             program, args = _program(args[positional[1]]), args[positional[1] + 1 :]
-    if program in _MODULE_RUNNERS and "-m" in args:
-        index = args.index("-m")
-        if index + 1 < len(args) and args[index + 1]:
-            return _program(args[index + 1])
+    if program in _MODULE_RUNNERS:
+        module = _python_module(program, args)
+        if module:
+            return module
     if program == "ssh":
         host = _ssh_host(args)
         if not host:
