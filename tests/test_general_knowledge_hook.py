@@ -1,5 +1,5 @@
-"""General knowledge hook, tasks 1 to 4: the index model, its fail-open reader, project detection, trigger matching, the
-session dedupe, the event log, failure signatures and failure ranking.
+"""General knowledge hook, tasks 1 to 5: the index model, its fail-open reader, project detection, trigger matching, the
+session dedupe, the event log, failure signatures, failure ranking and the PreToolUse integration.
 
 Only invented entries appear here (ids `gk-example-...`, host `examplehost`). The conftest autouse
 fixture `_confine_general_knowledge` points the corpus and the log at a per-test directory, so no
@@ -8,6 +8,7 @@ test reads the operator's real corpus.
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import subprocess
@@ -18,7 +19,9 @@ from typing import Any
 
 import pytest
 
+import recall_hooks
 from recall_hooks import general_knowledge as gk
+from recall_hooks import write_time
 
 
 def example_entry(**overrides: Any) -> dict[str, Any]:
@@ -1535,3 +1538,322 @@ def test_render_formats_each_entry_with_its_id_and_separates_them_with_a_blank_l
     )
     assert gk.render([first]) == "General knowledge (owner-approved):\n\n[gk-example-a]\nbody a"
     assert gk.render([]) == ""
+
+
+# ---------------------------------------------------------------------------------------------
+# PreToolUse integration (task 5): `python -m recall_hooks pre-tool-use` through `main`.
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def hook(tmp_path, monkeypatch, capsys):
+    """An isolated hook environment plus a `run(payload)` that feeds `main` and returns its stdout.
+
+    Every location a hook could read is a tmp dir: the corpus, the event log, and both config homes
+    (so write time never sees a real `recall-hook.json`, which would carry a `dsn`).
+    """
+    home = tmp_path / "gk-home"
+    config_home = tmp_path / "config-home"
+    config_home.mkdir()
+    log = tmp_path / "gk-events.jsonl"
+    monkeypatch.setenv("RECALL_GENERAL_KNOWLEDGE_HOME", str(home))
+    monkeypatch.setenv("RECALL_GENERAL_KNOWLEDGE_LOG", str(log))
+    monkeypatch.setenv("RECALL_PROJECT_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("RECALL_HOOK_CONFIG_HOME", str(config_home))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
+    monkeypatch.delenv("RECALL_HOOK_CLIENT", raising=False)
+
+    class Env:
+        def __init__(self) -> None:
+            self.home, self.config_home, self.log = home, config_home, log
+
+        def index(self, *entries: dict[str, Any]) -> None:
+            write_index(home, list(entries))
+
+        def config(self, **block: Any) -> None:
+            (config_home / "recall-hook.json").write_text(
+                json.dumps({"general_knowledge": block}), encoding="utf-8"
+            )
+
+        def events(self) -> list[dict[str, Any]]:
+            if not log.exists():
+                return []
+            return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+        def run(self, payload: dict[str, Any]) -> str:
+            monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+            capsys.readouterr()
+            assert recall_hooks.main(["pre-tool-use"]) == 0
+            return capsys.readouterr().out
+
+    return Env()
+
+
+def shell(command: str, session: str | None = "s1", tool: str = "Bash", cwd: Any = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"tool_name": tool, "tool_input": {"command": command}}
+    if session is not None:
+        payload["session_id"] = session
+    if cwd is not None:
+        payload["cwd"] = str(cwd)
+    return payload
+
+
+def injected_text(output: str) -> str:
+    document = json.loads(output)
+    assert document["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    return document["hookSpecificOutput"]["additionalContext"]
+
+
+def test_main_injects_a_matching_entry_once(hook):
+    """Invariant: a matching entry is injected on the first call of a session and suppressed on the
+    second, and both calls are logged, the second with the id in `suppressed`.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_main_injects_a_matching_entry_once`.
+    Mutation: in `pre_tool_use_context` replace `claim_for_session(session, [e.id for e in matched])` with
+    `[e.id for e in matched][:MAX_PER_CALL]` (no dedupe). Symbol: `pre_tool_use_context`. Seen: the second
+    call printed the injection again, `assert '{"hookSpecif...ry here."}}\n' == ''`.
+    """
+    hook.index(example_entry())
+    first = hook.run(shell("pytest -q"))
+    assert "[gk-example-tests]" in injected_text(first)
+    assert hook.run(shell("pytest -q")) == ""
+    events = hook.events()
+    assert [e["event"] for e in events] == ["trigger", "trigger"]
+    assert (events[0]["injected"], events[0]["suppressed"]) == (["gk-example-tests"], [])
+    assert (events[1]["injected"], events[1]["suppressed"]) == ([], ["gk-example-tests"])
+
+
+def test_the_trigger_record_has_exactly_the_documented_fields(hook, monkeypatch):
+    """Invariant: a `"trigger"` event carries `event`, `project`, `session`, `client`, `trigger`
+    (one `"<kind>:<value>"` per matched entry, in match order, the first trigger that fired),
+    `injected` and `suppressed`, plus the logger's `ts`, and nothing else.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_trigger_record_has_exactly_the_documented_fields`.
+    Mutation: the `trigger` list is built from `entry.triggers[0]` instead of the trigger that fired.
+    Symbol: `pre_tool_use_context`. Seen: `assert ['command:pyt...ommand:rsync'] == ['command:pyt...:examplehost']`
+    (the second entry lists `rsync`, which did not match, instead of `host:examplehost`).
+    """
+    monkeypatch.setenv("RECALL_HOOK_CLIENT", "codex")
+    hook.index(
+        example_entry(id="gk-example-tests"),
+        example_entry(id="gk-example-ssh", triggers=[{"command": "rsync"}, {"host": "examplehost"}]),
+        example_entry(id="gk-example-never", triggers=[{"command": "unrelated"}]),
+    )
+    out = hook.run(shell("pytest -q && ssh examplehost uptime", session="s9"))
+    assert injected_text(out).count("[gk-example-") == 2
+    (event,) = hook.events()
+    assert set(event) == {"ts", "event", "project", "session", "client", "trigger", "injected", "suppressed"}
+    assert event["event"] == "trigger"
+    assert (event["session"], event["client"], event["project"]) == ("s9", "codex", None)
+    assert event["trigger"] == ["command:pytest", "host:examplehost"]
+    assert event["injected"] == ["gk-example-tests", "gk-example-ssh"]
+    assert event["suppressed"] == []
+
+
+def test_a_capped_match_is_logged_as_suppressed(hook):
+    """Invariant: a match the per-call cap drops is logged in `suppressed`, in match order, and
+    matching nothing logs nothing.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_capped_match_is_logged_as_suppressed`.
+    Mutation: the logged `suppressed` is a constant `[]`. Symbol: `pre_tool_use_context`. Seen:
+    `assert (['gk-example...ample-b'], []) == (['gk-example...k-example-c'])`; the once test fails too.
+    """
+    hook.index(*(example_entry(id=f"gk-example-{n}") for n in "abc"))
+    assert hook.run(shell("echo nothing here")) == ""
+    assert hook.events() == []
+    text = injected_text(hook.run(shell("pytest -q")))
+    assert text.count("[gk-example-") == gk.MAX_PER_CALL
+    (event,) = hook.events()
+    assert (event["injected"], event["suppressed"]) == (["gk-example-a", "gk-example-b"], ["gk-example-c"])
+
+
+def test_main_is_silent_when_disabled(hook):
+    """Invariant: `general_knowledge.enabled: false` means no output, no log line and no state.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_main_is_silent_when_disabled`.
+    Mutation: replace the `if not load_settings()["enabled"]:` gate in `pre_tool_use_context` with `if False:`.
+    Symbol: `pre_tool_use_context`. Seen: `assert '{"hookSpecif...ry here."}}\n' == ''`.
+    """
+    hook.index(example_entry())
+    hook.config(enabled=False)
+    assert hook.run(shell("pytest -q")) == ""
+    assert hook.events() == []
+    assert not (hook.home / "state").exists()
+
+
+def test_a_disabled_hook_does_not_read_the_index(hook, monkeypatch):
+    """Invariant: the switch is read before the index, so a disabled feature costs one small file.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_disabled_hook_does_not_read_the_index`.
+    Mutation: call `load_index()` before the `load_settings()` gate in `pre_tool_use_context`.
+    Symbol: `pre_tool_use_context`. Seen: `assert ['read'] == []`.
+    """
+    hook.config(enabled=False)
+    reads: list[str] = []
+    monkeypatch.setattr(gk, "load_index", lambda *a, **k: reads.append("read") or [])
+    assert hook.run(shell("pytest -q")) == ""
+    assert reads == []
+
+
+@pytest.mark.parametrize("tool", ["Write", "Read", "Edit"])
+def test_main_ignores_non_shell_tools(hook, tool):
+    """Invariant: only `Bash` and `PowerShell` are matched, even when the input has a `command` key.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_main_ignores_non_shell_tools`.
+    Mutation: `SHELL_TOOLS` gains `"Write"`. Symbol: `SHELL_TOOLS`. Seen: the `[Write]` case failed with
+    `assert '{"hookSpecif...ry here."}}\n' == ''`; `[Read]` and `[Edit]` stayed green, as they should.
+    """
+    hook.index(example_entry())
+    assert hook.run(shell("pytest -q", tool=tool)) == ""
+    assert hook.events() == []
+
+
+def test_a_powershell_command_is_matched(hook):
+    """Invariant: `PowerShell` is a shell tool and matches like `Bash`.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_powershell_command_is_matched`.
+    Mutation: `SHELL_TOOLS = frozenset({"Bash"})`. Symbol: `SHELL_TOOLS`. Seen:
+    `json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)` from `injected_text`,
+    because nothing was printed.
+    """
+    hook.index(example_entry())
+    assert "[gk-example-tests]" in injected_text(hook.run(shell("pytest -q", tool="PowerShell")))
+
+
+@pytest.mark.parametrize("tool_input", [None, "pytest", {"command": 3}, {"command": "   "}, {}])
+def test_a_shell_payload_without_a_command_string_is_silent(hook, tool_input):
+    """Invariant: a malformed `tool_input` is no command, not an error.
+
+    Red proof. NONE POSSIBLE for the guard itself: the fail-open `try` turns the error a missing
+    `isinstance` check would raise into the same silence, so this is a CONTROL for the contract
+    that a bad payload exits 0 with no output, and is labelled as such.
+    """
+    hook.index(example_entry())
+    assert hook.run({"tool_name": "Bash", "tool_input": tool_input}) == ""
+
+
+def test_main_survives_a_raising_matcher(hook, monkeypatch):
+    """Invariant: any exception inside the general knowledge path is silence, never a crash.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_main_survives_a_raising_matcher`.
+    Mutation: narrow the `except Exception` at the end of `pre_tool_use_context` to `except KeyError`.
+    Symbol: `pre_tool_use_context`. Seen: `RuntimeError: matcher exploded` at the direct call (same with
+    the dispatcher guard narrowed as well). The dispatcher guard is proved by
+    `test_one_source_failing_does_not_silence_the_other`.
+    """
+    hook.index(example_entry())
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("matcher exploded")
+
+    monkeypatch.setattr(gk, "matched_trigger", explode)
+    assert gk.pre_tool_use_context(shell("pytest -q")) is None
+    assert hook.run(shell("pytest -q")) == ""
+
+
+def test_both_contexts_share_one_json_object(hook, monkeypatch):
+    """Invariant: when both sources speak, ONE object is printed whose text holds both, general
+    knowledge first, joined by a blank line.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_both_contexts_share_one_json_object`.
+    Mutation: the dispatcher sends `texts[-1]` instead of `"\n\n".join(texts)` (the first source is lost).
+    Symbol: `recall_hooks._pre_tool_use`. Seen: `assert False` on the `startswith("General knowledge")` line.
+    """
+    hook.index(example_entry())
+    monkeypatch.setattr(write_time, "context_for", lambda payload: "WT")
+    text = injected_text(hook.run(shell("pytest -q")))
+    assert text.startswith("General knowledge (owner-approved):")
+    assert text.endswith("\n\nWT")
+
+
+def test_write_time_alone_prints_what_it_always_printed(hook, monkeypatch, capsys):
+    """Invariant: with no general knowledge match, the printed bytes are exactly the object
+    `write_time.pre_tool_use` prints for the same text (same `json.dumps` form, same key order).
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_write_time_alone_prints_what_it_always_printed`.
+    Mutation: the dispatcher's `hookEventName` becomes `"PreToolUse "`. Symbol: `recall_hooks._pre_tool_use`.
+    Seen: `via_main == capsys.readouterr().out` fails, the two printed strings differ.
+    """
+    monkeypatch.setattr(write_time, "context_for", lambda payload: "WT")
+    via_main = hook.run(shell("ls"))
+    capsys.readouterr()
+    write_time.pre_tool_use(shell("ls"))
+    assert via_main == capsys.readouterr().out
+    assert injected_text(via_main) == "WT"
+
+
+def test_one_source_failing_does_not_silence_the_other(hook, monkeypatch):
+    """Invariant: a raising write-time path leaves the general knowledge text, and a raising general
+    knowledge path leaves the write-time text; the exit status is 0 either way.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_one_source_failing_does_not_silence_the_other`.
+    Mutation: narrow the dispatcher's first `except Exception` to `except ImportError`, and separately the
+    second. Symbol: `recall_hooks._pre_tool_use`. Seen, both: `RuntimeError: source exploded` escaped
+    `main` (first mutation in the second half, second mutation in the first half).
+    """
+    hook.index(example_entry())
+
+    def explode(payload: dict[str, Any]) -> str:
+        raise RuntimeError("source exploded")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(write_time, "context_for", explode)
+        text = injected_text(hook.run(shell("pytest -q", session="a")))
+    assert "[gk-example-tests]" in text and "WT" not in text
+
+    with monkeypatch.context() as patch:
+        patch.setattr(gk, "pre_tool_use_context", explode)
+        patch.setattr(write_time, "context_for", lambda payload: "WT")
+        assert injected_text(hook.run(shell("pytest -q", session="b"))) == "WT"
+
+
+def test_general_knowledge_needs_no_write_time_configuration(hook):
+    """Invariant: with no `dsn` and no `project_root` (write time unconfigured) general knowledge
+    still speaks, because it runs before and independently of the write-time gates.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_general_knowledge_needs_no_write_time_configuration`.
+    Mutation: the dispatcher returns 0 first when `load_config().get("dsn")` is falsy. Symbol:
+    `recall_hooks._pre_tool_use`. Seen: `json.decoder.JSONDecodeError` from `injected_text` (no output).
+    """
+    hook.index(example_entry())
+    assert not (hook.config_home / "recall-hook.json").exists()
+    assert "[gk-example-tests]" in injected_text(hook.run(shell("pytest -q", cwd=hook.config_home)))
+
+
+def test_without_a_session_id_the_cap_holds_and_no_state_is_written(hook):
+    """Invariant: no session id means at most `MAX_PER_CALL` entries are injected, the rest are
+    `suppressed`, and no `state/` directory is created.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_without_a_session_id_the_cap_holds_and_no_state_is_written`.
+    Mutation: `pre_tool_use_context` uses `"anonymous"` instead of `""` for a missing `session_id`. Symbol:
+    `pre_tool_use_context`. Seen: `assert 'anonymous' == ''` on the logged session (a state file would follow).
+    """
+    hook.index(*(example_entry(id=f"gk-example-{n}") for n in "abc"))
+    text = injected_text(hook.run(shell("pytest -q", session=None)))
+    assert text.count("[gk-example-") == gk.MAX_PER_CALL
+    (event,) = hook.events()
+    assert event["session"] == ""
+    assert (event["injected"], event["suppressed"]) == (["gk-example-a", "gk-example-b"], ["gk-example-c"])
+    assert not (hook.home / "state").exists()
+
+
+def test_a_project_scoped_entry_fires_only_in_that_repository(hook, tmp_path):
+    """Invariant: a `project:alpha` entry is injected from inside the `alpha` checkout and nowhere
+    else, and the logged `project` is the repository name.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_project_scoped_entry_fires_only_in_that_repository`.
+    Mutation: (a) `project = None` in `pre_tool_use_context`: the in-repo call is silent, `JSONDecodeError`
+    on the last injection assertion. (b) `project = "alpha"` constant: the `beta` call injects,
+    `assert '{"hookSpecif...ry here."}}\n' == ''`. Symbol: `pre_tool_use_context`.
+    """
+    alpha = tmp_path / "alpha"
+    (alpha / ".git").mkdir(parents=True)
+    beta = tmp_path / "beta"
+    (beta / ".git").mkdir(parents=True)
+    hook.index(example_entry(id="gk-example-alpha-only", scope="project:alpha"))
+    assert hook.run(shell("pytest -q", session="s1", cwd=beta)) == ""
+    assert hook.events() == []
+    assert hook.run(shell("pytest -q", session="s2", cwd=tmp_path)) == ""
+    assert "[gk-example-alpha-only]" in injected_text(hook.run(shell("pytest -q", session="s3", cwd=alpha)))
+    (event,) = hook.events()
+    assert event["project"] == "alpha"

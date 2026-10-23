@@ -500,6 +500,45 @@ def _auth_command(args: list[str]) -> int:
     return credentials.login(config, args[1:])
 
 
+def _pre_tool_use(payload: dict[str, Any]) -> int:
+    """`PreToolUse`: general knowledge first, then write time, printed as ONE JSON object.
+
+    Two sources can speak on the same event and a client reads one document from stdout, so each
+    returns its text and this joins them with a blank line. Each source has its own guarded import
+    AND its own `try`: an older install that lacks a module, or a source that raises, must not
+    silence the other, and neither may fail the tool call. General knowledge runs first and needs
+    nothing the write-time gates check (`dsn`, `project_root`), so it works in every project.
+
+    When only write time speaks, the printed object is byte-identical to what
+    `write_time.pre_tool_use` prints, which is what the write-time tests and real clients see.
+    """
+    texts: list[str] = []
+    try:
+        from .general_knowledge import pre_tool_use_context
+
+        text = pre_tool_use_context(payload)
+        if text:
+            texts.append(text)
+    except Exception:  # BROAD-CATCH: fail-open (ImportError from an older checkout included)
+        pass
+    try:
+        from .write_time import context_for
+
+        text = context_for(payload)
+        if text:
+            texts.append(text)
+    except Exception:  # BROAD-CATCH: fail-open (ImportError from an older checkout included)
+        pass
+    if texts:
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": "\n\n".join(texts),
+            }
+        }))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves.
 
@@ -534,14 +573,7 @@ def main(argv: list[str] | None = None) -> int:
     # The deterministic fix belongs at the call site rather than here: invoke with `-P`, which
     # stops the cwd being prepended, and point `PYTHONPATH` at the copy you mean to run.
     if args[0] == "pre-tool-use":
-        # Imported HERE, not at module scope. This dispatch is shared with SessionStart, whose
-        # whole design is that it imports nothing it does not need, and `write_time` is only
-        # reached on its own event.
-        try:
-            from .write_time import pre_tool_use
-        except ImportError:
-            return 0
-        return pre_tool_use(payload)
+        return _pre_tool_use(payload)
     if args[0] == "write-time-relay":
         from .relay import main as relay_main
 

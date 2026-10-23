@@ -716,6 +716,76 @@ def render(entries: list[Entry]) -> str:
     return "General knowledge (owner-approved):\n\n" + "\n\n".join(f"[{e.id}]\n{e.body}" for e in entries)
 
 
+#: The tools whose `command` is matched. `PowerShell` is a shell tool on Windows and carries the
+#: same `tool_input["command"]` as `Bash`.
+SHELL_TOOLS = frozenset({"Bash", "PowerShell"})
+
+
+def pre_tool_use_context(payload: dict[str, Any]) -> str | None:
+    """The general knowledge to inject before the shell command in `payload`, or None.
+
+    Runs for every project, before and independently of the write-time gates: it needs no `dsn`, no
+    `project_root` and no write-time `enabled`. It reads only the shared switch (`load_settings`),
+    so a disabled feature costs one small file read and never touches the index or the log.
+
+    One `"trigger"` event is logged whenever any in-scope entry matched, whether or not it was
+    injected: `injected` holds the ids the session claimed, `suppressed` the matched ids it had
+    already received (or that the per-call cap dropped). `trigger` names, per matched entry and in
+    match order, the first trigger that fired, as `"<kind>:<value>"`.
+
+    **Never raises.** The whole body is fail-open: a hook that raises is charged to the client, and
+    a hook may never be the reason a tool call does not run.
+    """
+    try:
+        if payload.get("tool_name") not in SHELL_TOOLS:
+            return None
+        tool_input = payload.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if not isinstance(command, str) or not command.strip():
+            return None
+        if not load_settings()["enabled"]:
+            return None
+        cwd = payload.get("cwd")
+        project = repository_name(cwd) if isinstance(cwd, str) else None
+        entries = [e for e in load_index() if in_scope(e, project)]
+        if not entries:
+            return None
+        command = command[:MAX_COMMAND_CHARS]
+        segments = parse_command(command)
+        matched: list[Entry] = []
+        triggers: list[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if entry.id in seen:
+                continue
+            fired = matched_trigger(entry, command, segments, project)
+            if fired is not None:
+                seen.add(entry.id)
+                matched.append(entry)
+                triggers.append(f"{fired.kind}:{fired.value}")
+        if not matched:
+            return None
+        session = payload.get("session_id")
+        session = session if isinstance(session, str) else ""
+        claimed_ids = claim_for_session(session, [e.id for e in matched])
+        taken = set(claimed_ids)
+        claimed = [e for e in matched if e.id in taken]
+        log_event(
+            {
+                "event": "trigger",
+                "project": project,
+                "session": session,
+                "client": client(),
+                "trigger": triggers,
+                "injected": [e.id for e in claimed],
+                "suppressed": [e.id for e in matched if e.id not in taken],
+            }
+        )
+        return render(claimed) or None
+    except Exception:  # BROAD-CATCH: fail-open
+        return None
+
+
 __all__ = [
     "INDEX_NAME",
     "INDEX_SCHEMA",
@@ -743,6 +813,7 @@ __all__ = [
     "match_triggers",
     "matched_trigger",
     "parse_command",
+    "pre_tool_use_context",
     "rank_for_failure",
     "render",
     "repository_name",
