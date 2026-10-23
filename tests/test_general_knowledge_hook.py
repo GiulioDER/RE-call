@@ -1228,6 +1228,95 @@ def test_a_failing_prune_does_not_break_the_claim(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "state" / "s1.json").read_text(encoding="utf-8")) == ["a", "b"]
 
 
+
+@pytest.mark.parametrize("pair", [("Abc", "abc"), ("ABC-1", "abc-1")])
+def test_ids_differing_only_by_case_never_share_a_state_file(tmp_path, pair):
+    """Invariant: two session ids that differ only by letter case keep separate state, also on a
+    case-insensitive filesystem (the Windows and macOS defaults), where `Abc.json` and `abc.json`
+    would be one file. So no two state file names may be equal ignoring case.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_ids_differing_only_by_case_never_share_a_state_file`.
+    Mutation: the `cleaned == cleaned.lower()` condition removed from `plain` in `_session_key`.
+    Symbol: `_session_key`. Seen, both params (on Windows the second claim already fails):
+    `assert [] == ['a']`.
+    """
+    first, second = pair
+    assert gk.claim_for_session(first, ["a"], tmp_path) == ["a"]
+    assert gk.claim_for_session(second, ["a"], tmp_path) == ["a"]
+    names = [p.name.lower() for p in (tmp_path / "state").iterdir()]
+    assert len(names) == len(set(names)) == 2
+
+
+@pytest.mark.parametrize("session_id", ["con", "NUL", "com1", "lpt9", "aux"])
+def test_a_windows_device_name_never_names_a_state_file(tmp_path, session_id):
+    """Invariant: a session id that is a Windows device name (`CON`, `NUL`, `COM1`...) is stored
+    under a hash-suffixed name, because Windows opens `CON.json` as the console device.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_windows_device_name_never_names_a_state_file`.
+    Mutation: the `cleaned.lower() not in _WINDOWS_DEVICE_NAMES` condition removed from `plain` in
+    `_session_key`. Symbol: `_session_key`. Seen: 4 failed, 1 passed; each lower-case param fails
+    `assert 'con' not in frozenset({'aux', 'com0', ...})` (likewise `com1`, `lpt9`, `aux`), and
+    the upper-case `NUL` passes because the case rule hash-suffixes it anyway.
+    """
+    assert gk.claim_for_session(session_id, ["a"], tmp_path) == ["a"]
+    (state_file,) = (tmp_path / "state").iterdir()
+    assert state_file.stem.lower() not in gk._WINDOWS_DEVICE_NAMES
+    assert gk.claim_for_session(session_id, ["a"], tmp_path) == []
+
+
+def test_a_deeply_nested_state_file_is_repaired_by_the_next_claim(tmp_path):
+    """Invariant: a state file nested too deeply for the JSON parser (`RecursionError`) counts as
+    nothing claimed, and the claim rewrites it, so the session is repaired instead of re-injecting
+    on every call.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_deeply_nested_state_file_is_repaired_by_the_next_claim`.
+    Mutation: `RecursionError` removed from the `except` in `_read_claimed`, so it reaches the
+    broad fallback of `claim_for_session`, which returns the ids but writes nothing. Symbol:
+    `_read_claimed`. Seen: the file is still the broken one, `assert False` on its
+    `startswith('["a"]')` check (the file is compared as text, since parsing it would raise).
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "s1.json").write_text("[" * 200_000, encoding="utf-8")
+    assert gk.claim_for_session("s1", ["a"], tmp_path) == ["a"]
+    assert (state / "s1.json").read_text(encoding="utf-8").startswith('["a"]')
+
+
+def test_prune_keeps_a_six_day_old_state_file_and_removes_an_old_temp_file(tmp_path):
+    """Invariant: the age limit is 7 days, not less (a 6 day old state file survives), and a `*.tmp`
+    left by a killed atomic write is removed once it is older than that.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_prune_keeps_a_six_day_old_state_file_and_removes_an_old_temp_file`.
+    Mutation A: `STATE_MAX_AGE_SECONDS` set to 1 day. Seen: `assert ['s1.json'] == ['s1.json',
+    'six.json']`. Mutation B: `.endswith((".json", ".tmp"))` back to `.endswith(".json")`. Seen:
+    `assert ['.s9.json.ab...', 'six.json'] == ['s1.json', 'six.json']`. Symbol: `_prune_state`.
+    """
+    import os
+    import time
+
+    state = tmp_path / "state"
+    state.mkdir()
+    now = time.time()
+    (state / "six.json").write_text("[]", encoding="utf-8")
+    (state / ".s9.json.abc123.tmp").write_text("[", encoding="utf-8")
+    os.utime(state / "six.json", (now - 6 * 24 * 3600, now - 6 * 24 * 3600))
+    os.utime(state / ".s9.json.abc123.tmp", (now - 8 * 24 * 3600, now - 8 * 24 * 3600))
+    assert gk.claim_for_session("s1", ["a"], tmp_path) == ["a"]
+    assert sorted(p.name for p in state.iterdir()) == ["s1.json", "six.json"]
+
+
+def test_log_event_never_raises_on_a_record_that_is_not_a_mapping(tmp_path):
+    """Invariant: a record that is not a mapping (`None`, a list) is dropped, never raised.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_log_event_never_raises_on_a_record_that_is_not_a_mapping`.
+    Mutation: `AttributeError` removed from the `except` in `log_event`. Symbol: `log_event`.
+    Seen: `AttributeError: 'NoneType' object has no attribute 'items'` raised out of `log_event`.
+    """
+    path = tmp_path / "gk.jsonl"
+    assert gk.log_event(None, path) is None  # type: ignore[arg-type]
+    assert gk.log_event(["event"], path) is None  # type: ignore[arg-type]
+    assert not path.exists()
+
 def test_log_event_appends_json_lines(tmp_path):
     """Invariant: each call appends exactly one parseable JSON line holding the given fields plus a UTC
     `ts`, earlier lines are kept, and a missing parent directory is created.
