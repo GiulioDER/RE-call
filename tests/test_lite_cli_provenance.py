@@ -11,6 +11,8 @@ Invariants and the failure each one catches:
 - P3 `provenance current` prints the same JSON on PostgreSQL and on lite for the same ledger.
 - P4 the generation route is refused on a lite DSN by name.
 - P7 `provenance current` cites every memo that states a fact, as `recall_current_facts` does.
+- P8 after a memo is withdrawn, `provenance current` and `recall_current_facts` list the same
+  facts: the value the withdrawn memo had superseded, and not the withdrawn one.
 
 Red proof: recorded in each test's docstring.
 """
@@ -254,3 +256,48 @@ def test_p7_current_cites_every_memo_that_states_a_fact(tmp_path: Path) -> None:
     )
     assert fact["sources"] == ["tea-again.md", "tea.md"], fact
     assert listed["served_state"] == "unchecked", listed
+
+
+def test_p8_both_listings_show_what_a_withdrawn_memo_had_superseded(tmp_path: Path) -> None:
+    """Node tests/test_lite_cli_provenance.py::test_p8_both_listings_show_what_a_withdrawn_memo_had_superseded.
+
+    Withdrawal changes what is listed only through the projections both surfaces share
+    (`current_fact_listing`: the materialized view, `project_current`, `live_cards`), so the CLI and
+    the MCP tool must agree after one. Coffee's memo superseded tea's and is withdrawn: both list
+    tea, neither lists coffee.
+    Red, mutation of `fact_supersession` (recall/provenance_controller.py) counting a withdrawn
+    successor's own window (`if holder is None:` made `if True:`): both list nothing, and it fails
+    on "provenance current did not list what the withdrawn memo had superseded".
+    """
+    from recall.types import Chunk
+    from recall_mcp.lifecycle import withdraw_memory
+    from recall_mcp.provenance import current_facts_memory
+
+    tenant = "cli-withdrawn"
+    lite = LiteStore(tmp_path / "withdrawn.db", dim=64, tenant=tenant)
+    lite.upsert(
+        [Chunk(f"chunk-{name}", f"/notes/{name}", f"text of {name}", {"file": name}) for name in ("tea.md", "coffee.md")],
+        [[1.0] + [0.0] * 63, [0.0, 1.0] + [0.0] * 62],
+    )
+    cards_store, ledger = LiteEvidenceCardStore(lite), LiteFactLedger(lite)
+    tea = card(tenant, TEA, "chunk-tea.md", "tea.md")
+    coffee = card(tenant, COFFEE, "chunk-coffee.md", "coffee.md", links=("tea.md",))
+    cards_store.put((tea, coffee))
+    codes = [
+        ProvenanceController(
+            tenant_id=tenant, generation_id=GEN, cards=cards_store, ledger=ledger,
+            source_digest_for=lambda _c: "digest", now=lambda: NOW, writer="withdrawn",
+        ).apply_fact(FactApplicationRequest(fact, (evidence.card_id,), rid)).code
+        for fact, evidence, rid in ((TEA, tea, "r1"), (COFFEE, coffee, "r2"))
+    ]
+    assert codes == [DecisionCode.APPLIED, DecisionCode.APPLIED], codes
+    assert withdraw_memory(lite, ["coffee.md"]).facts_withdrawn == 1
+    mcp = sorted(str(item["fact"]["object"]) for item in current_facts_memory(lite)["facts"])  # type: ignore[index, union-attr]
+    lite.close()
+
+    as_of = (NOW + timedelta(hours=1)).isoformat()
+    listed = json.loads(_run(["--embedder", "hashing", "--dsn", _dsn(tmp_path / "withdrawn.db"),
+                              "--tenant", tenant, "provenance", "current", "--as-of", as_of]))
+    cli = sorted(str(fact["fact"]["object"]) for fact in listed["facts"])
+    assert cli == ["tea"], f"provenance current did not list what the withdrawn memo had superseded: {listed}"
+    assert mcp == cli, f"the two listings disagree after a withdrawal: mcp {mcp}, cli {cli}"
