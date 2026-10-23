@@ -232,6 +232,19 @@ Claude settings is approved.
   exist in it, plus the files changed against the merge base with the default branch. For Python
   files, the changed symbols are resolved with `recall.anchors`, so the lookup is by anchor; other
   files match at file level.
+- **Git never runs what the audited repository configures** (decided 2026-10-22, from the CCA
+  audit of this hook, finding SEC-001). The hook runs on every auditor launch, often in a
+  repository the user did not write, and a work-tree `git diff` runs that repository's fsmonitor,
+  textconv and clean-filter commands; a clean filter cannot be switched off by config. So the
+  committed changes come from a commit-to-commit diff (`git diff --merge-base <ref> HEAD`, with
+  `--no-ext-diff --no-textconv`, `core.fsmonitor=false`, no pager, `GIT_TERMINAL_PROMPT=0`, and
+  `GIT_NO_LAZY_FETCH=1` with `GIT_ALLOW_PROTOCOL=none` so a partial clone cannot fetch through the
+  repository's own remote command), whose
+  files are read from their HEAD copy so the diff's line numbers fit the text; and a named file's
+  uncommitted change is found in Python: its work-tree copy read from disk against its merge-base
+  copy. Git supplies those blobs through `git cat-file --batch`, which applies no filter, and no
+  blob is requested for a file whose work-tree copy is over the size cap or absent. **An uncommitted change in a file the prompt does not name is not
+  in scope.**
 - **Source:** the CCA memo directory on the local machine, read directly through RE-call's record
   parser and the same matching rules as `recall_records` (exact, symbol_changed, file_only, best
   first, superseded and expired records marked, retractions honoured within their window). No

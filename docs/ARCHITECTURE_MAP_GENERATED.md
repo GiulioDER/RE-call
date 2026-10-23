@@ -9,8 +9,8 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 338
-Cross package edges: 355
-Source tree fingerprint: `285311add7ddf33c1b46152f51ffb07ccb45ccd8d586594e6e89790bdcc36372`
+Cross package edges: 356
+Source tree fingerprint: `118f5643efd4250c9ff6a60d7ad5929ab5461e9369714d5260a9afe03e887401`
 
 ## Highest fan in modules
 
@@ -142,6 +142,7 @@ They are observations, not automatic failures.
 | `recall_consistency.stale_probe` | `recall.types` |
 | `recall_hooks` | `recall.memory_index` |
 | `recall_hooks.auditor_brief` | `recall.anchors` |
+| `recall_hooks.auditor_brief` | `recall.records` |
 | `recall_hooks.auditor_brief` | `recall.records_files` |
 | `recall_hooks.auditor_brief` | `recall.supersession` |
 | `recall_hooks.codex` | `recall.codex` |
@@ -757,7 +758,7 @@ They are observations, not automatic failures.
 | `recall_consistency.stale_probe` | 5 | 101 |
 | `recall_hooks` | 8 | 53 |
 | `recall_hooks.__main__` | 1 | 54 |
-| `recall_hooks.auditor_brief` | 4 | 53 |
+| `recall_hooks.auditor_brief` | 5 | 53 |
 | `recall_hooks.codex` | 2 | 56 |
 | `recall_hooks.credentials` | 0 | 0 |
 | `recall_hooks.hosted` | 3 | 53 |

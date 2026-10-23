@@ -518,8 +518,14 @@ def main(argv: list[str] | None = None) -> int:
 
         return warm()
     try:
-        payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
+        # Bytes, decoded as UTF-8, which is what the client writes. `json.load(sys.stdin)` decoded
+        # with the console code page (cp1252 on Windows), and `pre-agent` writes the prompt back,
+        # so every non-ASCII character came back as mojibake. A stream with no byte buffer (a
+        # test's StringIO) is read as text.
+        buffer = getattr(sys.stdin, "buffer", None)
+        raw = buffer.read().decode("utf-8-sig") if buffer is not None else sys.stdin.read()
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):  # UnicodeDecodeError is a ValueError
         payload = {}
     if not isinstance(payload, dict):
         payload = {}

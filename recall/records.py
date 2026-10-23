@@ -317,6 +317,36 @@ def _string_list(value: object, name: str) -> list[str]:
     return list(value)
 
 
+def validated_anchor_query(repo: object, anchors: object) -> list[dict[str, Any]]:
+    """`anchors` checked as the anchors of a query in `repo`; raises `RecordsQueryError` otherwise.
+
+    The one statement of what an anchor query accepts, so `lookup_records` and
+    `recall.records_files.match_memo_records` refuse the same queries with the same words.
+    """
+    if repo is not None and (not isinstance(repo, str) or not repo):
+        raise RecordsQueryError("repo must be a non-empty string")
+    query_anchors = _validated_anchors(anchors)
+    if repo is None:
+        raise RecordsQueryError("an anchor query needs `repo`: anchors are paths inside one repository")
+    return query_anchors
+
+
+def validated_kinds(kinds: object) -> set[str] | None:
+    """`kinds` as a set of known record kinds, or None for every kind; raises on an unknown one."""
+    if kinds is None:
+        return None
+    wanted = set(_string_list(kinds, "kinds"))
+    if unknown := wanted - RECORD_KINDS:
+        raise RecordsQueryError(f"unknown kinds {sorted(unknown)}; known: {sorted(RECORD_KINDS)}")
+    return wanted
+
+
+def as_utc(now: datetime | None) -> datetime:
+    """`now` (default: the current time) as an aware instant, a naive one read as UTC."""
+    instant = now or datetime.now(UTC)
+    return instant if instant.tzinfo is not None else instant.replace(tzinfo=UTC)
+
+
 def _generation_id(store: object) -> str:
     reader = getattr(store, "generation_binding", None)
     if callable(reader):
@@ -377,6 +407,17 @@ def match_candidates(
                 if isinstance(cause, str):
                     caused.setdefault(cause, []).append(candidate.id)
 
+    # A query anchor for another file can only ever meet a record anchor as "none", which is
+    # `_best`'s default, so each record anchor is compared with its own file's queries alone:
+    # the same answer, without comparing every record anchor with every query anchor.
+    by_file: dict[str, list[dict[str, Any]]] = {}
+    for query in query_anchors or ():
+        by_file.setdefault(query["file"], []).append(query)
+
+    def queries_for(anchor: Mapping[str, Any]) -> list[dict[str, Any]]:
+        file = anchor.get("file")
+        return by_file.get(file, []) if isinstance(file, str) else []
+
     matched: list[tuple[int, str, dict[str, Any]]] = []
     for candidate in candidates:
         record_id, record, kind, meta = candidate.id, candidate.record, candidate.kind, candidate.meta
@@ -389,7 +430,7 @@ def match_candidates(
         successor = superseded_by(candidate)
         if query_anchors is not None:
             anchor_matches: list[dict[str, Any]] = [
-                {"anchor": anchor, "match": _best(_match(q, anchor) for q in query_anchors)}
+                {"anchor": anchor, "match": _best(_match(q, anchor) for q in queries_for(anchor))}
                 for anchor in candidate.anchors
             ]
         else:
@@ -469,13 +510,9 @@ def lookup_records(
         raise RecordsQueryError("offset must be a non-negative integer")
     if repo is not None and (not isinstance(repo, str) or not repo):
         raise RecordsQueryError("repo must be a non-empty string")
-    query_anchors = _validated_anchors(anchors) if anchors is not None else None
-    if query_anchors is not None and repo is None:
-        raise RecordsQueryError("an anchor query needs `repo`: anchors are paths inside one repository")
+    query_anchors = validated_anchor_query(repo, anchors) if anchors is not None else None
     wanted_ids = set(_string_list(ids, "ids")) if ids is not None else None
-    wanted_kinds = set(_string_list(kinds, "kinds")) if kinds is not None else None
-    if wanted_kinds is not None and (unknown := wanted_kinds - RECORD_KINDS):
-        raise RecordsQueryError(f"unknown kinds {sorted(unknown)}; known: {sorted(RECORD_KINDS)}")
+    wanted_kinds = validated_kinds(kinds)
     if security_policy is not None and access_context is None:
         raise RecordsQueryError("access_context is required when security_policy is configured")
 
@@ -489,9 +526,7 @@ def lookup_records(
         generation_id = _generation_id(store)
         chunks = _record_chunks(store)
         graph = store_supersession_graph(store)
-    instant = now or datetime.now(UTC)
-    if instant.tzinfo is None:
-        instant = instant.replace(tzinfo=UTC)
+    instant = as_utc(now)
 
     # One record per document: a memo's chunks all carry its record. In a code tenant several
     # chunks share one anchor (a split symbol, every module-level chunk of a file), so a code
@@ -613,8 +648,11 @@ __all__ = [
     "RecordsQueryError",
     "WITHHELD",
     "admit_record",
+    "as_utc",
     "lookup_records",
     "match_candidates",
     "record_problem",
     "record_schema",
+    "validated_anchor_query",
+    "validated_kinds",
 ]

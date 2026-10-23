@@ -23,6 +23,23 @@ Invariants and the failure each one catches:
 - H14 a stage no inner deadline bounds (here matching) is cut by the hook's hard stop.
 - H15 `python -m recall_hooks warm-auditor-brief` reads no stdin and fills the on-disk cache, so
   the next launch parses no memo.
+- H16 (CCA BUG-001) the event is read as UTF-8 bytes, so a non-ASCII prompt is written back intact
+  on a console whose code page is not UTF-8.
+- H17 (CCA SEC-001) no command the audited repository configures runs (fsmonitor, textconv, an
+  external diff, a clean filter), for a committed change or a named uncommitted file.
+- H18 (CCA SEC-002) `named_files` makes no filesystem call on a UNC, absolute-outside or `..` token.
+- H19 (CCA ENV-001) a userless scp-style remote (an ssh host alias) names its repository.
+- H20 (CCA BUG-002) a user's `diff.noprefix` cannot empty the scope.
+- H21a (CCA PERF-005, CODE-003) the scope fetches no file past the records query limit, and logs it.
+- H21b (CCA PERF-005) once the deadline passes the scope parses no further file, and logs it.
+- H22 an uncommitted change in a named file is resolved to its symbol (`exact`).
+- H23 a named in-repository symlink whose target is outside the repository is not in scope.
+- H24 an unnamed file with committed and uncommitted edits keeps its committed symbol (the commit
+  diff's line numbers are read against HEAD's copy).
+- H25 a changed file whose work-tree copy is over `MAX_FILE_BYTES` is never requested from git.
+- H26 a changed file missing from the work tree is never requested from git.
+- H27 (CCA SEC-001, architect gate) in a partial clone, no lazy fetch runs the repository's own
+  remote command.
 Every case also asserts exit status 0.
 
 Red proof, recorded 2026-10-22 on the test host inside the test bounds, each mutation failing in
@@ -54,9 +71,46 @@ the named assertion, then restored and green (`recall_hooks/auditor_brief.py` un
 - H13 `...::test_budget_enforced_with_slow_source`: the memo reader's `reader.join()` without a
   timeout: the hard stop still cuts the launch, but "the log does not name the slow source".
 - H14 `...::test_budget_enforced_with_slow_matching`: the hard stop's `worker.join()` without a
-  timeout: "the hook waited 3.0s on a slow stage".
+  timeout: "the hook waited 6.0s on a slow stage". (Both tests use a 2 s budget and a 6 s stub
+  since 2026-10-22: at 0.5 s, git alone overran the inner deadline on the Windows workstation
+  under three workers, and the log named git rather than the stage under test.)
 - H15 `...::test_warm_command_fills_the_cache`: `warm` mutated to load without `cache_file`: the
   next launch parses a memo, the stub raises, and "the hook printed nothing".
+Recorded 2026-10-22 for the CCA audit fixes (run 20261022T185308Z), same host and bounds; H1 to
+H15 were re-run against the fixed code and stayed red under their mutations:
+- H16 `...::test_non_ascii_prompt_survives_a_code_page_stdin`: `recall_hooks.main` mutated back to
+  `json.load(sys.stdin)`: "the prompt came back re-encoded".
+- H17 `...::test_no_command_the_repository_configures_runs`: every scope diff mutated to read the
+  work tree (`, "HEAD", "--")` dropped at both call sites): the clean filter runs even with
+  `core.fsmonitor=false` and `--no-textconv`, "a command the audited repository configures ran".
+  A second mutation, `--no-textconv` dropped, fails the same assertion through the textconv.
+- H18 `...::test_named_files_never_touch_a_path_outside_the_repository`: `named_files` restored to
+  its pre-fix body (resolve, then check containment): the UNC paths are touched.
+- H19 `...::test_repo_identity_reads_every_remote_form`: `_SCP_REMOTE` restored to require
+  `user@`: `gh-work:owner/name` fails the equality.
+- H20 `...::test_diff_prefix_config_does_not_empty_the_scope`: the `--src-prefix`/`--dst-prefix`
+  options removed: "the hook printed nothing".
+- H21a `...::test_scope_stops_at_the_query_limit`: the `cat-file` request's cap removed: "5 blobs
+  were fetched for a limit of 3". (The loop's own limit check is now a second layer for the
+  limit: with the request capped, removing it alone stays green.)
+- H21b `...::test_scope_stops_at_the_deadline`: the loop's limit-or-deadline check replaced by
+  `if False:`: "the scope parsed 5 files after its deadline passed". Run on the workstation.
+- H22 `...::test_named_uncommitted_file_is_anchored_by_symbol`: a named file's changed lines
+  mutated to `set()`: the bug is `file_only`, so the `[exact]` line is missing.
+- H23 `...::test_named_symlink_out_of_the_repository_is_refused`: the resolved containment check
+  replaced by the lexical name (`relative = "/".join(parts)`): the symlink is returned.
+- H24 `...::test_unnamed_file_with_uncommitted_edits_keeps_its_committed_symbol`: a changed file
+  read from the work tree (`_read_source`) instead of its HEAD blob: the shifted lines miss
+  `Pool._lease`, so the `[exact]` line is missing.
+- H25 `...::test_an_oversized_file_is_never_streamed`: `_small` mutated to `return True`: "an
+  oversized blob was requested".
+- H26 `...::test_a_changed_file_missing_from_the_work_tree_is_never_streamed`: `_small` mutated to
+  count a missing copy as small: "a missing file's HEAD blob was requested".
+- H27 `...::test_partial_clone_never_fetches_through_the_repository_remote`: `GIT_NO_LAZY_FETCH`
+  and `GIT_ALLOW_PROTOCOL` removed from `_GIT_SAFE_ENV`: the `ext::` remote runs, "the
+  repository's remote command ran through a lazy fetch". Run on the workstation (git 2.55); with
+  either entry removed alone the test stays green, so each layer suffices (the second covers a
+  git older than 2.45, which ignores `GIT_NO_LAZY_FETCH`).
 The budget has two layers on purpose (the stages' own deadlines, 0.1 s early, and the hard stop),
 so H13 and H14 each prove one; removing either timeout alone leaves the other test green.
 """
@@ -106,7 +160,11 @@ def _git(root: Path, *args: str) -> None:
 
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
-    """A repository whose `origin/master` holds `BASE_SOURCE` and whose work tree changed `_lease`."""
+    """A repository whose `origin/master` holds `BASE_SOURCE` and whose HEAD commit changed `_lease`.
+
+    The change is committed: the scope reads committed changes through a commit-to-commit diff,
+    and an uncommitted change only for a file the prompt names (SEC-001's fix).
+    """
     root = tmp_path / "repo"
     (root / "pkg").mkdir(parents=True)
     _git(root, "init", "-q")
@@ -116,6 +174,7 @@ def repo(tmp_path: Path) -> Path:
     _git(root, "commit", "-q", "-m", "base")
     _git(root, "update-ref", "refs/remotes/origin/master", "HEAD")
     (root / FILE).write_text(CHANGED_SOURCE, encoding="utf-8", newline="\n")
+    _git(root, "commit", "-q", "-a", "-m", "change")
     return root
 
 
@@ -306,15 +365,15 @@ def test_budget_enforced_with_slow_source(repo: Path, env: Path, monkeypatch: py
     real = records_files.load_memo_records
 
     def slow(directory: Path, **options: Any) -> Any:
-        time.sleep(3.0)
+        time.sleep(6.0)
         return real(directory)
 
     monkeypatch.setattr(records_files, "load_memo_records", slow)
-    monkeypatch.setenv("RECALL_AUDITOR_BRIEF_BUDGET", "0.5")
+    monkeypatch.setenv("RECALL_AUDITOR_BRIEF_BUDGET", "2")
     started = time.monotonic()
     output = _run(_payload(repo), monkeypatch, capsys)
     elapsed = time.monotonic() - started
-    assert elapsed < 2.0, f"the hook waited {elapsed:.2f}s on a slow source"
+    assert elapsed < 4.0, f"the hook waited {elapsed:.2f}s on a slow source"
     assert output is None
     log = env.read_text(encoding="utf-8")
     assert "the memo directory was still being read" in log, f"the log does not name the slow source: {log!r}"
@@ -340,14 +399,295 @@ def test_budget_enforced_with_slow_matching(repo: Path, env: Path, monkeypatch: 
     real = records_files.match_memo_records
 
     def slow(*args: Any, **options: Any) -> Any:
-        time.sleep(3.0)
+        time.sleep(6.0)
         return real(*args, **options)
 
     monkeypatch.setattr(records_files, "match_memo_records", slow)
-    monkeypatch.setenv("RECALL_AUDITOR_BRIEF_BUDGET", "0.5")
+    monkeypatch.setenv("RECALL_AUDITOR_BRIEF_BUDGET", "2")
     started = time.monotonic()
     output = _run(_payload(repo), monkeypatch, capsys)
     elapsed = time.monotonic() - started
-    assert elapsed < 2.0, f"the hook waited {elapsed:.2f}s on a slow stage"
+    assert elapsed < 4.0, f"the hook waited {elapsed:.2f}s on a slow stage"
     assert output is None
-    assert "budget of 0.50s exceeded" in env.read_text(encoding="utf-8")
+    assert "budget of 2.00s exceeded" in env.read_text(encoding="utf-8")
+
+
+def _bug_at(number: int, file: str, symbol: str | None, sha: str | None) -> dict[str, Any]:
+    return {**_bug(number), "anchors": [{"file": file, "symbol": symbol, "code_sha": sha}]}
+
+
+def test_non_ascii_prompt_survives_a_code_page_stdin(repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """H16 (BUG-001): the event is read as UTF-8 bytes, whatever the console code page."""
+    prompt = "Audit — café → ok"
+    raw = json.dumps(_payload(repo, prompt=prompt), ensure_ascii=False).encode("utf-8")
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="cp1252"))
+    assert recall_hooks.main(["pre-agent"]) == 0
+    updated = _prompt(json.loads(capsys.readouterr().out))
+    assert updated.startswith(prompt), f"the prompt came back re-encoded: {updated[:40]!r}"
+
+
+def test_no_command_the_repository_configures_runs(repo: Path, env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """H17 (SEC-001): fsmonitor, textconv, an external diff and a clean filter planted in the
+    audited repository's config never run, for a committed change or a named uncommitted file."""
+    extra = "def helper():\n    return 1\n"
+    (repo / "pkg" / "extra.py").write_text(extra, encoding="utf-8", newline="\n")
+    _git(repo, "add", "pkg/extra.py")
+    _git(repo, "commit", "-q", "-m", "extra")
+    uncommitted = CHANGED_SOURCE.replace("return 10", "return 11")
+    (repo / FILE).write_text(uncommitted, encoding="utf-8", newline="\n")
+    marker = tmp_path / "marker"
+    touch = f"touch '{marker.as_posix()}'"
+    for key, value in (
+        ("core.fsmonitor", f"{touch}; false"),
+        ("diff.evil.textconv", f"{touch}; cat"),
+        ("diff.evil.command", f"{touch}; true"),
+        ("filter.evil.clean", f"{touch}; cat"),
+        ("filter.evil.smudge", "cat"),
+    ):
+        _git(repo, "config", key, value)
+    (repo / ".gitattributes").write_text("*.py diff=evil filter=evil\n", encoding="utf-8")
+    records = [
+        _bug_at(1, FILE, "Pool._lease", symbol_sha(uncommitted, "Pool._lease")),
+        _bug_at(2, "pkg/extra.py", "helper", symbol_sha(extra, "helper")),
+    ]
+    monkeypatch.setenv("RECALL_AUDITOR_MEMOS", str(_write_memos(tmp_path / "planted", records)))
+
+    block = _block(_run(_payload(repo, prompt=f"Audit {FILE} and the branch."), monkeypatch, capsys))
+
+    assert not marker.exists(), "a command the audited repository configures ran"
+    assert f"BUG {_bug(1)['id']} [exact] {FILE} Pool._lease:" in block
+    assert f"BUG {_bug(2)['id']} [exact] pkg/extra.py helper:" in block
+
+
+def test_named_files_never_touch_a_path_outside_the_repository(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """H18 (SEC-002): no filesystem call sees a UNC, absolute or parent-relative token."""
+    from recall_hooks import auditor_brief
+
+    touched: list[str] = []
+    real_resolve, real_is_file = Path.resolve, Path.is_file
+
+    def spy_resolve(self: Path, *args: Any, **kwargs: Any) -> Path:
+        touched.append(str(self))
+        return real_resolve(self, *args, **kwargs)
+
+    def spy_is_file(self: Path, *args: Any, **kwargs: Any) -> bool:
+        touched.append(str(self))
+        return real_is_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", spy_resolve)
+    monkeypatch.setattr(Path, "is_file", spy_is_file)
+    prompt = (
+        "see //attacker.invalid/share/x.py and \\\\attacker.invalid\\share\\y.py, "
+        "/etc/outside/w.py, ../outside/z.py and pkg/pool.py"
+    )
+    assert auditor_brief.named_files(prompt, repo) == [FILE]
+    assert not [p for p in touched if "attacker.invalid" in p or "outside" in p], touched
+
+
+@pytest.mark.parametrize(
+    ("url", "identity"),
+    [
+        ("gh-work:owner/name", "owner/name"),
+        ("github.com:owner/name.git", "owner/name"),
+        ("git@github.com:owner/name.git", "owner/name"),
+        ("https://github.com/owner/name", "owner/name"),
+        ("ssh://git@host.example/owner/name.git", "owner/name"),
+        ("C:\\repos\\owner\\name", "owner/name"),
+    ],
+)
+def test_repo_identity_reads_every_remote_form(url: str, identity: str) -> None:
+    """H19 (ENV-001): a userless scp-style remote (an ssh host alias) names its repository."""
+    from recall_hooks import auditor_brief
+
+    assert auditor_brief.repo_identity(url) == identity
+
+
+def test_diff_prefix_config_does_not_empty_the_scope(repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """H20 (BUG-002): a user's `diff.noprefix` cannot leave every diff header unparseable."""
+    _git(repo, "config", "diff.noprefix", "true")
+    block = _block(_run(_payload(repo), monkeypatch, capsys))
+    assert f"BUG {_bug(1)['id']} [exact] {FILE} Pool._lease:" in block
+
+
+def _five_changed_files(root: Path) -> list[str]:
+    """A repository at `root` whose HEAD commit changed `f` in five files since `origin/master`."""
+    (root / "pkg").mkdir(parents=True)
+    _git(root, "init", "-q")
+    _git(root, "remote", "add", "origin", f"https://github.com/{REPO}.git")
+    files = [f"pkg/m{n}.py" for n in range(5)]
+    for file in files:
+        (root / file).write_text("def f():\n    return 1\n", encoding="utf-8", newline="\n")
+    _git(root, "add", *files)
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "update-ref", "refs/remotes/origin/master", "HEAD")
+    for file in files:
+        (root / file).write_text("def f():\n    return 2\n", encoding="utf-8", newline="\n")
+    _git(root, "commit", "-q", "-a", "-m", "change")
+    return files
+
+
+def test_scope_stops_at_the_query_limit(tmp_path: Path, env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """H21a (PERF-005, CODE-003): past the records query limit no further file is fetched or parsed,
+    and the cut is logged."""
+    import recall.records
+    from recall_hooks import auditor_brief
+
+    root = tmp_path / "many"
+    _five_changed_files(root)
+    monkeypatch.setattr(recall.records, "MAX_QUERY_ANCHORS", 3)
+    requests: list[bytes] = []
+    real_finish = auditor_brief._finish_git
+
+    def recording(process: Any, deadline: float, data: bytes | None = None) -> bytes:
+        if data is not None:
+            requests.append(data)
+        return real_finish(process, deadline, data)
+
+    monkeypatch.setattr(auditor_brief, "_finish_git", recording)
+    _repo, anchors = auditor_brief.scope(str(root), "Audit the branch.", deadline=time.monotonic() + 30)
+
+    fetched = sum(request.count(b"\n") for request in requests)
+    assert fetched <= 3, f"{fetched} blobs were fetched for a limit of 3"
+    assert len(anchors) == 3
+    assert "scope cut" in env.read_text(encoding="utf-8")
+
+
+def test_scope_stops_at_the_deadline(tmp_path: Path, env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """H21b (PERF-005): once the deadline passes, the scope parses no further file, and says so."""
+    import types
+
+    from recall_hooks import auditor_brief
+
+    root = tmp_path / "many"
+    _five_changed_files(root)
+    real_monotonic = time.monotonic
+    expired = {"now": False}
+    # The clock jumps past every deadline the moment the first file has been parsed.
+    clock = types.SimpleNamespace(monotonic=lambda: real_monotonic() + (10_000.0 if expired["now"] else 0.0))
+    monkeypatch.setattr(auditor_brief, "time", clock)
+    parsed: list[str] = []
+    real = auditor_brief._python_anchors
+
+    def counting(file: str, source: str, lines: set[int]) -> list[dict[str, Any]]:
+        parsed.append(file)
+        expired["now"] = True
+        return real(file, source, lines)
+
+    monkeypatch.setattr(auditor_brief, "_python_anchors", counting)
+    auditor_brief.scope(str(root), "Audit the branch.", deadline=real_monotonic() + 30)
+
+    assert len(parsed) == 1, f"the scope parsed {len(parsed)} files after its deadline passed"
+    assert "scope cut" in env.read_text(encoding="utf-8")
+
+
+def test_named_uncommitted_file_is_anchored_by_symbol(repo: Path, env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """H22: an uncommitted change in a file the prompt names is resolved to its symbol."""
+    uncommitted = CHANGED_SOURCE.replace("return 10", "return 11")
+    (repo / FILE).write_text(uncommitted, encoding="utf-8", newline="\n")
+    records = [_bug_at(1, FILE, "Pool._lease", symbol_sha(uncommitted, "Pool._lease"))]
+    monkeypatch.setenv("RECALL_AUDITOR_MEMOS", str(_write_memos(tmp_path / "named", records)))
+    block = _block(_run(_payload(repo, prompt=f"Audit {FILE}"), monkeypatch, capsys))
+    assert f"BUG {_bug(1)['id']} [exact] {FILE} Pool._lease:" in block
+
+
+def test_named_symlink_out_of_the_repository_is_refused(repo: Path, tmp_path: Path) -> None:
+    """H23: a named in-repository symlink whose target is outside the repository is not in scope."""
+    from recall_hooks import auditor_brief
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("SECRET = 1\n", encoding="utf-8")
+    try:
+        (repo / "pkg" / "link.py").symlink_to(outside)
+    except OSError:
+        pytest.skip("no symlink privilege on this platform")
+    assert auditor_brief.named_files("Audit pkg/link.py and pkg/pool.py", repo) == [FILE]
+
+
+def test_unnamed_file_with_uncommitted_edits_keeps_its_committed_symbol(repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """H24: the commit diff's line numbers are read against HEAD's copy, not the work tree's, so an
+    unnamed file whose uncommitted edits shift its lines still anchors the committed symbol."""
+    shifted = "# a\n# b\n# c\n# d\n# e\n# f\n" + CHANGED_SOURCE
+    (repo / FILE).write_text(shifted, encoding="utf-8", newline="\n")
+    block = _block(_run(_payload(repo), monkeypatch, capsys))
+    assert f"BUG {_bug(1)['id']} [exact] {FILE} Pool._lease:" in block
+
+
+def test_an_oversized_file_is_never_streamed(repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """H25: a changed file over `MAX_FILE_BYTES` is not requested from `git cat-file`, which streams
+    a blob whole; it is anchored at file level with no hash, as the work-tree read left it."""
+    from recall_hooks import auditor_brief
+
+    requests: list[bytes] = []
+    real_finish = auditor_brief._finish_git
+
+    def recording(process: Any, deadline: float, data: bytes | None = None) -> bytes:
+        if data is not None:
+            requests.append(data)
+        return real_finish(process, deadline, data)
+
+    monkeypatch.setattr(auditor_brief, "_finish_git", recording)
+    monkeypatch.setattr(auditor_brief, "MAX_FILE_BYTES", 10)
+    _repo, anchors = auditor_brief.scope(str(repo), "Audit the change.", deadline=time.monotonic() + 30)
+
+    assert not any(FILE.encode() in request for request in requests), "an oversized blob was requested"
+    assert anchors == [{"file": FILE, "symbol": None, "code_sha": None}]
+
+
+def test_a_changed_file_missing_from_the_work_tree_is_never_streamed(repo: Path, env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """H26: a changed file deleted from the work tree (or outside a sparse checkout) still exists at
+    HEAD; its blob is not requested, and it is anchored at file level with no hash."""
+    from recall_hooks import auditor_brief
+
+    requests: list[bytes] = []
+    real_finish = auditor_brief._finish_git
+
+    def recording(process: Any, deadline: float, data: bytes | None = None) -> bytes:
+        if data is not None:
+            requests.append(data)
+        return real_finish(process, deadline, data)
+
+    monkeypatch.setattr(auditor_brief, "_finish_git", recording)
+    (repo / FILE).unlink()
+    _repo, anchors = auditor_brief.scope(str(repo), "Audit the change.", deadline=time.monotonic() + 30)
+
+    assert not any(FILE.encode() in request for request in requests), "a missing file's HEAD blob was requested"
+    assert anchors == [{"file": FILE, "symbol": None, "code_sha": None}]
+
+
+def test_partial_clone_never_fetches_through_the_repository_remote(tmp_path: Path, env: Path) -> None:
+    """H27 (SEC-001, from the CCA architect gate): in a partial clone, a blob the diff or `cat-file`
+    needs is missing, and git would fetch it through the repository's own remote; an `ext::`
+    remote is a command. The hook's git calls never start that fetch."""
+    from recall_hooks import auditor_brief
+
+    source = tmp_path / "source"
+    (source / "pkg").mkdir(parents=True)
+    _git(source, "init", "-q")
+    (source / FILE).write_text(BASE_SOURCE, encoding="utf-8", newline="\n")
+    _git(source, "add", FILE)
+    _git(source, "commit", "-q", "-m", "base")
+    (source / FILE).write_text(CHANGED_SOURCE, encoding="utf-8", newline="\n")
+    _git(source, "commit", "-q", "-a", "-m", "change")
+    _git(source, "config", "uploadpack.allowFilter", "true")
+    _git(source, "config", "uploadpack.allowAnySHA1InWant", "true")
+    victim = tmp_path / "victim"
+    subprocess.run(
+        ["git", "clone", "-q", "--filter=blob:none", "--no-checkout", source.as_uri(), str(victim)],
+        check=True,
+        capture_output=True,
+    )
+    _git(victim, "update-ref", "refs/remotes/origin/master", "HEAD~1")
+    missing = subprocess.run(
+        ["git", "-C", str(victim), "rev-list", "--objects", "--missing=print", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert any(line.startswith("?") for line in missing.splitlines()), "the clone is not partial"
+    marker = tmp_path / "marker"
+    _git(victim, "config", "remote.origin.url", f"ext::sh -c touch% {marker.as_posix()}")
+    _git(victim, "config", "protocol.ext.allow", "always")
+
+    auditor_brief.scope(str(victim), f"Audit {FILE}", deadline=time.monotonic() + 30)
+
+    assert not marker.exists(), "the repository's remote command ran through a lazy fetch"

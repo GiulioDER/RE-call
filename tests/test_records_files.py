@@ -12,6 +12,12 @@ Invariants and the failure each one catches:
 - F5 with `cache_file` the cache outlives the process: a new process parses nothing unchanged.
 - F6 a load past its deadline raises `TimeoutError` and keeps what it parsed, so a cold cache
   warms over several calls rather than never.
+- F7 (CCA DAT-001) a change to a module that reads memos invalidates the persisted cache.
+- F8 (CCA DAT-002) a record holding a lone surrogate is cached and reads back equal.
+- F9 (CCA DAT-003) the walk reads what the indexer reads: no hidden or excluded directory, no
+  hidden file, no symlink out of the directory; a nested memo is read.
+- F10 (CCA PERF-001) a load under a deadline only appends to the cache, never rewrites it whole.
+- A control test pins the restated excluded-directory set to the indexer's.
 
 Red proof, recorded 2026-10-22 on the test host inside the test bounds, each mutation of
 `recall/records_files.py` failing in the named assertion, then restored and green:
@@ -29,7 +35,19 @@ Red proof, recorded 2026-10-22 on the test host inside the test bounds, each mut
 - F5 `...::test_cache_file_serves_a_new_process`: the persisted entries ignored
   (`cached = None` for `persisted.get(key)`): "a new process re-parsed memos the cache file holds".
 - F6 `...::test_deadline_keeps_progress`: the cache not saved when the deadline passes (`pass` for
-  that `_write_cache_file`): "the progress made before the deadline was not kept".
+  that save; since the CCA audit fixes it is `_append_cache_delta`, re-proved the same way):
+  "the progress made before the deadline was not kept".
+
+Recorded 2026-10-22 for the CCA audit fixes (run 20261022T185308Z), same host and bounds:
+- F7 `...::test_cache_tag_follows_the_reader_code`: `_cache_tag` mutated to ignore the reader
+  files (`for file in []:`): "a change to the reading code kept serving the old parses".
+- F8 `...::test_a_lone_surrogate_is_cached`: `_dumps` mutated to `ensure_ascii=False`: the write
+  fails silently, "a record holding a lone surrogate was never cached".
+- F9 `...::test_walk_reads_what_the_indexer_reads`: the hidden-name check removed from
+  `_memo_files`: `.hidden.md` and `.trash/old.md` are read (`assert names == ...`).
+- `...::test_excluded_dirs_match_the_indexer` (control): `venv` removed from `_EXCLUDED_DIRS`.
+- F10 `...::test_a_deadline_load_only_appends`: the end-of-load append mutated to `if False:`, so
+  the load rewrites the cache: "a load under a deadline rewrote the whole cache".
 """
 
 from __future__ import annotations
@@ -138,10 +156,11 @@ def test_cache_rereads_a_changed_file(tmp_path: Path, monkeypatch: pytest.Monkey
 
     target = memos / "RE-call__0123456789ab__BUG-001.md"
     before = target.stat()
-    text = target.read_text(encoding="utf-8")
-    old = "so the liveness check raced."
-    # Same length, so only the modification time tells the cache the file changed.
-    target.write_text(text.replace(old, "so the liveness check broke."), encoding="utf-8")
+    raw = target.read_bytes()
+    old = b"so the liveness check raced."
+    # Same length, so only the modification time tells the cache the file changed. Bytes, so a
+    # Windows text write cannot turn the golden LF endings into CRLF and change the size.
+    target.write_bytes(raw.replace(old, b"so the liveness check broke."))
     os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
     assert target.stat().st_size == before.st_size
 
@@ -199,3 +218,101 @@ def test_deadline_keeps_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert sorted(reads) == sorted(set(p.name for p in memos.glob("*.md")) - set(first_pass)), (
         "the progress made before the deadline was not kept"
     )
+
+
+def _counting_reads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    reads: list[str] = []
+    real_read = records_files._read
+
+    def counting_read(path: Path, file: str) -> Any:
+        reads.append(path.name)
+        return real_read(path, file)
+
+    monkeypatch.setattr(records_files, "_read", counting_read)
+    return reads
+
+
+def test_cache_tag_follows_the_reader_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F7 (DAT-001): changing a module that reads memos re-reads every memo, not only a schema change."""
+    memos = copy_memos(tmp_path / "memos")
+    cache = tmp_path / "cache" / "memos.json"
+    reader = tmp_path / "reader.py"
+    reader.write_text("RULE = 1\n", encoding="utf-8")
+    monkeypatch.setattr(records_files, "_reader_files", lambda: [str(reader)])
+    load_memo_records(memos, cache_file=cache)
+
+    reader.write_text("RULE = 22\n", encoding="utf-8")
+    records_files._CACHE.clear()
+    reads = _counting_reads(monkeypatch)
+    load_memo_records(memos, cache_file=cache)
+    assert len(reads) == len(EXPECTED), "a change to the reading code kept serving the old parses"
+
+
+def test_a_lone_surrogate_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F8 (DAT-002): a record holding a lone surrogate is written to the cache and read back equal."""
+    memos = copy_memos(tmp_path / "memos")
+    target = memos / "RE-call__0123456789ab__BUG-001.md"
+    text = target.read_text(encoding="utf-8")
+    assert '"summary":"The pool' in text
+    target.write_text(text.replace('"summary":"The pool', '"summary":"\\udc00The pool'), encoding="utf-8")
+    cache = tmp_path / "cache" / "memos.json"
+    first = {m.record["id"]: m for m in load_memo_records(memos, cache_file=cache)}
+    bug_id = EXPECTED[target.name]["id"]
+    assert first[bug_id].record["summary"].startswith("\udc00")
+
+    records_files._CACHE.clear()
+    reads = _counting_reads(monkeypatch)
+    second = {m.record["id"]: m for m in load_memo_records(memos, cache_file=cache)}
+    assert reads == [], "a record holding a lone surrogate was never cached"
+    assert second[bug_id] == first[bug_id]
+
+
+def test_walk_reads_what_the_indexer_reads(tmp_path: Path) -> None:
+    """F9 (DAT-003): hidden files and directories, excluded directories and a symlink out of the
+    directory are not read; a nested memo is."""
+    memos = copy_memos(tmp_path / "memos")
+    golden = (memos / "RE-call__0123456789ab__BUG-001.md").read_bytes()
+    for relative in (".hidden.md", ".trash/old.md", "node_modules/x.md", "sub/.hidden.md"):
+        path = memos / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(golden)
+    (memos / "nested").mkdir()
+    (memos / "nested" / "kept.md").write_bytes(golden.replace(b"BUG-001", b"BUG-777"))
+    outside = tmp_path / "outside.md"
+    outside.write_bytes(golden)
+    try:
+        (memos / "link.md").symlink_to(outside)
+    except OSError:
+        pass  # no symlink privilege on this platform; the other cases still hold
+
+    loaded = load_memo_records(memos)
+    names = sorted(Path(m.source).relative_to(memos).as_posix() for m in loaded)
+    assert names == sorted([*EXPECTED, "nested/kept.md"]), names
+
+
+def test_excluded_dirs_match_the_indexer() -> None:
+    """Control, not a behaviour test: the restated set equals the indexer's, so the walks agree."""
+    import recall.index
+
+    assert records_files._EXCLUDED_DIRS == recall.index._DEFAULT_INDEX_EXCLUDED_DIRS
+
+
+def test_a_deadline_load_only_appends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F10 (PERF-001): under a deadline the cache is only appended to, never rewritten whole (a
+    rewrite grows with the cache and a hook's exit can kill it), and the next call reads it."""
+    import time
+
+    memos = copy_memos(tmp_path / "memos")
+    cache = tmp_path / "cache" / "memos.json"
+
+    def no_rewrite(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("a load under a deadline rewrote the whole cache")
+
+    monkeypatch.setattr(records_files, "_write_cache_file", no_rewrite)
+    load_memo_records(memos, cache_file=cache, deadline=time.monotonic() + 60)
+
+    records_files._CACHE.clear()
+    reads = _counting_reads(monkeypatch)
+    loaded = load_memo_records(memos, cache_file=cache, deadline=time.monotonic() + 60)
+    assert reads == [], "what the first call parsed was not kept"
+    assert len(loaded) == len(EXPECTED)
