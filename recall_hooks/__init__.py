@@ -512,9 +512,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args[0] in {"login", "logout", "auth-headers"}:
         return _auth_command(args)
+    if args[0] == "warm-auditor-brief":
+        # A command a person runs, so it is dispatched before the stdin read, like the three above.
+        from .auditor_brief import warm
+
+        return warm()
     try:
-        payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
+        # Bytes, decoded as UTF-8, which is what the client writes. `json.load(sys.stdin)` decoded
+        # with the console code page (cp1252 on Windows), and `pre-agent` writes the prompt back,
+        # so every non-ASCII character came back as mojibake. A stream with no byte buffer (a
+        # test's StringIO) is read as text.
+        buffer = getattr(sys.stdin, "buffer", None)
+        raw = buffer.read().decode("utf-8-sig") if buffer is not None else sys.stdin.read()
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):  # UnicodeDecodeError is a ValueError
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
@@ -554,6 +565,13 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             return 0
         return user_prompt_submit(payload)
+    if args[0] == "pre-agent":
+        # Same reason as above: only an `Agent` launch pays for git and the memo directory.
+        try:
+            from .auditor_brief import pre_agent
+        except ImportError:
+            return 0
+        return pre_agent(payload)
     return 0
 
 

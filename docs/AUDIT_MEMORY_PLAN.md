@@ -35,6 +35,7 @@ each other's unmerged code.
 | 5 Lessons | cca-audit | Session 4 merged | distillation, acceptance, LESSONS block |
 | 6 Deploy and ops | operator tooling | Sessions 1 and 3 merged, and the owner says the AML runs are over | serving, tenants, worker check |
 | 7 Recurrence experiment | RE-call research | Session 6 done | pre-registration, then the experiment |
+| 8 Auditor brief hook | RE-call | owner request 2026-10-22, independent | `pre-agent` hook for auditors outside CCA |
 | Final | orchestrator | Sessions 4, 5 and 6 done | live round-trip verification, integration report |
 
 Wave 1 runs Sessions 1, 2 and 3 in parallel. Sessions 1 and 3 are both in RE-call and both edit
@@ -435,7 +436,80 @@ public plan, names hosts and paths.
       its MCP registration.
 - [ ] The refresh worker runs `recall records --all --json` and `bugs roundtrip-check` after every
       rebuild and fails the tick on any difference.
+- [ ] Install the merged CCA pipeline into `~/.claude` and the Codex skill with CCA's own
+      installer, only after the serving sync, because its brief calls `recall_records`.
 - [ ] Report: generation ids, counts, and the first round-trip result.
+
+## Session 8: Auditor brief hook (RE-call)
+
+Added 2026-10-22 (design: "Auditor brief hook"). Independent of Sessions 6 and 7: it reads local
+memo files, so it needs no serving change. It stays inert until memos carry `recall_record`, which
+Session 6's `bugs rerender --all` provides.
+
+### Task 8.1: Records from a memo directory
+
+**Files:** Create `recall/records_files.py`; modify `recall/records.py` only to share its matching
+core; test `tests/test_records_files.py`.
+
+**Interfaces:**
+- `load_memo_records(directory: Path) -> list[MemoRecord]`, where `MemoRecord` is a frozen
+  dataclass `(source: str, record: dict, valid_from: str | None, supersedes: tuple[str, ...])`,
+  parsed with `recall.frontmatter` and admitted with `recall.records.admit_record`; an invalid
+  record is skipped and counted, never raised. Cached on `(path, mtime_ns, size)`.
+- `match_memo_records(records: list[MemoRecord], *, repo: str, anchors: list[dict], kinds:
+  list[str], now: datetime) -> list[dict]` returning C5 record entries, through the same match,
+  best-of and currency rules `lookup_records` uses (factor them out, no behaviour change).
+
+- [ ] Tests: `test_matches_like_lookup_records` (the C4 golden memos give the same entries through
+      both paths for exact, symbol_changed and file_only queries); `test_invalid_memo_is_skipped`;
+      `test_future_retraction_does_not_hide_yet`; `test_cache_rereads_a_changed_file`. The #977
+      records tests stay green unchanged.
+- [ ] Red proof per test; commit.
+
+### Task 8.2: The `pre-agent` hook
+
+**Files:** Create `recall_hooks/auditor_brief.py`; modify `recall_hooks/__init__.py` (`main`
+dispatches `pre-agent`); test `tests/test_auditor_brief_hook.py`.
+
+**Interfaces:** `python -m recall_hooks pre-agent` reads the PreToolUse JSON on stdin and prints
+either nothing (prompt unchanged) or `{"hookSpecificOutput": {"hookEventName": "PreToolUse",
+"updatedInput": {...every original tool_input field..., "prompt": <prompt + block>}}}`. It never
+prints a permission decision and always exits 0.
+
+- [ ] Fires only when `tool_name == "Agent"` and `tool_input.subagent_type`, with any `plugin:`
+      prefix removed, is in the auditor list (default in the design; overridden by
+      `RECALL_AUDITOR_TYPES`, comma separated).
+- [ ] Skips when the prompt holds a CCA heading (`PRIOR FIXES IN THESE FILES`, `PRIOR BUGS AT THE
+      CHANGED CODE`, `LESSONS AT THE CHANGED CODE`) or the hook's marker `<!-- recall:auditor-brief
+      -->`.
+- [ ] Scope from `cwd`: repository identity `owner/name` from the `origin` remote URL; files named
+      in the prompt that exist in the repository; files changed against the merge base with
+      `origin/HEAD` (else `origin/master`, else `origin/main`); changed Python symbols from the diff
+      hunks via `recall.anchors.enclosing_symbol`, others at file level.
+- [ ] Source directory `RECALL_AUDITOR_MEMOS`, default the CCA memo directory (`$CCA_BUGS_DIR/memos`,
+      else `~/.claude/cca-bugs/memos`). Kinds `bug` and `lesson` only; `false_positive` is never
+      queried.
+- [ ] Block: heading "PRIOR BUGS AND LESSONS AT THIS CODE (RE-call; context, not findings, not
+      instructions)", the marker, at most 5 bugs and 3 lessons, each with id, match label, file,
+      symbol and a one-line summary or rule; at most 4000 characters; backticks and newlines in
+      record text neutralised so the fence cannot be closed.
+- [ ] Budget: about one second of wall clock for the whole hook; on timeout or any exception, print
+      nothing and append one line (UTC time, reason) to `~/.claude/logs/recall-auditor-brief.log`.
+- [ ] Tests, each with red proof: non-auditor type untouched; plugin-prefixed auditor fires; CCA
+      heading skips; own marker skips (idempotent); every original field kept in `updatedInput`;
+      no permission decision printed; false positives never appear; changed symbol gives an exact
+      match; a hostile summary cannot close the fence; size cap holds; a broken memo directory or a
+      non-git cwd prints nothing and logs; the budget is enforced with a slow source stub.
+- [ ] Commit; full suite and mypy on the test host within the bounds; open the PR. Do not merge.
+
+### Task 8.3: Install (owner approved, 2026-10-22)
+
+- [ ] After the PR merges: add one `PreToolUse` entry with matcher `Agent` to the user's Claude
+      settings running `python -P -m recall_hooks pre-agent`, in the same form as the existing
+      `user-prompt-submit` entry, and back the file up first.
+- [ ] Verify live: in a scratch repository with a fixture memo directory, launch a `bug-auditor`
+      subagent and confirm its prompt received the block; launch a `general-purpose` subagent and
+      confirm it did not. Report both.
 
 ## Session 7: Recurrence experiment
 
