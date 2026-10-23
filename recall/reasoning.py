@@ -16,11 +16,16 @@ from recall.evidence import (
     EvidencePolicy,
     EvidenceValidationError,
     build_evidence_bundle,
+    ground_premise_correction,
     normalize_citations,
     parse_answer_envelope,
+    parse_premise_answer_envelope,
     render_dated_evidence_prompt,
+    render_dated_premise_prompt,
     render_evidence_prompt,
+    stale_premise_notice,
     validate_answer,
+    validate_premise_answer,
 )
 from recall.reasoning_graph import ReasoningGraphProjection
 from recall.reasoning_expansion import (
@@ -250,8 +255,14 @@ def _answer_from_evidence(
 
     # `max_model_calls` bounds planner accounting, not the caller supplied answer provider.
     # The answer call is still counted by `_budget_used` after a successful response.
+    premise = request.answer_profile == "dated-premise"
+    notice: tuple[str, ...] = ()
     if request.answer_profile == "plain":
         system, user = render_evidence_prompt(bundle)
+    elif premise:
+        asked = request.as_of or datetime.now(timezone.utc)
+        notice = stale_premise_notice(retrieval, bundle)
+        system, user = render_dated_premise_prompt(bundle, asked.isoformat(), notice)
     else:
         asked = request.as_of or datetime.now(timezone.utc)
         system, user = render_dated_evidence_prompt(bundle, asked.isoformat())
@@ -283,12 +294,40 @@ def _answer_from_evidence(
             started=started,
             graph_expansion=graph_expansion,
         )
-    raw = parse_answer_envelope(provider_output)
-    envelope = normalize_citations(raw)
-    validation = validate_answer(envelope, bundle)
+    grounded = False
+    if premise:
+        # A correction the reader left uncited is grounded by the structural notice, when there is
+        # one; without it the correction stays uncited and validation refuses it (SP-2).
+        raw, grounded = ground_premise_correction(parse_premise_answer_envelope(provider_output), notice)
+        envelope = normalize_citations(raw)
+        validation = validate_premise_answer(envelope, bundle)
+    else:
+        raw = parse_answer_envelope(provider_output)
+        envelope = normalize_citations(raw)
+        validation = validate_answer(envelope, bundle)
     if not validation.valid:
         raise EvidenceValidationError("; ".join(validation.errors))
     citations_normalized = envelope.citations != raw.citations
+    if envelope.premise_correction is not None:
+        return _response(
+            request=request,
+            retrieval=retrieval,
+            bundle=bundle,
+            outcome="corrected",
+            answer=None if envelope.insufficient_evidence else envelope.answer,
+            proposals=proposals,
+            provider_failures=provider_failures,
+            plan=plan,
+            citations=envelope.citations,
+            generator_invoked=True,
+            citations_normalized=citations_normalized,
+            expansion_trace=expansion_trace,
+            started=started,
+            graph_expansion=graph_expansion,
+            premise_correction=envelope.premise_correction,
+            premise_notice=notice,
+            premise_citations_from_notice=grounded,
+        )
     if envelope.insufficient_evidence:
         return _response(
             request=request,
@@ -305,6 +344,7 @@ def _answer_from_evidence(
             expansion_trace=expansion_trace,
             started=started,
             graph_expansion=graph_expansion,
+            premise_notice=notice,
         )
     return _response(
         request=request,
@@ -321,6 +361,7 @@ def _answer_from_evidence(
         expansion_trace=expansion_trace,
         started=started,
         graph_expansion=graph_expansion,
+        premise_notice=notice,
     )
 
 
@@ -925,6 +966,9 @@ def _response(
     citations_normalized: bool,
     graph_expansion: SemanticGraphExpansionResult | None = None,
     expansion_trace: RetrievalExpansionTrace | None = None,
+    premise_correction: str | None = None,
+    premise_notice: Sequence[str] = (),
+    premise_citations_from_notice: bool = False,
 ) -> ReasoningResponse:
     """Assemble the response and record its metrics.
 
@@ -1011,7 +1055,10 @@ def _response(
             ),
             performance=performance_snapshot,
             answer_profile=request.answer_profile,
+            premise_notice=tuple(premise_notice),
+            premise_citations_from_notice=premise_citations_from_notice,
         ),
+        premise_correction=premise_correction,
     )
     _record_reasoning_metrics(response)
     return response

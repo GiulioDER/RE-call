@@ -15,6 +15,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `RECALL_AUDITOR_MEMOS`, `CCA_BUGS_DIR`, `RECALL_AUDITOR_BRIEF_BUDGET`; the command
   `python -m recall_hooks warm-auditor-brief` fills its memo cache. See
   `docs/AUDIT_MEMORY_DESIGN.md`, "Auditor brief hook".
+- Add the opt-in `dated-premise` answer profile for `recall_reasoning_query`
+  (`RECALL_REASONING_ANSWER_PROFILE=dated-premise`): when a question assumes something the evidence
+  shows is no longer current, the response has outcome `corrected` and a cited `premise_correction`
+  instead of an answer built on the old state or an abstention. Whether a superseded memory matched
+  the question is decided structurally and its successor's evidence is named to the reader
+  (`diagnostics.premise_notice`). The default `dated` profile, its prompt and its three-key envelope
+  are unchanged.
 - Search and evidence now report unchecked semantic query support separately from retrieval
   eligibility, and carry calibration-bound synthetic near-miss coverage when available. Missing
   measurements remain unmeasured and report failures are unavailable. Existing retrieval decisions,

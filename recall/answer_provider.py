@@ -68,6 +68,8 @@ class OllamaAnswerProvider:
         response: object | None = None
         try:
             if isinstance(self.client, _NativeOllamaClient):
+                from recall.evidence import DATED_PREMISE_SYSTEM_PROMPT
+
                 response = self.client.chat(
                     model=self.model_id,
                     messages=[
@@ -77,6 +79,9 @@ class OllamaAnswerProvider:
                     max_tokens=self.max_tokens,
                     context_tokens=self.context_tokens,
                     thinking=self.thinking,
+                    # The schema follows the profile: the premise system prompt is a library
+                    # constant, so identity says which envelope the reader was asked for.
+                    premise=system is DATED_PREMISE_SYSTEM_PROMPT,
                 )
             elif isinstance(self.client, _OpenRouterClient):
                 response = self.client.chat(
@@ -301,7 +306,18 @@ class _NativeOllamaClient:
         max_tokens: int,
         context_tokens: int,
         thinking: bool,
+        premise: bool = False,
     ) -> object:
+        properties: dict[str, object] = {
+            "answer": {"type": ["string", "null"]},
+            "citations": {"type": "array", "items": {"type": "string"}},
+            "insufficient_evidence": {"type": "boolean"},
+        }
+        required = ["answer", "citations", "insufficient_evidence"]
+        if premise:
+            # The ``dated-premise`` envelope (`recall.evidence.parse_premise_answer_envelope`).
+            properties["premise_correction"] = {"type": ["string", "null"]}
+            required.append("premise_correction")
         payload = {
             "model": model,
             "messages": messages,
@@ -309,12 +325,8 @@ class _NativeOllamaClient:
             "think": thinking,
             "format": {
                 "type": "object",
-                "properties": {
-                    "answer": {"type": ["string", "null"]},
-                    "citations": {"type": "array", "items": {"type": "string"}},
-                    "insufficient_evidence": {"type": "boolean"},
-                },
-                "required": ["answer", "citations", "insufficient_evidence"],
+                "properties": properties,
+                "required": required,
                 "additionalProperties": False,
             },
             "options": {
