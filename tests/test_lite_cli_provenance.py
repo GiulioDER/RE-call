@@ -10,6 +10,7 @@ Invariants and the failure each one catches:
   nothing is written.
 - P3 `provenance current` prints the same JSON on PostgreSQL and on lite for the same ledger.
 - P4 the generation route is refused on a lite DSN by name.
+- P7 `provenance current` cites every memo that states a fact, as `recall_current_facts` does.
 
 Red proof: recorded in each test's docstring.
 """
@@ -32,7 +33,7 @@ from recall.lite import LiteStore
 from recall.lite.calibration import ensure_calibrated
 from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
 from recall.provenance_cards import PostgresEvidenceCardStore
-from recall.provenance_controller import FactApplicationRequest, ProvenanceController
+from recall.provenance_controller import DecisionCode, FactApplicationRequest, ProvenanceController
 from recall_mcp.evidence_cards import register_evidence_cards
 from recall_mcp.retrieval import _retrieve_trusted
 from tests.conftest import TEST_DSN, requires_db
@@ -217,3 +218,39 @@ def test_p6_the_width_comes_from_the_file(tmp_path: Path, monkeypatch: pytest.Mo
     narrow = _run([*base, "provenance", "apply", "--claim", str(tmp_path / "claim.json"),
                    "--cards", str(tmp_path / "cards.json"), "--request-id", "r9", "--generation", "g"])
     assert "EXIT" in narrow and "width" in narrow and "RAISED" not in narrow, f"a width mismatch was not refused by name: {narrow}"
+
+
+def test_p7_current_cites_every_memo_that_states_a_fact(tmp_path: Path) -> None:
+    """Node tests/test_lite_cli_provenance.py::test_p7_current_cites_every_memo_that_states_a_fact.
+
+    A fact stated by a second memo is recorded DUPLICATE with that memo's card, and
+    `recall_current_facts` cites both memos through `live_cards` (PR 982). `provenance current`
+    printed the APPLIED event's own cards, so the memo that restated the fact was missing, and the
+    two surfaces disagreed about one ledger.
+    Red against master `e5d87caba` (`_cmd_provenance` listing `event.evidence_cards`): fails on
+    "the restating memo is not cited".
+    """
+    tenant = "cli-restated"
+    lite = LiteStore(tmp_path / "restated.db", dim=64, tenant=tenant)
+    cards_store, ledger = LiteEvidenceCardStore(lite), LiteFactLedger(lite)
+    first = card(tenant, TEA, "chunk-tea", "tea.md")
+    again = card(tenant, TEA, "chunk-tea-again", "tea-again.md")
+    cards_store.put((first, again))
+    codes = [
+        ProvenanceController(
+            tenant_id=tenant, generation_id=GEN, cards=cards_store, ledger=ledger,
+            source_digest_for=lambda _c: "digest", now=lambda: NOW, writer="restated",
+        ).apply_fact(FactApplicationRequest(TEA, (evidence.card_id,), rid)).code
+        for evidence, rid in ((first, "r1"), (again, "r2"))
+    ]
+    assert codes == [DecisionCode.APPLIED, DecisionCode.DUPLICATE], codes
+    lite.close()
+    as_of = (NOW + timedelta(hours=1)).isoformat()
+    listed = json.loads(_run(["--embedder", "hashing", "--dsn", _dsn(tmp_path / "restated.db"),
+                              "--tenant", tenant, "provenance", "current", "--as-of", as_of]))
+    [fact] = listed["facts"]
+    assert set(fact["evidence_card_ids"]) == {first.card_id, again.card_id}, (
+        f"the restating memo is not cited: {fact}"
+    )
+    assert fact["sources"] == ["tea-again.md", "tea.md"], fact
+    assert listed["served_state"] == "unchecked", listed
