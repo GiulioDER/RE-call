@@ -20,6 +20,8 @@ from recall import (
     fact_identity,
     facts_conflict,
 )
+from recall.lite import LiteStore
+from recall.lite.facts import LiteFactLedger
 
 
 NOW = datetime(2026, 9, 4, 12, tzinfo=UTC)
@@ -281,6 +283,67 @@ def test_ledger_read_outage_fails_closed_without_asserting():
     assert not decision.allowed
     assert decision.code == DecisionCode.LEDGER_UNAVAILABLE
     assert not [event for event in ledger.events if event.event_type == "asserted"]
+
+
+def test_apply_fact_never_reads_the_tenants_current_facts_on_a_key_scoped_ledger(tmp_path):
+    """PERF-003: on a ledger with a key-scoped read (lite here; PostgreSQL in
+    `tests/test_provenance_postgres.py`), `apply_fact` decides on the claim's conflict key and
+    never calls `current()`, which decoded every fact current in the tenant to be discarded.
+
+    Red proof, 2026-10-22: against master `e5d87caba`, whose `ProvenanceController._in_force`
+    read `ledger.current(...)` before `conflict_history`, `current` was called once, failing
+    `assert reads == []`.
+    """
+    claim = fact("team:platform")
+    evidence = card(claim)
+    reads = []
+
+    class CountingLedger(LiteFactLedger):
+        def current(self, **kwargs):
+            reads.append(kwargs)
+            return super().current(**kwargs)
+
+    store = LiteStore(tmp_path / "facts.db", dim=4, tenant="tenant-a")
+    try:
+        decision = controller([evidence], CountingLedger(store)).apply_fact(
+            FactApplicationRequest(claim, (evidence.card_id,), "key-read-only")
+        )
+    finally:
+        store.close()
+
+    assert decision.allowed and decision.code == DecisionCode.APPLIED
+    assert reads == []
+
+
+def test_a_key_read_outage_fails_closed_without_asserting(tmp_path):
+    """Once `current()` is not read beside it, the claim's key-scoped read is the one authorization
+    fails closed on: a lite ledger whose `conflict_history` cannot answer refuses with
+    LEDGER_UNAVAILABLE and appends no assertion.
+
+    Red proof, 2026-10-22: mutating `ProvenanceController._in_force` to treat a failed key read
+    as absent (`try: history = reader(...)`, `except Exception: history = None`, so the claim is
+    judged on `current()`) applied the claim (APPLIED), failing `assert not decision.allowed`.
+    """
+    claim = fact("team:platform")
+    evidence = card(claim)
+
+    class BrokenKeyRead(LiteFactLedger):
+        def conflict_history(self, *, tenant_id, fact):
+            raise OSError("ledger unavailable")
+
+    store = LiteStore(tmp_path / "facts.db", dim=4, tenant="tenant-a")
+    try:
+        ledger = BrokenKeyRead(store)
+        decision = controller([evidence], ledger).apply_fact(
+            FactApplicationRequest(claim, (evidence.card_id,), "key-read-outage")
+        )
+        asserted = [event for event in ledger.events if event.event_type == "asserted"]
+    finally:
+        store.close()
+
+    assert not decision.allowed
+    assert decision.code == DecisionCode.LEDGER_UNAVAILABLE
+    assert asserted == []
 
 
 def test_materialization_failure_is_not_success_and_replay_retries_same_event():
