@@ -185,6 +185,11 @@ OPENROUTER_API_KEY=
 #                                                      # as a 1000x understatement.
 #                                                      # REFUSED under PROVIDER=ollama, where
 #                                                      # inference is local and cost is 0.0.
+# RECALL_REASONING_ANSWER_PROFILE=dated                # dated (default) | plain | dated-premise.
+#                                                      # dated-premise is opt-in: a question that
+#                                                      # assumes a state the evidence shows has
+#                                                      # changed gets outcome `corrected` with a
+#                                                      # cited `premise_correction` (docs/REASONING_API.md).
 #
 # For PROVIDER=openai the bare legacy RECALL_REASONING_BASE_URL and RECALL_REASONING_TIMEOUT are
 # accepted as fallbacks alongside the legacy key, as a matched TRIO. Taking only the legacy key
