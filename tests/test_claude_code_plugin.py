@@ -45,6 +45,8 @@ MARKETPLACE = REPO / ".claude-plugin" / "marketplace.json"
 EXPECTED_HOOKS = {
     "SessionStart": "session-start",
     "PreToolUse": "pre-tool-use",
+    # General knowledge after a failed shell command; registered beside PreToolUse in both installs.
+    "PostToolUseFailure": "post-tool-use-failure",
     # The prompt-time hook, added at the same time as the installer's, deliberately in the same
     "UserPromptSubmit": "user-prompt-submit",
     "PreCompact": "pre-compact",

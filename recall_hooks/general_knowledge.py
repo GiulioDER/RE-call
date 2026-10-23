@@ -1,4 +1,4 @@
-"""General knowledge: owner-curated entries injected by the hooks before a command or after a failure.
+"""General knowledge: owner-curated entries injected before a command or after a failure.
 
 **What this module is.** The model and the reader for a small prebuilt index, plus the two hook
 entry points that use it. An entry is a piece of curated procedure or warning (how to run a test
@@ -25,8 +25,11 @@ package (see `recall_hooks/__init__.py` for what that import costs).
 | What | Where | Override |
 |---|---|---|
 | knowledge home | `<project config home>/general-knowledge` | `RECALL_GENERAL_KNOWLEDGE_HOME` |
-| event log | `<project config home>/logs/general-knowledge.jsonl` | `RECALL_GENERAL_KNOWLEDGE_LOG` |
-| switch | `general_knowledge` block of `<project config home>/recall-hook.json`: `{"enabled": bool, "min_score": float}` | no variable of its own |
+| event log | `<project config home>/logs/general-knowledge.jsonl` | `..._GENERAL_KNOWLEDGE_LOG` |
+| switch | the `general_knowledge` block of `<project config home>/recall-hook.json` | none |
+
+The block is `{"enabled": bool, "min_score": float}`; the two variables are
+`RECALL_GENERAL_KNOWLEDGE_HOME` and `RECALL_GENERAL_KNOWLEDGE_LOG`.
 
 The project config home is `RECALL_PROJECT_CONFIG_HOME`, else `CLAUDE_CONFIG_DIR`, else
 `~/.claude`, so all three rows move with those two variables as well as with their own.
@@ -111,16 +114,23 @@ INDEX_SCHEMA = 1
 MAX_PER_CALL = 2
 #: The most command text the matcher analyses, so its cost is bounded by this cap and not by the
 #: input. A command can carry a heredoc body of hundreds of kilobytes, and parsing it costs time on
-#: every `Bash` call (0.39 s for 100 KB of separators) for a program that is named in the first lines. Program extraction and
-#: `command_regex` triggers both see only the first `MAX_COMMAND_CHARS` characters.
+#: every `Bash` call (0.39 s for 100 KB of separators) for a program that is named in the first
+#: lines. Program extraction and `command_regex` triggers both see only the first
+#: `MAX_COMMAND_CHARS` characters.
 MAX_COMMAND_CHARS = 16384
 #: A per-session state file untouched for this long is deleted by the next claim (opportunistic).
 STATE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 #: The longest session id used as a file name; a longer one is truncated and hash-suffixed.
 _SESSION_ID_MAX = 100
 _SESSION_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+#: Names Windows opens as devices whatever the extension, so they never name a state file as is.
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{n}" for n in range(10)}
+    | {f"lpt{n}" for n in range(10)}
+)
 
-#: The three ways an entry can be triggered. A trigger is a one-key object whose key is one of these.
+#: The three ways an entry can be triggered: a trigger is a one-key object with one of these keys.
 TRIGGER_KINDS = frozenset({"command", "command_regex", "host"})
 #: The longest `command_regex` accepted at load; a longer one is dropped (see `_risky_regex`).
 MAX_REGEX_CHARS = 200
@@ -155,7 +165,10 @@ class Entry:
 
 
 def knowledge_home() -> Path:
-    """Where the index lives: `RECALL_GENERAL_KNOWLEDGE_HOME`, else `<project config home>/general-knowledge`."""
+    """Where the index lives.
+
+    `RECALL_GENERAL_KNOWLEDGE_HOME`, else `<project config home>/general-knowledge`.
+    """
     raw = os.environ.get("RECALL_GENERAL_KNOWLEDGE_HOME", "").strip()
     if raw:
         return Path(raw).expanduser()
@@ -163,7 +176,10 @@ def knowledge_home() -> Path:
 
 
 def log_path() -> Path:
-    """The event log: `RECALL_GENERAL_KNOWLEDGE_LOG`, else `<project config home>/logs/general-knowledge.jsonl`."""
+    """The event log.
+
+    `RECALL_GENERAL_KNOWLEDGE_LOG`, else `<project config home>/logs/general-knowledge.jsonl`.
+    """
     raw = os.environ.get("RECALL_GENERAL_KNOWLEDGE_LOG", "").strip()
     if raw:
         return Path(raw).expanduser()
@@ -290,7 +306,7 @@ def _risky_regex(pattern: str) -> bool:
                 stack.append(False)
                 i += 1
                 if i < n and pattern[i] == "?":
-                    # A group prefix (`(?:`, `(?P<name>`, `(?<=`, `(?i)`): this `?` is no quantifier.
+                    # A group prefix (`(?:`, `(?P<name>`, `(?<=`, `(?i)`): no quantifier here.
                     i += 1
                     if pattern.startswith("P<", i):
                         end = pattern.find(">", i)
@@ -306,7 +322,8 @@ def _risky_regex(pattern: str) -> bool:
                 inner = stack.pop() if len(stack) > 1 else False
                 i += 1
                 follower = pattern[i] if i < n else ""
-                if inner and (follower in ("+", "*") or (follower == "{" and _counted(pattern, i, need_comma=False))):
+                counted = follower == "{" and _counted(pattern, i, need_comma=False)
+                if inner and (follower in ("+", "*") or counted):
                     return True
                 if inner:
                     stack[-1] = True
@@ -507,7 +524,7 @@ def repository_name(cwd: str) -> str | None:
 
 
 def _name_from_gitdir_file(directory: Path, dot_git: Path) -> str | None:
-    """The repository name a `.git` file points at; the caller catches unreadable and undecodable."""
+    """The repository a `.git` file points at; the caller catches unreadable and undecodable."""
     with dot_git.open("rb") as handle:
         first = handle.read(4096).decode("utf-8").splitlines()[:1]
     if not first or not first[0].startswith("gitdir:"):
@@ -529,7 +546,9 @@ def in_scope(entry: Entry, project: str | None) -> bool:
     if entry.scope == "global":
         return True
     prefix = "project:"
-    return project is not None and entry.scope.startswith(prefix) and entry.scope[len(prefix) :] == project
+    if project is None or not entry.scope.startswith(prefix):
+        return False
+    return entry.scope[len(prefix) :] == project
 
 
 def _names_host(alias: str, args: tuple[str, ...]) -> bool:
@@ -542,7 +561,9 @@ def _names_host(alias: str, args: tuple[str, ...]) -> bool:
     return any(arg.partition(":")[0].rpartition("@")[2].casefold() == wanted for arg in args)
 
 
-def matched_trigger(entry: Entry, command: str, segments: list[Segment], project: str | None) -> Trigger | None:
+def matched_trigger(
+    entry: Entry, command: str, segments: list[Segment], project: str | None
+) -> Trigger | None:
     """The FIRST trigger of `entry` that matches, or `None` (also `None` when out of scope).
 
     `segments` is `parse_command(command)`, passed in so a caller matching many entries parses once.
@@ -557,7 +578,10 @@ def matched_trigger(entry: Entry, command: str, segments: list[Segment], project
             if any(segment.program == wanted for segment in segments):
                 return trigger
         elif trigger.kind == "host":
-            if any(s.program in _HOST_PROGRAMS and _names_host(trigger.value, s.args) for s in segments):
+            if any(
+                s.program in _HOST_PROGRAMS and _names_host(trigger.value, s.args)
+                for s in segments
+            ):
                 return trigger
         elif trigger.kind == "command_regex":
             pattern = compiled(trigger.value)
@@ -590,7 +614,7 @@ def match_triggers(entries: list[Entry], command: str, project: str | None) -> l
 
 
 def client() -> str:
-    """Which client wrote an event: `RECALL_HOOK_CLIENT` (the Codex adapter sets it), else `claude`."""
+    """Which client wrote an event: `RECALL_HOOK_CLIENT` (the Codex adapter sets it) or `claude`."""
     return os.environ.get("RECALL_HOOK_CLIENT", "claude")
 
 
@@ -602,23 +626,38 @@ def _session_key(session_id: Any) -> str:
     `a/b` and `ab` stay two sessions instead of silently sharing one state file (and one
     session's first injection being suppressed by the other's). An id with nothing left after
     sanitising is no session at all.
+
+    The hash is also appended when the id holds an upper-case letter, because on a
+    case-insensitive filesystem (the Windows and macOS defaults) `Abc` and `abc` would otherwise
+    open one file, and when it is a Windows device name (`CON`, `nul`, `COM1`), which Windows
+    opens as a device rather than as `CON.json`. Client ids are lower-case UUIDs, which keep their
+    plain name.
     """
     if not isinstance(session_id, str):
         return ""
     cleaned = _SESSION_UNSAFE.sub("", session_id)
     if not cleaned:
         return ""
-    if cleaned == session_id and len(cleaned) <= _SESSION_ID_MAX:
+    plain = (
+        cleaned == session_id
+        and len(cleaned) <= _SESSION_ID_MAX
+        and cleaned == cleaned.lower()
+        and cleaned.lower() not in _WINDOWS_DEVICE_NAMES
+    )
+    if plain:
         return cleaned
     digest = hashlib.sha256(session_id.encode("utf-8", "replace")).hexdigest()[:10]
     return f"{cleaned[: _SESSION_ID_MAX - 11]}-{digest}"
 
 
 def _read_claimed(path: Path) -> list[str]:
-    """The ids already injected in this session; unreadable, corrupt or foreign-shaped means none."""
+    """The ids already injected in this session; unreadable, corrupt or odd-shaped means none."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: deeply nested JSON. Counting it as "nothing claimed" means the next
+        # claim rewrites the file, which repairs it; letting it reach the broad catch in
+        # `claim_for_session` would leave the file broken and re-inject on every call.
         return []
     if not isinstance(data, list):
         return []
@@ -649,10 +688,11 @@ def _write_claimed(path: Path, claimed: list[str]) -> None:
 
 
 def _prune_state(state_dir: Path) -> None:
-    """Delete `*.json` files in `state_dir` not modified for 7 days. One directory listing, never raises.
+    """Delete state files in `state_dir` not modified for 7 days. One listing, never raises.
 
     Opportunistic: it rides on a claim instead of running on a schedule, and it touches nothing but
-    regular `*.json` files directly inside the state directory.
+    regular `*.json` files, and the `*.tmp` files a killed atomic write can leave behind, directly
+    inside the state directory.
     """
     try:
         cutoff = time.time() - STATE_MAX_AGE_SECONDS
@@ -660,7 +700,7 @@ def _prune_state(state_dir: Path) -> None:
             for item in listing:
                 try:
                     if (
-                        item.name.endswith(".json")
+                        item.name.endswith((".json", ".tmp"))
                         and item.is_file(follow_symlinks=False)
                         and item.stat(follow_symlinks=False).st_mtime < cutoff
                     ):
@@ -672,7 +712,7 @@ def _prune_state(state_dir: Path) -> None:
 
 
 def claim_for_session(session_id: str, entry_ids: list[str], home: Path | None = None) -> list[str]:
-    """The ids of `entry_ids` not yet injected in this session, at most `MAX_PER_CALL`, now recorded.
+    """The ids of `entry_ids` not yet injected in this session, at most `MAX_PER_CALL`; recorded.
 
     The caller's order is kept and duplicates are ignored. With no usable session id nothing can be
     remembered, so the first `MAX_PER_CALL` ids are returned and NOTHING is written: the cap still
@@ -681,7 +721,8 @@ def claim_for_session(session_id: str, entry_ids: list[str], home: Path | None =
 
     **Never raises, fails open on delivery.** An unreadable, corrupt or non-list state file counts
     as nothing claimed yet, and an unwritable state directory still returns the claimable ids; the
-    worst case of either is a repeated injection, whereas a hook that raises is charged to the client.
+    worst case of either is a repeated injection, whereas a hook that raises is charged to the
+    client.
     """
     try:
         unique = list(dict.fromkeys(i for i in entry_ids if isinstance(i, str)))
@@ -745,20 +786,37 @@ SYMPTOM_WEIGHT = 3
 
 #: Claude Code prefixes a failed Bash result with `Exit code N` on a line of its own.
 _EXIT_HEADER = re.compile(r"^exit code (-?\d+)\s*$", re.IGNORECASE)
+#: Terminal escape sequences, which PowerShell puts in its error text (observed live on
+#: 2026-10-23: the error for an unknown command arrived wrapped in SGR colour codes). A full
+#: sequence is ESC then either a CSI (`[`, parameters, a final byte), an OSC (`]` up to BEL or
+#: ESC backslash) or one more character. The ESC itself was already gone in the live payload,
+#: leaving `[31;1m`, so a bare SGR (`[` digits and semicolons `m`, at least one digit) goes too;
+#: requiring a digit keeps text such as `array[m]` intact.
+_ANSI_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])"
+    r"|\[\d{1,3}(?:;\d{1,3})*m"
+)
+
+
+def _without_ansi(text: str) -> str:
+    """`text` with terminal escape sequences removed, so colour never changes a signature."""
+    return _ANSI_ESCAPE.sub("", text)
 #: Characters inside a path: not whitespace, quotes, shell metacharacters or `:`, so that
 #: `a.py:42:` leaves its line number to the digit rule instead of being swallowed.
 _PATH_BODY = r"""[^\s"'<>|*?:]"""
 #: A path (other than a Windows one) must START a token: line start, or whitespace, a quote, an
 #: opening bracket, `=` or `,` before it. That keeps `1/2` and `and/or` intact.
 _PATH_START = r"""(?<![^\s"'(=\[,])"""
-#: A Windows path (`c:\a\b` or `c:/a/b`; the text is lowercased first) and a UNC path (`\\host\share`).
+#: A Windows path (`c:\a\b` or `c:/a/b`; the text is lowercased first) and a UNC path
+#: (`\\host\share`).
 _WINDOWS_PATH = re.compile(r"(?<![a-z0-9])[a-z]:[\\/]" + _PATH_BODY + "*")
 _UNC_PATH = re.compile(r"\\\\" + _PATH_BODY + "+")
-#: A POSIX absolute path (a character must follow the slash, which keeps a bare `/` intact) or `~/x`.
+#: A POSIX absolute path (a character must follow the slash, so a bare `/` stays) or `~/x`.
 _POSIX_PATH = re.compile(_PATH_START + "(?:/" + _PATH_BODY + r"+|~[\\/]" + _PATH_BODY + "*)")
 #: Hex runs of 7 or more with at least one digit AND at least one letter a to f, word bounded and
-#: applied after the path rules and before the digit rule: a commit hash or object id has both. An English word made of the letters a to f (`defaced`,
-#: `effaced`) has no digit, and a plain number (`1234567`) has no letter, so it stays for `<n>`.
+#: applied after the path rules and before the digit rule: a commit hash or object id has both.
+#: An English word made of the letters a to f (`defaced`, `effaced`) has no digit, and a plain
+#: number (`1234567`) has no letter, so it stays for `<n>`.
 _HEX_RUN = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,}\b")
 _DIGITS = re.compile(r"\d+")
 _WHITESPACE = re.compile(r"\s+")
@@ -767,7 +825,7 @@ _WHITESPACE = re.compile(r"\s+")
 #: because `ssh -O exit host` would otherwise name the host `exit`.
 _SSH_VALUE_OPTIONS = "pilOoFJLRDbceSmWwEBIQ"
 #: `-p`, or a cluster of valueless flags ending in a value option (`-vp`), with the value next.
-#: `-p22` and `-oBatchMode=yes` carry their value attached, so they do not match and consume nothing.
+#: `-p22` and `-oBatchMode=yes` carry their value attached, so they match nothing and consume none.
 _SSH_OPTION_WITH_VALUE = re.compile(r"^-[46AaCfGgKkMNnqsTtVvXxY]*[" + _SSH_VALUE_OPTIONS + r"]$")
 
 
@@ -798,7 +856,7 @@ def _ssh_host(args: tuple[str, ...]) -> str:
 
 
 def command_family(command: str) -> str:
-    """The first program of `command`, or `ssh:<alias>` for ssh; "" when there is none. Never raises.
+    """The first program of `command`, or `ssh:<alias>` for ssh; "" for none. Never raises.
 
     It reuses `parse_command` (and so its length cap) instead of finding the program a second way:
     the trigger matcher and the failure signature must agree on what a command is. For `ssh` the
@@ -815,7 +873,7 @@ def command_family(command: str) -> str:
 
 
 def _normalise(line: str) -> str:
-    """Lowercase `line`, then paths, hex runs and digit runs become placeholders and spaces collapse."""
+    """Lowercase `line`; paths, hex runs and digit runs become placeholders; spaces collapse."""
     line = line.lower()
     line = _WINDOWS_PATH.sub("<path>", line)
     line = _UNC_PATH.sub("<path>", line)
@@ -828,14 +886,15 @@ def _normalise(line: str) -> str:
 def failure_signature(command: str, error: str) -> str:
     """`<family>|<detail>`: the same failure of the same kind of command gives the same string.
 
-    `family` is `command_family(command)` cut to `FAMILY_CHARS`. `detail` is the first non-empty line of the error after a leading `Exit code N` line, normalised
-    by `_normalise` and cut to `SIGNATURE_CHARS`. When no such line exists it is `exit:N` (not
+    `family` is `command_family(command)` cut to `FAMILY_CHARS`. `detail` is the first non-empty
+    line of the error after a leading `Exit code N` line, normalised by `_normalise` and cut to
+    `SIGNATURE_CHARS`. When no such line exists it is `exit:N` (not
     normalised) or, with no exit header either, `exit:?`. The error is cut to `MAX_ERROR_CHARS`
     BEFORE any splitting or matching, so the cost does not depend on how much the command printed.
     A non-string `command` or `error` counts as empty. Never raises.
     """
     family = command_family(command)[:FAMILY_CHARS]
-    text = error[:MAX_ERROR_CHARS] if isinstance(error, str) else ""
+    text = _without_ansi(error[:MAX_ERROR_CHARS]) if isinstance(error, str) else ""
     lines = [line for line in (raw.strip() for raw in text.splitlines()) if line]
     code: str | None = None
     if lines:
@@ -870,7 +929,7 @@ def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list
     try:
         if not isinstance(error, str) or not entries:
             return []
-        query = _without_exit_header(error[:MAX_ERROR_CHARS])
+        query = _without_exit_header(_without_ansi(error[:MAX_ERROR_CHARS]))
         if not query.strip():
             return []
         from . import prompt_time
@@ -884,7 +943,8 @@ def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list
             text = " ".join(list(entry.symptoms) * SYMPTOM_WEIGHT) + " " + entry.body
             documents.append((entry.id, "", prompt_time.tokenize(text)))
         ranked = prompt_time.rank(documents, query, k=MAX_PER_CALL)
-        return [by_id[name] for name, _summary, score in ranked if score >= min_score][:MAX_PER_CALL]
+        kept = [by_id[name] for name, _summary, score in ranked if score >= min_score]
+        return kept[:MAX_PER_CALL]
     except Exception:  # BROAD-CATCH: fail-open
         return []
 
@@ -893,7 +953,8 @@ def render(entries: list[Entry]) -> str:
     """The text injected into the agent's context for `entries`; "" for none."""
     if not entries:
         return ""
-    return "General knowledge (owner-approved):\n\n" + "\n\n".join(f"[{e.id}]\n{e.body}" for e in entries)
+    blocks = "\n\n".join(f"[{e.id}]\n{e.body}" for e in entries)
+    return "General knowledge (owner-approved):\n\n" + blocks
 
 
 #: The tools whose `command` is matched. `PowerShell` is a shell tool on Windows and carries the
