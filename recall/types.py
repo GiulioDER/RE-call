@@ -275,6 +275,68 @@ class EvidenceCard:
         )
 
 
+#: The keys a redacted card keeps (`recall.fact_redaction`): its identity, its memo's name, and
+#: which redaction erased the rest. Migration 0029's triggers admit exactly this shape.
+REDACTED_CARD_KEYS = ("card_id", "generation_id", "redacted", "redaction_id", "source", "tenant_id")
+#: The keys a redacted fact payload keeps: the fresh fact id its events pair on, and the redaction.
+REDACTED_FACT_KEYS = ("fact_id", "redacted", "redaction_id")
+
+
+def is_redaction_marker(value: object) -> bool:
+    """Whether a stored fact or card payload is one `recall.fact_redaction` wrote in its place."""
+    return isinstance(value, Mapping) and value.get("redacted") is True
+
+
+@dataclass(frozen=True)
+class RedactedEvidenceCard(EvidenceCard):
+    """A card whose content `recall_forget` erased: the memo's name and the card's place remain.
+
+    Its id is a fresh random one, not a hash of content it no longer holds, so the content check
+    `EvidenceCard` makes is skipped. It supports no fact, is never live, and serializes back to
+    the marker it was read from.
+    """
+
+    redaction_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.card_id or not self.redaction_id:
+            raise ValueError("a redacted evidence card needs its id and its redaction id")
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "card_id": self.card_id,
+            "generation_id": self.generation_id,
+            "redacted": True,
+            "redaction_id": self.redaction_id,
+            "source": self.source,
+            "tenant_id": self.tenant_id,
+        }
+
+    @classmethod
+    def from_marker(cls, payload: Mapping[str, Any]) -> RedactedEvidenceCard:
+        return cls(
+            card_id=str(payload["card_id"]),
+            chunk_id="redacted",
+            source=str(payload["source"]),
+            source_digest="redacted",
+            valid_from=None,
+            valid_until=None,
+            first_indexed_at=None,
+            indexed_at=None,
+            tenant_id=str(payload["tenant_id"]),
+            generation_id=str(payload["generation_id"]),
+            pipeline_fingerprint=None,
+            corpus_fingerprint=None,
+            calibration_id=None,
+            calibration_status="redacted",
+            trust_state="redacted",
+            verdict="unverified",
+            confidence=0.0,
+            rank=1,
+            redaction_id=str(payload["redaction_id"]),
+        )
+
+
 @dataclass(frozen=True)
 class ScoredChunk:
     chunk: Chunk

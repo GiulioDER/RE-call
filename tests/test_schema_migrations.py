@@ -62,10 +62,7 @@ def _target(prefix: str = "mig_"):
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     migrations = load_migrations()
-    # 0029 is PR 950's (fact value redaction), not on this branch.
-    assert [m.version for m in migrations] == [
-        *(f"{n:04d}" for n in range(1, 29)), "0030", "0031", "0032", "0033",
-    ]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 34)]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
@@ -84,10 +81,11 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[25].transactional  # 0026_fact_ledger_retraction
     assert migrations[26].transactional  # 0027_fact_ledger_gc_retraction
     assert migrations[27].transactional  # 0028_validate_fact_ledger_retraction
-    assert migrations[28].transactional  # 0030_fact_current_table
-    assert migrations[29].concurrent_index == "recall_fact_ledger_order_idx"  # 0031_fact_ledger_order_index
-    assert migrations[30].transactional  # 0032_fact_ledger_withdrawal
-    assert migrations[31].transactional  # 0033_validate_fact_ledger_withdrawal
+    assert migrations[28].transactional  # 0029_fact_value_redaction
+    assert migrations[29].transactional  # 0030_fact_current_table
+    assert migrations[30].concurrent_index == "recall_fact_ledger_order_idx"  # 0031_fact_ledger_order_index
+    assert migrations[31].transactional  # 0032_fact_ledger_withdrawal
+    assert migrations[32].transactional  # 0033_validate_fact_ledger_withdrawal
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -508,9 +506,8 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
 
     v0.13 shipped migrations 0001 through 0024. Building that exact checkpoint with the package
     loader temporarily limited to those immutable migration objects is safer than duplicating
-    twenty-four SQL files in a test. The current package then applies 0025 to 0028 and 0030 to 0033,
-    preserving an existing authored relation while allowing the newly supported ``supersedes``
-    relation.
+    twenty-four SQL files in a test. The current package then applies 0025 to 0033, preserving an
+    existing authored relation while allowing the newly supported ``supersedes`` relation.
     """
     import recall.schema as schema_module
 
@@ -551,7 +548,7 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
 
         applied = apply_migrations(dsn, table="chunks", dim=DIM)
         assert [migration.version for migration in applied] == [
-            "0025", "0026", "0027", "0028", "0030", "0031", "0032", "0033",
+            "0025", "0026", "0027", "0028", "0029", "0030", "0031", "0032", "0033",
         ]
 
         with psycopg.connect(dsn, autocommit=True) as conn:
@@ -568,6 +565,77 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
                 (tenant, generation),
             ).fetchall()
         assert relations == [("existing", "supports"), ("successor", "supersedes")]
+
+
+@requires_db
+def test_0029_lands_last_on_a_database_already_at_0033(monkeypatch):
+    """A database migrated to 0033 before 0029 existed (PR 950 held the number) takes it last.
+
+    Master shipped 0030 to 0033 while 0029 was unmerged, so a database built then has every
+    migration but 0029. Invariants: the upgrade applies 0029 alone; it keeps 0032's `withdrawn`
+    event type (0029 replaces the ledger's trigger functions, never its constraints); and on that
+    database a tenant erase of an asserted, then withdrawn, fact renames the withdrawal with its
+    assertion, so the withdrawal still names a ledger event.
+
+    Red proof, 2026-10-24 on the remote test host, each mutation alone with its checksum updated,
+    on a database that never applied the real 0029, then restored: 0029 with migration 0026's event-type constraint appended (no `withdrawn`)
+    fails on "applying 0029 after 0033 lost 0032's withdrawn event type"; 0029's
+    `recall_redact_fact_values` without its `withdrawn` branch fails on "the tenant erase was
+    refused" (the function holds the renamed withdrawal to its old ids).
+    """
+    import recall.schema as schema_module
+    from recall.fact_ledger import PostgresFactLedger
+    from recall.fact_redaction import TENANT_ERASE_WRITER, PostgresFactRedactor
+    from recall.provenance_cards import PostgresEvidenceCardStore
+    from recall.provenance_controller import (
+        FactApplicationRequest,
+        ProvenanceController,
+        withdrawn_event_ids,
+    )
+    from recall.types import AtomicFact
+    from tests.fact_fixtures import NOW, evidence_card
+
+    without = tuple(m for m in load_migrations() if m.version != "0029")
+    tenant = "gap-" + uuid.uuid4().hex[:10]
+    with _fresh_database(prefix="gap0029_") as dsn:
+        monkeypatch.setattr(schema_module, "load_migrations", lambda: without)
+        assert apply_migrations(dsn, table="chunks", dim=DIM)
+        monkeypatch.undo()
+
+        applied = apply_migrations(dsn, table="chunks", dim=DIM)
+        assert [migration.version for migration in applied] == ["0029"]
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'recall_fact_ledger_events_event_type_check'"
+            ).fetchone()
+        assert row is not None and "withdrawn" in row[0], (
+            "applying 0029 after 0033 lost 0032's withdrawn event type"
+        )
+
+        fact = AtomicFact(namespace="memory", subject="user", predicate="door_code", object="4512")
+        cards = PostgresEvidenceCardStore(dsn, tenant_id=tenant)
+        card = evidence_card(fact, tenant=tenant, generation="g1", chunk="chunk-a", source="a.md")
+        cards.put((card,))
+        ledger = PostgresFactLedger(dsn, tenant_id=tenant)
+        ProvenanceController(
+            tenant_id=tenant, generation_id="g1", cards=cards, ledger=ledger,
+            source_digest_for=lambda _card: "digest", now=lambda: NOW, writer="gap-test",
+        ).apply_fact(FactApplicationRequest(fact, (card.card_id,), "r1"))
+        assert ledger.withdraw_forgotten(tenant_id=tenant, touched=lambda _c: True, gone=lambda _c: True)
+
+        try:
+            report = PostgresFactRedactor(dsn, tenant_id=tenant).redact(
+                everything=True, reason="tenant_erase", writer=TENANT_ERASE_WRITER
+            )
+        except psycopg.Error as exc:
+            pytest.fail(f"the tenant erase was refused: {exc}")
+        assert report.facts_redacted == 1
+        events = PostgresFactLedger(dsn, tenant_id=tenant).events
+        named = withdrawn_event_ids(events)
+        assert named and named <= {event.event_id for event in events}, (
+            "the withdrawal names an assertion the ledger no longer holds"
+        )
 
 
 @requires_db

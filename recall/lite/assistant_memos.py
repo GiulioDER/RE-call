@@ -10,7 +10,9 @@ What it writes, and nothing else:
   `valid_from`, `valid_until`, `supersedes` and `recall_graph` written by this module, never taken
   from the caller's text;
 - the authorship ledger `.recall-authors.json` in the folder, replaced atomically; no index reads it;
-- the deletion of one memo file of the folder by `delete`, after its rows are forgotten.
+- the deletion of one memo file of the folder by `delete`, after its rows are forgotten;
+- the request journal's erasure for a memo removed any other way (`forget_memo_requests`): the
+  generic forget, or a deletion by hand that the indexer prunes.
 
 Memo ids are `<kind>-<number>`, the number at least four digits and never reused: the ledger keeps
 every id ever written, forgotten ones included, and a new id is one past the largest in the ledger
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -33,9 +36,28 @@ if TYPE_CHECKING:
     from recall.lite import LiteStore
     from recall.lite.refresh import RefreshReport
 
-__all__ = ["LEDGER_NAME", "MEMO_ID", "MemoFolder"]
+__all__ = ["LEDGER_NAME", "MEMO_ID", "MemoFolder", "forget_memo_requests"]
 
 LEDGER_NAME = ".recall-authors.json"
+
+
+def forget_memo_requests(sources: Iterable[str]) -> int:
+    """Erase the request journal hashes of every memo among `sources`, as `MemoFolder.delete` does.
+
+    For a memo leaving the index by a path other than `recall_forget_memo`: the generic forget
+    (`recall forget`, `recall_forget`), and the indexer's prune of a memo deleted by hand. A source
+    is a memo when it is an absolute `<memo id>.md` whose folder holds an authorship ledger; any
+    other source is left alone. Returns how many journal entries changed.
+    """
+    changed = 0
+    for source in dict.fromkeys(sources):
+        path = Path(source)
+        if not path.is_absolute() or path.suffix != ".md" or not MEMO_ID.fullmatch(path.stem):
+            continue
+        ledger = path.parent / LEDGER_NAME
+        if ledger.is_file():
+            changed += len(cancel_requests(ledger, path.stem))
+    return changed
 
 
 def _opens_a_fence(text: str) -> bool:
@@ -168,5 +190,5 @@ class MemoFolder:
             # The file is still there (a Windows editor holding it, say): the request it came from
             # must stay finishable rather than read as forgotten.
             if path.exists():
-                restore_requests(self.ledger_path, memo_id, previous)
+                restore_requests(self.ledger_path, previous)
             raise

@@ -31,6 +31,7 @@ from recall.fact_ledger import (
     RETRACTION_WRITER,
     WITHDRAWAL_WRITER,
     SQLITE_FACT_LEDGER_DDL,
+    SQLITE_FACT_LEDGER_TRIGGERS,
     assertion_event_id,
     assertion_is_duplicate,
     decision_event_id,
@@ -70,7 +71,10 @@ from recall.provenance_controller import (
 )
 from recall.types import AtomicFact, EvidenceCard
 
-_SCHEMA = SQLITE_FACT_LEDGER_DDL + SQLITE_EVIDENCE_CARD_DDL
+def _schema() -> str:
+    from recall.fact_redaction import SQLITE_FACT_REDACTIONS_DDL
+
+    return SQLITE_FACT_LEDGER_DDL + SQLITE_EVIDENCE_CARD_DDL + SQLITE_FACT_REDACTIONS_DDL
 _log = get_logger("lite.facts")
 
 
@@ -96,13 +100,16 @@ def ensure_fact_tables(store: LiteStore) -> None:
     Outside `_write()` on purpose: `executescript` commits any open transaction first, and every
     statement is `IF NOT EXISTS`, so running it on each adapter construction costs a catalog read.
     A ledger table made before `retracted` or `withdrawn` existed is upgraded in place
-    (`_admit_retraction`).
-    The current-facts tables (`recall.fact_current`) come last, because that upgrade rebuilds the
-    ledger table and drops the index they add to it.
+    (`_admit_retraction`), and a file whose update triggers predate redaction gets the current
+    ones (`_admit_redaction`).
+    The current-facts tables (`recall.fact_current`) come last, because the first upgrade rebuilds
+    the ledger table and drops the index they add to it.
     """
-    store.ensure_schema(_SCHEMA)
+    store.ensure_schema(_schema())
     if not _admits_retraction(store):
         _admit_retraction(store)
+    if not _admits_redaction(store):
+        _admit_redaction(store)
     store.ensure_schema(SQLITE_FACT_CURRENT_DDL)
 
 
@@ -114,11 +121,45 @@ def _admits_retraction(store: LiteStore) -> bool:
     return not rows or "'withdrawn'" in str(rows[0][0])
 
 
+#: The two update triggers migration 0029's rule replaced; an older file's refuse every UPDATE.
+_REDACTION_AWARE_TRIGGERS = ("recall_fact_ledger_no_update", f"{EVIDENCE_CARD_TABLE}_no_update")
+
+
+def _admits_redaction(store: LiteStore) -> bool:
+    rows = store._metadata_values(
+        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN (?, ?)",
+        _REDACTION_AWARE_TRIGGERS,
+    )
+    return all("recall_redaction_session" in str(sql) for _name, sql in rows)
+
+
+def _admit_redaction(store: LiteStore) -> None:
+    """Replace a file's update triggers that predate redaction, in one transaction.
+
+    They refused every UPDATE; the current ones (`SQLITE_FACT_LEDGER_DDL`, `SQLITE_EVIDENCE_CARD_DDL`)
+    admit one made inside a redaction session into the marker shape, and still refuse the rest.
+    The rows are not touched, so unlike `_admit_retraction` there is nothing a row could refuse.
+    """
+    with store._write():
+        if _admits_redaction(store):  # another handle upgraded it first
+            return
+        conn = store._conn
+        for name in _REDACTION_AWARE_TRIGGERS:
+            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+        for statement in _statements(SQLITE_FACT_LEDGER_DDL) + _statements(SQLITE_EVIDENCE_CARD_DDL):
+            if statement.startswith("CREATE TRIGGER"):
+                conn.execute(statement)
+
+
 def _ledger_statements() -> list[str]:
     """`SQLITE_FACT_LEDGER_DDL` one statement at a time (a trigger body holds its own `;`)."""
+    return _statements(SQLITE_FACT_LEDGER_DDL)
+
+
+def _statements(ddl: str) -> list[str]:
     statements: list[str] = []
     pending = ""
-    for line in SQLITE_FACT_LEDGER_DDL.splitlines(keepends=True):
+    for line in ddl.splitlines(keepends=True):
         pending += line
         if sqlite3.complete_statement(pending):
             statements.append(pending.strip())
@@ -143,7 +184,7 @@ def _admit_retraction(store: LiteStore) -> None:
                 return
             conn = store._conn
             conn.execute(f"ALTER TABLE {FACT_LEDGER_TABLE} RENAME TO {old}")
-            for name in ("recall_fact_ledger_no_update", "recall_fact_ledger_no_delete"):
+            for name in SQLITE_FACT_LEDGER_TRIGGERS:
                 conn.execute(f"DROP TRIGGER IF EXISTS {name}")
             conn.execute("DROP INDEX IF EXISTS recall_fact_ledger_current_idx")
             for statement in _ledger_statements():

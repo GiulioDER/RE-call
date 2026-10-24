@@ -61,6 +61,7 @@ def test_recall_forget_tool_returns_json_matching_forget_result(make_store):
         "outbox_events_scrubbed": 0,
         "staged_files_removed": 0,
         "facts_retracted": 0,
+        "facts_redacted": 0,
     }
     assert store.count() == 0
 

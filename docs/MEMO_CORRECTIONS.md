@@ -55,10 +55,25 @@ A completed request's edited or removed memo is refused rather than overwritten 
 Replay checks raw bytes independently of the indexed revision, so even a representation-only edit
 is protected. Explicit forgetting durably cancels request reservations before unlinking, including
 an interrupted request whose file was published but whose final journal update failed. If cancellation
-cannot be saved, forgetting raises and leaves the file present. A prepared request without a published
+cannot be saved, forgetting raises and leaves the file present. A memo that was published but never
+indexed (a crash after publication with no refresh since) is forgotten the same way, rather than refused.
+A prepared request without a published
 memo can finish after rechecking correction preconditions; use explicit forgetting for deletion, since
 a direct filesystem deletion in that interrupted state cannot be distinguished from non-publication.
 The authorship ledger retains reservations and request identities when legacy calls write new memos.
+
+Forgetting also drops every hash the journal derived from the memo's bytes, since an unsalted hash of a
+short value in a known template can be reversed by enumeration. The memo's own requests keep only their
+memo id, state and time, and every retry of one is refused as `memo_missing`, whatever its text. A
+correction that named the memo as its target loses the hash of its revision precondition and keeps a hash
+of its own content: its retry is still replayed when the reply was lost, and an unfinished one is refused
+as `target_missing`.
+
+The same erasure follows a memo that leaves the index any other way: `recall forget` and the
+`recall_forget` tool erase the hashes of every memo they forget, whether or not its file is still on
+disk, and the next index (the server's refresh, `recall lite refresh`, `recall index`) that prunes a
+memo deleted by hand erases them before it deletes the rows. A memo deleted by hand that was never
+indexed is not pruned, so its hashes stay until it is forgotten by name.
 
 A reservation is not authorship. The ledger records the assistant as author only once its file
 exists, so a file somebody else puts in the folder under a reserved name is never claimed: the

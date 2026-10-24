@@ -500,6 +500,15 @@ class ForgetResult(BaseModel):
         "A fact with evidence in a memo that survives stays. -1 means the retraction FAILED and "
         "this forget must be re-run with the same source names.",
     )
+    facts_redacted: int = Field(
+        default=0,
+        description="Fact values erased from the fact ledger because these sources supplied them: "
+        "the value, every evidence card citing these sources and the replay receipts echoing "
+        "them are rewritten in place under fresh ids, so the ledger no longer holds the value or a "
+        "hash of it. A value a surviving memo also states stays. -1 means the erasure FAILED (or "
+        "was not attempted because the retraction failed) and this forget must be re-run with "
+        "the same source names.",
+    )
 
 
 class WithdrawResult(BaseModel):
@@ -530,6 +539,12 @@ class WithdrawResult(BaseModel):
         description="Facts in the fact ledger withdrawn because every piece of their evidence was "
         "in these sources: no longer listed, and what they superseded is current again. -1 means "
         "the withdrawal FAILED and this withdraw must be re-run with the same source names.",
+    )
+    facts_redacted: int = Field(
+        default=0,
+        description="As recall_forget's: fact values erased from the fact ledger because these "
+        "sources supplied them. -1 means the erasure FAILED (or was not attempted because the "
+        "withdrawal failed) and this withdraw must be re-run with the same source names.",
     )
 
 

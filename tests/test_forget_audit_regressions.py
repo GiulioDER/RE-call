@@ -44,8 +44,8 @@ def test_dat001_two_prepared_forgets_retract_the_last_support(make_store):
         b = _forget_retractions(store, None, ['b.md'], ['/notes/b.md'])
         store.delete_sources(['/notes/a.md'])
         store.delete_sources(['/notes/b.md'])
-        a()
-        b()
+        a.retract()
+        b.retract()
         assert not ledger.current(tenant_id=tenant, now=NOW), 'both deleted supports escaped permanent retraction'
         _remember(store, 'a.md')
         assert not ledger.current(tenant_id=tenant, now=NOW), 'restoring a memo revived explicitly forgotten facts'

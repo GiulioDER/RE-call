@@ -133,11 +133,17 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "build will re-admit that URI even if the file is there; nothing deletes a tombstone "
             "and there is no `unforget`. Name a source exactly as stored, which is the `source` "
             "field printed by `recall search`; a source this store has never seen is reported as NOT "
-            "erased and NOT tombstoned rather than acted on. What is erased is the chunks: a fact "
-            "the fact ledger holds whose only evidence was in these sources is retracted, so it is "
-            "no longer listed, but its value stays in the append-only fact ledger and evidence "
-            "cards, the audit trail, which nothing deletes. Whatever a forgotten memo superseded "
-            "stays retired: to give it back, because the memo was a mistake, use `recall withdraw`."
+            "erased and NOT tombstoned rather than acted on, though the facts it supplied are still "
+            "erased, which is how a forget whose fact erasure failed is completed. The fact values "
+            "these sources supplied are erased with them: a fact whose only evidence they were is "
+            "retracted, so it is no longer listed, and its value, every evidence card citing these "
+            "sources and the replay receipts echoing them are rewritten in place under fresh ids, "
+            "so the fact ledger keeps the shape of its history and not the value. A value another "
+            "surviving memo also states stays. On a lite store the freed bytes are zeroed in the "
+            "file and its write-ahead log; PostgreSQL keeps dead row versions until VACUUM, and its "
+            "WAL, replicas and backups are the operator's to manage. Whatever a forgotten memo "
+            "superseded stays retired: to give it back, because the memo was a mistake, use "
+            "`recall withdraw`."
         ),
         help="permanently delete indexed memory for the given source(s) — irreversible",
     )
@@ -157,6 +163,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "irreversible, and it is also invoked from scripts, so a typo or an unattended "
         "run must not silently wipe a corpus. Re-run with --yes once the preview looks right.",
     )
+    p_forget.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="lite store only: VACUUM the file after the forget, which rewrites it without its "
+        "free pages. The bytes the forget freed are already zeroed without it; VACUUM also "
+        "compacts the file and needs about its size again in free disk.",
+    )
 
     p_withdraw = sub.add_parser(
         "withdraw",
@@ -167,8 +180,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "voids its `supersedes:` claims, so what it replaced is current again, and whatever "
             "superseded it now supersedes what it replaced (in a -> b -> c, withdrawing b leaves a "
             "retired by c). In the fact ledger each fact it alone supported is withdrawn, which "
-            "also undoes the supersession that fact made. A memo forgotten or pruned earlier can "
-            "be withdrawn by the name it had."
+            "also undoes the supersession that fact made, and the fact values these sources "
+            "supplied are erased as `recall forget` erases them. A memo forgotten or pruned "
+            "earlier can be withdrawn by the name it had."
         ),
         help="erase memory that was a mistake and bring back what it replaced — irreversible",
     )
@@ -184,6 +198,11 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         action="store_true",
         help="actually withdraw. Without this flag, withdraw only PREVIEWS what it would do and "
         "changes nothing, for the reason `recall forget --yes` gives.",
+    )
+    p_withdraw.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="lite store only: VACUUM the file after the withdrawal, as `recall forget --vacuum` does.",
     )
 
     p_search = sub.add_parser(
@@ -466,6 +485,11 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
         raise SystemExit(refusal)
     if is_lite_dsn(args.dsn):
         _check_lite_forget_target(args.dsn, args.tenant, command)
+    elif getattr(args, "vacuum", False):
+        raise SystemExit(
+            f"{command}: --vacuum applies to a lite store; on PostgreSQL, VACUUM the fact tables "
+            "yourself (dead row versions stay until it runs); nothing deleted"
+        )
     # After the refusals: building an embedder loads a model or sends a billed probe, and erasure
     # embeds nothing; a refused command must not pay for it.
     embedder = _make_embedder(args.embedder)
@@ -570,21 +594,26 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
             # One source per call: `delete_sources` commits a separate transaction each,
             # so a failure part way through leaves the earlier ones erased. Reporting from
             # a finally means a partial erasure is never silent.
-            if targets:
+            # A forget passes an unseen name on too: nothing of it is deleted or tombstoned (it
+            # resolves to no rows), but the facts its memo supplied are retracted and erased,
+            # which is how a forget whose fact erasure failed after its chunks went is completed.
+            # A withdraw does not: an unseen name has no record to withdraw.
+            names = targets if withdraw else [*targets, *unseen]
+            if names:
                 control_plane = ControlPlane(args.dsn) if gen_store is not None else None
-                if withdraw:
-                    message = withdraw_memory(
-                        store, targets, control_plane=control_plane,
-                        security_policy=security_policy, security_context=security_context,
-                    ).message
-                else:
-                    message = forget_memory(
-                        store, targets, control_plane=control_plane,
-                        security_policy=security_policy, security_context=security_context,
-                    ).message
+                remove = withdraw_memory if withdraw else forget_memory
+                message = remove(
+                    store, names, control_plane=control_plane,
+                    security_policy=security_policy, security_context=security_context,
+                ).message
                 print(message[:1].lower() + message[1:])
             if unseen:
                 print(unseen_note)
+            if getattr(args, "vacuum", False):
+                vacuum = getattr(store, "vacuum", None)
+                if callable(vacuum):
+                    vacuum()
+                    print("vacuumed the lite store file")
 
 
 def refusal_message(exc: TrustRefusal) -> str:

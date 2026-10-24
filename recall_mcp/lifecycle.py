@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, project_current_state
-from recall.fact_retraction import fact_ledger_for, prepare_retraction
+from recall.fact_retraction import FactErasure, fact_ledger_for, prepare_fact_erasure
 from recall.guards import staleness
 from recall.observability import METRICS, get_logger
 from recall.uploads import delete_staged_sources
@@ -117,18 +117,24 @@ def _forget_retractions(
     requested: list[str],
     to_delete: list[str],
     withdraw: bool = False,
-) -> Callable[[], int] | None:
-    """Prepare, before any chunk is deleted, the retraction this forget owes the fact ledger
-    (with `withdraw`, the withdrawal this withdraw owes it).
+) -> FactErasure | None:
+    """Prepare, before any chunk is deleted, the retraction and redaction this forget owes the
+    fact ledger (with `withdraw`, a withdrawal in place of the retraction).
 
-    None for a store with no ledger; otherwise `recall.fact_retraction.prepare_retraction`, which
-    states the rule.
+    None for a store with no ledger; otherwise `recall.fact_retraction.prepare_fact_erasure`,
+    which states the rule, with the redactor `recall.fact_redaction.fact_redactor_for` resolves
+    from the same environment.
     """
+    from recall.fact_redaction import fact_redactor_for
+    from recall_mcp.settings import runtime_environment
+
     ledger = _fact_ledger_for(store)
     if ledger is None:
         return None
-    return prepare_retraction(
-        ledger, store, shadow_store, named=requested, erased=to_delete, withdraw=withdraw
+    redactor = fact_redactor_for(store, runtime_environment())
+    return prepare_fact_erasure(
+        ledger, store, shadow_store, named=requested, erased=to_delete, redactor=redactor,
+        withdraw=withdraw,
     )
 
 
@@ -139,21 +145,35 @@ def forget_memory(
     control_plane: ControlPlane | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
+    *,
+    erase_memo_requests: bool = True,
 ) -> ForgetResult:
-    """Permanently delete every indexed chunk for the given sources.
+    """Permanently delete every indexed chunk for the given sources, and erase the fact values
+    they supplied.
 
     Every fact the fact ledger holds whose evidence was only in these sources is retracted with
-    them (`recall.fact_ledger.plan_retractions`), so `recall_current_facts` stops listing it. The
-    ledger is append-only: the retraction hides the fact, and the fact's own event stays in the
-    audit trail.
+    them (`recall.fact_ledger.plan_retractions`), so `recall_current_facts` stops listing it, and
+    then its value is erased in place (`recall.fact_redaction`): from the ledger events, from every
+    evidence card citing these sources, and from the replay receipts that echo them. The history
+    keeps its shape (event types, times, memo names, one redaction record).
 
-    On a lite store the resolve and the delete hold the file's write lane (`recall.lite.writer_lock`).
+    On a lite store the resolve and the delete hold the file's write lane (`recall.lite.writer_lock`),
+    and everything runs inside `LiteStore.erasing()`, so the bytes it frees are zeroed in the file
+    and its write-ahead log.
+
+    A source that is an assistant memo (`recall.lite.assistant_memos.forget_memo_requests`) also
+    loses its request journal hashes, whether or not its file is still on disk.
+    `erase_memo_requests=False` is for `recall_forget_memo`, which erases them itself just before
+    it deletes the file, and puts them back if the delete fails.
     """
     from recall.backends import write_session
+    from recall.lite import LiteStore
 
-    with write_session(store, "forget"):
+    erasing = store.erasing() if isinstance(store, LiteStore) else nullcontext()
+    with write_session(store, "forget"), erasing:
         return _forget_memory_unlocked(
-            store, sources, shadow_store, control_plane, security_policy, security_context
+            store, sources, shadow_store, control_plane, security_policy, security_context,
+            erase_memo_requests=erase_memo_requests,
         )
 
 
@@ -177,8 +197,10 @@ def withdraw_memory(
     be withdrawn by the name it had.
     """
     from recall.backends import write_session
+    from recall.lite import LiteStore
 
-    with write_session(store, "forget"):
+    erasing = store.erasing() if isinstance(store, LiteStore) else nullcontext()
+    with write_session(store, "forget"), erasing:
         result = _forget_memory_unlocked(
             store, sources, shadow_store, control_plane, security_policy, security_context,
             withdraw=True,
@@ -191,6 +213,7 @@ def withdraw_memory(
         outbox_events_scrubbed=result.outbox_events_scrubbed,
         staged_files_removed=result.staged_files_removed,
         facts_withdrawn=result.facts_retracted,
+        facts_redacted=result.facts_redacted,
     )
 
 
@@ -232,6 +255,7 @@ def _forget_memory_unlocked(
     security_context: AccessContext | None = None,
     *,
     withdraw: bool = False,
+    erase_memo_requests: bool = True,
 ) -> ForgetResult:
     """`forget_memory` (or with `withdraw`, `withdraw_memory`) without the lite store's write
     lane; call one of those."""
@@ -277,9 +301,10 @@ def _forget_memory_unlocked(
             store, shadow_store, to_delete, security_policy, security_context, withdraw=withdraw
         )
     facts_retracted = 0
-    retract: Callable[[], int] | None = None
+    facts_redacted = 0
+    erasure: FactErasure | None = None
     try:
-        retract = _forget_retractions(store, shadow_store, requested, to_delete, withdraw)
+        erasure = _forget_retractions(store, shadow_store, requested, to_delete, withdraw)
     except Exception:  # BROAD-CATCH: error-translation
         _log.exception(
             "fact retraction plan failed before chunk deletion for tenant %r",
@@ -303,14 +328,26 @@ def _forget_memory_unlocked(
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception("outbox scrub failed after chunk deletion for tenant %r", store.tenant)
             outbox_events_scrubbed = -1
-    if retract is not None:
+    if erasure is not None:
         try:
-            facts_retracted = retract()
+            facts_retracted = erasure.retract()
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception(
                 "fact retraction failed after chunk deletion for tenant %r", store.tenant
             )
             facts_retracted = -1
+        if facts_retracted < 0:
+            # A value erased before its retraction is appended would leave the retraction nothing
+            # to pair with; the re-run does both.
+            facts_redacted = -1
+        else:
+            try:
+                facts_redacted = erasure.redact()
+            except Exception:  # BROAD-CATCH: error-translation
+                _log.exception(
+                    "fact value redaction failed after chunk deletion for tenant %r", store.tenant
+                )
+                facts_redacted = -1
     staged_files_removed = 0
     try:
         staged_files_removed = delete_staged_sources(store.tenant, to_delete)
@@ -319,6 +356,18 @@ def _forget_memory_unlocked(
             "staged upload cleanup failed after chunk deletion for tenant %r", store.tenant
         )
         staged_files_removed = -1
+    memo_requests_erased = 0
+    if erase_memo_requests:
+        from recall.lite.assistant_memos import forget_memo_requests
+
+        try:
+            # The requested names too: a re-run after a failure here finds no rows left.
+            memo_requests_erased = forget_memo_requests([*to_delete, *requested])
+        except Exception:  # BROAD-CATCH: error-translation
+            _log.exception(
+                "memo request journal erasure failed after chunk deletion for tenant %r", store.tenant
+            )
+            memo_requests_erased = -1
     if found and not_found:
         message = (
             f"{did} {chunks_removed} chunk(s) from {len(found)} source(s); "
@@ -349,6 +398,14 @@ def _forget_memory_unlocked(
         message += f" Withdrew {facts_retracted} fact(s) that had no other evidence."
     elif facts_retracted:
         message += f" Retracted {facts_retracted} fact(s) that had no other evidence."
+    if facts_redacted < 0:
+        message += (
+            " WARNING: erasing the fact values these sources supplied failed, so they stay in the "
+            f"fact ledger; re-run this {'withdraw' if withdraw else 'forget'} with the same "
+            "source names to erase them."
+        )
+    elif facts_redacted:
+        message += f" Erased the values of {facts_redacted} fact(s) from the fact ledger."
     if staged_files_removed < 0:
         message += (
             " WARNING: the chunk deletion succeeded but staged upload cleanup failed; "
@@ -356,6 +413,11 @@ def _forget_memory_unlocked(
         )
     elif staged_files_removed:
         message += f" Removed {staged_files_removed} staged upload file(s)."
+    if memo_requests_erased < 0:
+        message += (
+            " WARNING: the chunk deletion succeeded but erasing the memo request journal failed, "
+            "so it still holds hashes of the memo; re-run this forget with the same source names."
+        )
     return ForgetResult(
         chunks_removed=chunks_removed,
         sources_removed=found,
@@ -364,6 +426,7 @@ def _forget_memory_unlocked(
         outbox_events_scrubbed=outbox_events_scrubbed,
         staged_files_removed=staged_files_removed,
         facts_retracted=facts_retracted,
+        facts_redacted=facts_redacted,
     )
 
 
