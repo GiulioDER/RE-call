@@ -20,7 +20,8 @@ Invariants, each a test below, on lite, the legacy PostgreSQL table and a Genera
 - P1 the indexer's prune counts as a forget, and a restored file decides again.
 - G1 a memo left out of a promoted generation counts as a forget, a rollback restores it.
 - C1 a reader sees a withdrawal another process wrote, though it deleted no row.
-- S1 to S3 the resolver's own rules (pure).
+- U1 an upload named like a forgotten memo never switches its record off (2026-10-24).
+- S1 to S5 the resolver's own rules (pure); S4 and S5 are from 2026-10-24.
 
 Red proof: in each docstring. "Red on master" means the test run against `e5d87caba` with only
 this file added, failing in the named assertion.
@@ -343,6 +344,42 @@ def test_g1_a_memo_left_out_of_a_promoted_generation_counts_as_a_forget(tmp_path
         corpus.close()
 
 
+@pytest.mark.parametrize("rome_root", ["/notes", "/trips"])
+@pytest.mark.parametrize("backend", ["lite", "postgres"])
+def test_u1_an_upload_by_the_forgotten_name_does_not_revive_the_predecessor(
+    backend: str, rome_root: str, tmp_path: Path
+) -> None:
+    """Node tests/test_supersession_records.py::test_u1_an_upload_by_the_forgotten_name_does_not_revive_the_predecessor.
+
+    `recall_ingest` needs only write scope, and the uploader chooses every root-relative name.
+    An upload named like a forgotten memo is not that memo coming back: it must not switch off
+    the forget, which needed forget scope (security review of PR 950, 2026-10-24). Rome sits in
+    Paris's folder (its root keeps rows after the forget) or alone in its own (its root is empty).
+    Red on master `cdbd76385`, all four cases: fails on "an upload switched off a forget". Red,
+    mutation of `_resolve_rows` (recall/supersession.py) reading no row as an upload
+    (`staged = set()` always): fails on the same assertion, `/trips` cases only.
+    """
+    if backend == "postgres" and not _db_available():
+        pytest.skip(db_unreachable_reason())
+    corpus = Corpus(backend, tmp_path)
+    vector = [1.0] + [0.0] * (DIM - 1)
+    try:
+        corpus.index({"paris.md": {}})
+        rome = Chunk("chunk-rome.md", f"{rome_root}/rome.md", "I moved to Rome",
+                     {"file": "rome.md", "supersedes": "paris.md"})
+        corpus.store.upsert([rome], [vector])
+        corpus.forget("rome.md")
+        assert corpus.successor("paris.md") == "rome.md"
+
+        tenant = corpus.store.tenant
+        upload = Chunk("chunk-upload-rome", f"/srv/recall/uploads/{tenant}/job1/rome.md",
+                       "an uploaded rome", {"file": "rome.md"})
+        corpus.store.upsert([upload], [vector])
+        assert corpus.successor("paris.md") == f"{rome_root}/rome.md", "an upload switched off a forget"
+    finally:
+        corpus.close()
+
+
 @pytest.mark.parametrize("backend", ["postgres", "generation"])
 def test_c1_a_reader_sees_a_withdrawal_written_elsewhere(backend: str, tmp_path: Path) -> None:
     """Node tests/test_supersession_records.py::test_c1_a_reader_sees_a_withdrawal_written_elsewhere.
@@ -440,3 +477,41 @@ def test_s3_a_record_is_dormant_while_its_file_is_indexed_under_another_root() -
         [_record(FORGOTTEN_RECORD, "b.md", "a.md", source="/old/b.md")],
     )
     assert graph.successor("a.md") is None, "a record stood beside its own re-indexed memo"
+
+
+def test_s4_another_project_by_the_same_name_does_not_silence_a_record() -> None:
+    """Node tests/test_supersession_records.py::test_s4_another_project_by_the_same_name_does_not_silence_a_record.
+
+    Two projects in one tenant each hold a `rome.md`. Forgetting /p1's copy, which retired /p1's
+    Paris, must keep Paris retired: /p1 is still indexed, so /p2's memo is not /p1's coming back.
+    Red on master `cdbd76385`: fails on "a memo in another root silenced the forget". Red,
+    mutation of `_standing_records` (recall/supersession.py) skipping its own-root branch (any
+    root's file counts): fails on the same assertion.
+    """
+    graph = _resolve(
+        [("paris.md", None, None, "/p1/paris.md", None, None), ("rome.md", None, None, "/p2/rome.md", None, None)],
+        [_record(FORGOTTEN_RECORD, "rome.md", "paris.md", source="/p1/rome.md")],
+    )
+    assert graph.successor("paris.md") == "/p1/rome.md", "a memo in another root silenced the forget"
+
+
+def test_s5_an_upload_never_takes_a_reference_from_a_ghost() -> None:
+    """Node tests/test_supersession_records.py::test_s5_an_upload_never_takes_a_reference_from_a_ghost.
+
+    A -> B -> C, forget B, then an upload named `b.md`: C's `supersedes: b.md` must keep naming
+    B's ghost in C's own root, so A's line still ends at C rather than at a ghost.
+    Red, mutation of `ReferenceIndex._indexed_first` (recall/supersession.py) dropping every ghost
+    whatever displaces it (the code at `cdbd76385`): fails on "an upload took C's claim".
+    """
+    from recall.supersession import resolve_supersession_graph
+
+    graph = resolve_supersession_graph(
+        [
+            ("a.md", None, None, "/n/a.md", None, None),
+            ("c.md", "b.md", None, "/n/c.md", None, None),
+            ("b.md", None, None, "/srv/uploads/t1/job1/b.md", None, None),
+        ],
+        [_record(FORGOTTEN_RECORD, "b.md", "a.md")],
+        tenant="t1",
+    )
+    assert graph.successor("a.md") == "c.md", "an upload took C's claim"

@@ -1108,7 +1108,7 @@ class GenerationStore(PgVectorStore):
         rows, records = self._with_retry(_scan)
         self._supersession_scans += 1
         METRICS.increment("recall_supersession_scans_total")
-        graph = resolve_supersession_graph(rows, records)
+        graph = resolve_supersession_graph(rows, records, self._tenant)
         self._supersession_cache = (identity, graph)
         return graph.copy()
 
