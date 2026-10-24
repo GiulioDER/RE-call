@@ -50,6 +50,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -114,6 +115,9 @@ REAP_WAIT_SECONDS = 0.2
 #: Bounds on what the scope reads, so a huge prompt or diff cannot spend the budget on paths.
 MAX_NAMED_FILES = 50
 MAX_NAMED_TOKENS = 400
+# A junction's reparse tag. `stat.IO_REPARSE_TAG_MOUNT_POINT` exists only on Windows, and so does
+# `st_reparse_tag`, so elsewhere the comparison is simply never true.
+JUNCTION_REPARSE_TAG = 0xA0000003
 MAX_FILE_BYTES = 1_000_000
 BASE_REFS = ("origin/HEAD", "origin/master", "origin/main")
 #: The hash a query anchor carries for a file whose content could not be read: it equals no real
@@ -348,6 +352,36 @@ def repo_identity(url: str) -> str | None:
     return "/".join(parts[-2:]) if len(parts) >= 2 else None
 
 
+def _unlinked_lstat(root: Path, parts: list[str]) -> os.stat_result | None:
+    """`lstat` of `root` joined with `parts`, or None when it is missing or any component below
+    `root` is a symbolic link or a junction.
+
+    The components are looked up one at a time from the top, so no call ever traverses a link: a
+    link committed to an audited repository can point at a UNC path, and following it (to resolve
+    or even to stat the path) makes Windows authenticate to that host, as SEC-002 found for a
+    prompt-chosen path. `root` itself is the user's checkout and is not checked.
+
+    Each component must also name exactly one child of the path above it. A changed file's name
+    comes from a git tree, which a malicious commit can fill with anything: on Windows
+    `root / "\\\\host\\share\\x.py"` IS that UNC path, a drive replaces `root`, and a backslash or
+    a `..` climbs out of it. A colon is refused on Windows too (a drive or a data stream).
+    """
+    path = root
+    result: os.stat_result | None = None
+    for part in parts:
+        child = path / part
+        if part in ("", ".", "..") or child.parent != path or child.name != part or (os.name == "nt" and ":" in part):
+            return None
+        path = child
+        try:
+            result = os.lstat(path)
+        except OSError:
+            return None
+        if stat.S_ISLNK(result.st_mode) or getattr(result, "st_reparse_tag", 0) == JUNCTION_REPARSE_TAG:
+            return None
+    return result
+
+
 def named_files(prompt: str, root: Path) -> list[str]:
     """Repository-relative paths of the files `prompt` names that exist in `root`, in order.
 
@@ -355,7 +389,8 @@ def named_files(prompt: str, root: Path) -> list[str]:
     the repository is never touched: on Windows even resolving a UNC path (``//host/share/x.py``)
     authenticates to that host, which could send the user's credentials anywhere. An absolute
     token counts only when it spells out a path under `root` (case-insensitively on Windows). A
-    path that passes is then resolved, so a symlink out of the repository is refused and the
+    path that passes must then be a regular file reached through no link (`_unlinked_lstat`),
+    since the repository's own content is not trusted either; only then is it resolved, so the
     name is the one git and the records use, in the file system's own case. At most
     `MAX_NAMED_TOKENS` distinct tokens reach the file system, so a prompt that pastes a long
     listing cannot spend the budget on it (measured 2026-10-22: 4000 tokens cost 6.6 s).
@@ -382,10 +417,13 @@ def named_files(prompt: str, root: Path) -> list[str]:
         parts = [part for part in token.split("/") if part not in ("", ".")]
         if not parts or ".." in parts:
             continue
+        found_stat = _unlinked_lstat(root, parts)
+        if found_stat is None or not stat.S_ISREG(found_stat.st_mode):
+            continue
         try:
             resolved = root.joinpath(*parts).resolve()
             relative = resolved.relative_to(resolved_root).as_posix()
-            if relative in found or not resolved.is_file():
+            if relative in found:
                 continue
         except (OSError, ValueError):
             continue
@@ -562,17 +600,16 @@ def _parse_batch(output: bytes, files: list[str]) -> dict[str, bytes | None]:
     return blobs
 
 
-def _small(path: Path) -> bool:
-    """Whether the work-tree copy at `path` exists and is at most `MAX_FILE_BYTES`.
+def _small(root: Path, file: str) -> bool:
+    """Whether the work-tree copy of `file` under `root` exists and is at most `MAX_FILE_BYTES`.
 
     A missing copy is not small: a changed file deleted from the work tree, or outside a sparse
     checkout, still exists at HEAD, and its blob would be streamed whole. Like the pre-fix work-tree
-    read, such a file is anchored at file level, with the hash `UNKNOWN_SHA`.
+    read, such a file is anchored at file level, with the hash `UNKNOWN_SHA`. So is a copy reached
+    through a link, which is never followed (`_unlinked_lstat`).
     """
-    try:
-        return path.stat().st_size <= MAX_FILE_BYTES
-    except OSError:
-        return False
+    result = _unlinked_lstat(root, file.split("/"))
+    return result is not None and result.st_size <= MAX_FILE_BYTES
 
 
 def _blob_text(blob: bytes | None) -> str | None:
@@ -673,11 +710,11 @@ def _collect(
         # `cat-file` streams a blob whole, so a file whose work-tree copy is over `MAX_FILE_BYTES`,
         # or absent, is not requested at all (the pre-fix code skipped it on the same stat); it is
         # anchored at file level with `UNKNOWN_SHA`, which never matches a hash exactly.
-        specs = [f"{base}:{file}" for file in found.named if base and file.endswith(".py") and _small(root / file)]
+        specs = [f"{base}:{file}" for file in found.named if base and file.endswith(".py") and _small(root, file)]
         specs += [
             f"HEAD:{file}"
             for file, lines in found.changes.items()
-            if lines is not None and file not in found.named and _small(root / file)
+            if lines is not None and file not in found.named and _small(root, file)
         ]
         specs = [spec for spec in specs if "\n" not in spec][: len(found.named) + MAX_QUERY_ANCHORS]
         if specs:

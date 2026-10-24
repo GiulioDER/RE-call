@@ -170,6 +170,40 @@ mutation failing in the named assertion, then restored byte for byte and green:
   is raised inside the hook, which fails open).
 - H15 (DOC-006): `recall_hooks.main` mutated to dispatch `warm-auditor-brief` after the stdin
   read, like an event: "warm-auditor-brief read stdin".
+
+The security review of 2026-10-23 (a link in the audited repository pointing at a UNC path is
+followed, so Windows authenticates to that host; SEC-002 had closed only prompt-chosen paths)
+added H28 and H29. Invariants:
+- H28 a named path through a directory link is refused with no call following the link and no
+  lookup beneath it.
+- H29 a changed file's size check never follows a link in its path; the file is not requested and
+  is anchored with `UNKNOWN_SHA`.
+The links are junctions on a Windows host without the symlink privilege, symbolic links elsewhere.
+Since the fix a token's first filesystem call is `lstat`, so H18 and D12 now watch it too (D12
+counted `resolve` alone, which a missing token no longer reaches, so it could not fail).
+
+Red proof, recorded 2026-10-24 on the workstation (junctions, Python 3.14), each failing in the
+named assertion, then restored byte for byte and green:
+- H28 `...::test_a_named_file_through_a_link_is_never_followed`: against the unfixed code
+  (`8187355f9`), `named_files` resolving before any link check: "a link was followed".
+- H29 `...::test_a_changed_file_through_a_link_is_never_followed`: against the unfixed code,
+  `_small`'s `path.stat()`: "a link was followed".
+- H28 and H29 again: `_unlinked_lstat`'s junction clause (`st_reparse_tag`) removed: H28 "a link
+  was followed" (the junction passes and is resolved), H29 "a path beneath a link was looked up".
+- D12 re-proved with its widened count: the token cap removed: "4000 paths were tried".
+
+A second review (2026-10-24, on the fix above) found that a changed file's name, read from a git
+tree a malicious commit controls, could still leave the repository: on Windows
+`root / "\\\\host\\share\\x.py"` is that UNC path. Invariant:
+- H30 for a changed file named with a UNC, drive, `..`, backslash, empty or `.` component, `_small`
+  looks up no path outside the repository and answers False.
+Red proof, recorded 2026-10-24 on the workstation, same rules:
+- H30 `...::test_a_changed_file_path_never_leaves_the_repository`: against `fe45612fc` (no name
+  check): the UNC, `C:\\outside`, `..\\outside` and `../outside` cases fail, "a path outside the
+  repository was looked up" (the UNC case names `\\\\attacker.invalid\\share\\x.py` itself).
+  `child.parent != path or child.name != part` removed: the UNC and `..\\outside` cases fail (the
+  drive case stays caught by the colon rule, a second layer). `part in ("", ".", "..")` removed:
+  `../outside` fails.
 """
 
 from __future__ import annotations
@@ -180,6 +214,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -673,24 +708,13 @@ def test_named_files_never_touch_a_path_outside_the_repository(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """H18 (SEC-002): no filesystem call sees a UNC, absolute or parent-relative token."""
-    touched: list[str] = []
-    real_resolve, real_is_file = Path.resolve, Path.is_file
-
-    def spy_resolve(self: Path, *args: Any, **kwargs: Any) -> Path:
-        touched.append(str(self))
-        return real_resolve(self, *args, **kwargs)
-
-    def spy_is_file(self: Path, *args: Any, **kwargs: Any) -> bool:
-        touched.append(str(self))
-        return real_is_file(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", spy_resolve)
-    monkeypatch.setattr(Path, "is_file", spy_is_file)
+    following, lstats = _spy_link_following_calls(monkeypatch)
     prompt = (
         "see //attacker.invalid/share/x.py and \\\\attacker.invalid\\share\\y.py, "
         "/etc/outside/w.py, ../outside/z.py and pkg/pool.py"
     )
     assert auditor_brief.named_files(prompt, repo) == [FILE]
+    touched = following + lstats
     assert not [p for p in touched if "attacker.invalid" in p or "outside" in p], touched
 
 
@@ -1190,19 +1214,13 @@ def test_named_files_try_a_bounded_number_of_tokens(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """D12 (CCA PERF-007): a prompt pasting thousands of path-like tokens reaches the file system
-    for at most `MAX_NAMED_TOKENS` of them."""
-    resolved: list[str] = []
-    real_resolve = Path.resolve
-
-    def counting(self: Path, *args: Any, **kwargs: Any) -> Path:
-        resolved.append(str(self))
-        return real_resolve(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", counting)
+    for at most `MAX_NAMED_TOKENS` of them. Counted at the first call that touches a token's path,
+    `lstat` since H28 (a missing token never reaches `resolve`), and at `resolve`."""
+    following, lstats = _spy_link_following_calls(monkeypatch)
     prompt = " ".join(f"pkg/mod{n}.py" for n in range(4000))
     assert auditor_brief.named_files(prompt, repo) == []
-    bound = auditor_brief.MAX_NAMED_TOKENS + 1  # the tokens, and the root itself
-    assert len(resolved) <= bound, f"{len(resolved)} paths were resolved"
+    tried = {p for p in following + lstats if p.endswith(".py")}
+    assert len(tried) <= auditor_brief.MAX_NAMED_TOKENS, f"{len(tried)} paths were tried"
 
 
 def test_each_memo_directory_has_its_own_cache(
@@ -1233,3 +1251,148 @@ def test_each_memo_directory_has_its_own_cache(
     assert "was parsed" not in _log_text(env), "another directory evicted this one's cache"
     assert _bug(1)["id"] in _block(output)
     assert auditor_brief.cache_path(first) != auditor_brief.cache_path(second)
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    """`link` made a directory link to `target`: a symbolic link, or on Windows without the symlink
+    privilege a junction, which needs none. Skips where neither can be made."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError:
+        if sys.platform != "win32":
+            pytest.skip("no symlink privilege on this platform")
+    import _winapi
+
+    _winapi.CreateJunction(str(target), str(link))
+
+
+def _spy_link_following_calls(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[str]]:
+    """Record every path given to a call that follows links, and every path given to `lstat`.
+
+    `lstat` follows every component but the last, so it may name a link but nothing beneath one.
+    """
+    import os
+
+    following: list[str] = []
+    lstats: list[str] = []
+    real_stat, real_lstat = os.stat, os.lstat
+    real = {name: getattr(Path, name) for name in ("resolve", "stat", "is_file", "exists", "read_text", "open")}
+
+    def spy_os_stat(path: Any, *args: Any, follow_symlinks: bool = True, **kwargs: Any) -> Any:
+        (following if follow_symlinks else lstats).append(os.fspath(path))
+        return real_stat(path, *args, follow_symlinks=follow_symlinks, **kwargs)
+
+    def spy_os_lstat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        lstats.append(os.fspath(path))
+        return real_lstat(path, *args, **kwargs)
+
+    def method(name: str) -> Callable[..., Any]:
+        def spy(self: Path, *args: Any, **kwargs: Any) -> Any:
+            if kwargs.get("follow_symlinks", True):
+                following.append(str(self))
+            return real[name](self, *args, **kwargs)
+
+        return spy
+
+    monkeypatch.setattr(os, "stat", spy_os_stat)
+    monkeypatch.setattr(os, "lstat", spy_os_lstat)
+    for name in real:
+        monkeypatch.setattr(Path, name, method(name))
+    return following, lstats
+
+
+def _through(link: Path, paths: list[str]) -> list[str]:
+    """The `paths` that are `link` or lie beneath it, compared lexically (no file system call)."""
+    import os
+
+    base = os.path.normcase(os.path.abspath(link))
+    return [p for p in paths if (n := os.path.normcase(os.path.abspath(p))) == base or n.startswith(base + os.sep)]
+
+
+def _beneath(link: Path, paths: list[str]) -> list[str]:
+    import os
+
+    base = os.path.normcase(os.path.abspath(link))
+    return [p for p in paths if os.path.normcase(os.path.abspath(p)).startswith(base + os.sep)]
+
+
+def test_a_named_file_through_a_link_is_never_followed(
+    repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H28 (security review 2026-10-23): a named path that passes through a directory link in the
+    repository is refused before any call follows the link. A link committed to an audited
+    repository can point at a UNC path, and following it on Windows authenticates to that host."""
+    outside = tmp_path / "outside-dir"
+    outside.mkdir()
+    (outside / "x.py").write_text("SECRET = 1\n", encoding="utf-8")
+    link = repo / "pkg" / "linked"
+    _link_directory(link, outside)
+    following, lstats = _spy_link_following_calls(monkeypatch)
+
+    assert auditor_brief.named_files("Audit pkg/linked/x.py and pkg/pool.py", repo) == [FILE]
+    assert not _through(link, following), f"a link was followed: {_through(link, following)}"
+    assert not _beneath(link, lstats), f"a path beneath a link was looked up: {_beneath(link, lstats)}"
+
+
+def test_a_changed_file_through_a_link_is_never_followed(
+    tmp_path: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """H29 (security review 2026-10-23): the size check on a changed file never follows a link in
+    its path; the file is not requested from git and is anchored with `UNKNOWN_SHA`."""
+    import shutil
+
+    root = tmp_path / "linked-repo"
+    (root / "pkg" / "linked").mkdir(parents=True)
+    _git(root, "init", "-q")
+    _git(root, "remote", "add", "origin", f"https://github.com/{REPO}.git")
+    file = "pkg/linked/x.py"
+    (root / file).write_text("def f():\n    return 1\n", encoding="utf-8", newline="\n")
+    _git(root, "add", file)
+    _git(root, "commit", "-q", "-m", "base")
+    _git(root, "update-ref", "refs/remotes/origin/master", "HEAD")
+    (root / file).write_text("def f():\n    return 2\n", encoding="utf-8", newline="\n")
+    _git(root, "commit", "-q", "-a", "-m", "change")
+    outside = tmp_path / "outside-dir"
+    shutil.copytree(root / "pkg" / "linked", outside)
+    shutil.rmtree(root / "pkg" / "linked")
+    link = root / "pkg" / "linked"
+    _link_directory(link, outside)
+    following, lstats = _spy_link_following_calls(monkeypatch)
+
+    _repo, anchors = auditor_brief.scope(str(root), "Audit the branch.", deadline=time.monotonic() + 30)
+
+    assert not _through(link, following), f"a link was followed: {_through(link, following)}"
+    assert not _beneath(link, lstats), f"a path beneath a link was looked up: {_beneath(link, lstats)}"
+    assert anchors == [{"file": file, "symbol": None, "code_sha": auditor_brief.UNKNOWN_SHA}]
+
+
+@pytest.mark.parametrize(
+    "file",
+    [
+        r"\\attacker.invalid\share\x.py",
+        r"C:\outside\x.py",
+        "C:outside.py",
+        r"..\outside\x.py",
+        "../outside/x.py",
+        "pkg//outside.py",
+        "pkg/./outside.py",
+    ],
+)
+def test_a_changed_file_path_never_leaves_the_repository(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, file: str
+) -> None:
+    r"""H30 (security review 2026-10-24): a changed file's path comes from a git tree, which a
+    malicious commit can fill with a backslash, a drive or a `..` component; `_small` looks up no
+    path outside the repository for it (on Windows `root / "\\host\share\x"` is that UNC path)."""
+    import os
+
+    _following, lstats = _spy_link_following_calls(monkeypatch)
+    assert auditor_brief._small(repo, file) is False
+    base = os.path.normcase(os.path.abspath(repo))
+    outside = [p for p in lstats if not os.path.normcase(os.path.abspath(p)).startswith(base + os.sep)]
+    assert not outside, f"a path outside the repository was looked up: {outside}"
