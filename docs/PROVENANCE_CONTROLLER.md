@@ -212,6 +212,9 @@ memo was forgotten. Since migration 0029, `recall_forget` (CLI, MCP, and the ass
 - The materialized current facts are rebuilt from the rewritten ledger in the same transaction.
   A read would replay rather than trust rows naming ids that no longer resolve, but those ids hash
   the erased values, so leaving them would leave what the redaction removes.
+  An erased fact has no conflict key of its own; its assertion stays filed under the key of the
+  facts it superseded, and an event naming the erased fact (its retraction, its withdrawal) is
+  filed under that key too, so the key's history still sees the successor taken back.
 
 The tables stay append-only: their triggers refuse every DELETE and every UPDATE except one made
 while the transaction-local `recall.redaction` setting (on a lite file, a row of

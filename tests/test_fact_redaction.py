@@ -635,6 +635,7 @@ OLD_DOOR = _fact("door_code", "1111")
 def test_t10_a_withdrawal_follows_the_assertion_it_names(backend: Backend) -> None:
     """Node tests/test_fact_redaction.py::test_t10_a_withdrawal_follows_the_assertion_it_names[lite|pg].
 
+    Red proof 2026-10-24 on the remote test host, each mutation alone, then restored and green.
     Red, mutation of `plan_redaction` (recall/fact_redaction.py) renaming only retractions
     (`_NAMING_PREFIXES` without its "withdrawn" entry): on lite fails on "the withdrawal names an
     assertion the ledger no longer holds" (and the old successor hides 1111 again); on PostgreSQL
@@ -675,6 +676,7 @@ def test_t10_a_withdrawal_follows_the_assertion_it_names(backend: Backend) -> No
 def test_t11_the_current_facts_tables_are_rebuilt(backend: Backend) -> None:
     """Node tests/test_fact_redaction.py::test_t11_the_current_facts_tables_are_rebuilt[lite|pg].
 
+    Red proof 2026-10-24 on the remote test host, then restored and green.
     Red, mutation removing the rebuild from both redactors (`_rebuild_pg_current_facts(...)` in
     `PostgresFactRedactor.redact`, `rebuild_tables(...)` in `LiteFactRedactor.redact`,
     recall/fact_redaction.py): fails on "the current-facts tables still name ids the redaction

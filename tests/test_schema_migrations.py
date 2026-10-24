@@ -577,8 +577,8 @@ def test_0029_lands_last_on_a_database_already_at_0033(monkeypatch):
     database a tenant erase of an asserted, then withdrawn, fact renames the withdrawal with its
     assertion, so the withdrawal still names a ledger event.
 
-    Red proof, run on the remote test host, each mutation alone with its checksum updated and
-    then restored: 0029 with migration 0026's event-type constraint appended (no `withdrawn`)
+    Red proof, 2026-10-24 on the remote test host, each mutation alone with its checksum updated,
+    on a database that never applied the real 0029, then restored: 0029 with migration 0026's event-type constraint appended (no `withdrawn`)
     fails on "applying 0029 after 0033 lost 0032's withdrawn event type"; 0029's
     `recall_redact_fact_values` without its `withdrawn` branch fails on "the tenant erase was
     refused" (the function holds the renamed withdrawal to its old ids).
