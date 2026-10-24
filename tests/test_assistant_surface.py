@@ -297,3 +297,113 @@ def test_a_half_configured_surface_refuses_to_start(
     postgres = {**envs[0], "RECALL_DSN": "postgresql://recall@127.0.0.1:1/recall"}
     with pytest.raises(AssistantSurfaceError, match="lite store only"):
         srv.build_server(bootstrap_settings(postgres))
+
+
+def test_a_stated_facts_receipt_names_its_key_and_the_edge_left_to_settle(
+    envs: tuple[dict[str, str], dict[str, str]],
+) -> None:
+    """A8. A receipt for a memo stating a fact says which key it went under (`fact_key`), what is in
+    force for it, and the edge rule R(a') proposes, for a reviewer: none for a key only this memo
+    holds; pref-0001 superseded by pref-0002 when the second states another value with no
+    `supersedes`; and, after pref-0003 supersedes pref-0002 only, pref-0001 still stands against it
+    and is proposed again, against pref-0003.
+
+    Red by mutation, 2026-10-23 on the remote test host: the `fact_key` assignment in
+    `recall_mcp.assistant.AssistantMemos.remember` written under another name; this test failed at
+    its "no fact_key" assertion on the first receipt (the receipt was written, its key part was not).
+    """
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        def key_of(answer: str) -> dict[str, Any]:
+            receipt = json.loads(answer)["receipt"]
+            assert "fact_key" in receipt, f"no fact_key in the receipt: {receipt}"
+            return receipt["fact_key"]
+
+        first = key_of(await a("recall_remember", text="The user drink tea, every morning.", kind="pref",
+                               fact=TEA, valid_from="2026-01-01", include_receipt=True))
+        assert first["state"] == "current" and first["proposals"] == [], first
+        assert [v["memos"] for v in first["in_force"]] == [["pref-0001"]], first
+        second = key_of(await a("recall_remember", text="The user drink coffee now.", kind="pref",
+                                fact={**TEA, "object": "coffee"}, valid_from="2026-02-01", include_receipt=True))
+        assert second["state"] == "contested", second
+        assert second["proposals"] == [{
+            "rule_id": "deterministic.stated_key_successor", "status": "requires_review", "relation": "supersedes",
+            "superseded": "pref-0001", "superseder": "pref-0002",
+        }], second
+        third = key_of(await a("recall_remember", text="The user drink water now.", kind="pref",
+                               fact={**TEA, "object": "water"}, valid_from="2026-03-01", supersedes="pref-0002",
+                               include_receipt=True))
+        assert third["state"] == "contested", third
+        assert [(x["superseded"], x["superseder"]) for x in third["proposals"]] == [("pref-0001", "pref-0003")], third
+        assert sorted(m for v in third["in_force"] for m in v["memos"]) == ["pref-0001", "pref-0003"], third
+
+    _serve_both(envs, body)
+
+
+def test_current_facts_can_be_looked_up_by_subject(envs: tuple[dict[str, str], dict[str, str]]) -> None:
+    """A9. `recall_current_facts(subject=...)` keeps that subject's facts whatever its case and
+    spacing, `predicate` narrows it further, `similar_subjects` names the look-alikes, and without a
+    subject both views answer as before.
+
+    Red by mutation, 2026-10-23 on the remote test host: the `subject_view` call removed from the
+    compact `recall_current_facts` in `recall_mcp.server._register_assistant_views`; this test failed
+    with both facts listed for "  USER ".
+    """
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await a("recall_remember", text="The user drink tea, every morning.", kind="pref", fact=TEA)
+        await a("recall_remember", text="The user's sister lives in Lyon.", kind="fact",
+                fact={"subject": "user's sister", "predicate": "city", "object": "Lyon"})
+        compact = json.loads(await a("recall_current_facts", subject="  USER "))
+        assert [f["fact"]["object"] for f in compact["facts"]] == ["tea"], compact
+        assert compact["similar_subjects"] == [{"subject": "user's sister", "predicate": "city"}], compact
+        full = json.loads(await p("recall_current_facts", subject="user", predicate="drink"))
+        assert [f["fact"]["object"] for f in full["facts"]] == ["tea"] and full["predicate"] == "drink", full
+        assert list(json.loads(await a("recall_current_facts"))) == VIEWS["recall_current_facts"]["top"], \
+            "the compact view without a subject changed"
+
+    _serve_both(envs, body)
+
+
+def test_a_writer_without_the_read_scope_gets_its_own_key_and_nothing_else(
+    envs: tuple[dict[str, str], dict[str, str]], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A10. `recall_remember` needs only the write scope, so its receipt must not report what
+    `recall_current_facts` would serve under the read scope: for a caller without it, `fact_key`
+    names the caller's own key, `unchecked`, with no value in force, no other memo and no proposal
+    (security review of PR 990).
+
+    Red by mutation, 2026-10-23 on the remote test host: `read_facts=_caller_may_read(state)`
+    written as `read_facts=True` in `recall_mcp.server`'s `recall_remember`; this test failed at its
+    equality assertion with pref-0001's value and id in `in_force`.
+    """
+    monkeypatch.setattr(srv, "_caller_may_read", lambda state: False)
+
+    async def body(a: Call, p: Call, state: dict[str, Any]) -> None:
+        await a("recall_remember", text="The user drink tea, every morning.", kind="pref", fact=TEA,
+                valid_from="2026-01-01")
+        answer = json.loads(await a("recall_remember", text="The user drink coffee now.", kind="pref",
+                                    fact={**TEA, "object": "coffee"}, valid_from="2026-02-01", include_receipt=True))
+        assert answer["receipt"]["fact_key"] == {
+            "key": {"namespace": "memory", "subject": "user", "predicate": "drink", "context": {}},
+            "state": "unchecked", "reason": "reading what else is in force needs the read scope",
+        }, answer["receipt"]
+
+    _serve_both(envs, body)
+
+
+def test_the_read_scope_is_decided_as_the_tools_decide_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A11. `_caller_may_read`: an unauthenticated stdio server's one caller may read; an
+    authenticated caller only with the read scope; no token, no read.
+
+    Red by mutation, 2026-10-23 on the remote test host: `SCOPE_READ` replaced by `SCOPE_WRITE` in
+    `recall_mcp.server._caller_may_read`'s `authorize` call; this test failed at the write-only
+    token's assertion (`True is False`).
+    """
+    assert srv._caller_may_read({}) is True
+    stores = {"stores": object()}
+    for scopes, expected in (([srv.SCOPE_WRITE], False), ([srv.SCOPE_READ], True), ([srv.SCOPE_READ, srv.SCOPE_WRITE], True)):
+        monkeypatch.setattr(srv, "get_access_token", lambda scopes=scopes: SimpleNamespace(scopes=scopes, claims={"tenant": "t"}))
+        assert srv._caller_may_read(stores) is expected, scopes
+    monkeypatch.setattr(srv, "get_access_token", lambda: None)
+    assert srv._caller_may_read(stores) is False

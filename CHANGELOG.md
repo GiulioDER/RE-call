@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
+  answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
+  a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for
+  a memo stating a `fact` gains `fact_key`: the key, its state, the values in force and the
+  supersession left to settle. The new deterministic rule `deterministic.stated_key_successor`
+  (`recall.declared_keys.successor_pairs`) proposes, for review only, that of the memos stating one
+  single-valued key each supersedes the one of the latest earlier `valid_from`, whatever the value;
+  it never writes an edge.
 - Add general knowledge hooks to `recall_hooks`: an operator-curated, prebuilt `index.json` of
   procedures and warnings is injected as context before a matching `Bash` or `PowerShell` command
   (`PreToolUse`, trigger keyed) and after a failed one (`PostToolUseFailure`, ranked against the

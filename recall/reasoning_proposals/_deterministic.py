@@ -12,6 +12,7 @@ import posixpath
 from types import MappingProxyType
 from typing import Any
 
+from recall.declared_keys import STATED_KEY_SUCCESSOR_RULE, KeyedMemo, fact_key, successor_pairs
 from recall.frontmatter import supersedes_key
 from recall.lineage import canonical_sha256
 from recall.reasoning_graph import EVIDENCE_TEXT_METADATA_KEY, ReasoningGraphNode, ReasoningGraphProjection
@@ -195,6 +196,7 @@ RULE_CONFIDENCE: Mapping[str, float] = MappingProxyType(
         "deterministic.repeated_decision_subject": 0.72,
         "deterministic.contradictory_validity_windows": 0.78,
         "deterministic.temporal_ordering": 0.64,
+        STATED_KEY_SUCCESSOR_RULE: 0.8,
     }
 )
 
@@ -351,9 +353,71 @@ def deterministic_inference_proposals(
     versions, dated = _refer_disagreements(graph, context, versions, repeated + temporal)
     proposals.extend(versions)
     proposals.extend(dated)
+    # A declared key is the writers' own statement that two memos are about one slot; an edge a
+    # rule above already proposed is not proposed again under a second id.
+    proposed = {(proposal.subject_id, proposal.object_id) for proposal in proposals}
+    proposals.extend(_stated_key_successor_proposals(graph, context, claims, authored | proposed))
 
     by_id = {proposal.id: proposal for proposal in proposals}
     return tuple(by_id[key] for key in sorted(by_id))
+
+
+def _stated_key_successor_proposals(
+    graph: ReasoningGraphProjection,
+    context: ProposalContext,
+    claims: Mapping[str, EvidenceClaim],
+    skip: set[tuple[str, str]],
+) -> list[InferenceProposal]:
+    """Rule R(a') (`recall.declared_keys.successor_pairs`) over the facts memos state.
+
+    Each memo's single-valued facts (its chunks' `structured_facts`, from `recall_graph`) start at
+    the fact's own `valid_from`, else the memo's. A pair either direction of which is already
+    authored, or already proposed by another rule, is skipped. The proposal says when the older
+    memo also states facts of other keys, since a memo-level `supersedes:` hides those too.
+    """
+    stated: dict[str, list[KeyedMemo]] = {}
+    for file, nodes in _chunk_nodes_by_file(graph).items():
+        claim = claims.get(file)
+        if claim is None:
+            continue
+        seen: set[str] = set()
+        for node in nodes:
+            for fact in node.structured_facts:
+                payload = canonical_sha256(fact.to_payload())
+                if payload not in seen:
+                    seen.add(payload)
+                    stated.setdefault(file, []).append(KeyedMemo(file, fact, fact.valid_from or claim.valid_from))
+    proposals: list[InferenceProposal] = []
+    for older, newer in successor_pairs(memo for memos in stated.values() for memo in memos):
+        if (older.name, newer.name) in skip or (newer.name, older.name) in skip:
+            continue
+        key = fact_key(older.fact)
+        others = {fact_key(memo.fact) for memo in stated[older.name]} - {key}
+        uncertainty = ["the key is the writers' declaration, compared exactly as written"]
+        if others:
+            uncertainty.append(f"{older.name} also states facts of other keys, which a memo-level supersession hides")
+        assert older.valid_from is not None and newer.valid_from is not None  # successor_pairs orders dated memos only
+        proposals.append(
+            _make_proposal(
+                graph=graph,
+                context=context,
+                source_evidence_ids=(claims[older.name].evidence_id, claims[newer.name].evidence_id),
+                proposed_relation="supersedes",
+                subject_id=older.name,
+                object_id=newer.name,
+                explanation=(
+                    f"{newer.name} states {newer.fact.predicate} of {newer.fact.subject} from "
+                    f"{newer.valid_from.date().isoformat()}, after {older.name} stated it from "
+                    f"{older.valid_from.date().isoformat()}: the later start supersedes the earlier, "
+                    "whatever the value."
+                ),
+                confidence=RULE_CONFIDENCE[STATED_KEY_SUCCESSOR_RULE],
+                uncertainty=tuple(uncertainty),
+                status="requires_review",
+                rule_id=STATED_KEY_SUCCESSOR_RULE,
+            )
+        )
+    return proposals
 
 
 #: Said on both of two opposite edges when the version rule and a date rule disagree.

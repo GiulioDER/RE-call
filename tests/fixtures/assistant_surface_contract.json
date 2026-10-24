@@ -81,7 +81,7 @@
       }
     },
     "recall_current_facts": {
-      "description": "Return the tenant scoped current projection of the append only fact ledger.\n\nFacts a memo states in its `recall_graph` frontmatter appear here, with the memo in\n`sources`, once the store has recorded them; a lite store does so whenever it indexes.\nValues that disagree with no supersession between their memos are listed under\n`contested`, not `facts`: memory holds both and says neither is current.\n`served_state` is `degraded` when a check against the served memos failed, naming each in\n`served_lookups_failed`; stated facts may then be missing, so do not read an absence as\nsettled.",
+      "description": "Return the tenant scoped current projection of the append only fact ledger.\n\nFacts a memo states in its `recall_graph` frontmatter appear here, with the memo in\n`sources`, once the store has recorded them; a lite store does so whenever it indexes.\nValues that disagree with no supersession between their memos are listed under\n`contested`, not `facts`: memory holds both and says neither is current.\n`served_state` is `degraded` when a check against the served memos failed, naming each in\n`served_lookups_failed`; stated facts may then be missing, so do not read an absence as\nsettled.\n\nWith `subject`, only that subject's facts (matched ignoring case and spacing) and, with\n`predicate` too, only that predicate's; `similar_subjects` then names subjects whose names\ncontain or are contained in it. Look a subject up before stating a fact about it, and\nrepeat an existing subject and predicate exactly to write under the same key.",
       "parameters": {
         "properties": {
           "as_of": {
@@ -95,6 +95,16 @@
             ],
             "default": null,
             "title": "As Of"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          },
+          "predicate": {
+            "default": "",
+            "title": "Predicate",
+            "type": "string"
           }
         },
         "type": "object"
@@ -155,7 +165,7 @@
       }
     },
     "recall_remember": {
-      "description": "Store ONE fact in the user's long-term memory for future sessions. Put dates in the text as YYYY-MM-DD with the weekday and the user's time zone. valid_from/valid_until (YYYY-MM-DD) say when the fact holds; supersedes names a memo_id this fact replaces. fact (optional) is the same fact as {subject, predicate, object}: recall_evidence then returns cards that recall_apply_fact can cite. Corrections should pass supersedes and the revision returned by search or a write receipt as expected_revision. Reuse request_id only to retry the same write. include_receipt returns write, indexing and calibration readiness separately; old calls still return only memo_id. A correction target that already has a successor is refused.",
+      "description": "Store ONE fact in the user's long-term memory for future sessions. Put dates in the text as YYYY-MM-DD with the weekday and the user's time zone. valid_from/valid_until (YYYY-MM-DD) say when the fact holds; supersedes names a memo_id this fact replaces. fact (optional) is the same fact as {subject, predicate, object}: recall_evidence then returns cards that recall_apply_fact can cite. Corrections should pass supersedes and the revision returned by search or a write receipt as expected_revision. Reuse request_id only to retry the same write. include_receipt returns write, indexing and calibration readiness separately; old calls still return only memo_id. A correction target that already has a successor is refused. Before stating a fact, look its subject up with recall_current_facts(subject=...) and repeat an existing subject and predicate exactly; the receipt's fact_key says which key the fact went under, what else is in force for it, and any supersession left to settle.",
       "parameters": {
         "properties": {
           "text": {

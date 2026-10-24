@@ -59,6 +59,7 @@ from recall_mcp.assistant import (
     memo_ref,
 )
 from recall.store import DEFAULT_TABLE, PgVectorStore, redacted_dsn
+from recall.declared_keys import subject_view
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
@@ -1837,7 +1838,7 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         ),
     )
     async def recall_current_facts(
-        ctx: Context[dict, object], as_of: str | None = None
+        ctx: Context[dict, object], as_of: str | None = None, subject: str = "", predicate: str = ""
     ) -> str:
         """Return the tenant scoped current projection of the append only fact ledger.
 
@@ -1848,6 +1849,11 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         `served_state` is `degraded` when a check against the served memos failed, naming each in
         `served_lookups_failed`; stated facts may then be missing, so do not read an absence as
         settled.
+
+        With `subject`, only that subject's facts (matched ignoring case and spacing) and, with
+        `predicate` too, only that predicate's; `similar_subjects` then names subjects whose names
+        contain or are contained in it. Look a subject up before stating a fact about it, and
+        repeat an existing subject and predicate exactly to write under the same key.
         """
         store = await _require(SCOPE_READ, ctx)
         instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
@@ -1856,6 +1862,8 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             store, as_of=instant, security_policy=state.get("source_security_policy"),
             access_context=_access_context(state, store),
         ))
+        if subject.strip():
+            result = subject_view(result, subject, predicate.strip() or None)
         return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
 
     @mcp.tool(
@@ -3187,6 +3195,25 @@ class _HeldTools:
         return getattr(self._mcp, item)
 
 
+def _caller_may_read(state: dict) -> bool:
+    """Whether this call's caller holds SCOPE_READ, decided as `_require` decides it, debiting nothing.
+
+    `recall_remember` needs only SCOPE_WRITE, while its receipt's `fact_key` reports values and memos
+    `recall_current_facts` would serve under SCOPE_READ, so a writer without it gets its own key and
+    no more (security review of PR 990). An unauthenticated stdio server has one local caller.
+    """
+    if state.get("stores") is None:
+        return True
+    token = get_access_token()
+    if token is None:
+        return False
+    try:
+        authorize(token.scopes, token.claims, SCOPE_READ)
+    except PermissionError:
+        return False
+    return True
+
+
 def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools) -> None:
     """The assistant surface: `recall_remember`, `recall_forget_memo`, and the compact forms.
 
@@ -3247,6 +3274,8 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
                     request_id=request_id or None,
                     expected_revision=expected_revision or None,
                     include_receipt=include_receipt,
+                    access_context=_access_context(state, store),
+                    read_facts=_caller_may_read(state),
                     **_policy(state, store),
                 )
             )
@@ -3315,7 +3344,9 @@ def _register_assistant_views(held: _HeldTools, deps: _ToolDeps, assistant: Assi
 
     if "recall_current_facts" in held.held:
 
-        async def recall_current_facts(ctx: Context[dict, object], as_of: str | None = None) -> str:
+        async def recall_current_facts(
+            ctx: Context[dict, object], as_of: str | None = None, subject: str = "", predicate: str = ""
+        ) -> str:
             # From the library, not the held tool's text: that one sorts every key, nested facts
             # included, and the compact form keeps the order the ledger writes.
             store = await _require(SCOPE_READ, ctx)
@@ -3325,6 +3356,8 @@ def _register_assistant_views(held: _HeldTools, deps: _ToolDeps, assistant: Assi
                 store, as_of=instant, security_policy=state.get("source_security_policy"),
                 access_context=deps.access_context(state, store),
             ))
+            if subject.strip():
+                result = subject_view(result, subject, predicate.strip() or None)
             return assistant_dumps(assistant.render_current_facts(result))
 
         held.register("recall_current_facts", recall_current_facts)

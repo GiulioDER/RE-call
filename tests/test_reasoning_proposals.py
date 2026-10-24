@@ -1112,3 +1112,53 @@ def test_every_rule_id_this_module_names_is_a_rule() -> None:
     named = set(re.findall(r"[\"'](deterministic\.[a-z_]+)[\"']", source))
     assert named
     assert named - set(RULE_CONFIDENCE) == set()
+
+
+STATED = "deterministic.stated_key_successor"
+
+
+def _stated(cid: str, file: str, value: str, day: str, *, supersedes: str | None = None,
+            also: tuple[dict[str, Any], ...] = ()) -> Chunk:
+    chunk = _chunk(cid, file, f"The user drinks {value}.", valid_from=day, supersedes=supersedes)
+    facts = [{"namespace": "memory", "subject": "user", "predicate": "drink", "object": value}, *also]
+    return Chunk(chunk.id, chunk.source, chunk.text, {**chunk.metadata, "recall_graph": {"facts": facts}})
+
+
+def test_memos_stating_one_key_are_proposed_in_date_order_whatever_the_value() -> None:
+    """Rule R(a') over stated facts (`recall.declared_keys.successor_pairs`): tea, tea, coffee under
+    one declared key give tea-1 to tea-2 and tea-2 to coffee, both for a reviewer, and the second
+    says its older memo states another key a memo-level edge would hide.
+
+    Red by mutation, 2026-10-23 on the remote test host: the line extending `proposals` with
+    `_stated_key_successor_proposals` removed from
+    `recall.reasoning_proposals._deterministic.deterministic_inference_proposals`; this test failed
+    at its first assertion with `[] == [...]`.
+    """
+    city = {"namespace": "memory", "subject": "user", "predicate": "city", "object": "Lyon"}
+    chunks = [
+        _stated("one", "tea.md", "tea", "2026-01-01"),
+        _stated("two", "tea-again.md", "tea", "2026-01-02", also=(city,)),
+        _stated("three", "coffee.md", "coffee", "2026-01-03"),
+    ]
+    assert _supersedes(chunks, STATED) == [
+        ("tea-again.md", "coffee.md", STATED), ("tea.md", "tea-again.md", STATED),
+    ]
+    graph = build_reasoning_graph(chunks, tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a")
+    stated = [p for p in deterministic_inference_proposals(graph) if p.rule_id == STATED]
+    assert {p.status for p in stated} == {"requires_review"}, stated
+    hides = [p for p in stated if p.subject_id == "tea-again.md"]
+    assert any("other keys" in note for note in hides[0].uncertainty), hides[0].uncertainty
+
+
+def test_a_supersession_already_authored_is_not_proposed_again_by_the_stated_key_rule() -> None:
+    """An edge a memo already declares, in either direction, is not proposed.
+
+    Red by mutation, 2026-10-23 on the remote test host: the `skip` test in
+    `recall.reasoning_proposals._deterministic._stated_key_successor_proposals` removed; this test
+    failed with the authored pair proposed under the stated-key rule.
+    """
+    chunks = [
+        _stated("one", "tea.md", "tea", "2026-01-01"),
+        _stated("two", "coffee.md", "coffee", "2026-01-02", supersedes="tea.md"),
+    ]
+    assert _supersedes(chunks, STATED) == []
