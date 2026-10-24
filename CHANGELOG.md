@@ -86,6 +86,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   endpoint could grow its memory without bound. RE-call's HTTP server runs stateless by default
   and is exposed only when `RECALL_MCP_STATELESS=0` is set; the stdio servers are not affected.
 
+* **`recall forget` erases the fact values a forgotten memo supplied** (migration 0029). It used
+  to retract them, which hid them, while the value stayed in the append-only fact ledger, in every
+  evidence card citing the memo and in replay receipts, and the ids hashing it let a low-entropy
+  value be recovered by enumeration. Those are now rewritten in place under fresh random ids
+  (`facts_redacted` in the result), the triggers still refusing any other change; a lite store
+  also zeroes the freed bytes, and `--vacuum` compacts the file. `recall provenance erase` does the
+  same for a whole tenant. Apply 0029 with `--with-migrations` and re-run
+  `recall schema grants --controller`. PostgreSQL's dead row versions, WAL, replicas and backups
+  stay the operator's to manage.
+
+* **`recall_forget_memo` also erases the request journal's hashes of the memo.** The assistant's
+  request journal (`.recall-authors.json`) kept a forgotten memo's request identity, an unsalted
+  SHA-256 over its bytes, and a correction kept one over the corrected memo's revision, so a
+  guessable template turned either into an enumeration oracle for a short value. A forgotten
+  memo's requests now keep only their memo id, state and time, and any retry of one is refused as
+  forgotten; a correction of it keeps a hash of its own content, so a lost reply is still replayed.
+  A memo published but never indexed (a crash after publication with no refresh since) is now
+  forgotten instead of refused, so its retry can no longer store it.
+  The journal's hashes of a memo go however it leaves the index: the generic forget (`recall
+  forget`, `recall_forget`) erases them too, and so does the next index that prunes a memo deleted
+  by hand. `recall_forget_memo` also refuses when rows hold the memo's bytes under its file name
+  from another path, not only under its stored name.
+
 ### Added
 
 * **Current facts are materialized, so a read no longer replays the tenant's history.** Migration

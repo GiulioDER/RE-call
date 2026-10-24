@@ -79,6 +79,6 @@ RECALL_INDEX_DESCRIPTION = (
 RECALL_FORGET_DESCRIPTION = (
     "Permanently erase the given sources from memory. Write operation: exposed only when the "
     "host application opted into write tools. This is the right-to-erasure path and cannot be "
-    "undone. It erases chunks, not fact values: a fact whose only evidence was in these sources "
-    "is retracted, but its value stays in the append-only fact ledger."
+    "undone. A fact whose only evidence was in these sources is retracted and its value erased "
+    "from the fact ledger."
 )

@@ -137,7 +137,9 @@ For production least privilege, generate serving grants with
 `recall schema grants --role recall_server --strict`, generate separate controller grants with
 `recall schema grants --role recall_fact_writer --controller`, and set `RECALL_FACT_WRITE_DSN` on
 the controller process. The serving role always receives read-only ledger, card, and outbox
-access, so a raw SQL connection using the serving DSN cannot append a fact event. Migration
+access, so a raw SQL connection using the serving DSN cannot append a fact event. The controller
+grants also cover migration 0029's `recall_redact_fact_values`, through which `recall_forget`
+erases fact values (below); re-run them after applying 0029. Migration
 `0026_provenance_protected_append.sql` removes raw `INSERT` from the
 isolated controller role as well. Its ledger and outbox appends go through owner-controlled
 `SECURITY DEFINER` functions with a tenant-context check, while outbox delivery updates remain
@@ -187,6 +189,39 @@ assertion through the protected function, which checks an event's shape and not 
 It does remove tamper evidence, which `recall provenance rebuild --check --verify` restores on
 demand: it recomputes every row from the ledger in one snapshot, compares, reports the ids that
 differ, and exits 1 on a difference. A strict serving role can only read the tables.
+
+## Forgetting erases fact values
+
+The ledger is append-only, and a fact applied from a memo used to keep its value in it after the
+memo was forgotten. Since migration 0029, `recall_forget` (CLI, MCP, and the assistant's
+`recall_forget_memo`) erases it, in `recall.fact_redaction`, after the retraction it appends:
+
+- Every evidence card citing a forgotten memo, in `recall_evidence_cards` and inside every ledger
+  event, becomes a marker keeping only its tenant, generation and memo name.
+- A fact value is erased when every card on every event holding it (asserted, DUPLICATE, rejected,
+  abstained) cites a forgotten memo, at least one of them in this forget: its payload becomes
+  `{fact_id, redacted, redaction_id}`. A value another surviving memo states stays.
+- Every id that hashes erased content (fact, card, event and request ids) is replaced by a fresh
+  random one, consistently, so a retraction still pairs with its assertion and every projection
+  lists what it listed before. Unkeyed hashes would leave a low-entropy value (a four-digit code)
+  recoverable by enumeration.
+- Replay receipts whose result names an erased id or memo are deleted; one row per redaction is
+  appended to `recall_fact_redactions`.
+
+The tables stay append-only: their triggers refuse every DELETE and every UPDATE except one made
+while the transaction-local `recall.redaction` setting (on a lite file, a row of
+`recall_redaction_session` that exists only inside the redaction transaction) names a redaction,
+changing only what a redaction erases into the marker shape. On PostgreSQL the setting counts only
+for the table's owner, which `current_user` is only inside `recall_redact_fact_values`, so a role
+granted UPDATE on the outbox's delivery columns cannot raise it for itself. Nor does the function take
+the controller's plan on trust: it derives which fact and card ids the plan replaces and refuses any
+row that is not exactly what those replacements make of it (an event renamed although its value is
+not erased, a superseded id remapped), and it rebuilds each outbox snapshot from its rewritten ledger
+row. A redaction that fails reports
+`facts_redacted: -1`, and the same forget re-run completes it; a name that matches no chunk still
+does. `recall provenance erase` erases every value of a tenant. A memo forgotten on a lite store or
+the legacy table and indexed again byte for byte states its facts again, with its chunks: the
+ledger keeps nothing that could recognize it. Production's tombstone keeps such a memo out.
 
 ## Failure behavior
 

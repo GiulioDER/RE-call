@@ -381,7 +381,10 @@ def _current_request_ids(events: Sequence[Any]) -> tuple[set[str], set[str]]:
     gc retracts, for good, a fact whose memos no generation holds (SOURCE_REMOVED, PR 933). The
     same memo coming back byte for byte computes the same request id, which then counted as known,
     so its facts never returned. A request whose assertion gc retracted is recorded again under a
-    derived id (`_next_request_id`). Forget's retraction (SOURCE_FORGOTTEN) stays final.
+    derived id (`_next_request_id`). A forget erases the value and replaces the request id with a
+    random one (`recall.fact_redaction`), so a forgotten memo indexed again byte for byte (lite and
+    the legacy table allow it; production's tombstone does not) states its facts again, with its
+    chunks: the ledger keeps nothing that could recognize it.
     """
     retraction_prefix = RETRACTION_REQUEST_PREFIX
     removed_events = {
