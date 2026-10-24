@@ -1418,6 +1418,6 @@ class LiteStore:
             # keys the records too.
             with self._lock:
                 records = sqlite_records(self._conn, self._table)
-            cached = (matrix.version, resolve_supersession_graph(rows, records))
+            cached = (matrix.version, resolve_supersession_graph(rows, records, self._tenant))
             self._supersession_cache = cached
         return cached[1].copy()

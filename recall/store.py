@@ -2906,7 +2906,9 @@ class PgVectorStore:
             ).fetchall()
             self._supersession_scans += 1
             METRICS.increment("recall_supersession_scans_total")
-            graph = resolve_supersession_graph(rows, pg_records(conn, self._tenant, self.record_scope))
+            graph = resolve_supersession_graph(
+                rows, pg_records(conn, self._tenant, self.record_scope), self._tenant
+            )
             self._supersession_cache = (fingerprint, graph)
             return graph
 
