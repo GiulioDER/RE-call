@@ -115,6 +115,9 @@ REAP_WAIT_SECONDS = 0.2
 #: Bounds on what the scope reads, so a huge prompt or diff cannot spend the budget on paths.
 MAX_NAMED_FILES = 50
 MAX_NAMED_TOKENS = 400
+# A junction's reparse tag. `stat.IO_REPARSE_TAG_MOUNT_POINT` exists only on Windows, and so does
+# `st_reparse_tag`, so elsewhere the comparison is simply never true.
+JUNCTION_REPARSE_TAG = 0xA0000003
 MAX_FILE_BYTES = 1_000_000
 BASE_REFS = ("origin/HEAD", "origin/master", "origin/main")
 #: The hash a query anchor carries for a file whose content could not be read: it equals no real
@@ -374,7 +377,7 @@ def _unlinked_lstat(root: Path, parts: list[str]) -> os.stat_result | None:
             result = os.lstat(path)
         except OSError:
             return None
-        if stat.S_ISLNK(result.st_mode) or getattr(result, "st_reparse_tag", 0) == stat.IO_REPARSE_TAG_MOUNT_POINT:
+        if stat.S_ISLNK(result.st_mode) or getattr(result, "st_reparse_tag", 0) == JUNCTION_REPARSE_TAG:
             return None
     return result
 
