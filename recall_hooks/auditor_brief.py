@@ -357,11 +357,19 @@ def _unlinked_lstat(root: Path, parts: list[str]) -> os.stat_result | None:
     link committed to an audited repository can point at a UNC path, and following it (to resolve
     or even to stat the path) makes Windows authenticate to that host, as SEC-002 found for a
     prompt-chosen path. `root` itself is the user's checkout and is not checked.
+
+    Each component must also name exactly one child of the path above it. A changed file's name
+    comes from a git tree, which a malicious commit can fill with anything: on Windows
+    `root / "\\\\host\\share\\x.py"` IS that UNC path, a drive replaces `root`, and a backslash or
+    a `..` climbs out of it. A colon is refused on Windows too (a drive or a data stream).
     """
     path = root
     result: os.stat_result | None = None
     for part in parts:
-        path = path / part
+        child = path / part
+        if part in ("", ".", "..") or child.parent != path or child.name != part or (os.name == "nt" and ":" in part):
+            return None
+        path = child
         try:
             result = os.lstat(path)
         except OSError:

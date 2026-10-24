@@ -191,6 +191,19 @@ named assertion, then restored byte for byte and green:
 - H28 and H29 again: `_unlinked_lstat`'s junction clause (`st_reparse_tag`) removed: H28 "a link
   was followed" (the junction passes and is resolved), H29 "a path beneath a link was looked up".
 - D12 re-proved with its widened count: the token cap removed: "4000 paths were tried".
+
+A second review (2026-10-24, on the fix above) found that a changed file's name, read from a git
+tree a malicious commit controls, could still leave the repository: on Windows
+`root / "\\\\host\\share\\x.py"` is that UNC path. Invariant:
+- H30 for a changed file named with a UNC, drive, `..`, backslash, empty or `.` component, `_small`
+  looks up no path outside the repository and answers False.
+Red proof, recorded 2026-10-24 on the workstation, same rules:
+- H30 `...::test_a_changed_file_path_never_leaves_the_repository`: against `fe45612fc` (no name
+  check): the UNC, `C:\\outside`, `..\\outside` and `../outside` cases fail, "a path outside the
+  repository was looked up" (the UNC case names `\\\\attacker.invalid\\share\\x.py` itself).
+  `child.parent != path or child.name != part` removed: the UNC and `..\\outside` cases fail (the
+  drive case stays caught by the colon rule, a second layer). `part in ("", ".", "..")` removed:
+  `../outside` fails.
 """
 
 from __future__ import annotations
@@ -1356,3 +1369,30 @@ def test_a_changed_file_through_a_link_is_never_followed(
     assert not _through(link, following), f"a link was followed: {_through(link, following)}"
     assert not _beneath(link, lstats), f"a path beneath a link was looked up: {_beneath(link, lstats)}"
     assert anchors == [{"file": file, "symbol": None, "code_sha": auditor_brief.UNKNOWN_SHA}]
+
+
+@pytest.mark.parametrize(
+    "file",
+    [
+        r"\\attacker.invalid\share\x.py",
+        r"C:\outside\x.py",
+        "C:outside.py",
+        r"..\outside\x.py",
+        "../outside/x.py",
+        "pkg//outside.py",
+        "pkg/./outside.py",
+    ],
+)
+def test_a_changed_file_path_never_leaves_the_repository(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, file: str
+) -> None:
+    r"""H30 (security review 2026-10-24): a changed file's path comes from a git tree, which a
+    malicious commit can fill with a backslash, a drive or a `..` component; `_small` looks up no
+    path outside the repository for it (on Windows `root / "\\host\share\x"` is that UNC path)."""
+    import os
+
+    _following, lstats = _spy_link_following_calls(monkeypatch)
+    assert auditor_brief._small(repo, file) is False
+    base = os.path.normcase(os.path.abspath(repo))
+    outside = [p for p in lstats if not os.path.normcase(os.path.abspath(p)).startswith(base + os.sep)]
+    assert not outside, f"a path outside the repository was looked up: {outside}"
