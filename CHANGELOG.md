@@ -92,7 +92,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   value be recovered by enumeration. Those are now rewritten in place under fresh random ids
   (`facts_redacted` in the result), the triggers still refusing any other change; a lite store
   also zeroes the freed bytes, and `--vacuum` compacts the file. `recall provenance erase` does the
-  same for a whole tenant. Apply 0029 with `--with-migrations` and re-run
+  same for a whole tenant. `recall withdraw` erases them the same way, and a `withdrawn` event
+  follows the assertion it names to its new id, as a retraction does. The materialized current
+  facts (0030) are rebuilt in the same transaction, since their ids hash the erased values. A
+  database already at 0033 applies 0029 last. Apply it with `--with-migrations` and re-run
   `recall schema grants --controller`. PostgreSQL's dead row versions, WAL, replicas and backups
   stay the operator's to manage.
 

@@ -16,10 +16,15 @@ these rewrites and nothing else:
   A fact with evidence in a memo that survives is not touched, nor is one a memo this forget did
   not name still holds (a memo gc removed: name it in the forget too). Each holding event's
   payload becomes `{fact_id, redacted, redaction_id}` with a fresh fact id, and its event and
-  request ids, which hash the value, are replaced too; the `retracted` and `superseded` events
-  derived from them, and every `supersedes_fact_ids` naming the fact, follow, so a retraction
-  still pairs with its assertion and every projection lists what it listed before.
+  request ids, which hash the value, are replaced too; the `retracted`, `withdrawn` and
+  `superseded` events derived from them, and every `supersedes_fact_ids` naming the fact, follow,
+  so a retraction or withdrawal still pairs with its assertion and every projection lists what it
+  listed before.
 - RECEIPTS (`recall_idempotency_receipts`) whose result names an erased id or memo are deleted.
+- The MATERIALIZED CURRENT FACTS (`recall.fact_current`, migration 0030) are rebuilt from the
+  rewritten ledger in the same transaction. A read would replay rather than trust rows naming
+  ids that no longer resolve, so this is not about answers: those old ids hash the erased values,
+  and an erasure that left them would leave what it exists to remove.
 
 What stays is the shape of the history: event types, writers, decision codes, times, the memo
 names, and one `recall_fact_redactions` row per redaction. What this cannot reach is disclosed in
@@ -40,7 +45,12 @@ from typing import Any
 
 from recall.fact_ledger import FACT_LEDGER_TABLE, decision_event_id
 from recall.observability import get_logger
-from recall.provenance_controller import fact_conflict_key, fact_identity
+from recall.provenance_controller import (
+    RETRACTION_REQUEST_PREFIX,
+    WITHDRAWAL_REQUEST_PREFIX,
+    fact_conflict_key,
+    fact_identity,
+)
 from recall.schema import FACT_REDACTION_FUNCTION
 from recall.types import AtomicFact, is_redaction_marker
 
@@ -57,7 +67,10 @@ TENANT_ERASE_WRITER = "recall_provenance_erase"
 REASONS = frozenset({"forget", "tenant_erase"})
 #: The event types that hold a fact value: an application, a refusal, an abstention.
 _HOLDERS = frozenset({"asserted", "rejected", "abstained"})
-_RETRACTION_PREFIX = "retraction:"
+#: The events whose request id names the assertion they take back, by its event id; their own
+#: event id is `decision_event_id` of that request id (`recall.fact_ledger.retraction_ids`,
+#: `withdrawal_ids`), so both follow a renamed assertion.
+_NAMING_PREFIXES = {"retracted": RETRACTION_REQUEST_PREFIX, "withdrawn": WITHDRAWAL_REQUEST_PREFIX}
 _SUPERSESSION_SUFFIX = "_sup"
 
 
@@ -226,11 +239,12 @@ def plan_redaction(
     def new_ids(event_id: str, event_type: str, request_id: str) -> tuple[str, str]:
         if event_id in event_map:
             return event_map[event_id], request_map[event_id]
-        if event_type == "retracted" and request_id.startswith(_RETRACTION_PREFIX):
-            retracted = request_id[len(_RETRACTION_PREFIX):]
-            if retracted in event_map:
-                new_request = _RETRACTION_PREFIX + event_map[retracted]
-                return decision_event_id(tenant_id, new_request, "retracted"), new_request
+        prefix = _NAMING_PREFIXES.get(event_type)
+        if prefix is not None and request_id.startswith(prefix):
+            named = request_id[len(prefix):]
+            if named in event_map:
+                new_request = prefix + event_map[named]
+                return decision_event_id(tenant_id, new_request, event_type), new_request
         if event_type == "superseded" and event_id.endswith(_SUPERSESSION_SUFFIX):
             holder = event_id[: -len(_SUPERSESSION_SUFFIX)]
             if holder in event_map:
@@ -419,6 +433,7 @@ class PostgresFactRedactor:
                     Jsonb(list(plan.needles)), everything,
                 ),
             ).fetchone()
+            _rebuild_pg_current_facts(conn, self.tenant_id)
         counts = dict(row[0]) if row and isinstance(row[0], Mapping) else {}
         return RedactionReport(
             facts_redacted=plan.facts,
@@ -427,6 +442,24 @@ class PostgresFactRedactor:
             receipts_deleted=int(counts.get("receipts_deleted", 0)),
             redaction_id=plan.redaction_id,
         )
+
+
+def _rebuild_pg_current_facts(conn: Any, tenant_id: str) -> None:
+    """Rebuild the tenant's current-facts tables inside the redaction's transaction.
+
+    A database migrated before 0030 has none, so there is nothing naming an old id; any other
+    failure (a role not granted the tables) fails the redaction, which `recall_forget` reports and
+    a re-run completes, rather than leave the old ids behind.
+    """
+    import psycopg
+
+    from recall.fact_current import PostgresTables, rebuild_tables
+
+    try:
+        with conn.transaction():  # a savepoint: a missing table must not abort the redaction
+            rebuild_tables(PostgresTables(conn, tenant_id))
+    except psycopg.errors.UndefinedTable:
+        _log.info("no current-facts tables to rebuild for tenant %r (migration 0030 not applied)", tenant_id)
 
 
 # --------------------------------------------------------------------------------------- lite file
@@ -523,6 +556,8 @@ class LiteFactRedactor:
         """`PostgresFactRedactor.redact` on the file, in one write transaction."""
         from datetime import UTC, datetime
 
+        from recall.fact_current import SQLiteTables, rebuild_tables
+
         del names  # one file: the card table is read whole, there is no second connection
         if reason not in REASONS:
             raise ValueError(f"{reason!r} is not a redaction reason")
@@ -577,6 +612,8 @@ class LiteFactRedactor:
                 ),
             )
             conn.execute("DELETE FROM recall_redaction_session")
+            # `ensure_fact_tables` (in __init__) made the file's current-facts tables.
+            rebuild_tables(SQLiteTables(conn, self.tenant_id))
         return RedactionReport(
             facts_redacted=plan.facts, events_rewritten=len(plan.events),
             cards_redacted=len(plan.cards), receipts_deleted=int(receipts),

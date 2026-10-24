@@ -26,6 +26,12 @@ test database):
   still refused: the triggers honour the flag only for the table's owner.
 - T9 (PostgreSQL) the redaction function refuses a plan that renames an event whose value it
   does not erase, and the outbox refuses a snapshot whose fact turns into another value.
+- T10 a withdraw erases the values like a forget, and its `withdrawn` event follows the assertion
+  the redaction renamed: it still names a ledger event, the value the withdrawn successor hid is
+  current again, and no id left recovers the erased value (the withdrawal's id hashes the old
+  assertion id, which hashes the value).
+- T11 the materialized current facts (migration 0030) are rebuilt in the redaction: they name no
+  id the redaction replaced, and the next read is answered from them.
 
 Red proof, 2026-10-19, run on the remote test host, each then restored and green; the node id,
 baseline or mutation, production symbol and failure are in each test's docstring.
@@ -44,19 +50,26 @@ from uuid import uuid4
 
 import pytest
 
-from recall.fact_ledger import PostgresFactLedger, PostgresMaterializationOutbox, assertion_event_id
+from recall.fact_ledger import (
+    PostgresFactLedger,
+    PostgresMaterializationOutbox,
+    assertion_event_id,
+    decision_event_id,
+)
 from recall.lite import LiteStore
 from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
 from recall.provenance_cards import PostgresEvidenceCardStore
 from recall.provenance_controller import (
     DecisionCode,
     FactApplicationRequest,
+    WITHDRAWAL_REQUEST_PREFIX,
     ProvenanceController,
     fact_identity,
+    withdrawn_event_ids,
 )
 from recall.store import PgVectorStore
 from recall.types import AtomicFact, Chunk
-from recall_mcp.lifecycle import forget_memory
+from recall_mcp.lifecycle import forget_memory, withdraw_memory
 from tests.conftest import TEST_DSN, requires_db
 from tests.fact_fixtures import NOW, evidence_card
 
@@ -93,8 +106,10 @@ class Backend:
             [[1.0] + [0.0] * (DIM - 1)],
         )
 
-    def apply(self, fact: AtomicFact, name: str, request_id: str) -> str:
-        card = evidence_card(fact, tenant=self.tenant, generation=GEN, chunk=f"chunk-{name}", source=name)
+    def apply(self, fact: AtomicFact, name: str, request_id: str, links: tuple[str, ...] = ()) -> str:
+        card = evidence_card(
+            fact, tenant=self.tenant, generation=GEN, chunk=f"chunk-{name}", source=name, links=links
+        )
         self.cards.put((card,))
         decision = ProvenanceController(
             tenant_id=self.tenant, generation_id=GEN, cards=self.cards, ledger=self.ledger(),
@@ -128,6 +143,22 @@ class Backend:
                 for sql in tables
                 for row in conn.execute(sql.format(p="%s"), (self.tenant,)).fetchall()
             ]
+
+    def current_fact_ids(self) -> set[str]:
+        """Every id the tenant's materialized current-facts tables hold (`recall.fact_current`)."""
+        sql = [
+            "SELECT event_id, fact_id FROM recall_fact_current_events WHERE tenant_id = {p}",
+            "SELECT event_id, fact_id FROM recall_fact_current WHERE tenant_id = {p}",
+        ]
+        if self.name == "lite":
+            rows = [row for q in sql for row in self.store._metadata_values(q.format(p="?"), (self.tenant,))]
+        else:
+            import psycopg
+
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (self.tenant,))
+                rows = [row for q in sql for row in conn.execute(q.format(p="%s"), (self.tenant,)).fetchall()]
+        return {str(value) for row in rows for value in row if value is not None}
 
     def file_bytes(self) -> bytes:
         if self.name != "lite":
@@ -596,3 +627,73 @@ def test_t9_the_function_and_the_outbox_refuse_a_rewrite_that_is_not_a_redaction
     assert outbox_refused and "immutable" in outbox_refused, (
         "the outbox took a snapshot whose fact was rewritten to another value"
     )
+
+
+OLD_DOOR = _fact("door_code", "1111")
+
+
+def test_t10_a_withdrawal_follows_the_assertion_it_names(backend: Backend) -> None:
+    """Node tests/test_fact_redaction.py::test_t10_a_withdrawal_follows_the_assertion_it_names[lite|pg].
+
+    Red, mutation of `plan_redaction` (recall/fact_redaction.py) renaming only retractions
+    (`_NAMING_PREFIXES` without its "withdrawn" entry): on lite fails on "the withdrawal names an
+    assertion the ledger no longer holds" (and the old successor hides 1111 again); on PostgreSQL
+    migration 0029's function refuses the plan, failing on "the withdraw did not erase the value".
+    Red, mutation of `recall_redact_fact_values` (migration 0029) without its `withdrawn` branch,
+    checksum updated: PostgreSQL fails on "the withdraw did not erase the value".
+    """
+    backend.remember("old.md")
+    backend.remember("a.md", "door_code: 4512")
+    assert backend.apply(OLD_DOOR, "old.md", "r-old") == "APPLIED"
+    assert backend.apply(DOOR, "a.md", "r-new", links=("old.md",)) == "APPLIED"
+    ledger = backend.ledger()
+    assert [e.fact.object for e in ledger.current(tenant_id=backend.tenant, now=NOW)] == ["4512"]
+
+    result = withdraw_memory(backend.store, ["a.md"])
+
+    assert (result.facts_withdrawn, result.facts_redacted) == (1, 1), (
+        f"the withdraw did not erase the value: {result.message}"
+    )
+    events = backend.ledger().events
+    named = withdrawn_event_ids(events)
+    assert named and named <= {e.event_id for e in events}, (
+        "the withdrawal names an assertion the ledger no longer holds"
+    )
+    listed = [e.fact.object for e in backend.ledger().current(tenant_id=backend.tenant, now=NOW) if e.fact]
+    assert listed == ["1111"], f"withdrawing the erased successor did not give 1111 back: {listed}"
+    ids = _ids(backend)
+    hits = []
+    for code in (f"{n:04d}" for n in range(10_000)):
+        old_id = assertion_event_id(backend.tenant, _fact("door_code", code), "r-new")
+        withdrawal = decision_event_id(backend.tenant, WITHDRAWAL_REQUEST_PREFIX + old_id, "withdrawn")
+        if {old_id, withdrawal} & ids:
+            hits.append(code)
+    assert hits == [], f"recovered {hits} from the ids left after the withdraw"
+    assert "4512" not in " ".join(backend.rows())
+
+
+def test_t11_the_current_facts_tables_are_rebuilt(backend: Backend) -> None:
+    """Node tests/test_fact_redaction.py::test_t11_the_current_facts_tables_are_rebuilt[lite|pg].
+
+    Red, mutation removing the rebuild from both redactors (`_rebuild_pg_current_facts(...)` in
+    `PostgresFactRedactor.redact`, `rebuild_tables(...)` in `LiteFactRedactor.redact`,
+    recall/fact_redaction.py): fails on "the current-facts tables still name ids the redaction
+    replaced", both params.
+    """
+    backend.remember("a.md")
+    backend.remember("k.md")
+    assert backend.apply(DOOR, "a.md", "r-door") == "APPLIED"
+    assert backend.apply(CITY, "k.md", "r-city") == "APPLIED"
+    door = next(e for e in backend.ledger().events if e.event_type == "asserted" and e.fact == DOOR)
+    replaced = {door.event_id, str(door.fact_id)}
+    assert replaced <= backend.current_fact_ids(), "the tables must file the fact before the forget"
+
+    result = forget_memory(backend.store, ["a.md"])
+
+    assert result.facts_redacted == 1, result.message
+    left = replaced & backend.current_fact_ids()
+    assert not left, f"the current-facts tables still name ids the redaction replaced: {sorted(left)}"
+    ledger = backend.ledger()
+    listed = [e.fact.object for e in ledger.current(tenant_id=backend.tenant, now=NOW) if e.fact]
+    assert listed == ["Turin"]
+    assert ledger.last_read == "table", "the read after the redaction was not answered by the tables"

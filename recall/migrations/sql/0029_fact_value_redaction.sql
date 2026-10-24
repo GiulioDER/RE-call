@@ -233,9 +233,10 @@ $$;
 -- one new id), then holds every planned row to exactly what those replacements imply: the fact
 -- unchanged or the marker of its new id, every card unchanged or the redacted card of its new id,
 -- every superseded fact id mapped, and event and request ids changed only for an event whose
--- value is erased now, or derived from one (its retraction, its supersession) as the ledger
--- derives them. It then applies the rewrites, rebuilds each outbox snapshot from its rewritten
--- ledger row, deletes the replay receipts that echo what was erased, and records the redaction.
+-- value is erased now, or derived from one (its retraction, its withdrawal, its supersession) as
+-- the ledger derives them. It then applies the rewrites, rebuilds each outbox snapshot from its
+-- rewritten ledger row, deletes the replay receipts that echo what was erased, and records the
+-- redaction.
 -- The triggers are the backstop for the shape of every row.
 CREATE OR REPLACE FUNCTION recall_redact_fact_values(
     p_tenant_id TEXT,
@@ -372,6 +373,13 @@ BEGIN
             IF event_map ? holder THEN
                 want_request := 'retraction:' || (event_map->holder->>'event_id');
                 want_event := public.recall_decision_event_id(p_tenant_id, want_request, 'retracted');
+            END IF;
+        ELSIF old_row.event_type = 'withdrawn' AND old_row.request_id LIKE 'withdrawal:%' THEN
+            -- Migration 0032's `withdrawn` event names its assertion as a retraction does.
+            holder := substr(old_row.request_id, length('withdrawal:') + 1);
+            IF event_map ? holder THEN
+                want_request := 'withdrawal:' || (event_map->holder->>'event_id');
+                want_event := public.recall_decision_event_id(p_tenant_id, want_request, 'withdrawn');
             END IF;
         ELSIF old_row.event_type = 'superseded' AND old_row.event_id LIKE '%\_sup' THEN
             holder := left(old_row.event_id, length(old_row.event_id) - 4);

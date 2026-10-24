@@ -568,6 +568,77 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
 
 
 @requires_db
+def test_0029_lands_last_on_a_database_already_at_0033(monkeypatch):
+    """A database migrated to 0033 before 0029 existed (PR 950 held the number) takes it last.
+
+    Master shipped 0030 to 0033 while 0029 was unmerged, so a database built then has every
+    migration but 0029. Invariants: the upgrade applies 0029 alone; it keeps 0032's `withdrawn`
+    event type (0029 replaces the ledger's trigger functions, never its constraints); and on that
+    database a tenant erase of an asserted, then withdrawn, fact renames the withdrawal with its
+    assertion, so the withdrawal still names a ledger event.
+
+    Red proof, run on the remote test host, each mutation alone with its checksum updated and
+    then restored: 0029 with migration 0026's event-type constraint appended (no `withdrawn`)
+    fails on "applying 0029 after 0033 lost 0032's withdrawn event type"; 0029's
+    `recall_redact_fact_values` without its `withdrawn` branch fails on "the tenant erase was
+    refused" (the function holds the renamed withdrawal to its old ids).
+    """
+    import recall.schema as schema_module
+    from recall.fact_ledger import PostgresFactLedger
+    from recall.fact_redaction import TENANT_ERASE_WRITER, PostgresFactRedactor
+    from recall.provenance_cards import PostgresEvidenceCardStore
+    from recall.provenance_controller import (
+        FactApplicationRequest,
+        ProvenanceController,
+        withdrawn_event_ids,
+    )
+    from recall.types import AtomicFact
+    from tests.fact_fixtures import NOW, evidence_card
+
+    without = tuple(m for m in load_migrations() if m.version != "0029")
+    tenant = "gap-" + uuid.uuid4().hex[:10]
+    with _fresh_database(prefix="gap0029_") as dsn:
+        monkeypatch.setattr(schema_module, "load_migrations", lambda: without)
+        assert apply_migrations(dsn, table="chunks", dim=DIM)
+        monkeypatch.undo()
+
+        applied = apply_migrations(dsn, table="chunks", dim=DIM)
+        assert [migration.version for migration in applied] == ["0029"]
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'recall_fact_ledger_events_event_type_check'"
+            ).fetchone()
+        assert row is not None and "withdrawn" in row[0], (
+            "applying 0029 after 0033 lost 0032's withdrawn event type"
+        )
+
+        fact = AtomicFact(namespace="memory", subject="user", predicate="door_code", object="4512")
+        cards = PostgresEvidenceCardStore(dsn, tenant_id=tenant)
+        card = evidence_card(fact, tenant=tenant, generation="g1", chunk="chunk-a", source="a.md")
+        cards.put((card,))
+        ledger = PostgresFactLedger(dsn, tenant_id=tenant)
+        ProvenanceController(
+            tenant_id=tenant, generation_id="g1", cards=cards, ledger=ledger,
+            source_digest_for=lambda _card: "digest", now=lambda: NOW, writer="gap-test",
+        ).apply_fact(FactApplicationRequest(fact, (card.card_id,), "r1"))
+        assert ledger.withdraw_forgotten(tenant_id=tenant, touched=lambda _c: True, gone=lambda _c: True)
+
+        try:
+            report = PostgresFactRedactor(dsn, tenant_id=tenant).redact(
+                everything=True, reason="tenant_erase", writer=TENANT_ERASE_WRITER
+            )
+        except psycopg.Error as exc:
+            pytest.fail(f"the tenant erase was refused: {exc}")
+        assert report.facts_redacted == 1
+        events = PostgresFactLedger(dsn, tenant_id=tenant).events
+        named = withdrawn_event_ids(events)
+        assert named and named <= {event.event_id for event in events}, (
+            "the withdrawal names an assertion the ledger no longer holds"
+        )
+
+
+@requires_db
 def test_the_ledger_order_index_serves_the_replay_without_a_sort():
     """Migration 0031 builds an index that serves one tenant's ledger in `created_at, event_id` order.
 

@@ -194,7 +194,7 @@ differ, and exits 1 on a difference. A strict serving role can only read the tab
 
 The ledger is append-only, and a fact applied from a memo used to keep its value in it after the
 memo was forgotten. Since migration 0029, `recall_forget` (CLI, MCP, and the assistant's
-`recall_forget_memo`) erases it, in `recall.fact_redaction`, after the retraction it appends:
+`recall_forget_memo`) and `recall_withdraw` erase it, in `recall.fact_redaction`, after the retraction it appends:
 
 - Every evidence card citing a forgotten memo, in `recall_evidence_cards` and inside every ledger
   event, becomes a marker keeping only its tenant, generation and memo name.
@@ -205,8 +205,13 @@ memo was forgotten. Since migration 0029, `recall_forget` (CLI, MCP, and the ass
   random one, consistently, so a retraction still pairs with its assertion and every projection
   lists what it listed before. Unkeyed hashes would leave a low-entropy value (a four-digit code)
   recoverable by enumeration.
+- A `retracted` or `withdrawn` event names its assertion by event id, and its own id hashes that
+  name, so both follow the renamed assertion; a `superseded` event follows its holder.
 - Replay receipts whose result names an erased id or memo are deleted; one row per redaction is
   appended to `recall_fact_redactions`.
+- The materialized current facts are rebuilt from the rewritten ledger in the same transaction.
+  A read would replay rather than trust rows naming ids that no longer resolve, but those ids hash
+  the erased values, so leaving them would leave what the redaction removes.
 
 The tables stay append-only: their triggers refuse every DELETE and every UPDATE except one made
 while the transaction-local `recall.redaction` setting (on a lite file, a row of

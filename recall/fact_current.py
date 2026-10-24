@@ -977,11 +977,11 @@ class PostgresCurrentFacts:
             return self._status(conn)
 
     def purge(self) -> None:
-        """Delete the tenant's rows: reads replay until `rebuild`. The hook an erasure calls.
+        """Delete the tenant's rows: reads replay until `rebuild`.
 
-        `recall_forget`'s redaction (PR 950) rewrites event ids, fact ids and payloads in place,
-        so the rows naming the old ones must go in the same transaction; `purge_in` and
-        `rebuild_in` take the caller's connection for that.
+        `recall_forget`'s redaction (`recall.fact_redaction`) rewrites event ids, fact ids and
+        payloads in place, so the rows naming the old ones go in the same transaction: it rebuilds
+        them there. `purge_in` and `rebuild_in` take a caller's connection for the same purpose.
         """
         with self._connect() as conn, conn.transaction():
             self.purge_in(conn)
