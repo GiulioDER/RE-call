@@ -1484,14 +1484,15 @@ def test_a_plain_number_is_a_number_and_a_hash_with_a_letter_is_hex():
 
 
 def test_the_error_is_cut_before_the_detail_line_is_looked_for():
-    """Invariant (the deterministic form of the 2 MB test): only the first `MAX_ERROR_CHARS` characters are read,
-    so a detail line that starts after them does not exist. An implementation that cut late would find it.
+    """Invariant (the deterministic form of the 2 MB test): only the first and the last
+    `MAX_ERROR_CHARS` characters are read, so a line in the middle of a long error does not exist
+    for the signature. An implementation that read the whole error would find it.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_error_is_cut_before_the_detail_line_is_looked_for`.
-    Mutation: `text = error[:MAX_ERROR_CHARS] ...` becomes `text = error ...` in `failure_signature`.
-    Symbol: `failure_signature`. Seen: `assert 'make|boom' == 'make|exit:1'`.
+    Mutation: `error[-MAX_ERROR_CHARS:]` becomes `error` in `_detail_line`. Symbol: `_detail_line`.
+    Seen: `assert 'make|boom' == 'make|exit:1'`.
     """
-    error = "Exit code 1\n" + "\n" * 5000 + "boom"
+    error = "Exit code 1\n" + "\n" * 5000 + "boom" + "\n" * 5000
     assert gk.failure_signature("make", error) == "make|exit:1"
 
 
@@ -1500,7 +1501,7 @@ def test_the_error_is_cut_before_the_detail_line_is_looked_for():
     [
         ("Exit code 2\nboom happened", "make|boom happened"),
         ("EXIT CODE 137   \n\n   killed by signal", "make|killed by signal"),
-        ("boom happened\nsecond line", "make|boom happened"),
+        ("boom happened\nsecond line", "make|second line"),
         ("Exit code 1\n", "make|exit:1"),
         ("Exit code -1", "make|exit:-1"),
         ("Exit code 3\n   \n\t\n", "make|exit:3"),
@@ -1514,9 +1515,11 @@ def test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code(erro
     printed nothing still groups by its exit code.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_failure_signature_skips_the_exit_header_and_falls_back_to_the_code`.
-    Mutations: (a) the `lines = lines[1:]` that drops the header is removed: the five cases that start
-    with a header fail (the detail becomes `exit code <n>`); (b) the `'?'` fallback is replaced by `''`:
-    the last two cases fail (`make|exit:`). Symbol: `failure_signature`.
+    Mutations: (a) the header drop in `_error_lines` is removed: the three cases holding nothing but
+    a header fail (`assert 'make|exit code <n>' == 'make|exit:1'`, likewise `exit:3`, `exit:-1`); a
+    case with a later line still passes, because the detail is now read from the end; (b) the `'?'`
+    fallback is replaced by `''`: the last two cases fail (`make|exit:`). Symbols: `_error_lines`,
+    `failure_signature`.
     """
     assert gk.failure_signature("make test", error) == expected
 
@@ -1546,30 +1549,35 @@ def test_the_family_part_of_a_signature_is_capped():
         ("ssh -p22 examplehost", "ssh:examplehost"),
         ("ssh -tt examplehost", "ssh:examplehost"),
         ("ssh -O exit examplehost", "ssh:examplehost"),
-        ("ssh -l bob [::1]", "ssh:::1"),
-        ("ssh bob@[fe80::1]:22 uptime", "ssh:fe80::1"),
+        ("ssh -l bob [::1]", "ssh:<host>"),
+        ("ssh bob@[fe80::1]:22 uptime", "ssh:<host>"),
         ("ssh -- examplehost uptime", "ssh:examplehost"),
         ("ssh -J jumphost examplehost uptime", "ssh:examplehost"),
         ("ssh ExampleHost", "ssh:examplehost"),
         ("ssh", "ssh"),
         ("ssh -v", "ssh"),
         ("pytest -q tests/", "pytest"),
-        ("FOO=1 python -m pytest", "python"),
+        ("FOO=1 python -m pytest", "pytest"),
         ("", ""),
         ("   ", ""),
     ],
 )
 def test_command_family_is_the_program_and_for_ssh_the_alias(command, expected):
-    """Invariant: the family is the first segment's program, and `ssh:<alias>` for ssh, skipping options
-    and the values of the options that take one.
+    """Invariant: the family is the command's program (the module for `python -m`), and
+    `ssh:<alias>` for ssh, skipping options and the values of the options that take one. Shell
+    preamble and wrappers are covered by `test_command_family_skips_shell_preamble_and_wrappers`.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_command_family_is_the_program_and_for_ssh_the_alias`.
     Mutations: (a) `_ssh_host` never skips an option's value (`skip = False`): five cases fail, e.g.
     `ssh:2222`, `ssh:jumphost`, `ssh:key.pem`, `ssh:22`, `ssh:exit`; (b) `.rpartition("@")[2]` removed: the
     `alice@examplehost` case gives `ssh:alice@examplehost`; (c) the alias dropped (`return "ssh"`): ten
     cases fail; (d) `O` removed from `_SSH_VALUE_OPTIONS`: only `ssh -O exit examplehost` fails
-    (`ssh:exit`); (e) the bracketed-IPv6 branch (`if host.startswith("[")`) disabled: the two `[...]`
-    cases fail (`ssh:[` and `ssh:[fe80`). Symbols: `_ssh_host`, `command_family`.
+    (`ssh:exit`); (e) the bracketed-IPv6 branch (`if host.startswith("[")`) disabled: before
+    addresses were masked the two `[...]` cases failed (`ssh:[`, `ssh:[fe80`); both now give
+    `ssh:<host>` either way, so that branch is proved on `_ssh_host` in
+    `test_a_host_that_is_not_an_alias_is_masked_in_the_family`; (f) the `-m` branch of `command_family` disabled: the
+    `FOO=1 python -m pytest` case fails (`assert 'python' == 'pytest'`). Symbols: `_ssh_host`,
+    `command_family`.
     """
     assert gk.command_family(command) == expected
 
@@ -2159,18 +2167,18 @@ def test_failure_injects_and_logs(hook):
 def test_the_documented_failure_payload_gives_a_stable_signature(hook, tmp_path):
     """Invariant: the `PostToolUseFailure` example payload of the Claude Code hooks reference
     (https://code.claude.com/docs/en/hooks, read 2026-10-23), used verbatim apart from `cwd`, logs
-    the signature `npm|error: cannot find module 'express'`: the `Exit code 1` header is skipped and
-    the first output line is the detail. The same page says long output is middle-truncated with a
-    `... [N characters truncated] ...` line and that Claude Code may insert a line such as
-    `Command timed out after 2m 0s`; when either is the first detail line it must not crash, and
-    its numbers become `<n>`, so two occurrences with different counts share one signature.
+    the signature `npm|error: cannot find module 'express'`. The same page says long output is
+    middle-truncated with a `... [N characters truncated] ...` line and that Claude Code may insert
+    a line such as `Command timed out after 2m 0s`. The marker is not the detail when an error line
+    follows it, and an inserted timeout line, the only line with an error word, is the detail with
+    its numbers as `<n>`, so two occurrences with different durations share one signature.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_documented_failure_payload_gives_a_stable_signature`.
-    Symbol: `failure_signature` and `_normalise`. Mutations, one at a time:
-    A: `lines = lines[1:]` (the header skip) deleted in `failure_signature`; seen
-    `assert 'npm|exit code <n>' == "npm|error: c...ule 'express'"` on the documented payload.
+    Symbol: `_detail_line` and `_normalise`. Mutations, one at a time:
+    A: `_detail_line` returns `lines[0]` instead of walking back from the end; seen
+    `assert 'npm|... [<n>...runcated] ...' == "npm|error: c...ule 'express'"` on the truncated error.
     B: `line = _DIGITS.sub("<n>", line)` deleted in `_normalise`; seen
-    `assert 'npm|... [123...runcated] ...' == 'npm|... [<n>...runcated] ...'` on the truncation marker.
+    `assert 'npm|command ...t after 2m 0s' == 'npm|command ...ter <n>m <n>s'`.
     """
     checkout = tmp_path / "alpha"
     (checkout / ".git").mkdir(parents=True)
@@ -2195,7 +2203,7 @@ def test_the_documented_failure_payload_gives_a_stable_signature(hook, tmp_path)
         return hook.events()[-1]["signature"]
 
     truncated = "Exit code 1\n... [{} characters truncated] ...\nError: Cannot find module 'express'"
-    assert signature_of(truncated.format(1234)) == "npm|... [<n> characters truncated] ..."
+    assert signature_of(truncated.format(1234)) == "npm|error: cannot find module 'express'"
     assert signature_of(truncated.format(98765)) == signature_of(truncated.format(1234))
     timed_out = "Exit code 143\nCommand timed out after {}\nnpm ERR! lifecycle"
     assert signature_of(timed_out.format("2m 0s")) == "npm|command timed out after <n>m <n>s"
@@ -2623,3 +2631,259 @@ def test_colour_codes_do_not_break_the_failure_ranking():
         "\x1b[31;1mdatabase\x1b[0m \x1b[31;1mconnection\x1b[0m \x1b[31;1mrefused\x1b[0m"
     )
     assert [e.id for e in gk.rank_for_failure([entry, other], error, 0.0)] == ["gk-example-db"]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            "Exit code 1\nTraceback (most recent call last):\n  File \"x.py\", line 3, in <module>\n"
+            "    main()\nValueError: example value is out of range",
+            "python|valueerror: example value is out of range",
+        ),
+        (
+            "Exit code 1\nTraceback (most recent call last):\n  File \"x.py\", line 9\n"
+            "json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)\n",
+            "python|json.decoder.jsondecodeerror: expecting value: line <n> column <n> (char <n>)",
+        ),
+    ],
+    ids=["value-error", "dotted-exception"],
+)
+def test_a_python_traceback_is_signed_by_its_exception_line(error, expected):
+    """Invariant: a Python traceback is signed by its last `ExceptionType: message` line, never by
+    `Traceback (most recent call last):`, which every traceback starts with.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_python_traceback_is_signed_by_its_exception_line`.
+    Mutation: `_detail_line` returns the first informative line (`lines[0]`). Symbol:
+    `_detail_line`. Seen, both params: `assert 'python|traceback (most recent call last):' == ...`.
+    """
+    assert gk.failure_signature("python x.py", error) == expected
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            "Exit code 1\nAll checks passed!\nexample.py:3: error: Name \"x\" is not defined\n"
+            "Found 1 error in 1 file (checked 9 source files)",
+            "mypy|found <n> error in <n> file (checked <n> source files)",
+        ),
+        (
+            "Exit code 1\ncollected 4 items\nFAILED tests/test_x.py::test_y - AssertionError: no\n"
+            "===== 1 failed, 3 passed in 0.52s =====",
+            "mypy|failed tests/test_x.py::test_y - assertionerror: no",
+        ),
+        ("Exit code 255\nConnection to example closed.\n8", "mypy|connection to example closed."),
+        ("Exit code 2\nfatal: not a git repository\n  (or any parent)", "mypy|fatal: not a git repository"),
+    ],
+    ids=["last-error-line", "banner-skipped", "bare-number-skipped", "last-error-not-last-line"],
+)
+def test_the_detail_is_the_last_line_that_says_what_failed(error, expected):
+    """Invariant: without a traceback, the detail is the last line with an error word that is not
+    a `=== ... ===` banner; lines that are only a number or a path once normalised never count;
+    and with no error word at all, the last informative line.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_the_detail_is_the_last_line_that_says_what_failed`.
+    Symbol: `_detail_line`, `_informative`, `_BANNER`. Mutations, one at a time:
+    A: the `and not _BANNER.match(line)` condition removed; seen on `banner-skipped`:
+    `assert 'mypy|===== <n> failed...in <n>.<n>s =====' == 'mypy|failed tests/...rtionerror: no'`.
+    B: the `_informative` filter removed (`lines = list(tail)`); seen on `bare-number-skipped`:
+    `assert 'mypy|<n>' == 'mypy|connection to example closed.'`.
+    C: the error-word pass removed (straight to `lines[-1]`); seen on `last-error-not-last-line`:
+    `assert 'mypy|(or any parent)' == 'mypy|fatal: not a git repository'`.
+    """
+    assert gk.failure_signature("mypy .", error) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("cd repo && pytest -q", "pytest"),
+        ("export FOO=1; cd a; make test", "make"),
+        ("source .venv/bin/activate && python -m ruff check .", "ruff"),
+        ("pushd x && . env.sh && npm test", "npm"),
+        ('Set-Location "C:\\example dir"; npm test', "npm"),
+        ("timeout 600 python -m pytest tests -q", "pytest"),
+        ("timeout -k 5 60s make check", "make"),
+        ("cd x && ssh examplehost uptime", "ssh:examplehost"),
+        ("cd only/here", "cd"),
+        ("python3 -m", "python3"),
+    ],
+)
+def test_command_family_skips_shell_preamble_and_wrappers(command, expected):
+    """Invariant: the family is the program the command runs: leading `cd`, `pushd`, `export`,
+    `set`, `source`, `.` and PowerShell's `Set-Location` are skipped, `timeout <duration>` and
+    `python -m <module>` are looked through, and the ssh alias rule still holds. A line of only
+    preamble keeps its first program; a dangling `-m` keeps the interpreter.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_command_family_skips_shell_preamble_and_wrappers`.
+    Symbol: `command_family`. Mutations, one at a time:
+    A: `chosen = segments[0]` (no preamble skip); seen `assert 'cd' == 'pytest'`.
+    B: the `timeout` branch removed; seen `assert 'timeout' == 'pytest'`.
+    C: the `-m` branch removed; seen `assert 'python' == 'ruff'`.
+    """
+    assert gk.command_family(command) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("ssh admin@192.0.2.10 uptime", "ssh:<host>"),
+        ("ssh host.example.com ls", "ssh:<host>"),
+        ("ssh -l bob [2001:db8::1]", "ssh:<host>"),
+        ("ssh bob@[fe80::1]:22 uptime", "ssh:<host>"),
+        ("ssh examplehost ls", "ssh:examplehost"),
+        ("ssh deploy@example-host-2 ls", "ssh:example-host-2"),
+    ],
+)
+def test_a_host_that_is_not_an_alias_is_masked_in_the_family(command, expected):
+    """Invariant: the signature is logged and reported, so an ssh destination that identifies a
+    machine (an IPv4 or IPv6 address, or a dotted host name) is `ssh:<host>`; a configured alias
+    (letters, digits, `-`) stays, and `user@` is still stripped. The bracketed-IPv6 parse in
+    `_ssh_host` is proved directly, since the mask hides it in the family.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_a_host_that_is_not_an_alias_is_masked_in_the_family`.
+    Symbols: `command_family`, `_ssh_host`. Mutations, one at a time:
+    A: `_BARE_ALIAS.match(host)` replaced by `True`; seen on the four address params, e.g.
+    `assert 'ssh:192.0.2.10' == 'ssh:<host>'`.
+    B: the bracketed-IPv6 branch of `_ssh_host` disabled; seen on every param (the direct
+    `_ssh_host` assertion): `assert '[2001' == '2001:db8::1'`.
+    """
+    assert gk.command_family(command) == expected
+    assert gk._ssh_host(("-l", "bob", "[2001:db8::1]")) == "2001:db8::1"
+
+
+#: An invented OpenSSH-style fingerprint, built at run time so the source never holds one.
+INVENTED_FINGERPRINT = "SHA256:" + "Ab3x" * 11
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            'Good "git" signature for dev@example.com with key ' + INVENTED_FINGERPRINT,
+            'git|good "git" signature for <email> with key <fingerprint>',
+        ),
+        ("fatal: unable to connect to 192.0.2.10 port 22", "git|fatal: unable to connect to <ip> port <n>"),
+        ("connect to 2001:db8::1 port 22: Connection refused", "git|connect to <ip> port <n>: connection refused"),
+        (
+            'error: rejected api_token=Zx81qq and PASSWORD="two words"',
+            "git|error: rejected api_token=<redacted> and password=<redacted>",
+        ),
+        (
+            "error: host key aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99 changed",
+            "git|error: host key <fingerprint> changed",
+        ),
+        ("error: bearer AbCdEf123456GhIjKl7890xyz rejected", "git|error: bearer <token> rejected"),
+    ],
+    ids=["mailbox-and-fingerprint", "ipv4", "ipv6", "credential-pair", "colon-hex", "token"],
+)
+def test_identifying_values_never_reach_a_signature(line, expected):
+    """Invariant: mailboxes, SSH fingerprints (`SHA256:` or colon hex), `name=value` credentials,
+    IPv4 and IPv6 addresses and long credential-like tokens are placeholders in a signature, which
+    is written to the event log and into reports. All values here are invented.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_identifying_values_never_reach_a_signature`.
+    Symbol: `_redact`, `_normalise`. Each substitution removed alone; seen only on its own params:
+    `_FINGERPRINT` (mailbox-and-fingerprint, colon-hex), `_EMAIL` (mailbox-and-fingerprint),
+    `_SECRET_PAIR` (credential-pair), `_IPV6` (ipv6), `_IPV4` (ipv4), `_TOKEN` (token); each run
+    failed exactly the params named (2, 1, 1, 1, 1, 1 failures). E.g. without `_IPV4`:
+    `assert 'git|fatal: u....<n> port <n>' == 'git|fatal: u...<ip> port <n>'`; without `_TOKEN`:
+    `assert 'git|error: b...>xyz rejected' == 'git|error: b...ken> rejected'`.
+    """
+    assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("error: deadline 12:30:45 passed", "git|error: deadline <n>:<n>:<n> passed"),
+        ("error: std::io failed", "git|error: std::io failed"),
+        ("error: version 1.2.3 is too old", "git|error: version <n>.<n>.<n> is too old"),
+        ("error: commit 9f3c2ab1e9f3c2ab1e9f3c2ab1e is missing", "git|error: commit <hex> is missing"),
+        ("error: test_the_signature_names_the_program failed", "git|error: test_the_signature_names_the_program failed"),
+    ],
+    ids=["time", "scope-operator", "version", "hex-id", "long-identifier"],
+)
+def test_text_that_only_resembles_identifying_data_is_kept(line, expected):
+    """Invariant: the redaction is narrow: a time, a `::` scope operator, a three-part version, a
+    pure hex id (still `<hex>`) and a long identifier with no digit keep their shape.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_text_that_only_resembles_identifying_data_is_kept`.
+    Symbols: `_ipv6_or_text`, `_TOKEN`. Mutations, one at a time:
+    A: `_ipv6_or_text` always returns `<ip>`; seen on time only:
+    `assert 'git|error: deadline <ip> passed' == 'git|error: deadline <n>:<n>:<n> passed'`. The
+    scope-operator param passes under A because `_IPV6` itself cannot start inside a word, so it
+    guards that boundary rather than `_ipv6_or_text`.
+    B: the digit lookahead removed from `_TOKEN`; seen on long-identifier:
+    `assert 'git|error: <token> failed' == 'git|error: test_the_signature_names_the_program failed'`.
+    """
+    assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "token." * (4096 // 6),
+        "a." * 2048,
+        "key" * 1365,
+        "a_" * 2048 + "!",
+        "a." * 1024 + "@" + "b." * 1024,
+        "a=" * 2048,
+        "=" * 4096,
+        "a" * 4000 + "@b.cd",
+        "@a.b" * 1024,
+    ],
+    ids=[
+        "keyword-dots", "dotted-run", "keyword-run", "name-run", "at-in-dotted-run",
+        "pair-run", "equals-run", "long-local-part", "domain-run",
+    ],
+)
+def test_redaction_is_linear_on_adversarial_lines(line):
+    """Invariant: no identifying-data pattern backtracks: a signature of one line of the capped
+    length (`MAX_ERROR_CHARS`) built to defeat them takes well under the 800 ms failure budget.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_redaction_is_linear_on_adversarial_lines`.
+    Mutation: `_NAME_VALUE` restored to the first version, a credential word between two unbounded
+    name runs with no anchored start. Symbol: `_NAME_VALUE`. Seen: 2 failed, 3 passed;
+    keyword-dots `assert (13291.88 - 13247.94) < 0.5` (43.9 s for one 4 KB line) and dotted-run
+    1.1 s (measured with the first five params). The other params hold the mailbox, token,
+    fingerprint and the later `=`/`@` scans to the same bound. Before the fix, measured 2026-10-23, the old
+    pattern alone took 12.3 s on keyword-dots.
+    """
+    started = time.perf_counter()
+    gk.failure_signature("x", "Exit code 1\n" + line)
+    assert time.perf_counter() - started < 0.5
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        (
+            "error: GET url=https://example.com/x?token=abc123 failed",
+            "git|error: get url=https://example.com/x?token=<redacted> failed",
+        ),
+        (
+            "error: " + "a" * 70 + "_token=sekrit9 rejected",
+            "git|error: " + "a" * 70 + "_token=<redacted> rejected",
+        ),
+        ("error: mail " + "b" * 70 + "@example.com bounced", "git|error: mail <email> bounced"),
+        ("error: mode=fast and api_key=Zx81qq", "git|error: mode=fast and api_key=<redacted>"),
+    ],
+    ids=["nested-in-a-value", "long-credential-name", "long-local-part", "plain-pair-kept"],
+)
+def test_no_credential_or_mailbox_escapes_by_nesting_or_length(line, expected):
+    """Invariant: a credential nested in another pair's value is still redacted (the outer pair
+    does not swallow it), a credential name and a mailbox local part of any length are found, and
+    a pair that is not a credential keeps its value.
+
+    Red proof. Node: `tests/test_general_knowledge_hook.py::test_no_credential_or_mailbox_escapes_by_nesting_or_length`.
+    Symbols: `_redact_credential_pairs`, `_redact_emails`. Mutations, one at a time:
+    A: a non-credential pair skips its value (`position = value.end()` when not redacting); seen on
+    nested-in-a-value: `assert '...x?token=abc<n> failed' == '...x?token=<redacted> failed'`.
+    B: a name longer than 64 characters is skipped; seen on long-credential-name:
+    `assert '...a_token=sekrit<n> rejected' == '...a_token=<redacted> rejected'`.
+    C: the local-part walk stops after 64 characters; seen on long-local-part:
+    `assert 'git|error: m...ail> bounced' == 'git|error: m...ail> bounced'` with six `b` left.
+    """
+    assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected
