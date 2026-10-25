@@ -9,6 +9,7 @@ test reads the operator's real corpus.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -3071,3 +3072,28 @@ def test_quoted_mailboxes_never_reach_failure_logs(hook, mailbox, boundary):
         signature = event["signature"]
     assert "example" not in signature
     assert "<email>" in signature
+
+
+@pytest.mark.parametrize("session_id", ["con", "nul", "com1", "lpt9", "aux", "Abc", "ABC-1", "MiXeD"])
+def test_hashed_session_ids_cannot_alias_literal_ids(tmp_path, session_id):
+    """STAKES-001: a hashed ID and a literal ID shaped like that hash keep independent claims.
+
+    Red proof: this exact node fails every parameter at baseline
+    2ceb8de8e333090760c37bd69072e285e89f4e1c. Lower-case device IDs make the second public claim
+    return [] instead of the entry; upper-case IDs create names equal ignoring case (or already
+    suppress the second claim on Windows). Production symbol: `_session_key`'s plain branch.
+    The same node passes after digest-shaped IDs are reserved for the hashed namespace.
+    The trailing UUID check is an unchanged-format control, not an independent red proof.
+    """
+    digest = hashlib.sha256(session_id.encode()).hexdigest()[:10]
+    literal = session_id.lower() + "-" + digest
+    assert session_id != literal
+    for identity in (session_id, literal):
+        assert gk.claim_for_session(identity, ["gk-example-entry"], tmp_path) == ["gk-example-entry"]
+    names = [path.name.casefold() for path in (tmp_path / "state").iterdir()]
+    assert len(set(names)) == 2
+    for identity in (session_id, literal):
+        assert gk.claim_for_session(identity, ["gk-example-entry"], tmp_path) == []
+    ordinary_uuid = "12345678-1234-1234-1234-123456789abc"
+    assert gk.claim_for_session(ordinary_uuid, ["gk-example-entry"], tmp_path) == ["gk-example-entry"]
+    assert (tmp_path / "state" / (ordinary_uuid + ".json")).is_file()

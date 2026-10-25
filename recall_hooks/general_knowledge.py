@@ -125,6 +125,8 @@ STATE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 #: The longest session id used as a file name; a longer one is truncated and hash-suffixed.
 _SESSION_ID_MAX = 100
 _SESSION_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+#: The generated suffix is reserved: a literal ID with this shape must be hashed as well.
+_SESSION_HASH_SUFFIX = re.compile(r"-[0-9a-f]{10}$")
 #: Names Windows opens as devices whatever the extension, so they never name a state file as is.
 _WINDOWS_DEVICE_NAMES = frozenset(
     {"con", "prn", "aux", "nul"}
@@ -633,7 +635,8 @@ def _session_key(session_id: Any) -> str:
     case-insensitive filesystem (the Windows and macOS defaults) `Abc` and `abc` would otherwise
     open one file, and when it is a Windows device name (`CON`, `nul`, `COM1`), which Windows
     opens as a device rather than as `CON.json`. Client ids are lower-case UUIDs, which keep their
-    plain name.
+    plain name. A literal id ending in a generated digest suffix is hashed too, so it cannot
+    alias another session's generated key, including on a case-insensitive filesystem.
     """
     if not isinstance(session_id, str):
         return ""
@@ -645,6 +648,7 @@ def _session_key(session_id: Any) -> str:
         and len(cleaned) <= _SESSION_ID_MAX
         and cleaned == cleaned.lower()
         and cleaned.lower() not in _WINDOWS_DEVICE_NAMES
+        and _SESSION_HASH_SUFFIX.search(cleaned) is None
     )
     if plain:
         return cleaned
