@@ -2883,6 +2883,10 @@ def test_identifying_values_never_reach_a_signature(line, expected):
     failed exactly the params named (2, 1, 1, 1, 1, 1 failures). E.g. without `_IPV4`:
     `assert 'git|fatal: u....<n> port <n>' == 'git|fatal: u...<ip> port <n>'`; without `_TOKEN`:
     `assert 'git|error: b...>xyz rejected' == 'git|error: b...ken> rejected'`.
+
+    `_EMAIL` and `_SECRET_PAIR` above are historical mutation names from the regex version.
+    The corresponding committed scanner boundaries are `_redact`'s calls to `_redact_emails`
+    and `_redact_credential_pairs`. The measurements and counts above describe the earlier runs.
     """
     assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected
 
