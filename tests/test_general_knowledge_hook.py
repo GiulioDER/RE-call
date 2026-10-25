@@ -9,6 +9,7 @@ test reads the operator's real corpus.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -2883,6 +2884,10 @@ def test_identifying_values_never_reach_a_signature(line, expected):
     failed exactly the params named (2, 1, 1, 1, 1, 1 failures). E.g. without `_IPV4`:
     `assert 'git|fatal: u....<n> port <n>' == 'git|fatal: u...<ip> port <n>'`; without `_TOKEN`:
     `assert 'git|error: b...>xyz rejected' == 'git|error: b...ken> rejected'`.
+
+    `_EMAIL` and `_SECRET_PAIR` above are historical mutation names from the regex version.
+    The corresponding committed scanner boundaries are `_redact`'s calls to `_redact_emails`
+    and `_redact_credential_pairs`. The measurements and counts above describe the earlier runs.
     """
     assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected
 
@@ -2980,3 +2985,115 @@ def test_no_credential_or_mailbox_escapes_by_nesting_or_length(line, expected):
     `assert 'git|error: m...ail> bounced' == 'git|error: m...ail> bounced'` with six `b` left.
     """
     assert gk.failure_signature("git commit", "Exit code 1\n" + line) == expected
+
+
+@pytest.mark.parametrize("boundary", ["signature", "event-log"])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "error: password = maple-bridge rejected",
+        "error: password= maple-bridge rejected",
+        "error: password =maple-bridge rejected",
+        'error: {"password": "maple-bridge"}',
+        'error: {"password":"maple-bridge"}',
+        "error: {'api_token': 'maple-bridge'}",
+        "error: password: maple-bridge rejected",
+        'error: {"password": "maple\\\"bridge"}',
+    ],
+)
+def test_spaced_and_quoted_credentials_never_reach_failure_logs(hook, line, boundary):
+    """SEC-001: credential separators and JSON quoting must not expose short secret values.
+
+    Red proof: this exact node, including both public boundaries and every parameter, fails
+    against cdbd7638568de71acafd491dd95c00bfc1d087b2 at the assertion that 'maple' is absent.
+    Production symbol: `_redact_credential_pairs`. The same node passes with the scanner fixed.
+    All inputs are invented; no token-length heuristic can hide this short alphabetic value.
+    """
+    error = "Exit code 1\nRequest failed\n" + line
+    if boundary == "signature":
+        signature = gk.failure_signature("python app.py", error)
+    else:
+        assert gk.post_tool_use_failure(failure(command="python app.py", error=error)) == 0
+        (event,) = hook.events()
+        signature = event["signature"]
+    assert "maple" not in signature
+    assert "<redacted>" in signature
+
+
+@pytest.mark.parametrize("boundary", ["signature", "event-log"])
+@pytest.mark.parametrize("address", ["fdab:cdef::abcd", "abcd:efab:cdef:abcd:efab:cdef:abcd:efab"])
+def test_letter_only_ipv6_never_reaches_failure_logs(hook, address, boundary):
+    """SEC-002: an IPv6 address needs no decimal digit to identify a host.
+
+    Red proof: this exact node fails all parameters against cdbd7638568de71acafd491dd95c00bfc1d087b2
+    because the invented address survives the signature and event-log boundaries. Production
+    symbol: `_ipv6_or_text`. The same node passes after IPv6 validation replaces the digit check.
+    """
+    error = "Exit code 1\nRequest failed\nerror: connection to " + address + " refused"
+    if boundary == "signature":
+        signature = gk.failure_signature("git fetch", error)
+    else:
+        assert gk.post_tool_use_failure(failure(command="git fetch", error=error)) == 0
+        (event,) = hook.events()
+        signature = event["signature"]
+    assert address not in signature
+    assert "<ip>" in signature
+
+
+@pytest.mark.parametrize("boundary", ["signature", "event-log"])
+@pytest.mark.parametrize(
+    "mailbox",
+    [
+        '"example user"@example.com',
+        '"example\\\"user"@example.com',
+        '"example@inside.test user"@example.com',
+        '" prefix; mailbox "example user"@example.com',
+    ],
+)
+def test_quoted_mailboxes_never_reach_failure_logs(hook, mailbox, boundary):
+    """SEC-003: a quoted or escaped mailbox local part must be masked together with its domain.
+
+    Red proof: this exact node fails all parameters against cdbd7638568de71acafd491dd95c00bfc1d087b2
+    because 'example' survives in the signature and failure event. Production symbol:
+    `_redact_emails`. The same node passes with quoted local parts recognized. Invented mail only.
+    The inner-domain case also failed both boundaries against the first repair (source SHA256
+    d9cd3e1be818eb948346c50918a02c57d615656e04c13e08ac4c9dcab491a5e5), then passed after complete
+    quoted mailboxes were handled before their internal domain matches.
+    The unmatched-prefix case failed both boundaries against the next repair (source SHA256
+    79b33deee1520c3e2758defe15b16d8c6f8f9da77cee6ba910802ec6a0df4202), then passed after an
+    unproductive closing quote was reconsidered as a potential mailbox opener.
+    """
+    error = "Exit code 1\nRequest failed\nerror: mailbox " + mailbox + " rejected"
+    if boundary == "signature":
+        signature = gk.failure_signature("git fetch", error)
+    else:
+        assert gk.post_tool_use_failure(failure(command="git fetch", error=error)) == 0
+        (event,) = hook.events()
+        signature = event["signature"]
+    assert "example" not in signature
+    assert "<email>" in signature
+
+
+@pytest.mark.parametrize("session_id", ["con", "nul", "com1", "lpt9", "aux", "Abc", "ABC-1", "MiXeD"])
+def test_hashed_session_ids_cannot_alias_literal_ids(tmp_path, session_id):
+    """STAKES-001: a hashed ID and a literal ID shaped like that hash keep independent claims.
+
+    Red proof: this exact node fails every parameter at baseline
+    2ceb8de8e333090760c37bd69072e285e89f4e1c. Lower-case device IDs make the second public claim
+    return [] instead of the entry; upper-case IDs create names equal ignoring case (or already
+    suppress the second claim on Windows). Production symbol: `_session_key`'s plain branch.
+    The same node passes after digest-shaped IDs are reserved for the hashed namespace.
+    The trailing UUID check is an unchanged-format control, not an independent red proof.
+    """
+    digest = hashlib.sha256(session_id.encode()).hexdigest()[:10]
+    literal = session_id.lower() + "-" + digest
+    assert session_id != literal
+    for identity in (session_id, literal):
+        assert gk.claim_for_session(identity, ["gk-example-entry"], tmp_path) == ["gk-example-entry"]
+    names = [path.name.casefold() for path in (tmp_path / "state").iterdir()]
+    assert len(set(names)) == 2
+    for identity in (session_id, literal):
+        assert gk.claim_for_session(identity, ["gk-example-entry"], tmp_path) == []
+    ordinary_uuid = "12345678-1234-1234-1234-123456789abc"
+    assert gk.claim_for_session(ordinary_uuid, ["gk-example-entry"], tmp_path) == ["gk-example-entry"]
+    assert (tmp_path / "state" / (ordinary_uuid + ".json")).is_file()
