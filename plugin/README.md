@@ -109,14 +109,19 @@ memory as a tool.
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
 | `SessionEnd` | Closes this session's owned MCP transports, then indexes the session so the next one can find it |
 
+The Codex bundle also registers `PostToolUse` for proven shell failures and `SubagentStart`
+for advisory auditor context. Its adapter reuses the shared failure and auditor handlers.
+See [Codex integration](../docs/CODEX_RECALL_INTEGRATION.md) for payload compatibility and upgrade steps.
+
 The two retrieval hooks answer different questions and are separately switchable in
 `~/.claude/recall-hook.json` (`write_time.enabled`, `prompt_time.enabled`). `PreToolUse` uses the
 draft text, which is what reaches a hazard; `UserPromptSubmit` uses your words, which is what
 reaches a decision the project already made.
 
-**Three skills**, `check-memory-before-acting`, `keep-memory-current`, and `re-call`, teach Claude
+**Five skills**, `check-memory-before-acting`, `keep-memory-current`, `re-call`, `session-open`,
+and `session-close`, teach Claude
 when to search, how to preserve durable memory, and how to use RE-call's retrieval and refresh
-lifecycle. Installing the plugin loads all three automatically. The first
+lifecycle and session checklists. Installing the plugin loads all five automatically. The first
 skill teaches Claude *when* to search and, more
 importantly, *how*. That second half is not decoration: measured over 54 paired sessions, the
 memory layer eliminated a class of known hazard when the relevant memo reached the agent, and

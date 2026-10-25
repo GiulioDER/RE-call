@@ -286,8 +286,9 @@ def session_start(payload: dict[str, Any]) -> int:
         f"RE-call memory is available for {project}: {count} indexed chunks. "
         "Call `recall_search` before proposing an idea, forming a hypothesis, or "
         "repeating past work, and treat an `abstained: true` result as 'no supported "
-        "answer' rather than as an empty one. This corpus is uncalibrated, so trust "
-        "thresholds are defaults rather than fitted to it."
+        "answer' rather than as an empty one. This count is cached configuration, not live "
+        "readiness or trust evidence. Use `recall_stats` for freshness and the live retrieval "
+        "verdict for calibration and trust."
         if count
         else ""
     )

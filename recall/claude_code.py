@@ -517,8 +517,9 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
             }
         ],
         # General knowledge after a shell command FAILED: the error text is ranked against the
-        # operator's entries (see `recall_hooks/general_knowledge.py`). It does nothing without the
-        # operator's own index, and it fires only on a failure, so a command that succeeds never
+        # operator's entries (see `recall_hooks/general_knowledge.py`). Without an index it injects
+        # no context, but still logs the signature when enabled. It fires only on a failure, so
+        # a command that succeeds never
         # starts this interpreter. Synchronous, because `additionalContext` that arrives after the
         # next turn has started is context the model never saw.
         "PostToolUseFailure": [

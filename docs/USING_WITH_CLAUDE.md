@@ -273,7 +273,7 @@ does not keep the corpus current. `recall setup` also offers six hooks, written 
 | `SessionStart` | Injects a one-line digest naming the indexed chunk count and the standing instruction | The only event that can add context before the first turn |
 | `UserPromptSubmit` | Searches the project's memo files with the prompt and names up to three prior records | The only event that carries a query and still precedes every proposal in the turn |
 | `PreToolUse` | Searches the corpus with the text about to be written and injects what comes back; also matches shell commands against the operator's general knowledge index, if there is one | An agent that has to decide to search mostly does not |
-| `PostToolUseFailure` | After a failed `Bash` or `PowerShell` command, ranks the operator's general knowledge entries against the error; does nothing without that index | A hazard nobody knew to look up is cheapest to name right after it bites |
+| `PostToolUseFailure` | After a failed `Bash` or `PowerShell` command, ranks the operator's general knowledge entries against the error; without an index it injects no context, but still logs the signature when enabled | A hazard nobody knew to look up is cheapest to name right after it bites |
 | `PreCompact` | Indexes `memory/` | Compaction is where a long session loses the detail behind its conclusions |
 | `SessionEnd` | Closes this session's owned MCP transports, indexes `memory/`, and refreshes the cached count | Releases the MCP session and closes the write-to-searchable loop |
 

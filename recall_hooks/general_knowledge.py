@@ -49,7 +49,8 @@ must share one corpus, one switch and one log.
   triggers appears in the command about to run. No ranking. Logs one `trigger` event whenever any
   in-scope entry matched, with `ts`, `project`, `session`, `client`, `trigger` (the first trigger
   that fired per matched entry, as `<kind>:<value>`), `injected` and `suppressed` ids.
-* `PostToolUseFailure` (`post_tool_use_failure`), Claude only, since Codex has no post-tool event.
+* `PostToolUseFailure` (`post_tool_use_failure`); the Codex adapter delegates proven
+  `PostToolUse` shell failures here and translates the advisory output back to that event.
   Error keyed: the entries are ranked against the error text by BM25 over their symptoms and
   bodies (`prompt_time`, lexical, imported only on this path). Logs one `failure` event for every
   failure, matched or not, with `ts`, `project`, `session`, `client`, `signature` (command family
@@ -95,6 +96,7 @@ entry index with the feature on and off, alternating the arms, and compare the m
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -123,6 +125,8 @@ STATE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60
 #: The longest session id used as a file name; a longer one is truncated and hash-suffixed.
 _SESSION_ID_MAX = 100
 _SESSION_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+#: The generated suffix is reserved: a literal ID with this shape must be hashed as well.
+_SESSION_HASH_SUFFIX = re.compile(r"-[0-9a-f]{10}$")
 #: Names Windows opens as devices whatever the extension, so they never name a state file as is.
 _WINDOWS_DEVICE_NAMES = frozenset(
     {"con", "prn", "aux", "nul"}
@@ -631,7 +635,8 @@ def _session_key(session_id: Any) -> str:
     case-insensitive filesystem (the Windows and macOS defaults) `Abc` and `abc` would otherwise
     open one file, and when it is a Windows device name (`CON`, `nul`, `COM1`), which Windows
     opens as a device rather than as `CON.json`. Client ids are lower-case UUIDs, which keep their
-    plain name.
+    plain name. A literal id ending in a generated digest suffix is hashed too, so it cannot
+    alias another session's generated key, including on a case-insensitive filesystem.
     """
     if not isinstance(session_id, str):
         return ""
@@ -643,6 +648,7 @@ def _session_key(session_id: Any) -> str:
         and len(cleaned) <= _SESSION_ID_MAX
         and cleaned == cleaned.lower()
         and cleaned.lower() not in _WINDOWS_DEVICE_NAMES
+        and _SESSION_HASH_SUFFIX.search(cleaned) is None
     )
     if plain:
         return cleaned
@@ -982,7 +988,8 @@ _EMAIL_LOCAL_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789._%+-")
 #: The characters of a `name` in `name=value`, a credential word in it, and the value after `=`.
 _PAIR_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_.-")
 _CREDENTIAL_NAME = re.compile(r"token|secret|password|passwd|key|auth")
-_PAIR_VALUE = re.compile(r"\"[^\"]*\"|'[^']*'|[^\s,;&]+")
+_PAIR_VALUE = re.compile(r"\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*'|[^\s,;&]+")
+_PAIR_SEPARATOR = re.compile(r"[=:]")
 #: IPv4, and IPv6 candidates (checked by `_ipv6_or_text`, so a time such as `12:30:45` stays).
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d]|\.\d)")
 _IPV6 = re.compile(r"(?<![\w:])[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?![\w:])")
@@ -994,16 +1001,41 @@ _TOKEN = re.compile(
 
 
 def _ipv6_or_text(match: re.Match[str]) -> str:
-    """`<ip>` for an IPv6 address (it holds a digit and either `::` or eight groups), else as is."""
+    """`<ip>` for a valid IPv6 address, including letter-only groups; keep other colon text."""
     value = match.group(0)
-    if any(c.isdigit() for c in value) and ("::" in value or value.count(":") == 7):
-        return "<ip>"
-    return value
+    try:
+        ipaddress.IPv6Address(value)
+    except ipaddress.AddressValueError:
+        return value
+    return "<ip>"
 
 
 def _redact_emails(line: str) -> str:
     """`line` with every mailbox (a local part of any length, `@`, a dotted domain) as `<email>`."""
     out: list[str] = []
+    kept = 0
+    # Consume a quoted mailbox whole before an internal `@domain` can split its local part.
+    # Visit each run between quotes once; an unrelated unmatched quote must not hide an opener.
+    index = 0
+    while index < len(line):
+        start = line.find('"', index)
+        if start < 0:
+            break
+        index = start + 1
+        while index < len(line) and line[index] != '"':
+            index += 2 if line[index] == "\\" else 1
+        if index >= len(line):
+            break
+        index += 1
+        domain = _EMAIL_DOMAIN.match(line, index)
+        if domain is not None:
+            out.extend((line[kept:start], "<email>"))
+            kept = index = domain.end()
+        else:
+            index -= 1  # The unproductive closer may open the next quoted mailbox.
+    out.append(line[kept:])
+    line = "".join(out)
+    out = []
     kept = 0
     for domain in _EMAIL_DOMAIN.finditer(line):
         start = domain.start()
@@ -1021,7 +1053,7 @@ def _redact_emails(line: str) -> str:
 
 
 def _redact_credential_pairs(line: str) -> str:
-    """`line` with the value of every `name=value` whose name holds a credential word redacted.
+    """Mask credential values in assignments and quoted fields, allowing spaced separators.
 
     The name may be any length, and a pair that is NOT a credential keeps its value AND has it
     scanned, so `url=https://x/?token=abc` redacts the nested `token`.
@@ -1030,19 +1062,32 @@ def _redact_credential_pairs(line: str) -> str:
     kept = 0
     position = 0
     while True:
-        equals = line.find("=", position)
-        if equals < 0:
+        separator = _PAIR_SEPARATOR.search(line, position)
+        if separator is None:
             break
-        start = equals
+        end = separator.start()
+        position = end + 1
+        while end > kept and line[end - 1].isspace():
+            end -= 1
+        quote = line[end - 1] if end > kept and line[end - 1] in "\"'" else ""
+        if quote:
+            end -= 1
+        start = end
         while start > kept and line[start - 1] in _PAIR_NAME_CHARS:
             start -= 1
-        value = _PAIR_VALUE.match(line, equals + 1)
-        if value is not None and _CREDENTIAL_NAME.search(line, start, equals):
-            out.append(line[kept : equals + 1])
-            out.append("<redacted>")
-            kept = position = value.end()
+        if quote and (start == kept or line[start - 1] != quote):
             continue
-        position = equals + 1
+        if _CREDENTIAL_NAME.search(line, start, end) is None:
+            continue
+        value_start = position
+        while value_start < len(line) and line[value_start].isspace():
+            value_start += 1
+        value = _PAIR_VALUE.match(line, value_start)
+        if value is None:
+            continue
+        out.append(line[kept:value_start])
+        out.append("<redacted>")
+        kept = position = value.end()
     out.append(line[kept:])
     return "".join(out)
 
