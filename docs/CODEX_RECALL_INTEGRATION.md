@@ -13,7 +13,7 @@ The PostgreSQL `recall setup` path detects Codex and, with the default answer, i
 Codex integration
 automatically. It writes a personal marketplace entry at `~/.agents/plugins/marketplace.json`,
 copies the validated plugin bundle below that marketplace, stores the DSN in the user-owned Codex
-integration directory, and merges the five user-level hooks into `CODEX_HOME/hooks.json`.
+integration directory, and merges the seven user-level hooks into `CODEX_HOME/hooks.json`.
 The operation is idempotent and preserves unrelated marketplace entries and hooks. Restart Codex
 after setup so it refreshes the personal marketplace and enables the plugin. The same flow works
 from a wheel because the Codex plugin bundle is force-included in the package.
@@ -35,6 +35,10 @@ RE-call lifecycle and additionally handles compact sessions:
   SessionStart matcher currently covers startup, resume, and clear; compact is Codex-specific.
 * `UserPromptSubmit` runs prompt time retrieval before the response is planned.
 * `PreToolUse` runs the shared Claude write time hook for write capable tools.
+* `PostToolUse` sends completed shell failures to the shared general knowledge handler.
+  Successful commands, interrupted calls and outputs without a proven exit status stay quiet.
+* `SubagentStart` sends the shared auditor brief to recognized auditors as advisory child
+  context. It neither rewrites the launch input nor makes a permission decision.
 * `PreCompact` queues the docs and code refresh and serialized memory refresh; `SessionEnd` runs the
   bounded memory refresh synchronously because Codex treats that lifecycle event as synchronous.
   `SessionEnd` also invokes RE-call's repository-owned `recall_hooks.mcp_cleanup` module, closing
@@ -52,6 +56,24 @@ because its command resembles another session's.
 The Codex adapter `python -m recall_hooks.codex` delegates prompt time and write time to the shared
 `recall_hooks` implementation. This keeps thresholds, local project discovery, front matter
 summaries, and fail-open behaviour in one implementation.
+
+The [Codex hook contract](https://learn.chatgpt.com/docs/hooks) supplies tool output on
+`PostToolUse`, but its shape depends on the tool and runtime. Structured shell output with an
+integer `exit_code` is supported. When the runtime supplies raw stdout, the adapter reads at
+most the last 1 MiB of the identified rollout below `CODEX_HOME/sessions`, matches the exact
+`tool_use_id`, and requires a completed native `CommandExecution` record. Printed status
+headers are never parsed as exit metadata. This native record path is a compatibility layer,
+not a stable public rollout API; unknown records produce no failure hint.
+
+Some named collaboration auditors start with `agent_type: default`. The adapter accepts their
+role only from child session metadata whose child id, parent thread id and full agent path
+agree. The startup event can name either the parent or child transcript while retaining the
+parent `session_id`. Unrelated children receive no auditor brief. Codex supplies no launch
+prompt here, so the shared handler uses changed files without prompt-based file hints.
+
+Existing installations must rerun setup to refresh the installed bundle and merged hooks, then
+review and trust changed hook definitions in Codex. Changing Python code alone does not add
+event registrations to an older installation.
 
 ## Durable memo contract
 

@@ -2545,8 +2545,30 @@ def test_codex_adapter_marks_the_client(hook, tmp_path, monkeypatch, capsys):
     assert hook.events()[-1]["client"] == "codex"
 
 
+def test_codex_native_failure_uses_the_shared_index(hook, tmp_path, monkeypatch, capsys):
+    """A Codex failure returns real owner guidance and records the Codex client.
+
+    Red proof: with cdbd76385's adapter this consumer assertion sees no output.
+    Restored, the real shared failure handler returns the indexed entry, writes
+    one failure event, and restores the preexisting client environment.
+    """
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setenv("RECALL_HOOK_CLIENT", "preset")
+    hook.index(example_entry())
+    payload = failure(session="codex-native-failure")
+    payload["tool_response"] = {"exit_code": 7, "output": payload.pop("error")}
+    out = codex_run(monkeypatch, capsys, payload, "post-tool-use")
+    assert out.strip(), "native failure did not deliver shared owner guidance"
+    result = json.loads(out)["hookSpecificOutput"]
+    assert result["hookEventName"] == "PostToolUse"
+    assert "[gk-example-tests]" in result["additionalContext"]
+    assert hook.events()[-1]["client"] == "codex"
+    assert hook.events()[-1]["injected"] == ["gk-example-tests"]
+    assert os.environ["RECALL_HOOK_CLIENT"] == "preset"
+
+
 def test_codex_does_not_handle_the_failure_event(hook, tmp_path, monkeypatch, capsys):
-    """Invariant: Codex has no post-tool event, so its adapter does not accept `post-tool-use-failure`:
+    """Invariant: Codex accepts `post-tool-use`, not Claude's `post-tool-use-failure` event:
     it exits 0 with no output and no log line even for a matching failure.
 
     Red proof. Node: `tests/test_general_knowledge_hook.py::test_codex_does_not_handle_the_failure_event`.
