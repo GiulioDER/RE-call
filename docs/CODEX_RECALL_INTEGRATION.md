@@ -17,8 +17,9 @@ integration directory, and merges the seven user-level hooks into `CODEX_HOME/ho
 The operation is idempotent and preserves unrelated marketplace entries and hooks. Restart Codex
 after setup so it refreshes the personal marketplace and enables the plugin. The same flow works
 from a wheel because the Codex plugin bundle is force-included in the package.
-The bundle includes the public RE-call skills `check-memory-before-acting`, `keep-memory-current`,
-and `re-call`; they are installed with the plugin rather than relying on machine-specific skills.
+The bundle includes `check-memory-before-acting`, `keep-memory-current`, `re-call`,
+`session-open`, and `session-close`. These portable skills ship with both client bundles;
+they do not depend on another user's home-directory commands or refresh scripts.
 
 The repository also exposes the bundle through `.agents/plugins/marketplace.json` for a repo-scoped
 plugin checkout. Codex plugins require a user review of bundled hooks before trusting a changed
@@ -29,10 +30,10 @@ invoke `recall-hooks`.
 ## Installed parity
 
 The global Codex configuration at `CODEX_HOME/hooks.json` (normally `~/.codex/hooks.json`) mirrors Claude's
-RE-call lifecycle and additionally handles compact sessions:
+shared RE-call lifecycle:
 
-* `SessionStart` restores the instruction on startup, resume, clear, and compact. Claude's
-  SessionStart matcher currently covers startup, resume, and clear; compact is Codex-specific.
+* `SessionStart` restores the instruction on startup, resume, clear, and compact. Its cached
+  count is not evidence of current calibration or availability; use live MCP verdicts.
 * `UserPromptSubmit` runs prompt time retrieval before the response is planned.
 * `PreToolUse` runs the shared Claude write time hook for write capable tools.
 * `PostToolUse` sends completed shell failures to the shared general knowledge handler.
@@ -75,6 +76,23 @@ Existing installations must rerun setup to refresh the installed bundle and merg
 review and trust changed hook definitions in Codex. Changing Python code alone does not add
 event registrations to an older installation.
 
+## Verify a fresh session
+
+After installation, open a new read-only Codex chat. Check its actual skill catalog for
+`session-open` and `session-close`, then read the installed skill files. Check the initial
+startup context or the client's hook diagnostics for SessionStart delivery. If the deployment
+records lifecycle logs, correlate the new chat's session ID with its startup record. Running
+the hook manually, or finding its file on disk, does not prove automatic delivery.
+
+Use `session-open` for the full repository and memory orientation. The automatic memory hook
+does not claim a workspace, fetch origin, inspect containers, or approve knowledge proposals.
+Use `session-close` to complete the project's close procedure and report each applicable
+result. Queueing a refresh is not proof that the next session can retrieve a new memo.
+
+User-level and plugin-level hooks are separate registration paths. Review an installation
+that also has custom RE-call hooks before enabling equivalent handlers twice. Preserve
+unrelated hooks and use the client's normal trust review for changed plugin definitions.
+
 ## Durable memo contract
 
 Write one fact per file in the Claude project memory directory and add its pointer to
@@ -98,21 +116,20 @@ The fact, why it matters, and how to apply it.
 ```
 
 If the fact changes, create a new file with `supersedes: old-file.md` and retain the old file.
-Add a pointer to `project_index.md` in the form `- [Title](file.md) — one-line hook`.
+Add a pointer to `project_index.md`, for example `- [Title](file.md): one-line hook`.
 
 The automatic `SessionEnd` hook handles the normal refresh path. When a session produces a durable
 fact, write it in the same project memory directory and front matter format Claude uses, then add
-its pointer to `project_index.md`; the next `SessionStart` or prompt hook will discover it.
+its pointer to `project_index.md`. Verify retrieval after refresh before claiming it is served.
 
 ## Operational boundary
 
 The Codex RE-call MCP server is launched by `recall-codex-mcp` from the protected integration
-configuration. The VPS2 memory, docs, and code tenants remain the deployment's configured
-servers; the memory tenant uses `voyage:voyage-4`, the documentation tenant uses its active
-`fastembed:BAAI/bge-large-en-v1.5` generation, and the code tenant uses `voyage:voyage-code-3`.
-The workstation does not embed memory locally. The memory worker
-uses the existing lock, debounce, sync, production generation, calibration, promotion, and
-postcondition verification in the operator's refresh worker.
+configuration. Corpus routes, refresh commands, embedding location, worker locks and maintenance
+holds belong to the deployment. An audit corpus or general knowledge index is optional; this
+integration does not install a particular operator's servers, tenant names or review workflow.
+Keep credentials, private endpoints and machine-specific lifecycle scripts in private
+configuration rather than copying them into the public plugin.
 
 Hook failures are fail open and may be silent at the bridge boundary. They do not deny a tool or
 block a session. Refresh-worker failures remain visible through the worker state and log files,
