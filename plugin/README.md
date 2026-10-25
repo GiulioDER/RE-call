@@ -118,9 +118,10 @@ The two retrieval hooks answer different questions and are separately switchable
 draft text, which is what reaches a hazard; `UserPromptSubmit` uses your words, which is what
 reaches a decision the project already made.
 
-**Three skills**, `check-memory-before-acting`, `keep-memory-current`, and `re-call`, teach Claude
+**Five skills**, `check-memory-before-acting`, `keep-memory-current`, `re-call`, `session-open`,
+and `session-close`, teach Claude
 when to search, how to preserve durable memory, and how to use RE-call's retrieval and refresh
-lifecycle. Installing the plugin loads all three automatically. The first
+lifecycle and session checklists. Installing the plugin loads all five automatically. The first
 skill teaches Claude *when* to search and, more
 importantly, *how*. That second half is not decoration: measured over 54 paired sessions, the
 memory layer eliminated a class of known hazard when the relevant memo reached the agent, and

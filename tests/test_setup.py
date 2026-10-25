@@ -2150,11 +2150,18 @@ def test_every_shipped_skill_is_where_the_wizard_looks_for_it():
 
     Asserts the SET, not a count. A count passes while a newly added skill is never installed,
     which is exactly the failure that made this plural: the resolver named one skill by hand.
+
+    Session-skill red proof: narrow plugin_skill_sources' discovery glob to
+    ``[!s]*/SKILL.md``, omitting both session skills. This exact node must fail at
+    its expected-set assertion, then pass after restoring ``*/SKILL.md``.
     """
     from recall.claude_code import plugin_skill_sources
 
     sources = plugin_skill_sources()
-    assert set(sources) == {"check-memory-before-acting", "keep-memory-current", "re-call"}
+    assert set(sources) == {
+        "check-memory-before-acting", "keep-memory-current", "re-call",
+        "session-open", "session-close",
+    }
     for name, source in sources.items():
         assert source.name == "SKILL.md"
         assert source.parent.name == name, "a skill is loaded by its DIRECTORY name"
