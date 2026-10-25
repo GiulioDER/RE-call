@@ -109,6 +109,10 @@ memory as a tool.
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
 | `SessionEnd` | Closes this session's owned MCP transports, then indexes the session so the next one can find it |
 
+The Codex bundle also registers `PostToolUse` for proven shell failures and `SubagentStart`
+for advisory auditor context. Its adapter reuses the shared failure and auditor handlers.
+See [Codex integration](../docs/CODEX_RECALL_INTEGRATION.md) for payload compatibility and upgrade steps.
+
 The two retrieval hooks answer different questions and are separately switchable in
 `~/.claude/recall-hook.json` (`write_time.enabled`, `prompt_time.enabled`). `PreToolUse` uses the
 draft text, which is what reaches a hazard; `UserPromptSubmit` uses your words, which is what

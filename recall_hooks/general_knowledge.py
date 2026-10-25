@@ -49,7 +49,8 @@ must share one corpus, one switch and one log.
   triggers appears in the command about to run. No ranking. Logs one `trigger` event whenever any
   in-scope entry matched, with `ts`, `project`, `session`, `client`, `trigger` (the first trigger
   that fired per matched entry, as `<kind>:<value>`), `injected` and `suppressed` ids.
-* `PostToolUseFailure` (`post_tool_use_failure`), Claude only, since Codex has no post-tool event.
+* `PostToolUseFailure` (`post_tool_use_failure`); the Codex adapter delegates proven
+  `PostToolUse` shell failures here and translates the advisory output back to that event.
   Error keyed: the entries are ranked against the error text by BM25 over their symptoms and
   bodies (`prompt_time`, lexical, imported only on this path). Logs one `failure` event for every
   failure, matched or not, with `ts`, `project`, `session`, `client`, `signature` (command family
