@@ -261,7 +261,7 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
             diagnostics_payload.get("answer_profile", "plain"), ANSWER_PROFILES, "answer_profile"
         ),
         premise_notice=tuple(str(item) for item in _sequence(diagnostics_payload.get("premise_notice", ()))),
-        premise_citations_from_notice=bool(diagnostics_payload.get("premise_citations_from_notice", False)),
+        premise_citations_from_notice=_required_bool(diagnostics_payload.get("premise_citations_from_notice", False)),
     )
     return ReasoningResponse(
         schema_version=_required_int(payload["schema_version"]),

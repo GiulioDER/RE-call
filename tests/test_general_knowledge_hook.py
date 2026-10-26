@@ -2868,7 +2868,7 @@ INVENTED_FINGERPRINT = "SHA256:" + "Ab3x" * 11
             "error: host key aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99 changed",
             "git|error: host key <fingerprint> changed",
         ),
-        ("error: bearer AbCdEf123456GhIjKl7890xyz rejected", "git|error: bearer <token> rejected"),
+        ("error: AbCdEf123456GhIjKl7890xyz rejected", "git|error: <token> rejected"),
     ],
     ids=["mailbox-and-fingerprint", "ipv4", "ipv6", "credential-pair", "colon-hex", "token"],
 )
@@ -2886,6 +2886,8 @@ def test_identifying_values_never_reach_a_signature(line, expected):
     `assert 'git|error: b...>xyz rejected' == 'git|error: b...ken> rejected'`.
 
     `_EMAIL` and `_SECRET_PAIR` above are historical mutation names from the regex version.
+    CCA PR992 integration keeps the `_TOKEN` case unlabelled: Basic/Bearer schemes now receive
+    credential redaction first. Removing `_TOKEN.sub` still must fail this independent control.
     The corresponding committed scanner boundaries are `_redact`'s calls to `_redact_emails`
     and `_redact_credential_pairs`. The measurements and counts above describe the earlier runs.
     """

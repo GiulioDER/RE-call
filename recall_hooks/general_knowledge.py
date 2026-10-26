@@ -4,7 +4,8 @@
 entry points that use it. An entry is a piece of curated procedure or warning (how to run a test
 suite on a given host, which flag a tool needs) that a session cannot derive from the repository.
 The content is the operator's own and is never shipped in this repository; every fixture in the
-tests is invented. With no index the feature does nothing.
+tests is invented. With no index no knowledge is injected; registered failure hooks still log
+diagnostics unless the shared switch disables them.
 
 **The index.** `<knowledge home>/index.json`, written atomically by the operator's own tooling and
 only ever read here:
@@ -98,11 +99,15 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import heapq
 import math
 import os
 import re
+import sys
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -114,6 +119,15 @@ INDEX_NAME = "index.json"
 INDEX_SCHEMA = 1
 #: The most entries one tool call may inject. Each entry is paid for in the agent's context.
 MAX_PER_CALL = 2
+#: Admission limits apply before parsing and matching; oversized indexes decline as a whole,
+#: while one oversized record costs only that record.
+MAX_INDEX_BYTES = 1024 * 1024
+MAX_INDEX_ENTRIES = 256
+MAX_ENTRY_CHARS = 16384
+MAX_ENTRY_ITEMS = 32
+MAX_PRUNE_FILES = 128
+PRUNE_INTERVAL_SECONDS = 3600
+CLAIM_LOCK_TIMEOUT_SECONDS = 0.5
 #: The most command text the matcher analyses, so its cost is bounded by this cap and not by the
 #: input. A command can carry a heredoc body of hundreds of kilobytes, and parsing it costs time on
 #: every `Bash` call (0.39 s for 100 KB of separators) for a program that is named in the first
@@ -373,11 +387,17 @@ def _entry(raw: Any) -> Entry | None:
     ident, body = raw.get("id"), raw.get("body")
     if not isinstance(ident, str) or not ident or not isinstance(body, str) or not body:
         return None
+    if len(ident) > MAX_ENTRY_CHARS or len(body) > MAX_ENTRY_CHARS:
+        return None
     raw_triggers, raw_symptoms = raw.get("triggers", []), raw.get("symptoms", [])
     if not isinstance(raw_triggers, list) or not isinstance(raw_symptoms, list):
         return None
+    if len(raw_triggers) > MAX_ENTRY_ITEMS or len(raw_symptoms) > MAX_ENTRY_ITEMS:
+        return None
     kind, scope = raw.get("kind", "procedure"), raw.get("scope", "global")
     if not isinstance(kind, str) or not isinstance(scope, str):
+        return None
+    if any(len(value) > MAX_ENTRY_CHARS for value in (kind, scope, *raw_symptoms) if isinstance(value, str)):
         return None
     triggers = tuple(t for t in map(_trigger, raw_triggers) if t is not None)
     symptoms = tuple(s for s in raw_symptoms if isinstance(s, str) and s.strip())
@@ -389,15 +409,20 @@ def load_index(home: Path | None = None) -> list[Entry]:
 
     Missing, unreadable, corrupt, not an object, or a schema other than `INDEX_SCHEMA` all give
     `[]`: a schema this reader does not know is not guessed at. A malformed entry is skipped and the
-    rest are kept.
+    rest are kept. Indexes beyond 1 MiB or 256 entries decline as a whole. Records with a field
+    beyond 16,384 characters or more than 32 triggers/symptoms are skipped individually.
     """
     path = (knowledge_home() if home is None else home) / INDEX_NAME
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_INDEX_BYTES + 1)
+        if len(raw) > MAX_INDEX_BYTES:
+            return []
+        document = json.loads(raw)
         if not isinstance(document, dict) or document.get("schema") != INDEX_SCHEMA:
             return []
         records = document.get("entries")
-        if not isinstance(records, list):
+        if not isinstance(records, list) or len(records) > MAX_INDEX_ENTRIES:
             return []
         return [e for e in map(_entry, records) if e is not None]
     except (OSError, ValueError):
@@ -602,18 +627,26 @@ def matched_trigger(
 
 def match_triggers(entries: list[Entry], command: str, project: str | None) -> list[Entry]:
     """The entries whose scope and triggers fit `command`, in input order, each id once."""
+    return [entry for entry, _trigger in _trigger_matches(entries, command, project)]
+
+
+def _trigger_matches(
+    entries: list[Entry], command: str, project: str | None
+) -> list[tuple[Entry, Trigger]]:
+    """One ordered selection shared by public matching and hook delivery/logging."""
     if not isinstance(command, str) or not command.strip():
         return []
     command = command[:MAX_COMMAND_CHARS]
     segments = parse_command(command)
-    matched: list[Entry] = []
+    matched: list[tuple[Entry, Trigger]] = []
     seen: set[str] = set()
     for entry in entries:
         if entry.id in seen:
             continue
-        if matched_trigger(entry, command, segments, project) is not None:
+        fired = matched_trigger(entry, command, segments, project)
+        if fired is not None:
             seen.add(entry.id)
-            matched.append(entry)
+            matched.append((entry, fired))
     return matched
 
 
@@ -694,16 +727,32 @@ def _write_claimed(path: Path, claimed: list[str]) -> None:
 
 
 def _prune_state(state_dir: Path) -> None:
-    """Delete state files in `state_dir` not modified for 7 days. One listing, never raises.
+    """Best-effort age cleanup, at most 128 metadata checks once per hour across sessions.
 
-    Opportunistic: it rides on a claim instead of running on a schedule, and it touches nothing but
-    regular `*.json` files, and the `*.tmp` files a killed atomic write can leave behind, directly
-    inside the state directory.
+    Name enumeration is O(n), with only 128 candidates retained in memory. A shared cursor advances
+    past retained files too, so old files cannot be starved by an unchanged first batch. Cleanup
+    touches only regular `*.json` state and abandoned `*.tmp` files in the state directory.
     """
     try:
-        cutoff = time.time() - STATE_MAX_AGE_SECONDS
-        with os.scandir(state_dir) as listing:
-            for item in listing:
+        with _claim_lock(state_dir.parent, "cleanup"):
+            now = time.time()
+            stamp = state_dir.parent / ".state-cleanup"
+            try:
+                elapsed = now - stamp.stat().st_mtime
+                if 0 <= elapsed < PRUNE_INTERVAL_SECONDS:
+                    return
+            except FileNotFoundError:
+                pass
+            saved = _read_claimed(stamp)
+            cursor = saved[0] if saved else ""
+            cutoff = now - STATE_MAX_AGE_SECONDS
+            with os.scandir(state_dir) as listing:
+                candidates = heapq.nsmallest(
+                    MAX_PRUNE_FILES,
+                    (item for item in listing if item.name.endswith((".json", ".tmp")) and item.name > cursor),
+                    key=lambda item: item.name,
+                )
+            for item in candidates:
                 try:
                     if (
                         item.name.endswith((".json", ".tmp"))
@@ -713,8 +762,54 @@ def _prune_state(state_dir: Path) -> None:
                         os.unlink(item.path)
                 except OSError:
                     continue
+            # Atomically persist progress and the throttle timestamp under the shared lock.
+            next_cursor = candidates[-1].name if len(candidates) == MAX_PRUNE_FILES else ""
+            _write_claimed(stamp, [next_cursor])
     except OSError:
         return
+
+
+@contextmanager
+def _claim_lock(home: Path, key: str) -> Iterator[None]:
+    """Serialize one session's read/update, with a bounded wait and automatic OS unlock.
+
+    Lock files remain in a separate directory: unlinking a lock file while another process has
+    it open could create two independently locked inodes for the same session.
+    """
+    directory = home / ".state-locks"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{key}.lock").open("a+b") as handle:
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        deadline = time.monotonic() + CLAIM_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("session claim lock unavailable") from None
+                time.sleep(0.005)
+        try:
+            yield
+        finally:
+            try:
+                if sys.platform == "win32":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
 
 
 def claim_for_session(session_id: str, entry_ids: list[str], home: Path | None = None) -> list[str]:
@@ -738,17 +833,20 @@ def claim_for_session(session_id: str, entry_ids: list[str], home: Path | None =
     if not key:
         return unique[:MAX_PER_CALL]
     try:
-        state_dir = (home if home is not None else knowledge_home()) / "state"
+        base = home if home is not None else knowledge_home()
+        state_dir = base / "state"
         path = state_dir / f"{key}.json"
-        claimed = _read_claimed(path)
-        taken = set(claimed)
-        fresh = [i for i in unique if i not in taken][:MAX_PER_CALL]
+        with _claim_lock(base, key):
+            claimed = _read_claimed(path)
+            taken = set(claimed)
+            fresh = [i for i in unique if i not in taken][:MAX_PER_CALL]
+            if fresh:
+                try:
+                    _write_claimed(path, claimed + fresh)
+                except Exception:  # BROAD-CATCH: fail-open
+                    pass  # unwritable state: deliver anyway, a repeat injection is the worst case
         if fresh:
-            try:
-                _write_claimed(path, claimed + fresh)
-            except Exception:  # BROAD-CATCH: fail-open
-                pass  # unwritable state: deliver anyway, a repeat injection is the worst case
-        _prune_state(state_dir)
+            _prune_state(state_dir)
         return fresh
     except Exception:  # BROAD-CATCH: fail-open
         return unique[:MAX_PER_CALL]
@@ -766,7 +864,9 @@ def log_event(record: dict[str, Any], path: Path | None = None) -> None:
         line = json.dumps(stamped)
         target = path if path is not None else log_path()
         target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "a", encoding="utf-8", newline="\n") as handle:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8", newline="\n") as handle:
+            target.chmod(0o600)
             handle.write(line + "\n")
     except (OSError, TypeError, ValueError, AttributeError):
         return
@@ -1092,8 +1192,14 @@ def _redact_credential_pairs(line: str) -> str:
     return "".join(out)
 
 
+_URL_USERINFO = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^\s/?#]+@")
+_AUTH_SCHEME = re.compile(r"\b(bearer|basic)\s+[^\s,;\"']+")
+
+
 def _redact(line: str) -> str:
     """`line` (lower case) with fingerprints, mailboxes, credential values and addresses replaced."""
+    line = _URL_USERINFO.sub(r"\1<redacted>@", line)
+    line = _AUTH_SCHEME.sub(r"\1 <redacted>", line)
     line = _FINGERPRINT.sub("<fingerprint>", line)
     line = _redact_emails(line)
     line = _redact_credential_pairs(line)
@@ -1281,19 +1387,9 @@ def pre_tool_use_context(payload: dict[str, Any]) -> str | None:
         entries = [e for e in load_index() if in_scope(e, project)]
         if not entries:
             return None
-        command = command[:MAX_COMMAND_CHARS]
-        segments = parse_command(command)
-        matched: list[Entry] = []
-        triggers: list[str] = []
-        seen: set[str] = set()
-        for entry in entries:
-            if entry.id in seen:
-                continue
-            fired = matched_trigger(entry, command, segments, project)
-            if fired is not None:
-                seen.add(entry.id)
-                matched.append(entry)
-                triggers.append(f"{fired.kind}:{fired.value}")
+        pairs = _trigger_matches(entries, command, project)
+        matched = [entry for entry, _trigger in pairs]
+        triggers = [f"{trigger.kind}:{trigger.value}" for _entry, trigger in pairs]
         if not matched:
             return None
         session = payload.get("session_id")
