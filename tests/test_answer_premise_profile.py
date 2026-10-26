@@ -163,6 +163,8 @@ def test_the_notice_names_the_successors_evidence_and_nothing_else() -> None:
     """
     bundle = _bundle((_item("c1", "notes/new.md"), _item("c2", "other.md"), _item("c3", "/root/notes/new.md")))
     result = _result([
+        _hit("c1", "notes/new.md", "ok"),
+        _hit("c3", "notes/new.md", "ok", source="/root/notes/new.md"),
         _hit("c2", "other.md", "ok", superseded_by="other.md"),
         _hit("c0", "old.md", "superseded", superseded_by="notes/new.md"),
     ])

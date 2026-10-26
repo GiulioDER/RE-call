@@ -718,11 +718,11 @@ def _dated_data(bundle: EvidenceBundle, question_date: str) -> dict[str, object]
 
 
 def _same_source(left: str | None, right: str | None) -> bool:
-    """One memo named two ways: a root-relative file name, or the absolute source that ends in it."""
+    """Compare complete source or root-relative file identities, normalizing separators only."""
     if not left or not right:
         return False
     left, right = left.replace("\\", "/"), right.replace("\\", "/")
-    return left == right or left.endswith("/" + right) or right.endswith("/" + left)
+    return left == right
 
 
 def stale_premise_notice(result: TrustedResult, bundle: EvidenceBundle) -> tuple[str, ...]:
@@ -741,10 +741,17 @@ def stale_premise_notice(result: TrustedResult, bundle: EvidenceBundle) -> tuple
         for hit in result.hits
         if hit.verdict == "superseded" and hit.validity.superseded_by
     ]
+    # EvidenceItem.source is a display label and can lose the root when filenames collide.
+    # Recover each selected item's original identities through its exact trusted chunk id.
+    trusted = {hit.chunk.id: hit for hit in result.hits if hit.verdict == "ok"}
     return tuple(
         item.chunk_id
         for item in bundle.items
-        if any(_same_source(item.source, successor) for successor in successors)
+        if (hit := trusted.get(item.chunk_id)) is not None
+        and any(
+            _same_source(hit.provenance.source, successor) or _same_source(hit.provenance.file, successor)
+            for successor in successors
+        )
     )
 
 
@@ -830,6 +837,8 @@ def validate_answer(envelope: AnswerEnvelope, bundle: EvidenceBundle) -> Validat
 def parse_answer_envelope(value: str | dict[str, object] | AnswerEnvelope) -> AnswerEnvelope:
     """Parse a strict answer envelope, rejecting added fields and coercion."""
     if isinstance(value, AnswerEnvelope):
+        if value.premise_correction is not None:
+            raise EvidenceValidationError("premise_correction requires the dated-premise profile")
         return value
     if isinstance(value, str):
         try:

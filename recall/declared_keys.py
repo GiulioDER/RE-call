@@ -83,13 +83,16 @@ def _utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def successor_pairs(memos: Iterable[KeyedMemo]) -> list[tuple[KeyedMemo, KeyedMemo]]:
+def successor_pairs(
+    memos: Iterable[KeyedMemo], *, incident_to: str | None = None,
+) -> list[tuple[KeyedMemo, KeyedMemo]]:
     """Rule R(a'): (older, newer) for every memo and each memo of the next later start stating its key.
 
     Grouped by `fact_key`; per key, the dated statements sorted by start and grouped by equal start,
     each group paired with the next. A memo is never paired with itself, and a pair is listed once
     however many keys the two memos share. Statements with no start, and keys that are not
-    single-valued, take part in nothing.
+    single-valued, take part in nothing. With `incident_to`, generate only pairs involving that
+    memo, without allocating the other pairs of adjacent groups.
     """
     by_key: dict[tuple[str, str, str, str], list[KeyedMemo]] = {}
     for memo in memos:
@@ -102,8 +105,10 @@ def successor_pairs(memos: Iterable[KeyedMemo]) -> list[tuple[KeyedMemo, KeyedMe
         dated = sorted(by_key[key], key=lambda m: (_utc(m.valid_from), m.name))  # type: ignore[arg-type]
         groups = [list(g) for _start, g in groupby(dated, key=lambda m: _utc(m.valid_from))]  # type: ignore[arg-type]
         for earlier, later in zip(groups, groups[1:], strict=False):
+            incident_later = [memo for memo in later if memo.name == incident_to] if incident_to is not None else later
             for older in earlier:
-                for newer in later:
+                candidates = later if incident_to is None or older.name == incident_to else incident_later
+                for newer in candidates:
                     if older.name != newer.name and (older.name, newer.name) not in seen:
                         seen.add((older.name, newer.name))
                         pairs.append((older, newer))
@@ -208,7 +213,7 @@ def key_receipt(
     if key is None:
         receipt["state"] = "not_single_valued"
         return receipt
-    if listing.get("served_state") == "degraded":
+    if listing.get("served_state") in {"degraded", "unchecked"}:
         receipt["state"] = "unchecked"
         return receipt
     statements = _statements(listing, key)
@@ -218,10 +223,10 @@ def key_receipt(
         for payload, sources, _standing in statements
     ]
     mine = any(source in sources for _payload, sources, _standing in statements)
-    if any(not standing for _payload, _sources, standing in statements):
-        receipt["state"] = "contested"
-    elif not mine:
+    if not mine:
         receipt["state"] = "not_in_force"
+    elif any(not standing for _payload, _sources, standing in statements):
+        receipt["state"] = "contested"
     else:
         values = {canonical_json(payload.get("object")) for payload, _sources, _standing in statements}
         receipt["state"] = "current" if len(values) == 1 else "contested"
@@ -230,12 +235,11 @@ def key_receipt(
         stated = AtomicFact.from_payload(payload)
         for name in sources:
             memos.append(KeyedMemo(name, stated, stated.valid_from))
-    for older, newer in successor_pairs(memos):
-        if source in (older.name, newer.name):
-            receipt["proposals"].append({
-                "rule_id": STATED_KEY_SUCCESSOR_RULE, "status": "requires_review", "relation": "supersedes",
-                "superseded": name_of(older.name), "superseder": name_of(newer.name),
-            })
+    for older, newer in successor_pairs(memos, incident_to=source):
+        receipt["proposals"].append({
+            "rule_id": STATED_KEY_SUCCESSOR_RULE, "status": "requires_review", "relation": "supersedes",
+            "superseded": name_of(older.name), "superseder": name_of(newer.name),
+        })
     if receipt["state"] == "contested" and not receipt["proposals"]:
         receipt["note"] = ("another value is in force for this key and the memos cannot be ordered by "
                            "valid_from; write the correction with supersedes, or give the memos dates")

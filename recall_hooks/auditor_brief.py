@@ -55,7 +55,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Set
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -214,6 +214,17 @@ def warm_command() -> str:
     """The warm command as the hook itself runs: this interpreter, `-P`, and this copy of
     `recall_hooks` on `PYTHONPATH`, so it imports the code (and so writes the cache) the hook reads."""
     package_parent = Path(__file__).resolve().parent.parent
+    if sys.platform == "win32":
+        def literal(value: str) -> str:
+            return "'" + value.replace("'", "''") + "'"
+
+        # The inline block comment labels the shell even after the diagnostic log flattens lines.
+        return (
+            "& { <# PowerShell #> $recallPriorPythonPath = $env:PYTHONPATH; "
+            f"try {{ $env:PYTHONPATH = {literal(str(package_parent))}; "
+            f"& {literal(sys.executable)} -P -m recall_hooks warm-auditor-brief "
+            "} finally { $env:PYTHONPATH = $recallPriorPythonPath } }"
+        )
     return f'PYTHONPATH="{package_parent}" "{sys.executable}" -P -m recall_hooks warm-auditor-brief'
 
 
@@ -812,7 +823,7 @@ def _best_anchor(entry: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unnamed_files: set[str]) -> str | None:
+def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unnamed_files: Set[str]) -> str | None:
     """One record as one line, or None when a retraction in force hides it.
 
     A successor in `unnamed_files` (a false-positive memo) is reported as "superseded" without its
@@ -851,7 +862,7 @@ def render(
         if kind not in _KIND_VIEW:
             continue
         bucket, cap = buckets[kind], _KIND_VIEW[kind][2]
-        if len(bucket) < cap and (line := _line(entry, now, retraction_files, set(unnamed_files))) is not None:
+        if len(bucket) < cap and (line := _line(entry, now, retraction_files, unnamed_files)) is not None:
             bucket.append(line)
     lines = [line for kind in _KIND_VIEW for line in buckets[kind]]
     if not lines:

@@ -20,8 +20,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   procedures and warnings is injected as context before a matching `Bash` or `PowerShell` command
   (`PreToolUse`, trigger keyed) and after a failed one (`PostToolUseFailure`, ranked against the
   error by lexical BM25). At most two entries per call, each once per session, one event log line per
-  trigger or failure. It is opt-in through the operator's own index: without one the hooks do
-  nothing, and the repository ships no entries. It never denies a call, never raises, loads no
+  trigger or failure. Injection needs the operator's own index, and the repository ships no
+  entries. A registered failure hook still logs diagnostics without an index unless disabled.
+  It never denies a call, never raises, loads no
   embedder and makes no network call. The `general_knowledge` block of `recall-hook.json` switches
   it off (`enabled: false`); a `recall-hook.json` that cannot be read or parsed (or is not a JSON
   object), a block that is not an object, or an `enabled` that is not a boolean also disables it,

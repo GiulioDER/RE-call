@@ -862,12 +862,14 @@ class LiteStore:
         by, from their rows and, with `recorded`, from the records standing for them."""
         if not sources:
             return {}
-        rows = self._metadata_values(
-            "SELECT DISTINCT source, CASE WHEN json_type(metadata, '$.file') = 'text' "
-            "THEN json_extract(metadata, '$.file') END FROM chunks "
-            "WHERE source IN (SELECT value FROM json_each(?))",
-            (json.dumps(list(dict.fromkeys(sources))),),
-        )
+        rows = [
+            (source, _json_text(json.loads(metadata), "file"))
+            for source, metadata in self._metadata_values(
+                "SELECT DISTINCT source, metadata FROM chunks "
+                "WHERE source IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(dict.fromkeys(sources))),),
+            )
+        ]
         records: list[SupersessionRecord] = []
         if recorded:
             with self._lock:
