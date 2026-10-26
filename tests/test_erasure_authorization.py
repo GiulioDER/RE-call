@@ -296,3 +296,24 @@ def test_a9_postgres_cli_withdraw_refuses_a_forgotten_memo_by_its_record(
     monkeypatch.setenv("RECALL_PRINCIPAL", "alice")
     out = run_cli([*base, "withdraw", salaries, "--yes"])
     assert "source authorization denied for hr/salaries.md" in out, out
+
+
+@pytest.mark.parametrize("file_value", [123, 0, True, False, [1, "é"], [], {"bb": 1, "a": 2}, {}])
+@pytest.mark.parametrize("withdraw", [False, True], ids=["forget", "withdraw"])
+def test_a10_erasure_refuses_a_denied_json_file(
+    tmp_path: Path, file_value: object, withdraw: bool
+) -> None:
+    """SEC-001: erasure uses the same JSON-text subject as retrieval and preserves denied rows.
+
+    Red proof at PR993 head 058d3c041: every parameter fails `DID NOT RAISE PermissionError`
+    with the text-only CASE in LiteStore.erasure_subjects. This exercises public upsert and
+    forget_memory/withdraw_memory, not a mock or a missing implementation symbol.
+    """
+    source = "/data/public/memo"
+    with LiteStore(tmp_path / "memory.db", dim=3) as store:
+        store.upsert([Chunk("c1", source, "private row", {"file": file_value})], [[1.0, 0.0, 0.0]])
+        policy = SourceSecurityPolicy((SourceRule("data/public", purposes=ERASURE),))
+        remove = withdraw_memory if withdraw else forget_memory
+        with pytest.raises(PermissionError):
+            remove(store, [source], security_policy=policy, security_context=_context("alice"))
+        assert store.count() == 1, "the refused erasure deleted the row"
