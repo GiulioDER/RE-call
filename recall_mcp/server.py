@@ -1851,8 +1851,9 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Values that disagree with no supersession between their memos are listed under
         `contested`, not `facts`: memory holds both and says neither is current.
         `served_state` is `degraded` when a check against the served memos failed, naming each in
-        `served_lookups_failed`; stated facts may then be missing, so do not read an absence as
-        settled.
+        `served_lookups_failed`; nothing is settled then. After an `admission` or `content`
+        failure stated facts may be missing; after a `presence` or `supersession` failure a
+        listed fact may be retired or no longer served.
 
         With `subject`, only that subject's facts (matched ignoring case and spacing) and, with
         `predicate` too, only that predicate's; `similar_subjects` then names subjects whose names
