@@ -1,7 +1,7 @@
 # RE-call Lite: install and maintain
 
 Lite keeps one project's memory in a local SQLite file. It uses the shared trust layer, local
-embeddings, automatic memo refresh, and automatic calibration. Choose PostgreSQL when you need
+embeddings by default (fastembed), automatic memo refresh, and automatic calibration. Choose PostgreSQL when you need
 immutable generations, multi-tenant serving, authentication, or a database shared across machines.
 
 ## Install a build that contains Lite
@@ -54,6 +54,11 @@ recall setup --lite --memory ./notes
 The help should list `--lite`. If it does not, this shell is using an older installation. Activate
 the environment above before continuing.
 
+Setup embeds with `RECALL_EMBEDDER` when that variable is set, in the shell or in the project's
+`.env`, and with fastembed otherwise. A hosted embedder (Voyage, OpenAI) sends the text of every
+memo to that provider. To keep embedding local whatever the environment says, name the embedder
+before the command: `recall --embedder fastembed setup --lite --memory ./notes`.
+
 Setup indexes the chosen folder into `.recall/memory.db`, attempts calibration, and registers
 `recall-memory` with Claude Code for this project. It prints the store path, calibration result,
 registration result, and configured doctor and dashboard commands. Check those results and restart
@@ -78,8 +83,9 @@ network shares and simultaneous writers on different machines are unsupported.
 plugin. For CLI use or manual client wiring, run it with `--no-register`.
 
 For Codex, Claude Desktop, or another stdio MCP client, configure the interpreter from the Lite
-environment to launch `-m recall_mcp.server`. Use the absolute paths and environment printed by
-setup. The essential settings are:
+environment to launch `-m recall_mcp.server`. Setup prints the DSN and the memo folder but not the
+interpreter; with the Lite environment active, `python -c "import sys; print(sys.executable)"`
+prints its absolute path. The essential settings are:
 
 | Setting | Value |
 |---|---|
@@ -95,15 +101,22 @@ setup. The essential settings are:
 Here `RECALL_ENV=development` selects the local operating environment; the separate
 `RECALL_TRUST_MODE=strict` still enforces certification. A POSIX absolute path has a DSN such as
 `sqlite:////home/me/project/.recall/memory.db`; a Windows path uses
-`sqlite:///C:/projects/myapp/.recall/memory.db`. Use setup's OS environment passthrough when a
-client replaces its child process environment. See [the MCP guide](USING_WITH_CLAUDE.md) for client
+`sqlite:///C:/projects/myapp/.recall/memory.db`. Also set `PYTHONSAFEPATH=1`, so a project that
+holds its own `recall/` package cannot shadow the installed one. When a client replaces its child
+process environment instead of extending it, pass through `APPDATA`, `LOCALAPPDATA`, `SystemRoot`,
+`TEMP`, `TMP`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`, `HOME`, `XDG_CACHE_HOME` and
+`XDG_DATA_HOME` with their current values; setup copies these into the server it registers itself,
+but prints none of them. See [the MCP guide](USING_WITH_CLAUDE.md) for client
 configuration locations and [the Codex guide](CODEX_RECALL_INTEGRATION.md) for the distinct
 PostgreSQL installer and hooks.
 
 ## Keep memory current
 
 Edit or add memos in the configured folder. With `RECALL_INDEX_ROOT` configured, the MCP server
-refreshes on startup and checks for changes before searches. It re-indexes changed content and
+refreshes on startup and checks for changes before searches. The Claude plugin's settings cannot
+set `RECALL_INDEX_ROOT`, so unless that variable is already in the environment Claude Code starts
+from, the plugin's server does not refresh by itself: with it, run the refresh below yourself or on
+a schedule, or use the server setup registers. It re-indexes changed content and
 refits calibration when needed. There is no separate scheduler to install for this path.
 
 For an explicit check or refresh, run these from your project with the same environment active:
@@ -168,10 +181,17 @@ copy the entire `.recall/` directory and the memo folder to your backup destinat
 backup private, since it contains the indexed text. For an online database snapshot, use SQLite's
 backup API rather than an ordinary live file copy.
 
-Restore with all clients stopped. Restore the store and notes together, rerun setup with their
-actual paths to check calibration and client registration, then run the printed doctor command and
-an explicit refresh check before restarting clients. If the environment or project moved, the old
-absolute interpreter, database, and memo paths in client configuration must be updated.
+Restore with all clients stopped. A store is bound to the absolute path of the memo folder it was
+built from: every memo is recorded under its absolute path. Restore the notes to that same path,
+restore the store, rerun setup with those paths to check calibration and client registration, then
+run the printed doctor command and an explicit refresh check before restarting clients.
+
+If the memo folder must live at a new path, do not rerun setup on the restored store: it would index
+every memo again under its new path while the rows under the old path stay and keep being returned,
+so each memo would be found twice. Build a new store from the notes instead, with
+`recall setup --lite --memory <new folder> --store <new file>`. Fact ledger data lives only in the
+old store, so keep that file. If the environment moved, also update the absolute interpreter,
+database, and memo paths in client configuration.
 
 ## Common problems
 
