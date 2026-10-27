@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from recall.db_constants import TENANT_GUC
 from recall.errors import RecallError
 from recall.stale_reports import STALE_REPORT_EVENT, STALE_REPORT_FIELDS
 
@@ -44,7 +45,7 @@ class DashboardDB:
         return is_lite_dsn(self.dsn)
 
     @contextmanager
-    def connect(self) -> Iterator[Any]:
+    def connect(self, tenant: str | None = None) -> Iterator[Any]:
         import psycopg
 
         try:
@@ -57,6 +58,8 @@ class DashboardDB:
             first = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
             raise DatabaseUnavailable(first) from exc
         try:
+            if tenant is not None:
+                connection.execute("select set_config(%s, %s, false)", (TENANT_GUC, tenant))
             yield connection
         except psycopg.Error as exc:
             first = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
@@ -92,12 +95,25 @@ def availability(db: DashboardDB) -> dict[str, Any]:
 
 
 def tenants(db: DashboardDB) -> list[dict[str, Any]]:
-    """Every tenant with its active generation, embedder, size and calibration."""
+    """Visible tenant inventory; RLS roles need an explicit session tenant context.
+
+    Cross-tenant inventory requires a separately provisioned administrative reader.
+    This function never grants or bypasses database policy.
+    """
     if db.lite:
         from recall.dashboard import lite_db
 
         return lite_db.tenants(db.dsn)
     with db.connect() as c:
+        bypass, context = c.execute(
+            "select rolsuper or rolbypassrls, current_setting(%s, true) "
+            "from pg_roles where rolname = current_user", (TENANT_GUC,),
+        ).fetchone()
+        if not bypass and not context:
+            raise DatabaseUnavailable(
+                "tenant inventory needs a tenant context for this RLS role; "
+                "configure its recall.tenant_id session default or use an authorized inventory reader"
+            )
         rows = c.execute(
             "select t.tenant_id, t.active_generation_id, t.updated_at, g.state, g.activated_at, g.pipeline_identity "
             "from recall_tenant_state t left join recall_generations g "
@@ -140,7 +156,7 @@ def generations(db: DashboardDB, tenant: str, limit: int = 15) -> list[dict[str,
         from recall.dashboard import lite_db
 
         return lite_db.generations(db.dsn, tenant, limit)
-    with db.connect() as c:
+    with db.connect(tenant) as c:
         rows = c.execute(
             "select generation_id, state, created_at, activated_at, retired_at, failure_reason, created_by "
             "from recall_generations where tenant_id = %s order by created_at desc limit %s",
@@ -156,7 +172,7 @@ def lifecycle_events(db: DashboardDB, tenant: str, limit: int = 100) -> list[dic
         from recall.dashboard import lite_db
 
         return lite_db.lifecycle_events(db.dsn, tenant, limit)
-    with db.connect() as c:
+    with db.connect(tenant) as c:
         rows = c.execute(
             "select event_type, actor, generation_id, source_uri, created_at from recall_audit_events "
             "where tenant_id = %s and event_type <> all(%s) order by created_at desc limit %s",
@@ -166,13 +182,16 @@ def lifecycle_events(db: DashboardDB, tenant: str, limit: int = 100) -> list[dic
     return [dict(zip(keys, row, strict=True)) for row in rows]
 
 
-def _summarise(payload: Any) -> dict[str, Any]:
+def _summarise(payload: Any, event_type: str = "search_decision") -> dict[str, Any]:
     payload = payload if isinstance(payload, dict) else {}
     hits = payload.get("hits") if isinstance(payload.get("hits"), list) else []
+    outcome = payload.get("outcome") or (
+        "refused" if event_type == "search_refusal" else "abstained" if payload.get("abstained") else "answered"
+    )
     return {
         "query": str(payload.get("query", "")),
-        "outcome": payload.get("outcome") or ("abstained" if payload.get("abstained") else "answered"),
-        "abstained": bool(payload.get("abstained")),
+        "outcome": outcome,
+        "abstained": outcome == "abstained",
         "reason": payload.get("reason"),
         "trust_state": payload.get("trust_state"),
         "failure_code": payload.get("failure_code"),
@@ -200,7 +219,7 @@ def searches(db: DashboardDB, tenant: str, limit: int = 100, contains: str = "")
         from recall.dashboard import lite_db
 
         return lite_db.searches(db.dsn, tenant, limit, contains)
-    with db.connect() as c:
+    with db.connect(tenant) as c:
         rows = c.execute(
             "select event_id, event_type, actor, generation_id, payload, created_at from recall_audit_events "
             "where tenant_id = %s and event_type = any(%s) and (%s = '' or payload->>'query' ilike %s) "
@@ -210,7 +229,7 @@ def searches(db: DashboardDB, tenant: str, limit: int = 100, contains: str = "")
     out = []
     for event_id, event_type, actor, generation, payload, created in rows:
         out.append({"event_id": event_id, "event": event_type, "actor": actor, "generation": generation,
-                    "created_at": created, **_summarise(payload)})
+                    "created_at": created, **_summarise(payload, event_type)})
     return out
 
 
@@ -219,7 +238,7 @@ def search(db: DashboardDB, tenant: str, event_id: str) -> dict[str, Any] | None
         from recall.dashboard import lite_db
 
         return lite_db.search(db.dsn, tenant, event_id)
-    with db.connect() as c:
+    with db.connect(tenant) as c:
         row = c.execute(
             "select event_id, event_type, actor, generation_id, payload, created_at from recall_audit_events "
             "where tenant_id = %s and event_id = %s and event_type = any(%s)",
@@ -229,7 +248,7 @@ def search(db: DashboardDB, tenant: str, event_id: str) -> dict[str, Any] | None
         return None
     event_id, event_type, actor, generation, payload, created = row
     return {"event_id": event_id, "event": event_type, "actor": actor, "generation": generation, "created_at": created,
-            **_summarise(payload)}
+            **_summarise(payload, event_type)}
 
 
 USE_REPORT_EVENT = "use_report"
@@ -282,7 +301,7 @@ def control(db: DashboardDB, tenant: str) -> dict[str, Any]:
             "succeeded": 0, "failed": 0, "last_reported": None,
         })
 
-    with db.connect() as c:
+    with db.connect(tenant) as c:
         for source, n, first, last, ok, superseded, low in c.execute(_RETRIEVALS, (tenant,)).fetchall():
             row = memo(source)
             row.update(retrieved=n, first=first, last_retrieved=last, ok=ok, superseded=superseded, low_confidence=low)
@@ -298,9 +317,14 @@ def control(db: DashboardDB, tenant: str) -> dict[str, Any]:
                     row["succeeded" if succeeded == "true" else "failed"] += n
                 if last and (row["last_reported"] is None or last > row["last_reported"]):
                     row["last_reported"] = last
-        searches, answered = c.execute(
-            "select count(*), count(*) filter (where event_type = 'search_decision') from recall_audit_events "
-            "where tenant_id = %s and event_type = any(%s)", (tenant, list(SEARCH_EVENTS)),
+        searches, answered, abstained, refused = c.execute(
+            "select count(*), count(*) filter (where outcome = 'answered'), "
+            "count(*) filter (where outcome = 'abstained'), count(*) filter (where outcome = 'refused') "
+            "from (select coalesce(nullif(payload->>'outcome', ''), case "
+            "when event_type = 'search_refusal' then 'refused' "
+            "when payload->>'abstained' = 'true' then 'abstained' else 'answered' end) as outcome "
+            "from recall_audit_events where tenant_id = %s and event_type = any(%s)) decisions",
+            (tenant, list(SEARCH_EVENTS)),
         ).fetchone()
         reports, helped, no_difference, misled, succeeded, failed = c.execute(
             "select count(*), count(*) filter (where payload->>'effect' = 'helped'), "
@@ -309,7 +333,8 @@ def control(db: DashboardDB, tenant: str) -> dict[str, Any]:
             "from recall_audit_events where tenant_id = %s and event_type = 'use_report'", (tenant,),
         ).fetchone()
     summary = {
-        "searches": searches, "answered": answered, "reports": reports, "helped": helped,
+        "searches": searches, "answered": answered, "abstained": abstained, "refused": refused,
+        "reports": reports, "helped": helped,
         "no_difference": no_difference, "misled": misled, "succeeded": succeeded, "failed": failed,
         "memos_retrieved": sum(1 for m in memos.values() if m["retrieved"]),
     }
@@ -323,7 +348,7 @@ def use_reports(db: DashboardDB, tenant: str, limit: int = 50, source: str = "")
         from recall.dashboard import lite_db
 
         return lite_db.use_reports(db.dsn, tenant, limit, source)
-    with db.connect() as c:
+    with db.connect(tenant) as c:
         rows = c.execute(
             "select event_id, actor, payload, created_at from recall_audit_events "
             "where tenant_id = %s and event_type = 'use_report' "
@@ -348,7 +373,7 @@ def top_sources(db: DashboardDB, tenant: str, generation: str, limit: int = 40) 
         from recall.dashboard import lite_db
 
         return lite_db.top_sources(db.dsn, tenant, generation, limit)
-    with db.connect() as c:
+    with db.connect(tenant) as c:
         rows = c.execute(
             "select source_uri, count(*), max(indexed_at) from recall_chunks_v1 where tenant_id = %s and generation_id = %s "
             "group by source_uri order by max(indexed_at) desc limit %s",
@@ -382,10 +407,13 @@ def stale_reports(db: DashboardDB, tenants: tuple[str, ...], limit: int = MAX_ST
         from recall.dashboard import lite_db
 
         return lite_db.stale_reports(db.dsn, tenants, limit)
-    with db.connect() as c:
-        rows = c.execute(
-            "select event_id, tenant_id, payload, created_at from recall_audit_events "
-            "where tenant_id = any(%s) and event_type = %s order by created_at desc limit %s",
-            (list(tenants), STALE_REPORT_EVENT, limit),
-        ).fetchall()
-    return [stale_row(*row) for row in rows]
+    rows = []
+    for tenant in dict.fromkeys(tenants):
+        with db.connect(tenant) as c:
+            rows.extend(c.execute(
+                "select event_id, tenant_id, payload, created_at from recall_audit_events "
+                "where tenant_id = %s and event_type = %s order by created_at desc limit %s",
+                (tenant, STALE_REPORT_EVENT, limit),
+            ).fetchall())
+    rows.sort(key=lambda row: (row[3], row[0]), reverse=True)
+    return [stale_row(*row) for row in rows[:limit]]

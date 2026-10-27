@@ -798,7 +798,7 @@ class DashboardApp:
         local = self._memo_for_source(source)
         corpus_link = self._corpus_source_link(source, "this source in the corpus")
         links = "<a href='/control'>← all memories</a>" + (f" · {corpus_link}" if corpus_link else "") + (
-            f" · <a href='/memo?{_e(urlencode({'path': local}))}'>edit this memo</a> · <a href='/graph#memo={_e(local)}'>see it in the graph</a>" if local else ""
+            f" · <a href='/memo?{_e(urlencode({'path': local}))}'>edit this memo</a> · <a href='/graph#memo={_e(quote(local, safe=''))}'>see it in the graph</a>" if local else ""
         )
         cards = "".join(
             f"<div class='card report'><div class='tags'><span class='tag effect-{_e(r['effect'])}'>{_e(str(r['effect']).replace('_', ' '))}</span>"
@@ -930,7 +930,7 @@ class DashboardApp:
                 hits.append((0 if needle in name.lower() else 1, name, snippet))
         hits.sort()
         cards = "".join(
-            f"<div class='card found'><div class='names'>{self._memo_link(name)} <a class='muted small' href='/graph#memo={_e(name)}'>graph</a></div>"
+            f"<div class='card found'><div class='names'>{self._memo_link(name)} <a class='muted small' href='/graph#memo={_e(quote(name, safe=''))}'>graph</a></div>"
             f"<div class='muted'>{_e(snippet)}</div></div>"
             for _, name, snippet in hits[:60]
         )
@@ -1100,7 +1100,7 @@ class DashboardApp:
             )
         flash = f"<div class='card ok'>{_e(done)}</div>" if done else ""
         body = (
-            f"<div class='muted'><a href='/graph#memo={_e(values.name)}'>← see it in the graph</a></div>{flash}"
+            f"<div class='muted'><a href='/graph#memo={_e(quote(values.name, safe=''))}'>← see it in the graph</a></div>{flash}"
             f"<div class='card'>{current}</div>{form}"
             f"<h2 class='sec'>Changes made here</h2>{''.join(rows) or '<p class=muted>No edits from the dashboard yet.</p>'}"
         )
@@ -1269,7 +1269,7 @@ class DashboardApp:
             else:
                 action = "<p class='muted'>The sentence names no memo this store holds under that name (a broken link, or a file elsewhere).</p>"
             cards.append(
-                f"<div class='card triage'><div class='names'>{self._memo_link(f.file)} <a class='muted small' href='/graph#memo={_e(f.file)}'>graph</a></div>"
+                f"<div class='card triage'><div class='names'>{self._memo_link(f.file)} <a class='muted small' href='/graph#memo={_e(quote(f.file, safe=''))}'>graph</a></div>"
                 f"<blockquote>{highlight(f.sentence, f.marker)}</blockquote>{action}"
                 f"<form method='post' action='/lint/dismiss' class='dismiss'>{token}"
                 f"<input type='hidden' name='file' value='{_e(f.file)}'><input type='hidden' name='sha' value='{_e(f.sentence_sha)}'>"
@@ -1335,7 +1335,7 @@ class DashboardApp:
         sections: list[str] = []
         for code, found in sorted(by_code.items(), key=lambda item: -len(item[1])):
             items = "".join(
-                f"<li>{self._memo_link(name)} <a class='muted' href='/graph#memo={_e(name)}'>graph</a></li>" for name, _level, _msg in found[:60]
+                f"<li>{self._memo_link(name)} <a class='muted' href='/graph#memo={_e(quote(name, safe=''))}'>graph</a></li>" for name, _level, _msg in found[:60]
             )
             more = f"<li class='muted'>and {len(found) - 60} more</li>" if len(found) > 60 else ""
             sections.append(
@@ -1561,14 +1561,16 @@ class DashboardApp:
             rows = dbq.searches(self.db, tenant, limit=200, contains=contains)
         except dbq.DatabaseUnavailable:
             return self._not_connected("RE-call · retrieval", "retrieval", "Retrieval")
-        answered = sum(1 for r in rows if not r["abstained"])
+        answered = sum(1 for r in rows if r["outcome"] == "answered")
+        abstained = sum(1 for r in rows if r["outcome"] == "abstained")
+        refused = sum(1 for r in rows if r["outcome"] == "refused")
         hits = [len(r["hits"]) for r in rows]
         superseded = sum(1 for r in rows if any(h["verdict"] == "superseded" for h in r["hits"]))
         tiles = "".join(
             f"<div class='card tile'><span class='eyebrow'>{_e(label)}</span><b>{_e(value)}</b><span class='muted'>{_e(note)}</span></div>"
             for label, value, note in (
                 ("searches", len(rows), "most recent 200"),
-                ("answered", answered, f"{len(rows) - answered} abstained"),
+                ("answered", answered, f"{abstained} abstained · {refused} refused"),
                 ("hits per search", f"{(sum(hits) / len(hits)):.1f}" if hits else "0", "returned to the agent"),
                 ("caught a superseded memo", superseded, "a stale version was flagged, not served as current"),
             )
@@ -1577,7 +1579,7 @@ class DashboardApp:
             f"<a class='card search' href='/retrieval/event?{_e(urlencode({'id': r['event_id']}))}'>"
             f"<time>{_e(self._when(r['created_at']))}</time>"
             f"<div><div class='names'>{_e(r['query'][:220])}</div><div class='chips'>{self._verdict_chips(r['verdict_counts'])}</div></div>"
-            f"<span class='tag {'warn' if r['abstained'] else 'good'}'>{_e('abstained' if r['abstained'] else 'answered')}</span></a>"
+            f"<span class='tag {'good' if r['outcome'] == 'answered' else 'warn'}'>{_e(r['outcome'])}</span></a>"
             for r in rows
         )
         empty = (
@@ -1623,7 +1625,7 @@ class DashboardApp:
             "<dl class='values'>"
             f"<dt>when</dt><dd>{_e(self._when(found['created_at']))}</dd>"
             f"<dt>by</dt><dd>{_e(found['actor'])}</dd>"
-            f"<dt>outcome</dt><dd>{_e('abstained' if found['abstained'] else 'answered')}{' · ' + _e(found['reason']) if found['reason'] else ''}</dd>"
+            f"<dt>outcome</dt><dd>{_e(found['outcome'])}{' · ' + _e(found['reason']) if found['reason'] else ''}</dd>"
             f"<dt>trust</dt><dd>{_e(found['trust_state'] or '')}{' · ' + _e(found['failure_code']) if found['failure_code'] else ''}</dd>"
             f"<dt>generation</dt><dd class='mono'>{_e(found['generation'] or '')}</dd></dl>"
         )
@@ -1921,14 +1923,25 @@ def security_headers() -> tuple[tuple[str, str], ...]:
     )
 
 
+MAX_REQUEST_BODY_BYTES = 1_000_000
+
+
 def serve(app: DashboardApp) -> ThreadingHTTPServer:
     """A server bound to 127.0.0.1 that hands every request to `app`."""
 
     class Handler(BaseHTTPRequestHandler):
         def _respond(self, method: str) -> None:
-            length = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(min(length, 1_000_000)) if length else b""
-            response = app.handle(method, self.path, dict(self.headers.items()), body)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if length < 0 or length > MAX_REQUEST_BODY_BYTES:
+                self.close_connection = True
+                status = HTTPStatus.BAD_REQUEST if length < 0 else HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+                response = Response(status, b"Invalid request body length.", ())
+            else:
+                body = self.rfile.read(length) if length else b""
+                response = app.handle(method, self.path, dict(self.headers.items()), body)
             self.send_response(response.status)
             for name, value in response.headers + security_headers():
                 self.send_header(name, value)
