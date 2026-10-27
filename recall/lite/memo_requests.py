@@ -297,6 +297,10 @@ def write_memo(
                 return conflict
             folder.mkdir(parents=True, exist_ok=True)
             free = not path.exists() and not path.is_symlink()
+            if not free and state == "prepared" and authors.get(memo_id) == author:
+                # A ledger from before this module wrote `authors` only after the create recorded
+                # the reservation as authored; the file there is not ours, so that row goes too.
+                del authors[memo_id]
             number = int(memo_id.rsplit("-", 1)[1]) if free else _next_number(folder, ledger)
             memo_id = _publish(folder, ledger_path, ledger, data, kind, number, entry)
     else:

@@ -490,6 +490,38 @@ def test_a_reservation_is_not_authorship_until_the_memo_exists(serving, monkeypa
     assert entry["memo_id"] not in memos.authors()
 
 
+def test_a_legacy_reservation_moved_off_a_persons_file_stops_claiming_it(serving, monkeypatch):
+    """CCA DAT-001 (run 20261027T111547Z). PR 947 journalled `authors[memo_id]` with the prepared
+    reservation, before the file existed. When the retry moves such a reservation off a file a
+    person put under that name, the stale row must go with it, or the person's file stays recorded
+    as the assistant's and can be superseded as one. Red: master 23f1820d4 moves the reservation
+    but keeps `authors[old_id]`, so `a person's file is still credited to the assistant` fails.
+    Target: write_memo's prepared, not-ours replay branch in recall/lite/memo_requests.py.
+    """
+    from recall.lite import memo_requests
+    store, memos = serving
+    create = memo_requests._create
+    def interrupted(path, body):
+        raise OSError("injected interruption before memo publication")
+    monkeypatch.setattr(memo_requests, "_create", interrupted)
+    with pytest.raises(OSError, match="before memo publication"):
+        remember(store, memos, request_id="legacy")
+    monkeypatch.setattr(memo_requests, "_create", create)
+    ledger = json.loads(memos.ledger_path.read_text())
+    reserved = ledger["requests"]["legacy"]["memo_id"]
+    ledger["authors"][reserved] = "assistant"  # what PR 947 wrote with the reservation
+    memos.ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    taken = memos.path_of(reserved)
+    taken.write_bytes(b"A person's own note.\n")
+    result = remember(store, memos, request_id="legacy")
+    assert result.get("memo_id") not in (None, reserved), f"the retry is stuck on a taken name: {result}"
+    assert taken.read_bytes() == b"A person's own note.\n"
+    assert reserved not in memos.authors(), "a person's file is still credited to the assistant"
+    refused = remember(store, memos, "The user drinks coffee.", supersedes=reserved)
+    assert "refused" in refused, f"a person's file was superseded as an assistant memo: {refused}"
+    assert taken.read_bytes() == b"A person's own note.\n"
+
+
 @pytest.mark.parametrize("unrelated", ["latin1", "directory"])
 def test_an_unreadable_file_does_not_block_a_correction(serving, unrelated):
     """Finding 4. Red: baseline 561ba05ae reads every memo with read_text(encoding="utf-8"), so
