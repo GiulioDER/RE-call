@@ -8,9 +8,10 @@ that owns it (`_graph_projection._store_graph`) is patched on that module, its o
 
 from __future__ import annotations
 
-from recall.reasoning_proposals import deterministic_inference_proposals  # S5b: was a call-time service lookup
-from recall.trust import evaluate  # S5b: was a call-time service lookup
-
+import hashlib
+import os
+import random
+import threading
 from collections import OrderedDict
 from collections.abc import (
     Mapping,
@@ -27,17 +28,23 @@ from dataclasses import (
 from datetime import (
     datetime,
 )
+from typing import (
+    Any,
+    cast,
+)
 
 from recall.calibration import Calibration
 from recall.embeddings import (
-    embed_query,
     Embedder,
+    embed_query,
 )
 from recall.frontmatter import supersedes_key
 from recall.observability import (
-    current_performance_trace,
-    get_logger as _get_logger,
     METRICS,
+    current_performance_trace,
+)
+from recall.observability import (
+    get_logger as _get_logger,
 )
 from recall.query_entity_resolution import resolve_query_entities
 from recall.reasoning import (
@@ -45,11 +52,11 @@ from recall.reasoning import (
     SemanticGraphExpansionResult,
 )
 from recall.reasoning_graph import (
-    build_reasoning_graph,
     ReasoningGraphProjection,
+    build_reasoning_graph,
 )
 from recall.reasoning_planner import _reset_planner_index_cache
-from recall.reasoning_proposals import InferenceProposal
+from recall.reasoning_proposals import InferenceProposal, deterministic_inference_proposals
 from recall.security_policy import (
     AccessContext,
     SourceSecurityPolicy,
@@ -59,7 +66,7 @@ from recall.semantic_graph import (
     SemanticGraphProjection,
 )
 from recall.store import PgVectorStore
-from recall.trust import resolve_successor
+from recall.trust import evaluate, resolve_successor
 from recall.types import (
     Provenance,
     RetrievalResult,
@@ -68,24 +75,16 @@ from recall.types import (
     TrustedResult,
     Validity,
 )
-
 from recall_mcp import (
     graph_expansion as _graph_expansion,
+)
+from recall_mcp import (
     graph_projection as _graph_projection,
 )
 from recall_mcp.graph_projection import (
     _authorization_scope,
     _combined_graph_policy_fingerprint,
 )
-from typing import (
-    Any,
-    cast,
-)
-import hashlib
-import os
-import random
-import threading
-
 
 _log = _get_logger("mcp.service")
 

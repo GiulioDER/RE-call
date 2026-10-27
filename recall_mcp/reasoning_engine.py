@@ -8,18 +8,17 @@ that owns it (`_retrieval._retrieve_trusted`) is patched on that module, its one
 
 from __future__ import annotations
 
-from recall.reasoning import reason  # S5b: was a call-time service lookup
-from recall.reasoning_expansion import resolve_expansion_provider  # S5b: was a call-time service lookup
-from recall_mcp import graph_projection as _graph_projection
-from recall_mcp import reasoning_diagnostics as _reasoning_diagnostics
-from recall_mcp import retrieval as _retrieval
-
+import copy
+import time
 from collections.abc import (
     Mapping,
     Sequence,
 )
 from dataclasses import replace
 from datetime import datetime
+from typing import (
+    cast,
+)
 
 from recall.answer_provider import OllamaAnswerProvider
 from recall.atomic_rescue import (
@@ -34,24 +33,28 @@ from recall.evidence import (
     EvidencePolicy,
 )
 from recall.observability import (
-    get_logger as _get_logger,
     METRICS,
-    performance_trace_scope,
     PerformanceTrace,
+    performance_trace_scope,
+)
+from recall.observability import (
+    get_logger as _get_logger,
 )
 from recall.reasoning import (
-    GenerationSelection,
     REASONING_API_VERSION,
+    GenerationSelection,
     ReasoningDiagnostics,
     ReasoningPolicy,
     ReasoningProviderPorts,
     ReasoningRequest,
     ReasoningResponse,
     SemanticGraphExpansionResult,
+    reason,
 )
 from recall.reasoning_expansion import (
     ExpansionProposal,
     ReasoningExpansionRetriever,
+    resolve_expansion_provider,
 )
 from recall.reasoning_graph import ReasoningGraphProjection
 from recall.reasoning_planner import ReasoningBudget
@@ -73,7 +76,9 @@ from recall.types import (
     RetrievalResult,
     TrustedResult,
 )
-
+from recall_mcp import graph_projection as _graph_projection
+from recall_mcp import reasoning_diagnostics as _reasoning_diagnostics
+from recall_mcp import retrieval as _retrieval
 from recall_mcp.graph_projection import (
     _authorized_graph,
     _combined_graph_policy_fingerprint,
@@ -92,6 +97,8 @@ from recall_mcp.reasoning_diagnostics import (
     _source_conditioning_shadow_sampled,
 )
 from recall_mcp.semantic_graph_cache import (
+    GRAPH_FIRST_CONTEXT_K,
+    GRAPH_FIRST_RETRIEVAL_K,
     _assemble_graph_first_context,
     _cached_deterministic_proposals,
     _expand_semantic_graph,
@@ -101,16 +108,8 @@ from recall_mcp.semantic_graph_cache import (
     _provisional_graph_seed_result,
     _resolve_graph_calibration,
     _retrieval_graph,
-    GRAPH_FIRST_CONTEXT_K,
-    GRAPH_FIRST_RETRIEVAL_K,
 )
 from recall_mcp.settings import runtime_environment
-from typing import (
-    cast,
-)
-import copy
-import time
-
 
 _log = _get_logger("mcp.service")
 
@@ -364,15 +363,17 @@ def _execute_reasoning_query(
                         "source admission benchmark audit did not capture a query vector"
                     )
                 with performance.span("source_admission_benchmark_audit_ms"):
-                    source_admission_audit = _reasoning_diagnostics._source_admission_benchmark_audit_payload(
-                        store,
-                        embedder,
-                        query,
-                        query_vector,
-                        source,
-                        calibration,
-                        policy,
-                        executed.profile,
+                    source_admission_audit = (
+                        _reasoning_diagnostics._source_admission_benchmark_audit_payload(
+                            store,
+                            embedder,
+                            query,
+                            query_vector,
+                            source,
+                            calibration,
+                            policy,
+                            executed.profile,
+                        )
                     )
                 performance.set("source_admission_benchmark_audit", source_admission_audit)
             if performance is not None and shadow_mode != "off":
@@ -482,18 +483,22 @@ def _execute_reasoning_query(
                                     raise RuntimeError(
                                         "reuse benchmark did not capture a query vector"
                                     )
-                                duplicate_legs = _reasoning_diagnostics._retrieval_leg_benchmark_audit_payload(
-                                    store, query, query_vector, source
+                                duplicate_legs = (
+                                    _reasoning_diagnostics._retrieval_leg_benchmark_audit_payload(
+                                        store, query, query_vector, source
+                                    )
                                 )
-                                duplicate_pool = _reasoning_diagnostics._source_admission_benchmark_audit_payload(
-                                    store,
-                                    embedder,
-                                    query,
-                                    query_vector,
-                                    source,
-                                    calibration,
-                                    policy,
-                                    executed.profile,
+                                duplicate_pool = (
+                                    _reasoning_diagnostics._source_admission_benchmark_audit_payload(
+                                        store,
+                                        embedder,
+                                        query,
+                                        query_vector,
+                                        source,
+                                        calibration,
+                                        policy,
+                                        executed.profile,
+                                    )
                                 )
                                 duplicate_payload = _source_conditioning_shadow_payload(
                                     artifact_path=artifact_path,
