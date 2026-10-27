@@ -11,6 +11,7 @@ Nothing here needs a database or a network: the whole point of this hook is that
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -387,7 +388,10 @@ def test_provenance_labels_each_date_by_the_field_it_came_from(hook_env):
 
 
 def test_a_date_in_the_body_is_never_taken_as_the_memos_own(hook_env):
-    """A memo that states no date of its own is `[undated]`, whatever dates its prose quotes.
+    """A memo whose frontmatter states no date is `[undated]`, whatever dates its prose quotes.
+
+    The body is read for one thing only, the date on a `🔁` correction line, which the
+    `corrected` part of the stamp names as such.
 
     Red proof: searching the whole file instead of the frontmatter (`VALID_FROM_RE.search(raw)`
     in `prompt_time.provenance`) returns `[valid from 2026-01-01]` and fails the equality below.
@@ -401,6 +405,63 @@ def test_a_date_in_the_body_is_never_taken_as_the_memos_own(hook_env):
     )
 
     assert prompt_time.provenance(path) == "[undated]"
+
+
+def test_a_horizontal_rule_is_not_read_as_frontmatter(hook_env):
+    """A memo opening with a rule and a heading has no frontmatter, as `frontmatter_span` says.
+
+    Red proof: deleting the `_is_frontmatter` check in `prompt_time.provenance` pairs the two
+    rules, reads the prose line as the memo's own field and returns `[valid from 2026-01-01]`,
+    failing the equality below.
+    """
+
+    path = write_memo(
+        hook_env / "store",
+        "a-memo-opening-with-a-rule",
+        "# Notes\nvalid_from: 2026-01-01 was what the old run used.",
+        "More prose.",
+    )
+
+    assert prompt_time.provenance(path) == "[undated]"
+
+
+def test_a_line_of_correction_markers_is_read_in_linear_time(hook_env):
+    """The stamp runs on every prompt, so no memo may make it quadratic.
+
+    Red proof: restoring `CORRECTION_RE`'s gap to `[^\\n]*?` in `prompt_time` scans the line
+    once per marker, and 20,000 markers take several seconds and fail the bound below.
+    """
+
+    path = write_memo(
+        hook_env / "store", "markers", "name: m\ndescription: m", "\U0001f501" * 20_000
+    )
+
+    started = time.monotonic()
+    stamp = prompt_time.provenance(path)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"provenance took {elapsed:.2f}s on one line of markers"
+    assert stamp == "[undated]"
+
+
+def test_a_head_of_blank_lines_is_searched_in_linear_time(hook_env):
+    """A field regex must not let its indent run across newlines.
+
+    Red proof: restoring the leading `^\\s*` of `VALID_FROM_RE`, `MODIFIED_RE` and `SESSION_RE`
+    in `prompt_time` makes each search quadratic in the blank lines, and 40,000 take several
+    seconds and fail the bound below.
+    """
+
+    path = write_memo(
+        hook_env / "store", "blank-head", "\n" * 40_000 + "name: b", "Body."
+    )
+
+    started = time.monotonic()
+    stamp = prompt_time.provenance(path)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"provenance took {elapsed:.2f}s on a head of blank lines"
+    assert stamp == "[undated]"
 
 
 def test_the_rendered_block_leads_each_hit_with_its_stamp_and_states_today(hook_env):

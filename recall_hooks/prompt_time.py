@@ -122,15 +122,24 @@ DESCRIPTION_RE = re.compile(r"^description:\s*(.+)$", re.MULTILINE)
 #: A memo's frontmatter: the block between the opening `---` and the next one.
 FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.DOTALL)
 #: The provenance fields a memo states about itself, read from the frontmatter only, so a date
-#: quoted in the body can never be mistaken for the memo's own.
-VALID_FROM_RE = re.compile(r"^\s*valid_from:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.MULTILINE)
-MODIFIED_RE = re.compile(r"^\s*modified:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.MULTILINE)
-SESSION_RE = re.compile(r"^\s*originSessionId:\s*['\"]?([0-9A-Za-z]{8})", re.MULTILINE)
+#: quoted in the body can never be mistaken for the memo's own. The indent is `[ \t]*`, not
+#: `\s*`: `\s` also matches a newline, which makes a head of blank lines quadratic to search.
+VALID_FROM_RE = re.compile(r"^[ \t]*valid_from:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.MULTILINE)
+MODIFIED_RE = re.compile(r"^[ \t]*modified:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.MULTILINE)
+SESSION_RE = re.compile(r"^[ \t]*originSessionId:\s*['\"]?([0-9A-Za-z]{8})", re.MULTILINE)
 #: Memos written by the dated convention carry the day in the file name.
 NAME_DATE_RE = re.compile(r"\A(\d{4}-\d{2}-\d{2})-")
 #: A correction appended in place, the `🔁 Corrected 2026-08-25` convention, with its date on the
-#: same line as the marker.
-CORRECTION_RE = re.compile("\U0001f501" r"[^\n]*?(\d{4}-\d{2}-\d{2})")
+#: same line as the marker. The gap stops at the next marker, so a line of markers with no date
+#: is scanned once rather than once per marker; `findall` returns the same dates either way.
+CORRECTION_RE = re.compile("\U0001f501" r"[^\n" "\U0001f501" r"]*?(\d{4}-\d{2}-\d{2})")
+#: `recall.frontmatter.frontmatter_span`'s member rule, copied because this package may not import
+#: `recall`. A leading `---` is also a horizontal rule, so a head is trusted only when every line
+#: is a plausible YAML member and at least one is a key; otherwise the file is all body.
+_HEAD_NON_KEY_START = frozenset(":#-*+`[>|")
+_EXPLICIT_KEY_RE = re.compile(r"[?:](\s|$)")
+_SEQUENCE_ITEM_RE = re.compile(r"-(\s|$)")
+_FLOW_CLOSER_RE = re.compile(r"[\]}],?\s*$")
 
 #: Function words plus the conversational filler a prompt is made of. Not a linguistic stoplist:
 #: every word here was watched matching a memo for no reason during development.
@@ -327,6 +336,47 @@ def rank(
     return [row for row in scored[:k] if row[2] >= floor]
 
 
+def _is_key_line(line: str) -> bool:
+    """`recall.frontmatter._KEY_LINE.match(line)`, decided without its regex.
+
+    That pattern is `[^:]* \\s* :` after the first character, which backtracks quadratically on a
+    long run of whitespace; on every prompt that is a cost a memo can choose. Both accept exactly
+    a line whose first character can open a key and that holds a colon after it.
+    """
+
+    first = line[:1]
+    if not first or first.isspace():
+        return False
+    if first in "-+":
+        return len(line) > 1 and not line[1].isspace() and ":" in line[1:]
+    return first not in _HEAD_NON_KEY_START and ":" in line[1:]
+
+
+def _is_frontmatter(head: str) -> bool:
+    """True when `head` is a real frontmatter block, by `frontmatter_span`'s rule."""
+
+    seen_key = False
+    for line in head.split("\n"):
+        line = line.rstrip("\r")
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if line[:1].isspace():
+            seen_key = seen_key or _is_key_line(stripped)
+            continue
+        if _is_key_line(line) or _EXPLICIT_KEY_RE.match(line):
+            seen_key = True
+            continue
+        if seen_key and (
+            stripped.startswith("#")
+            or _SEQUENCE_ITEM_RE.match(line)
+            or _FLOW_CLOSER_RE.match(line)
+        ):
+            continue
+        return False
+    return seen_key
+
+
 def provenance(path: Path) -> str:
     """The dates a memo states about itself, as one bracketed stamp. Nothing is inferred.
 
@@ -351,6 +401,8 @@ def provenance(path: Path) -> str:
     except OSError:
         return "[undated]"
     head_match = FRONTMATTER_RE.search(raw)
+    if head_match and not _is_frontmatter(head_match.group(1)):
+        head_match = None
     head = head_match.group(1) if head_match else ""
     body = raw[head_match.end():] if head_match else raw
     parts: list[str] = []
