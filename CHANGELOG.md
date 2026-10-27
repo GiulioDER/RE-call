@@ -42,6 +42,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `historical` field to null and drops their advice. A memo whose authored facts do not parse no
   longer fails the search or evidence call that returns it: a malformed fact is left off its
   evidence card, and a memo with no well-formed fact gets no card.
+- The auditor brief hook's default budget is now 3 s, up from 1 s. A CCA dispatch launches its
+  auditors at once, and under that contention the hook's git calls timed out, so 0 of 9 auditors
+  got the brief (measured 2026-10-27); at 3 s all 9 did. `RECALL_AUDITOR_BRIEF_BUDGET` still
+  overrides it.
 - Every FastEmbed embedding profile now records the installed `onnxruntime` and `tokenizers`
   versions in its `dependencies` (`onnxruntime-gpu` and the other builds are named in the value), on
   the registered and the unregistered construction path alike. Before this an upgrade of either with
