@@ -273,6 +273,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **Withdrawing a fact's first memo no longer gives back what a forgotten second memo retired.**
+  A fact stated by two memos is one application recorded APPLIED and one recorded DUPLICATE, and
+  projections listed only the APPLIED one. Forgetting the second memo and then withdrawing the
+  first made the value the fact superseded current again, where the other order kept it retired.
+  When the application a DUPLICATE repeats is withdrawn, the DUPLICATE now stands in for it, with
+  its supersession and at its point in the ledger, so it hides exactly what the withdrawn one hid
+  (`recall.provenance_controller.applications`), on PostgreSQL, lite and in memory, and in the
+  current-facts tables. A retraction needs no stand-in: it takes every application of the fact.
 * **A request id names one application.** A request id already used for another fact, or for the
   same fact on other cards, was answered allowed `DUPLICATE` with the earlier event and recorded
   nothing; it is now refused `REQUEST_ID_REUSED` and not recorded, while the same request sent again
