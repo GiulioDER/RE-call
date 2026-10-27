@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 344
 Cross package edges: 363
-Source tree fingerprint: `61b8cf1820ea5d9575cae5fa00df2268872f65ad8334d0429df7fad2e2639a82`
+Source tree fingerprint: `a0e15036d66d3db89dc929b5a8f44cf467b75a0fc8f803acf4c1c972ec2975a8`
 
 ## Highest fan in modules
 
