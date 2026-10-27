@@ -17,7 +17,7 @@ from recall.reasoning_graph import (
     ReasoningGraphProjection,
 )
 from recall.reasoning_proposals import InferenceProposal, ProposedRelation
-from recall.supersession import SupersessionGraph
+from recall.supersession import ReferenceIndex, SupersessionGraph
 from recall.trust import is_trusted
 from recall.types import TrustedHit, TrustedResult
 
@@ -274,7 +274,10 @@ def _lineage(graph: ReasoningGraphProjection) -> SupersessionGraph:
         ):
             windows[edge.to_file] = (start, end)
     edges = {target: max(f for f, _when in claims) for target, claims in candidates.items()}
-    return SupersessionGraph.from_parts(edges, frozenset(), candidates, windows)
+    references = ReferenceIndex(
+        (node.file, node.source) for node in graph.nodes if node.file is not None
+    )
+    return SupersessionGraph(edges=edges, candidates=candidates, windows=windows, collided=references.collided)
 
 
 _PLANNER_INDEX_CACHE_LOCK = threading.Lock()
@@ -526,7 +529,8 @@ def _direct_evidence_nodes(
     ):
         return None
 
-    accepted_files = {node.file for node in matches if node.file is not None}
+    lineage = _lineage(graph)
+    accepted_files = {lineage.key(node.file, node.source) for node in matches if node.file is not None}
     if any(
         file in accepted_files
         for edge in (*graph.authored_edges, *graph.authored_dependency_edges)
@@ -576,7 +580,7 @@ def _successor_files(state: _PlannerState, indexes: _PlannerIndexes) -> frozense
         if node.file is not None
         and (
             successor := indexes.lineage.successor(
-                node.file, now=state.as_of, known_as_of=state.known_as_of
+                indexes.lineage.key(node.file, node.source), now=state.as_of, known_as_of=state.known_as_of
             )
         )
         is not None
@@ -589,14 +593,14 @@ def _has_authored_relationships(state: _PlannerState, indexes: _PlannerIndexes) 
 
 def _has_adjacent_proposals(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
     accepted_files = tuple(
-        sorted({node.file for node in state.accepted.values() if node.file is not None})
+        sorted({indexes.lineage.key(node.file, node.source) for node in state.accepted.values() if node.file is not None})
     )
     return bool(_adjacent_proposals(indexes, accepted_files))
 
 
 def _has_missing_intermediate_evidence(state: _PlannerState, indexes: _PlannerIndexes) -> bool:
     accepted_files = {
-        node.file for node in state.accepted.values() if node.file is not None
+        indexes.lineage.key(node.file, node.source) for node in state.accepted.values() if node.file is not None
     }
     for proposal in _adjacent_proposals(indexes, tuple(sorted(accepted_files))):
         if proposal.proposed_relation != "supersedes":
@@ -619,7 +623,9 @@ def _has_contradiction_signal(state: _PlannerState, indexes: _PlannerIndexes) ->
         return True
     if any(node.authored_contradiction_refs for node in state.accepted.values()):
         return True
-    accepted_files = {node.file for node in state.accepted.values() if node.file is not None}
+    accepted_files = {
+        indexes.lineage.key(node.file, node.source) for node in state.accepted.values() if node.file is not None
+    }
     accepted_ids = set(state.accepted)
     return any(
         diagnostic.kind == "conflicting_authored_claim"
@@ -632,16 +638,17 @@ def _has_contradiction_signal(state: _PlannerState, indexes: _PlannerIndexes) ->
 def _build_indexes(
     graph: ReasoningGraphProjection, proposals: Sequence[InferenceProposal]
 ) -> _PlannerIndexes:
+    lineage = _lineage(graph)
     mutable_chunks_by_file: dict[str, list[ReasoningGraphNode]] = {}
     mutable_chunks_by_source: dict[str, list[ReasoningGraphNode]] = {}
     mutable_source_node_ids_by_file: dict[str, list[str]] = {}
     for node in graph.nodes:
         if node.kind == "chunk":
             if node.file is not None:
-                mutable_chunks_by_file.setdefault(node.file, []).append(node)
+                mutable_chunks_by_file.setdefault(lineage.key(node.file, node.source), []).append(node)
             mutable_chunks_by_source.setdefault(node.source, []).append(node)
         elif node.kind == "source" and node.file is not None:
-            mutable_source_node_ids_by_file.setdefault(node.file, []).append(node.id)
+            mutable_source_node_ids_by_file.setdefault(lineage.key(node.file, node.source), []).append(node.id)
 
     authored_edges_by_file: dict[str, list[int]] = {}
     authored_pairs: set[tuple[str, str]] = set()
@@ -727,7 +734,7 @@ def _build_indexes(
         blocking_diagnostic_node_ids=frozenset(blocking_node_ids),
         blocking_diagnostic_references=frozenset(blocking_references),
         blocking_cycle_files=frozenset(blocking_cycle_files),
-        lineage=_lineage(graph),
+        lineage=lineage,
     )
 
 
@@ -796,7 +803,9 @@ def _follow_authored_relationships(state: _PlannerState, indexes: _PlannerIndexe
     evidence here.
     """
     input_ids = tuple(sorted(state.frontier))
-    accepted_files = {node.file for node in state.accepted.values() if node.file is not None}
+    accepted_files = {
+        indexes.lineage.key(node.file, node.source) for node in state.accepted.values() if node.file is not None
+    }
     targets = _successor_files(state, indexes)
     edge_indices = tuple(
         sorted(
@@ -838,7 +847,7 @@ def _compare_candidate_memories(
     candidate_nodes: list[ReasoningGraphNode] = []
     proposal_ids: list[str] = []
     accepted_files = tuple(
-        sorted({node.file for node in state.accepted.values() if node.file is not None})
+        sorted({indexes.lineage.key(node.file, node.source) for node in state.accepted.values() if node.file is not None})
     )
     adjacent_proposals = _adjacent_proposals(indexes, accepted_files)
     for proposal in adjacent_proposals:
@@ -881,7 +890,7 @@ def _search_missing_intermediate_evidence(
 ) -> None:
     input_ids = tuple(sorted(state.frontier))
     accepted_files = tuple(
-        sorted({node.file for node in state.accepted.values() if node.file is not None})
+        sorted({indexes.lineage.key(node.file, node.source) for node in state.accepted.values() if node.file is not None})
     )
     gap_ids: list[str] = []
     for proposal in _adjacent_proposals(indexes, accepted_files):
@@ -1047,7 +1056,7 @@ def _accepted_evidence_ids(
     evidence_ids = set(state.accepted)
     for node in state.accepted.values():
         if node.file is not None:
-            evidence_ids.update(indexes.source_node_ids_by_file.get(node.file, ()))
+            evidence_ids.update(indexes.source_node_ids_by_file.get(indexes.lineage.key(node.file, node.source), ()))
     return tuple(sorted(evidence_ids))
 
 
@@ -1172,10 +1181,11 @@ def _diagnostic_blocks_node(node: ReasoningGraphNode, indexes: _PlannerIndexes) 
         return True
     if node.file is None:
         return False
+    key = indexes.lineage.key(node.file, node.source)
     return (
-        node.file in indexes.blocking_diagnostic_references
+        key in indexes.blocking_diagnostic_references
         or supersedes_key(node.file) in indexes.blocking_diagnostic_references
-        or node.file in indexes.blocking_cycle_files
+        or key in indexes.blocking_cycle_files
     )
 
 

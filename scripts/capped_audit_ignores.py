@@ -16,6 +16,10 @@ the lock moves to it; once the lock pins a fixed pillow, OSV lists nothing again
 Prints the `--ignore-vuln` arguments on stdout and the reason for each decision on stderr. Any
 network or parse failure exits nonzero, so the audit fails rather than running with a guessed
 exception list.
+
+Distinct marker-specific versions of either selected package are refused before fetching:
+one global audit exception cannot describe several dependency-version policies. Repeated
+identical pins and variants of unrelated packages remain supported.
 """
 
 from __future__ import annotations
@@ -48,12 +52,18 @@ class Decision:
     reason: str
 
 
-def locked_versions(lock_text: str) -> dict[str, Version]:
+def locked_versions(
+    lock_text: str, *, require_unique: frozenset[str] = frozenset()
+) -> dict[str, Version]:
     pins: dict[str, Version] = {}
     for line in lock_text.splitlines():
         match = _PIN.match(line.strip())
         if match and not line[:1].isspace():
-            pins[canonicalize_name(match.group(1))] = Version(match.group(2))
+            name = canonicalize_name(match.group(1))
+            version = Version(match.group(2))
+            if name in require_unique and name in pins and pins[name] != version:
+                raise ValueError(f"multiple locked versions for {name}: {pins[name]} and {version}")
+            pins[name] = version
     return pins
 
 
@@ -86,7 +96,7 @@ def capped_decisions(
     fetch_advisories: Callable[[str, str], Iterable[dict]],
 ) -> list[Decision]:
     capped, capper = canonicalize_name(capped), canonicalize_name(capper)
-    pins = locked_versions(lock_text)
+    pins = locked_versions(lock_text, require_unique=frozenset({capped, capper}))
     pinned, capper_pin = pins.get(capped), pins.get(capper)
     if pinned is None or capper_pin is None:
         return []

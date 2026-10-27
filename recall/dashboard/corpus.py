@@ -19,8 +19,8 @@ edge kind:
   `SHARE_MAX_FILES` files is too common to say anything and is skipped, and each file keeps only
   its `SHARE_PER_FILE` strongest partners, so a common name cannot join everything to everything.
 
-A file is `coalesce(metadata->>'file', source_uri)` throughout: the root-relative path where the
-indexer recorded one, else the source itself.
+A file is its recorded root-relative path, else its source URI. When several roots hold that
+path, the shared supersession graph identifies each copy by its source URI instead.
 """
 
 from __future__ import annotations
@@ -205,8 +205,8 @@ def corpus_graph(db: DashboardDB, tenant: str, *, today: date | None = None) -> 
         files = c.execute(
             "select coalesce(c.metadata->>'file', c.source_uri), count(*), min(coalesce(c.first_indexed_at, c.indexed_at)), "
             "max(c.metadata->>'type'), max(c.metadata->>'valid_from'), max(c.metadata->>'valid_until'), "
-            "(array_agg(c.metadata->'heading_hierarchy' order by c.chunk_ordinal))[1] "
-            "from recall_chunks_v1 c where c.tenant_id = %s and c.generation_id = %s group by 1",
+            "(array_agg(c.metadata->'heading_hierarchy' order by c.chunk_ordinal))[1], c.source_uri "
+            "from recall_chunks_v1 c where c.tenant_id = %s and c.generation_id = %s group by 1, 8",
             (tenant, generation),
         ).fetchall()
         winner = _winners(c, tenant, generation)
@@ -244,7 +244,8 @@ def assemble_graph(
 ) -> dict[str, Any]:
     """The graph from the queries' rows. Pure, so its rules are testable without a database.
 
-    `files`: `(file, chunks, first indexed, type, valid_from, valid_until, heading hierarchy)`;
+    `files`: `(file, chunks, first indexed, type, valid_from, valid_until, heading hierarchy)`
+    with an optional eighth `source_uri` column for resolving copies;
     `winner`: superseded file -> the file replacing it; `relations`: `(relation, subject file,
     object file)`; `mentions`: `(entity id, file)`; `imports`: `(importer, imported)`.
     """
@@ -252,10 +253,11 @@ def assemble_graph(
     graph = winner if isinstance(winner, SupersessionGraph) else SupersessionGraph.from_parts(winner)
     winner = graph.edges
     nodes: dict[str, dict[str, Any]] = {}
-    for file, chunks, first, kind, valid_from, valid_until, hierarchy in files:
-        nodes[file] = {
-            "id": file, "title": _title(file, hierarchy), "description": f"{chunks} chunk(s)", "type": kind or "",
-            "state": _state(file, graph, valid_from, valid_until, now), "born": _day(first) or now,
+    for file, chunks, first, kind, valid_from, valid_until, hierarchy, *sources in files:
+        key = graph.key(file, str(sources[0]) if sources else None)
+        nodes[key] = {
+            "id": key, "title": _title(file, hierarchy), "description": f"{chunks} chunk(s)", "type": kind or "",
+            "state": _state(key, graph, valid_from, valid_until, now), "born": _day(first) or now,
             "valid_from": valid_from, "valid_until": valid_until,
             "folder": file.split("/", 1)[0] if "/" in file else "", "issues": [], "chunks": chunks,
         }
@@ -330,37 +332,48 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
     """One file of `tenant` (matched by its root-relative `file` or its `source_uri`), or None.
 
     Its identity, state and validity, what replaces it and what it replaces, its chunks, the
-    entities they mention and the relations its file entity takes part in.
+    entities they mention and the relations its file entity takes part in. A root-relative name
+    shared by several sources is ambiguous; its source URI selects one copy explicitly.
     """
     now = (today or datetime.now(UTC).date()).isoformat()
     with _tenant(db, tenant) as c:
         generation = _generation(c, tenant)
         if generation is None:
             return None
+        sources = c.execute(
+            "select c.source_uri from recall_chunks_v1 c where c.tenant_id = %s and c.generation_id = %s "
+            "and (coalesce(c.metadata->>'file', c.source_uri) = %s or c.source_uri = %s) "
+            "group by c.source_uri order by (c.source_uri = %s) desc, c.source_uri limit 2",
+            (tenant, generation, file, file, file),
+        ).fetchall()
+        if not sources or (len(sources) > 1 and str(sources[0][0]) != file):
+            return None
+        source = str(sources[0][0])
         chunks = c.execute(
             "select c.chunk_id, c.chunk_ordinal, c.source_uri, c.text, c.metadata, c.indexed_at, "
             "coalesce(c.first_indexed_at, c.indexed_at), coalesce(c.metadata->>'file', c.source_uri) from recall_chunks_v1 c "
             "where c.tenant_id = %s and c.generation_id = %s "
-            "and (coalesce(c.metadata->>'file', c.source_uri) = %s or c.source_uri = %s) "
+            "and c.source_uri = %s "
             "order by c.chunk_ordinal limit %s",
-            (tenant, generation, file, file, MAX_CHUNKS + 1),
+            (tenant, generation, source, MAX_CHUNKS + 1),
         ).fetchall()
         if not chunks:
             return None
         canonical = str(chunks[0][7])
         total = c.execute(
             "select count(*) from recall_chunks_v1 c where c.tenant_id = %s and c.generation_id = %s "
-            "and coalesce(c.metadata->>'file', c.source_uri) = %s",
-            (tenant, generation, canonical),
+            "and c.source_uri = %s",
+            (tenant, generation, source),
         ).fetchone()[0]
         graph = _winners(c, tenant, generation)
+        key = graph.key(canonical, source)
         entities = c.execute(
             "select e.canonical_name, e.entity_kind, count(*) from recall_graph_mentions_v1 m "
             "join recall_graph_entities_v1 e on e.tenant_id = m.tenant_id and e.generation_id = m.generation_id and e.entity_id = m.entity_id "
             "join recall_chunks_v1 c on c.tenant_id = m.tenant_id and c.generation_id = m.generation_id and c.chunk_id = m.chunk_id "
-            "where m.tenant_id = %s and m.generation_id = %s and coalesce(c.metadata->>'file', c.source_uri) = %s "
+            "where m.tenant_id = %s and m.generation_id = %s and c.source_uri = %s "
             "and e.entity_kind <> 'file' group by 1, 2 order by 3 desc, 1 limit %s",
-            (tenant, generation, canonical, MAX_ENTITIES),
+            (tenant, generation, source, MAX_ENTITIES),
         ).fetchall()
         relations = c.execute(
             "select r.relation, r.status, s.canonical_name, s.entity_kind, o.canonical_name, o.entity_kind "
@@ -390,22 +403,22 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
     return {
         "tenant": tenant,
         "generation": generation,
-        "file": canonical,
-        "source_uri": str(chunks[0][2]),
+        "file": key,
+        "source_uri": source,
         "project": first_meta.get("project"),
         "indexed_commit": first_meta.get("indexed_commit"),
         "type": first_meta.get("type"),
         "valid_from": valid_from,
         "valid_until": valid_until,
-        "state": _state(canonical, graph, valid_from, valid_until, now),
-        "superseded_by": graph.successor(canonical, now=_instant(now)),
+        "state": _state(key, graph, valid_from, valid_until, now),
+        "superseded_by": graph.successor(key, now=_instant(now)),
         "supersedes": sorted(
-            old for old, claims in graph.candidates.items() if any(f == canonical for f, _when in claims)
+            old for old, claims in graph.candidates.items() if any(f == key for f, _when in claims)
         ),
         "declared_supersedes": declared_list,
         # The declared references that name several files, as the resolver found them. This
         # compared resolved file paths with the references as written, so it was always empty.
-        "unresolved_claims": sorted(graph.ambiguous_claims.get(canonical, ())),
+        "unresolved_claims": sorted(graph.ambiguous_claims.get(key, ())),
         "first_indexed": _day(min(row[6] for row in chunks)),
         "last_indexed": _day(max(row[5] for row in chunks)),
         "chunk_count": total,

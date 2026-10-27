@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -301,3 +302,109 @@ def test_a_real_generation_reads_back_as_graph_and_view_two(built: str) -> None:
     assert code is not None and util in code["imports"]
     assert main in (corpus.source_detail(db, built, util) or {}).get("imported_by", [])
     assert corpus.source_detail(db, built, "no/such/file.md") is None
+
+
+@pytest.fixture
+def built_copies() -> Any:
+    if not _db_available():
+        pytest.skip(db_unreachable_reason())
+    from recall.generations import GenerationManager
+    from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, ManifestObjectV1, PipelineIdentity
+    from recall.manifest import S3Allowlist, S3ObjectReader
+
+    tenant = "dash-copies-" + uuid.uuid4().hex[:10]
+    sources = {
+        ("approved-one", "README.md"): (
+            b"---\ntype: reference\n---\n# First copy\n\nFirst paragraph.\n\nMore first copy.\n"
+        ),
+        ("approved-two", "README.md"): (
+            b"---\ntype: feedback\nvalid_until: 2099-12-31\n---\n# Second copy\n\nOnly second copy.\n"
+        ),
+        ("approved-one", "CHANGES.md"): b"---\nsupersedes: README\n---\n# Changes\n\nUpdated first copy.\n",
+    }
+    objects, entries = {}, []
+    for (bucket, path), data in sources.items():
+        key = f"corpora/{tenant}/{path}"
+        objects[(bucket, key, "v1")] = data
+        entries.append(ManifestObjectV1(
+            f"s3://{bucket}/{key}", "v1", "text/markdown", len(data), hashlib.sha256(data).hexdigest(),
+        ))
+    manifest = IndexManifestV1(tenant, "copies-v1", tuple(entries))
+    reader = S3ObjectReader(_S3(objects), S3Allowlist.parse("approved-one/corpora/,approved-two/corpora/"))
+    pipeline = PipelineIdentity(
+        EmbedderIdentity("fixture", "fixture-model", 64, revision="r1"),
+        ChunkerIdentity("paragraph-pack", 1, {"max_chars": 800, "overlap": 80}),
+        fts_configuration={"language": "english", "schema_version": 1},
+    )
+    manager = GenerationManager(TEST_DSN, tenant, actor="pytest", environment="test")
+    try:
+        generation = manager.create(manifest, pipeline)
+        manager.build(
+            generation.generation_id, reader, _Embedder(),
+            lambda text: [piece for piece in text.split("\n\n") if piece.strip()],
+        )
+        manager.validate(generation.generation_id)
+        manager.promote(generation.generation_id, unsafe_development=True)
+        yield tenant, f"s3://approved-one/corpora/{tenant}/README.md", f"s3://approved-two/corpora/{tenant}/README.md"
+    finally:
+        _cleanup(tenant)
+
+
+@requires_db
+def test_generation_graph_keeps_same_path_copies_separate(built_copies: Any) -> None:
+    """Node tests/test_dashboard_corpus.py::test_generation_graph_keeps_same_path_copies_separate.
+
+    The corpus graph must retain each root's copy and supersession edge.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    corpus_graph merged README copies and failed the node-ID assertion.
+    """
+    tenant, first, second = built_copies
+    graph = corpus.corpus_graph(DashboardDB(TEST_DSN), tenant, today=date.fromisoformat(TODAY))
+    nodes = {node["id"]: node for node in graph["nodes"]}
+
+    assert set(nodes) == {first, second, "CHANGES.md"}, "same-path copies lost their source identities"
+    assert nodes[first]["state"] == "superseded" and nodes[second]["state"] == "current"
+    assert nodes[first]["chunks"] == 3 and nodes[second]["chunks"] == 2
+    assert nodes[first]["folder"] == nodes[second]["folder"] == ""
+    assert _edges(graph, "supersedes") == {("CHANGES.md", first)}
+
+
+@requires_db
+@pytest.mark.parametrize("copy", ["first", "second"])
+def test_source_uri_detail_reads_only_selected_copy(built_copies: Any, copy: str) -> None:
+    """Node tests/test_dashboard_corpus.py::test_source_uri_detail_reads_only_selected_copy.
+
+    A source URI detail must contain only that copy's chunks and metadata.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    source_detail combined both copies and failed the chunk-count assertion.
+    """
+    tenant, first, second = built_copies
+    source = first if copy == "first" else second
+    expected = 3 if copy == "first" else 2
+    detail = corpus.source_detail(DashboardDB(TEST_DSN), tenant, source, today=date.fromisoformat(TODAY))
+
+    assert detail is not None
+    assert detail["chunk_count"] == len(detail["chunks"]) == expected, "detail counted another root's copy"
+    assert detail["file"] == detail["source_uri"] == source
+    assert detail["type"] == ("reference" if copy == "first" else "feedback")
+    assert detail["valid_until"] == (None if copy == "first" else "2099-12-31")
+    text = "\n".join(chunk["text"] for chunk in detail["chunks"])
+    assert ("First copy" if copy == "first" else "Second copy") in text
+    assert ("Second copy" if copy == "first" else "First copy") not in text
+    assert detail["state"] == ("superseded" if copy == "first" else "current")
+    assert detail["superseded_by"] == ("CHANGES.md" if copy == "first" else None)
+
+
+@requires_db
+def test_ambiguous_path_detail_refuses_to_choose_copy(built_copies: Any) -> None:
+    """Node tests/test_dashboard_corpus.py::test_ambiguous_path_detail_refuses_to_choose_copy.
+
+    An ambiguous bare path must not choose or merge copies.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    source_detail returned a mixed result and failed the None assertion.
+    """
+    tenant, _first, _second = built_copies
+
+    assert corpus.source_detail(DashboardDB(TEST_DSN), tenant, "README.md") is None, (
+        "an ambiguous bare path chose or merged two source copies"
+    )

@@ -152,11 +152,12 @@ def _query_terms(text: str) -> list[str]:
 def _supersession_rows(
     entries: Iterable[tuple[Mapping[str, Any], str, str]],
 ) -> list[tuple[str | None, str | None, datetime | None, str, str | None, str | None]]:
-    """The PostgreSQL scan's rows (`recall.supersession.supersession_rows_sql`) from chunk
-    ``(metadata, first_indexed_at, source)`` entries: one per (file, claim, source), with its
-    earliest first write and the first `valid_from` and last `valid_until` among its chunks."""
-    first: dict[tuple[str, str | None, str], str] = {}
-    bounds: dict[tuple[str, str | None, str], tuple[str | None, str | None]] = {}
+    """Preserve distinct chunk validity bounds, matching the PostgreSQL supersession scan.
+
+    Group only identical claims and bounds; retain the earliest write for each complete row
+    identity so malformed or disagreeing document windows still reach validation.
+    """
+    first: dict[tuple[str, str | None, str, str | None, str | None], str] = {}
     for metadata, first_indexed_at, source in entries:
         file = metadata.get("file")
         if not isinstance(file, str):
@@ -165,19 +166,17 @@ def _supersession_rows(
         valid_from = _bound_text(metadata.get("valid_from"))
         valid_until = _bound_text(metadata.get("valid_until"))
         for target in targets:
-            key = (file, target, source)
+            key = (file, target, source, valid_from, valid_until)
             if key not in first or first_indexed_at < first[key]:
                 first[key] = first_indexed_at
-            low, high = bounds.get(key, (None, None))
-            bounds[key] = (
-                valid_from if low is None or (valid_from is not None and valid_from < low) else low,
-                valid_until if high is None or (valid_until is not None and valid_until > high) else high,
-            )
     return [
-        (file, target, _parse_time(stamp), source, *bounds[(file, target, source)])
-        for (file, target, source), stamp in sorted(
+        (file, target, _parse_time(stamp), source, valid_from, valid_until)
+        for (file, target, source, valid_from, valid_until), stamp in sorted(
             first.items(),
-            key=lambda item: (item[0][0], item[0][1] is None, item[0][1] or "", item[0][2]),
+            key=lambda item: (
+                item[0][0], item[0][1] is None, item[0][1] or "", item[0][2],
+                item[0][3] is None, item[0][3] or "", item[0][4] is None, item[0][4] or "",
+            ),
         )
     ]
 
@@ -1409,8 +1408,9 @@ class LiteStore:
     def supersession_graph(self) -> SupersessionGraph:
         """The resolved graph behind `supersession_all()`, with each claimant's validity window.
 
-        Rows are grouped per (file, claim, source) as the PostgreSQL scan groups them, carrying
-        the first `valid_from` and the last `valid_until` among the group's chunks as written.
+        Rows are grouped per (file, claim, source, raw window), as the PostgreSQL scan groups
+        them. Every distinct pair of bounds reaches the resolver, which alone decides whether
+        they are readable and agree after parsing.
         """
         matrix = self._load()
         cached = self._supersession_cache

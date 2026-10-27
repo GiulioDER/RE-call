@@ -69,14 +69,16 @@ SUPERSEDES_TARGET_ROWS_SQL = """
 
 
 def supersession_rows_sql(table: str, *, source_column: str, scope: str) -> str:
-    """The supersession scan every PostgreSQL reader runs, one row per (file, claim, source).
+    """The supersession scan, one row per distinct (file, claim, source, raw window).
 
     `scope` is the WHERE condition on the chunk alias ``c`` (tenant, and generation where the
     table has them). Rows are ``(file, supersedes, first_indexed, source, valid_from,
     valid_until)``, the shape `resolve_supersession_graph` reads: the source, because files are
     told apart by ROOT as well as path, and the validity bounds as written, because a successor
-    hides its predecessor only inside its own window. `min`/`max` over a file's chunks, which
-    share one frontmatter. `ORDER BY` is load-bearing (`PgVectorStore.supersession_all`).
+    hides its predecessor only inside its own window. Distinct raw bounds must reach the
+    resolver: reducing them with `min`/`max` can hide an unreadable or disagreeing chunk. The
+    resolver compares parsed windows, so equivalent date spellings still agree. `ORDER BY` is
+    load-bearing (`PgVectorStore.supersession_all`).
 
     Every interpolated part is an identifier or a condition fixed by the calling store, never a
     request value; the tenant and generation stay bound parameters.
@@ -88,13 +90,13 @@ def supersession_rows_sql(table: str, *, source_column: str, scope: str) -> str:
                -- first write recorded, and its last write is the only evidence there is.
                min(COALESCE(c.first_indexed_at, c.indexed_at)) AS first_indexed,
                c.{source_column} AS source,
-               min(c.metadata->>'valid_from') AS valid_from,
-               max(c.metadata->>'valid_until') AS valid_until
+               c.metadata->>'valid_from' AS valid_from,
+               c.metadata->>'valid_until' AS valid_until
         FROM {table} AS c
         CROSS JOIN LATERAL ({SUPERSEDES_TARGET_ROWS_SQL}) AS t
         WHERE {scope} AND c.metadata ? 'file'
-        GROUP BY 1, 2, 4
-        ORDER BY 1, 2, 4
+        GROUP BY 1, 2, 4, 5, 6
+        ORDER BY 1, 2, 4, 5, 6
     """  # noqa: S608
 
 

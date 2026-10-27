@@ -168,7 +168,13 @@ def _project_evidence(full: dict[str, Any]) -> dict[str, Any]:
 
 
 def test_the_published_tools_are_the_contract(envs: tuple[dict[str, str], dict[str, str]]) -> None:
-    """A1."""
+    """A1: pin the complete assistant tool contract.
+
+    DOC-001 red proof, 2026-10-26: restore the original PR970 recall_search and
+    recall_evidence descriptions independently while retaining the corrected contract.
+    Each mutation failed published[name] == expected for its intended tool. The six-tool
+    set, schemas and unrelated descriptions remain subject to the unchanged assertions.
+    """
     published = _published({**envs[0], "RECALL_MCP_TOOLS": "assistant"})
     assert sorted(published) == sorted(CONTRACT["tools"]), f"the assistant preset offers {sorted(published)}"
     for name, expected in CONTRACT["tools"].items():

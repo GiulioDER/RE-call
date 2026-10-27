@@ -2,8 +2,8 @@
 
 ``tests/fixtures/audit_memory/anchor_vectors.json`` was generated from hand-written spans, with
 hashes taken by an independent regex normaliser, so these tests check `recall.anchors` against a
-second statement of the rules rather than against itself. cca-audit carries a byte-identical copy
-of the vectors and must pass the same cases.
+second statement of the rules rather than against itself. cca-audit must carry a byte-identical
+copy of the vectors and pass the same cases; new cases require a coordinated consumer update.
 
 Red proof (2026-10-21, `recall/anchors.py`, run on the deployment host inside the test bounds):
 - `normalize` with ``.replace("\\r", "\\n")`` removed (a lone CR not unified):
@@ -78,3 +78,18 @@ def test_unparseable_source_raises_rather_than_reporting_no_symbols() -> None:
 def test_unknown_symbol_raises() -> None:
     with pytest.raises(KeyError):
         symbol_sha("def f():\n    return 1\n", "g")
+
+
+def test_later_branches_do_not_rename_prior_handlers() -> None:
+    """BUG-001: appending later branches cannot rename an unchanged except definition.
+
+    Red proof (2026-10-26): baseline 20baf3a8b, _statement_bodies visits handlers last.
+    This test fails its handler-identity assertion; the shared try_except_else_finally
+    vector also fails its explicit ordered-span assertion in test_vectors_reproduce.
+    """
+    source = BY_NAME["try_except_else_finally"]["source"]
+    earlier = "\n".join(source.splitlines()[:6]) + "\n"
+
+    assert enclosing_symbol(earlier, 5) == "f#2"
+    assert enclosing_symbol(source, 5) == "f#2"
+    assert symbol_sha(earlier, "f#2") == symbol_sha(source, "f#2")

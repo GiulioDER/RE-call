@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Literal, cast
+from urllib.parse import unquote, urlsplit
 
 from psycopg.types.json import Jsonb
 
@@ -60,6 +61,17 @@ def _utc(value: datetime | None) -> datetime | None:
 def source_file(chunk: Chunk) -> str:
     value = chunk.metadata.get("file")
     return value if isinstance(value, str) and value else chunk.source
+
+
+def _source_root(source: str, file: str) -> str | None:
+    # Generation files retain URI escapes; indexed files may already be decoded. Decode the
+    # file only when it matches the URI's raw path, never a plain path's literal percent name.
+    if "://" in source:
+        path = urlsplit(source).path
+        posix_file = file.replace("\\", "/")
+        if path == posix_file or path.endswith("/" + posix_file):
+            file = unquote(file)
+    return root_of(source_location(source), file)
 
 
 def dependency_key(chunk: Chunk, collided: frozenset[str]) -> str:
@@ -280,7 +292,7 @@ def build_dependency_projection(
         file = source_file(members[0])
         nodes_by_file[file].append(node)
         sources = {member.source for member in members}
-        node_roots[node] = frozenset(root_of(source_location(source), file) for source in sources)
+        node_roots[node] = frozenset(_source_root(source, file) for source in sources)
         node_staged[node] = all(in_upload_staging(source, tenant_id) for source in sources)
 
     def resolve(dependent: str, reference: str) -> tuple[str | None, str]:
