@@ -13,7 +13,9 @@ Invariants and the failure each one catches:
 - F6 a load past its deadline raises `TimeoutError` and keeps what it parsed, so a cold cache
   warms over several calls rather than never.
 - F7 (CCA DAT-001) a change to a module that reads memos invalidates the persisted cache.
-- F8 (CCA DAT-002) a record holding a lone surrogate is cached and reads back equal.
+- F8 (CCA DAT-002; amended by CCA run 20261026T220018Z, DAT-001) a record holding a lone
+  surrogate is refused, as the indexer refuses it because PostgreSQL jsonb cannot store it, and
+  the refusal is cached like any other parse: a second load reads nothing.
 - F9 (CCA DAT-003) the walk reads what the indexer reads: no hidden or excluded directory, no
   hidden file, no symlink out of the directory; a nested memo is read.
 - F10 (CCA PERF-001) a load under a deadline only appends to the cache, never rewrites it whole.
@@ -52,7 +54,12 @@ Recorded 2026-10-22 for the CCA audit fixes (run 20261022T185308Z), same host an
 - F7 `...::test_cache_tag_follows_the_reader_code`: `_cache_tag` mutated to ignore the reader
   files (`for file in []:`): "a change to the reading code kept serving the old parses".
 - F8 `...::test_a_lone_surrogate_is_cached`: `_dumps` mutated to `ensure_ascii=False`: the write
-  fails silently, "a record holding a lone surrogate was never cached".
+  fails silently, "a record holding a lone surrogate was never cached". Renamed by CCA run
+  20261026T220018Z to `...::test_a_lone_surrogate_record_is_refused_and_the_refusal_cached`.
+  Its red proof, recorded 2026-10-26 on the deployment host: on the pre-fix `record_problem`,
+  which refused NUL only, "a record holding a lone surrogate was admitted"; on the fix with
+  `_UNSTORABLE` narrowed to NUL, the same; on the fix with `_dumps` set to `ensure_ascii=False`,
+  "the cache writer left a lone surrogate unescaped".
 - F9 `...::test_walk_reads_what_the_indexer_reads`: the hidden-name check removed from
   `_memo_files`: `.hidden.md` and `.trash/old.md` are read (`assert names == ...`).
 - `...::test_excluded_dirs_match_the_indexer` (control): `venv` removed from `_EXCLUDED_DIRS`.
@@ -62,6 +69,7 @@ Recorded 2026-10-22 for the CCA audit fixes (run 20261022T185308Z), same host an
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -258,8 +266,14 @@ def test_cache_tag_follows_the_reader_code(tmp_path: Path, monkeypatch: pytest.M
     assert len(reads) == len(EXPECTED), "a change to the reading code kept serving the old parses"
 
 
-def test_a_lone_surrogate_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """F8 (DAT-002): a record holding a lone surrogate is written to the cache and read back equal."""
+def test_a_lone_surrogate_record_is_refused_and_the_refusal_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F8. Before run 20261026T220018Z this asserted the record was ADMITTED and cached; DAT-001 of
+    that run found PostgreSQL jsonb refuses a lone surrogate, so the indexer now refuses the record
+    and this reader, which holds what a store holds (F12), refuses it too. What is cached is now the
+    refusal, which is persisted so a second load parses nothing; the ASCII cache writer is checked
+    directly, since no admitted record carries a lone surrogate through it any more."""
     memos = copy_memos(tmp_path / "memos")
     target = memos / "RE-call__0123456789ab__BUG-001.md"
     text = target.read_text(encoding="utf-8")
@@ -268,13 +282,21 @@ def test_a_lone_surrogate_is_cached(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     cache = tmp_path / "cache" / "memos.json"
     first = {m.record["id"]: m for m in load_memo_records(memos, cache_file=cache)}
     bug_id = EXPECTED[target.name]["id"]
-    assert first[bug_id].record["summary"].startswith("\udc00")
+    assert bug_id not in first, "a record holding a lone surrogate was admitted"
+    assert len(first) == len(EXPECTED) - 1, "the other memos must still be read"
 
     records_files._CACHE.clear()
     reads = _counting_reads(monkeypatch)
     second = {m.record["id"]: m for m in load_memo_records(memos, cache_file=cache)}
-    assert reads == [], "a record holding a lone surrogate was never cached"
-    assert second[bug_id] == first[bug_id]
+    assert reads == [], "the refused memo's parse was never cached"
+    assert second == first
+    # The cache writer still escapes a lone surrogate, which a cached value can still hold (a POSIX
+    # file name decoded with surrogateescape, in `source`): written with `ensure_ascii=False`, it
+    # cannot be encoded and the cache is never written.
+    lone = "a" + chr(0xDC00) + "b"
+    written = records_files._dumps({"value": lone})
+    assert written.isascii(), "the cache writer left a lone surrogate unescaped"
+    assert json.loads(written) == {"value": lone}
 
 
 def test_walk_reads_what_the_indexer_reads(tmp_path: Path) -> None:

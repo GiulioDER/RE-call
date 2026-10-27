@@ -1168,16 +1168,19 @@ class GenerationStore(PgVectorStore):
         )
         return rows + self._legacy_rows_for_identifiers(sources)
 
-    def record_chunks(self) -> list[Chunk]:
-        """Every chunk of the served generation carrying an audit record or a code anchor, without
-        passage text: the read behind `recall.records.lookup_records`."""
+    def record_chunks(self, code_files: Sequence[str] | None = None) -> list[Chunk]:
+        """Every chunk of the served generation carrying an audit record or a code anchor (with
+        `code_files`, only the code anchors in those files), without passage text: the read behind
+        `recall.records.lookup_records`."""
+        from recall.records import record_rows_condition
+
         generation_id = self._generation_id()
+        condition, params = record_rows_condition("postgres", code_files)
         rows = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT chunk_id, source_uri, metadata FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s "
-                "AND (metadata ? 'recall_record' OR metadata ? 'code_anchor') ORDER BY chunk_id",
-                (self._tenant, generation_id),
+                "SELECT chunk_id, source_uri, metadata FROM recall_chunks_v1 "  # noqa: S608  # a fixed condition, values bound
+                f"WHERE tenant_id = %s AND generation_id = %s AND {condition} ORDER BY chunk_id",
+                (self._tenant, generation_id, *params),
             ).fetchall()
         )
         return [

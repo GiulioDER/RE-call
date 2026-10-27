@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 343
+Modules: 344
 Cross package edges: 363
-Source tree fingerprint: `301b0360cc3b753d477e1fb9a508fb66f160645691c9daf03d98558624f1057c`
+Source tree fingerprint: `5590cb661794c6a55fbe0d49c88f8b0e2a29db278c702f145b63d8a8c81363d9`
 
 ## Highest fan in modules
 
@@ -63,7 +63,7 @@ Source tree fingerprint: `301b0360cc3b753d477e1fb9a508fb66f160645691c9daf03d9855
 |---:|---|
 | 59 | `recall_mcp.service` |
 | 58 | `recall_mcp.server` |
-| 28 | `recall.cli_commands.index_search` |
+| 29 | `recall.cli_commands.index_search` |
 | 23 | `recall_mcp.retrieval` |
 | 22 | `recall.generations` |
 | 22 | `recall.trust` |
@@ -76,13 +76,13 @@ Source tree fingerprint: `301b0360cc3b753d477e1fb9a508fb66f160645691c9daf03d9855
 | 17 | `recall_mcp.indexing` |
 | 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall_mcp.semantic_graph_cache` |
+| 15 | `recall.generation_store` |
 | 15 | `recall.wizard.headless` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.cli_commands.provenance_cmd` |
 | 14 | `recall.dashboard.server` |
 | 14 | `recall.eval.promotion.__main__` |
-| 14 | `recall.generation_store` |
 | 14 | `recall_mcp.lifecycle` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
 | 13 | `recall.eval.labelled` |
@@ -95,12 +95,12 @@ Source tree fingerprint: `301b0360cc3b753d477e1fb9a508fb66f160645691c9daf03d9855
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.doctor` |
 | 12 | `recall.eval.harness` |
+| 12 | `recall.lite.store` |
 | 12 | `recall.stated_facts` |
 | 12 | `recall_agent.memory` |
 | 11 | `recall.cli_commands.generation_cmd` |
 | 11 | `recall.cli_commands.reasoning_cmd` |
 | 11 | `recall.desktop.ui` |
-| 11 | `recall.lite.calibration` |
 
 ## Cross package edges
 
@@ -498,6 +498,7 @@ They are observations, not automatic failures.
 | `recall.claude_code` | 5 | 119 |
 | `recall.cli` | 5 | 99 |
 | `recall.cli_commands` | 0 | 0 |
+| `recall.cli_commands._lite` | 3 | 97 |
 | `recall.cli_commands._shared` | 10 | 107 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
 | `recall.cli_commands.calibration_cmd` | 17 | 196 |
@@ -507,13 +508,13 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 11 | 111 |
 | `recall.cli_commands.graph_cmd` | 1 | 97 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 32 |
-| `recall.cli_commands.index_search` | 28 | 119 |
+| `recall.cli_commands.index_search` | 29 | 120 |
 | `recall.cli_commands.lint_check` | 7 | 111 |
 | `recall.cli_commands.lite_cmd` | 8 | 121 |
 | `recall.cli_commands.manifest_cmd` | 4 | 98 |
 | `recall.cli_commands.provenance_cmd` | 14 | 126 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 156 |
-| `recall.cli_commands.records_cmd` | 8 | 108 |
+| `recall.cli_commands.records_cmd` | 9 | 109 |
 | `recall.cli_commands.schema_cmd` | 2 | 108 |
 | `recall.cli_commands.secret_cmd` | 1 | 3 |
 | `recall.cli_commands.setup_wizard` | 16 | 165 |
@@ -612,7 +613,7 @@ They are observations, not automatic failures.
 | `recall.fix` | 7 | 27 |
 | `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 97 |
-| `recall.generation_store` | 14 | 96 |
+| `recall.generation_store` | 15 | 96 |
 | `recall.generation_types` | 2 | 13 |
 | `recall.generations` | 22 | 96 |
 | `recall.graph_first` | 2 | 28 |
@@ -635,7 +636,7 @@ They are observations, not automatic failures.
 | `recall.lite.receipts` | 3 | 96 |
 | `recall.lite.refresh` | 13 | 96 |
 | `recall.lite.setup` | 10 | 120 |
-| `recall.lite.store` | 11 | 96 |
+| `recall.lite.store` | 12 | 96 |
 | `recall.lite.writer_lock` | 1 | 96 |
 | `recall.manifest` | 3 | 14 |
 | `recall.memory_index` | 6 | 97 |
@@ -686,9 +687,9 @@ They are observations, not automatic failures.
 | `recall.reasoning_proposals._providers` | 3 | 34 |
 | `recall.reasoning_proposals.types` | 2 | 28 |
 | `recall.reasoning_response` | 7 | 109 |
-| `recall.records` | 6 | 32 |
-| `recall.records_files` | 4 | 35 |
-| `recall.related` | 8 | 100 |
+| `recall.records` | 7 | 33 |
+| `recall.records_files` | 4 | 36 |
+| `recall.related` | 9 | 100 |
 | `recall.rerank` | 4 | 15 |
 | `recall.retrieval_plan` | 1 | 1 |
 | `recall.retrieval_slo` | 0 | 0 |

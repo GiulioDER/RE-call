@@ -71,6 +71,37 @@ def _record_edges(chunk: Chunk) -> tuple[str | None, frozenset[str]]:
     return record["id"], frozenset(c for c in causes if isinstance(c, str))
 
 
+def _caused_by_candidates(
+    store: RelatedStore, seed_record: str, seed_causes: frozenset[str]
+) -> list[Chunk] | None:
+    """The chunks a `caused_by` match can accept, text included, or None to scan the corpus.
+
+    Found among the record chunks, read without text (`recall.records`), and only those fetched
+    by id: the full scan read every chunk's text to keep a handful. None when the store can list
+    its record chunks or fetch by id in neither way, so the caller falls back to the scan.
+    """
+    from recall.records import RecordsQueryError, _record_chunks
+
+    try:
+        # Memo records only: a code anchor carries no `caused_by` and is never named by one.
+        light = _record_chunks(store, code_files=())
+    except RecordsQueryError:
+        return None
+    ids: list[str] = []
+    for chunk in light:
+        record_id, causes = _record_edges(chunk)
+        if record_id is not None and (record_id in seed_causes or seed_record in causes):
+            ids.append(chunk.id)
+    by_ids = getattr(store, "chunks_by_ids", None)
+    if callable(by_ids):
+        found = by_ids(ids) if ids else {}
+        return [found[chunk_id] for chunk_id in ids if chunk_id in found]
+    by_id = getattr(store, "chunk_by_id", None)
+    if callable(by_id):
+        return [chunk for chunk_id in ids if (chunk := by_id(chunk_id)) is not None]
+    return None
+
+
 def _lineage(graph: SupersessionGraph, seed: str) -> frozenset[str]:
     """Every document on `seed`'s supersession lineage, both ways, the whole chain.
 
@@ -219,8 +250,14 @@ def trusted_related(
     # `caused_by` is a regression edge between audit records, read both ways: the records the seed
     # was caused by, and the records the seed's fix caused. A seed with no record has neither.
     seed_record, seed_causes = _record_edges(seed)
-    if relation == "caused_by" and seed_record is None:
-        candidates_iter = ()
+    if relation == "caused_by":
+        # Audit records are superseded and retracted like any memo, so the trust gate needs the
+        # graph here too: with an empty one, a retracted record came back as current evidence.
+        graph = store_supersession_graph(store)
+        if seed_record is None:
+            candidates_iter = ()
+        elif candidates_iter is None:
+            candidates_iter = _caused_by_candidates(store, seed_record, seed_causes)
     if candidates_iter is None:
         candidates_iter = store.iter_chunks()
     related: list[ScoredChunk] = []

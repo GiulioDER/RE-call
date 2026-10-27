@@ -28,7 +28,7 @@ from recall.scope import Scope
 from recall.backends import lite_route_refusal, open_legacy_store, write_session
 from recall.lite import LiteStore, LiteWriterBusy, is_lite_dsn, lite_dsn_path
 from recall.lite.writer_lock import queued_notice
-from recall.store import DEFAULT_TABLE, PgVectorStore
+from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
 from recall.types import TrustedResult
@@ -679,7 +679,7 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
     # schema compatibility is checked by embedding commands that actually consume vectors.
     metadata_dimension = 1
     if is_lite_dsn(args.dsn):
-        from recall.lite.inspect import lite_file_meta
+        from recall.cli_commands._lite import lite_read_meta
         from recall.runtime_route import RouteConfigurationError
 
         try:
@@ -688,24 +688,12 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
             raise SystemExit(f"recall scopes: {exc}") from exc
         if (refusal := lite_route_refusal(args.dsn, route)) is not None:
             raise SystemExit(refusal)
-        if args.table != DEFAULT_TABLE:
-            # A lite file has one table: listing the real one for `--table scratch` would describe
-            # memory the user asked to keep out of view.
-            raise SystemExit(
-                f"recall scopes: a lite store ({args.dsn}) has one table, '{DEFAULT_TABLE}'; --table "
-                f"{args.table!r} cannot be honoured. Use another sqlite:/// file instead"
-            )
-
-        path = lite_dsn_path(args.dsn)
-        if not path.exists():
-            # An empty corpus, as an empty PostgreSQL table reads; listing must not create the file.
+        meta = lite_read_meta("recall scopes", args)
+        if meta is None:
+            # Listing must not create the file.
             _print_scopes(args.dimension, [], 0)
             return
-        # The width and tenant the file records, read without writing: opening a store at a guessed
-        # width stamped a file that is not a lite store with one, and broke every later index run.
-        meta = lite_file_meta(path)
-        if meta is None or "dim" not in meta:
-            raise SystemExit(f"{path} is not a lite store (it has no RE-call meta table); nothing was read or written")
+        path = lite_dsn_path(args.dsn)
         if meta.get("tenant") != args.tenant:
             # As on PostgreSQL, a tenant with no rows lists nothing; a lite file holds one tenant.
             held = terminal_safe(meta.get("tenant"))

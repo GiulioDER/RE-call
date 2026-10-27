@@ -20,6 +20,8 @@ Invariants and the failure each one catches:
   would present a retracted record as current).
 - K12 `superseded_by` follows #970's window rule through the store's supersession graph: a
   successor hides a record only inside its own validity window (the trust gate's reading).
+- K13 a lookup reads only the code anchors it can match: an anchor query the asked files', a
+  `kinds` without `code` none, and the lite and PostgreSQL reads select the same rows for each.
 
 Red proof, recorded 2026-10-21 (K12 2026-10-22) on the deployment host inside the test bounds, each failing in its
 own assertion, then restored and green:
@@ -51,6 +53,12 @@ own assertion, then restored and green:
 - K12 `...::test_a_successor_hides_a_record_only_inside_its_own_window`: `superseded_by` read
   from the raw edge (`graph.edges.get(...)`, the pre-#970 reading) instead of
   `graph.successor(..., now=...)`: "a successor hid a record before its window".
+- K13 `...::test_a_lookup_reads_only_the_code_anchors_it_can_match` (CCA run 20261026T220018Z (PR 977 audit), 2026-10-26 on the deployment host inside the test bounds): on the pre-fix
+  `lookup_records`, which never narrowed: `[None, None, None]`; mutation M2 on the fix (the
+  computed `code_files` overwritten with None) gives the same. Mutation M1 on the fix
+  (`record_rows_condition` ignoring `code_files`): "an anchor query read another file's code
+  anchors", here and in `...::test_the_postgres_reads_narrow_the_code_anchors_alike`, whose
+  pre-fix run is no proof (`_record_chunks` took no `code_files`: a TypeError).
 """
 
 from __future__ import annotations
@@ -280,8 +288,8 @@ class _CodeStore:
             for i, a in enumerate(anchors)
         ]
 
-    def record_chunks(self) -> list[Chunk]:
-        return list(self.chunks)
+    def record_chunks(self, code_files: list[str] | None = None) -> list[Chunk]:
+        return [c for c in self.chunks if code_files is None or c.metadata["code_anchor"]["file"] in code_files]
 
     def supersession_all(self) -> tuple[dict[str, str], frozenset[str], dict[str, Any]]:
         return {}, frozenset(), {}
@@ -340,3 +348,65 @@ def test_postgres_and_lite_return_the_same_records(tmp_path: Path, cli_table: st
         dumps[name] = envelope["records"]
     assert len(dumps["lite"]) == len(EXPECTED)
     assert dumps["postgres"] == dumps["lite"]
+
+
+def test_a_lookup_reads_only_the_code_anchors_it_can_match(tmp_path: Path) -> None:
+    """K13: every chunk of a code tenant carries a `code_anchor`, so a lookup read the whole tenant
+    whatever it asked. An anchor query reads the asked files' anchors, a `kinds` without `code`
+    reads none, and every store's read selects the same rows for each."""
+    asked: list[list[str] | None] = []
+
+    class _Spy(_CodeStore):
+        def record_chunks(self, code_files: list[str] | None = None) -> list[Chunk]:
+            asked.append(None if code_files is None else sorted(code_files))
+            return super().record_chunks(code_files)
+
+    lease = {"repo": REPO, **BUG_001["anchors"][0]}
+    spy = _Spy([lease])
+    lookup_records(spy, repo=REPO, anchors=[_anchor(BUG_001), _anchor(BUG_001, symbol="other")])
+    lookup_records(spy, ids=["c0"], kinds=["bug"])
+    lookup_records(spy, all_records=True)
+    assert asked == [[lease["file"]], [], None], asked
+
+    store = LiteStore(tmp_path / "memory.db", dim=2)
+    store.upsert(
+        [
+            Chunk("record", "memo.md", "a memo", {"recall_record": {"id": "x"}}),
+            Chunk("a", "a.py", "def a(): ...", {"code_anchor": {"file": "a.py"}}),
+            Chunk("b", "b.py", "def b(): ...", {"code_anchor": {"file": "b.py"}}),
+            Chunk("plain", "notes.md", "nothing", {}),
+        ],
+        [[1.0, 0.0]] * 4,
+    )
+
+    def read(code_files: list[str] | None) -> list[str]:
+        return sorted(chunk.id for chunk in store.record_chunks(code_files=code_files))
+
+    assert read(None) == ["a", "b", "record"]
+    assert read(["a.py"]) == ["a", "record"], "an anchor query read another file's code anchors"
+    assert read([]) == ["record"], "a lookup that cannot match code read the code anchors"
+
+
+@requires_db
+def test_the_postgres_reads_narrow_the_code_anchors_alike(cli_table: str) -> None:
+    """K13 on the legacy PostgreSQL read, which `recall.records` issues itself."""
+    from recall.records import _record_chunks
+    from recall.store import PgVectorStore
+
+    with PgVectorStore(TEST_DSN, dim=64, table=cli_table, tenant="k13") as store:
+        store.upsert(
+            [
+                Chunk("record", "memo.md", "a memo", {"recall_record": {"id": "x"}}),
+                Chunk("a", "a.py", "def a(): ...", {"code_anchor": {"file": "a.py"}}),
+                Chunk("b", "b.py", "def b(): ...", {"code_anchor": {"file": "b.py"}}),
+                Chunk("plain", "notes.md", "nothing", {}),
+            ],
+            [[1.0] + [0.0] * 63] * 4,
+        )
+
+        def read(code_files: list[str] | None) -> list[str]:
+            return sorted(chunk.id for chunk in _record_chunks(store, code_files=code_files))
+
+        assert read(None) == ["a", "b", "record"]
+        assert read(["a.py"]) == ["a", "record"], "an anchor query read another file's code anchors"
+        assert read([]) == ["record"], "a lookup that cannot match code read the code anchors"
