@@ -1,5 +1,8 @@
 # AML Multimodal Full 2: version and method disclosure
 
+> The registered disclosure is preserved below. The [audit clarifications](#audit-clarifications-26-october-2026)
+> qualify its date and Search timing claims against the fixed source version.
+
 The version registered for the second Multimodal Full run of the Agent Memory Leaderboard, Cycle 2,
 Open-source Methods, and the changes since the first run. The same text is entered on the
 platform when the version is registered.
@@ -79,3 +82,23 @@ references and licences are listed in the method paper submitted with the materi
 
 The commit carries the PolyForm Noncommercial License 1.0.0 in its tree;
 [LICENSE_GRANT_AGPL.md](../LICENSE_GRANT_AGPL.md) licenses it under AGPL-3.0-only by its full hash.
+
+## Audit clarifications, 26 October 2026
+
+These clarifications describe the source at the fixed commit above. They do not remeasure the
+historical run or establish its inputs, live configuration or observed latency.
+
+- **Change 2, available dates.** Returned items carry their source date when it is known; an image
+  item's `created_at` comes from its message timestamp. A message may omit its timestamp, and an
+  item without a known date remains undated. The universal wording in change 2 exceeds the supported
+  input contract. See the pinned [message model](https://github.com/GiulioDER/RE-call/blob/625b71381c2f5c7de6d34c8dc5b9f45e08370b58/recall_aml/models.py),
+  [image rendering](https://github.com/GiulioDER/RE-call/blob/625b71381c2f5c7de6d34c8dc5b9f45e08370b58/recall_aml/multimodal.py)
+  and [date formatting](https://github.com/GiulioDER/RE-call/blob/625b71381c2f5c7de6d34c8dc5b9f45e08370b58/recall_aml/window_format.py).
+- **Change 8, provider waits.** Search opens a shared 90 second budget after admission. Provider
+  waits draw on the remaining budget with a 10 second reserve for other work. This is not an
+  enforced end-to-end request deadline: admission waiting, database access, rendering and response
+  writing are not subject to an overall timeout. The stated fallbacks describe provider-stage
+  timeouts and do not guarantee completion within the connection limit. See the pinned
+  [budget implementation](https://github.com/GiulioDER/RE-call/blob/625b71381c2f5c7de6d34c8dc5b9f45e08370b58/recall_aml/search_deadline.py),
+  [Search service](https://github.com/GiulioDER/RE-call/blob/625b71381c2f5c7de6d34c8dc5b9f45e08370b58/recall_aml/service.py)
+  and [admission handler](https://github.com/GiulioDER/RE-call/blob/625b71381c2f5c7de6d34c8dc5b9f45e08370b58/recall_aml/app.py).

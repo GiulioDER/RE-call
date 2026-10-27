@@ -24,7 +24,7 @@ import json
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from recall.observability import get_logger
-from recall.supersession import SupersessionGraph, store_supersession_graph
+from recall.supersession import SupersessionGraph, store_supersession_graph, window_contains
 
 if TYPE_CHECKING:
     from recall.provenance_controller import ServedSources
@@ -299,9 +299,9 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
         sorting after an admitted claimant would displace it and keep the old value current. A
         claimant retires a memo only while the claimant itself is valid at `now` (the window rule,
         as search applies it); with no instant, every claim applies. A memo is also retired
-        through its chain, as search hides it (`SupersessionGraph.successor_path`), when every
-        member of that chain is admitted: in a, b (expired) superseding a, c superseding b,
-        search hides a by c and retirement asked only b (2026-10-21 audit, NUM-001). A name two
+        through any branch whose every member is admitted: in a, b (expired) superseding a, c
+        superseding b, c retires a even when an excluded sibling wins search's single chain.
+        Expired intermediates are traversed, excluded intermediates are not. A name two
         roots hold is keyed in the graph by each source (`SupersessionGraph.collided`), and is
         retired when any of them is: looked up by name, it never was (audit SEC-005).
         """
@@ -315,34 +315,52 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
             graph = supersession()
             collided = frozenset(name for name in names if name in graph.collided)
             copies = resolved_names(collided) if collided else {}
-            # name -> groups of claimants; a group retires the name when all of it is admitted
-            claims: dict[str, list[tuple[str, ...]]] = {}
-            for name in names:
-                for key in copies.get(name, ()) if name in collided else (name,):
-                    if key not in graph.edges:
-                        continue
-                    groups = claims.setdefault(name, [])
-                    groups.extend((claimant,) for claimant in graph.live_claimants(key, now=now))
-                    chain = graph.successor_path(key, now=now)
-                    if chain:
-                        groups.append(chain)
+            keys = {
+                name: tuple(copies.get(name, ())) if name in collided else (name,)
+                for name in names
+            }
+            # Resolve reachable claimants once. This structural walk does not grant authority;
+            # the retirement walk below stops at every excluded claimant.
+            claims: dict[str, tuple[str, ...]] = {}
+            pending = [key for group in keys.values() for key in group]
+            while pending:
+                key = pending.pop()
+                if key in claims:
+                    continue
+                claims[key] = graph.live_claimants(key)
+                pending.extend(claimant for claimant in claims[key] if claimant not in claims)
             claimants = resolved_names(
-                frozenset(c for groups in claims.values() for group in groups for c in group)
+                frozenset(claimant for group in claims.values() for claimant in group)
             )
-            # The supersession graph identifies a claimant only by its relative name.
-            # Ambiguous authority cannot retire another memo's facts.
+            # Keep the graph's canonical keys, including source-qualified copies. Admission
+            # must hold for every source a key resolves to, so ambiguous authority retires nothing.
             admitted = frozenset(
                 name for name, sources in claimants.items()
                 if sources and all(admits.admits(name, source) for source in sources)
             )
+
+            def retires(key: str) -> bool:
+                # Each node is visited once per starting copy, without enumerating paths. The
+                # starting copy is already seen, so a cycle cannot make it retire itself.
+                seen = {key}
+                pending = [key]
+                while pending:
+                    for claimant in claims.get(pending.pop(), ()):
+                        if claimant in seen:
+                            continue
+                        seen.add(claimant)
+                        if claimant not in admitted:
+                            continue
+                        if now is None or window_contains(graph.windows.get(claimant), now):
+                            return True
+                        pending.append(claimant)
+                return False
+
+            return frozenset(name for name, group in keys.items() if any(retires(key) for key in group))
         except Exception:  # BROAD-CATCH: fail-open  # no memo's facts are retired
             _log.exception("supersession lookup failed; retiring no memo's facts")
             failed("supersession")
             return frozenset()
-        return frozenset(
-            name for name, groups in claims.items()
-            if any(all(c in admitted for c in group) for group in groups)
-        )
 
     return ServedState(
         served, content_hashes=content_hashes, superseded_at=superseded, stated_admitted=stated_admitted

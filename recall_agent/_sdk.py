@@ -37,7 +37,11 @@ _RELATED_PROPERTIES: dict[str, Any] = {
     },
     "related_max_items": {
         "type": "integer",
-        "description": "Maximum related candidates, bounded by the serving contract.",
+        "description": (
+            "Maximum related items returned, bounded by the serving contract. "
+            "Supersession evaluates the complete matching lineage before limiting returned items; "
+            "source and ordinal relations also limit candidates."
+        ),
     },
 }
 

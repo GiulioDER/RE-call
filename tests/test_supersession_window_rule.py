@@ -274,6 +274,64 @@ def test_w12_the_postgres_scan_reads_each_successor_window(make_store: Any) -> N
     assert _verdicts(store, _at("2026-01-31"))["c.md"] == ("superseded", "d.md")
 
 
+MIXED_WINDOW_CASES = [
+    pytest.param("valid_from", "zzz", True, id="malformed-from"),
+    pytest.param("valid_until", "0000-bad", True, id="malformed-until"),
+    pytest.param("valid_from", None, True, id="missing-from"),
+    pytest.param("valid_until", None, True, id="missing-until"),
+    pytest.param("valid_from", "2028-01-01", True, id="disagreeing-from"),
+    pytest.param("valid_until", "2025-12-31", True, id="disagreeing-until"),
+    pytest.param("valid_from", "2027-1-1", False, id="equivalent-from"),
+    pytest.param("valid_until", "2025-1-1", False, id="equivalent-until"),
+]
+
+
+def _mixed_window_chunks(bound: str, other: str | None) -> list[Chunk]:
+    chunks = [_chunk("a.md")]
+    first = "2027-01-01" if bound == "valid_from" else "2025-01-01"
+    for ordinal, value in enumerate((first, other)):
+        metadata: dict[str, Any] = {"file": "b.md", "ord": ordinal, "supersedes": "a"}
+        if value is not None:
+            metadata[bound] = value
+        chunks.append(Chunk(f"mixed-b-{ordinal}", "/corpus/b.md", QUERY, metadata))
+    return chunks
+
+
+@pytest.mark.parametrize("bound,other,hidden", MIXED_WINDOW_CASES)
+def test_mixed_successor_windows_lite(tmp_path: Path, bound: str, other: str | None, hidden: bool) -> None:
+    """Node tests/test_supersession_window_rule.py::test_mixed_successor_windows_lite.
+
+    Successor chunks must agree after their validity windows are parsed.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    LiteStore's min/max reduction failed the predecessor verdict assertion.
+    Equivalent-date controls were red-proved by changing _resolve_rows to
+    if window is None or claimant in windows.
+    """
+    with closing(_lite(tmp_path, _mixed_window_chunks(bound, other))) as store:
+        actual = _verdicts(store, NOW)["a.md"]
+        expected = ("superseded", "b.md") if hidden else ("ok", None)
+        assert actual == expected, f"mixed successor windows changed the predecessor verdict: {actual}"
+
+
+@requires_db
+@pytest.mark.parametrize("bound,other,hidden", MIXED_WINDOW_CASES)
+def test_mixed_successor_windows_postgres(make_store: Any, bound: str, other: str | None, hidden: bool) -> None:
+    """Node tests/test_supersession_window_rule.py::test_mixed_successor_windows_postgres.
+
+    The PostgreSQL scan must preserve every distinct successor window.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    SQL MIN/MAX reduction failed the predecessor verdict assertion.
+    Equivalent-date controls were red-proved with the _resolve_rows condition
+    if window is None or claimant in windows.
+    """
+    chunks = _mixed_window_chunks(bound, other)
+    store = make_store(DIM)
+    store.upsert(chunks, HashingEmbedder(dim=DIM).embed([chunk.text for chunk in chunks]))
+    actual = _verdicts(store, NOW)["a.md"]
+    expected = ("superseded", "b.md") if hidden else ("ok", None)
+    assert actual == expected, f"mixed successor windows changed the predecessor verdict: {actual}"
+
+
 # ------------------------------------------------------------------ promotion, replay, the resolver
 
 

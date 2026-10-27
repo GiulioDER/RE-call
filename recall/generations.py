@@ -45,6 +45,7 @@ from recall.generation_types import (  # noqa: F401  # re-exported: public names
 from recall.extraction import (
     ExtractedBlock,
     ExtractedDocument,
+    _decode_text,
     chunk_extracted_document,
     strip_nul_from_blocks,
 )
@@ -131,10 +132,12 @@ def _decoded_secure_text(
     verified: VerifiedObject,
     policy: SourceSecurityPolicy | None,
     context: AccessContext | None,
+    *,
+    preserve_bom: bool = False,
 ) -> tuple[str, tuple[ExtractedBlock, ...]]:
     """A fetched object's text as generation build reads it: UTF 8, NUL free, then secured."""
     try:
-        text = verified.data.decode("utf-8-sig")
+        text = verified.data.decode("utf-8" if preserve_bom else "utf-8-sig")
     except UnicodeDecodeError as exc:
         raise GenerationError(f"{entry.uri} is not valid UTF-8 text") from exc
     # The blocks too: a document with table blocks is chunked from them rather than from `text`,
@@ -644,6 +647,8 @@ class GenerationManager:
         require_body_rule_version: str | None = None,
         security_policy_digest: str | None = None,
         context_group_fingerprint: str | None = None,
+        require_code_anchor_repo: bool = False,
+        code_anchor_repo: str | None = None,
     ) -> int:
         source = conn.execute(
             "SELECT c.generation_id FROM recall_chunks_v1 c "
@@ -655,6 +660,8 @@ class GenerationManager:
             "AND c.metadata ->> %s = %s "
             "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
+            "AND (NOT %s OR c.metadata -> 'code_anchor' ->> 'repo' "
+            "IS NOT DISTINCT FROM %s::text) "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
             (
@@ -674,6 +681,8 @@ class GenerationManager:
                 context_group_fingerprint,
                 "context_group_fingerprint",
                 context_group_fingerprint,
+                require_code_anchor_repo,
+                code_anchor_repo,
                 pipeline_fingerprint,
             ),
         ).fetchone()
@@ -1237,6 +1246,10 @@ class GenerationManager:
                 # is known NOT to be reused. The bytes are verified before reuse either way.
                 fetch_original = getattr(reader, "_fetch_original", None)
                 extract = getattr(reader, "_extract", None)
+                anchored_python = (
+                    callable(getattr(chunker, "pieces", None))
+                    and PurePosixPath(unquote(relative_source)).suffix == ".py"
+                )
                 extract_after_reuse = (
                     entry.media_type not in _MARKDOWN_MEDIA_TYPES
                     and callable(fetch_original)
@@ -1248,7 +1261,8 @@ class GenerationManager:
                 else:
                     verified = reader.fetch(entry)
                     text, redacted_blocks = _decoded_secure_text(
-                        entry, relative_source, verified, security_policy, security_context
+                        entry, relative_source, verified, security_policy, security_context,
+                        preserve_bom=anchored_python,
                     )
 
                 with self._connect() as conn, conn.transaction():
@@ -1275,6 +1289,8 @@ class GenerationManager:
                             if grouped_passages
                             else None
                         ),
+                        require_code_anchor_repo=anchored_python,
+                        code_anchor_repo=(provenance or {}).get("project"),
                     )
                     if reused:
                         reused_objects += 1
@@ -1285,9 +1301,21 @@ class GenerationManager:
 
                 if extract_after_reuse:
                     assert callable(extract)
+                    # Code anchors describe the verified source, whose outer whitespace and BOM
+                    # extraction would discard. Authorization and redaction still run below.
                     verified = extract(entry, original)
+                    if anchored_python:
+                        # Keep extraction's validation, bounds and metadata, but hash the source.
+                        try:
+                            source_text = original.data.decode("utf-8")
+                        except UnicodeDecodeError:
+                            # The extracting reader also accepts legacy text encodings. Decode
+                            # as it does, without the document-level whitespace trimming.
+                            source_text = _decode_text(original.data)
+                        verified = replace(verified, data=source_text.encode("utf-8"))
                     text, redacted_blocks = _decoded_secure_text(
-                        entry, relative_source, verified, security_policy, security_context
+                        entry, relative_source, verified, security_policy, security_context,
+                        preserve_bom=anchored_python,
                     )
                 source_chunks = self._chunks_for_source(
                     inputs, entry, verified, text, redacted_blocks, body_rule_changed
