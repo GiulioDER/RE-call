@@ -170,7 +170,7 @@ def _read_cache_file(path: Path, tag: str) -> _Entries:
         entries = {}
     try:
         lines = _delta_path(path).read_text(encoding="utf-8").splitlines()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return entries
     for line in lines:
         try:
@@ -335,7 +335,7 @@ def load_memo_records(
     a few calls instead of never. Under a deadline the cache is only ever appended to; a load with
     no deadline rewrites it whole, folding the journal in and dropping removed memos.
     """
-    root = Path(directory)
+    root = Path(directory).resolve()
     if not root.is_dir():
         raise NotADirectoryError(f"memo directory {root} is not a directory")
     tag = _cache_tag() if cache_file is not None else ""

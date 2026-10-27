@@ -806,8 +806,9 @@ class PostgresFactLedger:
 
     Reads and conflict checks are answered from the materialized current facts
     (`recall.fact_current`) whenever those reflect every event of the tenant, and replay the
-    history otherwise. With `materialize` (the default) every append also materializes the events
-    it wrote, in its own transaction, so the tables never lag what this ledger appended.
+    history otherwise. With `materialize` (the default) every append attempts to materialize the events
+    it wrote, in a savepoint in its own transaction. If materialization fails, the append
+    commits and reads replay until reconciliation or rebuilding repairs the derived tables.
     `last_read` says which way the latest read went: ``"table"`` or ``"replay"``.
     """
 

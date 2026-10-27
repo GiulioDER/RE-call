@@ -534,18 +534,28 @@ def absent_fact_ids(
     )
 
 
-def assertion_cards(events: Sequence[FactEvent]) -> dict[str, tuple[EvidenceCard, ...]]:
+def assertion_cards(
+    events: Sequence[FactEvent], *, index: FactSupersession | None = None,
+) -> dict[str, tuple[EvidenceCard, ...]]:
     """Per fact id, the cards of every application of it not retracted, DUPLICATE ones included.
 
     In ledger order, each card once. A fact applied from a second memo is recorded DUPLICATE with
     that memo's card, so the APPLIED event's cards alone name only the first memo: a successor
     linking the second was refused as a contradiction, and the listing cited the first memo after
-    the store stopped serving it (2026-10-21 supersession audit).
+    the store stopped serving it (2026-10-21 supersession audit). With an index, only applications
+    still in force contribute support. DUPLICATE cards belong to the latest unretracted APPLIED
+    episode of their fact, rather than creating an independently surviving assertion.
     """
     retracted = retracted_keys(events)
     cards: dict[str, dict[str, EvidenceCard]] = {}
+    episode_in_force: dict[str, bool] = {}
     for event in events:
         if event.event_type == "asserted" and event.fact_id is not None and retraction_key(event) not in retracted:
+            if index is not None:
+                if asserts_fact(event):
+                    episode_in_force[event.fact_id] = bool(index.in_force(event))
+                if not episode_in_force.get(event.fact_id, False):
+                    continue
             group = cards.setdefault(event.fact_id, {})
             for card in event.evidence_cards:
                 group.setdefault(card.card_id, card)
@@ -1739,7 +1749,9 @@ class ProvenanceController:
         )
         supersedes = self._superseding_fact_ids(
             request.claim, cards, conflicts,
-            None if in_force.history is None else assertion_cards(in_force.history),
+            None
+            if in_force.history is None or not conflicts
+            else assertion_cards(in_force.history, index=index),
         )
         # Refused on the rule every ledger applies (`unresolved_conflicts`): what the claim
         # contradicts and neither names nor hides through what it names.

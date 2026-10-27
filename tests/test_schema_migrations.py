@@ -61,8 +61,13 @@ def _target(prefix: str = "mig_"):
 
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
+    """FIX-004/FIX-005 add revision and concurrent latest-record-index migrations.
+
+    Removing only the two new migration files and their manifest entries must fail this strict
+    inventory assertion. The mutation RED/GREEN receipt is recorded with the audit.
+    """
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 34)]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 36)]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
@@ -86,6 +91,8 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[30].concurrent_index == "recall_fact_ledger_order_idx"  # 0031_fact_ledger_order_index
     assert migrations[31].transactional  # 0032_fact_ledger_withdrawal
     assert migrations[32].transactional  # 0033_validate_fact_ledger_withdrawal
+    assert migrations[33].transactional  # 0034_supersession_revision
+    assert migrations[34].concurrent_index == "recall_supersession_latest_idx"  # 0035
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -506,8 +513,11 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
 
     v0.13 shipped migrations 0001 through 0024. Building that exact checkpoint with the package
     loader temporarily limited to those immutable migration objects is safer than duplicating
-    twenty-four SQL files in a test. The current package then applies 0025 to 0033, preserving an
+    twenty-four SQL files in a test. The current package then applies 0025 to 0035, preserving an
     existing authored relation while allowing the newly supported ``supersedes`` relation.
+
+    FIX-004/FIX-005 extend the strict upgrade inventory by 0034/0035 without weakening any row
+    preservation assertion. Removing those new files and manifest entries supplies mutation RED.
     """
     import recall.schema as schema_module
 
@@ -548,7 +558,7 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
 
         applied = apply_migrations(dsn, table="chunks", dim=DIM)
         assert [migration.version for migration in applied] == [
-            "0025", "0026", "0027", "0028", "0029", "0030", "0031", "0032", "0033",
+            "0025", "0026", "0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035",
         ]
 
         with psycopg.connect(dsn, autocommit=True) as conn:

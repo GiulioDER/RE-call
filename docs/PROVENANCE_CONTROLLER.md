@@ -58,9 +58,13 @@ The decision code vocabulary is fixed: `APPLIED`, `DUPLICATE`, `CARD_NOT_FOUND`,
 `LEDGER_UNAVAILABLE`, `MATERIALIZATION_UNAVAILABLE`, `REQUEST_ID_REUSED` and
 `REQUEST_ID_RESERVED`.
 
-A request id names one application, a fact on a set of cards. Sent again with the same fact and
-cards it is answered with the event it recorded, as `DUPLICATE`; sent with another fact, or the same
-fact on other cards, it is refused `REQUEST_ID_REUSED`. An id of a form the ledger mints for its own
+A request id names one application, a fact on a set of cards. Reusing it for another fact is
+refused `REQUEST_ID_REUSED`. Previously asserted applications pass normal evidence revalidation
+and conflict authorization before reaching ledger replay. At that point, the same fact and cards
+return the recorded event as `DUPLICATE`, while different cards are refused `REQUEST_ID_REUSED`.
+Changed or expired evidence, or a later conflicting assertion, can prevent replay at those guards.
+For the same fact, a recorded refusal instead replays its original decision before comparing cards;
+a corrected attempt needs a new request id. An id of a form the ledger mints for its own
 events (ending `:supersession`, or starting `retraction:` or `stated:`) is refused
 `REQUEST_ID_RESERVED` before the ledger is read. Neither refusal is recorded: the id already names
 another event, or belongs to one the ledger will write.
@@ -178,8 +182,9 @@ rather than failing closed because the replay can never answer differently, and 
 an older build writing the same database feeds nothing. `PostgresFactLedger` and `LiteFactLedger`
 materialize what each append wrote inside its own transaction, in a savepoint, so a materialization
 failure leaves the tables behind and never fails the append. `recall provenance rebuild` rebuilds a
-tenant from its ledger; `--reconcile` files only what the tables lack (through the outbox and
-`MaterializationRecovery` on PostgreSQL); `--check` reports. An event that names a fact of another
+tenant from its ledger; `--reconcile` files only what the derived tables lack. On PostgreSQL,
+reconciliation uses bounded batches of direct repairs and preserves external materializer delivery
+state; `--check` reports. An event that names a fact of another
 conflict key, which no write path produces, puts the tenant in replay until a rebuild.
 
 The tables are writable by the role that appends the ledger (the controller role, or the single

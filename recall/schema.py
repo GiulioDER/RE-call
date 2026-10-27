@@ -65,6 +65,7 @@ FACT_CURRENT_TABLES = (
 #: only `FACT_REDACTION_FUNCTION`, running as the owner, appends to it. Not in `GENERATION_TABLES`,
 #: whose validation would then demand it of a database checked at an earlier migration.
 FACT_REDACTION_TABLES = ("recall_fact_redactions",)
+SUPERSESSION_REVISION_TABLES = ("recall_supersession_revisions",)
 FACT_LEDGER_APPEND_FUNCTION = "recall_append_fact_ledger_event"
 FACT_MATERIALIZATION_APPEND_FUNCTION = "recall_append_fact_materialization"
 FACT_REDACTION_FUNCTION = "recall_redact_fact_values"
@@ -241,6 +242,7 @@ def serving_grants(
         ),
         "GRANT SELECT ON " + ", ".join(FACT_CURRENT_TABLES) + f" TO {role};",
         "GRANT SELECT ON " + ", ".join(FACT_REDACTION_TABLES) + f" TO {role};",
+        "GRANT SELECT, INSERT, UPDATE ON " + ", ".join(SUPERSESSION_REVISION_TABLES) + f" TO {role};",
     ]
     if enterprise:
         statements += [

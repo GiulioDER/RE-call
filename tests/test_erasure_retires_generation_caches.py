@@ -82,6 +82,8 @@ class _StubGenerationStore(GenerationStore):
         return op(self)
 
     def execute(self, sql, _params=None):  # type: ignore[no-untyped-def]
+        if "recall_supersession_revisions" in sql:
+            return _Rows([(0,)])
         # The audit ledger holds the records of removed memos (`recall.supersession_records`):
         # none here, and a count of none, so only the chunk scan answers rows.
         if "recall_audit_events" in sql:
@@ -95,6 +97,8 @@ def test_supersession_closure_is_rescanned_after_an_erasure() -> None:
     Stub changed 2026-10-23 to answer the audit-ledger reads the graph now makes (the records of
     removed memos and their count). Re-proved red the same day with the corpus fingerprint dropped
     from `GenerationStore.supersession_graph`'s key: fails on ``_supersession_scans == 2`` with 1.
+    Re-proved 2026-10-26 after teaching the fake the revision lookup (FIX-004): dropping
+    the corpus fingerprint from the key fails the same assertion, then restoring it passes.
     """
     store = _StubGenerationStore()
 
