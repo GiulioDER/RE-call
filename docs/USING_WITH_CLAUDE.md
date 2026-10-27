@@ -170,7 +170,7 @@ one that honoured it.
 | Tool | When the agent calls it |
 |------|-------------------------|
 | **`recall_search`** | Before proposing an idea, forming a hypothesis, or repeating past work. Use it to check what memory already says, and follow the returned `advice`. |
-| **`recall_evidence`** | When the agent is about to answer from memory. It returns a citable evidence bundle plus `system_prompt` and `user_message`; the client remains the generator. |
+| **`recall_evidence`** | When the agent needs more than `recall_search`'s `evidence.citable` gives: card warrants for `recall_apply_fact`, the rendered answer prompt (`system_prompt` and `user_message`; the client remains the generator), or passages beyond the search's hits (related items, deeper pages of a paged document). With `RECALL_SEARCH_EVIDENCE=off`, search's `evidence` is null, so call it before answering from memory. |
 | **`recall_index`** | To add a markdown file/folder to memory (bounded by `RECALL_INDEX_ROOT`). |
 | **`recall_forget`** | To permanently delete indexed memory for source values returned by `recall_search`. Requires `recall:forget` on authenticated transports; irreversible, so check the returned `sources_not_found` before assuming a request matched. A fact whose only evidence was a forgotten source is retracted and no longer listed, and its value is erased from the fact ledger (`facts_redacted`). Whatever a forgotten memory superseded stays retired. |
 | **`recall_withdraw`** | When a memory was a MISTAKE and what it replaced should be current again. Erases it as `recall_forget` does (same scope, fact values included), then voids its `supersedes:` claims and splices the chain (withdrawing B in A -> B -> C leaves A retired by C); a memory forgotten earlier is withdrawn by the name it had. |
@@ -181,10 +181,13 @@ one that honoured it.
 | **`recall_reasoning_audit`** | To verify reasoning integration state and diagnostics before relying on the reasoning layer. |
 
 `recall_search` returns `abstained`, `reason`, `calibrated`, calibration identity, tenant and
-generation identity, `stale`, `gap_warning`, `advice`, and hits carrying `verdict`, `score`,
-`confidence`, `superseded_by`, `valid_until`, and `indexed_at`. `calibrated` is true only for a
-certified exact generation binding. When `abstained` is true, say you do not know and do not answer
-from the hits.
+generation identity, `stale`, `gap_warning`, `advice`, `evidence`, the optional `historical`, and
+hits carrying `verdict`, `score`, `confidence`, `superseded_by`, `valid_until`, and `indexed_at`.
+`calibrated` is true only for a certified exact generation binding. When `abstained` is true, say
+you do not know and do not answer from the hits. Otherwise answer only from the hits whose
+`chunk_id` is in `evidence.citable` and cite those ids; `evidence` also carries `decision` and
+`reason_code`. `historical.candidates` is only for a question about an earlier time (see
+[API.md](API.md)).
 
 For non-English presentation, pass `locale` to `recall_search` or `recall_evidence` after enabling
 the optional translation endpoint; localized text is additive and never replaces canonical

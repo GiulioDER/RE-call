@@ -28,6 +28,24 @@ non-commercial checkpoint is now in progress (see *Research artifacts*). The dis
 **shipped** and **measured** is the whole point and has to stay explicit: a benchmark arm run under
 an NC checkpoint is permitted, and it is not a number anyone can build a product on.
 
+## Local embedders with published prompts (`st-prompted:`)
+
+Opt-in through `RECALL_EMBEDDER=st-prompted:<hf-id>`; each loads at the revision pinned in
+`recall/embedding_prompts.py`. Licences read from each model card's `license` field at that
+revision through the Hugging Face API on 2026-10-27.
+
+| model | licence | notes |
+|---|---|---|
+| `BAAI/bge-small-en-v1.5` | MIT | also the default dense embedder |
+| `BAAI/bge-large-en-v1.5` | MIT | |
+| `Snowflake/snowflake-arctic-embed-l-v2.0` | Apache-2.0 | |
+| `Qwen/Qwen3-Embedding-0.6B` | Apache-2.0 | |
+| `voyageai/voyage-4-nano` | Apache-2.0 | runs the repository's modelling code; requires `RECALL_ACCEPT_REMOTE_MODEL_CODE=1` |
+
+`tests/test_prompted_sentence_transformer.py::test_every_prompted_model_has_a_licence_row` fails
+when a model is added to `PUBLISHED_PROMPTS` in `recall/embedding_prompts.py` without a row in this
+table.
+
 ## Opt-in only — NON-COMMERCIAL, and a notice does not fix that
 
 | model | licence | why it is registered |

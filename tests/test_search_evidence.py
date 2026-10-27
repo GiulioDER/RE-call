@@ -298,3 +298,64 @@ def test_supported_historical_time_explicitly_permits_an_answer() -> None:
     search, _ = _both(["expired"], demoted_confidence=0.7)
     assert "If they establish it, answer for that time" in search.advice, (
         "supported historical time is not allowed an answer")
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"recall_graph": {"facts": [{"predicate": "owns"}]}},
+        {"recall_graph": {"facts": 5}},
+        {"facts": [{"subject": "a", "predicate": "b", "valid_from": "not a date"}]},
+    ],
+)
+def test_a_malformed_authored_fact_does_not_fail_search(
+    monkeypatch: pytest.MonkeyPatch, metadata: dict[str, object],
+) -> None:
+    """BUG-001: an `ok` hit whose authored facts do not parse still yields search evidence.
+
+    Authored `recall_graph` metadata is stored as written, and since search builds the evidence
+    bundle on every call, a fact that does not parse failed the whole `recall_search`, not just
+    its card.
+
+    Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: restoring the unguarded
+    `AtomicFact.from_payload` comprehension in `recall.evidence.cards_from_trusted_result` failed
+    every parameter at "a malformed authored fact failed the search". Restored, passes.
+    """
+    def with_metadata(result: TrustedResult) -> TrustedResult:
+        first = result.hits[0]
+        chunk = replace(first.chunk, metadata={**first.chunk.metadata, **metadata})
+        return replace(result, hits=[replace(first, chunk=chunk), *result.hits[1:]])
+
+    _transform_fake_result(monkeypatch, with_metadata)
+    try:
+        search, evidence = _both(["ok", "ok"])
+    except (KeyError, TypeError, ValueError) as exc:
+        pytest.fail(f"a malformed authored fact failed the search: {exc!r}")
+    assert search.evidence is not None
+    assert search.evidence.citable == [item.chunk_id for item in evidence.items] == ["c0", "c1"]
+
+
+def test_a_degraded_search_qualifies_its_citations_as_evidence_does(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STAKES-001: a degraded result that keeps its `ok` hits says its citations are unverified.
+
+    In development mode a degraded result can keep `ok` verdicts, so `evidence.citable` is not
+    empty; `recall_evidence` qualifies those items as unverified and search told the agent to cite
+    them with no such qualification.
+
+    Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: deleting the
+    `result.trust_state != "trusted"` branch in `recall_mcp.retrieval.search_memory` failed at
+    "a degraded search told the agent to cite without qualification". Restored, passes.
+    """
+    _transform_fake_result(
+        monkeypatch,
+        lambda result: replace(result, trust_state="degraded",
+                               failure_code="dependency_graph_not_ready"),
+    )
+    search, evidence = _both(["ok", "ok"])
+    note = retrieval._degraded_note("dependency_graph_not_ready")
+    assert search.evidence is not None and search.evidence.decision == "answer"
+    assert search.evidence.citable == [item.chunk_id for item in evidence.items]
+    assert note in evidence.advice
+    assert note in search.advice, "a degraded search told the agent to cite without qualification"

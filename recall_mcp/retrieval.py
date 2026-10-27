@@ -561,17 +561,22 @@ def _search_advice(
     return advice
 
 
+def _degraded_note(failure_code: str | None) -> str:
+    """The qualification for citations from a result the trust gate could not certify."""
+    return (
+        f" DEGRADED ({failure_code or 'unknown'}): the trust gate could not certify "
+        f"this result, and a degraded bundle can still be non-empty. Treat every citation as "
+        f"unverified and say so in your answer."
+    )
+
+
 def _advice_suffixes(advice: str, bundle: EvidenceBundle) -> str:
     """Append the qualifications that apply to a bundle regardless of its decision."""
     if bundle.trust_state != "trusted":
         # Named because a populated bundle is NOT evidence the gate ran. This is the one place a
         # client is told what to do, and "the items look fine" is exactly the inference the
         # empty-bundle assumption used to license.
-        advice += (
-            f" DEGRADED ({bundle.failure_code or 'unknown'}): the trust gate could not certify "
-            f"this result, and a degraded bundle can still be non-empty. Treat every citation as "
-            f"unverified and say so in your answer."
-        )
+        advice += _degraded_note(bundle.failure_code)
     if not bundle.calibrated:
         advice += UNCALIBRATED_NOTE
     if bundle.stale:
@@ -718,6 +723,10 @@ def search_memory(
     historical = _historical_evidence(result, retrieval.effective_k) if evidence_enabled else None
     if evidence is not None and evidence.decision == "answer":
         advice += SEARCH_EVIDENCE_NOTE
+    if evidence is not None and result.trust_state != "trusted":
+        # A development-mode degraded result can keep its `ok` verdicts, so `citable` is not
+        # empty; `recall_evidence` qualifies the same items, and search must not read cleaner.
+        advice += _degraded_note(result.failure_code)
     if historical is not None:
         advice += HISTORICAL_RECORD_NOTE
 

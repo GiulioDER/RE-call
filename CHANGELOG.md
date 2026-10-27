@@ -8,6 +8,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Upgrade note for the embedding profile lineage check (#909): serving and calibration now
+  compare a generation's recorded embedding profile and its fingerprint with the runtime
+  embedder, not only the model name and dimension. The fingerprint includes the version of the
+  client library the profile names (`voyageai`, `openai`, `fastembed` or
+  `sentence-transformers`, plus `transformers` for `st-prompted:` models), for fastembed also the
+  installed `onnxruntime` and `tokenizers` versions and its ONNX providers, and for a hosted
+  profile its backend, base URL and output dimensions. Changing any
+  of these on a serving host turns every generation that recorded a profile into
+  `LINEAGE_MISMATCH`: refused in strict mode, served degraded and uncalibrated in development
+  mode. Calibrating that generation is refused too. Pin the library on serving hosts, or build
+  and calibrate a new generation under the new version before switching traffic. Generations
+  that recorded no profile are unaffected; legacy fastembed generations record a fallback
+  profile and are covered.
+- `RECALL_EMBEDDER=st-prompted:<hf-id>` (#908) encodes a local sentence-transformers model with
+  the query and document prompts it was published with, for the models pinned in
+  `recall/embedding_prompts.py`, each at a fixed Hugging Face revision. It has its own name
+  (`st-prompted:<hf-id>@<version>`) and profile, never the identity of `st:<hf-id>`.
+  `voyageai/voyage-4-nano` runs repository code and needs `RECALL_ACCEPT_REMOTE_MODEL_CODE=1`.
+  It refuses when a local path shadows the model id, and when the installed sentence-transformers
+  would route the model's text through a chat template. Behaviour change: `python -m
+  recall.eval.labelled --embedder` resolves any spelling other than `hashing`, `voyage`, `st:` and
+  `fastembed` through `RECALL_EMBEDDER`'s resolver and raises on an unknown one. It used to
+  measure `BAAI/bge-small-en-v1.5` for all of them and report the result under the name it was
+  given, so an earlier labelled result for any other spelling measured bge-small.
+- `recall_search` says what an answer may cite (#906). Its result carries `evidence`: `decision`,
+  `reason_code` and `citable`, the chunk ids of its own hits that `recall_evidence`'s rule admits,
+  built from the same trusted result with no extra retrieval and no card registration. When
+  something is citable the advice says to answer only from those hits; a result the trust gate
+  could not certify adds the same DEGRADED qualification `recall_evidence` gives. `recall_evidence`
+  remains the tool for card warrants, the rendered answer prompt and passages beyond the search's
+  hits. `RECALL_SEARCH_EVIDENCE=off` (also `0`, `false`, `no`) sets `evidence` and the later
+  `historical` field to null and drops their advice. A memo whose authored facts do not parse no
+  longer fails the search or evidence call that returns it: a malformed fact is left off its
+  evidence card, and a memo with no well-formed fact gets no card.
 - The auditor brief hook's default budget is now 3 s, up from 1 s. A CCA dispatch launches its
   auditors at once, and under that contention the hook's git calls timed out, so 0 of 9 auditors
   got the brief (measured 2026-10-27); at 3 s all 9 did. `RECALL_AUDITOR_BRIEF_BUDGET` still
