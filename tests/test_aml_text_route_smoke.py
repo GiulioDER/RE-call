@@ -24,6 +24,9 @@ class _Client:
         add_503s: int = 0,
         gates: str | None = None,
         visual_words: bool = True,
+        compiler: bool = True,
+        reranker: bool = False,
+        rerank_fallback: bool = False,
     ) -> None:
         self.paths: list[str] = []
         self.memories: list[str] = []
@@ -31,6 +34,9 @@ class _Client:
         self.add_503s = add_503s
         self.gates = gates
         self.visual_words = visual_words
+        self.compiler = compiler
+        self.reranker = reranker
+        self.rerank_fallback = rerank_fallback
 
     def call(self, path, payload=None):
         self.paths.append(path)
@@ -38,7 +44,13 @@ class _Client:
             version = {
                 "variant": "C9_routed_specialists_grounded_graph_atomic",
                 "git_commit": "abc123",
-                "active_components": {"graph_sidecar": True, "atomic_rescue": True},
+                # The graph serves exactly when the compile does (CCA U-07, 2026-10-20).
+                "active_components": {
+                    "graph_sidecar": self.compiler,
+                    "compiler": self.compiler,
+                    "atomic_rescue": True,
+                },
+                "reranker_enabled": self.reranker,
             }
             if self.gates is not None:
                 version["route_gates"] = self.gates
@@ -53,8 +65,10 @@ class _Client:
             route = route_query(payload["query"], visual_words=self.visual_words)
             headers = {
                 "x-recall-specialist-route": route,
-                "x-recall-graph-attempted": "1",
+                "x-recall-graph-attempted": "1" if self.compiler else "0",
                 "x-recall-graph-fallback": "0",
+                "x-recall-reranker-completed": "1" if self.reranker and not self.rerank_fallback else "0",
+                "x-recall-reranker-fallback": "1" if self.rerank_fallback else "0",
             }
             if route == "multimodal" and self.empty_multimodal:
                 return Call(200, {"data": []}, headers)
@@ -138,3 +152,70 @@ def test_the_smoke_follows_the_data_route_gates() -> None:
     )
     assert misrouted["passed"] is False
     assert misrouted["checks"]["visual_word_image_route"] is False
+
+
+VARIANT = "C9_routed_specialists_grounded_graph_atomic"
+
+
+def _verify(client: _Client, **expect: object) -> dict:
+    return verify(client, expected_variant=VARIANT, sleep=lambda _: None, **expect)  # type: ignore[arg-type]
+
+
+def test_the_full2_configuration_passes() -> None:
+    """CCA V-09 (2026-10-20). Invariant: the Full 2 deployment (compile off, so the graph is
+    skipped; reranker on and completing) passes when the operator states exactly that.
+
+    Red proof: at 43693e37 `verify` takes no expect_compiler/expect_reranker, so this call raises
+    TypeError; on the fix, mutating `graph_on` to always True fails `graph_sidecar_matches_compiler`.
+    """
+    result = _verify(
+        _Client(compiler=False, reranker=True), expect_compiler=False, expect_reranker=True,
+        expect_commit="abc1",
+    )
+
+    assert result["passed"] is True, json.dumps(result["checks"])
+    assert result["checks"]["served_commit"] is True
+
+
+def test_a_lost_compile_off_drop_in_fails_the_smoke() -> None:
+    """CCA V-09. Invariant: when the operator expects the compile off and the service reports it
+    on (a drop-in lost), the smoke fails instead of changing its expectation.
+
+    Red proof: deriving the expectation from /version (as 43693e37's smoke did) passes this case.
+    """
+    result = _verify(_Client(compiler=True), expect_compiler=False, expect_reranker=False)
+
+    assert result["passed"] is False
+    assert result["checks"]["compiler_as_expected"] is False
+
+
+def test_a_reranker_that_falls_back_fails_the_smoke() -> None:
+    """CCA V-09. Invariant: with the reranker expected on, a Search served in fused order
+    (reranker fallback) fails the smoke.
+
+    Red proof: mutating the `_reranked` check away leaves this run passing.
+    """
+    result = _verify(
+        _Client(compiler=False, reranker=True, rerank_fallback=True),
+        expect_compiler=False,
+        expect_reranker=True,
+    )
+
+    assert result["passed"] is False
+    assert any(name.endswith("_reranked") and not ok for name, ok in result["checks"].items())
+
+
+def test_a_lost_reranker_drop_in_fails_the_smoke() -> None:
+    """CCA V-09. Invariant: the operator expects the reranker on and the service reports it off."""
+    result = _verify(_Client(compiler=False, reranker=False), expect_compiler=False, expect_reranker=True)
+
+    assert result["passed"] is False
+    assert result["checks"]["reranker_as_expected"] is False
+
+
+def test_the_wrong_served_commit_fails_the_smoke() -> None:
+    """CCA V-09. Invariant: --expect-commit fails a service serving another build."""
+    result = _verify(_Client(), expect_commit="ffff")
+
+    assert result["passed"] is False
+    assert result["checks"]["served_commit"] is False

@@ -394,6 +394,8 @@ def test_version_reports_the_effective_atomic_stage(monkeypatch) -> None:
         "view_profile": "aml-add-micro-v1",
         "mode": "active",
         "placement": "fused",
+        # CCA U-03 (2026-10-20): reports whether the reranker reorders after the placement.
+        "reranked_after_placement": False,
     }
     monkeypatch.setenv("RECALL_ATOMIC_RESCUE_MODE", "off")
     assert service.atomic_rescue_profile["mode"] == "off"

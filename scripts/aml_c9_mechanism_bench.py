@@ -19,7 +19,8 @@ another user's data and never calls an AML evaluator.
 
 Hard checks (any failure exits 1): the served variant and components, every Add and Search
 status, the Add echo and idempotency contract, read-your-writes after the first Add, item shape
-and ``top_k``, user isolation, route headers, graph attempted without fallback, atomic rescue
+and ``top_k``, user isolation, route headers, the graph attempted without fallback exactly when
+the compile serves (it reads compiled records only; skipped when inert since CCA U-07), atomic rescue
 attempted and active on the large tenant, and cleanup.
 Measured, not gated: answer recall at 10 and 100, graph relation hits, candidates, promotions
 and invalid relations (see the comment at ``_graph_ok`` for why that last one cannot be a gate),
@@ -429,8 +430,9 @@ def run(
     components = version.payload.get("active_components", {}) if version.status == 200 else {}
     atomic_profile = version.payload.get("atomic_rescue") or {}
     checks["version_variant"] = version.payload.get("variant") == expected_variant
-    checks["version_graph_sidecar"] = components.get("graph_sidecar") is True and (
-        version.payload.get("graph_sidecar") is True
+    graph_on = components.get("compiler") is True
+    checks["version_graph_sidecar"] = components.get("graph_sidecar") is graph_on and (
+        version.payload.get("graph_sidecar") is graph_on
     )
     checks["version_atomic_active"] = isinstance(atomic_profile, dict) and (
         atomic_profile.get("mode") == "active"
@@ -536,10 +538,7 @@ def run(
         # `graph-invalid-relations` is reported, not gated: `promote_grounded_raw` also counts a
         # well-formed relation whose target ranks outside the served top 100 as invalid, so any
         # tenant past 100 candidates shows it (run 1, 2026-09-24, context route: 19 and 17).
-        checks[f"{prefix}_graph_ok"] = (
-            record.headers.get("x-recall-graph-attempted") == "1"
-            and record.headers.get("x-recall-graph-fallback") == "0"
-        )
+        checks[f"{prefix}_graph_ok"] = _graph_ok(record.headers, graph_on)
         if total_windows >= ATOMIC_MIN_WINDOWS:
             checks[f"{prefix}_atomic_active"] = (
                 record.headers.get("x-recall-atomic-rescue-attempted") == "1"
@@ -706,8 +705,20 @@ def _add_with_trace(
     }
 
 
+def _graph_ok(headers: dict[str, str], graph_on: bool) -> bool:
+    """The graph was attempted exactly when it serves, and never fell back."""
+    return (
+        headers.get("x-recall-graph-attempted") == ("1" if graph_on else "0")
+        and headers.get("x-recall-graph-fallback") == "0"
+    )
+
+
 def _search_with_trace(
-    client: Client, tenant: Tenant, needle: Needle | None, sleep: Callable[[float], None]
+    client: Client,
+    tenant: Tenant,
+    needle: Needle | None,
+    sleep: Callable[[float], None],
+    graph_on: bool = True,
 ) -> dict[str, Any]:
     query = needle.query if needle is not None else UNANSWERABLE
     statuses: list[int] = []
@@ -736,10 +747,7 @@ def _search_with_trace(
         "ids": [item.get("id") for item in call.payload.get("data", []) if isinstance(item, dict)],
         "isolated": call.status == 200 and _well_formed(call, set(tenant.session_ids.values())),
         "route_ok": needle is None or headers.get("x-recall-specialist-route") == needle.route,
-        "graph_ok": (
-            headers.get("x-recall-graph-attempted") == "1"
-            and headers.get("x-recall-graph-fallback") == "0"
-        ),
+        "graph_ok": _graph_ok(headers, graph_on),
         "graph_invalid_relations": int(
             headers.get("x-recall-graph-invalid-relations", "0") or 0
         ),
@@ -827,6 +835,7 @@ def run_concurrency(
     mixed: bool = True,
     seed: int = 20260924,
     sleep: Callable[[float], None] = time.sleep,
+    graph_on: bool | None = None,
 ) -> dict[str, Any]:
     """Stage A: ``adds`` Adds at once. Stage B: ``searches`` Searches at once over those users.
 
@@ -834,6 +843,9 @@ def run_concurrency(
     the stage A users. That is how the official run loads C9: different samples add and search at
     the same time, and every Voyage call in the process shares one lock.
     """
+    if graph_on is None:
+        version = client.call("/version")
+        graph_on = (version.payload.get("active_components") or {}).get("compiler") is True
     per_user = len(CONCURRENT_SESSIONS)
     if adds != users * per_user:
         raise ValueError(f"adds must equal users x {per_user} sessions, got {adds} for {users}")
@@ -853,7 +865,7 @@ def run_concurrency(
         checks["A_adds_echo"] = all(r["echo_ok"] for r in a_results)
 
         b_results, b_wall = _burst([
-            (lambda t=t, n=n: _search_with_trace(client, t, n, sleep))
+            (lambda t=t, n=n: _search_with_trace(client, t, n, sleep, graph_on))
             for t, n in _search_jobs(loaded, searches)
         ])
         stages["B_searches"] = _search_stats(b_results, b_wall)
@@ -871,7 +883,7 @@ def run_concurrency(
                 for body in _add_jobs(fresh, "c")
             ]
             c_search_jobs: list[Callable[[], Any]] = [
-                (lambda t=t, n=n: ("search", _search_with_trace(client, t, n, sleep)))
+                (lambda t=t, n=n: ("search", _search_with_trace(client, t, n, sleep, graph_on)))
                 for t, n in _search_jobs(loaded, searches)
             ]
             # Interleave submission so neither kind reaches the server wholly first.

@@ -116,6 +116,34 @@ def bounded_query(value: str) -> str:
     return value[:QUERY_HEAD_CHARS] + "\n" + value[-tail:]
 
 
+def bounded_query_parts(value: list[ContentPart]) -> list[ContentPart]:
+    """Fit a part-list Search question to the same 20,000 characters as a string one.
+
+    Every Search stage reads the text parts joined by newlines, so that join is what the bound
+    applies to: within it the list is returned unchanged; past it the joined text is bounded as
+    `bounded_query` bounds a string and takes the first text part's place, and the image parts
+    keep their order. Without this a part list skipped the bound, and the router's quadratic regex
+    ran on the event loop over all of it (21 s at 40,000 characters, measured 2026-10-20).
+    """
+    texts = [part.text for part in value if isinstance(part, TextContentPart)]
+    joined = "\n".join(texts)
+    if len(joined) <= MAX_QUERY_CHARS:
+        return value
+    bounded: list[ContentPart] = []
+    placed = False
+    for part in value:
+        if isinstance(part, ImageContentPart):
+            bounded.append(part)
+        elif not placed:
+            text = bounded_query(joined)
+            if not text.strip():
+                # Both kept ends were whitespace; bound the text without it instead.
+                text = bounded_query(joined.strip())
+            bounded.append(TextContentPart(type="text", text=text))
+            placed = True
+    return bounded
+
+
 UNKNOWN_ROLE = "unknown"
 MAX_ROLE_CHARS = 64
 MAX_TOP_K = 100
@@ -381,7 +409,7 @@ class SearchRequest(StrictModel):
             raise ValueError(
                 f"decoded Search images exceed {MAX_REQUEST_MEDIA_BYTES} aggregate bytes"
             )
-        return value
+        return bounded_query_parts(value)
 
 
 class SearchItem(StrictModel):

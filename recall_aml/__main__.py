@@ -21,7 +21,9 @@ from recall_aml.config import (
     GENERATION_MODEL,
     HostedSettings,
     OPENROUTER_BASE_URL,
+    RERANK_TIMEOUT_SECONDS,
     SPARSE_MODEL,
+    VISUAL_QUERY_TIMEOUT_SECONDS,
     SPARSE_REVISION,
 )
 from recall_aml.embedding_lock import (
@@ -33,8 +35,9 @@ from recall_aml.embedding_lock import (
 )
 from recall_aml.rerank_switch import rerank_model
 from recall_aml.retrieval import HostedRetriever
+from recall_aml.search_deadline import DeadlineEmbedder
 from recall_aml.readiness import verify_model_readiness
-from recall_aml.service import HostedService
+from recall_aml.service import HostedService, reranker_switch
 from recall_aml.storage import PgHostedRepository
 from recall_aml.multimodal import MultimodalEmbedder, VoyageMultimodalEmbedder
 from recall_aml.variants import HostedVariant, variant
@@ -144,22 +147,28 @@ def build_image_text_extractor(
     )
 
 
-def _env_reranker(behavior: HostedVariant) -> bool:
-    """Whether the reranker serves at startup: ``RECALL_AML_RERANKER`` when set, else the variant."""
-    from recall_aml.rerank_switch import RERANKER_ENV
+def _env_compiler(behavior: HostedVariant) -> bool:
+    """Whether the Add-time compile serves: the variant's, unless ``RECALL_AML_COMPILER`` is 0.
+
+    `HostedService` applies the same override, which can only switch the compile off; startup
+    reads it here too, so a compile that is switched off is neither required (the OpenRouter key)
+    nor probed (one live compile) at start. Before this, a restart with the compile off still died
+    on an OpenRouter refusal.
+    """
     from recall_aml.service import _env_flag
 
-    return _env_flag(RERANKER_ENV, behavior.reranker)
+    return behavior.compiler and _env_flag("RECALL_AML_COMPILER", behavior.compiler)
 
 
 def build_app(settings: HostedSettings | None = None) -> Any:
     settings = settings or HostedSettings.from_env()
     behavior = variant(settings.variant_name)
+    compile_on = _env_compiler(behavior)
     if not settings.voyage_api_key:
         raise RuntimeError("VOYAGE_API_KEY is required")
     if settings.embedding_lock_path is None:
         raise RuntimeError("RECALL_AML_EMBED_LOCK_PATH is required for hosted production")
-    if (behavior.compiler or behavior.facets) and not settings.openrouter_api_key:
+    if (compile_on or behavior.facets) and not settings.openrouter_api_key:
         raise RuntimeError(f"OPENROUTER_API_KEY is required for {behavior.name}")
     embedder, specialist_embedders = _resolve_hosted_embedders(settings, behavior)
     sparse_encoder = None
@@ -200,10 +209,16 @@ def build_app(settings: HostedSettings | None = None) -> Any:
     compiler = build_compiler(settings, behavior)
     # RK-1: the model is chosen once here; whether a Search reranks is the service's switch.
     selected_rerank_model = rerank_model(os.environ)
-    reranker = VoyageReranker(model=selected_rerank_model, api_key=settings.voyage_api_key)
-    rerank_on = _env_reranker(behavior)
+    reranker = VoyageReranker(
+        model=selected_rerank_model,
+        api_key=settings.voyage_api_key,
+        timeout=RERANK_TIMEOUT_SECONDS,
+    )
+    rerank_on = reranker_switch(behavior)
     multimodal_embedder: MultimodalEmbedder | None = (
-        VoyageMultimodalEmbedder(settings.voyage_api_key)
+        VoyageMultimodalEmbedder(
+            settings.voyage_api_key, query_timeout=VISUAL_QUERY_TIMEOUT_SECONDS
+        )
         if behavior.multimodal_native
         else None
     )
@@ -225,14 +240,17 @@ def build_app(settings: HostedSettings | None = None) -> Any:
             sparse_encoder=sparse_encoder,
             multimodal_embedder=multimodal_embedder,
             specialist_embedders=specialist_embedders,
-            behavior=replace(behavior, reranker=rerank_on),
+            behavior=replace(behavior, compiler=compile_on, reranker=rerank_on),
         )
     except BaseException:
         pool.close()
         raise
-    retriever = HostedRetriever(embedder, reranker, sparse_encoder=sparse_encoder)
+    # Retrievers embed queries only, and each query embedding waits at most the Search budget.
+    retriever = HostedRetriever(
+        DeadlineEmbedder(embedder), reranker, sparse_encoder=sparse_encoder
+    )
     specialist_retrievers = {
-        profile: HostedRetriever(specialist, reranker)
+        profile: HostedRetriever(DeadlineEmbedder(specialist), reranker)
         for profile, specialist in specialist_embedders.items()
     }
     service = HostedService(
@@ -248,7 +266,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         model_clients_ready=all(
             readiness[name]
             for name in ("embedder_ready",)
-            + (("compiler_ready",) if behavior.compiler or behavior.facets else ())
+            + (("compiler_ready",) if compile_on or behavior.facets else ())
             + (("reranker_ready",) if rerank_on else ())
             + (("sparse_ready",) if behavior.learned_sparse else ())
             + (("multimodal_ready",) if behavior.multimodal_native else ())

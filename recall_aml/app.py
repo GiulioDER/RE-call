@@ -14,6 +14,8 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable, TypeVar
 
+from PIL import UnidentifiedImageError
+from PIL.Image import DecompressionBombError
 from pydantic import BaseModel, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -29,7 +31,6 @@ from recall_aml.config import (
     GENERATION_PROVIDER,
     PRODUCT_NAME,
     PRODUCT_VERSION,
-    RERANK_MODEL,
     RERANK_PRICE_SOURCE_DATE,
     RERANK_PRICE_SOURCE_URL,
     RERANK_PRICE_USD_PER_MILLION_TOKENS,
@@ -46,6 +47,7 @@ from recall_aml.graph import (
     GRAPH_PROTECTED_PREFIX,
     GRAPH_SEED_K,
 )
+from recall_aml.rerank_switch import DEFAULT_RERANK_MODEL, RERANK_PROVIDER
 from recall_aml.retrieval import (
     CANDIDATE_WIDTH,
     CODE_NEIGHBOUR_PREDECESSOR_RADIUS,
@@ -55,6 +57,7 @@ from recall_aml.retrieval import (
     CODE_RRF_WEIGHT,
     RRF_CONSTANT,
 )
+from recall_aml.search_deadline import SearchDeadlineExceeded
 from recall_aml.service import CompilerCreditExhausted, HostedService, TenantLockBusy
 
 
@@ -293,6 +296,24 @@ def create_app(
                 {"error": "tenant_busy"},
                 status_code=503,
                 headers={"Retry-After": "60"},
+            )
+        except SearchDeadlineExceeded:
+            # The query embedding did not answer within the Search budget: answer before the
+            # ~100 s cut in front of the service, so AML resends instead of losing the request.
+            log.warning("hosted_search_deadline")
+            return JSONResponse(
+                {"error": "search_deadline"},
+                status_code=503,
+                headers={"Retry-After": "5"},
+            )
+        except (UnidentifiedImageError, DecompressionBombError) as exc:
+            # Admission checks only an image's type, size and magic bytes, so Pillow refusing an
+            # admitted image is a fact about the payload: every resend fails the same way. The
+            # generic 503 told AML to retry it up to 32 times; 422 is the permanent answer.
+            log.warning("hosted_request_unreadable_image", extra={"error_class": type(exc).__name__})
+            return JSONResponse(
+                {"error": "invalid_request", "detail": "an image could not be read"},
+                status_code=422,
             )
         except Exception as exc:  # BROAD-CATCH: public error translation without content leakage
             log.error("hosted_request_failed", extra={"error_class": type(exc).__name__})
@@ -600,9 +621,9 @@ def create_app(
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
                 # RK-1: the model the service actually loaded, and whether Searches rerank.
-                "reranker": f"voyage:{service.rerank_model}" if service.rerank_model else RERANK_MODEL,
-                "reranker_provider": RERANK_MODEL.split(":", 1)[0],
-                "reranker_model": service.rerank_model or RERANK_MODEL.split(":", 1)[1],
+                "reranker": f"{RERANK_PROVIDER}:{service.rerank_model or DEFAULT_RERANK_MODEL}",
+                "reranker_provider": RERANK_PROVIDER,
+                "reranker_model": service.rerank_model or DEFAULT_RERANK_MODEL,
                 "reranker_enabled": service.reranker_enabled,
                 "reranker_price_usd_per_million_tokens": (RERANK_PRICE_USD_PER_MILLION_TOKENS),
                 "reranker_price_source_date": RERANK_PRICE_SOURCE_DATE,

@@ -184,8 +184,7 @@ learned sparse sidecars if present, and Add replay receipts. Other user tenants 
 ### Runs of record
 
 Every AML Cycle 2 Full that RE-call ran, except the first Multimodal Full, was served by the
-variant `C9_routed_specialists_grounded_graph_atomic`, and both second Fulls, which have not run
-yet, will be served by it too, selected with
+variant `C9_routed_specialists_grounded_graph_atomic`, and so are both second Fulls, selected with
 `RECALL_AML_VARIANT=C9_routed_specialists_grounded_graph_atomic`. Each fixed commit is a signed tag
 in this repository.
 
@@ -254,12 +253,18 @@ role or timestamp.
 The Add also builds atomic views from its own raw windows, with no model: short spans (profile
 `aml-add-micro-v1`), each linked to its parent window and stored in an isolated tenant.
 
-In the Full 2 runs, an Add message that records an earlier answer reporting a failure, about a
-question this user was already asked, is not stored. Two record shapes are recognised: a message
-whose text is a JSON object with a question, the model's answer and its outcome, and a judge verdict
-line, the shapes the public AgentMemoryBench protocol (solomoon313/AgentMemoryBench, MIT) writes. A
-failed record that also carries the reference answer is kept, and every other message is stored
-unchanged.
+In the Full 2 runs, a record of an earlier answer that reports a failure, about a question this user
+was already asked, is not stored. Two record shapes are recognised, the shapes the public
+AgentMemoryBench protocol (solomoon313/AgentMemoryBench, MIT) writes. The first is one message whose
+text is a JSON object with a question, the model's answer and its outcome; that message alone is not
+stored. The second is a judge unit: the user turn that ends with `Question: ...` and `Answer:`
+(memories may come before them), the model's answer, and a judge message whose verdict is WRONG.
+Then the whole unit is not stored, from the nearest question turn before the judge message to the
+judge message, together with a system message directly before that turn; the rest of the Add is
+stored. When the judge messages of one Add disagree, none of them acts. A failed record that
+also carries the reference answer is kept, and so is a judge unit that holds one. Every message
+outside such a record or unit is stored unchanged. Which questions this user was asked is kept in the
+service process only: a restart or a Delete empties it, after which such records are stored.
 
 When the compiler is on, the server cuts the Add's messages into evidence anchors with identifiers
 it creates. The model returns at most eight records, each citing one to eight of those identifiers,
@@ -324,21 +329,23 @@ fails. No AML Cycle 2 run used it. It and the other experimental variants are de
 
 The declared service capacity is 16 concurrent Add requests and 16 concurrent Search requests in
 one process. The database pool is sized above the combined running capacity. Add provider and
-database work must complete before the caller's 45 second integration timeout. Search callers use
-a 10 second transport timeout, while the release gate requires a measured Search p95 below 5
-seconds and Add p95 below 30 seconds. HTTP 422 is permanent to the caller, so it is reserved for input
+database work must complete before the caller's 45 second integration timeout. A Search request is
+cut after about 100 seconds in front of the service, while the release gate requires a measured
+Search p95 below 5 seconds and Add p95 below 30 seconds. HTTP 422 is permanent to the caller, so it is reserved for input
 that can never be accepted: invalid JSON, a body over 44 MiB, a missing or blank `request_id`,
-`user_id` or `session_id`, a malformed or oversized image, an Add in which no part can be read, and a
-Search query image that cannot be decoded. An image that passes admission but cannot be decoded is
-dropped from an Add that holds anything else readable; the rest of the Add is stored. Everything else
+`user_id` or `session_id`, a malformed or oversized image, and, from `625b7138` (both Full 2 runs),
+an Add in which no part can be read and a Search query image that cannot be decoded. From the same
+build, an image that passes admission but cannot be decoded is dropped from an Add that holds
+anything else readable; the rest of the Add is stored. Everything else
 the service can store or answer is accepted: unknown fields are ignored, `content: null` and blank
 messages are dropped,
 an unreadable `timestamp` is dropped, `top_k` is clamped to 0 through 100 (`null` means 100), a
 query over 20,000 characters keeps its first 10,000 and last 9,999, and a blank query or
 `top_k: 0` returns an empty `data` list. A failure inside the service returns a retryable 503; so
 does an Add answered pending (`X-Recall-Add-Pending: 1`, see `POST /v1/add`), which is not a failure,
-and an Add answered `tenant_busy` (`Retry-After: 60`, see `POST /v1/add`), which stored nothing. A
-Search whose query embedding does not answer within the service's Search time budget (90 seconds)
+and an Add answered `tenant_busy` (`Retry-After: 60`, see `POST /v1/add`), which stored nothing. From
+`625b7138` (both Full 2 runs), a Search whose query embedding does not answer within the service's
+Search time budget (90 seconds)
 returns 503 `{"error": "search_deadline"}` with `Retry-After: 5`; it is safe to resend. Within that
 budget a rerank or image search that runs out of time is skipped, and a query with text is served
 its text ranking.
