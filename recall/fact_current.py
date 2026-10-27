@@ -18,7 +18,7 @@ Three tables, on PostgreSQL (migration 0030) and in a lite file alike:
   a fact of another conflict key, or a fact the ledger never recorded; no write path does either).
 
 **Derived, and exact or silent.** A conflict key's rows are recomputed from that key's ledger
-events with the ledger's own functions (`fact_supersession`, `retracted_keys`, `asserts_fact`),
+events with the ledger's own functions (`fact_supersession`, `retracted_keys`, `applications`),
 which read nothing outside the key, so the tables can always be rebuilt from the immutable ledger
 (`rebuild_tables`). A read uses them only when, in one snapshot, they file every event the ledger
 holds for the tenant and every id they name resolves there (`current_view`, `key_history`);
@@ -54,7 +54,7 @@ from recall.provenance_controller import (
     ServedSources,
     _as_utc,
     absent_fact_ids,
-    asserts_fact,
+    applications,
     fact_conflict_key,
     fact_supersession,
     retracted_keys,
@@ -140,13 +140,14 @@ def project_key(events: Sequence[FactEvent]) -> KeyProjection:
     """
     index = fact_supersession(events)
     retracted = retracted_keys(events)
+    counted = applications(events)
     rows: list[IntervalRow] = []
     live: set[str] = set()
     for event in events:
         if event.event_type != "asserted" or event.fact_id is None or retraction_key(event) in retracted:
             continue
         live.add(event.event_id)
-        if asserts_fact(event) and event.fact is not None:
+        if event.event_id in counted and event.fact is not None:
             rows.extend(
                 (event.event_id, event.fact_id, low, high)
                 for low, high in index.in_force(event)
@@ -172,6 +173,13 @@ def event_keys(event: FactEvent, named_key: NamedKey) -> tuple[frozenset[str], s
     keys: set[str] = set()
     if event.fact is not None:
         keys.add(fact_conflict_key(event.fact))
+    elif event.event_type == "asserted" and event.fact_id is not None and not event.supersedes_fact_ids:
+        # An erased DUPLICATE names nothing and has no value: it is filed with the assertion
+        # whose fact id the redaction gave it, so a key's history holds it when it stands in for
+        # that application (`applications`).
+        known, key = named_key(event.fact_id)
+        if known and key is not None:
+            keys.add(key)
     for fact_id in event.supersedes_fact_ids:
         known, key = named_key(fact_id)
         if not known:

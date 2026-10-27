@@ -35,7 +35,7 @@ from recall.provenance_controller import (
     FactSupersession,
     ServedSources,
     absent_fact_ids,
-    asserts_fact,
+    applications as counted_applications,
     fact_supersession,
     ordered_after,
     project_candidates,
@@ -279,8 +279,8 @@ def plan_retractions(
     index = fact_supersession(events)
     hidden = {
         event.event_id
-        for event in events
-        if asserts_fact(event) and event.fact is not None and not index.in_force(event)
+        for event in counted_applications(events).values()
+        if event.fact is not None and not index.in_force(event)
     }
     retracted = retracted_keys(events)
     live: dict[str, list[FactEvent]] = {}

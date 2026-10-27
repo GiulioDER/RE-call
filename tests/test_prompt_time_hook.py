@@ -11,6 +11,8 @@ Nothing here needs a database or a network: the whole point of this hook is that
 from __future__ import annotations
 
 import json
+import time
+from datetime import date, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,9 +22,14 @@ from recall_hooks import prompt_time
 
 @pytest.fixture
 def hook_env(tmp_path, monkeypatch):
-    """An isolated CLAUDE_CONFIG_DIR, so no test can read the developer's own memory store."""
+    """An isolated CLAUDE_CONFIG_DIR, so no test can read the developer's own memory store.
+
+    It also pins the zone `modified` is shown in to UTC, so a stamp does not depend on the zone
+    of the machine running the test.
+    """
 
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(prompt_time, "_LOCAL_TZ", timezone.utc, raising=False)
     return tmp_path
 
 
@@ -387,7 +394,10 @@ def test_provenance_labels_each_date_by_the_field_it_came_from(hook_env):
 
 
 def test_a_date_in_the_body_is_never_taken_as_the_memos_own(hook_env):
-    """A memo that states no date of its own is `[undated]`, whatever dates its prose quotes.
+    """A memo whose frontmatter states no date is `[undated]`, whatever dates its prose quotes.
+
+    The body is read for one thing only, the date on a `🔁` correction line, which the
+    `corrected` part of the stamp names as such.
 
     Red proof: searching the whole file instead of the frontmatter (`VALID_FROM_RE.search(raw)`
     in `prompt_time.provenance`) returns `[valid from 2026-01-01]` and fails the equality below.
@@ -403,14 +413,218 @@ def test_a_date_in_the_body_is_never_taken_as_the_memos_own(hook_env):
     assert prompt_time.provenance(path) == "[undated]"
 
 
+def test_a_horizontal_rule_is_not_read_as_frontmatter(hook_env):
+    """A memo opening with a rule and a heading has no frontmatter, as `frontmatter_span` says.
+
+    Red proof: deleting the `_is_frontmatter` check in `prompt_time.provenance` pairs the two
+    rules, reads the prose line as the memo's own field and returns `[valid from 2026-01-01]`,
+    failing the equality below.
+    """
+
+    path = write_memo(
+        hook_env / "store",
+        "a-memo-opening-with-a-rule",
+        "# Notes\nvalid_from: 2026-01-01 was what the old run used.",
+        "More prose.",
+    )
+
+    assert prompt_time.provenance(path) == "[undated]"
+
+
+def test_a_line_of_correction_markers_is_read_in_linear_time(hook_env):
+    """The stamp runs on every prompt, so no memo may make it quadratic.
+
+    Red proof: restoring `CORRECTION_RE`'s gap to `[^\\n]*?` in `prompt_time` scans the line
+    once per marker, and 20,000 markers take several seconds and fail the bound below.
+    """
+
+    path = write_memo(
+        hook_env / "store", "markers", "name: m\ndescription: m", "\U0001f501" * 20_000
+    )
+
+    started = time.monotonic()
+    stamp = prompt_time.provenance(path)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"provenance took {elapsed:.2f}s on one line of markers"
+    assert stamp == "[corrected 20000x]"
+
+
+def test_a_head_of_blank_lines_is_searched_in_linear_time(hook_env):
+    """A field regex must not let its indent run across newlines.
+
+    Red proof: restoring the leading `^\\s*` of `VALID_FROM_RE`, `MODIFIED_RE` and `SESSION_RE`
+    in `prompt_time` makes each search quadratic in the blank lines, and 40,000 take several
+    seconds and fail the bound below.
+    """
+
+    path = write_memo(
+        hook_env / "store", "blank-head", "\n" * 40_000 + "name: b", "Body."
+    )
+
+    started = time.monotonic()
+    stamp = prompt_time.provenance(path)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"provenance took {elapsed:.2f}s on a head of blank lines"
+    assert stamp == "[undated]"
+
+
+def test_modified_is_shown_as_the_readers_day(hook_env, monkeypatch):
+    """`modified` is an instant, so it is named in the zone `Today is` is stated in.
+
+    Red proof: showing `modified.group(1)` instead of `_record_day(modified)` in
+    `prompt_time.provenance` keeps the UTC day and returns `[modified 2026-08-19]`, failing the
+    equality below.
+    """
+
+    monkeypatch.setattr(prompt_time, "_LOCAL_TZ", timezone(timedelta(hours=-5)), raising=False)
+    path = write_memo(
+        hook_env / "store",
+        "an-evening-memo",
+        "name: e\ndescription: e\nmetadata:\n  modified: 2026-08-19T02:00:00.000Z",
+        "Body.",
+    )
+
+    assert prompt_time.provenance(path) == "[modified 2026-08-18]"
+
+
+def test_a_modified_value_that_cannot_be_converted_is_kept_as_written(hook_env):
+    """A conversion failure keeps the written day; it never escapes and drops the prompt's hits.
+
+    Red proof: catching only ValueError around the conversion in `prompt_time._record_day` lets
+    `astimezone` raise OverflowError on year 1 at +05:00, so `provenance` raises instead of
+    returning the stamp below.
+    """
+
+    path = write_memo(
+        hook_env / "store",
+        "a-memo-at-the-calendars-edge",
+        "name: c\nmodified: 0001-01-01T00:00:00+05:00",
+        "Body.",
+    )
+
+    assert prompt_time.provenance(path) == "[modified 0001-01-01]"
+
+
+def test_every_correction_marker_is_counted(hook_env):
+    """`corrected Nx` counts every marker, and `last` is the latest date one of them states.
+
+    Red proof: counting `CORRECTION_RE.findall(body)` instead of the markers in
+    `prompt_time.provenance` reports `corrected 1x, last 2026-08-20`, failing the first equality.
+    """
+
+    store = hook_env / "store"
+    both = write_memo(
+        store,
+        "two-corrections",
+        "name: t\ndescription: t",
+        "\U0001f501 **Corrected the same afternoon.**\n\n\U0001f501 Corrected 2026-08-20.",
+    )
+    undated = write_memo(
+        store, "an-undated-correction", "name: u\ndescription: u", "\U0001f501 Corrected later."
+    )
+
+    assert prompt_time.provenance(both) == "[corrected 2x, last 2026-08-20]"
+    assert prompt_time.provenance(undated) == "[corrected 1x]"
+
+
+def test_a_date_inside_a_name_is_not_a_correction_date(hook_env):
+    """A wiki link or a path names another memo; its date is not when this one was corrected.
+
+    Red proof: dropping the lookarounds around the date in `prompt_time.CORRECTION_RE` takes
+    the link's date and returns `[corrected 1x, last 2026-10-10]`, failing the equality below.
+    """
+
+    path = write_memo(
+        hook_env / "store",
+        "a-linked-correction",
+        "name: l\ndescription: l",
+        "\U0001f501 **12:05 UTC: ST-1c BENEFIT** (see [[2026-10-10-st1a]] and designs/2026-10-01-x).",
+    )
+
+    assert prompt_time.provenance(path) == "[corrected 1x]"
+
+
+def test_a_bom_does_not_hide_the_frontmatter(hook_env):
+    """A UTF-8 BOM before the opening fence is tolerated, as `frontmatter_span` tolerates it.
+
+    Red proof: removing `\\ufeff?` from `prompt_time.FRONTMATTER_RE` loses the whole head and
+    returns `[undated]`, failing the equality below.
+    """
+
+    store = hook_env / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    path = store / "a-bom-memo.md"
+    path.write_text(
+        "﻿---\nname: b\nvalid_from: 2026-01-01\n---\nBody.\n", encoding="utf-8", newline="\n"
+    )
+
+    assert prompt_time.provenance(path) == "[valid from 2026-01-01]"
+
+
+def test_an_unreadable_memo_is_undated(hook_env):
+    """A path that cannot be read gives no date rather than an error on the prompt.
+
+    Red proof: returning `"[unreadable]"` from the `except OSError` branch of
+    `prompt_time.provenance` fails the equality below.
+    """
+
+    folder = hook_env / "store" / "a-folder.md"
+    folder.mkdir(parents=True)
+
+    assert prompt_time.provenance(folder) == "[undated]"
+
+
+def test_valid_from_is_left_out_when_it_is_the_file_names_date(hook_env):
+    """The same day twice says nothing more, so `valid from` appears only when it differs.
+
+    Red proof: dropping the `name_date` equality guard in `prompt_time.provenance` returns
+    `[written 2026-08-18; valid from 2026-08-18]`, failing the equality below.
+    """
+
+    path = write_memo(
+        hook_env / "store", "2026-08-18-same-day", "name: s\nvalid_from: 2026-08-18", "Body."
+    )
+
+    assert prompt_time.provenance(path) == "[written 2026-08-18]"
+
+
+def test_a_session_alone_is_undated(hook_env):
+    """A session id is not a date, so a memo carrying only one is still `[undated]`.
+
+    Red proof: looking up `SESSION_RE` before the `if not parts` return in
+    `prompt_time.provenance` returns `[session deadbeef]`, failing the equality below.
+    """
+
+    path = write_memo(
+        hook_env / "store", "a-session-only-memo", "name: s\noriginSessionId: deadbeef-1", "Body."
+    )
+
+    assert prompt_time.provenance(path) == "[undated]"
+
+
+def test_a_file_without_frontmatter_is_read_as_body(hook_env):
+    """With no frontmatter the whole file is body, so its correction line still dates it.
+
+    Red proof: setting `body` to `""` when there is no head in `prompt_time.provenance` loses
+    the correction and returns `[undated]`, failing the equality below.
+    """
+
+    store = hook_env / "store"
+    store.mkdir(parents=True, exist_ok=True)
+    path = store / "no-frontmatter.md"
+    path.write_text("Body.\n\n\U0001f501 Corrected 2026-09-01.\n", encoding="utf-8")
+
+    assert prompt_time.provenance(path) == "[corrected 1x, last 2026-09-01]"
+
+
 def test_the_rendered_block_leads_each_hit_with_its_stamp_and_states_today(hook_env):
     """A date is only useful beside the date it is compared with, so `today` is in the block.
 
     Red proof: rendering each hit as `- {stem} (score ...)` without `provenance(path)` in
     `prompt_time.render` fails the first assertion.
     """
-
-    from datetime import date
 
     store = hook_env / "store"
     write_memo(store, "2026-09-24-dated", "name: d\ndescription: d", "Body.")

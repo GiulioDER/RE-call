@@ -206,7 +206,9 @@ def test_l4_a_value_another_memo_states_survives_withdrawing_one_memo(ledgered: 
     Coffee is stated by two memos; withdrawing one leaves coffee current and tea retired.
     Red, mutation of `plan_withdrawals` without its support check (the `if any(...): continue`
     removed): the first application is withdrawn and the DUPLICATE is never listed, so it fails
-    on "a value another memo states was withdrawn".
+    on "a value another memo states was withdrawn". Since the DUPLICATE stands in for a withdrawn
+    application (`applications`, 2026-10-27), coffee stays listed under that mutation and it
+    fails on `facts_withdrawn == 0` instead.
     """
     for name in ("tea.md", "coffee.md", "coffee-again.md"):
         ledgered.remember(name)
@@ -401,3 +403,158 @@ def test_l9_a_withdrawn_assertion_whose_value_was_erased_is_withdrawn_through_it
     assert february == ["tea"], f"the erased successor still hides tea in February: {february}"
     today = [e.fact.object for e in project_current(events, NOW) if e.fact]
     assert today == ["juice"], f"two current values: {today}"
+
+
+def test_l10_withdrawing_the_first_memo_keeps_what_a_forgotten_second_memo_retired(ledgered: Ledgered) -> None:
+    """Node tests/test_fact_withdrawal.py::test_l10_withdrawing_the_first_memo_keeps_what_a_forgotten_second_memo_retired.
+
+    Coffee is stated by two memos, the second recorded DUPLICATE. Forgetting the second keeps
+    coffee (the first still supports it); withdrawing the first then leaves the second's
+    application, whose memo is forgotten: coffee is no longer listed, and tea stays retired,
+    because a forget keeps retired what the forgotten memo retired (owner, 2026-10-22). The other
+    order already ended so; this one gave tea back (2026-10-27 audit of #921, STAKES-001).
+    Red on master 1ecb50db5 (`applications` absent, DUPLICATEs skipped by every projection):
+    fails on "withdrawing the first memo gave back what the forgotten one retired", with tea.
+    The withdraw erases coffee's value from both applications (PR 950), so the DUPLICATE stands
+    in with no value. Red, mutation of `fact_supersession` (recall/provenance_controller.py)
+    without its erased stand-in branch (`elif ... not asserts_fact(event)` made `elif False`):
+    same line, tea. Red, mutation of `event_keys` (recall/fact_current.py) without its erased
+    DUPLICATE branch, so the tables file it under no key: same line, tea, from the tables.
+    """
+    for name in ("tea.md", "coffee.md", "coffee-again.md"):
+        ledgered.remember(name)
+    ledgered.apply(TEA, "tea.md", "r1")
+    assert ledgered.apply(COFFEE, "coffee.md", "r2", links=("tea.md",)) == DecisionCode.APPLIED
+    assert ledgered.apply(COFFEE, "coffee-again.md", "r3", links=("tea.md",)) == DecisionCode.DUPLICATE
+    forget_memory(ledgered.store, ["coffee-again.md"])
+    assert ledgered.current() == ["coffee"]
+
+    withdraw_memory(ledgered.store, ["coffee.md"])
+    assert ledgered.current() == [], (
+        f"withdrawing the first memo gave back what the forgotten one retired: {ledgered.current()}"
+    )
+    assert ledgered.ledger.last_read == "table", "the tables did not answer"
+    assert ledgered.replayed() == []
+
+
+def test_l11_a_duplicate_stands_in_for_its_withdrawn_application() -> None:
+    """Node tests/test_fact_withdrawal.py::test_l11_a_duplicate_stands_in_for_its_withdrawn_application.
+
+    In memory, hand-built: coffee applied superseding tea, then twice more as DUPLICATEs (stored
+    with no supersession), then the APPLIED event withdrawn. The first DUPLICATE is counted in its
+    place with that application's supersession: coffee is listed once and tea stays hidden, and as a
+    candidate it carries that supersession, which is what `repeats_assertion` reads.
+    Red on master 1ecb50db5 (`applications` absent): fails on "the DUPLICATE did not stand in",
+    with tea listed. Red, mutation of `applications` (recall/provenance_controller.py) not carrying
+    the withdrawn application's supersession (`supersedes_fact_ids=repeated.supersedes_fact_ids`
+    dropped from its `replace`): tea comes back and it fails on the same line.
+    """
+    from datetime import timedelta
+
+    from recall.provenance_controller import FactEvent, fact_identity, project_candidates
+
+    def event(event_id: str, kind: str, fact: AtomicFact | None, code: str, *,
+              supersedes: tuple[str, ...] = (), request: str, day: int) -> FactEvent:
+        # Each application its own memo's card, as the ledger records them: a withdrawal takes
+        # back the one it names (`retraction_key`), not every application of the fact.
+        cards = () if fact is None else (
+            evidence_card(fact, tenant="t", generation=GEN, chunk=f"chunk-{event_id}", source=f"{event_id}.md"),
+        )
+        return FactEvent(
+            event_id=event_id, event_type=kind, tenant_id="t", generation_id=GEN, fact=fact,
+            fact_id=fact_identity(fact) if fact is not None else None, evidence_cards=cards,
+            supersedes_fact_ids=supersedes, request_id=request, writer="w", decision_code=code,
+            policy_version="p", controller_version=1,
+            created_at=datetime(2025, 12, 1, tzinfo=UTC) + timedelta(days=day),
+        )
+
+    tea = fact_identity(TEA)
+    events = [
+        event("evt_tea", "asserted", TEA, DecisionCode.APPLIED, request="r1", day=0),
+        event("evt_coffee", "asserted", COFFEE, DecisionCode.APPLIED, supersedes=(tea,), request="r2", day=1),
+        event("evt_again", "asserted", COFFEE, DecisionCode.DUPLICATE, request="r3", day=2),
+        event("evt_third", "asserted", COFFEE, DecisionCode.DUPLICATE, request="r4", day=3),
+        event("evt_w", "withdrawn", None, DecisionCode.WITHDRAWN, request="withdrawal:evt_coffee", day=4),
+    ]
+
+    listed = [(e.event_id, e.fact.object) for e in project_current(events, NOW) if e.fact]
+    assert listed == [("evt_again", "coffee")], f"the DUPLICATE did not stand in: {listed}"
+    candidates = {e.event_id: e.supersedes_fact_ids for e in project_candidates(events)}
+    assert candidates == {"evt_again": (tea,)}, candidates
+
+
+@pytest.mark.parametrize("ending", ["retracted", "withdrawn", "withdrawn and erased"])
+def test_l12_a_stand_in_hides_only_what_the_withdrawn_application_hid(ending: str) -> None:
+    """Node tests/test_fact_withdrawal.py::test_l12_a_stand_in_hides_only_what_the_withdrawn_application_hid.
+
+    Tea for 2024; coffee from 2024 superseding it (APPLIED); tea for 2024 again, superseding
+    coffee; coffee from a second memo (DUPLICATE: coffee is still in force from 2025). Then either
+    both coffee applications are retracted, or the APPLIED one is withdrawn (its value erased or
+    not). The second tea, recorded after the APPLIED coffee, is not hidden by it, so in mid-2024 it
+    is current whichever ending: a stand-in hides what the application it replaces hid, from that
+    application's point in the ledger, and a retraction needs no stand-in.
+    Red, mutation of `applications` (recall/provenance_controller.py) keeping the DUPLICATE's own
+    time (`created_at=repeated.created_at` dropped): the stand-in, recorded after the second tea,
+    hides it, and the withdrawn endings fail on "a stand-in hid a value recorded after the
+    application it replaces". The retracted ending is a control, not a red proof: it is the
+    ordinary forget path where the 2026-10-27 differential review of this fix first lost the
+    second tea, and it passes on master and here; counting a stand-in for a retracted application
+    as well changes nothing it can see, since that stand-in hides only what the retracted
+    application still hides.
+    """
+    from datetime import timedelta
+
+    from recall.provenance_controller import FactEvent, fact_identity
+
+    year = datetime(2024, 1, 1, tzinfo=UTC)
+    tea_2024 = AtomicFact(namespace="memory", subject="user", predicate="drink", object="tea",
+                          valid_from=year, valid_until=datetime(2025, 1, 1, tzinfo=UTC))
+    coffee = AtomicFact(namespace="memory", subject="user", predicate="drink", object="coffee",
+                        valid_from=year)
+    tea, coffee_id = fact_identity(tea_2024), fact_identity(coffee)
+    erased = ending == "withdrawn and erased"
+
+    def card(source: str, fact: AtomicFact) -> Any:
+        return evidence_card(fact, tenant="t", generation=GEN, chunk=f"chunk-{source}", source=source)
+
+    def event(event_id: str, kind: str, fact: AtomicFact | None, code: str, *, fact_id: str | None,
+              cards: tuple[Any, ...] = (), supersedes: tuple[str, ...] = (), request: str,
+              day: int) -> FactEvent:
+        return FactEvent(
+            event_id=event_id, event_type=kind, tenant_id="t", generation_id=GEN, fact=fact,
+            fact_id=fact_id, evidence_cards=cards, supersedes_fact_ids=supersedes, request_id=request,
+            writer="w", decision_code=code, policy_version="p", controller_version=1,
+            created_at=datetime(2023, 12, 1, tzinfo=UTC) + timedelta(days=day),
+        )
+
+    coffee_held = "fact_erased" if erased else coffee_id
+    a_card, b_card = card("a.md", coffee), card("b.md", coffee)
+    events = [
+        event("evt_tea", "asserted", tea_2024, DecisionCode.APPLIED, fact_id=tea,
+              cards=(card("tea.md", tea_2024),), request="r1", day=0),
+        event("evt_coffee", "asserted", None if erased else coffee, DecisionCode.APPLIED,
+              fact_id=coffee_held, cards=(a_card,), supersedes=(tea,), request="r2", day=1),
+        event("evt_tea2", "asserted", tea_2024, DecisionCode.APPLIED, fact_id=tea,
+              cards=(card("tea2.md", tea_2024),), supersedes=(coffee_held,), request="r3", day=2),
+        event("evt_again", "asserted", None if erased else coffee, DecisionCode.DUPLICATE,
+              fact_id=coffee_held, cards=(b_card,), request="r4", day=3),
+    ]
+    if erased:  # the erased APPLIED assertion's own `superseded` event, as the redaction leaves it
+        events.insert(2, event("evt_coffee_sup", "superseded", None, DecisionCode.APPLIED,
+                               fact_id=None, supersedes=(tea,), request="r2:supersession", day=1))
+    if ending == "retracted":
+        events += [
+            event("evt_r1", "retracted", None, DecisionCode.SOURCE_FORGOTTEN, fact_id=None,
+                  cards=(a_card,), supersedes=(coffee_id,), request="retraction:evt_coffee", day=4),
+            event("evt_r2", "retracted", None, DecisionCode.SOURCE_FORGOTTEN, fact_id=None,
+                  cards=(b_card,), supersedes=(coffee_id,), request="retraction:evt_again", day=4),
+        ]
+    else:
+        events.append(event("evt_w", "withdrawn", None, DecisionCode.WITHDRAWN, fact_id=None,
+                            supersedes=(coffee_held,), request="withdrawal:evt_coffee", day=4))
+
+    mid_2024 = datetime(2024, 6, 1, tzinfo=UTC)
+    listed = [(e.event_id, e.fact.object) for e in project_current(events, mid_2024) if e.fact]
+    assert listed == [("evt_tea2", "tea")], (
+        f"a stand-in hid a value recorded after the application it replaces ({ending}): {listed}"
+    )
