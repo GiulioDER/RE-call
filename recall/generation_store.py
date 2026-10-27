@@ -37,7 +37,7 @@ from recall.store import (
     supersession_rows_sql,
 )
 from recall.supersession import SupersessionRecord
-from recall.supersession_records import pg_record_count, pg_records
+from recall.supersession_records import pg_record_revision, pg_records
 from recall.support import COVERAGE_EVENT, latest_calibration_event
 from recall.types import Chunk, ScoredChunk
 from recall.errors import RecallError
@@ -1083,10 +1083,10 @@ class GenerationStore(PgVectorStore):
         One cache entry per serving identity, as `supersession_all` describes; the three-part
         accessors are projections of it. Callers receive a copy.
         """
-        # The tenant's record count is part of the key: a withdrawal of a memo every generation
+        # The tenant's record revision is part of the key: a withdrawal of a memo every generation
         # has already lost writes a record and erases nothing, so the corpus fingerprint stays.
-        # One indexed count; the records themselves are read only when the key moves.
-        records_seen = self._with_retry(lambda conn: pg_record_count(conn, self._tenant))
+        # One primary-key lookup; the records themselves are read only when the key moves.
+        records_seen = self._with_retry(lambda conn: pg_record_revision(conn, self._tenant))
         identity = (*self._serving_identity(), records_seen)
         generation_id = identity[0]
         cached = self._supersession_cache
@@ -1108,7 +1108,7 @@ class GenerationStore(PgVectorStore):
         rows, records = self._with_retry(_scan)
         self._supersession_scans += 1
         METRICS.increment("recall_supersession_scans_total")
-        graph = resolve_supersession_graph(rows, records)
+        graph = resolve_supersession_graph(rows, records, self._tenant)
         self._supersession_cache = (identity, graph)
         return graph.copy()
 

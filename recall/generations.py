@@ -60,7 +60,7 @@ from recall.manifest import ManifestObjectV1, ObjectReader, VerifiedObject
 from recall.observability import METRICS, get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
-from recall.supersession_records import pg_record_removals
+from recall.supersession_records import pg_delete_removals, pg_record_removals
 from recall.types import Chunk, EvidenceCard
 
 Chunker = Callable[[str], list[str]]
@@ -383,8 +383,8 @@ class GenerationManager:
         #: state (`recall.stated_facts`); 0 when stating is off; -1 when recording failed (the next
         #: activation retries, since nothing was appended for the facts it missed).
         self.last_stated_facts = 0
-        #: Records the last promote wrote for memos the outgoing generation held and the promoted
-        #: one leaves out (`_record_omitted_supersession`); -1 when writing them failed.
+        #: Records the last successful promotion committed for memos the outgoing generation held
+        #: and the promoted one leaves out (`_record_omitted_supersession`).
         self.last_omitted_records = 0
         self.environment = (environment or os.environ.get("RECALL_ENV", "development")).lower()
         if self.environment not in {"development", "test", "production"}:
@@ -1711,6 +1711,9 @@ class GenerationManager:
             if self.certification_required:
                 self.require_certified_for_production(generation_id, conn=conn)
             active = str(state[0]) if state and state[0] else None
+            # The incoming generation must never serve without the claims its omitted memos
+            # keep retired. An append failure rolls back the publication with these records.
+            omitted_records = self._record_omitted_supersession(conn, active, generation_id)
             if active:
                 conn.execute(
                     "UPDATE recall_generations SET state = 'retired', "
@@ -1736,12 +1739,14 @@ class GenerationManager:
                 generation_id=generation_id,
                 payload={"previous_generation_id": active},
             )
+        self.last_omitted_records = omitted_records
         # After the commit, best effort, as `gc` retracts: the activation is what serves the memos,
         # and recording what they state must never undo or fail it.
         self.last_stated_facts = self._record_stated_facts_after_activation(generation_id)
-        self.last_omitted_records = self._record_omitted_supersession(active, generation_id)
 
-    def _record_omitted_supersession(self, outgoing: str | None, incoming: str) -> int:
+    def _record_omitted_supersession(
+        self, conn: psycopg.Connection, outgoing: str | None, incoming: str
+    ) -> int:
         """Keep retired what a memo left out of the promoted generation retired.
 
         A memo deleted from disk is pruned by the indexer on a lite or legacy store, which writes a
@@ -1749,38 +1754,33 @@ class GenerationManager:
         deletion is a source the next promoted generation simply lacks. So the forward promotion
         writes the same records, from the outgoing generation's rows, which a retired generation
         keeps until gc. A rollback writes none: it restores the previous generation, whose memos
-        are then indexed again and decide with their own claims. After the commit and best effort,
-        as stated facts are: -1 when it failed, and the memos' claims are then simply absent.
+        are then indexed again and decide with their own claims. The caller's publication
+        transaction owns this connection: a recording failure must abort that transaction.
         """
         if not outgoing or outgoing == incoming:
             return 0
-        try:
-            with self._connect() as conn, conn.transaction():
-                omitted = [
-                    str(row[0])
-                    for row in conn.execute(
-                        "SELECT DISTINCT c.source_uri FROM recall_chunks_v1 AS c "
-                        "WHERE c.tenant_id = %s AND c.generation_id = %s AND NOT EXISTS ("
-                        "SELECT 1 FROM recall_chunks_v1 AS n WHERE n.tenant_id = c.tenant_id "
-                        "AND n.generation_id = %s AND n.source_uri = c.source_uri)",
-                        (self.tenant_id, outgoing, incoming),
-                    ).fetchall()
-                ]
-                if not omitted:
-                    return 0
-                return pg_record_removals(
-                    conn,
-                    tenant=self.tenant_id,
-                    table="recall_chunks_v1",
-                    source_column="source_uri",
-                    scope="c.tenant_id = %s AND c.generation_id = %s AND c.source_uri = ANY(%s)",
-                    params=(self.tenant_id, outgoing, omitted),
-                    sources=omitted,
-                    withdraw=False,
-                )
-        except Exception:  # BROAD-CATCH: error-translation  # counted; the promote stands
-            _log.exception("recording the supersession of memos %r left out failed for %r", incoming, self.tenant_id)
-            return -1
+        omitted = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT c.source_uri FROM recall_chunks_v1 AS c "
+                "WHERE c.tenant_id = %s AND c.generation_id = %s AND NOT EXISTS ("
+                "SELECT 1 FROM recall_chunks_v1 AS n WHERE n.tenant_id = c.tenant_id "
+                "AND n.generation_id = %s AND n.source_uri = c.source_uri)",
+                (self.tenant_id, outgoing, incoming),
+            ).fetchall()
+        ]
+        if not omitted:
+            return 0
+        return pg_record_removals(
+            conn,
+            tenant=self.tenant_id,
+            table="recall_chunks_v1",
+            source_column="source_uri",
+            scope="c.tenant_id = %s AND c.generation_id = %s AND c.source_uri = ANY(%s)",
+            params=(self.tenant_id, outgoing, omitted),
+            sources=omitted,
+            withdraw=False,
+        )
 
     def rollback(self, *, provisional_reason: str | None = None) -> str:
         with self._connect() as conn, conn.transaction():
@@ -2074,23 +2074,15 @@ class GenerationManager:
                     "SELECT to_regclass(%s) IS NOT NULL", (legacy_table,)
                 ).fetchone()
                 if exists and exists[0]:
-                    pg_record_removals(
+                    legacy_ids = pg_delete_removals(
                         conn,
                         tenant=self.tenant_id,
                         table=legacy_table,
-                        source_column="source",
-                        scope="c.tenant_id = %s AND c.source = ANY(%s)",
-                        params=(self.tenant_id, [source_uri]),
                         sources=[source_uri],
                         withdraw=withdraw,
+                        quote_table=True,
                     )
-                    legacy_rows = conn.execute(
-                        psycopg.sql.SQL(
-                            "DELETE FROM {} WHERE tenant_id = %s AND source = %s RETURNING id"
-                        ).format(psycopg.sql.Identifier(legacy_table)),
-                        (self.tenant_id, source_uri),
-                    ).fetchall()
-                    removed += len(legacy_rows)
+                    removed += len(legacy_ids)
             return ErasureResult(source_uri, tuple(sorted(selected)), removed, event_id)
 
     def gc(
