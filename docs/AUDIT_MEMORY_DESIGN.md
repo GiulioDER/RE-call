@@ -255,13 +255,14 @@ Claude settings is approved.
   lessons, each with its id and match label; a size cap; text sanitised so a summary cannot close
   the fence.
 - **Never blocks and never delays meaningfully:** any error, an unreadable source, or a wall-clock
-  budget of about one second leaves the prompt unchanged and appends a line to a local log naming
+  budget of about three seconds (one second until 2026-10-27, which a parallel L1 dispatch
+  never fit) leaves the prompt unchanged and appends a line to a local log naming
   the reason. It returns `updatedInput` without a permission decision, so normal permission
   evaluation still applies.
 - **Configuration and files** (as built, 2026-10-23). `RECALL_AUDITOR_TYPES` (comma separated,
   matched case-insensitively; a value naming no type falls back to the default list and logs),
   `RECALL_AUDITOR_MEMOS`, `CCA_BUGS_DIR` (read exactly as CCA reads it), and
-  `RECALL_AUDITOR_BRIEF_BUDGET` (seconds, default 1, at most 30; an invalid value is logged and
+  `RECALL_AUDITOR_BRIEF_BUDGET` (seconds, default 3, at most 30; an invalid value is logged and
   replaced). The log is `<config home>/logs/recall-auditor-brief.log` and the parsed-memo cache
   `<config home>/cache/recall-auditor-brief-memos-<hash of the memo directory>.json`, one per
   directory, where the config home is `RECALL_HOOK_CONFIG_HOME`, else `CLAUDE_CONFIG_DIR`, else
