@@ -8,6 +8,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Upgrade note for the embedding profile lineage check (#909): serving and calibration now
+  compare a generation's recorded embedding profile and its fingerprint with the runtime
+  embedder, not only the model name and dimension. The fingerprint includes the version of the
+  client library the profile names (`voyageai`, `openai`, `fastembed` or
+  `sentence-transformers`, plus `transformers` for `st-prompted:` models), fastembed's ONNX
+  providers, and for a hosted profile its backend, base URL and output dimensions. Changing any
+  of these on a serving host turns every generation that recorded a profile into
+  `LINEAGE_MISMATCH`: refused in strict mode, served degraded and uncalibrated in development
+  mode. Calibrating that generation is refused too. Pin the library on serving hosts, or build
+  and calibrate a new generation under the new version before switching traffic. Generations
+  that recorded no profile are unaffected; legacy fastembed generations record a fallback
+  profile and are covered.
 - Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
   answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
   a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for
