@@ -27,6 +27,10 @@ repository does not republish what it caught):
   term per line, matched case-insensitively. A finding prints the term's index, never the term.
   Without the variable this rule is not checked, and the output says so.
 * ``local-rules-file``: a tracked ``CLAUDE.local.md``, a maintainer's personal rules file.
+* ``recall-state``: a tracked path with a ``.recall`` directory component, which is where RE-call
+  keeps a folder's own state: the lite store (memo text and vectors), its SQLite sidecars and the
+  review ledgers. Those files are SQLite, so the text rules would list them as not checked and
+  pass; this rule refuses them by path, whatever they hold.
 
 Exceptions live in ``scripts/public_tree_allowlist.txt`` as exact values with a reason, never as
 patterns or whole files. Lock files are skipped for ``ipv4`` only (four-part version numbers).
@@ -67,6 +71,8 @@ DENYLIST_ENV = "RECALL_PUBLIC_TREE_DENYLIST"
 #: Rules whose existing hits are grandfathered per file by BASELINE; every other rule is absolute.
 RATCHETED = ("home-user", "private-term")
 LOCAL_RULES_FILE = "CLAUDE.local.md"
+#: The directory RE-call writes a folder's own state into; nothing under it is ever public.
+STATE_DIR = ".recall"
 
 #: An account name in a home-directory path, in the four spellings this tree has carried.
 HOME_USER = re.compile(
@@ -213,6 +219,8 @@ def scan(
             continue
         if Path(path).name == LOCAL_RULES_FILE:
             out.append((path, 0, "local-rules-file", path))
+        if any(part.lower() == STATE_DIR for part in Path(path).parts[:-1]):
+            out.append((path, 0, "recall-state", path))
         if path.endswith(SKIP_SUFFIXES):
             skipped.append(path)
             continue

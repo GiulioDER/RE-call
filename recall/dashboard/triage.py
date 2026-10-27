@@ -27,6 +27,7 @@ from recall.document import parse_document
 from recall.errors import RecallError
 from recall.frontmatter import supersedes_key
 from recall.lint import MEMO_REFERENCE, LintIssue, closure_marker_naming_a_memo, lint_corpus, prose_only, sentence_around
+from recall.state_dir import make_parent
 
 CODE = "closure-marker-unlinked"
 #: A memo linking at least this many others is an index page: its lines describe the memos they
@@ -71,7 +72,7 @@ class DismissalLedger:
         if not write and not self.path.exists():
             return None
         if write:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            make_parent(self.path)
             connection = sqlite3.connect(self.path, timeout=10.0)
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS dismissals (file TEXT NOT NULL, code TEXT NOT NULL, "
