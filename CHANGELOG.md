@@ -31,6 +31,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `fastembed` through `RECALL_EMBEDDER`'s resolver and raises on an unknown one. It used to
   measure `BAAI/bge-small-en-v1.5` for all of them and report the result under the name it was
   given, so an earlier labelled result for any other spelling measured bge-small.
+- `recall_search` says what an answer may cite (#906). Its result carries `evidence`: `decision`,
+  `reason_code` and `citable`, the chunk ids of its own hits that `recall_evidence`'s rule admits,
+  built from the same trusted result with no extra retrieval and no card registration. When
+  something is citable the advice says to answer only from those hits; a result the trust gate
+  could not certify adds the same DEGRADED qualification `recall_evidence` gives. `recall_evidence`
+  remains the tool for card warrants, the rendered answer prompt and passages beyond the search's
+  hits. `RECALL_SEARCH_EVIDENCE=off` (also `0`, `false`, `no`) sets `evidence` and the later
+  `historical` field to null and drops their advice. A memo whose authored facts do not parse no
+  longer fails the search or evidence call that returns it: a malformed fact is left off its
+  evidence card, and a memo with no well-formed fact gets no card.
 - Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
   answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
   a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for

@@ -431,6 +431,11 @@ RECALL_MULTIMODAL_MAX_ITEMS=20
 # quality = 20 candidates/leg, pinned reranker,   returns 5,  1500 ms budget, 2 concurrent +  8 queued
 # code    = 20 candidates/leg, CoREB code rerank, returns 5, 10000 ms budget, 1 concurrent  +  2 queued
 #
+# Search evidence (RECALL_SEARCH_EVIDENCE, default on). recall_search carries `evidence`: the
+# decision, reason code and the chunk ids of its own hits an answer may cite, built by the same
+# rule as recall_evidence, plus the optional `historical` candidates. off, 0, false or no
+# (any case) sets both to null and drops their citation advice; any other value leaves them on.
+#
 # Paged evidence depth (RECALL_PAGED_EVIDENCE, default off). When on, recall_evidence called
 # WITHOUT k returns the profile's paged depth (20 on fast, quality, code and legacy) if at least
 # three of the top five results come from PDF or PPTX documents, and the standard five otherwise.

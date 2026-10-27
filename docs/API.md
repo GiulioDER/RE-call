@@ -191,8 +191,9 @@ certified superseded or expired chunk identifiers in `historical.candidates`. It
 `historical_only`, and `requires_validity_check` is always true. Before citing a candidate as a
 fact at the requested time, match that time to the hit's `valid_from` and `valid_until` and its
 text. If they do not establish that time, describe only the archived assertion, without claiming
-it held then. These candidates never expand present-state citations. Disabling
-`RECALL_SEARCH_EVIDENCE` removes both evidence surfaces and their citation advice.
+it held then. These candidates never expand present-state citations. Setting
+`RECALL_SEARCH_EVIDENCE` to `off` (or `0`, `false`, `no`) sets both evidence fields to null and
+removes their citation advice.
 
 `recall_search` and `recall_evidence` also accept an optional `locale` argument for presentation
 localization. When supplied, the response gains an additive `localized` object containing display
