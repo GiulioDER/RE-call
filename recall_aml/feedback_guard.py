@@ -89,6 +89,12 @@ _FRAMED_QUESTION = re.compile(r"\s*(\S.*?)[ \t]*\nAnswer:", re.DOTALL)
 #: Below this many characters a question must match a searched query exactly; above it, one may
 #: contain the other (a query can carry the options or an instruction around the question).
 MIN_CONTAINED_CHARS = 20
+#: A remembered query is cut to this many characters, the bound a plain-text Search query already
+#: has (``models.MAX_QUERY_CHARS``); a query sent as text parts has no bound of its own.
+MAX_REMEMBERED_CHARS = 20_000
+#: All remembered queries together, in characters. Past it the tenants searched longest ago are
+#: forgotten first, which only switches the guard off for them.
+MAX_REMEMBERED_TOTAL_CHARS = 64_000_000
 
 
 @dataclass(frozen=True)
@@ -112,26 +118,42 @@ def normalize_question(text: str) -> str:
 class AskedQuestions:
     """The questions each tenant was searched with in this process, newest kept, bounded."""
 
-    def __init__(self, *, max_tenants: int = 20_000, per_tenant: int = 2_048) -> None:
+    def __init__(
+        self,
+        *,
+        max_tenants: int = 20_000,
+        per_tenant: int = 2_048,
+        max_total_chars: int = MAX_REMEMBERED_TOTAL_CHARS,
+    ) -> None:
         self._max_tenants, self._per_tenant = max_tenants, per_tenant
+        self._max_total_chars = max_total_chars
         self._by_tenant: OrderedDict[str, OrderedDict[str, None]] = OrderedDict()
+        self._chars = 0
 
     def remember(self, tenant: str, query: str) -> None:
-        question = normalize_question(query)
+        question = normalize_question(query)[:MAX_REMEMBERED_CHARS]
         if not question:
             return
         seen = self._by_tenant.pop(tenant, None) or OrderedDict()
-        seen.pop(question, None)
+        if question in seen:
+            seen.pop(question)
+            self._chars -= len(question)
         seen[question] = None
+        self._chars += len(question)
         while len(seen) > self._per_tenant:
-            seen.popitem(last=False)
+            self._chars -= len(seen.popitem(last=False)[0])
         self._by_tenant[tenant] = seen
-        while len(self._by_tenant) > self._max_tenants:
-            self._by_tenant.popitem(last=False)
+        while len(self._by_tenant) > 1 and (
+            len(self._by_tenant) > self._max_tenants or self._chars > self._max_total_chars
+        ):
+            _, oldest = self._by_tenant.popitem(last=False)
+            self._chars -= sum(map(len, oldest))
 
     def forget(self, tenant: str) -> None:
         """Drop what ``tenant`` was asked, so a user created again under its id starts empty."""
-        self._by_tenant.pop(tenant, None)
+        seen = self._by_tenant.pop(tenant, None)
+        if seen:
+            self._chars -= sum(map(len, seen))
 
     def asked(self, tenant: str, question: str) -> bool:
         wanted = normalize_question(question)
@@ -176,7 +198,8 @@ def _json_object(text: str) -> dict[str, Any] | None:
         return None
     try:
         value = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # RecursionError: nesting deeper than the interpreter's stack is not a record either.
         return None
     return value if isinstance(value, dict) else None
 
@@ -185,7 +208,8 @@ def _outcome(value: object) -> Verdict | None:
     if isinstance(value, bool):
         return "passed" if value else "failed"
     if isinstance(value, (int, float)):
-        if not math.isfinite(value):
+        # An int is always finite and math.isfinite overflows on one past float range.
+        if isinstance(value, float) and not math.isfinite(value):
             return None
         return "passed" if value > 0 else "failed"
     if isinstance(value, str):

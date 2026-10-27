@@ -341,6 +341,58 @@ def test_short_questions_must_match_exactly() -> None:
     assert not asked.asked("other", "Where is Mara now and who is she with?")
 
 
+@pytest.mark.parametrize(
+    "record",
+    [
+        '{"question": "' + QUESTION + '", "predicted_answer": "' + WRONG + '", "score": 1' + "0" * 400 + "}",
+        '{"question": ' + "[" * 100_000 + "]" * 100_000 + "}",
+    ],
+    ids=["int-past-float-range", "nesting-past-the-stack"],
+)
+def test_a_record_the_parser_cannot_read_is_stored_unchanged(record) -> None:
+    """CCA BUG-001 (PR 956 audit): an unreadable number or nesting is not a record, never an error.
+
+    Before the fix the first raised OverflowError (``math.isfinite`` on an int) and the second
+    RecursionError (``json.loads``), so every retry of the Add answered 503 and stored nothing.
+
+    Red proof, 2026-10-27 on the test host, both ids against this branch's ``feedback_guard.py`` before
+    the port (merge ``8a1936f97``, ``_outcome`` and ``_json_object``): ``Failed: the guard raised
+    OverflowError(...)`` and ``Failed: the guard raised RecursionError(...)``. Green after it.
+    """
+    message = Message(role="user", content=record)
+    try:
+        result = filter_feedback([message], asked=lambda q: True)
+    except (OverflowError, RecursionError) as exc:
+        pytest.fail(f"the guard raised {exc!r} instead of storing the message")
+    assert result.kept == [message]
+
+
+def test_remembered_queries_are_bounded_in_characters() -> None:
+    """CCA SEC-001 (PR 956 audit): a long query is cut, and the total is bounded by forgetting.
+
+    A Search query sent as text parts has no length bound of its own, and the guard used to keep
+    every one in full for the life of the process. ``forget`` (Delete) gives its characters back.
+
+    Red proof, 2026-10-27 on the test host, three mutations of ``AskedQuestions`` (the bound is new, so
+    the earlier code has no symbol to test): the ``[:MAX_REMEMBERED_CHARS]`` cut removed failed
+    ``assert 49999 <= 20000``; the total-character clause removed failed ``assert not True`` on
+    ``asked('oldest', ...)``; ``forget`` keeping the characters failed ``assert 20000 == 0``.
+    """
+    from recall_aml.feedback_guard import MAX_REMEMBERED_CHARS
+
+    asked = AskedQuestions()
+    asked.remember("t", "word " * 10_000)
+    assert asked._chars <= MAX_REMEMBERED_CHARS
+    asked.forget("t")
+    assert asked._chars == 0
+    bounded = AskedQuestions(max_total_chars=80)
+    for tenant in ("oldest", "middle", "newest"):
+        bounded.remember(tenant, f"Where did {tenant} Mara move after the conference?")
+    assert not bounded.asked("oldest", "Where did oldest Mara move after the conference?")
+    assert bounded.asked("newest", "Where did newest Mara move after the conference?")
+    assert bounded._chars <= 80
+
+
 def test_with_no_feedback_records_the_guard_stores_exactly_what_the_off_path_stores(monkeypatch) -> None:
     """Near-records included, and a real failed record about a question the tenant was never asked."""
     messages = [

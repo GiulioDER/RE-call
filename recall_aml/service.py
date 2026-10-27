@@ -36,7 +36,6 @@ from recall_aml.compiler import (
 )
 from recall_aml.config import (
     EMBEDDING_PROFILE,
-    RERANK_MODEL,
     RERANK_PRICE_USD_PER_MILLION_TOKENS,
     RETRIEVAL_PROFILE,
     VISUAL_QUERY_TIMEOUT_SECONDS,
@@ -104,7 +103,7 @@ from recall_aml.temporal_render import RENDER_VERSIONS, resolve_relative_times
 from recall_aml.window_compose import ADD_DIGEST_CHARS, compose_items
 from recall_aml.image_text import ImageTextExtractor, shown_items, sidecar_chunks
 from recall_aml.last_window import with_last_windows
-from recall_aml.rerank_switch import RERANKER_ENV
+from recall_aml.rerank_switch import DEFAULT_RERANK_MODEL, RERANKER_ENV
 from recall_aml.search_deadline import backoff_before, search_budget, stage_budget
 from recall_aml.feedback_guard import FEEDBACK_GUARD_ENV, AskedQuestions, filter_feedback
 from recall_aml.forget import (
@@ -140,6 +139,15 @@ def _env_flag(name: str, default: bool) -> bool:
     if configured:
         raise ValueError(f"{name} must be 1 or 0, not {configured!r}")
     return default
+
+
+def reranker_switch(behavior: HostedVariant) -> bool:
+    """RK-1: ``RECALL_AML_RERANKER`` (1/0) when set, else the variant's ``reranker``.
+
+    The one definition of the switch: startup readiness (``__main__.build_app``) and every Search
+    (``HostedService.reranker_enabled``) both read it here.
+    """
+    return _env_flag(RERANKER_ENV, behavior.reranker)
 
 
 RAW_SEGMENT_CHARS = 4_500
@@ -1650,7 +1658,7 @@ class HostedService:
                 # RK-1: the model the service loaded, not the config default (which named
                 # rerank-2.5 on every header while rerank-3 served).
                 reranker_model=(
-                    (self.rerank_model or RERANK_MODEL.split(":", 1)[1])
+                    (self.rerank_model or DEFAULT_RERANK_MODEL)
                     if run.reranker_attempted
                     else "none"
                 ),
@@ -2104,8 +2112,8 @@ class HostedService:
 
     @property
     def reranker_enabled(self) -> bool:
-        """RK-1: ``RECALL_AML_RERANKER`` (1/0) when set, else the variant's ``reranker``."""
-        return _env_flag(RERANKER_ENV, self._behavior.reranker)
+        """RK-1: whether a Search reranks, per ``reranker_switch``."""
+        return reranker_switch(self._behavior)
 
     @property
     def image_text_build(self) -> bool:

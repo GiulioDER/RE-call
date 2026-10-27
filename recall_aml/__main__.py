@@ -37,7 +37,7 @@ from recall_aml.rerank_switch import rerank_model
 from recall_aml.retrieval import HostedRetriever
 from recall_aml.search_deadline import DeadlineEmbedder
 from recall_aml.readiness import verify_model_readiness
-from recall_aml.service import HostedService
+from recall_aml.service import HostedService, reranker_switch
 from recall_aml.storage import PgHostedRepository
 from recall_aml.multimodal import MultimodalEmbedder, VoyageMultimodalEmbedder
 from recall_aml.variants import HostedVariant, variant
@@ -147,14 +147,6 @@ def build_image_text_extractor(
     )
 
 
-def _env_reranker(behavior: HostedVariant) -> bool:
-    """Whether the reranker serves at startup: ``RECALL_AML_RERANKER`` when set, else the variant."""
-    from recall_aml.rerank_switch import RERANKER_ENV
-    from recall_aml.service import _env_flag
-
-    return _env_flag(RERANKER_ENV, behavior.reranker)
-
-
 def _env_compiler(behavior: HostedVariant) -> bool:
     """Whether the Add-time compile serves: the variant's, unless ``RECALL_AML_COMPILER`` is 0.
 
@@ -222,7 +214,7 @@ def build_app(settings: HostedSettings | None = None) -> Any:
         api_key=settings.voyage_api_key,
         timeout=RERANK_TIMEOUT_SECONDS,
     )
-    rerank_on = _env_reranker(behavior)
+    rerank_on = reranker_switch(behavior)
     multimodal_embedder: MultimodalEmbedder | None = (
         VoyageMultimodalEmbedder(
             settings.voyage_api_key, query_timeout=VISUAL_QUERY_TIMEOUT_SECONDS

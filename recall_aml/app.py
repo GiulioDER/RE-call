@@ -31,7 +31,6 @@ from recall_aml.config import (
     GENERATION_PROVIDER,
     PRODUCT_NAME,
     PRODUCT_VERSION,
-    RERANK_MODEL,
     RERANK_PRICE_SOURCE_DATE,
     RERANK_PRICE_SOURCE_URL,
     RERANK_PRICE_USD_PER_MILLION_TOKENS,
@@ -48,6 +47,7 @@ from recall_aml.graph import (
     GRAPH_PROTECTED_PREFIX,
     GRAPH_SEED_K,
 )
+from recall_aml.rerank_switch import DEFAULT_RERANK_MODEL, RERANK_PROVIDER
 from recall_aml.retrieval import (
     CANDIDATE_WIDTH,
     CODE_NEIGHBOUR_PREDECESSOR_RADIUS,
@@ -621,9 +621,9 @@ def create_app(
                 "generation_provider": GENERATION_PROVIDER,
                 "generation_model": GENERATION_MODEL,
                 # RK-1: the model the service actually loaded, and whether Searches rerank.
-                "reranker": f"voyage:{service.rerank_model}" if service.rerank_model else RERANK_MODEL,
-                "reranker_provider": RERANK_MODEL.split(":", 1)[0],
-                "reranker_model": service.rerank_model or RERANK_MODEL.split(":", 1)[1],
+                "reranker": f"{RERANK_PROVIDER}:{service.rerank_model or DEFAULT_RERANK_MODEL}",
+                "reranker_provider": RERANK_PROVIDER,
+                "reranker_model": service.rerank_model or DEFAULT_RERANK_MODEL,
                 "reranker_enabled": service.reranker_enabled,
                 "reranker_price_usd_per_million_tokens": (RERANK_PRICE_USD_PER_MILLION_TOKENS),
                 "reranker_price_source_date": RERANK_PRICE_SOURCE_DATE,

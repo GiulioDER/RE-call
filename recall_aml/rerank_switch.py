@@ -21,10 +21,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from recall_aml.config import RERANK_MODEL
+
 RERANKER_ENV = "RECALL_AML_RERANKER"
 RERANK_MODEL_ENV = "RECALL_AML_RERANK_MODEL"
-#: The served default since the reranker was wired; unchanged unless the variable is set.
-DEFAULT_RERANK_MODEL = "rerank-2.5"
+#: The served default since the reranker was wired (``config.RERANK_MODEL``, its one definition);
+#: unchanged unless the variable is set.
+RERANK_PROVIDER, DEFAULT_RERANK_MODEL = RERANK_MODEL.split(":", 1)
 #: Voyage's current rerankers (docs.voyageai.com/docs/reranker, read 2026-10-19).
 RERANK_MODELS = ("rerank-2.5", "rerank-2.5-lite", "rerank-3", "rerank-3-lite")
 
