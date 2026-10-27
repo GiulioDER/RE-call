@@ -12,8 +12,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   compare a generation's recorded embedding profile and its fingerprint with the runtime
   embedder, not only the model name and dimension. The fingerprint includes the version of the
   client library the profile names (`voyageai`, `openai`, `fastembed` or
-  `sentence-transformers`, plus `transformers` for `st-prompted:` models), fastembed's ONNX
-  providers, and for a hosted profile its backend, base URL and output dimensions. Changing any
+  `sentence-transformers`, plus `transformers` for `st-prompted:` models), for fastembed also the
+  installed `onnxruntime` and `tokenizers` versions and its ONNX providers, and for a hosted
+  profile its backend, base URL and output dimensions. Changing any
   of these on a serving host turns every generation that recorded a profile into
   `LINEAGE_MISMATCH`: refused in strict mode, served degraded and uncalibrated in development
   mode. Calibrating that generation is refused too. Pin the library on serving hosts, or build
