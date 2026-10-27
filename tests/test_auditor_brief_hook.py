@@ -119,7 +119,7 @@ so H13 and H14 each prove one; removing either timeout alone leaves the other te
 
 The deferred CCA pass (run 20261023T102301Z, parent 20261022T185308Z) added D1 to D13 and
 extended H15. Invariants:
-- D1 (ENV-002) a non-finite or non-numeric budget falls back to 1 s, one above 30 s is clamped,
+- D1 (ENV-002) a non-finite or non-numeric budget falls back to the default (3 s since H31), one above 30 s is clamped,
   and either is logged.
 - D2 (ENV-003) the warm command names the cache file it wrote; the recommended command runs this
   interpreter with `-P`.
@@ -204,6 +204,15 @@ Red proof, recorded 2026-10-24 on the workstation, same rules:
   `child.parent != path or child.name != part` removed: the UNC and `..\\outside` cases fail (the
   drive case stays caught by the colon rule, a second layer). `part in ("", ".", "..")` removed:
   `../outside` fails.
+
+A CCA L1 dispatch launches its auditors at once, and the hook log of 2026-10-27 held 18 git
+timeouts and 8 budget overruns, every one from such a dispatch. Measured that day on the
+workstation, nine hooks at once against a 21-file diff: the git stage took 0.75 to 1.14 s and the
+anchors 0.3 s, so a 1 s default briefed 0 of 9 and a 3 s one 9 of 9. Invariant:
+- H31 with no budget configured, a scope as slow as that dispatch's still delivers the brief.
+Red proof, recorded 2026-10-27 on the workstation: H31
+`...::test_default_budget_fits_a_parallel_dispatch` against `4a0de3eea` (`BUDGET_SECONDS = 1.0`)
+fails "a parallel dispatch got no brief", the log reading "budget of 1.00s exceeded"; green at 3.0.
 """
 
 from __future__ import annotations
@@ -992,7 +1001,7 @@ def _log_text(env: Path) -> str:
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected"), [("nan", 1.0), ("inf", 1.0), ("1e9", 30.0), ("x", 1.0)]
+    ("raw", "expected"), [("nan", 3.0), ("inf", 3.0), ("1e9", 30.0), ("x", 3.0)]
 )
 def test_budget_rejects_unusable_values(
     env: Path, monkeypatch: pytest.MonkeyPatch, raw: str, expected: float,
@@ -1396,3 +1405,24 @@ def test_a_changed_file_path_never_leaves_the_repository(
     base = os.path.normcase(os.path.abspath(repo))
     outside = [p for p in lstats if not os.path.normcase(os.path.abspath(p)).startswith(base + os.sep)]
     assert not outside, f"a path outside the repository was looked up: {outside}"
+
+
+def test_default_budget_fits_a_parallel_dispatch(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """H31: the git stage slowed by 1.2 s, the worst measured under a nine-auditor dispatch, with
+    the default budget in force."""
+    monkeypatch.delenv("RECALL_AUDITOR_BRIEF_BUDGET")
+    real = auditor_brief._collect
+
+    def contended(*args: Any, **options: Any) -> Any:
+        time.sleep(1.2)
+        return real(*args, **options)
+
+    monkeypatch.setattr(auditor_brief, "_collect", contended)
+    output = _run(_payload(repo), monkeypatch, capsys)
+    assert output is not None, f"a parallel dispatch got no brief: {_log_text(env)!r}"
+    assert HEADING in _prompt(output)
