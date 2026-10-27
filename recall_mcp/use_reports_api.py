@@ -14,6 +14,7 @@ name, which is how search results usually show it.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from typing import Any
 
@@ -28,6 +29,12 @@ MAX_SOURCES = 20
 MAX_TASK_CHARS = 2000
 MAX_NOTE_CHARS = 1000
 MAX_QUERY_CHARS = 1000
+_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
+
+
+def _context(text: str | None, limit: int) -> str:
+    """Bound report context and replace code points PostgreSQL JSONB cannot store."""
+    return _UNSTORABLE.sub("\ufffd", (text or "").strip())[:limit]
 
 
 class UseReportRefused(ValueError, RecallError):
@@ -54,7 +61,8 @@ def resolve_sources(names: Sequence[str], known: set[str], field: str) -> list[s
         if name in known:
             source = name
         else:
-            matches = by_name.get(_basename(name), [])
+            # A filename alias must be bare; an unknown path is a different source.
+            matches = by_name.get(name, []) if name == _basename(name) else []
             if not matches:
                 raise UseReportRefused(f"{name!r} in {field} is not a memory in this corpus; name it as search returned it")
             if len(matches) > 1:
@@ -77,7 +85,7 @@ def report_use(
     note: str | None = None,
 ) -> dict[str, Any]:
     """Record one report, or raise `UseReportRefused` with the reason."""
-    task = (task or "").strip()
+    task = _context(task, MAX_TASK_CHARS)
     if not task:
         raise UseReportRefused("task is required: say in a sentence what you were doing")
     if effect not in EFFECTS:
@@ -98,8 +106,8 @@ def report_use(
         "used": used_sources,
         "wrong": wrong_sources,
         "task_succeeded": task_succeeded if isinstance(task_succeeded, bool) else None,
-        "query": (query or "").strip()[:MAX_QUERY_CHARS] or None,
-        "note": (note or "").strip()[:MAX_NOTE_CHARS] or None,
+        "query": _context(query, MAX_QUERY_CHARS) or None,
+        "note": _context(note, MAX_NOTE_CHARS) or None,
     }
     event_id = store.append_audit_event(USE_REPORT_EVENT, payload, actor="agent-report")
     return {

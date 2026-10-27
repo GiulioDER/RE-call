@@ -123,40 +123,43 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
         if args.reports_tenant is None:
             reports_tenants = (default_tenant,)
     tunnel = _open_tunnel(args.tunnel, args.tunnel_ports) if args.tunnel else None
-    if args.config_host.startswith("-") or any(c.isspace() for c in args.config_host):
-        print(f"recall dashboard: --config-host {args.config_host!r} is not a host", file=sys.stderr)
-        raise SystemExit(2)
-    app = DashboardApp(
-        root, port=args.port, db=db, reports_tenants=reports_tenants, project_root=Path.cwd(),
-        config_host=args.config_host, config_command=args.config_command, default_tenant=default_tenant,
-        recover_lite_tenant=recover_lite_tenant, auto_reports_tenant=args.reports_tenant is None,
-    )
+    server = None
     try:
-        server = serve(app)
-    except OSError as exc:
-        print(
-            f"recall dashboard: cannot listen on 127.0.0.1:{args.port}: {exc}\n"
-            f"Another dashboard may already be running on that port: stop it (Ctrl+C in its window), "
-            f"or start this one with --port {args.port + 1}.",
-            file=sys.stderr,
+        if args.config_host.startswith("-") or any(c.isspace() for c in args.config_host):
+            print(f"recall dashboard: --config-host {args.config_host!r} is not a host", file=sys.stderr)
+            raise SystemExit(2)
+        app = DashboardApp(
+            root, port=args.port, db=db, reports_tenants=reports_tenants, project_root=Path.cwd(),
+            config_host=args.config_host, config_command=args.config_command, default_tenant=default_tenant,
+            recover_lite_tenant=recover_lite_tenant, auto_reports_tenant=args.reports_tenant is None,
         )
-        raise SystemExit(2) from exc
-    url = f"http://127.0.0.1:{args.port}/?token={app.token}"
-    print(f"Reviewing {root}", flush=True)
-    if db is not None and db.lite:
-        print(f"Database: lite store {db.dsn[len('sqlite:///'):]}, read-only", flush=True)
-    else:
-        print(f"Database: {'read-only, from ' + args.db_dsn_file if db else 'not configured (memo pages only)'}", flush=True)
-    print(f"Open: {url}", flush=True)
-    print("This link is the session key for this run. Press Ctrl+C to stop.", flush=True)
-    if not args.no_browser:
-        webbrowser.open(url)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nstopped")
+        try:
+            server = serve(app)
+        except OSError as exc:
+            print(
+                f"recall dashboard: cannot listen on 127.0.0.1:{args.port}: {exc}\n"
+                f"Another dashboard may already be running on that port: stop it (Ctrl+C in its window), "
+                f"or start this one with --port {args.port + 1}.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
+        url = f"http://127.0.0.1:{args.port}/?token={app.token}"
+        print(f"Reviewing {root}", flush=True)
+        if db is not None and db.lite:
+            print(f"Database: lite store {db.dsn[len('sqlite:///'):]}, read-only", flush=True)
+        else:
+            print(f"Database: {'read-only, from ' + args.db_dsn_file if db else 'not configured (memo pages only)'}", flush=True)
+        print(f"Open: {url}", flush=True)
+        print("This link is the session key for this run. Press Ctrl+C to stop.", flush=True)
+        if not args.no_browser:
+            webbrowser.open(url)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print("\nstopped")
     finally:
-        server.server_close()
+        if server is not None:
+            server.server_close()
         if tunnel is not None:
             tunnel.terminate()
             try:

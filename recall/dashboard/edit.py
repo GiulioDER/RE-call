@@ -11,7 +11,8 @@ This is a person's tool, and it is shaped so it cannot become an agent's:
 * every edit names an editor and a reason, is shown as an exact diff first, and is refused when the
   memo changed after the diff was shown;
 * every edit is recorded with the bytes before and after in `<root>/.recall/edits.sqlite3`, so it
-  can be undone, and an undo is refused when the memo was changed again since.
+  can be undone, and an undo is refused when the memo was changed again since. Recovery bytes
+  are committed before replacement; reopening the ledger reconciles interrupted edits.
 
 The writers are the byte-preserving ones in `recall.frontmatter` and `recall.rewrite`, so a BOM,
 line endings and every line nobody asked to change survive an edit.
@@ -305,21 +306,49 @@ class EditLedger:
     def __init__(self, root: Path) -> None:
         path = root / _LEDGER
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(path), timeout=30.0)
-        self._conn.execute(
-            "CREATE TABLE IF NOT EXISTS edits ("
-            "edit_id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT NOT NULL, editor TEXT NOT NULL, "
-            "note TEXT NOT NULL, summary TEXT NOT NULL, before BLOB NOT NULL, after BLOB NOT NULL, "
-            "before_sha TEXT NOT NULL, after_sha TEXT NOT NULL, edited_at TEXT NOT NULL, "
-            "undone_at TEXT, undone_by TEXT)"
-        )
-        self._conn.commit()
+        # Recovery must distinguish a dead writer from one between its durable prepare
+        # and replacement. A separate database holds a process-shared reservation across
+        # commits on the history database, and SQLite releases it after process death.
+        self._lock_conn = sqlite3.connect(str(path.with_name("edits-lock.sqlite3")), timeout=30.0)
+        connection: sqlite3.Connection | None = None
+        self._root = root
+        self._defer_commit = False
+        try:
+            self._lock_conn.execute("BEGIN IMMEDIATE")
+            connection = sqlite3.connect(str(path), timeout=30.0)
+            self._conn = connection
+            self._conn.execute("PRAGMA synchronous = FULL")
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS edits ("
+                "edit_id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT NOT NULL, editor TEXT NOT NULL, "
+                "note TEXT NOT NULL, summary TEXT NOT NULL, before BLOB NOT NULL, after BLOB NOT NULL, "
+                "before_sha TEXT NOT NULL, after_sha TEXT NOT NULL, edited_at TEXT NOT NULL, "
+                "undone_at TEXT, undone_by TEXT)"
+            )
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS edit_recovery ("
+                "operation_id TEXT PRIMARY KEY, file TEXT NOT NULL UNIQUE, "
+                "before BLOB NOT NULL, after BLOB NOT NULL, summary TEXT NOT NULL, "
+                "editor TEXT NOT NULL, note TEXT NOT NULL, edited_at TEXT NOT NULL, undo_id INTEGER)"
+            )
+            self._conn.commit()
+            self._recover()
+        except BaseException:
+            try:
+                if connection is not None:
+                    connection.close()
+            finally:
+                self._lock_conn.close()
+            raise
 
     def __enter__(self) -> EditLedger:
         return self
 
     def __exit__(self, *exc: object) -> None:
-        self._conn.close()
+        try:
+            self._conn.close()
+        finally:
+            self._lock_conn.close()
 
     def record(self, plan: EditPlan, *, editor: str, note: str, at: datetime) -> int:
         cursor = self._conn.execute(
@@ -330,7 +359,8 @@ class EditLedger:
                 plan.before_sha, hashlib.sha256(plan.after).hexdigest(), at.isoformat(),
             ),
         )
-        self._conn.commit()
+        if not self._defer_commit:
+            self._conn.commit()
         return int(cursor.lastrowid or 0)
 
     def history(self, name: str | None = None, limit: int = 50) -> list[EditRecord]:
@@ -357,7 +387,112 @@ class EditLedger:
             "UPDATE edits SET undone_at = ?, undone_by = ? WHERE edit_id = ? AND undone_at IS NULL",
             (at.isoformat(), editor, edit_id),
         )
+        if not self._defer_commit:
+            self._conn.commit()
+
+    def _pending(self, operation_id: str) -> tuple[str, bytes, bytes, str, str, str, str, int | None] | None:
+        row = self._conn.execute(
+            "SELECT file, before, after, summary, editor, note, edited_at, undo_id "
+            "FROM edit_recovery WHERE operation_id = ?", (operation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return (
+            str(row[0]), bytes(row[1]), bytes(row[2]), str(row[3]), str(row[4]), str(row[5]),
+            str(row[6]), int(row[7]) if row[7] is not None else None,
+        )
+
+    def _complete(self, operation_id: str) -> int:
+        """Publish the edit, its optional undo mark, and journal removal as one transaction."""
+        row = self._pending(operation_id)
+        if row is None:
+            raise EditRefused("the edit recovery record is missing")
+        name, before, after, summary, editor, note, edited_at, undo_id = row
+        plan = EditPlan(name, bytes(before), bytes(after), tuple(json.loads(summary)), ())
+        at = datetime.fromisoformat(edited_at)
+        edit_id: int | None = None
+        self._conn.execute("BEGIN IMMEDIATE")
+        self._defer_commit = True
+        try:
+            if undo_id is not None:
+                self.mark_undone(undo_id, editor=editor, at=at)
+            edit_id = self.record(plan, editor=editor, note=note, at=at)
+            self._conn.execute("DELETE FROM edit_recovery WHERE operation_id = ?", (operation_id,))
+            self._conn.commit()
+        except (sqlite3.Error, OSError):
+            # A commit may reach disk before reporting an error. The journal deletion and
+            # both history changes committed together, so its absence confirms completion.
+            try:
+                self._conn.rollback()
+                pending = self._pending(operation_id)
+            except (sqlite3.Error, OSError) as exc:
+                raise EditRefused(
+                    "the edit's commit could not be checked; reopen its ledger to recover the durable outcome"
+                ) from exc
+            if edit_id is not None and pending is None:
+                return edit_id
+            raise
+        finally:
+            self._defer_commit = False
+        assert edit_id is not None
+        return edit_id
+
+    def _discard(self, operation_id: str) -> None:
+        self._conn.execute("DELETE FROM edit_recovery WHERE operation_id = ?", (operation_id,))
         self._conn.commit()
+
+    def _recover(self) -> None:
+        """Reconcile an interrupted replacement using durable bytes, never guessing past an edit."""
+        operations = self._conn.execute("SELECT operation_id FROM edit_recovery").fetchall()
+        for (operation_id,) in operations:
+            row = self._pending(operation_id)
+            if row is None:
+                continue
+            name, before, after, *_ = row
+            _, path = _memo(self._root, name)
+            current = path.read_bytes()
+            if current == bytes(before):
+                self._discard(operation_id)
+            elif current == bytes(after):
+                self._complete(operation_id)
+            else:
+                raise EditRefused(
+                    f"{name} changed during an interrupted edit; recovery bytes are retained in {_LEDGER}"
+                )
+
+    def replace(
+        self, plan: EditPlan, *, editor: str, note: str, at: datetime, undo_id: int | None = None,
+    ) -> int:
+        """Durably prepare recovery before replacement; publish history only after it succeeds."""
+        operation_id = os.urandom(16).hex()
+        _, path = _memo(self._root, plan.name)
+        if path.read_bytes() != plan.before:
+            raise EditRefused(f"{plan.name} changed since you reviewed the edit; review it again")
+        try:
+            self._conn.execute(
+                "INSERT INTO edit_recovery "
+                "(operation_id, file, before, after, summary, editor, note, edited_at, undo_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (operation_id, plan.name, plan.before, plan.after, json.dumps(list(plan.summary)),
+                 editor, note, at.isoformat(), undo_id),
+            )
+            self._conn.commit()
+            atomic_write_bytes(path, plan.after)
+            return self._complete(operation_id)
+        except (sqlite3.Error, OSError) as exc:
+            try:
+                self._conn.rollback()
+                current = path.read_bytes()
+                if current == plan.after:
+                    atomic_write_bytes(path, plan.before)
+                elif current != plan.before:
+                    raise EditRefused("the memo changed again; automatic restoration was refused")
+                self._discard(operation_id)
+            except (sqlite3.Error, OSError, EditRefused) as recovery_exc:
+                raise EditRefused(
+                    f"{plan.name}: edit storage failed; recovery bytes are retained in {_LEDGER}: {recovery_exc}"
+                ) from exc
+            raise EditRefused(f"{plan.name}: edit storage failed; the memo was not changed: {exc}") from exc
 
 
 def _require_person(editor: str, note: str) -> None:
@@ -370,13 +505,14 @@ def apply_edit(root: Path, name: str, *, editor: str, note: str, shown_sha: str,
     _require_person(editor, note)
     root = root.resolve()
     with _DECISION_LOCK:
-        plan = plan_edit(root, name, **changes)  # type: ignore[arg-type]
-        if plan.before_sha != shown_sha:
-            raise EditRefused(f"{plan.name} changed since you reviewed the edit; review it again")
-        _corpus_name, path = _memo(root, plan.name)
-        atomic_write_bytes(path, plan.after)
-        with EditLedger(root) as ledger:
-            edit_id = ledger.record(plan, editor=editor, note=note, at=now)
+        try:
+            with EditLedger(root) as ledger:
+                plan = plan_edit(root, name, **changes)  # type: ignore[arg-type]
+                if plan.before_sha != shown_sha:
+                    raise EditRefused(f"{plan.name} changed since you reviewed the edit; review it again")
+                edit_id = ledger.replace(plan, editor=editor, note=note, at=now)
+        except (sqlite3.Error, OSError) as exc:
+            raise EditRefused(f"{name}: edit storage is unavailable: {exc}") from exc
     return EditRecord(edit_id=edit_id, name=plan.name, editor=editor, note=note, summary=plan.summary, edited_at=now.isoformat())
 
 
@@ -384,25 +520,26 @@ def undo_edit(root: Path, edit_id: int, *, editor: str, note: str, now: datetime
     """Put back the bytes from before `edit_id`, if the memo is still exactly what that edit wrote."""
     _require_person(editor, note)
     root = root.resolve()
-    with _DECISION_LOCK, EditLedger(root) as ledger:
-        found = ledger.bytes_of(edit_id)
-        if found is None:
-            raise EditRefused(f"no edit {edit_id}")
-        name, before, after, undone_at = found
-        if undone_at is not None:
-            raise EditRefused(f"edit {edit_id} was already undone")
-        _corpus_name, path = _memo(root, name)
-        if path.read_bytes() != after:
-            raise EditRefused(f"{name} changed after edit {edit_id}; undo it by hand or edit it again")
-        # An undo can put back an edge that an edit removed, and another memo may have declared
-        # the reverse since: the same cycle `plan_edit` refuses, reached the other way round.
-        _refuse_cycles(root, path, before, _restored_targets(before, after))
-        atomic_write_bytes(path, before)
-        ledger.mark_undone(edit_id, editor=editor, at=now)
-        ledger.record(
-            EditPlan(name=name, before=after, after=before, summary=(f"undo of edit {edit_id}: {note}",), diff=()),
-            editor=editor, note=note, at=now,
-        )
+    try:
+        with _DECISION_LOCK, EditLedger(root) as ledger:
+            found = ledger.bytes_of(edit_id)
+            if found is None:
+                raise EditRefused(f"no edit {edit_id}")
+            name, before, after, undone_at = found
+            if undone_at is not None:
+                raise EditRefused(f"edit {edit_id} was already undone")
+            _corpus_name, path = _memo(root, name)
+            if path.read_bytes() != after:
+                raise EditRefused(f"{name} changed after edit {edit_id}; undo it by hand or edit it again")
+            # An undo can put back an edge that an edit removed, and another memo may have declared
+            # the reverse since: the same cycle `plan_edit` refuses, reached the other way round.
+            _refuse_cycles(root, path, before, _restored_targets(before, after))
+            ledger.replace(
+                EditPlan(name=name, before=after, after=before, summary=(f"undo of edit {edit_id}: {note}",), diff=()),
+                editor=editor, note=note, at=now, undo_id=edit_id,
+            )
+    except (sqlite3.Error, OSError) as exc:
+        raise EditRefused(f"edit {edit_id}: undo storage is unavailable: {exc}") from exc
     return name
 
 
@@ -410,5 +547,8 @@ def history(root: Path, name: str | None = None, limit: int = 50) -> list[EditRe
     path = root.resolve() / _LEDGER
     if not path.exists():
         return []
-    with EditLedger(root.resolve()) as ledger:
-        return ledger.history(name, limit)
+    try:
+        with _DECISION_LOCK, EditLedger(root.resolve()) as ledger:
+            return ledger.history(name, limit)
+    except (sqlite3.Error, OSError) as exc:
+        raise EditRefused(f"edit history storage is unavailable: {exc}") from exc
