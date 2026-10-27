@@ -296,14 +296,53 @@ def test_the_image_query_client_has_its_own_short_timeout() -> None:
 # --- correlated problems under concurrency ----------------------------------------------------
 
 
+def _run_as_served(main: Any) -> Any:
+    """Run ``main()`` on the default executor `create_app`'s lifespan installs (`executor_workers`).
+
+    A bare `asyncio.run` gets asyncio's own ``min(32, cpu + 4)`` threads instead: 8 on CI's 4-vCPU
+    runner, fewer than this burst's 20 requests, so the fast Searches queued behind the stalled
+    ones and started with their budget spent. Master CI failed that way at 1ecb50db5 (run
+    40534338969) while hosts with more cores passed.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from recall_aml.app import executor_workers
+
+    workers = executor_workers(HostedSettings("postgresql://unused", "secret", "abc123"))
+
+    async def served() -> Any:
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=workers, thread_name_prefix="recall-aml")
+        )
+        return await main()
+
+    return asyncio.run(served())
+
+
+def _outcomes(results: list[tuple[float, Any]]) -> list[str]:
+    """Each result as its exception's name or its number of memories, for an assertion message."""
+    return [
+        type(result).__name__ if isinstance(result, Exception) else f"{len(result.data)} memories"
+        for _, result in results
+    ]
+
+
 def test_stalled_searches_do_not_slow_the_rest_or_outlive_the_stall(short_budget: None) -> None:
     """Invariant (the owner's "no correlated problems"): with 8 Searches stalled on their query
     embedding and 8 fast ones, plus 4 Adds, all at once:
 
     * each stalled Search ends with ``SearchDeadlineExceeded`` within the budget;
-    * every fast Search and every Add completes, inside the budget (the stalled threads sit in the
-      query pool, apart from the shared executor the Adds and fast Searches use);
+    * every fast Search and every Add completes, inside the budget (the stalled embeddings run in
+      the query pool, so they never take a query-pool slot from a fast Search);
     * once the stall is over, the same users' Searches succeed (nothing is left behind).
+
+    A stalled Search still holds one shared-executor thread while it waits on its embedding, so
+    the burst runs on the executor production installs (`_run_as_served`), not on asyncio's
+    CPU-sized default.
+
+    Red proof, run 2026-10-27 in CI: with ``QUERY_EMBED_THREADS = 1`` in
+    `recall_aml/search_deadline.py`, the fast Searches' embeddings queue behind the stalled ones
+    and this test fails at the fast-Search assertion (RESULT_PLACEHOLDER).
     """
     service, _ = _slow_text_service(4.0)
     users = [f"user-{index}" for index in range(8)]
@@ -342,12 +381,14 @@ def test_stalled_searches_do_not_slow_the_rest_or_outlive_the_stall(short_budget
             )
         )
 
-    results = asyncio.run(burst())
+    results = _run_as_served(burst)
     stalled, fast, adds = results[:8], results[8:16], results[16:]
 
-    assert all(isinstance(result, SearchDeadlineExceeded) for _, result in stalled)
+    assert all(isinstance(result, SearchDeadlineExceeded) for _, result in stalled), _outcomes(stalled)
     assert max(elapsed for elapsed, _ in stalled) < BUDGET + 0.5
-    assert all(not isinstance(result, Exception) and result.data for _, result in fast)
+    assert all(not isinstance(result, Exception) and result.data for _, result in fast), _outcomes(
+        fast
+    )
     assert max(elapsed for elapsed, _ in fast) < BUDGET
     assert all(not isinstance(result, Exception) for _, result in adds)
     assert max(elapsed for elapsed, _ in adds) < BUDGET
@@ -355,8 +396,10 @@ def test_stalled_searches_do_not_slow_the_rest_or_outlive_the_stall(short_budget
     async def after_stall() -> list[tuple[float, Any]]:
         return list(await asyncio.gather(*(timed(search(user, "parking receipt")) for user in users)))
 
-    after = asyncio.run(after_stall())
-    assert all(not isinstance(result, Exception) and result.data for _, result in after)
+    after = _run_as_served(after_stall)
+    assert all(not isinstance(result, Exception) and result.data for _, result in after), _outcomes(
+        after
+    )
 
 
 # --- the media budget (U-23) ------------------------------------------------------------------
