@@ -58,7 +58,7 @@
   <p class="eyebrow">The install path</p>
   <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 18ch; margin-bottom: 1.5rem;">From nothing to a memory that answers you.</h1>
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
-  <p class="lede">Start with Lite for one project on your machine: a SQLite file, local embeddings, and automatic memo refresh. Choose PostgreSQL for immutable generations, multiple tenants, or authenticated serving.</p>
+  <p class="lede">Start with Lite for one project on your machine: a SQLite file, local embeddings by default, and automatic memo refresh. Choose PostgreSQL for immutable generations, multiple tenants, or authenticated serving.</p>
 
   <div class="notice" style="margin-top: 2rem;">
     <p class="notice-title">Choose your edition</p>
@@ -95,7 +95,7 @@
     <p>Use the configured doctor and read-only dashboard commands printed by setup. A plain <code>recall doctor</code> in a fresh shell can inspect PostgreSQL instead: the CLI does not read the MCP client's registered environment. Apply setup's printed settings for CLI searches too.</p>
     <p>Lite setup registers Claude Code only. For CLI use or another MCP client, add <code>--no-register</code>. Codex and Claude Desktop can launch the same stdio server using the absolute interpreter, SQLite DSN, and memo root from setup; follow <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md#connect-another-client">the client wiring guide</a>. The plugin and its hooks are optional and separate.</p>
     <h3 id="lite-maintenance">Keep it current</h3>
-    <p>Edit your memos normally. The MCP server refreshes on startup and checks for changes before searches, re-indexing changed content and refitting calibration when needed. For a manual check or refresh, keep the memo folder explicit:</p>
+    <p>Edit your memos normally. The server setup registers refreshes on startup and checks for changes before searches, re-indexing changed content and refitting calibration when needed. The Claude plugin's server does not refresh by itself. For a manual check or refresh, keep the memo folder explicit:</p>
     <div class="terminal terminal--command">
         <div class="terminal-bar"><span class="terminal-label">From your project</span><button class="copy-button" type="button">Copy</button></div>
         <div class="terminal-body"><pre><span class="line">recall lite refresh --store .recall/memory.db --memory ./notes --check</span><span class="line">recall lite refresh --store .recall/memory.db --memory ./notes</span></pre></div>

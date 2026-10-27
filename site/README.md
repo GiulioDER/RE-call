@@ -10,6 +10,10 @@ directory URL rather than `index.html`; the blog index follows the same conventi
 Keep a page's title and description specific to its content. The homepage's structured
 data connects the project site to its GitHub repository and PyPI package.
 
+The homepage repeats its title in `og:title`, and its description in `og:description` and in
+each JSON-LD node; change every copy together. `tests/test_site_metadata.py` fails when they
+disagree.
+
 `installation.html` and `requirements.html` are moved-page aliases. Keep their
 redirects, `noindex` directives, and canonical links to `start.html` together.
 The generated diagrams remain maintained through `docs/diagrams/README.md`.

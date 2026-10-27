@@ -323,7 +323,9 @@ Inside Claude Code, install the plugin after installing the Python package:
 
 The plugin supplies the MCP server, memory search skill, and lifecycle hooks. Lite setup already
 registers a project server; the plugin is optional. If you add it, configure its Database DSN with
-the SQLite DSN printed by setup and avoid enabling duplicate servers for the same memory.
+the SQLite DSN printed by setup and avoid enabling duplicate servers for the same memory. The
+plugin's server does not refresh memos by itself; run `recall lite refresh` yourself or keep the
+server setup registers.
 For PostgreSQL, run `recall setup` against the project and database Claude should use.
 Details are in [plugin/README.md](plugin/README.md).
 
