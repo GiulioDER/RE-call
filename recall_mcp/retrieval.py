@@ -51,9 +51,8 @@ from recall.observability import METRICS, get_logger
 from recall.paged_evidence import PagedDepthDecision, decide_depth, paged_evidence_enabled
 from recall.retriever import RetrievalCandidateTrace
 from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall_mcp import factories as _factories
 from recall_mcp.factories import (
-    _admission,
-    _build_reranker,
     _positive_env,
     _require_remote_model_code_enabled,
     _validate_quality_reranker_config,
@@ -181,11 +180,13 @@ def _retrieve_trusted(
     search, evidence, graph-first, and reasoning paths cannot silently diverge.
     """
     # Resolved here, not as parameter defaults: a default is bound when the function is defined,
-    # so patching this module's `trusted_search`, `_build_reranker` or `_admission` reached nothing.
+    # so patching reached nothing. The reranker builder and the admission are read from the module
+    # that owns them, `factories`, their one patch point; `trusted_search` (from `recall.trust`) is
+    # patched on this module.
     if reranker_builder is None:
-        reranker_builder = _build_reranker
+        reranker_builder = _factories._build_reranker
     if admission_factory is None:
-        admission_factory = _admission
+        admission_factory = _factories._admission
     search_fn: Callable[..., TrustedResult] = trusted_search if trusted_search_fn is None else trusted_search_fn
     if len(query) > MAX_QUERY_CHARS:
         raise ValueError(

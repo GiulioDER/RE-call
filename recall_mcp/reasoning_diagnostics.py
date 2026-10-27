@@ -1,8 +1,9 @@
 """Benchmark and shadow diagnostics attached to reasoning queries. Every one of them is
 environment gated and off by default.
 
-Moved out of `recall_mcp.service`, which re-exports every name defined here. Collaborators are
-imported from the modules that own them, so a test patches a collaborator on THIS module.
+Moved out of `recall_mcp.service`, which re-exports every name defined here. A name imported
+here by name is patched on THIS module; a collaborator called as an attribute of the module
+that owns it (`_factories._build_reranker`) is patched on that module, its one patch point.
 """
 
 from __future__ import annotations

@@ -188,3 +188,69 @@ def test_status_operations_are_owned_by_status_module() -> None:
     assert service.JobLedger is status.JobLedger
     assert service.job_status is status.job_status
     assert service.calibration_status is status.calibration_status
+
+
+def test_the_facade_contract_lists_every_server_module() -> None:
+    """Every recall_mcp module but the server is a source of the contract forbidding the facade.
+
+    The contract lists modules one by one, because import-linter reads an import inside a source
+    package as internal; a module added to `recall_mcp` and not listed would be unchecked.
+    Red proof (2026-10-27): removing "recall_mcp.retrieval" from the contract's `source_modules`
+    in pyproject.toml fails the equality below with that module missing.
+    """
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    contracts = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["tool"][
+        "importlinter"
+    ]["contracts"]
+    (contract,) = [c for c in contracts if c["id"] == "mcp-modules-do-not-reach-the-service-facade"]
+    modules = {
+        f"recall_mcp.{path.stem}"
+        for path in (root / "recall_mcp").glob("*.py")
+        if path.stem not in {"__init__", "server", "service"}
+    }
+
+    assert contract["forbidden_modules"] == ["recall_mcp.service"]
+    assert set(contract["source_modules"]) == modules, sorted(modules ^ set(contract["source_modules"]))
+
+
+def test_trusted_retrieval_reads_the_reranker_and_admission_from_factories(monkeypatch) -> None:
+    """`factories` is the one patch point of the reranker builder and the admission.
+
+    Red proof (2026-10-27): master 970dbeb7b's `retrieval._retrieve_trusted` resolves both
+    from names it imported from factories at load, so the patches below reach nothing and it
+    fails on "factories was not consulted".
+    """
+    import contextlib
+
+    import pytest
+
+    import recall_mcp.factories as factories
+
+    consulted: list[str] = []
+
+    def builder(_profile, env=None):
+        consulted.append("reranker")
+        return None
+
+    def admission(_profile):
+        consulted.append("admission")
+        return contextlib.nullcontext()
+
+    class _Stop(Exception):
+        pass
+
+    def search(*_args, **_kwargs):
+        raise _Stop
+
+    monkeypatch.setattr(factories, "_build_reranker", builder)
+    monkeypatch.setattr(factories, "_admission", admission)
+    store = SimpleNamespace(generation_id="g1")
+    embedder = SimpleNamespace(dim=2, name="seam-fixture", embed=lambda texts: [[1.0, 0.0] for _ in texts])
+
+    with pytest.raises(_Stop):
+        retrieval._retrieve_trusted(store, embedder, "q", None, 3, None, None, env={}, trusted_search_fn=search)
+
+    assert consulted == ["admission", "reranker"], f"factories was not consulted: {consulted}"
