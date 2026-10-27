@@ -9,12 +9,16 @@ both sides (1,535 questions, measured 2026-10-10). RE-call's `st:<model>` path s
 The table is the whole source of truth. Nothing reads a model's own
 `config_sentence_transformers.json` at runtime: a repository can change its prompts under the same
 revision name, and a prompt that changes is a change to every stored vector. Each entry pins the
-Hugging Face revision it was read from, and the prompts are recorded in the embedder's profile, so
-a different prompt is a different identity and never mixes with vectors written under this one.
+Hugging Face revision it was read from. The embedder's name and profile record the entry's
+`version`, and the profile's `artifact_digest`, so also its fingerprint, records the revision. The
+prompt text itself is not part of the identity; only whether the document prompt is empty shows,
+through `passage_mode`.
 
-`version` names the prompt set. Changing any prompt in an entry means a new version string, which
+`version` names the prompt set. Changing any field of an entry means a new version string, which
 changes the embedder's name and fingerprint, so a store built under the old prompts refuses rather
-than silently answering through the new ones.
+than silently answering through the new ones. Nothing derives the version from the text, so
+`tests/test_prompted_sentence_transformer.py::test_a_changed_prompt_set_needs_a_new_version` pins
+a digest of every entry against its version and fails when an entry changes without a new one.
 """
 
 from __future__ import annotations

@@ -20,6 +20,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   and calibrate a new generation under the new version before switching traffic. Generations
   that recorded no profile are unaffected; legacy fastembed generations record a fallback
   profile and are covered.
+- `RECALL_EMBEDDER=st-prompted:<hf-id>` (#908) encodes a local sentence-transformers model with
+  the query and document prompts it was published with, for the models pinned in
+  `recall/embedding_prompts.py`, each at a fixed Hugging Face revision. It has its own name
+  (`st-prompted:<hf-id>@<version>`) and profile, never the identity of `st:<hf-id>`.
+  `voyageai/voyage-4-nano` runs repository code and needs `RECALL_ACCEPT_REMOTE_MODEL_CODE=1`.
+  It refuses when a local path shadows the model id, and when the installed sentence-transformers
+  would route the model's text through a chat template. Behaviour change: `python -m
+  recall.eval.labelled --embedder` resolves any spelling other than `hashing`, `voyage`, `st:` and
+  `fastembed` through `RECALL_EMBEDDER`'s resolver and raises on an unknown one. It used to
+  measure `BAAI/bge-small-en-v1.5` for all of them and report the result under the name it was
+  given, so an earlier labelled result for any other spelling measured bge-small.
 - Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
   answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
   a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for

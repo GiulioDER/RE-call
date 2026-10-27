@@ -220,7 +220,7 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         )
     raise ValueError(
         f"unknown embedder: {name!r} (use hashing, fastembed, fastembed:<model>, "
-        "st:<model>, sfr-code, voyage, voyage:<model>, voyage-context, "
+        "st:<model>, st-prompted:<model>, sfr-code, voyage, voyage:<model>, voyage-context, "
         "voyage-context:<model>, voyage-multimodal, openai, openai:<model>, "
         "openrouter, or openrouter:<model>)"
     )
