@@ -97,9 +97,9 @@ def test_wiki_links_open_memos_and_unknown_names_are_marked(store: Path) -> None
 
 def test_a_replaced_memo_says_so_and_names_the_newer_one(store: Path) -> None:
     _, old = _read(store, "old-port.md")
-    assert "This memo has been replaced." in old, "the replaced banner is missing"
-    assert "href='/read?path=new-port.md'" in old.split("This memo has been replaced.", 1)[1][:400]
-    assert "This memo has been replaced." not in _read(store, "new-port.md")[1]
+    assert "Another memo declares a replacement." in old, "the replacement declaration banner is missing"
+    assert "href='/read?path=new-port.md'" in old.split("Another memo declares a replacement.", 1)[1][:400]
+    assert "Another memo declares a replacement." not in _read(store, "new-port.md")[1]
 
 
 def test_only_what_a_person_wrote_is_shown(store: Path) -> None:

@@ -36,7 +36,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from recall.dashboard import db as dbq
 from recall.dashboard import edit, review
@@ -814,12 +814,18 @@ class DashboardApp:
         from recall.dashboard.graph import build_graph
         from recall.dashboard.markdown import render
 
+        try:
+            path = (self.root / name).resolve()
+            if not path.is_relative_to(self.root) or not path.is_file():
+                return self._error(HTTPStatus.NOT_FOUND, "No memo by that name in this folder.")
+        except (OSError, RuntimeError):
+            return self._error(HTTPStatus.NOT_FOUND, "No memo by that name in this folder.")
         graph = build_graph(self.root, include_queue=False, lint=False)
         node = next((n for n in graph["nodes"] if n["id"] == name), None)
         if node is None:
             return self._error(HTTPStatus.NOT_FOUND, "No memo by that name in this folder.")
         try:
-            raw = (self.root / name).read_text(encoding="utf-8-sig")
+            raw = path.read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError) as exc:
             return self._error(HTTPStatus.NOT_FOUND, f"That memo cannot be read: {exc}")
         document = parse_document(raw)
@@ -830,7 +836,7 @@ class DashboardApp:
             by_key.setdefault(supersedes_key(Path(other).name), []).append(other)
 
         def resolve(target: str) -> str | None:
-            text = target.split("#", 1)[0].strip()
+            text = target.strip()
             if not text or "://" in text:
                 return None
             candidate = (self.root / Path(name).parent / text).resolve()
@@ -849,7 +855,7 @@ class DashboardApp:
         banners = []
         if replaced_by:
             newer = ", ".join(self._memo_link(n) for n in replaced_by)
-            banners.append(f"<div class='card banner tone-warn'><b>This memo has been replaced.</b> {newer} declares that it supersedes it, so search treats this one as out of date. Read the newer memo for the current state.</div>")
+            banners.append(f"<div class='card banner tone-warn'><b>Another memo declares a replacement.</b> {newer} declares that it supersedes this file. These are the files on disk; search also depends on validity dates and the indexed corpus.</div>")
         if node["state"] == "expired":
             banners.append(f"<div class='card banner tone-warn'><b>This memo has expired.</b> It was valid until {_e(node['valid_until'])}.</div>")
         if replaces:
@@ -877,7 +883,7 @@ class DashboardApp:
         ) or "<div class='card muted'>No other memo links to this one, and it links to none.</div>"
         actions = (
             f"<a class='button' href='/memo?{_e(urlencode({'path': name}))}'>Edit what it declares</a>"
-            f"<a class='button quiet' href='/graph#memo={_e(name)}'>See it in the graph</a>"
+            f"<a class='button quiet' href='/graph#memo={_e(quote(name, safe=''))}'>See it in the graph</a>"
         )
         article = render(document.human_body, resolve, skip_title=node["title"])
         body = (
