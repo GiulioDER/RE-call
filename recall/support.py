@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from recall.observability import get_logger
 
@@ -17,6 +17,14 @@ _log = get_logger("support")
 PROVISIONAL_BAR = 0.90
 MIN_PROBES = 10
 CLASSES = ("unknown_entity", "in_vocabulary")
+#: The vocabularies of the support and coverage diagnostics, read by the dataclasses below, the
+#: report validator and the reasoning response decoder, so a new state cannot reach one of them only.
+SupportStatus = Literal["not_checked"]
+SupportScope = Literal["returned_evidence"]
+CoverageStatus = Literal["measured", "unmeasured", "unavailable"]
+CoverageMethod = Literal["synthetic_corpus_probes"]
+UnknownTermGate = Literal["checked", "unavailable", "disabled", "not_run"]
+SYNTHETIC_PROBES: CoverageMethod = "synthetic_corpus_probes"
 #: The audit event a PostgreSQL calibration's coverage report is stored as (lite keeps it in meta).
 COVERAGE_EVENT = "calibration_near_miss_coverage"
 
@@ -49,8 +57,8 @@ ELIGIBILITY_NOTE = (
 class QuerySupport:
     """No semantic verifier runs in this release, including on empty or certified results."""
 
-    status: Literal["not_checked"] = "not_checked"
-    scope: Literal["returned_evidence"] = "returned_evidence"
+    status: SupportStatus = "not_checked"
+    scope: SupportScope = "returned_evidence"
     method: None = None
 
 
@@ -64,8 +72,8 @@ class CalibrationCoverage:
     """
 
     calibration_id: str | None = None
-    status: Literal["measured", "unmeasured", "unavailable"] = "unmeasured"
-    method: Literal["synthetic_corpus_probes"] | None = None
+    status: CoverageStatus = "unmeasured"
+    method: CoverageMethod | None = None
     report: dict[str, Any] | None = None
 
 
@@ -110,10 +118,15 @@ def validated_coverage_report(report: dict[str, Any], calibration_id: str) -> di
         raise ValueError("inconsistent coverage warning")
     clean["provisional_in_vocabulary"] = provisional
     gate = report.get("unknown_term_gate")
-    if gate not in {"checked", "unavailable", "disabled", "not_run"}:
+    if gate not in get_args(UnknownTermGate):
         raise ValueError("invalid coverage gate")
     clean["unknown_term_gate"] = gate
     return clean
+
+
+def coverage_status(clean: Mapping[str, Any]) -> Literal["measured", "unmeasured"]:
+    """`measured` only when every probe class of a validated report is measured."""
+    return "measured" if all(clean[name]["state"] == "measured" for name in CLASSES) else "unmeasured"
 
 
 def calibration_coverage(store: object, calibration_id: str | None) -> CalibrationCoverage:
@@ -133,14 +146,10 @@ def calibration_coverage(store: object, calibration_id: str | None) -> Calibrati
         # Only the documented, content-free diagnostic shape crosses this boundary.
         # A damaged optional report must not break CLI formatting or pretend it measured a class.
         clean = validated_coverage_report(report, calibration_id)
-        measured = all(
-            isinstance(report.get(name), dict) and report[name].get("state") == "measured"
-            for name in ("unknown_entity", "in_vocabulary")
-        )
         return CalibrationCoverage(
             calibration_id=calibration_id,
-            status="measured" if measured else "unmeasured",
-            method="synthetic_corpus_probes",
+            status=coverage_status(clean),
+            method=SYNTHETIC_PROBES,
             report=clean,
         )
     except Exception as exc:  # BROAD-CATCH: fail-open, optional diagnostics never gate retrieval

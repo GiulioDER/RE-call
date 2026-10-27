@@ -12,6 +12,12 @@ from typing import Any
 from recall.types import TrustedHit, TrustedResult
 
 
+#: Result-level diagnostics that travel with every document but are not text for a model: a
+#: framework that renders metadata into the prompt or the embedding text leaves these out, since
+#: they repeat the same nested report on every node and say nothing about the passage.
+UNRENDERED_METADATA_KEYS = ("recall_query_support", "recall_calibration_coverage")
+
+
 def result_trust_metadata(result: TrustedResult) -> dict[str, Any]:
     """Result-level trust and lineage identity, shared by the framework adapters.
 

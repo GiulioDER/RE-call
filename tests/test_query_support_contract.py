@@ -225,3 +225,40 @@ def test_unbound_development_calibration_does_not_borrow_stored_coverage(served,
     assert coverage is not None and coverage["status"] == "unmeasured", "unbound retrieval borrowed a certificate"
     assert coverage["calibration_id"] is None and seen == []
     assert asdict(result).get("query_support") == EXPECTED
+
+
+class _CoverageStore:
+    """A store whose only capability is the coverage reader, returning one fixed report."""
+
+    def __init__(self, report):
+        self._report = report
+
+    def near_miss_coverage(self, _calibration_id):
+        return self._report
+
+
+def _three_class_report(calibration_id):
+    report = _report(calibration_id)
+    report["paraphrase"] = {"n": 3, "rejected": 1, "rate": 0.333, "state": "unmeasured"}
+    return report
+
+
+def test_cca945_every_probe_class_decides_measured(monkeypatch):
+    """Node tests/test_query_support_contract.py::test_cca945_every_probe_class_decides_measured.
+
+    CCA DEEP run 20261027T143257Z, CODE-001 (with ENV-002). The top-level status must follow every
+    class in `recall.support.CLASSES`, which the validator already requires. Red against bde16292:
+    both the reader and the decoder judge only the two classes they spell out, so a report whose
+    added class is unmeasured reads `measured` and `coverage overstated an unmeasured class` fails.
+    Target: `recall.support.coverage_status`.
+    """
+    from recall import support
+    from recall.reasoning_response import EvidenceValidationError, _coverage_from_dict
+
+    monkeypatch.setattr(support, "CLASSES", (*support.CLASSES, "paraphrase"))
+    coverage = support.calibration_coverage(_CoverageStore(_three_class_report("fit-1")), "fit-1")
+    assert coverage.status == "unmeasured", f"coverage overstated an unmeasured class: {coverage.status}"
+    payload = {"calibration_id": "fit-1", "status": "measured", "method": "synthetic_corpus_probes",
+               "report": _three_class_report("fit-1")}
+    with pytest.raises(EvidenceValidationError, match="disagrees"):
+        _coverage_from_dict(payload)

@@ -673,3 +673,26 @@ def test_a_zero_k_search_does_not_traceback() -> None:
         cli.trusted_search = original  # type: ignore[assignment]
 
     assert seen["k"] == 1, "a k below the library's floor reached it"
+
+
+def test_cca945_llamaindex_keeps_result_diagnostics_out_of_the_prompt() -> None:
+    """Node tests/test_evidence_wiring.py::test_cca945_llamaindex_keeps_result_diagnostics_out_of_the_prompt.
+
+    CCA DEEP run 20261027T143257Z, PERF-001. The nested query_support and calibration_coverage
+    diagnostics travel with every node but are not passage text: LlamaIndex renders node metadata
+    into the model's prompt and the embedding text unless a key is excluded. Red against bde16292:
+    no key is excluded, so `the prompt carried the coverage report` fails. Target:
+    `recall.integrations.llamaindex._hit_to_node` and `UNRENDERED_METADATA_KEYS`.
+    """
+    pytest.importorskip("llama_index.core")
+    from llama_index.core.schema import MetadataMode
+
+    from recall.integrations.llamaindex import RecallRetriever
+
+    (scored,) = RecallRetriever(lambda _q: _result([_hit()])).retrieve("how many requests per second?")
+    for mode in (MetadataMode.LLM, MetadataMode.EMBED):
+        content = scored.node.get_content(metadata_mode=mode)
+        assert "recall_calibration_coverage" not in content, f"the {mode} text carried the coverage report"
+        assert "recall_query_support" not in content, f"the {mode} text carried query support"
+    assert "recall_calibration_coverage" in scored.node.metadata, "the node lost the coverage metadata"
+    assert "recall_trust_state" in scored.node.get_content(metadata_mode=MetadataMode.LLM)
