@@ -49,6 +49,7 @@ from recall.lint import (
     supersession_graph_of,
 )
 from recall.rewrite import RewriteRefused, _derived_value, set_derived_status
+from recall.state_dir import make_parent
 from recall.stale_reports import StaleReportRefused, resolve_memo
 from recall.truth_extraction.types import STATUS_VOCABULARY
 
@@ -304,7 +305,7 @@ class EditLedger:
 
     def __init__(self, root: Path) -> None:
         path = root / _LEDGER
-        path.parent.mkdir(parents=True, exist_ok=True)
+        make_parent(path)
         self._conn = sqlite3.connect(str(path), timeout=30.0)
         self._conn.execute(
             "CREATE TABLE IF NOT EXISTS edits ("
