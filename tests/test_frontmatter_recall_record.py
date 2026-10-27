@@ -27,6 +27,11 @@ Invariants and the failure each one catches:
   `surrogate` case and R10 are the lite half).
 - R12 `uniqueItems` is checked in linear time: a record with thousands of distinct `caused_by`
   ids validates without comparing every pair.
+- R13 R4's converse: a source the record rule cannot change (a memo declaring no record) keeps
+  its chunk set stored under the previous rule, reused rather than re-derived and re-embedded,
+  and restamped with the current rule (PERF-003, the owner's decision 2026-10-27).
+- R14 a markdown memo declaring `supersedes` is not reused under the previous rule: #864 changed
+  how `supersedes` is read and bumped nothing, so its chunk set may hold the old reading.
 
 Red proof, recorded 2026-10-21 on the deployment host inside the test bounds, each test failing
 in its own assertion, then restored and green:
@@ -62,6 +67,15 @@ in its own assertion, then restored and green:
   high surrogate" and "\\u0000 cannot be converted to text"; `...::test_uniqueness_is_checked_in_linear_time`:
   "1999015 comparisons for 2000 distinct ids". Mutation on the fix, `_UNSTORABLE` narrowed to
   NUL: R2[surrogate], R10[surrogate-label] and R11[surrogate-record] red again.
+- R13 and R14 (PERF-003 narrowing, 2026-10-27, on the deployment host inside the test bounds):
+  `...::test_a_source_the_record_rule_cannot_change_is_reused` on the pre-change `_reuse_source`,
+  which required the current rule for every source: "a source the record rule cannot change was
+  re-derived"; with the restamp mutated away: "the reused chunks kept the rule they were built
+  under". `...::test_a_supersedes_memo_from_before_its_reading_changed_is_rederived` passes on
+  the pre-change code, whose global bump reused nothing, so its proof is two mutations of
+  `_metadata_rules_accepted`: markdown not narrowed at all, and narrowed on `recall_record` only
+  (the version a review rejected): "a supersedes memo stored under the old reading was reused".
+  The first of those also reddens R4: "a chunk set from the previous metadata rule was reused".
 """
 
 from __future__ import annotations
@@ -355,6 +369,80 @@ def test_metadata_rule_version_bumped(manager) -> None:  # noqa: F811  # the imp
             (manager.tenant_id, second.generation_id),
         ).fetchall()
     assert rows and all(row[0] == EXPECTED[name] for row in rows), rows
+
+
+@requires_db
+def test_a_source_the_record_rule_cannot_change_is_reused(manager) -> None:  # noqa: F811  # the imported fixture
+    """R13, R4's converse: a memo that declares no `recall_record` derives the same metadata under
+    the record rule as before it, so its chunk set stored under the previous rule is reused, not
+    re-derived and re-embedded, and is restamped with the current rule."""
+    from recall.generations import _METADATA_RULE_VERSION
+
+    data = b"---\nname: plain-memo\ndescription: \"no record\"\nvalid_from: 2026-10-01\n---\n\n# A memo\n\nNo record here.\n"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    with manager._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET metadata = "
+            "metadata || jsonb_build_object('metadata_rule_version', %s::text) "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (PREVIOUS_RULE, manager.tenant_id, first),
+        )
+
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, _Embedder(9), lambda text: [text])
+
+    assert stats.reused_objects == 1, "a source the record rule cannot change was re-derived"
+    with manager._connect() as conn:
+        rules = {
+            row[0]
+            for row in conn.execute(
+                "SELECT metadata ->> 'metadata_rule_version' FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (manager.tenant_id, second.generation_id),
+            ).fetchall()
+        }
+    assert rules == {_METADATA_RULE_VERSION}, f"the reused chunks kept the rule they were built under: {rules}"
+
+
+@requires_db
+def test_a_supersedes_memo_from_before_its_reading_changed_is_rederived(manager) -> None:  # noqa: F811  # the imported fixture
+    """R14: #864 changed how `supersedes` is read and bumped nothing, so a block sequence stored
+    under the previous rule holds what the old reading made of it (nothing). Reused, the memo
+    would stay unsuperseding forever, and the restamp would hide it from any later repair."""
+    data = (
+        b"---\nname: newer-memo\nvalid_from: 2026-10-01\nsupersedes:\n  - old-a.md\n  - old-b.md\n"
+        b"---\n\n# A newer memo\n\nIt replaces two.\n"
+    )
+    expected = parse_document(data.decode("utf-8")).meta["supersedes"]
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    # What a build before #864 stored for these bytes: an empty `supersedes`, the previous rule.
+    with manager._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET metadata = metadata "
+            "|| jsonb_build_object('supersedes', '', 'metadata_rule_version', %s::text) "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (PREVIOUS_RULE, manager.tenant_id, first),
+        )
+
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, _Embedder(9), lambda text: [text])
+
+    assert stats.reused_objects == 0, "a supersedes memo stored under the old reading was reused"
+    with manager._connect() as conn:
+        rows = conn.execute(
+            "SELECT metadata -> 'supersedes' FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (manager.tenant_id, second.generation_id),
+        ).fetchall()
+    assert rows and all(row[0] == expected for row in rows), rows
 
 
 def test_legacy_index_rederives_a_record_memo_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

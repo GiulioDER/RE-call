@@ -6,7 +6,7 @@ import hashlib
 import os
 import time
 import uuid
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -49,7 +49,7 @@ from recall.extraction import (
     chunk_extracted_document,
     strip_nul_from_blocks,
 )
-from recall.frontmatter import legacy_pairing_differs, validity_bounds
+from recall.frontmatter import RECORD_KEY, SUPERSEDES, legacy_pairing_differs, validity_bounds
 from recall.lineage import (
     GenerationState,
     IndexManifestV1,
@@ -221,6 +221,16 @@ _METADATA_RULE_VERSION_KEY = "metadata_rule_version"
 #: learned `recall_record` (`recall.records`), the previous value being
 #: "relative-file-paths-2026-08-29".
 _METADATA_RULE_VERSION = "recall-record-2026-10-21"
+#: The rule before `recall_record`. Two changes since it move derived metadata without moving
+#: any reuse term (pipeline fingerprint, body rule, policy digest, context group, sha256): the
+#: record parser (#977) and the reading of `supersedes` (#864, 2026-10-02, which bumped nothing:
+#: a block sequence, a repeated key or a flow list stored under this rule reads differently now).
+#: Both act only on a markdown document whose front matter declares the key, so every other
+#: source's chunks stamped with this version are still what this code derives: `_reuse_source`
+#: accepts them and restamps them. The global bump re-derived, and re-embedded through any cache
+#: miss, every source of every tenant. A later bump narrows the same way only after checking,
+#: as here, every un-fingerprinted derivation change since the rule it accepts.
+_PRE_RECORD_METADATA_RULE_VERSION = "relative-file-paths-2026-08-29"
 
 
 def manifest_relative_paths(manifest: "IndexManifestV1") -> dict[str, str]:
@@ -249,6 +259,26 @@ def manifest_relative_paths(manifest: "IndexManifestV1") -> dict[str, str]:
         except ValueError:
             relative[entry.uri] = path.name
     return relative
+
+
+def _metadata_rules_accepted(media_type: str, text: str | None) -> tuple[str, ...]:
+    """The metadata rule versions a source's earlier chunks may carry and still be reused.
+
+    Only the current rule for a markdown document whose front matter declares `recall_record` or
+    `supersedes`, the two keys whose reading changed without a reuse term (see
+    `_PRE_RECORD_METADATA_RULE_VERSION`); `text` None, a markdown text not read yet, counts as
+    declaring, so an unknown is never reused on a guess. Also the rule before them for anything
+    else, which neither change can have reached. A substring test first: this runs per source of
+    every build, and most documents declare neither key.
+    """
+    if media_type not in _MARKDOWN_MEDIA_TYPES:
+        return (_METADATA_RULE_VERSION, _PRE_RECORD_METADATA_RULE_VERSION)
+    if text is None or (
+        (RECORD_KEY in text or SUPERSEDES in text)
+        and not {RECORD_KEY, SUPERSEDES}.isdisjoint(parse_document(text).meta)
+    ):
+        return (_METADATA_RULE_VERSION,)
+    return (_METADATA_RULE_VERSION, _PRE_RECORD_METADATA_RULE_VERSION)
 
 
 def _body_rule_changed(media_type: str, text: str) -> bool:
@@ -645,6 +675,7 @@ class GenerationManager:
         object_version_id: str,
         *,
         require_body_rule_version: str | None = None,
+        accepted_metadata_rules: Sequence[str] = (_METADATA_RULE_VERSION,),
         security_policy_digest: str | None = None,
         context_group_fingerprint: str | None = None,
         require_code_anchor_repo: bool = False,
@@ -657,7 +688,7 @@ class GenerationManager:
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
             "AND ((%s::text IS NULL AND c.metadata ->> %s IS NULL) "
             "OR (%s::text IS NOT NULL AND c.metadata ->> %s = %s)) "
-            "AND c.metadata ->> %s = %s "
+            "AND c.metadata ->> %s = ANY(%s) "
             "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND (NOT %s OR c.metadata -> 'code_anchor' ->> 'repo' "
@@ -674,7 +705,7 @@ class GenerationManager:
                 _BODY_RULE_VERSION_KEY,
                 require_body_rule_version,
                 _METADATA_RULE_VERSION_KEY,
-                _METADATA_RULE_VERSION,
+                list(accepted_metadata_rules),
                 security_policy_digest,
                 "security_policy_digest",
                 security_policy_digest,
@@ -694,13 +725,19 @@ class GenerationManager:
             "source_sha256, chunk_ordinal, text, metadata, embedding, indexed_at, "
             "first_indexed_at, tsv) "
             "SELECT tenant_id, %s, chunk_id, source_uri, %s, source_sha256, chunk_ordinal, "
-            "text, metadata || jsonb_build_object('reused_from_generation', generation_id), "
+            # Restamped with the current rule: a chunk set reused under an earlier rule that the
+            # change could not reach is what this rule derives, and a later narrowed bump must
+            # see it as such.
+            "text, metadata || jsonb_build_object('reused_from_generation', generation_id, "
+            "%s::text, %s::text), "
             "embedding, clock_timestamp(), COALESCE(first_indexed_at, indexed_at), tsv "
             "FROM recall_chunks_v1 "
             "WHERE tenant_id = %s AND generation_id = %s AND source_uri = %s",
             (
                 generation_id,
                 object_version_id,
+                _METADATA_RULE_VERSION_KEY,
+                _METADATA_RULE_VERSION,
                 self.tenant_id,
                 str(source[0]),
                 source_uri,
@@ -722,8 +759,9 @@ class GenerationManager:
         Read-only, one connection, and bounded by the generation index: it reads only the
         generations that already carry this pipeline fingerprint, which is the first thing
         `_reuse_source` requires. It then applies the other reuse conditions per object, all
-        except the markdown body rule (which needs each document's text), so the count is an
-        upper bound.
+        except the markdown body rule and the narrowed metadata rule (which need each document's
+        text: a memo declaring `recall_record` or `supersedes` is counted reusable under the rule
+        before them, which `_reuse_source` refuses), so the count is an upper bound.
 
         Best-effort by design: a failure is reported in the plan and never fails the build,
         because the plan only describes the work.
@@ -783,7 +821,7 @@ class GenerationManager:
         for entry in manifest.objects:
             wanted_group = group_fingerprints.get(entry.uri) if group_fingerprints else None
             if any(
-                rule == _METADATA_RULE_VERSION
+                rule in (_METADATA_RULE_VERSION, _PRE_RECORD_METADATA_RULE_VERSION)
                 and (security_policy_digest is None or digest == security_policy_digest)
                 and (wanted_group is None or group == wanted_group)
                 for rule, digest, group in available.get((entry.uri, entry.sha256), [])
@@ -1282,6 +1320,9 @@ class GenerationManager:
                         entry.version_id,
                         require_body_rule_version=(
                             _BODY_RULE_VERSION if body_rule_changed else None
+                        ),
+                        accepted_metadata_rules=_metadata_rules_accepted(
+                            entry.media_type, None if extract_after_reuse else text
                         ),
                         security_policy_digest=security_policy_digest,
                         context_group_fingerprint=(

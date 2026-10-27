@@ -683,7 +683,7 @@ def _body_derivation_hash(raw: str, content_hash: str) -> str:
     The same narrow trigger carries the `recall_record` parser (2026-10-21): a memo declaring one
     re-derives once, so a memo written with a record before this parser was installed gains it
     on the next run instead of being skipped as unchanged. The generation path's equivalent is
-    `recall.generations._METADATA_RULE_VERSION`.
+    `recall.generations._metadata_rules_accepted`.
     """
     if legacy_pairing_differs(raw):
         content_hash = hashlib.sha256(

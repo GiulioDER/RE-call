@@ -124,10 +124,16 @@ file name to its parsed `recall_record`.
 {"tenant_id": "...", "generation_id": "...", "truncated": false,
  "records": [{"id": "...", "kind": "bug", "recall_record": {}, "name": "...", "description": "...",
    "source": "...", "chunk_id": "...", "chunk_ids": ["..."], "valid_from": "...", "supersedes": null,
-   "superseded_by": null, "valid_until": null, "caused": [],
+   "superseded_by": null, "valid_until": null, "expired": false, "caused": [],
    "anchor_matches": [{"anchor": {}, "match": "exact|symbol_changed|file_only|none"}],
    "anchor_match": "exact|symbol_changed|file_only|none"}]}
 ```
+
+`expired` (amended 2026-10-27, NUM-001 of the PR 977 audit) is computed by RE-call at the lookup's
+`now`: true when `valid_until` has passed, a date lasting through that day in UTC, the rule
+`validity_bounds` and the trust gate apply; false when there is none; true when it does not read
+as a date. A consumer reads it rather than comparing `valid_until` itself, and falls back to that
+rule only for an answer that predates the field.
 
 `anchor_match` is the best of `anchor_matches` (exact, then symbol_changed, then file_only); a
 record with no anchor matching at least `file_only` is not returned for an anchor query. For an
