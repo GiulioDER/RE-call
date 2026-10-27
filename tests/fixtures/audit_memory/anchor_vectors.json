@@ -317,5 +317,54 @@
         "symbol": "Pool.release"
       }
     ]
+  },
+  {
+    "name": "try_except_else_finally",
+    "source": "try:\n    def f():\n        return \"try\"\nexcept Exception:\n    def f():\n        return \"except\"\nelse:\n    def f():\n        return \"else\"\nfinally:\n    def f():\n        return \"finally\"\n",
+    "expect": [
+      {
+        "symbol": "f",
+        "start_line": 2,
+        "end_line": 3,
+        "sha": "e790f32925baf9cf627916b5b57bce8a2aaf14f71e719d89b90a5c8b3475a08a"
+      },
+      {
+        "symbol": "f#2",
+        "start_line": 5,
+        "end_line": 6,
+        "sha": "a743d08302947895c543c07e4cd797e85ed156aa1d75eaab9076bb45ed0565e2"
+      },
+      {
+        "symbol": "f#3",
+        "start_line": 8,
+        "end_line": 9,
+        "sha": "63d316b5cb044b7465600fdefcd6049e61739517c4988a512dd4da105cee7ca4"
+      },
+      {
+        "symbol": "f#4",
+        "start_line": 11,
+        "end_line": 12,
+        "sha": "3dd8f59a33c61a6b8a21b19cbb4c96505fef6cf8a40a7e7f6aa837c2616e183e"
+      }
+    ],
+    "file_sha": "d20f7c9227b1f38c2dac3d099e77a2d78126b6df682f8e0d54121e669720f7ef",
+    "enclosing": [
+      {
+        "line": 2,
+        "symbol": "f"
+      },
+      {
+        "line": 5,
+        "symbol": "f#2"
+      },
+      {
+        "line": 8,
+        "symbol": "f#3"
+      },
+      {
+        "line": 11,
+        "symbol": "f#4"
+      }
+    ]
   }
 ]

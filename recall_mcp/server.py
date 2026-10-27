@@ -1651,7 +1651,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             explain: include the optional machine readable retrieval explanation.
             include_related: opt into independently trusted related evidence expansion.
             related_relation: one of `source`, `ordinal`, or `supersession` when expansion is on.
-            related_max_items: maximum related candidates, bounded by the serving contract.
+            related_max_items: maximum related items returned, bounded by the serving contract.
+                Supersession evaluates the complete matching lineage before limiting returned items;
+                source and ordinal relations also limit candidates.
 
         Returns:
             JSON with abstention, calibration status and ID, tenant/generation/pipeline/corpus/
@@ -1766,7 +1768,9 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             explain: include the optional machine readable retrieval explanation.
             include_related: opt into independently trusted related evidence expansion.
             related_relation: one of `source`, `ordinal`, or `supersession` when expansion is on.
-            related_max_items: maximum related candidates, bounded by the serving contract.
+            related_max_items: maximum related items returned, bounded by the serving contract.
+                Supersession evaluates the complete matching lineage before limiting returned items;
+                source and ordinal relations also limit candidates.
 
         Returns:
             JSON with the decision, the reason code when empty, trust and calibration state, the
@@ -1987,7 +1991,9 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             seed_chunk_id: identifier of the seed evidence chunk.
             relation: `source`, `ordinal`, authored `supersession`, or `caused_by`, the
                 regression edge between audit records, read in both directions.
-            max_items: positive bounded candidate limit. Each candidate is trust evaluated again.
+            max_items: returned-item limit, from 1 to 50. Each candidate is trust evaluated again.
+                Supersession evaluates the complete matching lineage before limiting returned items;
+                source, ordinal, and `caused_by` relations also limit candidates.
             explain: include stable structural explanation metadata.
 
         Returns:
@@ -2051,7 +2057,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Returns:
             JSON `{tenant_id, generation_id, truncated, records}`. Each record carries its
             `recall_record` exactly as authored, `name`, `description`, `source`, `chunk_id`,
-            `valid_from`, `supersedes`, `superseded_by`, `valid_until`, the reverse `caused`
+            `valid_from`, `supersedes`, `superseded_by`, `valid_until`, `expired` (whether
+            `valid_until` has passed: a date lasts through that day, UTC), the reverse `caused`
             edge, `anchor_matches` and the best `anchor_match`, best match first. More than 500
             matches is refused, never truncated. A record in a file the caller's source policy
             does not let it read is left out and never named in `caused`; a successor it may not

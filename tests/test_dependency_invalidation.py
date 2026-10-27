@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from recall.dependency_invalidation import build_dependency_projection
 from recall.types import Chunk
 
@@ -106,3 +108,71 @@ def test_an_escaped_file_uri_stays_in_its_own_root() -> None:
         f"an escaped name lost its own root: {projection.reason_for('my notes.md')}"
     )
     assert [(e.dependent, e.prerequisite) for e in projection.edges] == [("my notes.md", "base.md")]
+
+
+@pytest.mark.parametrize(
+    "root,other_root",
+    [("s3://one/root", "s3://two/root"), ("file:///one", "file:///two")],
+    ids=["s3", "file"],
+)
+def test_encoded_generation_file_resolves_its_own_roots_copy(root: str, other_root: str) -> None:
+    """Node tests/test_dependency_invalidation.py::test_encoded_generation_file_resolves_its_own_roots_copy.
+
+    Encoded generation names must resolve their own root's prerequisite.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    _source_root's encoded/decoded mismatch failed the edge assertion.
+    """
+    file = "my%20notes.md"
+    own = f"{root}/base.md"
+    other = f"{other_root}/base.md"
+    projection = build_dependency_projection(
+        [
+            _placed("own", "base.md", own),
+            _placed("other", "base.md", other),
+            _placed("notes", file, f"{root}/{file}", depends_on=["base.md"]),
+        ],
+        tenant_id="tenant",
+        generation_id="generation",
+        collided=frozenset({"base.md"}),
+        base_states={own: "expired", other: "current"},
+    )
+    assert [(e.dependent, e.prerequisite) for e in projection.edges] == [(file, own)], (
+        f"an encoded generation filename lost its own root: {projection.diagnostics}"
+    )
+    assert projection.dependencies[file] == ("base.md",)
+    reason = projection.reason_for(file)
+    assert reason is not None and reason.cause == "expired" and reason.dependency == own
+
+
+@pytest.mark.parametrize(
+    "root,other_root,source_name",
+    [
+        ("/one", "/two", "my%20notes.md"),
+        ("s3://one/root", "s3://two/root", "my%2520notes.md"),
+        ("file:///one", "file:///two", "my%2520notes.md"),
+    ],
+    ids=["plain-path", "s3-literal-percent", "file-literal-percent"],
+)
+def test_literal_percent_filenames_keep_their_own_root(root: str, other_root: str, source_name: str) -> None:
+    """Node tests/test_dependency_invalidation.py::test_literal_percent_filenames_keep_their_own_root.
+
+    Literal percent filenames must retain their own root.
+    Red-proved by making _source_root unconditionally unquote(file);
+    the edge assertion detected the second decoding.
+    """
+    file = "my%20notes.md"
+    own = f"{root}/base.md"
+    projection = build_dependency_projection(
+        [
+            _placed("own", "base.md", own),
+            _placed("other", "base.md", f"{other_root}/base.md"),
+            _placed("notes", file, f"{root}/{source_name}", depends_on=["base.md"]),
+        ],
+        tenant_id="tenant",
+        generation_id="generation",
+        collided=frozenset({"base.md"}),
+    )
+    assert [(e.dependent, e.prerequisite) for e in projection.edges] == [(file, own)], (
+        f"a literal percent filename was decoded again: {projection.diagnostics}"
+    )
+    assert projection.reason_for(file) is None

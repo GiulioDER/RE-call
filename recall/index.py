@@ -329,11 +329,13 @@ def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
     return _pack(blocks, max_chars)
 
 
-#: The version recorded in the code chunker's `ChunkerIdentity`. Version 2 is the anchored chunker:
+#: The version recorded in the code chunker's `ChunkerIdentity`. Version 3 preserves the original
+#: Python source through generation readers so anchors retain outer whitespace and a BOM.
+#: Version 2 introduced the anchored chunker:
 #: a Python file splits on the symbols `ast` reports and every chunk carries a `code_anchor`. The
 #: identity is part of the pipeline fingerprint and generation reuse is keyed on that, so raising
 #: this makes the next build of every code tenant re-chunk every source. Text tenants are untouched.
-CODE_CHUNKER_VERSION = 2
+CODE_CHUNKER_VERSION = 3
 #: The chunk metadata key holding a Python chunk's anchor, `{"repo", "file", "symbol", "code_sha"}`:
 #: the triple a `recall_record` anchor carries, plus the repository, so a record joins to the
 #: current code by equality (`docs/AUDIT_MEMORY_DESIGN.md`, "Code join").
@@ -681,7 +683,7 @@ def _body_derivation_hash(raw: str, content_hash: str) -> str:
     The same narrow trigger carries the `recall_record` parser (2026-10-21): a memo declaring one
     re-derives once, so a memo written with a record before this parser was installed gains it
     on the next run instead of being skipped as unchanged. The generation path's equivalent is
-    `recall.generations._METADATA_RULE_VERSION`.
+    `recall.generations._metadata_rules_accepted`.
     """
     if legacy_pairing_differs(raw):
         content_hash = hashlib.sha256(
