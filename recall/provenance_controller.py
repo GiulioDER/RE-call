@@ -17,7 +17,7 @@ import threading
 import unicodedata
 from bisect import bisect_left
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
@@ -108,13 +108,46 @@ def fact_identity(fact: AtomicFact) -> str:
 
 
 def asserts_fact(event: FactEvent) -> bool:
-    """Whether an event is the one application a fact's projection lists.
+    """Whether an event is an application of its fact by its own record: `asserted`, and not a
+    DUPLICATE. Projections decide over the whole history instead (`applications`)."""
+    return event.event_type == "asserted" and event.decision_code != DecisionCode.DUPLICATE
+
+
+def applications(events: Iterable[FactEvent]) -> dict[str, FactEvent]:
+    """The assertions projections count as applications of their fact, by event id, in ledger
+    order, each as it is counted.
 
     A fact applied again under a new request records a second `asserted` event coded DUPLICATE,
-    which is only ever written while the APPLIED event for the same fact is still a candidate.
-    Projections skip it, so a fact is listed once however many requests applied it.
+    written while an application of the same fact is a candidate: it repeats the latest earlier
+    application of its fact, and the two are one episode. It is skipped, so the fact is listed
+    once, unless that application was withdrawn. Then the DUPLICATE is counted in its place AS
+    it: with its supersession (a DUPLICATE is stored with none) and at its point in the ledger,
+    so it hides exactly what the withdrawn application hid, and a value another memo still states
+    keeps its supersession and all, which is what `plan_withdrawals` promises. A retracted
+    application needs no stand-in: a retraction takes every application of the fact together,
+    and a retracted successor still hides (`FactSupersession`). Before this, withdrawing the
+    APPLIED memo of a fact whose DUPLICATE's memo had been forgotten made the value the fact
+    superseded current again, while the other order kept it retired (2026-10-27 audit of #921,
+    STAKES-001).
     """
-    return event.event_type == "asserted" and event.decision_code != DecisionCode.DUPLICATE
+    history = tuple(events)
+    withdrawn = withdrawn_event_ids(history)
+    counted: dict[str, FactEvent] = {}
+    latest: dict[str, FactEvent] = {}
+    for event in history:
+        fact_id = event.fact_id
+        if event.event_type != "asserted" or fact_id is None:
+            continue
+        if not asserts_fact(event):  # a DUPLICATE
+            repeated = latest.get(fact_id)
+            if repeated is None or repeated.event_id not in withdrawn:
+                continue
+            event = replace(
+                event, supersedes_fact_ids=repeated.supersedes_fact_ids, created_at=repeated.created_at
+            )
+        counted[event.event_id] = event
+        latest[fact_id] = event
+    return counted
 
 
 RetractionKey = tuple[str | None, str, frozenset[str]]
@@ -431,12 +464,18 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
     by_fact: dict[str, list[FactEvent]] = {}
     successors: list[tuple[FactEvent, FactWindow | None]] = []
     paired: set[str] = set()
-    for event in events:
-        if asserts_fact(event) and event.fact_id is not None:
+    for event in applications(events).values():
+        if event.fact_id is not None:
             by_fact.setdefault(event.fact_id, []).append(event)
             if event.supersedes_fact_ids and event.fact is not None:
                 successors.append((event, fact_window(event.fact)))
                 paired.add(event.request_id + SUPERSESSION_REQUEST_SUFFIX)
+            elif event.supersedes_fact_ids and not asserts_fact(event):
+                # A DUPLICATE standing in for a withdrawn application whose value a forget or
+                # withdraw erased: it has no `superseded` event of its own, so it hides what that
+                # application superseded, from its point in the ledger and with an unknown window,
+                # as the erased application's own `superseded` event did.
+                successors.append((event, None))
     for event in events:
         if event.event_type == "superseded" and event.request_id not in paired:
             successors.append((event, fact_window(event.fact) if event.fact is not None else None))
@@ -684,12 +723,13 @@ def assertion_cards(
     episode of their fact, rather than creating an independently surviving assertion.
     """
     retracted = retracted_keys(events)
+    counted = applications(events) if index is not None else {}
     cards: dict[str, dict[str, EvidenceCard]] = {}
     episode_in_force: dict[str, bool] = {}
     for event in events:
         if event.event_type == "asserted" and event.fact_id is not None and retraction_key(event) not in retracted:
             if index is not None:
-                if asserts_fact(event):
+                if event.event_id in counted:
                     episode_in_force[event.fact_id] = bool(index.in_force(event))
                 if not episode_in_force.get(event.fact_id, False):
                     continue
@@ -1282,12 +1322,13 @@ def project_current(
     index = fact_supersession(events)
     retracted = retracted_keys(events)
     absent = absent_fact_ids(events, served, now)
+    counted = applications(events)
     instant = _as_utc(now)
     listed: set[str | None] = set()
     current: list[FactEvent] = []
     for event in events:
         if (
-            asserts_fact(event)
+            event.event_id in counted
             and event.fact is not None
             and event.fact_id not in listed
             and retraction_key(event) not in retracted
@@ -1378,11 +1419,12 @@ def project_candidates(
     """
     index = fact_supersession(events) if index is None else index
     retracted = retracted_keys(events)
+    # Each as `applications` counts it, so a DUPLICATE standing in for a withdrawn application
+    # brings that application's supersession to `repeats_assertion`.
     return tuple(
         event
-        for event in events
-        if asserts_fact(event)
-        and event.fact is not None
+        for event in applications(events).values()
+        if event.fact is not None
         and retraction_key(event) not in retracted
         and index.in_force(event)
     )

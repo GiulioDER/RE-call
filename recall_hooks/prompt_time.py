@@ -81,7 +81,7 @@ import json
 import math
 import re
 import sys
-from datetime import date
+from datetime import date, datetime, tzinfo
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -119,18 +119,53 @@ FIELD_WEIGHT = 3
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
 DESCRIPTION_RE = re.compile(r"^description:\s*(.+)$", re.MULTILINE)
 
-#: A memo's frontmatter: the block between the opening `---` and the next one.
-FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.DOTALL)
+#: A memo's frontmatter: the block between an opening and a closing line that are each `---`
+#: alone (a UTF-8 BOM and surrounding blanks allowed), as `frontmatter_span` reads them.
+FRONTMATTER_RE = re.compile(
+    r"\A﻿?[ \t]*---[ \t]*\r?\n(.*?)\r?\n[ \t]*---[ \t]*(?:\r?\n|\Z)", re.DOTALL
+)
+#: An ISO calendar date, the only date shape a stamp carries.
+_ISO_DATE = r"(\d{4}-\d{2}-\d{2})"
+#: The stamp of a memo that states no date of its own.
+UNDATED = "[undated]"
+
+
+def _field_re(key: str, value: str) -> re.Pattern[str]:
+    """A frontmatter field at any indent. The indent is `[ \\t]*`, not `\\s*`: `\\s` also
+    matches a newline, which makes a head of blank lines quadratic to search."""
+
+    return re.compile(rf"^[ \t]*{key}:\s*['\"]?{value}", re.MULTILINE)
+
+
 #: The provenance fields a memo states about itself, read from the frontmatter only, so a date
-#: quoted in the body can never be mistaken for the memo's own.
-VALID_FROM_RE = re.compile(r"^\s*valid_from:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.MULTILINE)
-MODIFIED_RE = re.compile(r"^\s*modified:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.MULTILINE)
-SESSION_RE = re.compile(r"^\s*originSessionId:\s*['\"]?([0-9A-Za-z]{8})", re.MULTILINE)
+#: quoted in the body can never be mistaken for the memo's own. `modified` keeps its time and
+#: zone, when it has them, so the stamp can name the reader's calendar day (`_record_day`).
+VALID_FROM_RE = _field_re("valid_from", _ISO_DATE)
+MODIFIED_RE = _field_re(
+    "modified", _ISO_DATE + r"(?:[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)(Z|[+-]\d{2}:?\d{2})?)?"
+)
+SESSION_RE = _field_re("originSessionId", r"([0-9A-Za-z]{8})")
 #: Memos written by the dated convention carry the day in the file name.
-NAME_DATE_RE = re.compile(r"\A(\d{4}-\d{2}-\d{2})-")
-#: A correction appended in place, the `🔁 Corrected 2026-08-25` convention, with its date on the
-#: same line as the marker.
-CORRECTION_RE = re.compile("\U0001f501" r"[^\n]*?(\d{4}-\d{2}-\d{2})")
+NAME_DATE_RE = re.compile(r"\A" + _ISO_DATE + "-")
+#: The marker of a correction appended in place, the `🔁 Corrected 2026-08-25` convention.
+CORRECTION_MARK = "\U0001f501"
+#: A correction's date: the first date on the marker's own line that stands alone, so not one
+#: inside a wiki link, a path or a memo name (`[[2026-10-09-x]]`, `designs/2026-10-01-y`). The gap
+#: stops at the next marker, so a line of markers with no date is scanned once, not once per
+#: marker. A correction states its date where it likes ("Superseded ... 2026-09-23", eleven
+#: words in), so no window is imposed, and a line that quotes another date first is read wrongly.
+CORRECTION_RE = re.compile(
+    r"\U0001f501[^\n\U0001f501]*?(?<![\w/\[`-])" + _ISO_DATE + r"(?!-\w|\d|[A-SU-Za-z_])"
+)
+#: The zone `modified` is shown in: None is this machine's local zone, the zone of `date.today()`.
+_LOCAL_TZ: tzinfo | None = None
+#: `recall.frontmatter.frontmatter_span`'s member rule, copied because this package may not import
+#: `recall`. A leading `---` is also a horizontal rule, so a head is trusted only when every line
+#: is a plausible YAML member and at least one is a key; otherwise the file is all body.
+_HEAD_NON_KEY_START = frozenset(":#-*+`[>|")
+_EXPLICIT_KEY_RE = re.compile(r"[?:](\s|$)")
+_SEQUENCE_ITEM_RE = re.compile(r"-(\s|$)")
+_FLOW_CLOSER_RE = re.compile(r"[\]}],?\s*$")
 
 #: Function words plus the conversational filler a prompt is made of. Not a linguistic stoplist:
 #: every word here was watched matching a memo for no reason during development.
@@ -327,30 +362,98 @@ def rank(
     return [row for row in scored[:k] if row[2] >= floor]
 
 
+def _is_key_line(line: str) -> bool:
+    """`recall.frontmatter._KEY_LINE.match(line)`, decided without its regex.
+
+    That pattern is `[^:]* \\s* :` after the first character, which backtracks quadratically on a
+    long run of whitespace; on every prompt that is a cost a memo can choose. Both accept exactly
+    a line whose first character can open a key and that holds a colon after it.
+    """
+
+    first = line[:1]
+    if not first or first.isspace():
+        return False
+    if first in "-+":
+        return len(line) > 1 and not line[1].isspace() and ":" in line[1:]
+    return first not in _HEAD_NON_KEY_START and ":" in line[1:]
+
+
+def _is_frontmatter(head: str) -> bool:
+    """True when `head` is a real frontmatter block, by `frontmatter_span`'s rule."""
+
+    seen_key = False
+    for line in head.split("\n"):
+        line = line.rstrip("\r")
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if line[:1].isspace():
+            seen_key = seen_key or _is_key_line(stripped)
+            continue
+        if _is_key_line(line) or _EXPLICIT_KEY_RE.match(line):
+            seen_key = True
+            continue
+        if seen_key and (
+            stripped.startswith("#")
+            or _SEQUENCE_ITEM_RE.match(line)
+            or _FLOW_CLOSER_RE.match(line)
+        ):
+            continue
+        return False
+    return seen_key
+
+
+def _record_day(match: re.Match[str]) -> str:
+    """The calendar day of a `modified` value, in `_LOCAL_TZ`, the zone `render`'s today is in.
+
+    A value with a zone (most are `...Z`) is an instant, and its UTC date is a day off the
+    reader's around midnight; one without a zone is already a day and is kept as written, as
+    is one that cannot be converted: a bad clock (ValueError), a year at the calendar's edge
+    (OverflowError), or a pre-1970 instant in Windows' local zone (OSError). Raising here would
+    drop every hit of the prompt, not just this stamp.
+    """
+
+    day, clock, zone = match.groups()
+    if not (clock and zone):
+        return day
+    try:
+        instant = datetime.fromisoformat(f"{day}T{clock}{'+00:00' if zone == 'Z' else zone}")
+        return instant.astimezone(_LOCAL_TZ).date().isoformat()
+    except (ValueError, OverflowError, OSError):
+        return day
+
+
 def provenance(path: Path) -> str:
     """The dates a memo states about itself, as one bracketed stamp. Nothing is inferred.
 
     🔑 **Why a stamp, and why this one.** An undated record reads as current: the model trusts a
     stale fact as readily as a fresh one. RE-call measured the same thing on its own reader: with
     each returned item prefixed by its date, LoCoMo temporal accuracy rose 53.75 points over
-    undated content (memo `2026-09-24-c9-textual-reader-sees-no-dates`), and the date had to be
-    IN the text, because an optional side field is not shown to every reader.
+    undated content (`docs/preregistrations/2026-09-25-aml-c9-window-format.md`), and the date had
+    to be IN the text, because an optional side field is not shown to every reader.
 
     ⛔ **Each date is labelled with the field it came from, and none is guessed.** The AML
     organiser's issue 9 asks for exactly this: keep when an event happened apart from when the
     record was stored, and never add an inferred date. T-1 broke that rule by dating the words of
     an album title (`2026-10-09-t1-annotates-relative-words-inside-names`). So `valid from` is
     the frontmatter's own claim about the fact, `written` is the date in the file name, `modified`
-    is the frontmatter's record time, and `corrected` is the latest dated 🔁 marker in the body.
-    File mtime is NOT used: on this store it clusters on bulk-copy days (64 memos share one), so
+    is the frontmatter's record time as a day in the reader's zone (`_record_day`), and
+    `corrected Nx, last D` counts every 🔁 marker in the body and names the latest date one of
+    them states (`CORRECTION_RE`); a body with markers but no such date says `corrected Nx`.
+    `valid from` is left out when it is the file name's date, and `session` (the first 8
+    characters of `originSessionId`) is added only to a stamp that already holds a date.
+    File mtime is NOT used: on the maintainer's store it clustered on bulk-copy days (64 memos
+    shared one day as of 2026-10-14; re-measure by counting a store's `*.md` per mtime day), so
     it would be a confident wrong date. A memo with none of these says `undated`.
     """
 
     try:
         raw = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return "[undated]"
+        return UNDATED
     head_match = FRONTMATTER_RE.search(raw)
+    if head_match and not _is_frontmatter(head_match.group(1)):
+        head_match = None
     head = head_match.group(1) if head_match else ""
     body = raw[head_match.end():] if head_match else raw
     parts: list[str] = []
@@ -361,14 +464,15 @@ def provenance(path: Path) -> str:
     if valid_from and not (name_date and valid_from.group(1) == name_date.group(1)):
         parts.append(f"valid from {valid_from.group(1)}")
     modified = MODIFIED_RE.search(head)
-    corrections = CORRECTION_RE.findall(body)
     if modified:
-        parts.append(f"modified {modified.group(1)}")
-    if corrections:
-        count = len(corrections)
-        parts.append(f"corrected {count}x, last {max(corrections)}")
+        parts.append(f"modified {_record_day(modified)}")
+    markers = body.count(CORRECTION_MARK)
+    if markers:
+        dates = CORRECTION_RE.findall(body)
+        last = f", last {max(dates)}" if dates else ""
+        parts.append(f"corrected {markers}x{last}")
     if not parts:
-        return "[undated]"
+        return UNDATED
     session = SESSION_RE.search(head)
     if session:
         parts.append(f"session {session.group(1)}")

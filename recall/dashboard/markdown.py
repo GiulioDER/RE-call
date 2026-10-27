@@ -17,13 +17,13 @@ from __future__ import annotations
 import html
 import re
 from collections.abc import Callable
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode, urlsplit
 
 #: Given a link target, the memo it names (a path relative to the store), or None.
 Resolver = Callable[[str], "str | None"]
 
 _FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
-_HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+_HEADING = re.compile(r"^(#{1,6})[ \t]+(.*)$")
 _RULE = re.compile(r"^\s{0,3}([-*_])(\s*\1){2,}\s*$")
 _ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
 _TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
@@ -36,6 +36,15 @@ _INLINE = re.compile(
     r"|(?P<url>https?://[^\s<>()\[\]]+[^\s<>()\[\].,;:!?'\"])"
 )
 _WEB = re.compile(r"^https?://", re.IGNORECASE)
+# Bound regex input and recursive formatting work. Over-budget text stays fully
+# visible, HTML-escaped, instead of being parsed as Markdown.
+_MAX_FRAGMENT_CHARS = 4096
+_MAX_DELIMITERS = 128
+_MAX_DEPTH = 32
+
+
+def _over_budget(text: str) -> bool:
+    return len(text) > _MAX_FRAGMENT_CHARS or sum(text.count(c) for c in "`[]*|>") > _MAX_DELIMITERS
 
 
 def memo_href(name: str) -> str:
@@ -43,7 +52,11 @@ def memo_href(name: str) -> str:
 
 
 def _anchor_for(target: str, label_html: str, resolve: Resolver) -> str:
-    memo = resolve(target)
+    try:
+        parsed = urlsplit(target)
+    except ValueError:
+        return label_html
+    memo = resolve(unquote(parsed.path)) if not parsed.scheme and not parsed.netloc else None
     if memo is not None:
         return f"<a class='memo-link' href='{html.escape(memo_href(memo), quote=True)}'>{label_html}</a>"
     if _WEB.match(target):
@@ -51,8 +64,10 @@ def _anchor_for(target: str, label_html: str, resolve: Resolver) -> str:
     return label_html
 
 
-def inline(text: str, resolve: Resolver) -> str:
+def inline(text: str, resolve: Resolver, *, _depth: int = 0) -> str:
     """One line or paragraph of memo text as escaped HTML with its inline formatting."""
+    if _depth >= _MAX_DEPTH or _over_budget(text):
+        return html.escape(text)
     out: list[str] = []
     position = 0
     for match in _INLINE.finditer(text):
@@ -69,11 +84,11 @@ def inline(text: str, resolve: Resolver) -> str:
                 else f"<span class='broken-link' title='No memo in this store has that name'>{label}</span>"
             )
         elif match.group("link_text"):
-            out.append(_anchor_for(match.group("link_url"), inline(match.group("link_text"), resolve), resolve))
+            out.append(_anchor_for(match.group("link_url"), inline(match.group("link_text"), resolve, _depth=_depth + 1), resolve))
         elif match.group("bold"):
-            out.append(f"<strong>{inline(match.group('bold'), resolve)}</strong>")
+            out.append(f"<strong>{inline(match.group('bold'), resolve, _depth=_depth + 1)}</strong>")
         elif match.group("em"):
-            out.append(f"<em>{inline(match.group('em'), resolve)}</em>")
+            out.append(f"<em>{inline(match.group('em'), resolve, _depth=_depth + 1)}</em>")
         else:
             url = match.group("url")
             out.append(_anchor_for(url, html.escape(url), resolve))
@@ -117,8 +132,13 @@ def _list(lines: list[str], resolve: Resolver) -> str:
     return "".join(out)
 
 
-def render(text: str, resolve: Resolver, *, skip_title: str | None = None) -> str:
-    """A memo body as HTML. `skip_title` drops a first heading equal to it (the page shows it)."""
+def render(text: str, resolve: Resolver, *, skip_title: str | None = None, _depth: int = 0) -> str:
+    """A memo body as HTML; oversized or deeply nested fragments stay escaped text.
+
+    `skip_title` drops a first heading equal to it (the page shows it).
+    """
+    if _depth >= _MAX_DEPTH:
+        return f"<p>{html.escape(text)}</p>"
     lines = text.replace("\r\n", "\n").split("\n")
     out: list[str] = []
     paragraph: list[str] = []
@@ -132,12 +152,18 @@ def render(text: str, resolve: Resolver, *, skip_title: str | None = None) -> st
     first_heading = True
     while index < len(lines):
         line = lines[index]
+        if _over_budget(line):
+            flush()
+            out.append(f"<p>{html.escape(line)}</p>")
+            index += 1
+            continue
         fence = _FENCE.match(line)
         if fence:
             flush()
             marker, block = fence.group(1), []
+            closing = re.compile(r"^ {0,3}" + re.escape(marker[0]) + "{" + str(len(marker)) + r",}[ \t]*$")
             index += 1
-            while index < len(lines) and not lines[index].strip().startswith(marker):
+            while index < len(lines) and not closing.fullmatch(lines[index]):
                 block.append(lines[index])
                 index += 1
             index += 1
@@ -146,7 +172,7 @@ def render(text: str, resolve: Resolver, *, skip_title: str | None = None) -> st
         heading = _HEADING.match(line)
         if heading:
             flush()
-            title = heading.group(2)
+            title = heading.group(2).rstrip().rstrip("#").rstrip()
             if not (first_heading and skip_title and title.strip() == skip_title.strip()):
                 level = min(len(heading.group(1)) + 1, 6)
                 out.append(f"<h{level}>{inline(title, resolve)}</h{level}>")
@@ -164,9 +190,13 @@ def render(text: str, resolve: Resolver, *, skip_title: str | None = None) -> st
             while index < len(lines) and lines[index].lstrip().startswith(">"):
                 quoted.append(re.sub(r"^\s*>\s?", "", lines[index]))
                 index += 1
-            out.append(f"<blockquote>{render(chr(10).join(quoted), resolve)}</blockquote>")
+            out.append(f"<blockquote>{render(chr(10).join(quoted), resolve, _depth=_depth + 1)}</blockquote>")
             continue
-        if "|" in line and index + 1 < len(lines) and _TABLE_RULE.match(lines[index + 1]) and "-" in lines[index + 1]:
+        if (
+            "|" in line and index + 1 < len(lines)
+            and not _over_budget(lines[index + 1]) and "-" in lines[index + 1]
+            and _TABLE_RULE.match(lines[index + 1])
+        ):
             flush()
             head = "".join(f"<th>{inline(cell, resolve)}</th>" for cell in _cells(line))
             index += 2

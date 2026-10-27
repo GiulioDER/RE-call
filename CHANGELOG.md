@@ -41,6 +41,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `historical` field to null and drops their advice. A memo whose authored facts do not parse no
   longer fails the search or evidence call that returns it: a malformed fact is left off its
   evidence card, and a memo with no well-formed fact gets no card.
+- Every FastEmbed embedding profile now records the installed `onnxruntime` and `tokenizers`
+  versions in its `dependencies` (`onnxruntime-gpu` and the other builds are named in the value), on
+  the registered and the unregistered construction path alike. Before this an upgrade of either with
+  fastembed unchanged, such as onnxruntime 1.30.0 to 1.31.0, left the profile fingerprint
+  byte-identical, so the embedding cache, the index skip guard and the v1 calibration binding reused
+  vectors computed by the old runtime or tokenizer. Every FastEmbed fingerprint changes once: the
+  embedding cache re-embeds once, and existing FastEmbed index fingerprints and v1 calibration
+  bindings need rebinding. Hosted and sentence-transformers profiles are unchanged.
 - Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
   answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
   a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for
@@ -298,6 +306,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **Withdrawing a fact's first memo no longer gives back what a forgotten second memo retired.**
+  A fact stated by two memos is one application recorded APPLIED and one recorded DUPLICATE, and
+  projections listed only the APPLIED one. Forgetting the second memo and then withdrawing the
+  first made the value the fact superseded current again, where the other order kept it retired.
+  When the application a DUPLICATE repeats is withdrawn, the DUPLICATE now stands in for it, with
+  its supersession and at its point in the ledger, so it hides exactly what the withdrawn one hid
+  (`recall.provenance_controller.applications`), on PostgreSQL, lite and in memory, and in the
+  current-facts tables. A retraction needs no stand-in: it takes every application of the fact.
 * **A request id names one application.** A request id already used for another fact, or for the
   same fact on other cards, was answered allowed `DUPLICATE` with the earlier event and recorded
   nothing; it is now refused `REQUEST_ID_REUSED` and not recorded, while the same request sent again

@@ -33,12 +33,12 @@ from recall.lint import lint_corpus
 HUB_OUT_LINKS = 40
 MAX_DESCRIPTION = 280
 
-_WIKI = re.compile(r"\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]")
-_MD_LINK = re.compile(r"\]\(([^)\s]+?\.md)(?:#[^)]*)?\)")
-_HEADING = re.compile(r"^#\s+(.+?)\s*$", re.M)
-_FRONT = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
-_DESCRIPTION = re.compile(r"^description:\s*(.+?)\s*$", re.M)
-_MODIFIED = re.compile(r"^\s*modified:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.M)
+_WIKI = re.compile(r"\[\[([^\[\]|#]+)(?:[#|][^\[\]]*)?\]\]")
+_MD_LINK = re.compile(r"\]\(([^\[\])\s]+?\.md)(?:#[^\[\])\n]*)?\)")
+_HEADING = re.compile(r"^#[ \t]+([^\r\n]*)$", re.M)
+_FRONT = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*\n", re.S)
+_DESCRIPTION = re.compile(r"^description:[ \t]*([^\r\n]*)$", re.M)
+_MODIFIED = re.compile(r"^[ \t]*modified:[ \t]*['\"]?(\d{4}-\d{2}-\d{2})", re.M)
 _FILE_DAY = re.compile(r"(?:^|/)(\d{4}-\d{2}-\d{2})")
 MAX_ISSUE_MESSAGE = 240
 
