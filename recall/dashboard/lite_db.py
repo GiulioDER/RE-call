@@ -174,7 +174,7 @@ def lifecycle_events(dsn: str, tenant: str, limit: int = 100) -> list[dict[str, 
 def _search_row(row: tuple[Any, ...]) -> dict[str, Any]:
     event_id, event_type, actor, generation, _source, payload, created = row
     return {"event_id": event_id, "event": event_type, "actor": actor, "generation": generation,
-            "created_at": _when(created), **_summarise(_payload(payload))}
+            "created_at": _when(created), **_summarise(_payload(payload), event_type)}
 
 
 def searches(dsn: str, tenant: str, limit: int = 100, contains: str = "") -> list[dict[str, Any]]:
@@ -236,7 +236,9 @@ def control(dsn: str, tenant: str) -> dict[str, Any]:
             row["low_confidence"] += "low_confidence" in seen["verdicts"]
             if at and (row["last_retrieved"] is None or at > row["last_retrieved"]):
                 row["last_retrieved"] = at
-    summary = {"searches": len(search_rows), "answered": sum(r[1] == "search_decision" for r in search_rows),
+    outcomes = [_summarise(_payload(r[5]), r[1])["outcome"] for r in search_rows]
+    summary = {"searches": len(search_rows), "answered": outcomes.count("answered"),
+               "abstained": outcomes.count("abstained"), "refused": outcomes.count("refused"),
                "reports": len(report_rows), "helped": 0, "no_difference": 0, "misled": 0, "succeeded": 0, "failed": 0}
     for *_ignored, raw, created in report_rows:
         payload, at = _payload(raw), _when(created)
