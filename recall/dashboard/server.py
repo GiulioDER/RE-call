@@ -53,9 +53,15 @@ TENANT_COOKIE = "recall_tenant"
 DEFAULT_TENANT = "memory"
 TENANT_CACHE_SECONDS = 60
 #: A corpus graph is rebuilt at most this often: building one reads every file of the corpus, about
-#: 2 s on the database host and 7 s over a tunnel for the memory tenant (measured 2026-10-08), and a
-#: corpus changes only when a new generation is promoted.
+#: 2 s on the database host and 7 s over a tunnel for the memory tenant (measured 2026-10-08). A
+#: forget or withdraw inside the active generation shows on it only once the entry expires.
 CORPUS_GRAPH_CACHE_SECONDS = 300
+#: Said instead of "the database did not answer": the corpus graph and View 2 read PostgreSQL
+#: tables (chunks, graph entities and relations) that a `sqlite:///` store does not have.
+LITE_CORPUS_MESSAGE = (
+    "The corpus graph and the corpus source pages read PostgreSQL tables, which a lite "
+    "(sqlite:///) store does not have. The memo pages and the memo graph work as usual."
+)
 # A tenant id as RE-call writes them; anything else in a query or cookie is ignored, never echoed.
 TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 # The corpora this project serves, first in the switcher, by what they hold.
@@ -424,6 +430,9 @@ class DashboardApp:
         self._tenant_lock = threading.Lock()
         self._corpus_graphs: dict[str, tuple[float, bytes]] = {}
         self._corpus_graph_lock = threading.Lock()
+        # One build per corpus at a time: a build reads the whole corpus, and a reload or a second
+        # tab during one would otherwise start another on its own connection.
+        self._corpus_graph_builds: dict[str, threading.Lock] = {}
 
     # ------------------------------------------------------------------ tenants (database)
 
@@ -787,7 +796,8 @@ class DashboardApp:
             f"<dt>tasks</dt><dd>succeeded {found['succeeded']} · failed {found['failed']} (only where an agent used it and said)</dd></dl>"
         )
         local = self._memo_for_source(source)
-        links = "<a href='/control'>← all memories</a> · " + self._corpus_source_link(source, "this source in the corpus") + (
+        corpus_link = self._corpus_source_link(source, "this source in the corpus")
+        links = "<a href='/control'>← all memories</a>" + (f" · {corpus_link}" if corpus_link else "") + (
             f" · <a href='/memo?{_e(urlencode({'path': local}))}'>edit this memo</a> · <a href='/graph#memo={_e(local)}'>see it in the graph</a>" if local else ""
         )
         cards = "".join(
@@ -1581,7 +1591,8 @@ class DashboardApp:
         for i, hit in enumerate(found["hits"], 1):
             memo = self._memo_for_source(hit["source"])
             source = (self._memo_link(memo) if memo else _e(hit["source"])) + (
-                f" <span class='muted'>· {self._corpus_source_link(hit['source'], 'corpus page')}</span>" if hit["source"] else ""
+                f" <span class='muted'>· {self._corpus_source_link(hit['source'], 'corpus page')}</span>"
+                if hit["source"] and self._corpus_source_link(hit["source"]) else ""
             )
             successor = f"<div class='muted'>superseded by {_e(hit['superseded_by'])}</div>" if hit["superseded_by"] else ""
             confidence = f"{hit['confidence']:.2f}" if isinstance(hit["confidence"], int | float) else ""
@@ -1625,23 +1636,39 @@ class DashboardApp:
             return Response(HTTPStatus.OK, json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers)
         if self.db is None:
             return Response(HTTPStatus.SERVICE_UNAVAILABLE, b'{"error": "no corpus database is configured"}', headers)
+        if self.db.lite:
+            return Response(HTTPStatus.NOT_IMPLEMENTED, json.dumps({"error": LITE_CORPUS_MESSAGE}).encode("utf-8"), headers)
         from recall.dashboard import corpus as corpus_db
 
+        def fresh() -> bytes | None:
+            with self._corpus_graph_lock:
+                cached = self._corpus_graphs.get(corpus)
+                if cached and time.monotonic() - cached[0] < CORPUS_GRAPH_CACHE_SECONDS:
+                    return cached[1]
+                return None
+
+        cached = fresh()
+        if cached is not None:
+            return Response(HTTPStatus.OK, cached, headers)
         with self._corpus_graph_lock:
-            cached = self._corpus_graphs.get(corpus)
-            if cached and time.monotonic() - cached[0] < CORPUS_GRAPH_CACHE_SECONDS:
-                return Response(HTTPStatus.OK, cached[1], headers)
-        try:
-            payload = corpus_db.corpus_graph(self.db, corpus)
-        except dbq.DatabaseUnavailable as exc:
-            return Response(HTTPStatus.SERVICE_UNAVAILABLE, json.dumps({"error": str(exc)}).encode("utf-8"), headers)
-        body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-        with self._corpus_graph_lock:
-            self._corpus_graphs[corpus] = (time.monotonic(), body)
+            build = self._corpus_graph_builds.setdefault(corpus, threading.Lock())
+        with build:
+            cached = fresh()  # built by the request this one waited for
+            if cached is not None:
+                return Response(HTTPStatus.OK, cached, headers)
+            try:
+                payload = corpus_db.corpus_graph(self.db, corpus)
+            except dbq.DatabaseUnavailable as exc:
+                return Response(HTTPStatus.SERVICE_UNAVAILABLE, json.dumps({"error": str(exc)}).encode("utf-8"), headers)
+            body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+            with self._corpus_graph_lock:
+                self._corpus_graphs[corpus] = (time.monotonic(), body)
         return Response(HTTPStatus.OK, body, headers)
 
     def _corpus_source_link(self, file: str, label: str | None = None) -> str:
-        """A link to View 2 for `file` in the current corpus."""
+        """A link to View 2 for `file` in the current corpus, or "" on a lite store, which has none."""
+        if self.db is not None and self.db.lite:
+            return ""
         return f"<a href='/corpus/source?{_e(urlencode({'file': file}))}'>{_e(label or file)}</a>"
 
     def _corpus_source_page(self, file: str) -> Response:
@@ -1651,6 +1678,8 @@ class DashboardApp:
         title = "RE-call · a source in the corpus"
         if self.db is None:
             return self._not_connected(title, "graph", "A source in the corpus")
+        if self.db.lite:
+            return self._error(HTTPStatus.NOT_IMPLEMENTED, LITE_CORPUS_MESSAGE)
         tenant = self._current_tenant()
         if not file:
             return self._error(HTTPStatus.NOT_FOUND, "Which file? Open one from the corpus graph or a search.")
@@ -1675,13 +1704,23 @@ class DashboardApp:
             )
         )
         lines: list[str] = []
-        if found["superseded_by"]:
+        forgotten = set(found.get("supersedes_forgotten") or ())
+        if found["superseded_by"] and found.get("superseded_by_forgotten"):
+            lines.append(
+                f"<p class='warn-text'>Superseded by <code>{_e(found['superseded_by'])}</code>, a forgotten memo: "
+                "forgetting a memo keeps retired what it replaced, so search still marks this file superseded.</p>"
+            )
+        elif found["superseded_by"]:
             lines.append(f"<p class='warn-text'>Superseded by {self._corpus_source_link(found['superseded_by'])}: search marks this file superseded.</p>")
         if found["supersedes"]:
-            lines.append("<p>Replaces " + ", ".join(self._corpus_source_link(old) for old in found["supersedes"]) + ".</p>")
+            lines.append("<p>Replaces " + ", ".join(
+                f"<code>{_e(old)}</code> (forgotten)" if old in forgotten else self._corpus_source_link(old)
+                for old in found["supersedes"]
+            ) + ".</p>")
         if found["unresolved_claims"]:
             lines.append(
-                "<p class='warn-text'>Declares <code>supersedes</code> on names that match no file in this corpus: "
+                "<p class='warn-text'>Declares <code>supersedes</code> on names that match several files in this corpus, "
+                "so the claim replaces none of them: "
                 + ", ".join(f"<code>{_e(name)}</code>" for name in found["unresolved_claims"]) + ".</p>"
             )
         local = self._memo_for_source(found["source_uri"]) if tenant == DEFAULT_TENANT else None
@@ -1738,6 +1777,8 @@ class DashboardApp:
     def _corpus_switch(self, corpus: str) -> str:
         """Links between the memo files' graph and each database corpus's graph."""
         names: list[str] = []
+        if self.db is not None and self.db.lite:
+            return ""
         if self.db is not None:
             try:
                 names = [t["tenant"] for t in self._tenants() if t["generation"]]
@@ -1757,6 +1798,8 @@ class DashboardApp:
     def _graph_page(self, corpus: str = "") -> Response:
         if corpus and self.db is None:
             return self._not_connected("RE-call · corpus graph", "graph", "Corpus graph")
+        if corpus and self.db is not None and self.db.lite:
+            return self._error(HTTPStatus.NOT_IMPLEMENTED, LITE_CORPUS_MESSAGE)
         kinds = [
             ("link", "imports and links" if corpus else "links", "<span class='sw link'></span>", True),
             ("supersedes", "supersedes", "<span class='sw supersedes'></span>", True),

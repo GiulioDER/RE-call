@@ -25,6 +25,7 @@ path, the shared supersession graph identifies each copy by its source URI inste
 
 from __future__ import annotations
 
+import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -84,8 +85,12 @@ def _winners(c: Any, tenant: str, generation: str) -> SupersessionGraph:
 
 
 #: A Python import line: `from MODULE import NAMES` or `import MODULE`. Matched inside Postgres
-#: (newline-sensitive, so `^` is a line start), so only the matches leave the database.
-_IMPORT_PATTERN = r"^[ \t]*(?:from[ \t]+([.A-Za-z0-9_]+)[ \t]+import[ \t]+\(?([A-Za-z0-9_, \t]+)|import[ \t]+([A-Za-z0-9_.]+))"
+#: (newline-sensitive, so `^` is a line start), so only the matches leave the database. The names
+#: may be empty: `from pkg import (` ending its line names them on the lines below, which a
+#: line-sensitive match cannot read, so it links to `pkg` alone.
+_IMPORT_PATTERN = r"^[ \t]*(?:from[ \t]+([.A-Za-z0-9_]+)[ \t]+import[ \t]+\(?([A-Za-z0-9_, \t]*)|import[ \t]+([A-Za-z0-9_.]+))"
+#: A relative `from .` import, which names its target by position rather than by name.
+_RELATIVE_IMPORT = r"(^|\n)[ \t]*from[ \t]+\."
 
 
 def _module_of(file: str) -> str | None:
@@ -98,15 +103,27 @@ def _module_of(file: str) -> str | None:
     return ".".join(p for p in parts if p) or None
 
 
-def _import_edges(c: Any, tenant: str, generation: str, files: set[str]) -> list[tuple[str, str]]:
-    """`(importer, imported)` pairs for every Python import in the corpus that names one of its files."""
+def _import_edges(
+    c: Any, tenant: str, generation: str, files: set[str], *, source: str | None = None, naming: str | None = None,
+) -> list[tuple[str, str]]:
+    """`(importer, imported)` pairs for the Python imports in the corpus that name one of its files.
+
+    `source` scans that source's chunks only (what one file imports). `naming` scans only the chunks
+    whose text holds that module name or a relative import, the only ones that can import it
+    (what imports one file), so a page about one file does not run the regex over the corpus.
+    """
     rows = c.execute(
         "select coalesce(c.metadata->>'file', c.source_uri), m[1], m[2], m[3] from recall_chunks_v1 c, "
         "regexp_matches(c.text, %s, 'gn') as m where c.tenant_id = %s and c.generation_id = %s "
-        "and coalesce(c.metadata->>'file', c.source_uri) like %s",
-        (_IMPORT_PATTERN, tenant, generation, "%.py"),
+        "and coalesce(c.metadata->>'file', c.source_uri) like %s "
+        "and (%s::text is null or c.source_uri = %s) "
+        "and (%s::text is null or strpos(c.text, %s) > 0 or c.text ~ %s)",
+        (_IMPORT_PATTERN, tenant, generation, "%.py", source, source, naming, naming, _RELATIVE_IMPORT),
     ).fetchall()
     return resolve_imports(rows, files)
+
+
+_STDLIB = frozenset(sys.stdlib_module_names)
 
 
 def resolve_imports(rows: Any, files: set[str]) -> list[tuple[str, str]]:
@@ -114,8 +131,10 @@ def resolve_imports(rows: Any, files: set[str]) -> list[tuple[str, str]]:
 
     A module resolves by its full dotted path, else as the dotted tail of exactly one file's module
     (a corpus indexed from a parent directory adds a prefix to every path); a tail two files share
-    resolves to neither. `from pkg import name` links to `pkg/name.py` when that is a file, else to
-    `pkg`. A relative import resolves against the importing file's package. Pure.
+    resolves to neither, and so does a module named like the standard library (`import inspect` is
+    not `recall/lite/inspect.py`) unless its full path is a file. `from pkg import name` links to
+    `pkg/name.py` when that is a file, else to `pkg`. A relative import resolves against the
+    importing file's package. Pure.
     """
     by_module: dict[str, str] = {}
     by_suffix: dict[str, set[str]] = defaultdict(set)
@@ -130,6 +149,8 @@ def resolve_imports(rows: Any, files: set[str]) -> list[tuple[str, str]]:
     def resolve(module: str) -> str | None:
         if module in by_module:
             return by_module[module]
+        if module.split(".", 1)[0] in _STDLIB:
+            return None
         found = by_suffix.get(module)
         return next(iter(found)) if found and len(found) == 1 else None
 
@@ -151,7 +172,7 @@ def resolve_imports(rows: Any, files: set[str]) -> list[tuple[str, str]]:
             for name in (n.strip() for n in (names or "").split(",")):
                 if name:
                     targets.append(resolve(f"{base}.{name}") or resolve(base))
-            if not names:
+            if not (names or "").strip():
                 targets.append(resolve(base))
         for target in targets:
             if target and target != importer:
@@ -218,12 +239,19 @@ def corpus_graph(db: DashboardDB, tenant: str, *, today: date | None = None) -> 
             "and r.relation in ('references', 'depends_on')",
             (tenant, generation),
         ).fetchall()
+        # Only the entities `assemble_graph` can use: named in two or more sources and in at most
+        # SHARE_MAX_FILES files, a superset of what it keeps, filtered here so the common and
+        # single-file names (most of a code corpus) never leave the database.
         mentions = c.execute(
-            "select m.entity_id, coalesce(c.metadata->>'file', c.source_uri) from recall_graph_mentions_v1 m "
+            "with ef as (select m.entity_id, coalesce(c.metadata->>'file', c.source_uri) as file, c.source_uri "
+            "from recall_graph_mentions_v1 m "
             "join recall_chunks_v1 c on c.tenant_id = m.tenant_id and c.generation_id = m.generation_id and c.chunk_id = m.chunk_id "
             "join recall_graph_entities_v1 e on e.tenant_id = m.tenant_id and e.generation_id = m.generation_id and e.entity_id = m.entity_id "
-            "where m.tenant_id = %s and m.generation_id = %s and e.entity_kind <> 'file' group by 1, 2",
-            (tenant, generation),
+            "where m.tenant_id = %s and m.generation_id = %s and e.entity_kind <> 'file' group by 1, 2, 3) "
+            "select ef.entity_id, ef.file, ef.source_uri from ef where ef.entity_id in ("
+            "select entity_id from ef group by 1 "
+            "having count(distinct source_uri) >= 2 and count(distinct file) <= %s)",
+            (tenant, generation, SHARE_MAX_FILES),
         ).fetchall()
         imports = _import_edges(c, tenant, generation, {str(row[0]) for row in files})
     return assemble_graph(
@@ -247,24 +275,41 @@ def assemble_graph(
     `files`: `(file, chunks, first indexed, type, valid_from, valid_until, heading hierarchy)`
     with an optional eighth `source_uri` column for resolving copies;
     `winner`: superseded file -> the file replacing it; `relations`: `(relation, subject file,
-    object file)`; `mentions`: `(entity id, file)`; `imports`: `(importer, imported)`.
+    object file)`; `mentions`: `(entity id, file)` with an optional third `source_uri` column;
+    `imports`: `(importer, imported)`.
+
+    Every edge end goes through the node keys: a path several roots hold is one node per copy
+    (`SupersessionGraph.key`), so a relation or import naming only the path picks no copy and draws
+    nothing, and a mention, which carries its source, joins the copy that holds it.
     """
     now = today
     graph = winner if isinstance(winner, SupersessionGraph) else SupersessionGraph.from_parts(winner)
     winner = graph.edges
     nodes: dict[str, dict[str, Any]] = {}
+    path_keys: dict[str, set[str]] = defaultdict(set)
     for file, chunks, first, kind, valid_from, valid_until, hierarchy, *sources in files:
         key = graph.key(file, str(sources[0]) if sources else None)
+        path_keys[file].add(key)
         nodes[key] = {
             "id": key, "title": _title(file, hierarchy), "description": f"{chunks} chunk(s)", "type": kind or "",
             "state": _state(key, graph, valid_from, valid_until, now), "born": _day(first) or now,
             "valid_from": valid_from, "valid_until": valid_until,
             "folder": file.split("/", 1)[0] if "/" in file else "", "issues": [], "chunks": chunks,
         }
+    def node_of(path: str, source: str | None = None) -> str | None:
+        """The node a path (and, when known, its source) is drawn as; None when ambiguous."""
+        if source:
+            key = graph.key(path, source)
+            return key if key in nodes else None
+        keys = path_keys.get(path, set())
+        return next(iter(keys)) if len(keys) == 1 else None
+
     edges: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 
-    def add(source: str, target: str, kind: str, **extra: Any) -> None:
+    def add(source: str | None, target: str | None, kind: str, **extra: Any) -> None:
+        if source is None or target is None:
+            return
         key = (source, target, kind)
         if source != target and source in nodes and target in nodes and key not in seen:
             seen.add(key)
@@ -273,12 +318,14 @@ def assemble_graph(
     for replaced, newer in sorted(winner.items()):
         add(newer, replaced, "supersedes")
     for relation, subject, obj in sorted(relations):
-        add(str(subject), str(obj), "link", relation=relation)
+        add(node_of(str(subject)), node_of(str(obj)), "link", relation=relation)
     for importer, imported in imports:
-        add(importer, imported, "link", relation="imports")
+        add(node_of(importer), node_of(imported), "link", relation="imports")
     by_entity: dict[Any, set[str]] = defaultdict(set)
-    for entity, file in mentions:
-        by_entity[entity].add(file)
+    for entity, file, *source in mentions:
+        member = node_of(str(file), str(source[0]) if source and source[0] else None)
+        if member is not None:
+            by_entity[entity].add(member)
     pair_weight: Counter[tuple[str, str]] = Counter()
     for members in by_entity.values():
         if 2 <= len(members) <= SHARE_MAX_FILES:
@@ -312,6 +359,18 @@ def assemble_graph(
         node["isolated"] = False
     counts = Counter(node["state"] for node in nodes.values())
     kinds = Counter(e["kind"] for e in edges)
+    notes: list[str] = []
+    # A forgotten memo keeps retired what it replaced (`recall.supersession.SupersessionRecord`),
+    # but it is no longer a file here, so its supersession has nothing to be drawn from.
+    hidden_by_forgotten = sum(
+        1 for node in nodes.values()
+        if node["state"] == "superseded" and graph.successor(node["id"], now=_instant(now)) not in nodes
+    )
+    if hidden_by_forgotten:
+        notes.append(
+            f"{hidden_by_forgotten} file(s) are superseded by a forgotten memo, which is not drawn: "
+            "forgetting a memo keeps retired what it replaced."
+        )
     return {
         "nodes": sorted(nodes.values(), key=lambda n: n["id"]),
         "edges": edges,
@@ -321,7 +380,7 @@ def assemble_graph(
             "supersedes": kinds["supersedes"], "link": kinds["link"], "shares": kinds["shares"],
             "hubs": sum(1 for n in nodes.values() if n["hub"]),
         },
-        "notes": [],
+        "notes": notes,
         "origin": "database",
         "tenant": tenant,
         "generation": generation,
@@ -385,8 +444,10 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
             (tenant, generation, canonical, canonical, MAX_RELATIONS),
         ).fetchall()
         imports: list[tuple[str, str]] = []
+        imported_by: list[tuple[str, str]] = []
         if canonical.endswith(".py"):
-            # The whole corpus's imports, because "imported by" needs every other file's.
+            # Resolution needs every file's module path; the regex runs only over this source (what
+            # it imports) and over the chunks that name its module (what imports it).
             every = {
                 str(row[0]) for row in c.execute(
                     "select distinct coalesce(c.metadata->>'file', c.source_uri) from recall_chunks_v1 c "
@@ -394,7 +455,23 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
                     (tenant, generation),
                 ).fetchall()
             }
-            imports = _import_edges(c, tenant, generation, every)
+            imports = _import_edges(c, tenant, generation, every, source=source)
+            module = _module_of(canonical)
+            if module:
+                imported_by = _import_edges(c, tenant, generation, every, naming=module.rsplit(".", 1)[-1])
+        successor = graph.successor(key, now=_instant(now))
+        replaced = sorted(old for old, claims in graph.candidates.items() if any(f == key for f, _when in claims))
+        named = [name for name in (successor, *replaced) if name]
+        indexed: set[str] = set()
+        if named:
+            indexed = {
+                graph.key(str(path), str(uri)) for path, uri in c.execute(
+                    "select coalesce(c.metadata->>'file', c.source_uri), c.source_uri from recall_chunks_v1 c "
+                    "where c.tenant_id = %s and c.generation_id = %s "
+                    "and (coalesce(c.metadata->>'file', c.source_uri) = any(%s) or c.source_uri = any(%s)) group by 1, 2",
+                    (tenant, generation, named, named),
+                ).fetchall()
+            }
 
     first_meta = chunks[0][4] if isinstance(chunks[0][4], dict) else {}
     valid_from, valid_until = first_meta.get("valid_from"), first_meta.get("valid_until")
@@ -411,13 +488,16 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
         "valid_from": valid_from,
         "valid_until": valid_until,
         "state": _state(key, graph, valid_from, valid_until, now),
-        "superseded_by": graph.successor(key, now=_instant(now)),
-        "supersedes": sorted(
-            old for old, claims in graph.candidates.items() if any(f == key for f, _when in claims)
-        ),
+        "superseded_by": successor,
+        # A successor or a replaced file that is no longer indexed is a forgotten memo: forgetting
+        # keeps retired what it replaced, and it has no page of its own.
+        "superseded_by_forgotten": bool(successor) and successor not in indexed,
+        "supersedes": replaced,
+        "supersedes_forgotten": [name for name in replaced if name not in indexed],
         "declared_supersedes": declared_list,
-        # The declared references that name several files, as the resolver found them. This
-        # compared resolved file paths with the references as written, so it was always empty.
+        # The declared references that name several files, so they resolve to none
+        # (`SupersessionGraph.ambiguous_claims`). Before #970 this field compared resolved paths with
+        # the references as written and was always empty.
         "unresolved_claims": sorted(graph.ambiguous_claims.get(key, ())),
         "first_indexed": _day(min(row[6] for row in chunks)),
         "last_indexed": _day(max(row[5] for row in chunks)),
@@ -435,5 +515,5 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
             for rel, status, sn, sk, on, ok in relations
         ],
         "imports": sorted(target for importer, target in imports if importer == canonical),
-        "imported_by": sorted(importer for importer, target in imports if target == canonical),
+        "imported_by": sorted(importer for importer, target in imported_by if target == canonical),
     }
