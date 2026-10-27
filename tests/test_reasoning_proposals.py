@@ -1097,6 +1097,29 @@ def test_versions_in_two_folders_are_two_series() -> None:
     ], VERSION) == [("a/plan_v1.md", "a/plan_v2.md", VERSION)]
 
 
+@pytest.mark.parametrize(("older", "newer"), [("V1.md", "V2.md"), ("V1", "V2")])
+@pytest.mark.parametrize(("left", "right"), [("a/", "b/"), ("", "a/")])
+def test_version_only_names_keep_their_folder(
+    older: str, newer: str, left: str, right: str,
+) -> None:
+    """BUG-001: a version-only name has no stem, but still belongs to its folder.
+
+    Red proof at e5d87caba: all four cases of
+    tests/test_reasoning_proposals.py::test_version_only_names_keep_their_folder
+    failed the first assertion with a cross-folder VERSION edge. Target:
+    recall.reasoning_proposals._deterministic._version_key. The same-folder
+    assertion preserves whole-name version support.
+    """
+    assert _supersedes([
+        _chunk("one", f"{left}{older}", "First."),
+        _chunk("two", f"{right}{newer}", "Second."),
+    ], VERSION) == []
+    assert _supersedes([
+        _chunk("one", f"{left}{older}", "First."),
+        _chunk("two", f"{left}{newer}", "Second."),
+    ], VERSION) == [(f"{left}{older}", f"{left}{newer}", VERSION)]
+
+
 def test_every_rule_id_this_module_names_is_a_rule() -> None:
     """A rule id written here that no rule emits would turn every `== []` filtered on it into a
     test of nothing, so each one must be a key of `RULE_CONFIDENCE`.

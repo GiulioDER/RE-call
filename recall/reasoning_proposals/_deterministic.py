@@ -217,7 +217,8 @@ def _version_key(file: str) -> tuple[str, int] | None:
     if not match:
         return None
     base = supersedes_key(f"{match.group('base')}{match.group('suffix') or ''}")
-    return _in_folder(file, base), int(match.group("version"))
+    # A whole-name version such as V1.md has an empty base; its folder still scopes the series.
+    return posixpath.join(posixpath.dirname(file), base), int(match.group("version"))
 
 
 def _decision_subject(text: str) -> str:

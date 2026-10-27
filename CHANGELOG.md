@@ -196,9 +196,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   the rules pair more in two places: `plan_V2.md` is a version, as `plan_v2.md` is, and two
   memos with the same start now both get a later third as successor instead of one of them.
   Two memos that share only a file name are proposed by temporal ordering (0.64) rather than as a
-  repeated decision subject (0.72). When the dates order two versions oppositely to their
-  numbers, the version proposal is `requires_review` and both opposite proposals say the two
-  disagree. The rules' revision is now `session3-v2`, which changes every deterministic proposal
+  repeated decision subject (0.72). When the version and date rules emit exact opposite pairs,
+  the version proposal is `requires_review` and both proposals say the two disagree; a
+  disagreement across a longer chain is not detected. Version-only filenames such as
+  `a/V1.md` and `b/V2.md` also retain their folder scope despite their empty versionless base.
+  The rules' revision is now `session3-v3`, which changes every deterministic proposal
   id; the Session 3 control artifact keeps its six proposals and its scores under new ids.
 * **A successor hides what it supersedes only while the successor itself is valid.** A memo
   `supersedes:` another from next month leaves it current until then, an expired time-bounded
