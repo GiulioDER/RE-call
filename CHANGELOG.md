@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Every FastEmbed embedding profile now records the installed `onnxruntime` and `tokenizers`
+  versions in its `dependencies` (`onnxruntime-gpu` and the other builds are named in the value), on
+  the registered and the unregistered construction path alike. Before this an upgrade of either with
+  fastembed unchanged, such as onnxruntime 1.30.0 to 1.31.0, left the profile fingerprint
+  byte-identical, so the embedding cache, the index skip guard and the v1 calibration binding reused
+  vectors computed by the old runtime or tokenizer. Every FastEmbed fingerprint changes once: the
+  embedding cache re-embeds once, and existing FastEmbed index fingerprints and v1 calibration
+  bindings need rebinding. Hosted and sentence-transformers profiles are unchanged.
 - Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
   answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
   a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for

@@ -58,20 +58,57 @@ def resolve_thread_budget(
 PROVIDERS_UNKNOWN = "<session not reachable>"
 
 
-def _provider_dependencies(providers: Iterable[str]) -> tuple[tuple[str, str], ...]:
-    """The execution provider as fingerprint key material, plus whether it is actually KNOWN.
+#: The distributions that install the `onnxruntime` module, in lookup order. The GPU and
+#: accelerator builds ship the same import name under a different distribution name, so asking
+#: only for "onnxruntime" would report "not-installed" on exactly the CUDA hosts.
+_ONNXRUNTIME_DISTRIBUTIONS = (
+    "onnxruntime",
+    "onnxruntime-gpu",
+    "onnxruntime-directml",
+    "onnxruntime-openvino",
+    "onnxruntime-silicon",
+)
 
-    Two entries, not one. The provider list alone cannot distinguish "this ran on CPU" from "I
-    could not tell what this ran on", and collapsing those two into one key is the same
-    negative-guard mistake as reporting an unrecorded session as a match: `_session_providers` is
-    documented as observational and must never fail a run, so its failure sentinel reaches here
-    on perfectly healthy deployments. Recording the SOURCE alongside the value keeps an
-    introspection failure legible in the profile instead of silently minting a new identity that
-    looks like a real provider change.
+
+def _onnxruntime_dependency() -> tuple[str, str]:
+    """The installed ONNX runtime as fingerprint key material.
+
+    fastembed pins only a range of onnxruntime, so an onnxruntime-only upgrade (1.30.0 to 1.31.0
+    with fastembed unchanged) used to leave every FastEmbed fingerprint byte-identical while the
+    runtime that computes the vectors had changed under it. A build other than the plain one is
+    named in the value, since two distributions at one version are not the same runtime.
+    """
+    for distribution in _ONNXRUNTIME_DISTRIBUTIONS:
+        installed = _package_version(distribution)
+        if installed != "not-installed":
+            if distribution == "onnxruntime":
+                return ("onnxruntime", installed)
+            return ("onnxruntime", f"{distribution}=={installed}")
+    return ("onnxruntime", "not-installed")
+
+
+def _provider_dependencies(providers: Iterable[str]) -> tuple[tuple[str, str], ...]:
+    """The ONNX runtime, the tokenizer and the execution provider as fingerprint key material.
+
+    Four entries. The first two are the onnxruntime version (`_onnxruntime_dependency`) and the
+    `tokenizers` version: fastembed tokenizes every text with `tokenizers` before inference and
+    accepts a wide range of both, so either can change while fastembed's own version stays put.
+    They live here so the registered and the unregistered construction paths both get them from
+    one place.
+
+    The provider takes two entries, not one. The provider list alone cannot distinguish "this ran
+    on CPU" from "I could not tell what this ran on", and collapsing those two into one key is the
+    same negative-guard mistake as reporting an unrecorded session as a match:
+    `_session_providers` is documented as observational and must never fail a run, so its failure
+    sentinel reaches here on perfectly healthy deployments. Recording the SOURCE alongside the
+    value keeps an introspection failure legible in the profile instead of silently minting a new
+    identity that looks like a real provider change.
     """
     known = [p for p in providers]
     unknown = not known or known == [PROVIDERS_UNKNOWN]
     return (
+        _onnxruntime_dependency(),
+        ("tokenizers", _package_version("tokenizers")),
         ("onnx-providers-source", "unavailable" if unknown else "session"),
         ("onnx-providers", "unavailable" if unknown else ",".join(known)),
     )
