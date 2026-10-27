@@ -11,9 +11,11 @@ forgotten memo's bytes: its own requests' identities and content hashes, and the
 correction that named it as its target, whose revision precondition hashed it.
 
 A reservation is not authorship: `authors` names only memos whose file this module created, so a
-file somebody else put in the folder under a reserved name is never claimed. The journal keeps
-every prepared entry, and a completed or cancelled entry for `REQUEST_RETENTION_SECONDS` and at
-most `REQUEST_RETENTION_COUNT` of them; a request id older than that is a new request.
+file somebody else put in the folder under a reserved name is never claimed, unless its bytes are
+exactly the memo the request would write, which cannot be told apart from that request's own
+interrupted publication. The journal keeps every prepared entry, and a completed or cancelled
+entry for at least `REQUEST_RETENTION_SECONDS` while it is among the newest
+`REQUEST_RETENTION_COUNT`; once a later write prunes it, its request id is a new request.
 """
 from __future__ import annotations
 
@@ -34,6 +36,12 @@ from recall.frontmatter import supersedes_key, supersedes_targets
 MEMO_ID = re.compile(r"^[a-z]+-\d{4,}$")
 _REVISION = re.compile(r"[0-9a-f]{64}")
 
+# Request journal states: reserved, published and recorded, explicitly forgotten.
+_PREPARED, _WRITTEN, _CANCELLED = "prepared", "written", "cancelled"
+_DONE = frozenset({_WRITTEN, _CANCELLED})
+_STATES = _DONE | {_PREPARED}
+_ABSENT = object()  # no authors row, as distinct from a row holding JSON null
+
 #: Completed and cancelled request entries older than this are pruned at the next write.
 REQUEST_RETENTION_SECONDS = 30 * 24 * 3600
 #: At most this many completed and cancelled entries are kept, the newest first.
@@ -46,7 +54,20 @@ _LINK_UNSUPPORTED_ERRNOS = frozenset(
     code for code in (errno.EPERM, errno.EINVAL, errno.ENOSYS, getattr(errno, "ENOTSUP", None),
                       getattr(errno, "EOPNOTSUPP", None)) if code is not None
 )
-_LINK_UNSUPPORTED_WINERRORS = frozenset({1, 50})
+_ERROR_INVALID_FUNCTION = 1
+_ERROR_NOT_SUPPORTED = 50
+_LINK_UNSUPPORTED_WINERRORS = frozenset({_ERROR_INVALID_FUNCTION, _ERROR_NOT_SUPPORTED})
+
+#: Folders where `os.link` was found unsupported; later writes there skip the staging.
+_NO_LINK_FOLDERS: set[str] = set()
+
+
+def _memo_id(kind: str, number: int) -> str:
+    return f"{kind}-{number:04d}"
+
+
+def _memo_number(memo_id: str) -> int:
+    return int(memo_id.rsplit("-", 1)[1])
 
 
 def revision(path: Path) -> str:
@@ -78,7 +99,7 @@ def _prune(requests: dict[str, Any], now: float) -> None:
     """Drop completed and cancelled entries past the retention age or count. Prepared ones stay."""
     done = []
     for key, entry in list(requests.items()):
-        if not isinstance(entry, dict) or entry.get("state") not in {"written", "cancelled"}:
+        if not isinstance(entry, dict) or entry.get("state") not in _DONE:
             continue
         at = entry.get("at")
         if not isinstance(at, (int, float)):
@@ -115,7 +136,7 @@ def cancel_requests(ledger_path: Path, memo_id: str) -> dict[str, Any]:
             previous[key] = dict(entry)
             for field in ("identity", "content", "supersedes"):
                 entry.pop(field, None)
-            entry.update(state="cancelled", at=now, erased=True)
+            entry.update(state=_CANCELLED, at=now, erased=True)
         elif entry.get("supersedes") == memo_id and "identity" in entry:
             previous[key] = dict(entry)
             del entry["identity"]
@@ -171,16 +192,36 @@ def _link_unsupported(exc: OSError) -> bool:
     return exc.errno in _LINK_UNSUPPORTED_ERRNOS or getattr(exc, "winerror", None) in _LINK_UNSUPPORTED_WINERRORS
 
 
+def _discard(path: Path) -> None:
+    """Remove a file this call created; a failure here must not hide the error being raised."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _create_exclusive(path: Path, body: bytes) -> None:
     """Exclusive create for a filesystem without hard links: never over an existing file."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o666)
     try:
-        with os.fdopen(fd, "wb") as fh:
+        fh = os.fdopen(fd, "wb")
+    except BaseException:
+        # fdopen owns the descriptor only once it returns, and an open handle makes the unlink
+        # fail on Windows (as in recall.atomic_write). io.open may already have closed it, so a
+        # failing close must not hide the error being raised.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        _discard(path)
+        raise
+    try:
+        with fh:
             fh.write(body)
             fh.flush()
             os.fsync(fh.fileno())
     except BaseException:
-        path.unlink(missing_ok=True)  # this call created it; a partial memo must not take the id
+        _discard(path)  # this call created it; a partial memo must not take the id
         raise
 
 
@@ -188,8 +229,14 @@ def _create(path: Path, body: bytes) -> None:
     """Publish complete bytes exclusively. A human-created destination is never replaced.
 
     A hard link publishes the staged bytes atomically; where the filesystem has none, an
-    exclusive create writes and fsyncs them in place, as the write path did before links.
+    exclusive create writes and fsyncs them in place, as the write path did before links. Once a
+    folder has refused a link, later writes there go straight to the exclusive create.
     """
+    folder = str(path.parent)
+    if folder in _NO_LINK_FOLDERS:
+        _create_exclusive(path, body)
+        _flush_directory(path.parent)
+        return
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".recall-memo-", suffix=".tmp")
     os.close(fd)
     staged = Path(name)
@@ -200,22 +247,34 @@ def _create(path: Path, body: bytes) -> None:
         except OSError as exc:
             if not _link_unsupported(exc):
                 raise
+            _NO_LINK_FOLDERS.add(folder)
             _create_exclusive(path, body)
         _flush_directory(path.parent)
     finally:
         staged.unlink(missing_ok=True)
 
 
+def _read_regular(path: Path) -> bytes | None:
+    """The bytes of a regular file at `path`, or None for no file, a symlink or a directory.
+
+    A regular file that cannot be read now raises: it may be the request's own memo, held by
+    another program, and a later retry can still adopt it.
+    """
+    if path.is_symlink() or not path.is_file():
+        return None
+    return path.read_bytes()
+
+
 def _next_number(folder: Path, ledger: dict[str, Any]) -> int:
     """One past the largest id in the folder, the authorship ledger or a request reservation."""
     reserved = [e.get("memo_id") for e in ledger.get("requests", {}).values() if isinstance(e, dict)]
     names = [*ledger["authors"], *(p.stem for p in folder.glob("*.md")), *reserved]
-    numbers = [int(n.rsplit("-", 1)[1]) for n in names if isinstance(n, str) and MEMO_ID.fullmatch(n)]
+    numbers = [_memo_number(n) for n in names if isinstance(n, str) and MEMO_ID.fullmatch(n)]
     return max(numbers, default=0) + 1
 
 
 def _publish(
-    folder: Path, ledger_path: Path, ledger: dict[str, Any], data: bytes, kind: str, number: int,
+    folder: Path, ledger_path: Path, ledger: dict[str, Any], data: bytes, *, kind: str, number: int,
     entry: dict[str, Any] | None,
 ) -> str:
     """Create the memo under the first free id from `number`, journalling the reservation first.
@@ -224,7 +283,7 @@ def _publish(
     reservation with it), as the write path always did; the taken file is never claimed.
     """
     while True:
-        memo_id = f"{kind}-{number:04d}"
+        memo_id = _memo_id(kind, number)
         if entry is not None:
             entry["memo_id"] = memo_id
             _save(ledger_path, ledger)  # durable intent before the memo becomes visible
@@ -274,16 +333,17 @@ def write_memo(
         memo_id = entry.get("memo_id")
         state = entry.get("state")
         # A completed write is authored; a reservation that never completed (prepared, or
-        # cancelled before completing) need not be.
-        if (not isinstance(memo_id, str) or not MEMO_ID.fullmatch(memo_id)
-                or state not in {"prepared", "written", "cancelled"}
-                or authors.get(memo_id, author if state != "written" else None) != author):
+        # cancelled before completing) may be unauthored, or authored by this author.
+        owner = authors.get(memo_id, _ABSENT) if isinstance(memo_id, str) else _ABSENT
+        owner_ok = owner == author if state == _WRITTEN else owner is _ABSENT or owner == author
+        if not isinstance(memo_id, str) or not MEMO_ID.fullmatch(memo_id) or state not in _STATES or not owner_ok:
             raise ValueError("invalid memo request reservation")
-        if state == "cancelled":
+        if state == _CANCELLED:
             return _conflict("memo_missing", "the request's memo was explicitly forgotten; retry cannot recreate it")
         path = folder / f"{memo_id}.md"
-        ours = path.exists() and not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest() == digest
-        if state == "written":
+        current = _read_regular(path)
+        ours = current is not None and hashlib.sha256(current).hexdigest() == digest
+        if state == _WRITTEN:
             if path.is_symlink() or (path.exists() and not ours):
                 return _conflict("memo_changed", "the request's memo changed; retry cannot overwrite it")
             if not path.exists():
@@ -296,28 +356,32 @@ def write_memo(
             if conflict:
                 return conflict
             folder.mkdir(parents=True, exist_ok=True)
+            if current is not None and len(current) < len(data) and data.startswith(current):
+                # The start of this very memo: an exclusive create cut short (the fallback where
+                # links are missing). Publishing again would leave a second, partial copy.
+                return _conflict("memo_changed", "the request's memo was left incomplete; retry cannot overwrite it")
             free = not path.exists() and not path.is_symlink()
-            if not free and state == "prepared" and authors.get(memo_id) == author:
+            if not free and state == _PREPARED and authors.get(memo_id) == author:
                 # A ledger from before this module wrote `authors` only after the create recorded
                 # the reservation as authored; the file there is not ours, so that row goes too.
                 del authors[memo_id]
-            number = int(memo_id.rsplit("-", 1)[1]) if free else _next_number(folder, ledger)
-            memo_id = _publish(folder, ledger_path, ledger, data, kind, number, entry)
+            number = _memo_number(memo_id) if free else _next_number(folder, ledger)
+            memo_id = _publish(folder, ledger_path, ledger, data, kind=kind, number=number, entry=entry)
     else:
         conflict = _target_conflict(folder, supersedes, expected_revision)
         if conflict:
             return conflict
         folder.mkdir(parents=True, exist_ok=True)
         if request_id is not None:
-            entry = {"identity": identity, "content": content, "state": "prepared"}
+            entry = {"identity": identity, "content": content, "state": _PREPARED}
             if supersedes is not None:
                 entry["supersedes"] = supersedes  # a memo id: which correction a forget must re-key
             requests[request_id] = entry
-        memo_id = _publish(folder, ledger_path, ledger, data, kind, _next_number(folder, ledger), entry)
+        memo_id = _publish(folder, ledger_path, ledger, data, kind=kind, number=_next_number(folder, ledger), entry=entry)
     if changed:
         authors[memo_id] = author
         if entry is not None:
-            entry["state"] = "written"
+            entry["state"] = _WRITTEN
             entry["at"] = time.time()
         _prune(requests, time.time())
         if not requests:

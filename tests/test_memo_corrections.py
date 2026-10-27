@@ -26,10 +26,10 @@ from __future__ import annotations
 import errno
 import hashlib
 import inspect
-import sys
-import time
 import json
 import re
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -433,7 +433,7 @@ def test_a_real_link_failure_is_not_taken_for_a_missing_feature(serving, monkeyp
     assert not list(memos.folder.glob("*.md")), "an I/O error still published a memo"
 
 
-def _take_the_name_first(monkeypatch, folder, name="note-0001.md"):
+def _take_the_name_first(monkeypatch, name="note-0001.md"):
     """Make a person's file appear under `name` between the folder scan and the create."""
     from recall.lite import memo_requests
     create = memo_requests._create
@@ -452,11 +452,8 @@ def test_a_name_taken_during_the_write_moves_to_the_next_id_without_claiming_it(
     retry in `_publish`, and `authors` being written only after `_create` returns.
     """
     store, memos = serving
-    _take_the_name_first(monkeypatch, memos.folder)
-    try:
-        result = remember(store, memos, request_id=request_id)
-    except FileExistsError as exc:
-        result = {"raised": repr(exc)}
+    _take_the_name_first(monkeypatch)
+    result = _attempt(store, memos, request_id=request_id)
     assert result.get("memo_id") == "note-0002", f"the write did not move past a taken name: {result}"
     assert (memos.folder / "note-0001.md").read_bytes() == b"A person's own note.\n"
     assert "note-0001" not in memos.authors(), "the assistant was recorded as author of a person's file"
@@ -520,6 +517,108 @@ def test_a_legacy_reservation_moved_off_a_persons_file_stops_claiming_it(serving
     refused = remember(store, memos, "The user drinks coffee.", supersedes=reserved)
     assert "refused" in refused, f"a person's file was superseded as an assistant memo: {refused}"
     assert taken.read_bytes() == b"A person's own note.\n"
+
+
+def _interrupt_the_create(monkeypatch, store, memos, request_id, cut=None):
+    """Fail the first create of `request_id`, leaving `cut(body)` under the reserved name if given."""
+    from recall.lite import memo_requests
+    create = memo_requests._create
+    def interrupted(path, body):
+        if cut is not None:
+            path.write_bytes(cut(body))
+        raise OSError("injected interruption during memo publication")
+    monkeypatch.setattr(memo_requests, "_create", interrupted)
+    with pytest.raises(OSError, match="during memo publication"):
+        remember(store, memos, request_id=request_id)
+    monkeypatch.setattr(memo_requests, "_create", create)
+    return json.loads(memos.ledger_path.read_text())["requests"][request_id]["memo_id"]
+
+
+def test_a_retry_over_its_own_cut_short_memo_does_not_publish_a_second_copy(serving, monkeypatch):
+    """CCA STAKES-002 (deferred run 20261027T114603Z). Where links are missing, the exclusive create
+    makes the name visible before the bytes, so a crash can leave the start of the memo under the
+    reserved name. Red: 6aa87eae reads it as somebody else's file and publishes the memo
+    again at the next id, so `a second copy was published` fails. Target: write_memo's prepared,
+    not-ours replay branch in recall/lite/memo_requests.py.
+    """
+    store, memos = serving
+    reserved = _interrupt_the_create(monkeypatch, store, memos, "cut-short", cut=lambda body: body[: len(body) // 2])
+    result = _attempt(store, memos, request_id="cut-short")
+    assert sorted(p.stem for p in memos.folder.glob("*.md")) == [reserved], f"a second copy was published: {result}"
+    assert result.get("conflict") == "memo_changed", f"the retry did not refuse: {result}"
+    memos.path_of(reserved).unlink()  # the documented remedy: delete the partial file
+    assert remember(store, memos, request_id="cut-short")["memo_id"] == reserved
+    assert memos.path_of(reserved).read_text(encoding="utf-8") == "The user drinks tea.\n"
+
+
+def test_a_directory_under_the_reserved_name_moves_the_retry_on(serving, monkeypatch):
+    """CCA BUG-002 (deferred run 20261027T114603Z). Red: 6aa87eae reads the reserved name's
+    bytes unguarded, so a directory there raises IsADirectoryError on every retry and `the retry is
+    stuck on a directory` fails. Target: the `ours` read in write_memo (`_read_regular`).
+    """
+    store, memos = serving
+    reserved = _interrupt_the_create(monkeypatch, store, memos, "dir-taken")
+    memos.path_of(reserved).mkdir()
+    result = _attempt(store, memos, request_id="dir-taken")
+    assert result.get("memo_id") not in (None, reserved), f"the retry is stuck on a directory: {result}"
+    assert memos.path_of(reserved).is_dir()
+
+
+def test_a_folder_without_hard_links_is_not_staged_again(serving, monkeypatch):
+    """CCA PERF-001 (deferred run 20261027T114603Z). Red: 6aa87eae stages, fsyncs and tries
+    os.link on every write, so two writes make two link attempts and `every write tried a link
+    again` fails. Target: `_NO_LINK_FOLDERS` in memo_requests._create.
+    """
+    from recall.lite import memo_requests
+    store, memos = serving
+    attempts = []
+    def no_links(src, dst, *args, **kwargs):
+        attempts.append(dst)
+        raise OSError(errno.EPERM, "hard links are not supported here")
+    monkeypatch.setattr(memo_requests.os, "link", no_links)
+    first = remember(store, memos, "The user drinks tea.")
+    second = remember(store, memos, "The user drinks coffee.")
+    assert "memo_id" in first and "memo_id" in second
+    assert len(attempts) == 1, f"every write tried a link again: {len(attempts)} attempts"
+    assert memos.path_of(second["memo_id"]).read_text(encoding="utf-8") == "The user drinks coffee.\n"
+
+
+@pytest.mark.parametrize("closes_first", [False, True])
+def test_a_failed_fdopen_closes_the_descriptor(tmp_path, monkeypatch, closes_first):
+    """CCA ENV-001 (deferred run 20261027T114603Z). Red, closes_first=False: 6aa87eae leaves the
+    descriptor from os.open unclosed when os.fdopen raises (on Windows that open handle then makes
+    the cleanup unlink fail), so `the descriptor leaked` fails. Red, closes_first=True (io.open
+    closed it before failing): the mutation of an unguarded `os.close(fd)` in the fdopen handler
+    raises EBADF, so `pytest.raises(MemoryError)` fails. Target: memo_requests._create_exclusive.
+    """
+    import os
+    from recall.lite import memo_requests
+    opened = []
+    real_open = os.open
+    def tracking_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+    def failing_fdopen(fd, *args, **kwargs):
+        if closes_first:
+            os.close(fd)
+        raise MemoryError("injected fdopen failure")
+    monkeypatch.setattr(memo_requests.os, "open", tracking_open)
+    monkeypatch.setattr(memo_requests.os, "fdopen", failing_fdopen)
+    path = tmp_path / "note-0001.md"
+    with pytest.raises(MemoryError, match="injected fdopen failure"):
+        memo_requests._create_exclusive(path, b"The user drinks tea.\n")
+    monkeypatch.undo()
+    leaked = []
+    for fd in opened:
+        try:
+            os.fstat(fd)
+        except OSError:
+            continue
+        leaked.append(fd)
+        os.close(fd)
+    assert not leaked, "the descriptor leaked when os.fdopen failed"
+    assert not path.exists()
 
 
 @pytest.mark.parametrize("unrelated", ["latin1", "directory"])

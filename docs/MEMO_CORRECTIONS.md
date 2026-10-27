@@ -2,8 +2,10 @@
 
 The existing `recall_remember` tool accepts three optional parameters. Calls that omit them retain
 the exact legacy `{memo_id}` success reply and raising refresh failures. One check is new for them
-too: a `supersedes` target that is not an existing memo file (`target_missing`) or already has a
-successor (`stale_target`) is refused on every call.
+too: a `supersedes` target that is not an assistant memo is refused (`no memo ...`), one whose file
+is gone returns `target_missing`, and one that already has a successor returns `stale_target`, on
+legacy calls as on guarded ones. A replay keeps its original reply without the check: of a
+completed request, or of an interrupted one whose memo is already in place.
 
 * `request_id`: an opaque nonempty string, at most 128 characters. Reuse it only for the same
   text, fact, kind, dates, supersession target and revision precondition. The memo folder journals
@@ -78,14 +80,20 @@ indexed is not pruned, so its hashes stay until it is forgotten by name.
 A reservation is not authorship. The ledger records the assistant as author only once its file
 exists, so a file somebody else puts in the folder under a reserved name is never claimed: the
 write, or the retry of an interrupted one, moves to the next free id and leaves that file alone.
+Two cases are the exception, because they cannot be told apart from the request's own interrupted
+publication: a file whose bytes are exactly the memo is taken as that memo, and a file holding only
+the start of it (an exclusive create cut short) refuses the retry as `memo_changed` rather than
+leave a second, partial copy; delete that partial file and the same retry finishes the memo under
+its reserved id.
 A memo is published with a hard link where the filesystem has them, and with an exclusive create
 otherwise (FAT32 and exFAT, many network shares); neither replaces an existing file. A memo of the
 folder that cannot be read, or is not UTF-8, does not block a correction; one that declares a
-successor in another encoding still counts.
+successor in another ASCII-compatible encoding (Latin-1, say) still counts, while a UTF-16 file is
+not read for one.
 
 The request journal is bounded. A prepared request is kept until it completes or is forgotten. A
-completed or cancelled request is kept for 30 days and at most 1,000 of them, the newest first;
-past that its request id is treated as new. Retry within that window.
+completed or cancelled request is kept for at least 30 days while it is among the newest 1,000;
+once a later write prunes it, its request id is treated as new. Retry within that window.
 
 Old memos are retained for historical inspection. This workflow does not infer supersession from
 prose or rewrite imported notes. For those corrections, use the existing `recall_report_stale`

@@ -101,8 +101,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   certification and citation eligibility are unchanged. The compact assistant surface and CLI
   expose the same distinction. No verifier or additional model call is enabled.
 - Add optional memo correction receipts, revision preconditions and persistent request identities;
-  refuse a missing or already superseded correction target on every call, legacy calls included;
-  calls without the new parameters keep the `{memo_id}` reply.
+  refuse a missing or already superseded correction target, legacy calls included (a replay of a
+  request whose memo is already in place keeps its original reply); calls without the new
+  parameters keep the `{memo_id}` reply.
 - **PostgreSQL generations now refuse by name, as Lite does, a strict search naming an entity-like
   term absent from the generation's vocabulary** (`unknown_term`). This changes verdicts: it is on
   by default and `RECALL_UNKNOWN_TERM_GATE=0` disables it. Each `calibrate()` fit also measures
