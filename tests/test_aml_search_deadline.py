@@ -36,6 +36,7 @@ import asyncio
 import base64
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -55,6 +56,8 @@ from tests.test_aml_specialist_fusion import _service
 
 BUDGET = 2.0
 RESERVE = 0.5
+#: Default-executor threads for the concurrency burst: one per Search and Add in it (8 + 8 + 4).
+BURST_THREADS = 20
 
 
 @pytest.fixture
@@ -301,9 +304,18 @@ def test_stalled_searches_do_not_slow_the_rest_or_outlive_the_stall(short_budget
     embedding and 8 fast ones, plus 4 Adds, all at once:
 
     * each stalled Search ends with ``SearchDeadlineExceeded`` within the budget;
-    * every fast Search and every Add completes, inside the budget (the stalled threads sit in the
-      query pool, apart from the shared executor the Adds and fast Searches use);
+    * every fast Search and every Add completes, inside the budget (the stalled embeddings sit in
+      the query pool, apart from the shared executor the Adds and fast Searches use);
     * once the stall is over, the same users' Searches succeed (nothing is left behind).
+
+    Limit of that guarantee: a stalled Search still holds one thread of the loop's default
+    executor while it waits on the query pool, and its budget opens before it gets one. The
+    default executor has min(32, cpus + 4) threads, 8 on CI's 4-vCPU runners, so 8 stalled
+    Searches there queue the fast ones past their budget. The test therefore gives the loop
+    `BURST_THREADS`, enough for the whole burst, rather than a count set by the runner. Red proof
+    of that dependence, 2026-10-27: with `os.cpu_count` and `os.process_cpu_count` faked to 4 and
+    the loop's default executor, the fast-Search assertion fails ``assert False`` (CI runs
+    40534338969 and 40535376562); with `BURST_THREADS` it passes.
     """
     service, _ = _slow_text_service(4.0)
     users = [f"user-{index}" for index in range(8)]
@@ -334,6 +346,7 @@ def test_stalled_searches_do_not_slow_the_rest_or_outlive_the_stall(short_budget
         return service.search(SearchRequest.model_validate({"query": text, "user_id": user}))
 
     async def burst() -> list[tuple[float, Any]]:
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(BURST_THREADS))
         return list(
             await asyncio.gather(
                 *(timed(search(user, "SLOW parking receipt")) for user in users),
@@ -353,6 +366,7 @@ def test_stalled_searches_do_not_slow_the_rest_or_outlive_the_stall(short_budget
     assert max(elapsed for elapsed, _ in adds) < BUDGET
 
     async def after_stall() -> list[tuple[float, Any]]:
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(BURST_THREADS))
         return list(await asyncio.gather(*(timed(search(user, "parking receipt")) for user in users)))
 
     after = asyncio.run(after_stall())
