@@ -142,10 +142,13 @@ def already_declared(root: Path, stale: str, replacing: str) -> bool:
 
 def memo_files(root: Path) -> list[Path]:
     """Every memo under the root, skipping dot directories such as the `.recall` sidecar."""
+    boundary = root.resolve()
     return sorted(
         path
         for path in root.rglob("*.md")
-        if path.is_file() and not any(part.startswith(".") for part in path.relative_to(root).parts)
+        if path.is_file()
+        and path.resolve().is_relative_to(boundary)
+        and not any(part.startswith(".") for part in path.relative_to(root).parts)
     )
 
 
