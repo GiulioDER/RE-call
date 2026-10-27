@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 343
 Cross package edges: 359
-Source tree fingerprint: `d2a6fea4cc1d3657feecb561178eecd1235b4766d5e00689ab31328a92ec5bb2`
+Source tree fingerprint: `af624c0370a0ee3f90abd784b3ad1715a2e921a9bda387e94d021079aa3fd669`
 
 ## Highest fan in modules
 
@@ -83,6 +83,7 @@ Source tree fingerprint: `d2a6fea4cc1d3657feecb561178eecd1235b4766d5e00689ab3132
 | 14 | `recall.dashboard.server` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
+| 13 | `recall.cli_commands.provenance_cmd` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.lite.refresh` |
 | 13 | `recall.reasoning` |
@@ -91,7 +92,6 @@ Source tree fingerprint: `d2a6fea4cc1d3657feecb561178eecd1235b4766d5e00689ab3132
 | 13 | `recall_mcp.reasoning_api` |
 | 12 | `recall.calibration_v2` |
 | 12 | `recall.cli_commands.extract_rewrite` |
-| 12 | `recall.cli_commands.provenance_cmd` |
 | 12 | `recall.doctor` |
 | 12 | `recall.eval.harness` |
 | 12 | `recall.stated_facts` |
@@ -508,7 +508,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.lint_check` | 7 | 108 |
 | `recall.cli_commands.lite_cmd` | 8 | 118 |
 | `recall.cli_commands.manifest_cmd` | 4 | 46 |
-| `recall.cli_commands.provenance_cmd` | 12 | 123 |
+| `recall.cli_commands.provenance_cmd` | 13 | 123 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 153 |
 | `recall.cli_commands.records_cmd` | 9 | 106 |
 | `recall.cli_commands.schema_cmd` | 2 | 105 |
@@ -533,7 +533,7 @@ They are observations, not automatic failures.
 | `recall.dashboard.triage` | 5 | 122 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 95 |
-| `recall.declared_keys` | 2 | 9 |
+| `recall.declared_keys` | 2 | 23 |
 | `recall.dependency_invalidation` | 5 | 21 |
 | `recall.derived_block` | 3 | 14 |
 | `recall.desktop` | 1 | 1 |
@@ -601,8 +601,8 @@ They are observations, not automatic failures.
 | `recall.evidence` | 2 | 5 |
 | `recall.explanations` | 1 | 4 |
 | `recall.extraction` | 1 | 1 |
-| `recall.fact_current` | 4 | 12 |
-| `recall.fact_ledger` | 4 | 12 |
+| `recall.fact_current` | 4 | 26 |
+| `recall.fact_ledger` | 4 | 26 |
 | `recall.fact_retraction` | 9 | 93 |
 | `recall.federation` | 4 | 103 |
 | `recall.fix` | 7 | 27 |
@@ -659,12 +659,12 @@ They are observations, not automatic failures.
 | `recall.proof_provider` | 3 | 9 |
 | `recall.provenance_card_hash` | 0 | 0 |
 | `recall.provenance_cards` | 3 | 34 |
-| `recall.provenance_controller` | 3 | 8 |
+| `recall.provenance_controller` | 3 | 22 |
 | `recall.provider_metadata` | 0 | 0 |
 | `recall.query_anchor_admission` | 0 | 0 |
 | `recall.query_class` | 0 | 0 |
 | `recall.query_construction` | 0 | 0 |
-| `recall.query_entity_resolution` | 1 | 23 |
+| `recall.query_entity_resolution` | 1 | 26 |
 | `recall.quickstart` | 2 | 118 |
 | `recall.readiness` | 5 | 95 |
 | `recall.reasoning` | 13 | 109 |
@@ -697,8 +697,8 @@ They are observations, not automatic failures.
 | `recall.scope_prior` | 2 | 5 |
 | `recall.security_policy` | 1 | 1 |
 | `recall.seed` | 4 | 44 |
-| `recall.semantic_graph` | 4 | 22 |
-| `recall.semantic_graph._build` | 4 | 20 |
+| `recall.semantic_graph` | 4 | 25 |
+| `recall.semantic_graph._build` | 4 | 23 |
 | `recall.semantic_graph._model` | 2 | 14 |
 | `recall.semantic_graph._store` | 1 | 15 |
 | `recall.semantic_lint` | 8 | 49 |
@@ -710,10 +710,10 @@ They are observations, not automatic failures.
 | `recall.stale_reports` | 3 | 117 |
 | `recall.stated_facts` | 12 | 93 |
 | `recall.store` | 13 | 31 |
-| `recall.supersession` | 1 | 2 |
+| `recall.supersession` | 2 | 17 |
 | `recall.supersession_arbiter` | 4 | 20 |
 | `recall.supersession_cues` | 0 | 0 |
-| `recall.supersession_records` | 1 | 3 |
+| `recall.supersession_records` | 1 | 18 |
 | `recall.support` | 1 | 1 |
 | `recall.timing` | 3 | 16 |
 | `recall.trust` | 22 | 102 |

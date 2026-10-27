@@ -234,7 +234,7 @@ class Tables(Protocol):
 
     def support_ids(self, fact_ids: Sequence[str]) -> list[str]: ...
 
-    def unfiled(self) -> list[str]:
+    def unfiled(self, *, limit: int | None = None) -> list[str]:
         """The ids of the tenant's ledger events the tables do not file, in ledger order."""
         ...
 
@@ -267,6 +267,9 @@ def current_view(tables: Tables, now: datetime, served: ServedSources | None) ->
     `project_current` lists it; a fact none of whose live assertions has a card the store serves
     is left out (`absent_fact_ids` over those assertions, which is what it reads of the history).
     """
+    if _as_utc(now) == datetime.max.replace(tzinfo=UTC):
+        # Replay preserves the distinction between an absent end and an explicit max end.
+        return None
     if not usable(tables):
         return None
     rows = tables.intervals_at(now)
@@ -476,9 +479,7 @@ def verify_tables(tables: Tables) -> Verification:
 
 def reconcile_tables(tables: Tables, *, limit: int | None = None) -> int:
     """Materialize the tenant's ledger events the tables lack (at most `limit`); return how many."""
-    missing = tables.unfiled()
-    if limit is not None:
-        missing = missing[:limit]
+    missing = tables.unfiled(limit=limit)
     if missing:
         materialize_events(tables, missing)
     return len(missing)
@@ -635,12 +636,12 @@ class SQLiteTables:
             ).fetchall())
         return out
 
-    def unfiled(self) -> list[str]:
+    def unfiled(self, *, limit: int | None = None) -> list[str]:
         return [str(row[0]) for row in self._conn.execute(
             f"SELECT l.event_id FROM {FACT_LEDGER_TABLE} l WHERE l.tenant_id = ? AND NOT EXISTS ("
             f"SELECT 1 FROM {CURRENT_EVENTS_TABLE} f WHERE f.tenant_id = l.tenant_id "
-            "AND f.event_id = l.event_id) ORDER BY l.created_at, l.event_id",
-            (self.tenant_id,),
+            "AND f.event_id = l.event_id) ORDER BY l.created_at, l.event_id" + (" LIMIT ?" if limit is not None else ""),
+            (self.tenant_id, limit) if limit is not None else (self.tenant_id,),
         ).fetchall()]
 
     def stored(self) -> tuple[set[FiledRow], set[StoredInterval], str | None]:
@@ -787,12 +788,12 @@ class PostgresTables:
             (self.tenant_id, list(fact_ids)),
         ).fetchall()]
 
-    def unfiled(self) -> list[str]:
+    def unfiled(self, *, limit: int | None = None) -> list[str]:
         return [str(row[0]) for row in self._conn.execute(
             f"SELECT l.event_id FROM {FACT_LEDGER_TABLE} l WHERE l.tenant_id = %s AND NOT EXISTS ("
             f"SELECT 1 FROM {CURRENT_EVENTS_TABLE} f WHERE f.tenant_id = l.tenant_id "
-            "AND f.event_id = l.event_id) ORDER BY l.created_at, l.event_id",
-            (self.tenant_id,),
+            "AND f.event_id = l.event_id) ORDER BY l.created_at, l.event_id" + (" LIMIT %s" if limit is not None else ""),
+            (self.tenant_id, limit) if limit is not None else (self.tenant_id,),
         ).fetchall()]
 
     def stored(self) -> tuple[set[FiledRow], set[StoredInterval], str | None]:
@@ -860,7 +861,11 @@ def pg_key_history(conn: psycopg.Connection, tenant_id: str, fact: AtomicFact) -
     """`key_history` inside the caller's transaction, in a savepoint, or None."""
     try:
         with conn.transaction():
-            return key_history(PostgresTables(conn, tenant_id), fact)
+            tables = PostgresTables(conn, tenant_id)
+            # Writers already hold the key lock; purge/rebuild holds the tenant exclusively.
+            # Retain its shared lock through the append, including this freshness check.
+            tables.lock_tenant(exclusive=False)
+            return key_history(tables, fact)
     except _DEGRADE as exc:
         _warn_once("conflict checks", exc)
         return None
@@ -964,10 +969,10 @@ class PostgresCurrentFacts:
             tables = PostgresTables(conn, self.tenant_id)
             return tuple(tables.events(tables.unfiled()))
 
-    def reconcile(self) -> int:
-        """Materialize every ledger event the tables lack, in one transaction; return how many."""
+    def reconcile(self, *, limit: int | None = None) -> int:
+        """Materialize missing events, at most `limit`, in one transaction; return how many."""
         with self._connect() as conn, conn.transaction():
-            return reconcile_tables(PostgresTables(conn, self.tenant_id))
+            return reconcile_tables(PostgresTables(conn, self.tenant_id), limit=limit)
 
     def rebuild(self) -> CurrentFactsStatus:
         """Replace the tenant's rows with ones derived from its ledger, in one transaction."""

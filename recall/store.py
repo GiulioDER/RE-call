@@ -32,13 +32,12 @@ from recall.supersession import (  # noqa: F401  # re-exported: public names of 
     resolve_supersession_candidates,
 )
 from recall.supersession_records import (
-    PG_RECORD_COUNT_SQL,
+    PG_RECORD_REVISION_SQL,
     erasure_subjects,
-    pg_record_removals,
+    pg_delete_removals,
     pg_records,
     records_matching,
 )
-from recall.supersession import SUPERSESSION_RECORD_TYPES
 from recall.db_constants import (  # noqa: F401  # re-exported: public names of this module
     _PG_MAX_INT,
     DEFAULT_SCHEMA_LOCK_TIMEOUT_MS,
@@ -2664,32 +2663,11 @@ class PgVectorStore:
         # within `with self._pool.connection()`, so nothing from the cursor may escape it.
         def _op(conn: "psycopg.Connection") -> int:
             with conn.transaction():
-                self._record_removals_in(conn, self._table, sources, withdraw=withdraw)
-                rows = conn.execute(
-                    f"DELETE FROM {self._table} "
-                    f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
-                    (self._tenant, sources),
-                ).fetchall()
-                self._scrub_sparse_rows(conn, self._table, [row[0] for row in rows])
-                return len(rows)
+                ids = pg_delete_removals(conn, self._tenant, self._table, sources, withdraw=withdraw)
+                self._scrub_sparse_rows(conn, self._table, ids)
+                return len(ids)
 
         return self._with_retry(_op)
-
-    def _record_removals_in(
-        self, conn: "psycopg.Connection", table: str, sources: list[str], *, withdraw: bool
-    ) -> int:
-        """The `SupersessionRecord`s removing `sources` from `table` owes, appended in `conn`'s
-        transaction before the rows go."""
-        return pg_record_removals(
-            conn,
-            tenant=self._tenant,
-            table=table,
-            source_column="source",
-            scope="c.tenant_id = %s AND c.source = ANY(%s)",
-            params=(self._tenant, list(sources)),
-            sources=sources,
-            withdraw=withdraw,
-        )
 
     def delete_sources_across(
         self, tables: list[str], sources: list[str], *, withdraw: bool = False
@@ -2718,16 +2696,11 @@ class PgVectorStore:
             removed = 0
             with conn.transaction():
                 for table in unique_tables:
-                    self._record_removals_in(conn, table, sources, withdraw=withdraw)
-                    rows = conn.execute(
-                        f"DELETE FROM {table} "
-                        f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
-                        (self._tenant, sources),
-                    ).fetchall()
+                    ids = pg_delete_removals(conn, self._tenant, table, sources, withdraw=withdraw)
                     # Under THAT table's name: the sidecar keys shadow-table rows by the
                     # chunk_table column, so each table scrubs its own.
-                    self._scrub_sparse_rows(conn, table, [row[0] for row in rows])
-                    removed += len(rows)
+                    self._scrub_sparse_rows(conn, table, ids)
+                    removed += len(ids)
             return removed
 
         return self._with_retry(_op)
@@ -2889,12 +2862,12 @@ class PgVectorStore:
         """
 
         def _op(conn: "psycopg.Connection") -> SupersessionGraph:
-            # The record count rides in the same statement: a withdrawal of a memo already gone
+            # The record revision rides in the same statement: a withdrawal of a memo already gone
             # writes a record and deletes no row, so the table's own fingerprint would not move.
             fingerprint = conn.execute(
-                f"SELECT max(indexed_at), count(*), ({PG_RECORD_COUNT_SQL}) "
+                f"SELECT max(indexed_at), count(*), ({PG_RECORD_REVISION_SQL}) "
                 f"FROM {self._table} WHERE tenant_id = %s",
-                (self._tenant, list(SUPERSESSION_RECORD_TYPES), self._tenant),
+                (self._tenant, self._tenant),
             ).fetchone()
             cached = self._supersession_cache
             if cached is not None and cached[0] == fingerprint:
@@ -2906,7 +2879,9 @@ class PgVectorStore:
             ).fetchall()
             self._supersession_scans += 1
             METRICS.increment("recall_supersession_scans_total")
-            graph = resolve_supersession_graph(rows, pg_records(conn, self._tenant, self.record_scope))
+            graph = resolve_supersession_graph(
+                rows, pg_records(conn, self._tenant, self.record_scope), self._tenant
+            )
             self._supersession_cache = (fingerprint, graph)
             return graph
 

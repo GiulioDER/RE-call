@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 from recall.frontmatter import supersedes_key, supersedes_targets, validity_bounds
+from recall.uploads import in_upload_staging, source_location
 
 
 def chunk_supersedes_targets(metadata: Mapping[str, object]) -> tuple[str, ...]:
@@ -122,9 +123,13 @@ class SupersessionRecord:
       whatever superseded it supersedes what it superseded instead (A -> B -> C, withdraw B: C
       hides A; A -> B, withdraw B: A is current again). Never two current versions in one line.
 
-    A record stands in for its memo only while no memo by that name is indexed: neither its
-    `source` nor its root-relative `file` has live rows. A restored file, a re-indexed memo or a
-    rollback brings the live claims back, and they decide again.
+    A record stands in for its memo only while no memo by that name is indexed: its `source` has
+    no live rows, nor does its root-relative `file` under the record's own root. Under ANOTHER
+    root the file counts only once the record's own root holds no rows at all (the corpus was
+    re-indexed somewhere else), and never under an upload staging root: `recall_ingest` needs
+    only write scope and its caller picks every name, so an upload named like a forgotten memo
+    must not undo a forget (security review of PR 950, 2026-10-24). A restored file, a re-indexed
+    memo or a rollback brings the live claims back, and they decide again.
 
     Names and dates only, never memo text: a record is the memo's own scan rows (`claims`), which
     the resolver matches again on every read by the one rule (`_resolve_rows`).
@@ -689,14 +694,17 @@ def _row_parts(
 
 
 def resolve_supersession_graph(
-    rows: Sequence[SupersessionRow], records: Iterable[SupersessionRecord] = ()
+    rows: Sequence[SupersessionRow],
+    records: Iterable[SupersessionRecord] = (),
+    tenant: str | None = None,
 ) -> SupersessionGraph:
     """The one resolution pass every store and reader goes through; see `_resolve_rows`.
 
     `records` are the store's latest `SupersessionRecord` per removed memo; each one counts only
-    while no memo by its name is among `rows`.
+    while no memo by its name is among `rows`. A store passes its `tenant`, so an upload staged
+    for it cannot stand for a forgotten memo.
     """
-    return _resolve_rows(rows, records)
+    return _resolve_rows(rows, records, tenant)
 
 
 def resolve_supersession_candidates(
@@ -743,13 +751,15 @@ class ReferenceIndex:
     `ghosts` are pairs of memos that are no longer indexed and stand in through a
     `SupersessionRecord`. A reference that matches an indexed document and a ghost names the
     indexed one: a memo moved to another folder leaves a ghost under its old path, and its stem
-    must keep naming the moved file rather than turn ambiguous.
+    must keep naming the moved file rather than turn ambiguous. An upload (`staged`, pairs under
+    an upload staging root) never displaces a ghost, for the reason a record ignores one.
     """
 
     def __init__(
         self,
         files: Iterable[tuple[str, str | None]],
         ghosts: Iterable[tuple[str, str | None]] = (),
+        staged: Iterable[tuple[str, str | None]] = (),
     ) -> None:
         ghost_pairs = set(ghosts)
         files = [*files, *ghost_pairs]
@@ -769,6 +779,8 @@ class ReferenceIndex:
             self.nodes.setdefault(self.key(file, source), (file, root, source))
         #: The keys that stand for a removed memo (`ghosts`) rather than an indexed one.
         self.ghosts = frozenset(self.key(file, source) for file, source in ghost_pairs)
+        #: The keys of uploads, which never displace a ghost (`_indexed_first`).
+        self.staged = frozenset(self.key(file, source) for file, source in staged)
         self._by_path: dict[str, list[str]] = {}
         self._by_stem: dict[str, list[str]] = {}
         folded: dict[str, str] = {}
@@ -808,11 +820,18 @@ class ReferenceIndex:
         return "dangling", []
 
     def _indexed_first(self, keys: list[str]) -> list[str]:
-        """`keys` less its ghosts, unless every one of them is a ghost."""
+        """Keep same-path ghosts for root selection; prefer indexed copies of moved files."""
         if not self.ghosts:
             return keys
         indexed = [key for key in keys if key not in self.ghosts]
-        return indexed or keys
+        if len(indexed) == len(keys):
+            return keys
+        honest = [key for key in indexed if key not in self.staged]
+        ghosts = [key for key in keys if key in self.ghosts]
+        if not honest:
+            return ghosts
+        files = {self.nodes[key][0] for key in honest}
+        return honest + [key for key in ghosts if self.nodes[key][0] in files]
 
     def _pick(self, others: list[str], claimant_root: str | None) -> tuple[str, list[str]]:
         """One candidate, or the claimant's own root's copy of one path; else ambiguous."""
@@ -825,8 +844,45 @@ class ReferenceIndex:
         return "ambiguous", others
 
 
+def _standing_records(
+    records: Sequence[SupersessionRecord],
+    sources: set[str],
+    pairs: set[tuple[str, str | None]],
+    staged: set[tuple[str, str | None]],
+) -> list[SupersessionRecord]:
+    """The `records` whose memo is not indexed: its source is not in `sources`, nor its file in
+    `pairs` as `SupersessionRecord` reads them, with the `staged` (upload) pairs never counting.
+
+    Roots are read on the decoded location (`recall.uploads.source_location`), so an escaped
+    `file://` source ends in the file it records, as `recall.dependency_invalidation` reads them.
+    """
+    if not records:
+        return []
+    by_root: dict[str | None, set[str]] = {}
+    for file, source in pairs:
+        root = root_of(source_location(source), file) if source else None
+        by_root.setdefault(root, set()).add(file)
+    elsewhere = {file for file, source in pairs - staged}
+    standing = []
+    for record in records:
+        if record.source in sources:
+            continue
+        held = by_root.get(root_of(source_location(record.source), record.file))
+        if held is not None:
+            # Its own root is still indexed: only the memo itself, back under that root, decides.
+            if record.file in held:
+                continue
+        elif record.file in elsewhere:
+            # Its own root is gone: the corpus was re-indexed under another root.
+            continue
+        standing.append(record)
+    return standing
+
+
 def _resolve_rows(
-    rows: Sequence[SupersessionRow], records: Iterable[SupersessionRecord] = ()
+    rows: Sequence[SupersessionRow],
+    records: Iterable[SupersessionRecord] = (),
+    tenant: str | None = None,
 ) -> SupersessionGraph:
     """The one resolution pass. Every store, `resolve_supersession` and every reader come here.
 
@@ -857,19 +913,21 @@ def _resolve_rows(
     same winner it always did.
 
     **Removed memos** (`records`, see `SupersessionRecord`). A record whose memo is still
-    indexed under its source or its file is ignored. A forgotten memo's claims are read as rows
+    indexed is ignored, by source or by file per root (`_standing_records`); `tenant` names the
+    upload staging root (`uploads/<tenant>/`) whose rows never count, and without it no row is
+    read as an upload. A forgotten memo's claims are read as rows
     of a ghost, window and date as they were, ahead of the indexed rows. A withdrawn memo is a node
     whose own claims are void: each document claiming it is spliced onto what it claimed, through
     withdrawn targets in turn, dated by that document's claim on it.
     """
     parsed = [_row_parts(row) for row in rows]
+    removed = list(records)
+    pairs = {(file, source) for file, _s, _w, source, _vf, _vu, _h in parsed if file}
+    staged: set[tuple[str, str | None]] = set()
+    if removed and tenant is not None:
+        staged = {(file, source) for file, source in pairs if source and in_upload_staging(source, tenant)}
     live_sources = {source for _f, _s, _w, source, _vf, _vu, _h in parsed if source}
-    live_files = {file for file, _s, _w, _src, _vf, _vu, _h in parsed if file}
-    standing = [
-        record
-        for record in records
-        if record.source not in live_sources and record.file not in live_files
-    ]
+    standing = _standing_records(removed, live_sources, pairs, staged)
     ghost_rows: list[tuple[str | None, str | None, datetime | None, str | None, object, object, bool]] = []
     for record in standing:
         windowed = record.kind == FORGOTTEN_RECORD
@@ -880,6 +938,7 @@ def _resolve_rows(
     index = ReferenceIndex(
         ((file, source) for file, _s, _w, source, _vf, _vu, _h in parsed if file),
         ghosts=((record.file, record.source) for record in standing),
+        staged=staged,
     )
     # First, so an indexed claim on the same target is the later row and wins the primary.
     parsed = [*ghost_rows, *parsed]

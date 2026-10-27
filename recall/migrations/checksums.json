@@ -30,5 +30,7 @@
   "0030_fact_current_table.sql": "a7f4ec10e740f885586be46a10e2a9592dc5f9848d8b76cdd09bb6a39576e5b4",
   "0031_fact_ledger_order_index.sql": "6910ae31801b6432b2c162e8b97ad29e97ce93f05dbfc36c227fecdc649f9774",
   "0032_fact_ledger_withdrawal.sql": "f33a5bd5198efe3f43585ee97312eed145b2026bd19c5946e15e09189cae587e",
-  "0033_validate_fact_ledger_withdrawal.sql": "6d3873ef638d7a5c4a670229db700104ad912d1336167f25380c7420b6f32ddf"
+  "0033_validate_fact_ledger_withdrawal.sql": "6d3873ef638d7a5c4a670229db700104ad912d1336167f25380c7420b6f32ddf",
+  "0034_supersession_revision.sql": "c4091ded755ce237fdfffc8886fa7138a13e813e9f2b4f44c45e79403ff0d7b6",
+  "0035_supersession_latest_index.sql": "f3fdd9cc373134a40db7cbb72af85babd5a696f1962e4f55eb09741b6512f360"
 }

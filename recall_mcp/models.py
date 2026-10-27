@@ -528,7 +528,8 @@ class WithdrawResult(BaseModel):
     facts_withdrawn: int = Field(
         default=0,
         description="Facts in the fact ledger withdrawn because every piece of their evidence was "
-        "in these sources: no longer listed, and what they superseded is current again. -1 means "
+        "in these sources: no longer listed, and their own supersession effects are undone. "
+        "What they superseded is current again only if no other assertion keeps it retired. -1 means "
         "the withdrawal FAILED and this withdraw must be re-run with the same source names.",
     )
 
