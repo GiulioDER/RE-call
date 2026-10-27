@@ -95,6 +95,9 @@ def _c9_startup(
     monkeypatch.setattr(hosted_main, "VoyageReranker", _reranker)
     monkeypatch.setattr(hosted_main, "VoyageMultimodalEmbedder", lambda *_a, **_k: object())
     monkeypatch.setattr(hosted_main, "verify_model_readiness", _readiness)
+    # The transport only: CI installs `dev` without the `openai` SDK, and these tests read what
+    # startup hands the readiness probe, never what the client does.
+    monkeypatch.setattr(hosted_main, "build_openrouter_client", lambda *_a, **_k: object())
     config = HostedSettings(
         "postgresql://unused",
         "secret",
