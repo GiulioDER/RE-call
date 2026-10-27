@@ -162,8 +162,9 @@ class LiteFactLedger:
     """The `FactLedger` protocol on a lite store, with `PostgresFactLedger`'s semantics.
 
     Like it, reads and conflict checks come from the materialized current facts when those reflect
-    every event in the file, and every append materializes what it wrote in its own transaction
-    unless `materialize` is off. `last_read` says which way the latest read went.
+    every event in the file. Unless `materialize` is off, appends attempt materialization in a
+    savepoint; failure preserves the append and reads replay until the derived tables are repaired.
+    `last_read` says which way the latest read went.
     """
 
     def __init__(self, store: LiteStore, *, materialize: bool = True) -> None:

@@ -25,7 +25,6 @@ from uuid import uuid4
 
 from recall.supersession import (
     FORGOTTEN_RECORD,
-    SUPERSESSION_RECORD_TYPES,
     WITHDRAWN_RECORD,
     SupersessionRecord,
     SupersessionRow,
@@ -38,14 +37,12 @@ from recall.supersession import (
 FORGET_ACTOR = "recall_forget"
 WITHDRAW_ACTOR = "recall_withdraw"
 
-_PG_EVENTS = (
-    "SELECT event_type, source_uri, payload FROM recall_audit_events "
-    "WHERE tenant_id = %s AND event_type = ANY(%s) {extra}ORDER BY created_at, event_id"
-)
-#: How many records a tenant holds: part of a cache key, because a withdrawal of a memo that is
-#: already gone writes a record and deletes nothing, so no chunk-side fingerprint moves.
-PG_RECORD_COUNT_SQL = (
-    "SELECT count(*) FROM recall_audit_events WHERE tenant_id = %s AND event_type = ANY(%s)"
+# Literal types also let generic plans use the partial latest-record index.
+_RECORD_TYPES_SQL = "('supersession_forgotten', 'supersession_withdrawn')"
+#: A bounded, transactionally maintained cache key. Record-only withdrawals must invalidate
+#: readers too, even though no chunk-side fingerprint moves. Missing tenant rows start at zero.
+PG_RECORD_REVISION_SQL = (
+    "SELECT COALESCE((SELECT revision FROM recall_supersession_revisions WHERE tenant_id = %s), 0)"
 )
 
 
@@ -54,20 +51,63 @@ def record_kind(withdraw: bool) -> str:
 
 
 def pg_records(conn: Any, tenant: str, scope: str, sources: Sequence[str] | None = None) -> list[SupersessionRecord]:
-    """The latest record per source for `scope`, optionally only for `sources`."""
+    """Latest usable records, in first-usable-source order, without transferring their history.
+
+    Rank IDs before joining winning payloads. An older truthy noniterable `claims` still raises
+    through the ordinary parser: a later usable event must not hide a corrupt ledger. The bad
+    event and winners share one SQL snapshot, including under READ COMMITTED.
+    """
     if sources is not None and not sources:
         return []
-    params: list[object] = [tenant, list(SUPERSESSION_RECORD_TYPES)]
+    params: list[object] = [tenant, scope]
     extra = ""
     if sources is not None:
         extra = "AND source_uri = ANY(%s) "
         params.append(list(sources))
-    rows = conn.execute(_PG_EVENTS.format(extra=extra), params).fetchall()
+    params.append(tenant)
+    rows = conn.execute(
+        f"""
+        WITH eligible AS (
+            SELECT event_id, source_uri, created_at,
+                   (jsonb_typeof(payload->'claims') = 'number' AND payload->'claims' <> '0'::jsonb)
+                   OR payload->'claims' = 'true'::jsonb AS bad_claims
+            FROM recall_audit_events
+            WHERE tenant_id = %s AND event_type IN {_RECORD_TYPES_SQL}
+              AND source_uri <> '' AND jsonb_typeof(payload) = 'object'
+              AND jsonb_typeof(payload->'scope') = 'string'
+              AND jsonb_typeof(payload->'file') = 'string'
+              AND payload->>'scope' = %s {extra}
+        ), first_bad AS (
+            SELECT event_id FROM eligible WHERE bad_claims
+            ORDER BY created_at, event_id LIMIT 1
+        ), ranked AS (
+            SELECT event_id,
+                   row_number() OVER (
+                       PARTITION BY source_uri ORDER BY created_at DESC, event_id DESC
+                   ) AS winner_rank,
+                   first_value(created_at) OVER (
+                       PARTITION BY source_uri ORDER BY created_at, event_id
+                   ) AS first_at,
+                   first_value(event_id) OVER (
+                       PARTITION BY source_uri ORDER BY created_at, event_id
+                   ) AS first_id
+            FROM eligible
+        ), selected AS (
+            SELECT event_id, first_at, first_id FROM ranked
+            WHERE winner_rank = 1 AND NOT EXISTS (SELECT 1 FROM first_bad)
+            UNION ALL
+            SELECT event_id, NULL::timestamptz, NULL::text FROM first_bad
+        )
+        SELECT e.event_type, e.source_uri, e.payload
+        FROM selected s JOIN recall_audit_events e ON e.event_id = s.event_id AND e.tenant_id = %s
+        ORDER BY s.first_at, s.first_id
+        """, params,
+    ).fetchall()
     return list(latest_records(rows, scope).values())
 
 
-def pg_record_count(conn: Any, tenant: str) -> int:
-    row = conn.execute(PG_RECORD_COUNT_SQL, (tenant, list(SUPERSESSION_RECORD_TYPES))).fetchone()
+def pg_record_revision(conn: Any, tenant: str) -> int:
+    row = conn.execute(PG_RECORD_REVISION_SQL, (tenant,)).fetchone()
     return int(row[0]) if row else 0
 
 
@@ -119,6 +159,7 @@ def pg_record_removals(
     sources: Sequence[str],
     withdraw: bool,
     record_scope: str | None = None,
+    rows: Sequence[SupersessionRow] | None = None,
 ) -> int:
     """Append, inside the caller's transaction, the records removing `sources` from `table` owes.
 
@@ -127,9 +168,10 @@ def pg_record_removals(
     """
     from psycopg.types.json import Jsonb  # here, so a lite store never loads psycopg for this
 
-    rows = conn.execute(
-        supersession_rows_sql(table, source_column=source_column, scope=scope), tuple(params)
-    ).fetchall()
+    if rows is None:
+        rows = conn.execute(
+            supersession_rows_sql(table, source_column=source_column, scope=scope), tuple(params)
+        ).fetchall()
     target = record_scope or table
     standing = pg_records(conn, tenant, target, sources)
     records = pending_records(rows, sources, withdraw=withdraw, standing=standing)
@@ -142,6 +184,42 @@ def pg_record_removals(
             (tenant, f"evt_{uuid4().hex}", record.kind, actor, record.source, Jsonb(record.payload(target))),
         )
     return len(records)
+
+
+def pg_delete_removals(
+    conn: Any, tenant: str, table: str, sources: list[str], *, withdraw: bool, quote_table: bool = False,
+) -> list[str]:
+    """Delete legacy rows and retain claims from exactly the versions DELETE removed.
+
+    The materialized DELETE result supplies both IDs for sparse cleanup and the ordinary SQL
+    supersession scan. No earlier SELECT can race with an upsert before deletion. The caller
+    owns the transaction, so a record-append failure also rolls the deletion back. `quote_table`
+    preserves the generation manager's quoted legacy-table contract; ordinary store callers
+    retain their existing unquoted identifier semantics. The record scope remains `table`.
+    """
+    from psycopg import sql
+
+    scan = supersession_rows_sql("removed", source_column="source", scope="true")
+    delete = (
+        "WITH removed AS (DELETE FROM {} WHERE tenant_id = %s AND source = ANY(%s) "
+        "RETURNING id, metadata, first_indexed_at, indexed_at, source) "
+    )
+    select = (
+        "SELECT id, NULL::text, NULL::text, NULL::timestamptz, NULL::text, NULL::text, NULL::text "
+        "FROM removed UNION ALL SELECT NULL, scanned.* FROM (" + scan + ") AS scanned"
+    )
+    query = (
+        sql.SQL(delete).format(sql.Identifier(table)) + sql.SQL(select)
+        if quote_table else delete.format(table) + select
+    )
+    result = conn.execute(query, (tenant, sources)).fetchall()
+    ids = [str(row[0]) for row in result if row[0] is not None]
+    rows = [tuple(row[1:]) for row in result if row[0] is None]
+    pg_record_removals(
+        conn, tenant=tenant, table=table, source_column="source", scope="true", params=(),
+        sources=sources, withdraw=withdraw, rows=rows,
+    )
+    return ids
 
 
 def records_matching(
@@ -177,19 +255,94 @@ def erasure_subjects(
 
 
 def sqlite_records(conn: sqlite3.Connection, scope: str, sources: Sequence[str] | None = None) -> list[SupersessionRecord]:
-    """`pg_records` for a lite file's `audit_events`."""
+    """`pg_records` for a lite file, preserving timestamp/rowid order and JSON parser refusals.
+
+    Invalid JSON raises even outside `scope` or with an empty source, as the old reader decoded
+    every type/source-matching payload before checking its envelope. Select that error row first
+    in the same snapshot; guard JSON field expressions so SQLite cannot evaluate them on it.
+    Legacy nonstandard tokens or duplicate outer keys use Python's original decoder and stream
+    the ordered history. Canonical serializer output takes the bounded payload-transfer path.
+    """
     if sources is not None and not sources:
         return []
-    sql = (
-        "SELECT event_type, source_uri, payload FROM audit_events "
-        "WHERE event_type IN (SELECT value FROM json_each(?))"
-    )
-    params: list[object] = [json.dumps(list(SUPERSESSION_RECORD_TYPES))]
+    extra = ""
+    params: list[object] = []
     if sources is not None:
-        sql += " AND source_uri IN (SELECT value FROM json_each(?))"
+        extra = "AND source_uri IN (SELECT value FROM json_each(?)) "
         params.append(json.dumps(list(sources)))
-    rows = conn.execute(sql + " ORDER BY created_at, rowid", params).fetchall()
-    return list(latest_records(((kind, source, json.loads(payload)) for kind, source, payload in rows), scope).values())
+    params.append(scope)
+    if sources is not None:
+        params.append(json.dumps(list(sources)))
+    safe = "(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END)"
+    rows = conn.execute(
+        f"""
+        WITH first_bad_json AS (
+            SELECT rowid AS event_rowid FROM audit_events
+            WHERE event_type IN {_RECORD_TYPES_SQL} {extra} AND (
+                NOT json_valid(payload) OR EXISTS (
+                    SELECT 1 FROM json_each({safe})
+                    WHERE key IN ('scope', 'file', 'claims') GROUP BY key HAVING count(*) > 1
+                )
+            )
+            ORDER BY created_at, rowid LIMIT 1
+        ), eligible AS (
+            SELECT rowid AS event_rowid, source_uri, created_at,
+                   json_type({safe}, '$.claims') = 'true'
+                   OR (json_type({safe}, '$.claims') IN ('integer', 'real')
+                       AND json_extract({safe}, '$.claims') <> 0) AS bad_claims
+            FROM audit_events
+            WHERE event_type IN {_RECORD_TYPES_SQL} AND json_valid(payload)
+              AND source_uri <> '' AND json_type({safe}) = 'object'
+              AND json_type({safe}, '$.scope') = 'text'
+              AND json_type({safe}, '$.file') = 'text'
+              AND json_extract({safe}, '$.scope') = ? {extra}
+        ), first_bad_claims AS (
+            SELECT event_rowid FROM eligible WHERE bad_claims
+            ORDER BY created_at, event_rowid LIMIT 1
+        ), ranked AS (
+            SELECT event_rowid,
+                   row_number() OVER (
+                       PARTITION BY source_uri ORDER BY created_at DESC, event_rowid DESC
+                   ) AS winner_rank,
+                   first_value(created_at) OVER (
+                       PARTITION BY source_uri ORDER BY created_at, event_rowid
+                   ) AS first_at,
+                   first_value(event_rowid) OVER (
+                       PARTITION BY source_uri ORDER BY created_at, event_rowid
+                   ) AS first_rowid
+            FROM eligible
+        ), selected AS (
+            SELECT event_rowid, first_at, first_rowid, 0 AS legacy_json FROM ranked
+            WHERE winner_rank = 1 AND NOT EXISTS (SELECT 1 FROM first_bad_json)
+              AND NOT EXISTS (SELECT 1 FROM first_bad_claims)
+            UNION ALL
+            SELECT event_rowid, NULL, NULL, 1 FROM first_bad_json
+            UNION ALL
+            SELECT event_rowid, NULL, NULL, 0 FROM first_bad_claims
+            WHERE NOT EXISTS (SELECT 1 FROM first_bad_json)
+        )
+        SELECT e.event_type, e.source_uri, e.payload, s.legacy_json
+        FROM selected s JOIN audit_events e ON e.rowid = s.event_rowid
+        ORDER BY s.first_at, s.first_rowid
+        """, params,
+    ).fetchall()
+    events: list[tuple[object, object, object]] = []
+    for kind, source, payload, legacy_json in rows:
+        decoded = json.loads(payload)  # A truly corrupt payload still raises, before any fallback.
+        if legacy_json:
+            # Python accepts nonstandard tokens and reads duplicate keys differently from
+            # SQLite. Preserve that legacy decoder/order, streaming the exceptional history.
+            legacy_params = [json.dumps(list(sources))] if sources is not None else []
+            cursor = conn.execute(
+                "SELECT event_type, source_uri, payload FROM audit_events "
+                f"WHERE event_type IN {_RECORD_TYPES_SQL} {extra} ORDER BY created_at, rowid",
+                legacy_params,
+            )
+            return list(latest_records(
+                ((kind, source, json.loads(payload)) for kind, source, payload in cursor), scope
+            ).values())
+        events.append((kind, source, decoded))
+    return list(latest_records(events, scope).values())
 
 
 def sqlite_record_removals(
@@ -217,11 +370,12 @@ def sqlite_record_removals(
 
 __all__ = [
     "FORGET_ACTOR",
-    "PG_RECORD_COUNT_SQL",
+    "PG_RECORD_REVISION_SQL",
     "WITHDRAW_ACTOR",
     "erasure_subjects",
     "pending_records",
-    "pg_record_count",
+    "pg_delete_removals",
+    "pg_record_revision",
     "pg_record_removals",
     "pg_records",
     "record_kind",
