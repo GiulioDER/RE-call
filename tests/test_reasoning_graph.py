@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from recall.calibration import Calibration
+from recall.lite import LiteStore
 from recall.reasoning_graph import build_reasoning_graph, project_store_graph
 from recall.store import resolve_supersession_candidates
 from recall.trust import evaluate
@@ -448,3 +451,132 @@ def test_supersession_rows_fallback_is_undated_by_design() -> None:
         ("v1.md", None, None, "/corpus/v1.md", None, None),
         ("v2.md", "v1.md", None, "/corpus/v2.md", None, None),
     ]
+
+
+@pytest.mark.parametrize(
+    "bound,other,hidden",
+    [
+        pytest.param("valid_from", "zzz", True, id="malformed-from"),
+        pytest.param("valid_until", "0000-bad", True, id="malformed-until"),
+        pytest.param("valid_from", None, True, id="missing-from"),
+        pytest.param("valid_until", None, True, id="missing-until"),
+        pytest.param("valid_from", "2028-01-01", True, id="disagreeing-from"),
+        pytest.param("valid_until", "2025-12-31", True, id="disagreeing-until"),
+        pytest.param("valid_from", "2027-1-1", False, id="equivalent-from"),
+        pytest.param("valid_until", "2025-1-1", False, id="equivalent-until"),
+    ],
+)
+def test_supersession_fallback_preserves_mixed_windows(bound: str, other: str | None, hidden: bool) -> None:
+    """Node tests/test_reasoning_graph.py::test_supersession_fallback_preserves_mixed_windows.
+
+    Fallback rows must preserve every window without inventing assertion dates.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    _supersession_rows discarded a window and failed the successor assertion.
+    Equivalent-date controls were red-proved with the _resolve_rows condition
+    if window is None or claimant in windows.
+    """
+    from recall.reasoning_graph import _supersession_rows
+    from recall.supersession import resolve_supersession_graph
+
+    chunks = [_chunk("a", "a.md")]
+    first = "2027-01-01" if bound == "valid_from" else "2025-01-01"
+    for ordinal, value in enumerate((first, other)):
+        metadata: dict[str, object] = {"file": "b.md", "ord": ordinal, "supersedes": "a"}
+        if value is not None:
+            metadata[bound] = value
+        chunks.append(Chunk(f"b-{ordinal}", "/corpus/b.md", "successor", metadata))
+    at = datetime(2026, 10, 21, tzinfo=timezone.utc)
+    rows = _supersession_rows(chunks)
+    actual = resolve_supersession_graph(rows).successor("a.md", now=at)
+    assert actual == ("b.md" if hidden else None), f"fallback discarded or misread a successor window: {actual}"
+    assert _supersession_rows(list(reversed(chunks))) == rows, "fallback row order depended on chunk order"
+    assert all(row[2] is None for row in rows), "fallback invented an assertion date"
+
+
+@pytest.mark.parametrize(
+    "backend,collision",
+    [
+        pytest.param(backend, collision, id=f"{backend}-{collision}")
+        for backend in ("fallback", "lite")
+        for collision in ("predecessor", "successor", "both")
+    ],
+)
+def test_rooted_supersession_adapters_keep_bounds_and_endpoints(
+    tmp_path: Path, backend: str, collision: str,
+) -> None:
+    """Node tests/test_reasoning_graph.py::test_rooted_supersession_adapters_keep_bounds_and_endpoints.
+
+    Source-qualified keys must retain bounds and endpoints in both graph adapters.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    _authored_edges lost a qualified claimant's bound or a source endpoint.
+    """
+    chunks = [
+        Chunk("old", "/one/base.md", "old", {"file": "base.md", "ord": 0}),
+        Chunk("new", "/one/new.md", "new", {
+            "file": "new.md", "ord": 0, "supersedes": "[[base]]", "valid_from": "2027-01-01",
+        }),
+    ]
+    if collision in {"predecessor", "both"}:
+        chunks.append(Chunk("other-old", "/two/base.md", "other old", {"file": "base.md", "ord": 0}))
+    if collision in {"successor", "both"}:
+        chunks.append(Chunk("other-new", "/two/new.md", "other new", {"file": "new.md", "ord": 0}))
+    if backend == "lite":
+        with closing(LiteStore(tmp_path / "graph.db", dim=4, tenant="acme")) as store:
+            store.upsert(chunks, [[1.0, 0.0, 0.0, 0.0] for _chunk in chunks])
+            graph = project_store_graph(store)
+    else:
+        graph = build_reasoning_graph(chunks, tenant_id="acme", generation_id="gen_1")
+    edge, = graph.authored_edges
+    sources = {node.source: node for node in graph.nodes if node.kind == "source"}
+    assert edge.valid_from == datetime(2027, 1, 1, tzinfo=timezone.utc), "qualified claimant lost its bound"
+    assert (edge.from_node_id, edge.to_node_id) == (
+        sources["/one/base.md"].id, sources["/one/new.md"].id,
+    ), "qualified endpoint was lost or resolved to its other root's copy"
+    assert edge.authored_reference == "[[base]]", "qualified claimant lost its authored reference"
+    assert edge.provenance["authored_in_file"] == "new.md", "display provenance lost the raw path"
+    assert not any(d.kind == "unresolved_reference" for d in graph.diagnostics), "a real endpoint read unresolved"
+    assert (edge.asserted_at is None) == (backend == "fallback"), "adapter changed assertion dating"
+    assert sources["/one/base.md"].file == "base.md"
+    assert sources["/one/new.md"].file == "new.md"
+
+
+def test_unrelated_root_collisions_preserve_unique_edge_identity() -> None:
+    """Node tests/test_reasoning_graph.py::test_unrelated_root_collisions_preserve_unique_edge_identity.
+
+    Unrelated collisions must leave unique source endpoints and edge identity intact.
+    Red-proved by making SupersessionGraph.key qualify every source;
+    the endpoint assertion detected the changed lookup.
+    """
+    chunks = [_chunk("old", "base.md"), _chunk("new", "new.md", supersedes="base")]
+    original = build_reasoning_graph(chunks, tenant_id="acme", generation_id="gen_1")
+    expanded = build_reasoning_graph(chunks + [
+        Chunk("copy-1", "/one/README.md", "one", {"file": "README.md"}),
+        Chunk("copy-2", "/two/README.md", "two", {"file": "README.md"}),
+    ], tenant_id="acme", generation_id="gen_1")
+    edge, = expanded.authored_edges
+    source_ids = {node.file: node.id for node in original.nodes if node.kind == "source"}
+    assert (edge.from_node_id, edge.to_node_id) == (source_ids["base.md"], source_ids["new.md"]), (
+        "an unrelated collision changed unique source endpoints"
+    )
+    assert edge.id == original.authored_edges[0].id, "an unrelated collision changed a unique edge identity"
+    assert (edge.from_file, edge.to_file) == ("base.md", "new.md")
+
+
+def test_explicit_candidate_preserves_nonclaiming_chunk_window() -> None:
+    """Node tests/test_reasoning_graph.py::test_explicit_candidate_preserves_nonclaiming_chunk_window.
+
+    Explicit candidates must retain windows without chunk supersession claims.
+    Red-proved by reading _authored_edges bounds solely from supersession.windows;
+    the bound assertion detected the missing window.
+    """
+    chunks = [
+        _chunk("old", "base.md"),
+        Chunk("new", "/corpus/new.md", "new", {"file": "new.md", "valid_from": "2027-01-01"}),
+    ]
+    graph = build_reasoning_graph(
+        chunks, tenant_id="acme", generation_id="gen_1",
+        authored_edge_candidates={"base.md": [("new.md", MON)]}, unresolved_references=frozenset(),
+    )
+    edge, = graph.authored_edges
+    assert edge.valid_from == datetime(2027, 1, 1, tzinfo=timezone.utc), "explicit candidate lost its source window"
+    assert edge.asserted_at == MON, "explicit candidate lost its supplied assertion date"

@@ -145,3 +145,56 @@ def test_ignores_only_fixes_newer_than_the_pinned_version() -> None:
 
     assert d.ignored
     assert d.fixed == ("13.0.0",)
+
+
+@pytest.mark.parametrize("package", ["fastembed", "pillow"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_refuses_distinct_selected_pins_before_fetching(package: str, reverse: bool) -> None:
+    """STAKES-001: conditional pins must not silently select an exception policy.
+
+    Red proof: on the original parser the exact four cases fail DID NOT RAISE.
+    Both pin orders are refused before either metadata fetcher is called.
+    """
+    versions = ("0.8.0", "0.9.0") if package == "fastembed" else ("12.2.0", "12.3.0")
+    lines = [
+        f'{package}=={versions[0]} ; python_version < "3.14"',
+        f'{package}=={versions[1]} ; python_version >= "3.14"',
+    ]
+    other = "pillow==12.3.0" if package == "fastembed" else "fastembed==0.9.0"
+    lock = "\n".join([other, *(reversed(lines) if reverse else lines)])
+    calls: list[str] = []
+
+    def requires(name: str, version: str) -> list[str]:
+        calls.append("requirements")
+        return FASTEMBED_CAP
+
+    def advisories(name: str, version: str) -> list[dict]:
+        calls.append("advisories")
+        return [advisory("GHSA-aaaa-bbbb-cccc", "CVE-2026-1", "13.0.0")]
+
+    with pytest.raises(ValueError, match="multiple locked versions"):
+        capped_decisions(lock, "pillow", "fastembed", requires, advisories)
+    assert not calls
+
+
+@pytest.mark.parametrize("package", ["fastembed", "pillow", "unrelated"])
+def test_only_distinct_selected_pins_are_refused(package: str) -> None:
+    """STAKES-001 controls: identical pins and unrelated variants remain supported.
+
+    Mutation proof: reject identical selected pins, or reject all distributions' variants;
+    these exact cases fail the explicit acceptance assertion instead of a setup error.
+    """
+    extra = {
+        "fastembed": 'FastEmbed==0.9.0 ; python_version >= "3.14"',
+        "pillow": 'Pillow==12.3.0 ; python_version >= "3.14"',
+        "unrelated": 'unrelated==1.0 ; python_version < "3.14"\n'
+                     'unrelated==2.0 ; python_version >= "3.14"',
+    }[package]
+    try:
+        decisions = decide(
+            FASTEMBED_CAP, [advisory("GHSA-aaaa-bbbb-cccc", "CVE-2026-1", "13.0.0")],
+            lock=LOCK + extra + "\n",
+        )
+    except ValueError as exc:
+        raise AssertionError("valid identical pins and unrelated variants must remain supported") from exc
+    assert [d.ignored for d in decisions] == [True]

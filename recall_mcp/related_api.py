@@ -61,7 +61,8 @@ def related_memory(
         store: tenant and generation bound read store.
         seed_chunk_id: chunk that defines the relation.
         relation: `source`, `ordinal`, `supersession`, or `caused_by`.
-        max_items: positive bounded candidate limit.
+        max_items: returned-item limit, from 1 to 50. Supersession evaluates the complete matching
+            lineage before limiting returned items; source, ordinal, and `caused_by` relations also limit candidates.
         calibration: optional trust calibration, resolved from the store when omitted.
         explain: include stable machine readable explanation metadata.
 
