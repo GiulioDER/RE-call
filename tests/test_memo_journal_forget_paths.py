@@ -19,6 +19,13 @@ Paths, one test each:
 P5 is the second note of PR 950's push review: rows holding the memo's bytes under its file name from
 another path, with a stored file name that is not the one refresh gives it.
 
+P6 and P7 are a later push review's finding: the forget handed the journal erasure every name it was
+asked for, so a forget in one store erased the journal of a memo another store holds. The erasure now
+takes the sources this forget deleted, plus requested names this store recorded (a `forget_memo_journal`
+audit event, written just before the deletion) as memos it deleted earlier.
+- P6 a forget in another store, naming this folder's memo, leaves its journal untouched;
+- P7 a forget whose journal erasure failed after its rows went is completed by the same forget re-run.
+
 Red proof, all against 3f2de9156 (PR 950's head) with this change's production files reverted and these
 tests kept, run 2026-10-19: P1 to P4 fail `a hash of the forgotten memo is still in the
 journal`; P5 fails `forget deleted the file of a memo still served under a third name`. Mutations of the
@@ -38,7 +45,10 @@ from typing import Any
 
 import pytest
 
+from recall.lite import LiteStore
 from recall.lite.assistant_memos import MemoFolder
+from recall.types import Chunk
+from recall_mcp.lifecycle import forget_memory
 from tests.lite_cli_support import _offline, run_cli  # noqa: F401  # _offline: autouse fixture
 from tests.test_assistant_surface import _serve_both, envs  # noqa: F401  # envs: fixture
 from tests.test_lite_calibration import ContentWordEmbedder
@@ -179,3 +189,63 @@ def test_p5_control_a_same_text_memo_under_another_name_does_not_block(serving) 
     except RuntimeError as exc:
         pytest.fail(f"a same-text memo under another name blocked the forget: {exc}")
     assert forgot["deleted"] == 1 and not path.exists(), forgot
+
+
+def _index(store: LiteStore, path: Path, text: str) -> None:
+    store.upsert([Chunk(f"chunk-{path.stem}", str(path), text, {"file": path.name})], [[1.0, 0.0, 0.0, 0.0]])
+
+
+def test_p6_a_forget_in_another_store_leaves_the_journal_alone(tmp_path: Path) -> None:
+    """Node tests/test_memo_journal_forget_paths.py::test_p6_a_forget_in_another_store_leaves_the_journal_alone.
+
+    Red, 2026-10-27, against PR 950's head `9e4c3e7a9` (where `_forget_memory_unlocked` in
+    recall_mcp/lifecycle.py passed `[*to_delete, *requested]`): fails on "a forget in another store
+    erased this memo's journal".
+    """
+    folder = MemoFolder(tmp_path / "victim")
+    first, _ = _write_pair(folder, GONE)
+    path = folder.path_of(first["memo_id"])
+    journal = (folder.folder / ".recall-authors.json").read_text(encoding="utf-8")
+    other = LiteStore(tmp_path / "other.db", dim=4, tenant="other")
+    try:
+        result = forget_memory(other, [str(path)])
+    finally:
+        other.close()
+    assert result.sources_removed == [], result.message
+    assert (folder.folder / ".recall-authors.json").read_text(encoding="utf-8") == journal, (
+        "a forget in another store erased this memo's journal"
+    )
+    retry = folder.write(_text(GONE), fact=_door(GONE), request_id="first")
+    assert retry.get("receipt", {}).get("replayed") is True, f"the memo's own request no longer replays: {retry}"
+
+
+def test_p7_a_forget_re_run_completes_a_failed_journal_erasure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Node tests/test_memo_journal_forget_paths.py::test_p7_a_forget_re_run_completes_a_failed_journal_erasure.
+
+    The first forget deletes the rows and then fails to erase the journal; the re-run finds no rows,
+    so only the record the first forget wrote lets it name the memo to the erasure. Red, 2026-10-27,
+    mutation of `_record_memo_journals` (recall_mcp/lifecycle.py) writing no event: fails on "the
+    re-run did not complete the journal erasure".
+    """
+    from recall.lite import assistant_memos
+
+    folder = MemoFolder(tmp_path / "memos")
+    first, _ = _write_pair(folder, GONE)
+    derived = _derived(folder.folder, tmp_path)
+    path = folder.path_of(first["memo_id"])
+    store = LiteStore(tmp_path / "memory.db", dim=4, tenant="mine")
+    try:
+        _index(store, path, _text(GONE))
+
+        def boom(_sources: Any) -> int:
+            raise OSError("injected journal failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(assistant_memos, "forget_memo_requests", boom)
+            failed = forget_memory(store, [str(path)])
+        assert failed.sources_removed == [str(path)] and "WARNING" in failed.message, failed.message
+        assert derived & _hashes(folder.folder), "the injected failure must leave the journal as it was"
+        rerun = forget_memory(store, [str(path)])
+    finally:
+        store.close()
+    assert not derived & _hashes(folder.folder), f"the re-run did not complete the journal erasure: {rerun.message}"

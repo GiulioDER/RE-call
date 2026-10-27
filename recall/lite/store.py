@@ -936,6 +936,16 @@ class LiteStore:
             self._conn.execute(insert, row)
         return event_id
 
+    def recorded_memo_journals(self, sources: Sequence[str]) -> set[str]:
+        """`PgVectorStore.recorded_memo_journals`: the file holds one tenant, so its whole ledger."""
+        if not sources:
+            return set()
+        rows = self._metadata_values(
+            "SELECT DISTINCT source_uri FROM audit_events WHERE event_type = 'forget_memo_journal' "
+            "AND source_uri IN (SELECT value FROM json_each(?))", (json.dumps(list(sources)),),
+        )
+        return {str(source) for (source,) in rows if source}
+
     def forgotten_source_aliases(self, sources: Sequence[str]) -> set[str]:
         """Recover card names recorded before these exact sources were forgotten."""
         if not sources:

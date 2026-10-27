@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+import hashlib
+import json
 from typing import TYPE_CHECKING, Any
 
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, project_current_state
@@ -217,6 +219,35 @@ def withdraw_memory(
     )
 
 
+#: The audit event a forget writes, just before deleting them, for the assistant memos it removes.
+MEMO_JOURNAL_EVENT = "forget_memo_journal"
+
+
+def _record_memo_journals(store: PgVectorStore, sources: list[str]) -> None:
+    """Record in `store`'s own audit ledger each assistant memo among `sources`, by its source only.
+
+    A store with no audit ledger records nothing, and its re-run then erases only what it deletes.
+    An append that fails raises before any row is deleted.
+    """
+    from recall.lite.assistant_memos import is_assistant_memo
+
+    append = getattr(store, "append_audit_event", None)
+    if not callable(append):
+        return
+    for source in sorted(source for source in set(sources) if is_assistant_memo(source)):
+        identity = json.dumps([getattr(store, "tenant", None), source], ensure_ascii=False)
+        append(
+            MEMO_JOURNAL_EVENT, {}, source_uri=source,
+            event_id="forget_memo_journal_" + hashlib.sha256(identity.encode()).hexdigest(),
+        )
+
+
+def _recorded_memo_journals(store: PgVectorStore, names: list[str]) -> set[str]:
+    """The `names` this store recorded deleting as assistant memos (`_record_memo_journals`)."""
+    recorded = getattr(store, "recorded_memo_journals", None)
+    return set(recorded(names)) if callable(recorded) and names else set()
+
+
 def _authorize_erasure(
     store: PgVectorStore,
     shadow_store: PgVectorStore | None,
@@ -313,6 +344,10 @@ def _forget_memory_unlocked(
         # A deletion without its recovery aliases would make an absolute-source retry
         # irrecoverable. A preparation failure therefore leaves the chunks in place.
         raise
+    if erase_memo_requests:
+        # Before the rows go, for the same reason: the record is how a re-run, which finds no
+        # rows, may still name these memos to the journal erasure below.
+        _record_memo_journals(store, to_delete)
     if to_delete and shadow_store is not None:
         chunks_removed = store.delete_sources_across(
             [store.table, shadow_store.table], to_delete, withdraw=withdraw
@@ -361,8 +396,9 @@ def _forget_memory_unlocked(
         from recall.lite.assistant_memos import forget_memo_requests
 
         try:
-            # The requested names too: a re-run after a failure here finds no rows left.
-            memo_requests_erased = forget_memo_requests([*to_delete, *requested])
+            # Only memos this store held: what it deleted now, and requested names it recorded
+            # deleting earlier (a re-run after a failure here finds no rows left).
+            memo_requests_erased = forget_memo_requests([*to_delete, *_recorded_memo_journals(store, requested)])
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception(
                 "memo request journal erasure failed after chunk deletion for tenant %r", store.tenant

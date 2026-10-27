@@ -111,7 +111,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   The journal's hashes of a memo go however it leaves the index: the generic forget (`recall
   forget`, `recall_forget`) erases them too, and so does the next index that prunes a memo deleted
   by hand. `recall_forget_memo` also refuses when rows hold the memo's bytes under its file name
-  from another path, not only under its stored name.
+  from another path, not only under its stored name. Since 2026-10-27 a forget erases the journal only of memos its own store held: the ones it deletes, and names it recorded deleting earlier (a `forget_memo_journal` audit event written before the rows go), so a re-run still completes a failed erasure while a forget in another store can no longer name this folder's memo.
 
 ### Added
 

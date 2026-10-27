@@ -36,9 +36,17 @@ if TYPE_CHECKING:
     from recall.lite import LiteStore
     from recall.lite.refresh import RefreshReport
 
-__all__ = ["LEDGER_NAME", "MEMO_ID", "MemoFolder", "forget_memo_requests"]
+__all__ = ["LEDGER_NAME", "MEMO_ID", "MemoFolder", "forget_memo_requests", "is_assistant_memo"]
 
 LEDGER_NAME = ".recall-authors.json"
+
+
+def is_assistant_memo(source: str) -> bool:
+    """Whether `source` is an absolute `<memo id>.md` whose folder holds an authorship ledger."""
+    path = Path(source)
+    if not path.is_absolute() or path.suffix != ".md" or not MEMO_ID.fullmatch(path.stem):
+        return False
+    return (path.parent / LEDGER_NAME).is_file()
 
 
 def forget_memo_requests(sources: Iterable[str]) -> int:
@@ -46,17 +54,15 @@ def forget_memo_requests(sources: Iterable[str]) -> int:
 
     For a memo leaving the index by a path other than `recall_forget_memo`: the generic forget
     (`recall forget`, `recall_forget`), and the indexer's prune of a memo deleted by hand. A source
-    is a memo when it is an absolute `<memo id>.md` whose folder holds an authorship ledger; any
-    other source is left alone. Returns how many journal entries changed.
+    is a memo by `is_assistant_memo`; any other source is left alone. The caller passes only
+    sources its own store held: a path is not proof of ownership, so a name taken on trust would
+    let a forget in one store erase the journal of a memo another store holds. Returns how many
+    journal entries changed.
     """
     changed = 0
     for source in dict.fromkeys(sources):
-        path = Path(source)
-        if not path.is_absolute() or path.suffix != ".md" or not MEMO_ID.fullmatch(path.stem):
-            continue
-        ledger = path.parent / LEDGER_NAME
-        if ledger.is_file():
-            changed += len(cancel_requests(ledger, path.stem))
+        if is_assistant_memo(source):
+            changed += len(cancel_requests(Path(source).parent / LEDGER_NAME, Path(source).stem))
     return changed
 
 
