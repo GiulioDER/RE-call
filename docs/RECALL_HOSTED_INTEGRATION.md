@@ -329,9 +329,9 @@ fails. No AML Cycle 2 run used it. It and the other experimental variants are de
 
 The declared service capacity is 16 concurrent Add requests and 16 concurrent Search requests in
 one process. The database pool is sized above the combined running capacity. Add provider and
-database work must complete before the caller's 45 second integration timeout. Search callers use
-a 10 second transport timeout, while the release gate requires a measured Search p95 below 5
-seconds and Add p95 below 30 seconds. HTTP 422 is permanent to the caller, so it is reserved for input
+database work must complete before the caller's 45 second integration timeout. A Search request is
+cut after about 100 seconds in front of the service, while the release gate requires a measured
+Search p95 below 5 seconds and Add p95 below 30 seconds. HTTP 422 is permanent to the caller, so it is reserved for input
 that can never be accepted: invalid JSON, a body over 44 MiB, a missing or blank `request_id`,
 `user_id` or `session_id`, a malformed or oversized image, and, from `625b7138` (both Full 2 runs),
 an Add in which no part can be read and a Search query image that cannot be decoded. From the same
