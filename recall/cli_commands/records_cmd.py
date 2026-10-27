@@ -165,7 +165,8 @@ def _print(result: dict[str, Any], args: argparse.Namespace) -> None:
         if record["superseded_by"]:
             marks.append(f"superseded by {terminal_safe(record['superseded_by'])}")
         if record["valid_until"]:
-            marks.append(f"valid until {terminal_safe(record['valid_until'])}")
+            lapse = "expired" if record.get("expired") else "valid until"
+            marks.append(f"{lapse} {terminal_safe(record['valid_until'])}")
         if record["caused"]:
             marks.append(f"caused {len(record['caused'])}")
         suffix = f"  ({'; '.join(marks)})" if marks else ""

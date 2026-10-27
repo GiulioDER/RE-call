@@ -2051,7 +2051,8 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         Returns:
             JSON `{tenant_id, generation_id, truncated, records}`. Each record carries its
             `recall_record` exactly as authored, `name`, `description`, `source`, `chunk_id`,
-            `valid_from`, `supersedes`, `superseded_by`, `valid_until`, the reverse `caused`
+            `valid_from`, `supersedes`, `superseded_by`, `valid_until`, `expired` (whether
+            `valid_until` has passed: a date lasts through that day, UTC), the reverse `caused`
             edge, `anchor_matches` and the best `anchor_match`, best match first. More than 500
             matches is refused, never truncated. A record in a file the caller's source policy
             does not let it read is left out and never named in `caused`; a successor it may not
