@@ -25,7 +25,8 @@ DETERMINISTIC_MODEL_ID = "rules"
 #: explanation does not bump it. Every proposal id is a hash over it, so a bump changes every id.
 #: `session3-v2`: the subject rules group in one folder, a version series is one folder's files,
 #: a same-start pair gets its later successor, and a version order the dates contradict is referred.
-DETERMINISTIC_PROVIDER_REVISION = "session3-v2"
+#: `session3-v3`: version-only filenames retain their folder when their versionless base is empty.
+DETERMINISTIC_PROVIDER_REVISION = "session3-v3"
 
 ProposalStatus = Literal["candidate", "rejected", "requires_review"]
 #: Single source of truth for the status vocabulary. `_providers._checked_status` and
