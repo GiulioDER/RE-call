@@ -319,12 +319,15 @@ def _run_as_served(main: Any) -> Any:
     return asyncio.run(served())
 
 
-def _outcomes(results: list[tuple[float, Any]]) -> list[str]:
-    """Each result as its exception's name or its number of memories, for an assertion message."""
-    return [
+def _outcomes(results: list[tuple[float, Any]]) -> str:
+    """Each result as its exception's name or its number of memories, for an assertion message.
+
+    A string, because pytest shortens a list in an assertion message and hides the failing entry.
+    """
+    return ", ".join(
         type(result).__name__ if isinstance(result, Exception) else f"{len(result.data)} memories"
         for _, result in results
-    ]
+    )
 
 
 def test_stalled_searches_do_not_slow_the_rest_or_outlive_the_stall(short_budget: None) -> None:
@@ -342,7 +345,10 @@ def test_stalled_searches_do_not_slow_the_rest_or_outlive_the_stall(short_budget
 
     Red proof, run 2026-10-27 in CI: with ``QUERY_EMBED_THREADS = 1`` in
     `recall_aml/search_deadline.py`, the fast Searches' embeddings queue behind the stalled ones
-    and this test fails at the fast-Search assertion (RESULT_PLACEHOLDER).
+    and this test fails at the fast-Search assertion with the fast results reported as
+    ``SearchDeadlineExceeded`` (run 40539781611, red in all three suite jobs). Restored, green
+    (run 40539763161). On asyncio's default executor the same test failed one of three suite jobs
+    (run 40539772152), so on a 4-vCPU runner it is timing-dependent, not deterministic.
     """
     service, _ = _slow_text_service(4.0)
     users = [f"user-{index}" for index in range(8)]
