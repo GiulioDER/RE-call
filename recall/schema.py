@@ -61,6 +61,7 @@ FACT_MATERIALIZATION_TABLES = ("recall_fact_materialization_outbox",)
 FACT_CURRENT_TABLES = (
     "recall_fact_current", "recall_fact_current_events", "recall_fact_current_state",
 )
+SUPERSESSION_REVISION_TABLES = ("recall_supersession_revisions",)
 FACT_LEDGER_APPEND_FUNCTION = "recall_append_fact_ledger_event"
 FACT_MATERIALIZATION_APPEND_FUNCTION = "recall_append_fact_materialization"
 #: Enterprise control-plane objects, created by `recall/sql/001_enterprise_control_plane.sql`
@@ -235,6 +236,7 @@ def serving_grants(
             else "GRANT SELECT, INSERT, UPDATE, DELETE ON " + ", ".join(FACT_CURRENT_TABLES) + f" TO {role};"
         ),
         "GRANT SELECT ON " + ", ".join(FACT_CURRENT_TABLES) + f" TO {role};",
+        "GRANT SELECT, INSERT, UPDATE ON " + ", ".join(SUPERSESSION_REVISION_TABLES) + f" TO {role};",
     ]
     if enterprise:
         statements += [

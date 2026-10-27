@@ -495,6 +495,13 @@ class LiteStore:
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS audit_events_lookup ON audit_events(event_type, created_at);
+                CREATE INDEX IF NOT EXISTS audit_events_supersession_latest
+                    ON audit_events(
+                        json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END, '$.scope'),
+                        source_uri, created_at DESC
+                    )
+                    WHERE event_type IN ('supersession_forgotten', 'supersession_withdrawn')
+                      AND json_valid(payload);
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
                     text, content='chunks', content_rowid='rowid', tokenize='porter unicode61'
                 );
@@ -1423,6 +1430,6 @@ class LiteStore:
             # keys the records too.
             with self._lock:
                 records = sqlite_records(self._conn, self._table)
-            cached = (matrix.version, resolve_supersession_graph(rows, records))
+            cached = (matrix.version, resolve_supersession_graph(rows, records, self._tenant))
             self._supersession_cache = cached
         return cached[1].copy()

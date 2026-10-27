@@ -152,27 +152,21 @@ def _open_lite(args: argparse.Namespace, dim: int) -> LiteStore:
 
 def _rebuild_postgres(args: argparse.Namespace, action: str) -> tuple[Any, int, dict[str, object] | None]:
     from recall.fact_current import PostgresCurrentFacts
-    from recall.fact_ledger import PostgresMaterializationOutbox
-    from recall.provenance_controller import MaterializationRecovery
+    from recall.fact_retraction import FACT_WRITE_DSN_ENV
+    import os
 
-    facts = PostgresCurrentFacts(args.dsn, tenant_id=args.tenant)
+    dsn = args.dsn
+    if action != "check":
+        dsn = os.environ.get(FACT_WRITE_DSN_ENV, "").strip() or dsn
+    facts = PostgresCurrentFacts(dsn, tenant_id=args.tenant)
     if action == "check":
         return facts.status(), 0, facts.verify().to_payload() if args.verify else None
     if action == "rebuild":
         return facts.rebuild(), 0, None
-    # Crash recovery: the events the tables lack get outbox rows and are delivered through them,
-    # a thousand at a time, until none is left or a batch delivers nothing (its failures are in
-    # the outbox's last_error).
-    recovery = MaterializationRecovery(
-        tenant_id=args.tenant,
-        outbox=PostgresMaterializationOutbox(args.dsn, tenant_id=args.tenant),
-        materializer=facts,
-    )
+    # Repair derived rows directly. External outbox acknowledgements belong to their
+    # configured materializer and cannot also represent current-table repair.
     reconciled = 0
-    while missing := facts.unfiled_events():
-        delivered = recovery.reconcile(missing[:1000], limit=1000)
-        if not delivered:
-            break
+    while delivered := facts.reconcile(limit=1000):
         reconciled += delivered
     return facts.status(), reconciled, None
 

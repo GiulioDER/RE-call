@@ -80,7 +80,7 @@ def _winners(c: Any, tenant: str, generation: str) -> SupersessionGraph:
     """The generation's supersession graph, resolved and windowed as search resolves it, with the
     records of forgotten and withdrawn memos (`recall.supersession.SupersessionRecord`)."""
     rows = c.execute(_SUPERSESSION_ROWS, (tenant, generation)).fetchall()
-    return resolve_supersession_graph(rows, pg_records(c, tenant, "recall_chunks_v1"))
+    return resolve_supersession_graph(rows, pg_records(c, tenant, "recall_chunks_v1"), tenant)
 
 
 #: A Python import line: `from MODULE import NAMES` or `import MODULE`. Matched inside Postgres

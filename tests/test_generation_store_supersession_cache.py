@@ -18,9 +18,7 @@ class _Result:
 
 
 class _Connection:
-    """Counts the chunk scans. The audit-ledger reads (`recall.supersession_records`: the
-    removed memos' records, and their count, which keys the cache) answer none and are counted
-    apart, since the count is read on every call by design and is not a scan."""
+    """Count chunk scans separately from bounded revision lookups and record reads."""
 
     def __init__(self, rows):
         self.rows = rows
@@ -28,6 +26,8 @@ class _Connection:
         self.record_reads = 0
 
     def execute(self, query, _params):
+        if "recall_supersession_revisions" in query:
+            return _Result([(0,)])
         if "recall_audit_events" in query:
             self.record_reads += 1
             return _Result([(0,)] if "count(*)" in query else [])
@@ -70,6 +70,10 @@ def test_generation_store_caches_supersession_scan_per_generation() -> None:
     apart from the scans it counts. Re-proved red the same day by disabling the cache hit in
     `GenerationStore.supersession_graph` (recall/generation_store.py): fails on
     ``connection.calls == 1`` with 2.
+
+    FIX-004 (2026-10-26) replaces that history count with a bounded revision lookup. The stub
+    now recognizes this deliberately changed query contract; the scan assertions remain intact.
+    A cache-hit comparison mutation supplies the new fixture's required RED/GREEN receipt.
     """
     connection = _Connection([("old.md", "new.md", None)])
     store = _Store(connection)

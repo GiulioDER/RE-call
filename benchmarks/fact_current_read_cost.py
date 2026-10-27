@@ -58,7 +58,7 @@ def _card(fact: AtomicFact, tenant: str, index: int) -> EvidenceCard:
 
 
 def build(ledger: Any, tenant: str, shape: str, events: int) -> AtomicFact:
-    """Append assertions until the ledger holds `events` events; return a fact of a busy key."""
+    """Append until at least `events` ledger events exist; return a fact of a busy key."""
     latest: dict[int, AtomicFact] = {}
     held = 0
     index = 0
@@ -136,7 +136,7 @@ def run_lite(shape: str, events: int, samples: int) -> dict[str, Any]:
         try:
             ledger = LiteFactLedger(store)
             probe = build(ledger, tenant, shape, events)
-            return measure(ledger, tenant, probe, ledger._events, samples)
+            return {"events": len(ledger.events), **measure(ledger, tenant, probe, ledger._events, samples)}
         finally:
             store.close()
 
@@ -150,7 +150,7 @@ def run_postgres(dsn: str, shape: str, events: int, samples: int) -> dict[str, A
         with ledger._connect() as conn:
             return ledger._events(conn)
 
-    return measure(ledger, tenant, probe, replay_events, samples)
+    return {"events": len(replay_events()), **measure(ledger, tenant, probe, replay_events, samples)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -181,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
                 run_lite(shape, events, args.samples) if args.backend == "lite"
                 else run_postgres(args.dsn, shape, events, args.samples)
             )
-            record = {"backend": args.backend, "shape": shape, "events": events, **result,
+            record = {"backend": args.backend, "shape": shape, "requested_events": events, **result,
                       "wall_s": round(time.perf_counter() - started, 1)}
             records.append(record)
             print(json.dumps({key: record[key] for key in ("backend", "shape", "events", "median_ms",
