@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 import sqlite3
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -183,6 +184,23 @@ def backend(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Backend]
     pg.close()
 
 
+def _holds(value: str, text: str | bytes) -> bool:
+    """Whether `text` holds `value` as a value: not inside a longer run of letters and digits.
+
+    A bare substring test also matches the random hex ids a redaction mints, so it failed about
+    once in a few hundred runs on an id that happened to contain the four digits of a code (CI
+    `floor`, 2026-10-27: `card_c8dda6b905cada350079878f38d45126`). A stored value is bounded by
+    quotes, spaces or punctuation, so this keeps every real leak and drops only that collision.
+    Red proof for the checks that use it, 2026-10-27 on the remote test host: with
+    `FactErasure.redact` (recall/fact_retraction.py) erasing nothing, T1, T6 and T10 fail on their
+    value assertions (lite; the PostgreSQL params ran in CI).
+    """
+    pattern = rf"(?<![0-9A-Za-z]){re.escape(value)}(?![0-9A-Za-z])"
+    if isinstance(text, bytes):
+        return re.search(pattern.encode(), text) is not None
+    return re.search(pattern, text) is not None
+
+
 def _view(event: Any, forgotten: str) -> tuple[Any, ...]:
     """A listed fact as `recall_current_facts` shows it, with the forgotten memo's card ids out."""
     return (
@@ -223,15 +241,15 @@ def test_t1_values_are_gone_after_forget(backend: Backend) -> None:
     if backend.name == "pg":
         PostgresMaterializationOutbox(TEST_DSN, tenant_id=backend.tenant).enqueue(applied)
     before = " ".join(backend.rows())
-    assert "4512" in before and "7777" in before, "the scenario must put both values in the tables"
+    assert _holds("4512", before) and _holds("7777", before), "the scenario must put both values in the tables"
 
     result = forget_memory(backend.store, ["a.md"])
 
     after = backend.rows()
     for value in ("4512", "7777"):
-        holders = [text for text in after if value in text]
+        holders = [text for text in after if _holds(value, text)]
         assert not holders, f"{value} is still in the fact tables after forget: {holders[:2]} ({result.message})"
-        assert value.encode() not in backend.file_bytes(), f"{value} is still in the lite file's bytes"
+        assert not _holds(value, backend.file_bytes()), f"{value} is still in the lite file's bytes"
 
 
 def test_t2_low_entropy_values_are_not_recoverable_from_ids(backend: Backend) -> None:
@@ -293,8 +311,8 @@ def test_t3_projections_are_unchanged_for_what_survives(backend: Backend) -> Non
         assert predicate not in after, f"a forgotten fact is listed again: {predicate} ({result.message})"
     assert after == {k: before[k] for k in ("city", "pet")}, "a surviving fact is listed differently"
     text = " ".join(backend.rows())
-    assert "AB123" not in text, "the value only the forgotten memo supplied must be erased"
-    assert "4512" in text, "the value a memo this forget did not name still holds stays"
+    assert not _holds("AB123", text), "the value only the forgotten memo supplied must be erased"
+    assert _holds("4512", text), "the value a memo this forget did not name still holds stays"
     assert result.facts_redacted == 1
 
 
@@ -439,11 +457,11 @@ def test_t6_idempotent_and_recoverable(backend: Backend, monkeypatch: pytest.Mon
         failed = forget_memory(backend.store, ["b.md"])
     assert (failed.facts_retracted, failed.facts_redacted) == (1, -1), failed.message
     assert "WARNING" in failed.message and "re-run this forget" in failed.message
-    assert "4512" in " ".join(backend.rows()), "a failed erasure must leave the value, not half of it"
+    assert _holds("4512", " ".join(backend.rows())), "a failed erasure must leave the value, not half of it"
 
     rerun = forget_memory(backend.store, ["b.md"])
     assert rerun.facts_redacted == 1, f"the re-run did not complete the erasure: {rerun.message}"
-    assert "4512" not in " ".join(backend.rows())
+    assert not _holds("4512", " ".join(backend.rows()))
 
 
 def _scenario(backend: Backend) -> list[tuple[str, Any]]:
@@ -670,7 +688,7 @@ def test_t10_a_withdrawal_follows_the_assertion_it_names(backend: Backend) -> No
         if {old_id, withdrawal} & ids:
             hits.append(code)
     assert hits == [], f"recovered {hits} from the ids left after the withdraw"
-    assert "4512" not in " ".join(backend.rows())
+    assert not _holds("4512", " ".join(backend.rows()))
 
 
 def test_t11_the_current_facts_tables_are_rebuilt(backend: Backend) -> None:
