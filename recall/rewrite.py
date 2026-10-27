@@ -86,6 +86,7 @@ from recall.lint import describe_cycle, supersession_cycle_closed_by, supersessi
 from recall.observability import get_logger
 from recall.promotion import PromotedFact
 from recall.reasoning_proposals.types import InferenceProposal
+from recall.state_dir import make_parent
 from recall.truth_extraction.types import STATUS_VOCABULARY, VALIDITY_CLAIM_KEYS
 from recall.trust import metadata_is_trusted
 from recall.errors import RecallError
@@ -249,8 +250,7 @@ class RejectionLedger:
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
         try:
-            if self._path.parent and not self._path.parent.exists():
-                self._path.parent.mkdir(parents=True, exist_ok=True)
+            make_parent(self._path)
         except OSError as exc:
             # Hardening the connect and leaving the mkdir above it raw meant a `.recall` name
             # already taken by a file — which `default_ledger_path` walks straight into — escaped

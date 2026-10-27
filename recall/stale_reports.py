@@ -40,6 +40,7 @@ from pathlib import Path
 from recall.errors import RecallError
 from recall.frontmatter import encodable_name
 from recall.rewrite import RejectionLedger, RewriteRefused, claim_key, default_ledger_path
+from recall.state_dir import make_parent
 
 MIN_QUOTE_CHARS = 20
 #: A quote is a sentence or two of evidence, not a copy of the memo.
@@ -162,7 +163,7 @@ class StaleReportQueue:
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
+            make_parent(self._path)
         except OSError as exc:
             raise StaleReportRefused(f"report queue directory for {self._path} could not be created: {exc}") from exc
         try:
