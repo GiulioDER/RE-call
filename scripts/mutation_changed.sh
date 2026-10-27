@@ -190,7 +190,7 @@ if [ -z "${MUTATE_FILES:-}" ]; then
   if [ ${#patterns[@]} -eq 0 ]; then
     {
       echo
-      echo "The added code is all outside functions (module-level), which mutmut does not mutate. Nothing to mutate."
+      echo "None of the added code is inside a function or method (it is module-level or in a class body), and mutmut mutates only functions and methods. Nothing to mutate."
     } >>"$SUMMARY"
     exit 0
   fi
