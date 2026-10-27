@@ -69,6 +69,28 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="with --check: recompute every row from the ledger and compare; exit 1 on a difference",
     )
     rebuild.add_argument("--sqlite-path", default=None, metavar="PATH")
+    erase = commands.add_parser(
+        "erase",
+        help="erase every fact value this tenant's fact ledger holds (tenant erasure)",
+        description=(
+            "Erase every fact value the tenant's fact ledger holds, as `recall forget` erases the "
+            "values of the memos it forgets: every fact payload, every evidence card and the "
+            "tenant's replay receipts are rewritten in place under fresh ids, so the ledger keeps "
+            "the shape of its history (event types, times, memo names) and no value or hash of "
+            "one. Nothing is listed by `recall_current_facts` afterwards. Chunks are not touched; "
+            "forget their sources too. IRREVERSIBLE. Without --yes it only previews the counts. "
+            "On PostgreSQL it runs through the controller role (RECALL_FACT_WRITE_DSN) and dead row "
+            "versions stay until VACUUM; WAL, replicas and backups are the operator's to manage. "
+            "On a lite store the freed bytes are zeroed in the file and its write-ahead log."
+        ),
+    )
+    erase.add_argument("--yes", action="store_true", help="actually erase; without it, preview only")
+    erase.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="lite store only: VACUUM the file afterwards, which also compacts it",
+    )
+    erase.set_defaults(sqlite_path=None)
 
 
 def _read_cards(path: str) -> tuple[EvidenceCard, ...]:
@@ -273,6 +295,9 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         }, ensure_ascii=False, indent=2, sort_keys=True))
         return
 
+    if args.provenance_cmd == "erase":
+        _erase(args, lite=lite)
+        return
     if args.provenance_cmd != "apply":
         raise SystemExit(f"unknown provenance command {args.provenance_cmd!r}")
     claim_payload = json.loads(Path(args.claim).read_text(encoding="utf-8"))
@@ -343,6 +368,61 @@ def _cmd_provenance(args: argparse.Namespace) -> None:
         generation_id=args.generation,
     ) as store:
         _print_applied(store, embedder, claim_payload, cards, args)
+
+
+def _erase(args: argparse.Namespace, *, lite: bool) -> None:
+    """`recall provenance erase`: redact every fact value of the tenant (`recall.fact_redaction`)."""
+    import os
+
+    from recall.fact_ledger import FACT_LEDGER_TABLE
+    from recall.fact_redaction import (
+        TENANT_ERASE_WRITER,
+        LiteFactRedactor,
+        PostgresFactRedactor,
+        RedactionReport,
+    )
+    from recall.fact_retraction import FACT_WRITE_DSN_ENV
+
+    def emit(report: RedactionReport, *, dry_run: bool) -> None:
+        print(json.dumps({
+            "tenant_id": args.tenant,
+            "dry_run": dry_run,
+            "facts_redacted": report.facts_redacted,
+            "events_rewritten": report.events_rewritten,
+            "cards_redacted": report.cards_redacted,
+            "receipts_deleted": report.receipts_deleted,
+            "redaction_id": report.redaction_id,
+        }, ensure_ascii=False, indent=2, sort_keys=True))
+
+    if lite:
+        path, meta, tables = _lite_target(args)
+        if meta.get("tenant") != args.tenant:
+            raise SystemExit(f"provenance erase: {path} holds tenant {meta.get('tenant')!r}; pass --tenant {meta.get('tenant')}")
+        if FACT_LEDGER_TABLE not in tables:
+            emit(RedactionReport(), dry_run=not args.yes)  # no fact was ever recorded here
+            return
+        with _open_lite(args, int(meta["dim"])) as store:
+            redactor = LiteFactRedactor(store)
+            if not args.yes:
+                emit(redactor.preview(), dry_run=True)
+                return
+            with store.erasing():
+                report = redactor.redact(everything=True, reason="tenant_erase", writer=TENANT_ERASE_WRITER)
+            if args.vacuum:
+                store.vacuum()
+        emit(report, dry_run=False)
+        return
+    if args.vacuum:
+        raise SystemExit(
+            "provenance erase: --vacuum applies to a lite store; on PostgreSQL, VACUUM the fact "
+            "tables yourself; nothing erased"
+        )
+    ledger_dsn = os.environ.get(FACT_WRITE_DSN_ENV, "").strip() or args.dsn
+    pg = PostgresFactRedactor(ledger_dsn, tenant_id=args.tenant, card_dsn=args.dsn)
+    if not args.yes:
+        emit(pg.preview(), dry_run=True)
+        return
+    emit(pg.redact(everything=True, reason="tenant_erase", writer=TENANT_ERASE_WRITER), dry_run=False)
 
 
 def _print_applied(

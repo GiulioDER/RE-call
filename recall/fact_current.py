@@ -73,6 +73,8 @@ MATERIALIZED_EVENT_TYPES = frozenset(
 )
 #: The types whose filing cannot change a key's intervals or its `live` flags.
 _INERT = frozenset({"rejected", "abstained"})
+#: The event types that hold a fact value, and so may hold a redaction marker instead.
+_VALUE_HOLDERS = frozenset({"asserted", "rejected", "abstained"})
 _log = get_logger("fact_current")
 
 SQLITE_FACT_CURRENT_DDL = f"""
@@ -153,8 +155,9 @@ def project_key(events: Sequence[FactEvent]) -> KeyProjection:
     return KeyProjection(tuple(rows), frozenset(live))
 
 
-#: Given a fact id an event names: whether the ledger holds it, and its conflict key (None for a
-#: fact with no value, which `recall_forget`'s redaction leaves; it bears on no key).
+#: Given a fact id an event names: whether the ledger holds it, and its conflict key. A fact whose
+#: value `recall_forget`'s redaction erased has none of its own; it answers the key its assertion
+#: was filed under (that of the facts it superseded), or None when it bears on no key.
 NamedKey = Callable[[str], tuple[bool, str | None]]
 
 
@@ -374,11 +377,13 @@ class DerivedTables:
 def derive_tables(events: Sequence[FactEvent]) -> DerivedTables:
     """The rows of every conflict key of a tenant, from its events in ledger order. Writes nothing."""
     named: dict[str, str | None] = {}
+    redacted: set[str] = set()
     for event in events:
         if event.fact is not None and event.fact_id is not None:
             named.setdefault(event.fact_id, fact_conflict_key(event.fact))
-        elif event.event_type in {"asserted", "rejected", "abstained"} and event.fact_id is not None:
-            named.setdefault(event.fact_id, None)  # a redacted value: it bears on no key
+        elif event.event_type in _VALUE_HOLDERS and event.fact_id is not None:
+            named.setdefault(event.fact_id, None)  # a redacted value: no key of its own
+            redacted.add(event.fact_id)
 
     def lookup(fact_id: str) -> tuple[bool, str | None]:
         return fact_id in named, named.get(fact_id)
@@ -394,6 +399,10 @@ def derive_tables(events: Sequence[FactEvent]) -> DerivedTables:
         rows.append((event.event_id, key, event.fact_id, event.event_type))
         if key is not None:
             groups.setdefault(key, []).append(event)
+            if event.fact_id in redacted and event.event_type == "asserted" and named[event.fact_id] is None:
+                # A redacted successor is filed under its predecessors' key, so the retraction or
+                # withdrawal naming it must be too, or that key's history keeps it as a successor.
+                named[event.fact_id] = key
     return DerivedTables(
         tuple(rows), {key: project_key(history) for key, history in groups.items()}, tuple(reasons)
     )
@@ -570,7 +579,17 @@ class SQLiteTables:
             "AND fact IS NOT NULL ORDER BY created_at, event_id LIMIT 1",
             (self.tenant_id, fact_id),
         ).fetchone()
-        return (False, None) if row is None else (True, _payload_key(row[0]))
+        if row is None:
+            return False, None
+        key = _payload_key(row[0])
+        if key is None:  # a redacted value: the key its assertion was filed under (`NamedKey`)
+            filed = self._conn.execute(
+                f"SELECT conflict_key FROM {CURRENT_EVENTS_TABLE} WHERE tenant_id = ? AND fact_id = ? "
+                "AND event_type = 'asserted' AND conflict_key IS NOT NULL LIMIT 1",
+                (self.tenant_id, fact_id),
+            ).fetchone()
+            key = None if filed is None else str(filed[0])
+        return True, key
 
     def file(self, rows: Sequence[tuple[str, str | None, str | None, str]]) -> None:
         self._conn.executemany(
@@ -727,7 +746,17 @@ class PostgresTables:
             "AND fact IS NOT NULL ORDER BY created_at, event_id LIMIT 1",
             (self.tenant_id, fact_id),
         ).fetchone()
-        return (False, None) if row is None else (True, _payload_key(row[0]))
+        if row is None:
+            return False, None
+        key = _payload_key(row[0])
+        if key is None:  # a redacted value: the key its assertion was filed under (`NamedKey`)
+            filed = self._conn.execute(
+                f"SELECT conflict_key FROM {CURRENT_EVENTS_TABLE} WHERE tenant_id = %s AND fact_id = %s "
+                "AND event_type = 'asserted' AND conflict_key IS NOT NULL LIMIT 1",
+                (self.tenant_id, fact_id),
+            ).fetchone()
+            key = None if filed is None else str(filed[0])
+        return True, key
 
     def file(self, rows: Sequence[tuple[str, str | None, str | None, str]]) -> None:
         if not rows:
@@ -982,11 +1011,11 @@ class PostgresCurrentFacts:
             return self._status(conn)
 
     def purge(self) -> None:
-        """Delete the tenant's rows: reads replay until `rebuild`. The hook an erasure calls.
+        """Delete the tenant's rows: reads replay until `rebuild`.
 
-        `recall_forget`'s redaction (PR 950) rewrites event ids, fact ids and payloads in place,
-        so the rows naming the old ones must go in the same transaction; `purge_in` and
-        `rebuild_in` take the caller's connection for that.
+        `recall_forget`'s redaction (`recall.fact_redaction`) rewrites event ids, fact ids and
+        payloads in place, so the rows naming the old ones go in the same transaction: it rebuilds
+        them there. `purge_in` and `rebuild_in` take a caller's connection for the same purpose.
         """
         with self._connect() as conn, conn.transaction():
             self.purge_in(conn)

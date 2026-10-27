@@ -17,15 +17,18 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
+from recall.fact_ledger import SQLITE_REDACTION_SESSION_DDL
 from recall.provenance_controller import EvidenceCardStore, evidence_card_from_payload
 from recall.store import TENANT_GUC
-from recall.types import EvidenceCard
+from recall.types import EvidenceCard, RedactedEvidenceCard
 
 
 EVIDENCE_CARD_TABLE = "recall_evidence_cards"
 
 # The SQLite card table: `SQLiteEvidenceCardStore` and the lite store's `recall.lite.facts` run it.
-SQLITE_EVIDENCE_CARD_DDL = f"""
+# As on PostgreSQL (migration 0029), an UPDATE is admitted only inside a redaction session, and only
+# into the redacted-card shape (`recall.types.RedactedEvidenceCard`); a DELETE never is.
+SQLITE_EVIDENCE_CARD_DDL = SQLITE_REDACTION_SESSION_DDL + f"""
 CREATE TABLE IF NOT EXISTS {EVIDENCE_CARD_TABLE} (
     card_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
@@ -38,7 +41,22 @@ CREATE TABLE IF NOT EXISTS {EVIDENCE_CARD_TABLE} (
 CREATE INDEX IF NOT EXISTS {EVIDENCE_CARD_TABLE}_lookup_idx
     ON {EVIDENCE_CARD_TABLE} (tenant_id, generation_id, chunk_id);
 CREATE TRIGGER IF NOT EXISTS {EVIDENCE_CARD_TABLE}_no_update BEFORE UPDATE ON {EVIDENCE_CARD_TABLE}
+WHEN NOT EXISTS (SELECT 1 FROM recall_redaction_session)
 BEGIN SELECT RAISE(ABORT, 'recall evidence cards are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS {EVIDENCE_CARD_TABLE}_redaction_shape BEFORE UPDATE ON {EVIDENCE_CARD_TABLE}
+WHEN EXISTS (SELECT 1 FROM recall_redaction_session) AND NOT (
+    NEW.tenant_id IS OLD.tenant_id AND NEW.generation_id IS OLD.generation_id
+    AND NEW.indexed_at IS OLD.indexed_at
+    AND NEW.chunk_id = 'redacted' AND NEW.source_digest = 'redacted'
+    AND json_extract(NEW.card, '$.card_id') IS NEW.card_id
+    AND json_extract(NEW.card, '$.redacted') IS 1
+    AND json_extract(NEW.card, '$.redaction_id') IS (SELECT max(redaction_id) FROM recall_redaction_session)
+    AND json_extract(NEW.card, '$.tenant_id') IS json_extract(OLD.card, '$.tenant_id')
+    AND json_extract(NEW.card, '$.generation_id') IS json_extract(OLD.card, '$.generation_id')
+    AND json_extract(NEW.card, '$.source') IS json_extract(OLD.card, '$.source')
+    AND (SELECT count(*) FROM json_each(NEW.card)) = 6
+)
+BEGIN SELECT RAISE(ABORT, 'recall evidence card redaction may change only what it erases'); END;
 CREATE TRIGGER IF NOT EXISTS {EVIDENCE_CARD_TABLE}_no_delete BEFORE DELETE ON {EVIDENCE_CARD_TABLE}
 BEGIN SELECT RAISE(ABORT, 'recall evidence cards are immutable'); END;
 """
@@ -115,8 +133,11 @@ def _sqlite_put_cards(conn: sqlite3.Connection, tenant_id: str, cards: tuple[Evi
             raise ValueError(f"evidence card identity collision for {card.card_id}")
 
 
-def _sqlite_resolved_card(card_id: str, tenant_id: str, row: tuple[Any, ...]) -> EvidenceCard:
-    """Revalidate a card read back from SQLite: `(generation_id, chunk_id, digest, indexed_at, card)`."""
+def _sqlite_resolved_card(card_id: str, tenant_id: str, row: tuple[Any, ...]) -> EvidenceCard | None:
+    """Revalidate a card read back from SQLite: `(generation_id, chunk_id, digest, indexed_at, card)`.
+
+    None for a card `recall_forget` erased: it supports nothing, as a card never written would not.
+    """
     generation_id, chunk_id, source_digest_value, indexed_at, encoded = row
     payload = json.loads(encoded)
     if not isinstance(payload, Mapping):
@@ -124,6 +145,8 @@ def _sqlite_resolved_card(card_id: str, tenant_id: str, row: tuple[Any, ...]) ->
     card = evidence_card_from_payload(payload)
     if card.card_id != card_id or card.tenant_id != tenant_id:
         raise ValueError("durable evidence card identity mismatch")
+    if isinstance(card, RedactedEvidenceCard):
+        return None
     stored_indexed_at = card.indexed_at.isoformat() if card.indexed_at is not None else None
     if (
         card.generation_id != generation_id
@@ -180,6 +203,8 @@ class PostgresEvidenceCardStore:
         card = evidence_card_from_payload(payload)
         if card.card_id != card_id or card.tenant_id != self.tenant_id:
             raise ValueError("durable evidence card identity mismatch")
+        if isinstance(card, RedactedEvidenceCard):
+            return None  # erased by `recall_forget`: it supports nothing
         if (
             card.generation_id != generation_id
             or card.chunk_id != chunk_id

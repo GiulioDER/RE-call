@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, cast
 
 from recall.backends import write_session
@@ -74,8 +74,8 @@ REMEMBER_DESCRIPTION = (
     "under, what else is in force for it, and any supersession left to settle."
 )
 FORGET_DESCRIPTION = (
-    "Delete one memo from long-term memory by memo_id. A fact it alone supported is retracted, "
-    "but its value stays in the append-only fact ledger."
+    "Delete one memo from long-term memory by memo_id. A fact it alone supported is retracted "
+    "and its value erased from the fact ledger."
 )
 _STRING = {"type": "string"}
 #: The published schema of `recall_remember`'s `fact`: an inline object, not a `$ref`.
@@ -272,8 +272,13 @@ class AssistantMemos(MemoFolder):
         `security_context` is the caller's, for `forget_memory`, as `recall_forget` passes it;
         `refresh_context` is the one the follow-up refresh indexes under (defaults to the same).
 
-        A forget that found no rows, or whose fact retraction failed, raises rather than delete
-        the file: the value would stay served while the caller reads the memo as gone.
+        A forget whose fact retraction or fact value erasure failed raises rather than delete the
+        file, and so does one that found no rows by the memo's path while rows name it another
+        way (`_indexed_under_another_name`): the value would stay served, or stay in the fact
+        ledger, while the caller reads the memo as gone. A memo no row names was published and
+        never indexed (a crash after publication, no refresh since): it is deleted, and its request
+        cancelled, like any other. The answer's fields are the pinned
+        contract's; a completed forget has erased the values too (`forget_memory`).
         """
         from recall_mcp.lifecycle import forget_memory
 
@@ -289,8 +294,10 @@ class AssistantMemos(MemoFolder):
                 [str(path)],
                 security_policy=security_policy,
                 security_context=security_context,
+                erase_memo_requests=False,  # `delete` erases them, and restores them if it fails
             )
-            if result.sources_not_found or result.facts_retracted == -1:
+            if (result.facts_retracted == -1 or result.facts_redacted == -1
+                    or (result.sources_not_found and self._indexed_under_another_name(store, path))):
                 raise RuntimeError(f"forget of {memo_id} incomplete: {result.message}")
             self.delete(memo_id)
             self.refresh(
@@ -301,6 +308,26 @@ class AssistantMemos(MemoFolder):
                 **refresh_kwargs,
             )
         return {"deleted": 1, "memo_id": memo_id, "facts_retracted": result.facts_retracted}
+
+    def _indexed_under_another_name(self, store: LiteStore, path: Path) -> bool:
+        """Whether rows hold this memo under a name other than its path.
+
+        Two ways: by its stored file name, the one `refresh` gives it (under the index root when
+        the folder is inside it, else under the folder); or under any other source of the same file
+        name and the same bytes (the folder indexed from another absolute path, or keyed to another
+        root). Rows of the same name and other bytes are not this memo's text, and nothing else in
+        a row ties it to this memo.
+        """
+        from recall.lite.memo_requests import revision
+
+        key = path.relative_to(self.index_root).as_posix() if path.is_relative_to(self.index_root) else path.name
+        if store.sources_for_identifiers([key]):
+            return True
+        text = revision(path)
+        return any(
+            digest == text and PurePath(source.replace("\\", "/")).name == path.name
+            for source, digest in store.source_raw_hashes().items()
+        )
 
     # -- the compact view -------------------------------------------------------------------------
     def memo_id(self, source: str) -> str:

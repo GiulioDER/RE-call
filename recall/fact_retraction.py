@@ -3,9 +3,10 @@
 A fact applied with `recall_apply_fact` cites evidence cards, and each card names the memo it came
 from. Two things take a memo away, and they are treated differently on purpose:
 
-- `recall_forget` is a DECISION. The memo is erased from every generation and nothing brings it
-  back, so the facts it was the only evidence for get a permanent `retracted` event
-  (`prepare_retraction`, rule in `recall.fact_ledger.plan_retractions`).
+- `recall_forget` is a DECISION. The memo is erased from every generation, so the facts it was
+  the only evidence for get a permanent `retracted` event (`prepare_fact_erasure`, rule in
+  `recall.fact_ledger.plan_retractions`), and the values it supplied are then erased from the
+  ledger (`recall.fact_redaction`).
 - A memo deleted from disk, pruned by the indexer, or left out of a promoted generation is a
   STATE. A rollback, a restored file or a repaired sync brings it back, so nothing is written: the
   projections hide a fact none of whose memos the store serves now (`served_sources`, rule in
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Mapping
 from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
 import hashlib
@@ -71,30 +73,68 @@ def prepare_retraction(
     erased: Collection[str],
     withdraw: bool = False,
 ) -> Callable[[], int]:
-    """Prepare, before any chunk is deleted, the retraction a deletion owes the fact ledger.
+    """The retraction half of `prepare_fact_erasure`: a callable answering how many facts it retracted."""
+    return prepare_fact_erasure(
+        ledger, store, shadow_store, named=named, erased=erased, withdraw=withdraw
+    ).retract
+
+
+@dataclass
+class FactErasure:
+    """What a deletion owes the fact ledger, prepared while the memos' rows still exist.
+
+    `retract()` appends the retractions and answers how many facts it retracted; `redact()`, run
+    after it, erases the values those memos supplied (`recall.fact_redaction`) and answers how many
+    fact values it erased. Both run after the chunks are deleted, and both are no-ops when there
+    is nothing left to do, so a forget re-run with the same names completes either.
+    """
+
+    retract: Callable[[], int]
+    redact: Callable[[], int]
+
+
+def prepare_fact_erasure(
+    ledger: Any,
+    store: Any,
+    shadow_store: Any | None,
+    *,
+    named: Collection[str],
+    erased: Collection[str],
+    redactor: Any | None = None,
+    withdraw: bool = False,
+) -> FactErasure:
+    """Prepare, before any chunk is deleted, the retraction and redaction a deletion owes the ledger.
 
     With `withdraw` it is a withdrawal instead (`recall_withdraw`): the facts are taken back with
     `withdrawn` events, which also undo the supersessions they made
-    (`recall.fact_ledger.plan_withdrawals`), on the same names.
+    (`recall.fact_ledger.plan_withdrawals`), on the same names. The redaction is the same either
+    way, since a withdrawn memo is deleted like a forgotten one.
 
-    Returns a callable that appends it and answers how many facts it retracted. A card names its
-    memo by the root-relative file a search hit shows, while deletion keys on the absolute
-    source, so every card's name is resolved here, while its rows still exist. `erased` is the
-    absolute sources about to be deleted; `named` is every name the caller used for them (a
-    forget's requested identifiers, or the erased sources themselves).
+    A card names its memo by the root-relative file a search hit shows, while deletion keys on the
+    absolute source, so every card's name is resolved here, while its rows still exist: the cards
+    every ledger event cites and, with a `redactor`, the card table's. `erased` is the absolute
+    sources about to be deleted; `named` is every name the caller used for them (a forget's
+    requested identifiers, or the erased sources themselves).
 
     A card is GONE when its name resolves to nothing outside `erased` (nothing at all when an
     earlier deletion took it), and TOUCHED when `named` holds its name or this deletion erases its
-    memo, so a forget re-run after a failed retraction, which deletes nothing, completes it. A
-    card whose name was not known here (applied while this ran) counts as surviving: a retraction
-    may fail to happen, never remove a fact that still has evidence.
+    memo, so a forget re-run after a failed retraction or redaction, which deletes nothing,
+    completes it. A card whose name was not known here (applied while this ran) counts as
+    surviving: a retraction may fail to happen, never remove a fact that still has evidence. A
+    redacted card (`recall.types.RedactedEvidenceCard`) is gone: its memo was forgotten, and a
+    namesake is another memo.
     """
-    names = sorted({
+    from recall.types import RedactedEvidenceCard
+
+    cited = {
         card.source
         for event in ledger.events
-        if event.event_type == "asserted"
         for card in event.evidence_cards
-    })
+        if not isinstance(card, RedactedEvidenceCard)
+    }
+    if redactor is not None:
+        cited |= set(redactor.card_sources())
+    names = sorted(cited)
     resolved: dict[str, list[str]] = dict(store.sources_for_identifiers(names)) if names else {}
     if shadow_store is not None and names:
         for name, values in shadow_store.sources_for_identifiers(names).items():
@@ -124,22 +164,40 @@ def prepare_retraction(
     def touched(card: EvidenceCard) -> bool:
         return card.source in touched_names
 
-    def retract() -> int:
+    remaining_cache: list[dict[str, list[str]]] = []
+
+    def remaining() -> dict[str, list[str]]:
         # Look again after deletion. Concurrent forgets may each have observed the other's memo
         # before either deletion; the last committer must see that both are now gone.
-        remaining = dict(store.sources_for_identifiers(names)) if names else {}
-        if shadow_store is not None and names:
-            for name, values in shadow_store.sources_for_identifiers(names).items():
-                remaining.setdefault(name, []).extend(values)
+        if not remaining_cache:
+            found = dict(store.sources_for_identifiers(names)) if names else {}
+            if shadow_store is not None and names:
+                for name, values in shadow_store.sources_for_identifiers(names).items():
+                    found.setdefault(name, []).extend(values)
+            remaining_cache.append(found)
+        return remaining_cache[0]
 
-        def gone(card: EvidenceCard) -> bool:
-            return card.source in known and not remaining.get(card.source)
+    def gone_name(name: str) -> bool:
+        return name in known and not remaining().get(name)
 
+    def gone(card: EvidenceCard) -> bool:
+        return isinstance(card, RedactedEvidenceCard) or gone_name(card.source)
+
+    def retract() -> int:
         append = ledger.withdraw_forgotten if withdraw else ledger.retract_forgotten
         written = append(tenant_id=store.tenant, touched=touched, gone=gone)
         return len({fact_id for event in written for fact_id in event.supersedes_fact_ids})
 
-    return retract
+    def redact() -> int:
+        if redactor is None:
+            return 0
+        report = redactor.redact(
+            erased=lambda name: name in touched_names and gone_name(name),
+            names=sorted(touched_names),
+        )
+        return int(report.facts_redacted)
+
+    return FactErasure(retract=retract, redact=redact)
 
 
 def _settled(fn: Callable[_P, _V]) -> Callable[_P, _V]:
@@ -367,4 +425,11 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
     )
 
 
-__all__ = ["FACT_WRITE_DSN_ENV", "fact_ledger_for", "prepare_retraction", "served_sources"]
+__all__ = [
+    "FACT_WRITE_DSN_ENV",
+    "FactErasure",
+    "fact_ledger_for",
+    "prepare_fact_erasure",
+    "prepare_retraction",
+    "served_sources",
+]

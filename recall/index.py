@@ -1622,6 +1622,12 @@ class Indexer:
                 )
 
         _log.info("pruning %d file(s) no longer on disk under %s", len(vanished), root)
+        # An assistant memo deleted by hand is forgotten here: its request journal hashes go
+        # before its rows, so a journal that cannot be rewritten fails this index with the rows
+        # still in place and the next one tries again.
+        from recall.lite.assistant_memos import forget_memo_requests
+
+        forget_memo_requests(vanished)
         if self._shadow is not None:
             self._store.delete_sources_across(
                 [self._store.table, self._shadow.store.table], vanished

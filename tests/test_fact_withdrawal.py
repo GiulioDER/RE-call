@@ -132,7 +132,10 @@ def test_l1_withdrawing_the_head_gives_back_what_it_superseded(ledgered: Ledgere
     "the withdrawn successor still hides tea", both backends. The read is answered by the
     materialized tables (`last_read`); red, mutation of `project_key` (recall/fact_current.py)
     reading retractions without the withdrawals: the tables keep coffee listed beside tea and it
-    fails on the same line, while the replay alone would have answered tea.
+    fails on the same line, while the replay alone would have answered tea. Since PR 950 the
+    withdraw also erases coffee's value: red (2026-10-24), mutation of `derive_tables`
+    (recall/fact_current.py) leaving a redacted fact keyless (`named[event.fact_id] = key`
+    removed), so its withdrawal is filed under no key: fails on the same line, both backends.
     """
     ledgered.remember("tea.md")
     ledgered.remember("coffee.md")
@@ -181,6 +184,9 @@ def test_l3_withdrawing_a_forgotten_memo_gives_back_what_the_forget_kept(ledgere
     Red, mutation of `plan_withdrawals` (recall/fact_ledger.py) skipping retracted applications
     (`and retraction_key(event) not in retracted` added to its collection): fails on
     "withdrawing a forgotten memo did not give tea back".
+    Since PR 950 the forget erases coffee's value first: red (2026-10-24), mutation of both
+    tables' `named_key` (recall/fact_current.py) ignoring the filed key of a redacted fact, so the
+    later withdrawal is filed under no key: fails on the same line, both backends.
     """
     ledgered.remember("tea.md")
     ledgered.remember("coffee.md")
@@ -252,6 +258,9 @@ def test_l6_postgres_and_lite_record_the_same_withdrawal(tmp_path: Path, request
     Red, with migrations 0032 and 0033 removed from the package (their SQL files and checksum
     entries): the append function refuses the `withdrawn` envelope, PostgreSQL's withdrawal
     reports -1 and it fails on "PostgreSQL and lite recorded different withdrawals".
+
+    A withdraw erases the values it took back (`recall.fact_redaction`), which re-keys the
+    withdrawn fact under a fresh random id on each side, so the ids compared are their count.
     """
     if not _db_available():
         pytest.skip(db_unreachable_reason())
@@ -267,7 +276,7 @@ def test_l6_postgres_and_lite_record_the_same_withdrawal(tmp_path: Path, request
         withdraw_memory(side.store, ["coffee.md"])
         # Event and request ids hash the tenant, which differs between the two stores here.
         runs.append([
-            (e.event_type, e.writer, e.decision_code, list(e.supersedes_fact_ids),
+            (e.event_type, e.writer, e.decision_code, len(e.supersedes_fact_ids),
              [c.card_id for c in e.evidence_cards], e.request_id.startswith("withdrawal:evt_"))
             for e in side.ledger.events
             if e.event_type == "withdrawn"

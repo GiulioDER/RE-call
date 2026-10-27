@@ -61,9 +61,14 @@ FACT_MATERIALIZATION_TABLES = ("recall_fact_materialization_outbox",)
 FACT_CURRENT_TABLES = (
     "recall_fact_current", "recall_fact_current_events", "recall_fact_current_state",
 )
+#: One row per redaction `recall_forget` made (migration 0029). Read-only to every runtime role:
+#: only `FACT_REDACTION_FUNCTION`, running as the owner, appends to it. Not in `GENERATION_TABLES`,
+#: whose validation would then demand it of a database checked at an earlier migration.
+FACT_REDACTION_TABLES = ("recall_fact_redactions",)
 SUPERSESSION_REVISION_TABLES = ("recall_supersession_revisions",)
 FACT_LEDGER_APPEND_FUNCTION = "recall_append_fact_ledger_event"
 FACT_MATERIALIZATION_APPEND_FUNCTION = "recall_append_fact_materialization"
+FACT_REDACTION_FUNCTION = "recall_redact_fact_values"
 #: Enterprise control-plane objects, created by `recall/sql/001_enterprise_control_plane.sql`
 #: through `ControlPlane.apply_migrations()` rather than by the versioned migrator. The serving
 #: process reads the first two on every routed request and appends to the third on every shadow
@@ -236,6 +241,7 @@ def serving_grants(
             else "GRANT SELECT, INSERT, UPDATE, DELETE ON " + ", ".join(FACT_CURRENT_TABLES) + f" TO {role};"
         ),
         "GRANT SELECT ON " + ", ".join(FACT_CURRENT_TABLES) + f" TO {role};",
+        "GRANT SELECT ON " + ", ".join(FACT_REDACTION_TABLES) + f" TO {role};",
         "GRANT SELECT, INSERT, UPDATE ON " + ", ".join(SUPERSESSION_REVISION_TABLES) + f" TO {role};",
     ]
     if enterprise:
@@ -259,8 +265,9 @@ def controller_grants(role: str) -> tuple[str, ...]:
     The serving role can read cards and ledger state, but it cannot append a fact event. The
     controller role is used only by the external authorization process and receives the minimum
     read, protected-append, and delivery privileges needed by :class:`ProvenanceController` and
-    its outbox, and the materialized current facts its appends maintain (`recall.fact_current`).
-    Migration 0021 revokes PUBLIC execution on the protected append functions.
+    its outbox, the materialized current facts its appends maintain (`recall.fact_current`), and
+    the redaction `recall_forget` runs through the same role (`recall.fact_redaction`). Migrations
+    0021, 0022 and 0029 revoke PUBLIC execution on the protected functions.
     """
     if not role.isidentifier():
         raise ValueError("role must be a valid SQL identifier")
@@ -275,6 +282,8 @@ def controller_grants(role: str) -> tuple[str, ...]:
         f"GRANT EXECUTE ON FUNCTION {FACT_LEDGER_APPEND_FUNCTION}(text, text, text, text, text, jsonb, jsonb, jsonb, text, text, text, text, integer, timestamptz) TO {quoted};",
         f"GRANT EXECUTE ON FUNCTION {FACT_MATERIALIZATION_APPEND_FUNCTION}(text, text, jsonb) TO {quoted};",
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON {', '.join(FACT_CURRENT_TABLES)} TO {quoted};",
+        f"GRANT EXECUTE ON FUNCTION {FACT_REDACTION_FUNCTION}(text, text, text, text, integer, jsonb, jsonb, jsonb, boolean) TO {quoted};",
+        f"GRANT SELECT ON {', '.join(FACT_REDACTION_TABLES)} TO {quoted};",
     )
 
 

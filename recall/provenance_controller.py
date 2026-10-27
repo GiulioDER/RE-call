@@ -25,7 +25,7 @@ from typing import Any, Protocol, cast
 
 from recall import eval_clock
 from recall.supersession import reference_stem_key
-from recall.types import AtomicFact, EvidenceCard, FactCardinality, Verdict
+from recall.types import AtomicFact, EvidenceCard, FactCardinality, RedactedEvidenceCard, Verdict
 
 
 CONTROLLER_SCHEMA_VERSION = 1
@@ -630,6 +630,8 @@ def card_liveness(
         return stated[0]
 
     def live(card: EvidenceCard) -> bool:
+        if isinstance(card, RedactedEvidenceCard):
+            return False  # its memo was forgotten and its content erased; a namesake is another memo
         if card.source not in present or card.source in retired:
             return False
         if card.trust_state == STATED_TRUST_STATE:
@@ -864,7 +866,13 @@ def source_digest(text: str) -> str:
 
 
 def evidence_card_from_payload(payload: Mapping[str, Any]) -> EvidenceCard:
-    """Parse a card produced by ``recall_evidence`` for a local CLI handoff."""
+    """Parse a card produced by ``recall_evidence`` for a local CLI handoff.
+
+    A card `recall_forget` erased (`recall.fact_redaction`) parses as a `RedactedEvidenceCard`.
+    """
+    if payload.get("redacted") is True:
+        return RedactedEvidenceCard.from_marker(payload)
+
     def parse_time(value: object) -> datetime | None:
         if value is None:
             return None
@@ -1042,6 +1050,9 @@ class FactEvent:
     controller_version: int
     created_at: datetime
     lease_token: str | None = None
+    #: Set when `recall_forget` erased this event's fact value (`recall.fact_redaction`): `fact` is
+    #: then None and `fact_id` the fresh id the redaction gave it, so its retraction still pairs.
+    redaction_id: str | None = None
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,7 @@ import hashlib
 import json
 import sqlite3
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from typing import Any
@@ -55,13 +55,23 @@ from recall.provenance_controller import (
     fact_identity,
 )
 from recall.schema import FACT_LEDGER_APPEND_FUNCTION, FACT_MATERIALIZATION_APPEND_FUNCTION
-from recall.types import AtomicFact, EvidenceCard
+from recall.types import AtomicFact, EvidenceCard, is_redaction_marker
 
 
 FACT_LEDGER_TABLE = "recall_fact_ledger_events"
 
+#: The SQLite stand-in for PostgreSQL's transaction-local `recall.redaction` setting (migration
+#: 0029): a row exists only inside the transaction `recall.fact_redaction` erases values in, so no
+#: other connection ever sees one. A main-schema table, because SQLite refuses a trigger in the
+#: main schema that reads a TEMP table ("cannot reference objects in database temp").
+SQLITE_REDACTION_SESSION_DDL = """
+CREATE TABLE IF NOT EXISTS recall_redaction_session (redaction_id TEXT NOT NULL);
+"""
+
 # The SQLite ledger table: `SQLiteFactLedger` and the lite store's `recall.lite.facts` both run it.
-SQLITE_FACT_LEDGER_DDL = f"""
+# Its triggers refuse every UPDATE and DELETE, except an UPDATE made while a redaction session row
+# exists that changes only what a redaction erases, into the marker shape (migration 0029's rule).
+SQLITE_FACT_LEDGER_DDL = SQLITE_REDACTION_SESSION_DDL + f"""
 CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
     event_id TEXT PRIMARY KEY,
     tenant_id TEXT NOT NULL,
@@ -84,10 +94,60 @@ CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
 CREATE INDEX IF NOT EXISTS recall_fact_ledger_current_idx
     ON {FACT_LEDGER_TABLE} (tenant_id, fact_id, created_at);
 CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_update BEFORE UPDATE ON {FACT_LEDGER_TABLE}
+WHEN NOT EXISTS (SELECT 1 FROM recall_redaction_session)
 BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_redaction_shape BEFORE UPDATE ON {FACT_LEDGER_TABLE}
+WHEN EXISTS (SELECT 1 FROM recall_redaction_session) AND NOT (
+    NEW.tenant_id IS OLD.tenant_id AND NEW.generation_id IS OLD.generation_id
+    AND NEW.event_type IS OLD.event_type AND NEW.writer IS OLD.writer
+    AND NEW.decision_code IS OLD.decision_code AND NEW.policy_version IS OLD.policy_version
+    AND NEW.controller_version IS OLD.controller_version AND NEW.created_at IS OLD.created_at
+    AND NEW.event_id GLOB 'evt_*' AND length(NEW.request_id) > 0
+    AND (NEW.fact IS OLD.fact OR (
+        OLD.fact IS NOT NULL
+        AND json_extract(NEW.fact, '$.redacted') IS 1
+        AND json_extract(NEW.fact, '$.redaction_id') IS (SELECT max(redaction_id) FROM recall_redaction_session)
+        AND json_extract(NEW.fact, '$.fact_id') IS NEW.fact_id
+        AND (SELECT count(*) FROM json_each(NEW.fact)) = 3))
+    AND (NEW.fact_id IS OLD.fact_id OR NEW.fact IS NOT OLD.fact)
+    AND json_array_length(NEW.evidence_cards) = json_array_length(OLD.evidence_cards)
+    AND json_array_length(NEW.supersedes_fact_ids) = json_array_length(OLD.supersedes_fact_ids)
+    AND NOT EXISTS (
+        SELECT 1 FROM json_each(NEW.evidence_cards) AS n JOIN json_each(OLD.evidence_cards) AS o ON n.key = o.key
+        WHERE n.value IS NOT o.value AND NOT (
+            json_extract(n.value, '$.redacted') IS 1
+            AND json_extract(n.value, '$.redaction_id') IS (SELECT max(redaction_id) FROM recall_redaction_session)
+            AND json_extract(n.value, '$.tenant_id') IS json_extract(o.value, '$.tenant_id')
+            AND json_extract(n.value, '$.generation_id') IS json_extract(o.value, '$.generation_id')
+            AND json_extract(n.value, '$.source') IS json_extract(o.value, '$.source')
+            AND (SELECT count(*) FROM json_each(n.value)) = 6))
+)
+BEGIN SELECT RAISE(ABORT, 'recall fact ledger redaction may change only what it erases'); END;
 CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_delete BEFORE DELETE ON {FACT_LEDGER_TABLE}
 BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
 """
+
+#: The ledger's update triggers, by name: an old file's unconditional `no_update` is replaced by
+#: these (`recall.lite.facts`), and a table rebuild drops them with the table's other triggers.
+SQLITE_FACT_LEDGER_TRIGGERS = (
+    "recall_fact_ledger_no_update", "recall_fact_ledger_redaction_shape", "recall_fact_ledger_no_delete",
+)
+
+
+def _decode_fact(payload: object) -> tuple[AtomicFact | None, str | None, str | None]:
+    """`(fact, fact_id, redaction_id)` for a stored fact payload.
+
+    A payload `recall_forget` erased (`recall.fact_redaction`) has no fact; its id is the fresh one
+    the redaction recorded, which the `retracted` and `superseded` events naming it were given too.
+    """
+    if isinstance(payload, Mapping):
+        if is_redaction_marker(payload):
+            return None, str(payload["fact_id"]), str(payload["redaction_id"])
+        fact = AtomicFact.from_payload(payload) if payload else None
+        return fact, (fact_identity(fact) if fact else None), None
+    if payload:
+        raise ValueError("a ledger fact payload must be a JSON object")
+    return None, None, None
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -103,7 +163,7 @@ def _event_from_row(row: tuple[Any, ...]) -> FactEvent:
         event_id, event_type, tenant_id, generation_id, fact_json, cards_json, supersedes_json,
         request_id, writer, decision_code, policy_version, controller_version, created_at,
     ) = row
-    fact = AtomicFact.from_payload(fact_json) if fact_json else None
+    fact, fact_id, redaction_id = _decode_fact(fact_json)
     cards = tuple(evidence_card_from_payload(item) for item in (cards_json or ()))
     created = _parse_time(created_at) if isinstance(created_at, str) else created_at
     if not isinstance(created, datetime):
@@ -114,7 +174,7 @@ def _event_from_row(row: tuple[Any, ...]) -> FactEvent:
         tenant_id=str(tenant_id),
         generation_id=str(generation_id),
         fact=fact,
-        fact_id=fact_identity(fact) if fact else None,
+        fact_id=fact_id,
         evidence_cards=cards,
         supersedes_fact_ids=tuple(supersedes_json or ()),
         request_id=str(request_id),
@@ -123,7 +183,14 @@ def _event_from_row(row: tuple[Any, ...]) -> FactEvent:
         policy_version=str(policy_version),
         controller_version=int(controller_version),
         created_at=_as_utc(created),
+        redaction_id=redaction_id,
     )
+
+
+def _fact_payload(event: FactEvent) -> dict[str, Any] | None:
+    if event.redaction_id is not None and event.fact is None and event.fact_id is not None:
+        return {"fact_id": event.fact_id, "redacted": True, "redaction_id": event.redaction_id}
+    return event.fact.to_payload() if event.fact else None
 
 
 def _event_to_payload(event: FactEvent) -> dict[str, Any]:
@@ -132,7 +199,7 @@ def _event_to_payload(event: FactEvent) -> dict[str, Any]:
         "event_type": event.event_type,
         "tenant_id": event.tenant_id,
         "generation_id": event.generation_id,
-        "fact": event.fact.to_payload() if event.fact else None,
+        "fact": _fact_payload(event),
         "evidence_cards": [card.to_payload() for card in event.evidence_cards],
         "supersedes_fact_ids": list(event.supersedes_fact_ids),
         "request_id": event.request_id,
@@ -145,8 +212,7 @@ def _event_to_payload(event: FactEvent) -> dict[str, Any]:
 
 
 def _event_from_payload(payload: dict[str, Any]) -> FactEvent:
-    fact_payload = payload.get("fact")
-    fact = AtomicFact.from_payload(fact_payload) if fact_payload else None
+    fact, fact_id, redaction_id = _decode_fact(payload.get("fact"))
     cards = tuple(evidence_card_from_payload(item) for item in payload.get("evidence_cards", ()))
     created = _parse_time(payload.get("created_at"))
     if created is None:
@@ -157,7 +223,8 @@ def _event_from_payload(payload: dict[str, Any]) -> FactEvent:
         tenant_id=str(payload["tenant_id"]),
         generation_id=str(payload["generation_id"]),
         fact=fact,
-        fact_id=fact_identity(fact) if fact else None,
+        fact_id=fact_id,
+        redaction_id=redaction_id,
         evidence_cards=cards,
         supersedes_fact_ids=tuple(payload.get("supersedes_fact_ids", ())),
         request_id=str(payload["request_id"]),
@@ -220,6 +287,7 @@ def plan_retractions(
     for event in events:
         if (
             event.event_type == "asserted"
+            and event.fact is not None  # a redacted assertion was retracted or erased already
             and event.fact_id is not None
             and event.event_id not in hidden
             and retraction_key(event) not in retracted

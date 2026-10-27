@@ -29,6 +29,7 @@ import inspect
 import sys
 import time
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -583,7 +584,9 @@ def test_a_pure_replay_rewrites_nothing(serving, monkeypatch):
 def test_a_failed_unlink_leaves_the_request_finishable(serving, monkeypatch):
     """Finding 8. Red: baseline 561ba05ae saves the cancellation and then fails to unlink, so the
     retry returns memo_missing and `a memo still on disk was read as forgotten` fails. Target:
-    `restore_requests` in MemoFolder.delete.
+    `restore_requests` in MemoFolder.delete. Since a forget drops the request's hashes, restore
+    puts the whole entry back: restoring only the state, as before, fails the same assertion
+    (mutation run 2026-10-19 against the journal erasure).
     """
     import pathlib
     store, memos = serving
@@ -617,3 +620,130 @@ def test_the_receipt_looks_up_only_its_own_source(serving, monkeypatch):
     monkeypatch.setattr(store, "source_raw_hashes", every_source)
     result = remember(store, memos, include_receipt=True)
     assert result["receipt"].get("index_state") == "indexed", f"the receipt read every source: {result}"
+
+
+def _door(code):
+    return {"subject": "user", "predicate": "door_code", "object": code}
+
+
+def _journal_hashes(memos):
+    """Every SHA-256-shaped token the request journal holds."""
+    return set(re.findall(r"[0-9a-f]{64}", memos.ledger_path.read_text(encoding="utf-8")))
+
+
+@pytest.mark.parametrize("forgotten", ["corrected", "correction"])
+def test_forget_leaves_no_hash_of_the_memo_in_the_journal(serving, tmp_path, forgotten):
+    """Acceptance finding 1 (2026-10-19). Invariant: once a memo is forgotten, the request journal
+    holds no hash derived from its bytes, and replay protection holds. Failure mode: the journal
+    kept the forgotten request's identity and its correction's (whose revision precondition hashes
+    the corrected memo), unsalted SHA-256 over the memo, so 0000 to 9999 run through the memo
+    template recovered a forgotten door code. A token is derived from a memo's value when the same
+    requests, written in a twin folder with that one value changed, journal a different token.
+
+    Red: against 86ea5b62d (PR 950's three commits on master 67ebebf74, this fix's production files
+    reverted), both cases fail `a hash of the forgotten memo is still in the journal`: [corrected]
+    keeps the request's identity and its correction's, [correction] the correction's own. Each
+    mutation of the fix is red at the named assertion: a correction of the forgotten memo erased
+    like the memo's own request (`cancel_requests`), `the surviving request no longer replays`
+    [corrected]; the content check skipped for a forgotten target (`write_memo`), `the surviving
+    request id took other content` [corrected]; the erased branch removed (`write_memo`), `a retry
+    of the forgotten request was answered by its text` [both].
+    """
+    from recall.lite.assistant_memos import MemoFolder
+    store, memos = serving
+    twin = MemoFolder(tmp_path / "twin")
+    codes = {"corrected": ("4512", "4513"), "correction": ("9031", "9032")}[forgotten]
+    first_code = codes[0] if forgotten == "corrected" else "4512"
+    second_code = codes[0] if forgotten == "correction" else "9031"
+    first = remember(store, memos, f"The user door code is {first_code}.", fact=_door(first_code), request_id="first")
+    second = remember(store, memos, f"The user door code is {second_code}.", fact=_door(second_code),
+                      supersedes=first["memo_id"], expected_revision=first["receipt"]["revision"],
+                      request_id="second")
+    twin_first_code = codes[1] if forgotten == "corrected" else first_code
+    twin_second_code = codes[1] if forgotten == "correction" else second_code
+    t1 = twin.write(f"The user door code is {twin_first_code}.", fact=_door(twin_first_code), request_id="first")
+    twin.write(f"The user door code is {twin_second_code}.", fact=_door(twin_second_code), supersedes=t1["memo_id"],
+               expected_revision=t1["receipt"]["revision"], request_id="second")
+    derived = _journal_hashes(memos) - _journal_hashes(twin)
+    assert derived, "the scenario must journal hashes derived from the value it forgets"
+
+    gone, kept = (first, second) if forgotten == "corrected" else (second, first)
+    gone_key, kept_key = ("first", "second") if forgotten == "corrected" else ("second", "first")
+    assert memos.forget(store, ContentWordEmbedder(), gone["memo_id"])["deleted"] == 1
+    assert not derived & _journal_hashes(memos), "a hash of the forgotten memo is still in the journal"
+
+    retry_args = {"first": dict(fact=_door(first_code)),
+                  "second": dict(fact=_door(second_code), supersedes=first["memo_id"],
+                                 expected_revision=first["receipt"]["revision"])}
+    text = {"first": f"The user door code is {first_code}.", "second": f"The user door code is {second_code}."}
+    same = remember(store, memos, text[gone_key], request_id=gone_key, **retry_args[gone_key])
+    other = remember(store, memos, "The user door code is 0000.", request_id=gone_key, **retry_args[gone_key])
+    assert same.get("conflict") == other.get("conflict") == "memo_missing", (
+        f"a retry of the forgotten request was answered by its text: {same} / {other}")
+    replay = remember(store, memos, text[kept_key], request_id=kept_key, **retry_args[kept_key])
+    assert replay.get("memo_id") == kept["memo_id"], f"the surviving request no longer replays: {replay}"
+    reused = remember(store, memos, "The user door code is 0000.", request_id=kept_key, **retry_args[kept_key])
+    assert reused.get("conflict") == "request_mismatch", f"the surviving request id took other content: {reused}"
+    assert sorted(p.name for p in memos.folder.glob("*.md")) == [f"{kept['memo_id']}.md"]
+
+
+def test_forget_deletes_a_published_memo_that_was_never_indexed(serving, monkeypatch):
+    """Acceptance finding 2 (2026-10-19). Invariant: a memo published and never indexed (a crash
+    after publication, no refresh since, as with auto refresh off) is forgotten like any other: its
+    file is deleted and its request cancelled, so the retry cannot store it. Failure mode:
+    `recall_forget_memo` raised `No matching source(s) found` and left the file and the prepared
+    request, and the retry then completed the write.
+
+    Red: against 86ea5b62d, `forget refused a published memo that was never indexed: forget of
+    note-0001 incomplete: No matching source(s) found`. With the erased branch of `write_memo`
+    removed, `the retry was not refused as a forgotten memo` (it got request_mismatch).
+    """
+    from recall.lite import memo_requests
+    store, memos = serving
+    save = memo_requests._save
+    def interrupted(path, ledger):
+        if ledger.get("requests", {}).get("unindexed", {}).get("state") == "written":
+            raise OSError("injected final journal save failure")
+        return save(path, ledger)
+    monkeypatch.setattr(memo_requests, "_save", interrupted)
+    with pytest.raises(OSError, match="final journal save"):
+        remember(store, memos, "The user door code is 4512.", fact=_door("4512"), request_id="unindexed")
+    monkeypatch.setattr(memo_requests, "_save", save)
+    entry = json.loads(memos.ledger_path.read_text())["requests"]["unindexed"]
+    path = memos.path_of(entry["memo_id"])
+    assert entry["state"] == "prepared" and path.exists()
+    assert str(path) not in store.source_raw_hashes(), "the scenario needs a memo no row names"
+    try:
+        forgot = memos.forget(store, ContentWordEmbedder(), entry["memo_id"])
+    except RuntimeError as exc:
+        pytest.fail(f"forget refused a published memo that was never indexed: {exc}")
+    assert forgot["deleted"] == 1 and not path.exists(), forgot
+    retry = remember(store, memos, "The user door code is 4512.", fact=_door("4512"), request_id="unindexed")
+    assert retry.get("conflict") == "memo_missing", f"the retry was not refused as a forgotten memo: {retry}"
+    assert not path.exists() and str(path) not in store.source_raw_hashes()
+
+
+def test_forget_refuses_a_memo_indexed_from_another_path(serving):
+    """The guard the previous test narrows. Invariant: a memo whose rows name its file under the
+    index root, but not its absolute path (indexed from another path), is not deleted by a forget
+    that could not reach those rows. Failure mode: treating every memo the forget found no rows
+    for as never indexed, which deletes the file while its text stays served.
+
+    Passes against 86ea5b62d, which refused every forget that found no rows. Red with the guard
+    removed from `AssistantMemos.forget` (`_indexed_under_its_file` replaced by False): `forget
+    deleted the file of a memo still served from another path`.
+    """
+    store, memos = serving
+    written = remember(store, memos, "The user door code is 4512.")
+    path = memos.path_of(written["memo_id"])
+    elsewhere = str(path.parent.parent / "moved" / path.name)
+    with store._write():
+        store._conn.execute("UPDATE chunks SET source = ? WHERE source = ?", (elsewhere, str(path)))
+    assert not store.sources_for_identifiers([str(path)]) and store.sources_for_identifiers([elsewhere])
+    refused = ""
+    try:
+        memos.forget(store, ContentWordEmbedder(), written["memo_id"])
+    except RuntimeError as exc:
+        refused = str(exc)
+    assert path.exists() and "incomplete" in refused, (
+        f"forget deleted the file of a memo still served from another path (refusal: {refused!r})")

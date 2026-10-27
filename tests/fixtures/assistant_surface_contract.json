@@ -150,7 +150,7 @@
       }
     },
     "recall_forget_memo": {
-      "description": "Delete one memo from long-term memory by memo_id. A fact it alone supported is retracted, but its value stays in the append-only fact ledger.",
+      "description": "Delete one memo from long-term memory by memo_id. A fact it alone supported is retracted and its value erased from the fact ledger.",
       "parameters": {
         "properties": {
           "memo_id": {

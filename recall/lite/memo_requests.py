@@ -4,6 +4,12 @@ The existing authorship file also journals request identities, hashes and reserv
 It never journals memo text. A retry can finish a prepared write, but cannot resurrect a
 written memo that was subsequently removed or any explicitly forgotten request memo.
 
+The hashes are unsalted SHA-256 over the memo bytes, so while a memo exists they say nothing its
+file does not; once it is forgotten, a guessable template and a short value (a four-digit code)
+would make them an enumeration oracle. `cancel_requests` therefore drops every hash derived from a
+forgotten memo's bytes: its own requests' identities and content hashes, and the identity of each
+correction that named it as its target, whose revision precondition hashed it.
+
 A reservation is not authorship: `authors` names only memos whose file this module created, so a
 file somebody else put in the folder under a reserved name is never claimed. The journal keeps
 every prepared entry, and a completed or cancelled entry for `REQUEST_RETENTION_SECONDS` and at
@@ -87,31 +93,48 @@ def _prune(requests: dict[str, Any], now: float) -> None:
 
 
 def cancel_requests(ledger_path: Path, memo_id: str) -> dict[str, Any]:
-    """Persist explicit deletion intent before unlinking, including prepared publications.
+    """Persist explicit deletion intent before unlinking, including prepared publications, and
+    drop every hash the journal derived from the memo's bytes.
 
-    Returns the cancelled entries' previous states, for `restore_requests` when the unlink fails.
+    The memo's own requests become `cancelled` and `erased`, keeping only the memo id, the state
+    and the time; a retry of one gets `memo_missing` whatever its text, since an answer that
+    depended on the text would be the same oracle. A correction that named the memo as its target
+    loses its identity, which hashed the memo's revision, and is marked `target_forgotten`: its
+    retry is compared on the content hash alone, so a lost reply is still replayed, and a write it
+    never finished is refused as `target_missing`, as before.
+
+    Returns the changed entries as they were, for `restore_requests` when the unlink fails.
     """
     ledger = load_ledger(ledger_path)
     previous: dict[str, Any] = {}
+    now = time.time()
     for key, entry in ledger.get("requests", {}).items():
-        if isinstance(entry, dict) and entry.get("memo_id") == memo_id and entry.get("state") != "cancelled":
-            previous[key] = entry.get("state")
-            entry["state"] = "cancelled"
-            entry["at"] = time.time()
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("memo_id") == memo_id and not entry.get("erased"):
+            previous[key] = dict(entry)
+            for field in ("identity", "content", "supersedes"):
+                entry.pop(field, None)
+            entry.update(state="cancelled", at=now, erased=True)
+        elif entry.get("supersedes") == memo_id and "identity" in entry:
+            previous[key] = dict(entry)
+            del entry["identity"]
+            entry["target_forgotten"] = True
     if previous:
         _save(ledger_path, ledger)
     return previous
 
 
-def restore_requests(ledger_path: Path, memo_id: str, previous: dict[str, Any]) -> None:
+def restore_requests(ledger_path: Path, previous: dict[str, Any]) -> None:
     """Undo `cancel_requests` for a memo whose file is still there, so a retry can finish it."""
     if not previous:
         return
     ledger = load_ledger(ledger_path)
-    for key, state in previous.items():
-        entry = ledger.get("requests", {}).get(key)
-        if isinstance(entry, dict) and entry.get("memo_id") == memo_id and entry.get("state") == "cancelled":
-            entry["state"] = state
+    requests = ledger.get("requests", {})
+    for key, entry in previous.items():
+        current = requests.get(key)
+        if isinstance(current, dict) and current.get("memo_id") == entry.get("memo_id"):
+            requests[key] = entry
     _save(ledger_path, ledger)
 
 
@@ -228,6 +251,11 @@ def write_memo(
     identity = hashlib.sha256(json.dumps(
         [digest, kind, author, supersedes, expected_revision], separators=(",", ":"),
     ).encode()).hexdigest()
+    # The identity without the revision precondition, which hashes the target's bytes: what a
+    # retry is compared on once that target is forgotten (`cancel_requests`).
+    content = hashlib.sha256(json.dumps(
+        [digest, kind, author, supersedes], separators=(",", ":"),
+    ).encode()).hexdigest()
     ledger = load_ledger(ledger_path)
     authors = ledger["authors"]
     requests = ledger.setdefault("requests", {})
@@ -235,7 +263,13 @@ def write_memo(
     replayed = entry is not None
     changed = True
     if entry is not None:
-        if not isinstance(entry, dict) or entry.get("identity") != identity:
+        if isinstance(entry, dict) and entry.get("erased"):
+            # Forgotten: nothing of the memo is left to compare a retry with, and every retry
+            # gets this answer, whatever its text.
+            return _conflict("memo_missing", "the request's memo was explicitly forgotten; retry cannot recreate it")
+        if not isinstance(entry, dict) or (
+            entry.get("content") != content if entry.get("target_forgotten") else entry.get("identity") != identity
+        ):
             return _conflict("request_mismatch", "request_id was already used for different content or preconditions")
         memo_id = entry.get("memo_id")
         state = entry.get("state")
@@ -271,7 +305,9 @@ def write_memo(
             return conflict
         folder.mkdir(parents=True, exist_ok=True)
         if request_id is not None:
-            entry = {"identity": identity, "state": "prepared"}
+            entry = {"identity": identity, "content": content, "state": "prepared"}
+            if supersedes is not None:
+                entry["supersedes"] = supersedes  # a memo id: which correction a forget must re-key
             requests[request_id] = entry
         memo_id = _publish(folder, ledger_path, ledger, data, kind, _next_number(folder, ledger), entry)
     if changed:

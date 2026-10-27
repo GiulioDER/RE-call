@@ -87,6 +87,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   endpoint could grow its memory without bound. RE-call's HTTP server runs stateless by default
   and is exposed only when `RECALL_MCP_STATELESS=0` is set; the stdio servers are not affected.
 
+* **`recall forget` erases the fact values a forgotten memo supplied** (migration 0029). It used
+  to retract them, which hid them, while the value stayed in the append-only fact ledger, in every
+  evidence card citing the memo and in replay receipts, and the ids hashing it let a low-entropy
+  value be recovered by enumeration. Those are now rewritten in place under fresh random ids
+  (`facts_redacted` in the result), the triggers still refusing any other change; a lite store
+  also zeroes the freed bytes, and `--vacuum` compacts the file. `recall provenance erase` does the
+  same for a whole tenant. `recall withdraw` erases them the same way, and a `withdrawn` event
+  follows the assertion it names to its new id, as a retraction does. The materialized current
+  facts (0030) are rebuilt in the same transaction, since their ids hash the erased values. A
+  database already at 0033 applies 0029 last. Apply it with `--with-migrations` and re-run
+  `recall schema grants --controller`. PostgreSQL's dead row versions, WAL, replicas and backups
+  stay the operator's to manage.
+
+* **`recall_forget_memo` also erases the request journal's hashes of the memo.** The assistant's
+  request journal (`.recall-authors.json`) kept a forgotten memo's request identity, an unsalted
+  SHA-256 over its bytes, and a correction kept one over the corrected memo's revision, so a
+  guessable template turned either into an enumeration oracle for a short value. A forgotten
+  memo's requests now keep only their memo id, state and time, and any retry of one is refused as
+  forgotten; a correction of it keeps a hash of its own content, so a lost reply is still replayed.
+  A memo published but never indexed (a crash after publication with no refresh since) is now
+  forgotten instead of refused, so its retry can no longer store it.
+  The journal's hashes of a memo go however it leaves the index: the generic forget (`recall
+  forget`, `recall_forget`) erases them too, and so does the next index that prunes a memo deleted
+  by hand. `recall_forget_memo` also refuses when rows hold the memo's bytes under its file name
+  from another path, not only under its stored name. Since 2026-10-27 a forget erases the journal only of memos its own store held: the ones it deletes, and names it recorded deleting earlier (a `forget_memo_journal` audit event written before the rows go), so a re-run still completes a failed erasure while a forget in another store can no longer name this folder's memo.
+
 ### Added
 
 * **Current facts are materialized, so a read no longer replays the tenant's history.** Migration

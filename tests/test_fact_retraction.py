@@ -249,7 +249,10 @@ def test_r7_a_ledger_made_before_retraction_accepts_one(tmp_path: Path) -> None:
     forget_memory(store, ["door.md"])
 
     assert current(store) == ["tea"], f"a ledger made before retraction refused it: {current(store)}"
-    assert {"r1", "r2"} <= {e.request_id for e in LiteFactLedger(store).events}
+    # Its rows are kept: r1's as it was, r2's with the request id forget's redaction gave it
+    # (`recall.fact_redaction`), since the forgotten memo's value is erased.
+    request_ids = {e.request_id for e in LiteFactLedger(store).events}
+    assert "r1" in request_ids and any(rid.startswith("redacted:") for rid in request_ids), request_ids
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         store._conn.execute("DELETE FROM recall_fact_ledger_events")
 

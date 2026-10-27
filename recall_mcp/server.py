@@ -2969,12 +2969,13 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         that does not exist is reported in `sources_not_found` rather than silently counted as
         "removed" — check that list before assuming a name was actually forgotten. A fact
         applied with `recall_apply_fact` whose only evidence was in these sources is retracted
-        with them, so `recall_current_facts` stops listing it; a fact with evidence in a memo
-        that survives stays. Retraction is not erasure: a retracted fact's value, and the
-        evidence cards that cited these sources, stay in the append-only fact ledger as its
-        audit trail. Only the chunks (and staged upload files) are deleted. Whatever a forgotten
-        memory superseded stays retired; for a memory that was a mistake, and should give back
-        what it replaced, use `recall_withdraw` instead.
+        with them, so `recall_current_facts` stops listing it, and its value is erased: the fact
+        ledger, the evidence cards citing these sources and the replay receipts echoing them are
+        rewritten in place under fresh ids, keeping the shape of the history but not the value. A
+        fact with evidence in a memo that survives stays. A name that matches nothing still
+        completes the erasure of facts it supplied, so re-run a forget that reported a failure.
+        Whatever a forgotten memory superseded stays retired; for a memory that was a mistake,
+        and should give back what it replaced, use `recall_withdraw` instead.
 
         Args:
             sources: one or more source values to forget, exactly as they appear in
@@ -2982,7 +2983,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
         Returns:
             JSON of {chunks_removed, sources_removed, sources_not_found, message,
-            facts_retracted}.
+            facts_retracted, facts_redacted}.
         """
         state = _state(ctx)
         operation = "recall_forget"
@@ -3051,8 +3052,9 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         current again); `recall_withdraw` voids its `supersedes:` claims, so what it replaced is
         current again, and whatever superseded IT now supersedes what it replaced instead (in
         A -> B -> C, withdrawing B leaves A retired by C). In the fact ledger, each fact it alone
-        supported is withdrawn, which also undoes the supersession that fact made. A memory
-        forgotten earlier can be withdrawn by the name it had. Scoped to this server's tenant.
+        supported is withdrawn, which also undoes the supersession that fact made, and the
+        values it supplied are erased as `recall_forget` erases them. A memory forgotten earlier
+        can be withdrawn by the name it had. Scoped to this server's tenant.
 
         Args:
             sources: one or more source values to withdraw, exactly as they appear in
@@ -3060,7 +3062,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
         Returns:
             JSON of {chunks_removed, sources_withdrawn, sources_not_found, message,
-            facts_withdrawn}.
+            facts_withdrawn, facts_redacted}.
         """
         state = _state(ctx)
         operation = "recall_withdraw"

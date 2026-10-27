@@ -49,6 +49,7 @@ from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
 from recall.db_constants import DEFAULT_TABLE
 from recall import eval_clock
 from recall.errors import RecallError
+from recall.observability import get_logger
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope, group_expression
 from recall.supersession import (
     EdgeCandidates,
@@ -68,6 +69,7 @@ from recall.types import Chunk, ScoredChunk
 #: A DSN naming a lite store: ``sqlite:///path/to/memory.db``.
 LITE_DSN_PREFIX = "sqlite:///"
 SCHEMA_VERSION = "1"
+_log = get_logger("lite.store")
 
 #: PostgreSQL's English stop word list (`english.stop`), so both stores drop the same words from a
 #: keyword query.
@@ -555,6 +557,49 @@ class LiteStore:
                     self._conn.execute("ROLLBACK")
                 raise
 
+    @contextmanager
+    def erasing(self) -> Iterator[None]:
+        """Erase on disk what the block deletes or rewrites: `recall_forget`'s path on a lite file.
+
+        Inside, `secure_delete` makes SQLite zero every cell and page the block frees, the old
+        version of a rewritten row included. After it, the full-text index is merged so a deleted
+        chunk's terms leave its segments (an FTS5 delete only appends a tombstone), and a TRUNCATE
+        checkpoint copies the new pages over the old ones in the main file and empties the
+        write-ahead log. A reader holding a snapshot open can keep that checkpoint from finishing,
+        which is logged. VACUUM, which also compacts the file, is `vacuum()`.
+        """
+        with self._lock:
+            prior = int(self._conn.execute("PRAGMA secure_delete").fetchone()[0])
+            self._conn.execute("PRAGMA secure_delete = ON")
+            try:
+                yield
+                with self._write():
+                    self._conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('optimize')")
+            finally:
+                self._conn.execute(f"PRAGMA secure_delete = {prior}")
+                self.checkpoint()
+
+    def checkpoint(self) -> bool:
+        """Copy the write-ahead log into the file and truncate it; False when a reader blocked it."""
+        with self._lock:
+            row = self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        done = row is not None and int(row[0]) == 0
+        if not done:
+            _log.warning(
+                "the WAL checkpoint of %s was blocked by a reader; erased bytes may stay in its log "
+                "until the next one", self.path,
+            )
+        return done
+
+    def vacuum(self) -> None:
+        """Rewrite the whole file without its free pages (`recall forget --vacuum`), then checkpoint.
+
+        Needs about the file's size again in free disk while it runs.
+        """
+        with self._lock:
+            self._conn.execute("VACUUM")
+        self.checkpoint()
+
     def _check_batch(self, chunks: Sequence[Chunk], embeddings: Sequence[Sequence[float]]) -> None:
         import numpy as np
 
@@ -890,6 +935,16 @@ class LiteStore:
         with self._write():
             self._conn.execute(insert, row)
         return event_id
+
+    def recorded_memo_journals(self, sources: Sequence[str]) -> set[str]:
+        """`PgVectorStore.recorded_memo_journals`: the file holds one tenant, so its whole ledger."""
+        if not sources:
+            return set()
+        rows = self._metadata_values(
+            "SELECT DISTINCT source_uri FROM audit_events WHERE event_type = 'forget_memo_journal' "
+            "AND source_uri IN (SELECT value FROM json_each(?))", (json.dumps(list(sources)),),
+        )
+        return {str(source) for (source,) in rows if source}
 
     def forgotten_source_aliases(self, sources: Sequence[str]) -> set[str]:
         """Recover card names recorded before these exact sources were forgotten."""

@@ -1495,6 +1495,21 @@ class PgVectorStore:
         self._with_retry(_op)
         return event_id
 
+    def recorded_memo_journals(self, sources: Sequence[str]) -> set[str]:
+        """The `sources` a forget recorded deleting as assistant memos (`forget_memo_journal`)."""
+        if not sources:
+            return set()
+
+        def _op(conn: "psycopg.Connection") -> set[str]:
+            rows = conn.execute(
+                "SELECT DISTINCT source_uri FROM recall_audit_events WHERE tenant_id = %s "
+                "AND event_type = 'forget_memo_journal' AND source_uri = ANY(%s)",
+                (self._tenant, list(sources)),
+            ).fetchall()
+            return {str(source) for (source,) in rows if source}
+
+        return self._with_retry(_op)
+
     def forgotten_source_aliases(self, sources: Sequence[str]) -> set[str]:
         """Recover card names recorded before these exact sources were forgotten."""
         if not sources:

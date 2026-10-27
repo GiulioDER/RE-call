@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pytest
+
 from recall.fact_ledger import PostgresFactLedger
 from recall.lite import LiteStore
 from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
@@ -112,22 +114,39 @@ def _scenario(store: Any, cards: Any, ledger: Callable[[], Any]) -> list[tuple[s
     return out
 
 
-def test_p2_postgres_and_lite_retract_the_same(tmp_path: Path, make_store: Callable[[int], PgVectorStore]) -> None:
+def test_p2_postgres_and_lite_retract_the_same(
+    tmp_path: Path, make_store: Callable[[int], PgVectorStore], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Node tests/test_fact_retraction_postgres.py::test_p2_postgres_and_lite_retract_the_same.
 
     Red, mutation of `LiteFactLedger.retract_forgotten` (recall/lite/facts.py) minting its event id
     from `retraction_ids(...)` plus a suffix: fails at step "events". Red against the pre-fix
     chain end: `ForgetResult` has no `facts_retracted`, so the scenario raises AttributeError at
     "forget a" on both backends; that is not an assertion failure, so the mutation is the proof.
+
+    Since forget erases values under fresh random ids (`recall.fact_redaction`), each backend runs
+    with the same fixed id sequence, so the ids still compare.
     """
+    import itertools
+
+    from recall import fact_redaction
+
+    prefix = uuid4().hex[:16]  # event and card ids are global keys: unique to this test
+
+    def fixed_ids() -> None:
+        counter = itertools.count()
+        monkeypatch.setattr(fact_redaction, "_token", lambda: f"{prefix}{next(counter):016x}")
+
     tenant = f"retract-parity-{uuid4().hex}"
     pg_store = _pg(make_store, tenant)
     lite_store = LiteStore(tmp_path / "parity.db", dim=DIM, tenant=tenant)
     try:
+        fixed_ids()
         expected = _scenario(
             pg_store, PostgresEvidenceCardStore(TEST_DSN, tenant_id=tenant),
             lambda: PostgresFactLedger(TEST_DSN, tenant_id=tenant),
         )
+        fixed_ids()
         actual = _scenario(lite_store, LiteEvidenceCardStore(lite_store), lambda: LiteFactLedger(lite_store))
     finally:
         pg_store.close()
