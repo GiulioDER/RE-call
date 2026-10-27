@@ -69,6 +69,13 @@ def _render(tools: list[dict[str, Any]]) -> str:
 
 
 def test_the_published_tool_surface_matches_the_golden_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DOC-001: pin corrected item-limit guidance with the full schema controls intact.
+
+    Red proof, 2026-10-26: restore each original PR970 description independently for
+    recall_search, recall_evidence and recall_related while retaining the corrected golden.
+    Each mutation failed the per-tool equality assertion for its intended tool. Names,
+    titles, schemas, defaults and annotations remain subject to the unchanged comparison.
+    """
     monkeypatch.delenv(TOOL_SURFACE_ENV, raising=False)
     rendered = _render(_published_tools())
     if os.environ.get(REGENERATE) == "1":

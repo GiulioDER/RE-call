@@ -8,14 +8,16 @@ P2 #11 (`facts_conflict` compared raw strings while the key is NFC), P2 #12 (sup
 from what is current now, conflicts from all time), and the set-valued predicate case.
 
 Every test here drives the real controller and real ledgers through names the pre-fix tree has,
-so each red proof is master ``67ffcce59`` with this file copied in, unless the docstring names a
-mutation instead.
+so each red proof uses master ``67ffcce59`` with this file copied in, unless its docstring
+names another baseline or a production mutation.
 """
 
 from __future__ import annotations
 
+import tracemalloc
 import unicodedata
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -435,3 +437,91 @@ def test_f14_a_memo_stating_a_fact_through_a_duplicate_can_supersede_it(env: Env
         f"a link to the memo behind the DUPLICATE did not supersede: {decision.code}"
     )
     assert env.current() == ["Rome"]
+
+
+def test_f14_thousands_of_alternating_assertions_have_bounded_projection_allocation() -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f14_thousands_of_alternating_assertions_have_bounded_projection_allocation.
+
+    Replaying 3,000 alternating assertions must fit 24 MiB of temporary allocation.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    fact_supersession retained 2,250,000 pairs and failed the allocation assertion.
+    Input construction is outside the trace; only the last assertion may remain current.
+    """
+    events = []
+    identities = {value: fact_identity(city(value)) for value in ("Paris", "Rome")}
+    for i in range(3000):
+        value, other = ("Paris", "Rome") if i % 2 == 0 else ("Rome", "Paris")
+        events.append(_assertion(i, value, (identities[other],) if i else (), NOW + timedelta(microseconds=i)))
+    tracemalloc.start()
+    try:
+        current = project_current(events, NOW)
+        _retained, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 24 * 1024 * 1024, (
+        f"alternating history exceeded the projection allocation budget: {peak} bytes"
+    )
+    assert [event.event_id for event in current] == ["e2999"]
+
+
+def test_f15_equal_time_legacy_cycles_keep_their_projection() -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f15_equal_time_legacy_cycles_keep_their_projection.
+
+    Equal-time cycles must retain their original bounded-window projection.
+    Red-proved on the final controller by making _FactSuccessorIndex.hidden use a
+    strict recorded-time comparison; Rome incorrectly became current in February.
+    """
+    january = city("Paris", start=datetime(2026, 1, 1, tzinfo=UTC), end=datetime(2026, 2, 1, tzinfo=UTC))
+    february = city("Rome", start=datetime(2026, 2, 1, tzinfo=UTC), end=datetime(2026, 3, 1, tzinfo=UTC))
+    first = replace(
+        _assertion(0, "Paris", (fact_identity(february),), NOW),
+        fact=january, fact_id=fact_identity(january),
+    )
+    second = replace(
+        _assertion(1, "Rome", (fact_identity(january),), NOW),
+        fact=february, fact_id=fact_identity(february),
+    )
+    assert [e.event_id for e in project_current([first, second], datetime(2026, 1, 15, tzinfo=UTC))] == ["e0"]
+    assert project_current([first, second], datetime(2026, 2, 15, tzinfo=UTC)) == (), (
+        "an equal-time legacy cycle changed the February projection"
+    )
+
+
+def test_f16_a_self_reference_hides_earlier_assertions_only() -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f16_a_self_reference_hides_earlier_assertions_only.
+
+    A self-reference must hide earlier assertions, never its own assertion.
+    Red-proved on the final controller by omitting self-span exclusion in
+    _FactSuccessorIndex.hidden; the current-event assertion detected self-hiding.
+    """
+    first = _assertion(0, "Paris", (), NOW)
+    second = _assertion(1, "Paris", (str(first.fact_id),), NOW + timedelta(microseconds=1))
+    assert [e.event_id for e in project_current([first, second], NOW)] == ["e1"], (
+        "a self-reference hid its own assertion"
+    )
+
+
+@pytest.mark.parametrize("paired", [True, False], ids=["paired", "legacy-unpaired"])
+def test_f17_supersession_receipts_preserve_known_and_unknown_windows(paired: bool) -> None:
+    """Node tests/test_fact_supersession_windows.py::test_f17_supersession_receipts_preserve_known_and_unknown_windows.
+
+    Paired receipts must preserve bounded windows; unpaired receipts remain unknown.
+    Both cases were red-proved on the final fact_supersession receipt guard:
+    processing paired receipts hid Paris outside Rome's window; discarding unpaired
+    receipts revived Paris. The outside-window assertions failed.
+    """
+    first = _assertion(0, "Paris", (), NOW)
+    summer = city("Rome", start=NOW - timedelta(days=1), end=NOW + timedelta(days=1))
+    second = replace(
+        _assertion(1, "Rome", (str(first.fact_id),), NOW + timedelta(microseconds=1)),
+        fact=summer, fact_id=fact_identity(summer),
+    )
+    receipt = replace(
+        second, event_id="receipt", event_type="superseded", fact=None, fact_id=None,
+        request_id=second.request_id + ":supersession" if paired else "legacy-receipt",
+    )
+    history = [first, second, receipt]
+    assert [e.event_id for e in project_current(history, NOW)] == ["e1"]
+    outside = ["e0"] if paired else []
+    assert [e.event_id for e in project_current(history, NOW - timedelta(days=2))] == outside
+    assert [e.event_id for e in project_current(history, NOW + timedelta(days=1))] == outside

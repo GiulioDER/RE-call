@@ -449,6 +449,7 @@ def match_memo_records(
         superseded_by=lambda candidate: graph.successor(
             graph.key(candidate.file, candidate.source), now=instant
         ),
+        now=instant,
     )
 
 

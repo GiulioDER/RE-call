@@ -15,6 +15,7 @@ import json
 import math
 import threading
 import unicodedata
+from bisect import bisect_left
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -300,19 +301,115 @@ class FactSupersession:
         return any(max(a, low) < min(b, high) for a, b in self.in_force(event))
 
 
+class _FactSuccessorIndex:
+    """One fact identity's successors, without assertion/successor pairs.
+
+    Navigation follows original successor order and skips assertions already entered by the
+    DFS. The second tree is in timestamp order: it aggregates each successor's own window,
+    plus inherited windows only AFTER that successor resolves. A visiting cycle member still
+    contributes its own window, as in the original walk, but not unfinished inheritance.
+    Timestamp suffix queries exclude the assertion's own unique ledger event.
+    """
+
+    def __init__(
+        self,
+        claims: Sequence[int],
+        successors: Sequence[tuple[FactEvent, FactWindow | None]],
+        children: Sequence[FactEvent | None],
+        own_windows: Sequence[tuple[Interval, ...]],
+    ) -> None:
+        self.claims = tuple(claims)
+        self.position = {claim: position for position, claim in enumerate(claims)}
+        ordered = sorted(claims, key=lambda claim: (_as_utc(successors[claim][0].created_at), claim))
+        self.times = [_as_utc(successors[claim][0].created_at) for claim in ordered]
+        self.time_position = {claim: position for position, claim in enumerate(ordered)}
+        # Two original-order claims per timestamp suffix suffice to exclude the assertion itself
+        # when establishing the old root order, including legacy receipts.
+        self.first: list[tuple[int, ...]] = [()] * (len(ordered) + 1)
+        for position in range(len(ordered) - 1, -1, -1):
+            self.first[position] = tuple(sorted((*self.first[position + 1], ordered[position]))[:2])
+        self.size = 1 << (len(claims) - 1).bit_length()
+        self.active: list[datetime | None] = [None] * (2 * self.size)
+        self.unions: list[tuple[Interval, ...]] = [()] * (2 * self.size)
+        for position, claim in enumerate(claims):
+            event = successors[claim][0]
+            if children[claim] is not None:
+                self.active[self.size + position] = _as_utc(event.created_at)
+        for position, claim in enumerate(ordered):
+            self.unions[self.size + position] = own_windows[claim]
+        for node in range(self.size - 1, 0, -1):
+            self._refresh_active(node)
+            self.unions[node] = _merge((*self.unions[2 * node], *self.unions[2 * node + 1]))
+
+    def _refresh_active(self, node: int) -> None:
+        left, right = self.active[2 * node], self.active[2 * node + 1]
+        self.active[node] = right if left is None else left if right is None else max(left, right)
+
+    def first_claim(self, written: datetime, own: int | None) -> int | None:
+        return next(
+            (claim for claim in self.first[bisect_left(self.times, written)] if claim != own),
+            None,
+        )
+
+    def next_assertion(self, written: datetime) -> int | None:
+        latest = self.active[1]
+        if latest is None or latest < written:
+            return None
+        node = 1
+        while node < self.size:
+            left = self.active[2 * node]
+            node = 2 * node if left is not None and left >= written else 2 * node + 1
+        return self.claims[node - self.size]
+
+    def enter(self, claim: int) -> None:
+        node = self.size + self.position[claim]
+        self.active[node] = None
+        while node > 1:
+            node //= 2
+            self._refresh_active(node)
+
+    def publish(self, claim: int, impact: tuple[Interval, ...]) -> None:
+        node = self.size + self.time_position[claim]
+        self.unions[node] = impact
+        while node > 1:
+            node //= 2
+            self.unions[node] = _merge((*self.unions[2 * node], *self.unions[2 * node + 1]))
+
+    def _range(self, low: int, high: int) -> tuple[Interval, ...]:
+        low, high = low + self.size, high + self.size
+        spans: list[Interval] = []
+        while low < high:
+            if low & 1:
+                spans.extend(self.unions[low])
+                low += 1
+            if high & 1:
+                high -= 1
+                spans.extend(self.unions[high])
+            low, high = low // 2, high // 2
+        return _merge(spans)
+
+    def hidden(self, written: datetime, own: int | None) -> tuple[Interval, ...]:
+        low = bisect_left(self.times, written)
+        own_position = self.time_position.get(own) if own is not None else None
+        if own_position is not None and own_position >= low:
+            return _merge((
+                *self._range(low, own_position),
+                *self._range(own_position + 1, len(self.times)),
+            ))
+        return self._range(low, len(self.times))
+
+
 def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
-    """The successors of every assertion in `events`, in ledger order (`FactSupersession`).
+    """The successors of every assertion in events, in original ledger traversal order.
 
-    A successor is an applied assertion naming the facts it supersedes (`supersedes_fact_ids`,
-    which every backend records on it), and, for a ledger whose `superseded` event has no such
-    assertion beside it, that event, with an unknown window. "Before" is the event's
-    `created_at`; equal times count as before, the reading the ledger had when supersession hid
-    a fact id outright, and the ledgers order the events of one conflict key strictly
-    (`ordered_after`), so equal times are only met in rows written before they did.
+    Applied assertions name the facts they supersede; an unpaired legacy superseded receipt
+    contributes its own window (unknown when it has no fact). Equal recorded times count as
+    before, while self-reference never hides the assertion itself.
 
-    Resolved without recursion: a chain is as long as a key's history, and a recursive walk hit
-    the interpreter's limit at about a thousand links, after which every read and write of the
-    tenant failed (2026-10-21 supersession audit, SEC-002).
+    The original iterative DFS order, including equal-time legacy cycles, is retained using
+    per-identity indexes rather than expanding assertion/successor pairs. With compact interval
+    unions, navigation, updates and queries take logarithmic work per recorded claim; disjoint
+    interval output can itself grow. A legacy tie never selects a dense fallback.
     """
     withdrawn = withdrawn_event_ids(events)
 
@@ -343,44 +440,84 @@ def fact_supersession(events: Sequence[FactEvent]) -> FactSupersession:
     for event in events:
         if event.event_type == "superseded" and event.request_id not in paired:
             successors.append((event, fact_window(event.fact) if event.fact is not None else None))
-    direct: dict[str, list[tuple[FactEvent, FactWindow | None]]] = {}
-    for successor, window in successors:
-        written = _as_utc(successor.created_at)
-        for fact_id in successor.supersedes_fact_ids:
-            for assertion in by_fact.get(fact_id, ()):
-                if assertion.event_id != successor.event_id and _as_utc(assertion.created_at) <= written:
-                    direct.setdefault(assertion.event_id, []).append((successor, window))
+
+    # A withdrawn assertion contributes no window of its own, but passes on the windows
+    # hiding it. An unpaired receipt for an erased assertion inherits through its holder too.
+    # Index claims by that logical child so all aliases enter and publish together; no dense
+    # assertion/successor fallback is needed when a history contains withdrawals.
+    events_by_id = {event.event_id: event for event in events}
+    children: list[FactEvent | None] = []
+    own_windows: list[tuple[Interval, ...]] = []
+    claims_by_child: dict[str, list[int]] = {}
+    for claim, (successor, window) in enumerate(successors):
+        holder = withdrawn_for(successor)
+        child = successor if successor.event_type == "asserted" else events_by_id.get(holder or "")
+        children.append(child)
+        own_windows.append((_span(window),) if holder is None else ())
+        if child is not None:
+            claims_by_child.setdefault(child.event_id, []).append(claim)
+
+    claims: dict[str, list[int]] = {}
+    target_positions: list[dict[str, int]] = []
+    successor_by_event = {event.event_id: claim for claim, (event, _window) in enumerate(successors)}
+    for claim, (successor, _window) in enumerate(successors):
+        positions: dict[str, int] = {}
+        for position, fact_id in enumerate(successor.supersedes_fact_ids):
+            if fact_id not in positions:
+                positions[fact_id] = position
+                claims.setdefault(fact_id, []).append(claim)
+        target_positions.append(positions)
+    indexes = {
+        fact_id: _FactSuccessorIndex(group, successors, children, own_windows)
+        for fact_id, group in claims.items()
+        if fact_id in by_fact
+    }
+    # The old nested loop inserted a root at its first eligible pair: successor position,
+    # target position within that successor, then assertion position in that fact's bucket.
+    roots: list[tuple[int, int, int, FactEvent]] = []
+    for fact_id, assertions in by_fact.items():
+        index = indexes.get(fact_id)
+        if index is None:
+            continue
+        for position, assertion in enumerate(assertions):
+            first_eligible = index.first_claim(
+                _as_utc(assertion.created_at), successor_by_event.get(assertion.event_id)
+            )
+            if first_eligible is not None:
+                roots.append((first_eligible, target_positions[first_eligible][fact_id], position, assertion))
+
+    def enter(event: FactEvent) -> None:
+        for claim in claims_by_child.get(event.event_id, ()):
+            for fact_id in target_positions[claim]:
+                if fact_id in indexes:
+                    indexes[fact_id].enter(claim)
+
     resolved: dict[str, tuple[Interval, ...]] = {}
-    for root in direct:
-        # Depth first, children before their parent, as the recursive walk visited them; an event
-        # on the current path is a cycle, only possible among rows of one instant, and adds nothing.
-        stack: list[tuple[str, bool]] = [(root, False)]
-        visiting: set[str] = set()
+    for _claim, _target_position, _assertion_position, root in sorted(roots, key=lambda item: item[:3]):
+        if root.event_id in resolved:
+            continue
+        stack = [root]
+        enter(root)
         while stack:
-            event_id, ready = stack.pop()
-            if event_id in resolved:
+            event = stack[-1]
+            index = indexes.get(event.fact_id) if event.fact_id is not None else None
+            written = _as_utc(event.created_at)
+            next_claim = index.next_assertion(written) if index is not None else None
+            if next_claim is not None:
+                next_event = children[next_claim]
+                assert next_event is not None  # only claims with a child are navigable
+                enter(next_event)
+                stack.append(next_event)
                 continue
-            if ready:
-                spans: list[Interval] = []
-                for successor, window in direct.get(event_id, ()):
-                    holder = withdrawn_for(successor)
-                    if holder is None:
-                        spans.append(_span(window))
-                    if successor.event_type == "asserted":
-                        spans.extend(resolved.get(successor.event_id, ()))
-                    elif holder is not None:
-                        spans.extend(resolved.get(holder, ()))
-                resolved[event_id] = _merge(spans)
-                visiting.discard(event_id)
-                continue
-            if event_id in visiting:
-                continue
-            visiting.add(event_id)
-            stack.append((event_id, True))
-            for successor, _window in reversed(direct.get(event_id, ())):
-                child = successor.event_id if successor.event_type == "asserted" else withdrawn_for(successor)
-                if child is not None and child not in resolved:
-                    stack.append((child, False))
+            own = successor_by_event.get(event.event_id)
+            hidden = index.hidden(written, own) if index is not None else ()
+            resolved[event.event_id] = hidden
+            stack.pop()
+            for claim in claims_by_child.get(event.event_id, ()):
+                impact = _merge((*own_windows[claim], *hidden))
+                for fact_id in target_positions[claim]:
+                    if fact_id in indexes:
+                        indexes[fact_id].publish(claim, impact)
     return FactSupersession(resolved)
 
 

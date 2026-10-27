@@ -29,6 +29,7 @@ from pathlib import Path
 
 import pytest
 
+from recall.fact_retraction import served_sources
 from recall.lite import LiteStore
 from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
 from recall.provenance_controller import (
@@ -254,3 +255,101 @@ def test_r7_a_ledger_made_before_retraction_accepts_one(tmp_path: Path) -> None:
     assert "r1" in request_ids and any(rid.startswith("redacted:") for rid in request_ids), request_ids
     with pytest.raises(sqlite3.IntegrityError, match="append-only"):
         store._conn.execute("DELETE FROM recall_fact_ledger_events")
+
+
+@pytest.mark.parametrize("collided", [False, True], ids=["single-source", "collided-source"])
+def test_admitted_branch_retires_fact_despite_excluded_primary(
+    store: LiteStore, monkeypatch: pytest.MonkeyPatch, collided: bool,
+) -> None:
+    """Node tests/test_fact_retraction.py::test_admitted_branch_retires_fact_despite_excluded_primary.
+
+    An admitted branch must retire the fact despite an excluded primary successor.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    served_sources selected one chain and the ledger-current assertion retained the fact.
+    Both plain and source-qualified identities were exercised.
+    """
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "mem")
+    remember(store, "mem/a.md")
+    assert apply(store, DOOR, "mem/a.md", "branch-fact").code == DecisionCode.APPLIED
+    chunks = [
+        Chunk("b", "/notes/mem/b.md", "b", {
+            "file": "mem/b.md", "supersedes": "mem/a.md", "valid_until": "2025-06-30",
+        }),
+        Chunk("c", "/notes/mem/c.md", "c", {"file": "mem/c.md", "supersedes": "mem/b.md"}),
+        Chunk("z", "/notes/z.md", "z", {"file": "z.md", "supersedes": "mem/a.md"}),
+    ]
+    if collided:
+        chunks.append(Chunk("other-a", "/other/mem/a.md", "a copy", {"file": "mem/a.md"}))
+    store.upsert(chunks, [[1.0] + [0.0] * (DIM - 1) for _ in chunks])
+    graph = store.supersession_graph()
+    assert graph.successor(graph.key("mem/a.md", "/notes/mem/a.md"), now=NOW) == "z.md"
+    failures: list[str] = []
+    served = served_sources(store, failures=failures)
+    assert served is not None
+
+    events = LiteFactLedger(store).current(tenant_id=store.tenant, now=NOW, served=served)
+
+    assert events == (), "an excluded primary hid an admitted retirement branch"
+    assert failures == []
+    assert current(store) == ["4512"], "memo retirement must not permanently retract the ledger fact"
+
+
+def test_excluded_intermediate_cannot_retire_fact_through_admitted_descendant(
+    store: LiteStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Node tests/test_fact_retraction.py::test_excluded_intermediate_cannot_retire_fact_through_admitted_descendant.
+
+    Retirement must stop at an excluded intermediate.
+    Red-proved by removing retires' admission guard in served_sources;
+    the ledger-current assertion detected unauthorized retirement.
+    """
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "mem")
+    remember(store, "mem/a.md")
+    assert apply(store, DOOR, "mem/a.md", "excluded-intermediate").code == DecisionCode.APPLIED
+    chunks = [
+        Chunk("b", "/notes/other/b.md", "b", {
+            "file": "other/b.md", "supersedes": "mem/a.md", "valid_until": "2025-06-30",
+        }),
+        Chunk("c", "/notes/mem/c.md", "c", {"file": "mem/c.md", "supersedes": "other/b.md"}),
+    ]
+    store.upsert(chunks, [[1.0] + [0.0] * (DIM - 1) for _ in chunks])
+    failures: list[str] = []
+    served = served_sources(store, failures=failures)
+    assert served is not None
+
+    events = LiteFactLedger(store).current(tenant_id=store.tenant, now=NOW, served=served)
+
+    assert [event.fact.object for event in events if event.fact] == ["4512"], (
+        "an excluded intermediate authorized its admitted descendant"
+    )
+    assert failures == []
+
+
+def test_expired_admitted_cycle_does_not_retire_its_starting_fact(
+    store: LiteStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Node tests/test_fact_retraction.py::test_expired_admitted_cycle_does_not_retire_its_starting_fact.
+
+    An expired admitted cycle must not retire its starting fact.
+    Red-proved by initializing retires' seen set to set() instead of {key};
+    the ledger-current assertion detected self-retirement.
+    """
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "mem")
+    chunks = [
+        Chunk("a", "/notes/mem/a.md", "a", {"file": "mem/a.md", "supersedes": "mem/b.md"}),
+        Chunk("b", "/notes/mem/b.md", "b", {
+            "file": "mem/b.md", "supersedes": "mem/a.md", "valid_until": "2025-06-30",
+        }),
+    ]
+    store.upsert(chunks, [[1.0] + [0.0] * (DIM - 1) for _ in chunks])
+    assert apply(store, DOOR, "mem/a.md", "cycle-fact").code == DecisionCode.APPLIED
+    failures: list[str] = []
+    served = served_sources(store, failures=failures)
+    assert served is not None
+
+    events = LiteFactLedger(store).current(tenant_id=store.tenant, now=NOW, served=served)
+
+    assert [event.fact.object for event in events if event.fact] == ["4512"], (
+        "a cycle let a memo retire its own starting fact"
+    )
+    assert failures == []

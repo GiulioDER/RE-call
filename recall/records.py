@@ -20,7 +20,7 @@ Three parts:
   `recall.records_files.match_memo_records` over a memo directory, so the two cannot disagree.
 - `lookup_records` answers by key, with no embedding, no calibration and no abstention: an exact
   key match is not a relevance claim. Superseded and expired records are returned and marked,
-  never hidden. In a code tenant a chunk carrying `code_anchor` (its file, symbol and hash) is a
+  never hidden: `superseded_by` and `expired` are both computed at the lookup's `now`. In a code tenant a chunk carrying `code_anchor` (its file, symbol and hash) is a
   record of kind ``code`` and matches by the same rules; the chunks sharing one anchor (a split
   symbol, a module's module-level chunks) are one record, identified by its lowest-ordinal chunk,
   with every chunk in `chunk_ids`. A code anchor with a null `repo` never matches a `repo` query.
@@ -42,7 +42,7 @@ from importlib import resources
 from typing import Any, Literal
 
 from recall.errors import RecallError
-from recall.frontmatter import RECORD_KEY, RECORD_LABEL_KEYS, supersedes_targets
+from recall.frontmatter import RECORD_KEY, RECORD_LABEL_KEYS, supersedes_targets, validity_bounds
 from recall.observability import get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.supersession import store_supersession_graph
@@ -402,6 +402,23 @@ def _scalar(value: object) -> object:
     return None if value in (None, "") else value
 
 
+def _expired(meta: Mapping[str, Any], instant: datetime) -> bool:
+    """Whether the document's `valid_until` has passed at `instant`, by the rule the trust gate and
+    the indexer read it with (`validity_bounds`): a date-only value stays valid through the end of
+    that day, UTC. Absent, never expired. A value that does not read as a date is expired: it is
+    not proof the record is current, and the indexer refuses such a memo, so none reaches a store
+    that way. Computed here once, so no consumer redoes the comparison and gets the day wrong.
+    """
+    value = meta.get("valid_until")
+    if value in (None, ""):
+        return False
+    try:
+        _start, end = validity_bounds({"valid_until": value})
+    except ValueError:
+        return True
+    return end is not None and end < instant
+
+
 @dataclass(frozen=True)
 class RecordCandidate:
     """One record as the matcher sees it, read from a store's chunks or from a memo file.
@@ -430,13 +447,15 @@ def match_candidates(
     wanted_ids: set[str] | None,
     wanted_kinds: set[str] | None,
     superseded_by: Callable[[RecordCandidate], str | None],
+    now: datetime,
 ) -> list[dict[str, Any]]:
     """The C5 record entries for `candidates`, best match first: the rule every records reader shares.
 
     `lookup_records` calls it with a store's records and `recall.records_files.match_memo_records`
     with a memo directory's, so the two cannot disagree on a match, a best-of, the reverse
-    `caused` edge or the order. `superseded_by` answers the currency question for one candidate,
-    because the two read their supersession graph from different places. `caused` is built over
+    `caused` edge or the order. `superseded_by` answers the supersession question for one
+    candidate, because the two read their supersession graph from different places; `expired` is
+    judged here, at `now` (aware), from the document's own `valid_until`. `caused` is built over
     every candidate before any filter applies, so a record's reverse edge does not depend on the
     query that returned it.
     """
@@ -497,6 +516,7 @@ def match_candidates(
                     "supersedes": (list(targets) if len(targets) > 1 else targets[0]) if targets else None,
                     "superseded_by": successor,
                     "valid_until": _scalar(meta.get("valid_until")),
+                    "expired": _expired(meta, now),
                     "caused": sorted(caused.get(record_id, [])),
                     "anchor_matches": anchor_matches,
                     "anchor_match": best,
@@ -534,8 +554,9 @@ def lookup_records(
     generation id to pin them to.
     Reads one snapshot of the store's active generation when it has one.
 
-    `superseded_by` is what hides the record at `now` (default: the current time), read from the
-    store's supersession graph the way the trust gate reads it: a successor hides its predecessor
+    `expired` is true when the document's `valid_until` has passed at `now` (a date-only value
+    lasts through that day, UTC). `superseded_by` is what hides the record at `now` (default: the
+    current time), read from the store's supersession graph the way the trust gate reads it: a successor hides its predecessor
     only inside its own validity window, a chain names its deepest valid member, and a path two
     roots hold is keyed by its source.
 
@@ -640,6 +661,7 @@ def lookup_records(
         wanted_ids=wanted_ids,
         wanted_kinds=wanted_kinds,
         superseded_by=superseded_by,
+        now=instant,
     )
     truncated = False
     if all_records:

@@ -342,3 +342,143 @@ def test_a_generation_build_stores_the_anchor_on_every_python_chunk(manager) -> 
         ]
     )
     assert anchors == expected
+
+
+def _source_build(  # type: ignore[no-untyped-def]
+    manager, tmp_path, source, project, *, extracting=True, encoding="utf-8", **build_options
+):
+    from recall.generation_build import build_generation
+    from recall.manifest import LocalObjectReader, reader_for_manifest
+
+    path = tmp_path / "source.py"
+    data = source.encode(encoding)
+    path.write_bytes(data)
+    sha = hashlib.sha256(data).hexdigest()
+    entry = ManifestObjectV1(path.as_uri(), sha, "text/x-python", len(data), sha)
+    manifest = IndexManifestV1(manager.tenant_id, "source-v1", (entry,))
+    reader = (
+        reader_for_manifest(manifest, local_roots=[tmp_path])
+        if extracting else LocalObjectReader([tmp_path])
+    )
+    stats = build_generation(
+        manager, manifest, reader, _Embedder(),
+        BuildRequest(chunker="code", project=project, revision="fixture", commit_root=None),
+        **build_options,
+    )
+    with psycopg.connect(TEST_DSN) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        rows = conn.execute(
+            "SELECT text, metadata FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_ordinal",
+            (manager.tenant_id, stats.generation_id),
+        ).fetchall()
+    return stats, rows
+
+
+@requires_db
+@pytest.mark.parametrize("extracting", [True, False], ids=["cli-reader", "raw-reader"])
+@pytest.mark.parametrize("source", [
+    "X = 1\n", "\n\nX = 1\n\n", "\ufeffX = 1\n",
+    "\ufeffdef first():\n    return 1\n", "\n\ndef first():\n    return 1\n",
+])
+def test_generation_anchors_hash_original_python_source(manager, tmp_path, source, extracting):  # type: ignore[no-untyped-def]
+    """BUG-001: build readers must preserve the reference anchor hashing input.
+
+    Red proof (2026-10-26, bounded Linux host): PR976 baseline 1695f8417 failed six cases at stored-anchor
+    equality: extraction loses outer whitespace and both readers lose a BOM. All ten cases
+    also failed that assertion when _chunks_for_source stamped an all-zero code_sha. The
+    remaining baseline cases are preservation controls, not claims of an existing defect.
+    """
+    _, rows = _source_build(manager, tmp_path, source, "owner/name", extracting=extracting)
+    expected = code_pieces(source, file="source.py", repo="owner/name")
+    assert [(text, metadata[CODE_ANCHOR_KEY]) for text, metadata in rows] == [
+        (text, metadata[CODE_ANCHOR_KEY]) for text, metadata in expected
+    ]
+
+
+@requires_db
+@pytest.mark.parametrize("before,after", [
+    (None, "owner/b"), ("owner/a", "owner/b"), ("owner/a", None),
+    ("owner/a", "owner/a"), (None, None),
+])
+def test_reused_code_anchors_obey_current_repository(manager, tmp_path, before, after):  # type: ignore[no-untyped-def]
+    """DAT-002: repository provenance is part of the code-anchor reuse contract.
+
+    Red proof (2026-10-26, bounded Linux host): PR976 baseline 1695f8417, GenerationManager._reuse_source;
+    all three changed-project cases failed at repo equality. All five cases also failed
+    there when _chunks_for_source stamped repo='mutation'. The two same-project cases
+    must retain reuse, so a fix cannot simply disable source reuse.
+    """
+    first, _ = _source_build(manager, tmp_path, "def value():\n    return 1\n", before)
+    manager.validate(first.generation_id)
+    second, rows = _source_build(manager, tmp_path, "def value():\n    return 1\n", after)
+    assert rows
+    assert {metadata[CODE_ANCHOR_KEY]["repo"] for _, metadata in rows} == {after}
+    assert second.reused_objects == int(before == after)
+
+
+@requires_db
+@pytest.mark.parametrize("allowed", [True, False], ids=["redacted", "denied"])
+def test_original_python_still_passes_source_security(manager, tmp_path, allowed):  # type: ignore[no-untyped-def]
+    """BUG-001 control: raw source selection must preserve authorization and redaction.
+
+    Mutation proof: set security_policy=None before GenerationManager.build's source loop.
+    The redacted case fails its content assertion; the denied case fails DID NOT RAISE.
+    """
+    from recall.generations import GenerationError
+    from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
+
+    policy = SourceSecurityPolicy((SourceRule(
+        "source.py", principals=frozenset({"allowed"}),
+        purposes=frozenset({"indexing"}), redactions=("email",),
+    ),))
+    options = {
+        "security_policy": policy,
+        "security_context": AccessContext(
+            "allowed" if allowed else "denied", manager.tenant_id, purpose="indexing"
+        ),
+    }
+    source = '\ufeffEMAIL = "person@example.com"\n'
+    if not allowed:
+        with pytest.raises(GenerationError, match="denied by source security policy"):
+            _source_build(manager, tmp_path, source, "owner/name", **options)
+        return
+    _, rows = _source_build(manager, tmp_path, source, "owner/name", **options)
+    assert rows
+    assert all("person@example.com" not in text for text, _ in rows)
+    assert any("[REDACTED:email]" in text for text, _ in rows)
+
+
+@requires_db
+def test_original_python_keeps_extraction_bounds(manager, tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
+    """BUG-001 control: preserving bytes must retain the extracting reader's refusal.
+
+    Mutation proof: replace extract(entry, original) with original for anchored Python;
+    this test fails DID NOT RAISE instead of silently discarding the extraction cap.
+    """
+    from recall.extraction import DocumentExtractionError
+
+    monkeypatch.setattr("recall.extraction.MAX_EXTRACTED_CHARACTERS", 10)
+    with pytest.raises(DocumentExtractionError, match="extracted more than"):
+        _source_build(manager, tmp_path, "VALUE = 'long enough'\n", "owner/name")
+
+
+@requires_db
+def test_original_python_keeps_extracting_reader_encoding(manager, tmp_path):  # type: ignore[no-untyped-def]
+    """BUG-001 regression: preserving source must retain the reader's supported encodings.
+
+    Red proof: the first repair replaces the extracted UTF-8 view with cp1252 bytes;
+    _decoded_secure_text raises GenerationError, failing the explicit consumer assertion.
+    The corrected build must hash the original decoded text including its final newline.
+    """
+    from recall.generations import GenerationError
+
+    source = '# coding: cp1252\nNAME = "caf\u00e9"\n'
+    try:
+        _, rows = _source_build(manager, tmp_path, source, "owner/name", encoding="cp1252")
+    except GenerationError as exc:
+        raise AssertionError("the extracting reader must retain supported source decoding") from exc
+    assert [(text, meta[CODE_ANCHOR_KEY]) for text, meta in rows] == [
+        (text, meta[CODE_ANCHOR_KEY])
+        for text, meta in code_pieces(source, file="source.py", repo="owner/name")
+    ]

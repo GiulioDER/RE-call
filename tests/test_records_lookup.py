@@ -22,6 +22,9 @@ Invariants and the failure each one catches:
   successor hides a record only inside its own validity window (the trust gate's reading).
 - K13 a lookup reads only the code anchors it can match: an anchor query the asked files', a
   `kinds` without `code` none, and the lite and PostgreSQL reads select the same rows for each.
+- K14 `expired` is computed at `now`, a `valid_until` date lasting through that day in UTC, the
+  same through the store and through the memo-directory reader (NUM-001, owner 2026-10-27).
+- K15 a `valid_until` that does not read as a date is marked expired, never current.
 
 Red proof, recorded 2026-10-21 (K12 2026-10-22) on the deployment host inside the test bounds, each failing in its
 own assertion, then restored and green:
@@ -59,6 +62,13 @@ own assertion, then restored and green:
   (`record_rows_condition` ignoring `code_files`): "an anchor query read another file's code
   anchors", here and in `...::test_the_postgres_reads_narrow_the_code_anchors_alike`, whose
   pre-fix run is no proof (`_record_chunks` took no `code_files`: a TypeError).
+- K14 and K15 (NUM-001, 2026-10-27, on the deployment host inside the test bounds):
+  `...::test_expired_is_computed_at_now_through_the_last_day` on the pre-change lookup, which had
+  no `expired`: "store: at 2026-09-01T23:59:00+00:00 a record valid until 2026-09-01 read
+  expired=None, expected False"; with `_expired` mutated to CCA's date-only `<=`: the same
+  instant read "expired=True, expected False". `...::test_an_unreadable_valid_until_is_expired` on
+  the pre-change lookup and with the unreadable branch mutated to return False: "an unreadable
+  valid_until read as current".
 """
 
 from __future__ import annotations
@@ -410,3 +420,45 @@ def test_the_postgres_reads_narrow_the_code_anchors_alike(cli_table: str) -> Non
         assert read(None) == ["a", "b", "record"]
         assert read(["a.py"]) == ["a", "record"], "an anchor query read another file's code anchors"
         assert read([]) == ["record"], "a lookup that cannot match code read the code anchors"
+
+
+def test_expired_is_computed_at_now_through_the_last_day(tmp_path: Path) -> None:
+    """K14 (NUM-001, owner decision 2026-10-27): `expired` is computed at `now` by the rule the
+    trust gate reads `valid_until` with, a date lasting through that day in UTC, so no consumer
+    redoes the comparison. Through the store and through the memo-directory reader alike."""
+    from recall.records_files import load_memo_records, match_memo_records
+
+    folder = copy_memos(tmp_path / "memos")
+    dated = folder / "RE-call__0123456789ab__BUG-001.md"
+    dated.write_bytes(dated.read_bytes().replace(b"valid_from: 2026-08-04\n", b"valid_from: 2026-08-04\nvalid_until: 2026-09-01\n"))
+    store = indexed_lite_store(tmp_path, memos=folder)
+    memos = load_memo_records(folder)
+    last_minute = datetime(2026, 9, 1, 23, 59, tzinfo=UTC)
+    next_day = datetime(2026, 9, 2, 0, 0, 1, tzinfo=UTC)
+    for when, want in ((last_minute, False), (next_day, True)):
+        through_store = _by_id(lookup_records(store, repo=REPO, anchors=[_anchor(BUG_001)], now=when))
+        from_files = {r["id"]: r for r in match_memo_records(memos, repo=REPO, anchors=[_anchor(BUG_001)], kinds=["bug"], now=when)}
+        for name, found in (("store", through_store), ("memo directory", from_files)):
+            assert found[BUG_001["id"]].get("expired") is want, (
+                f"{name}: at {when.isoformat()} a record valid until 2026-09-01 read expired="
+                f"{found[BUG_001['id']].get('expired')!r}, expected {want}"
+            )
+    undated = _by_id(lookup_records(store, ids=[BUG_002["id"]], now=AFTER_ALL))
+    assert undated[BUG_002["id"]].get("expired") is False, "a record with no valid_until read as expired"
+
+
+def test_an_unreadable_valid_until_is_expired() -> None:
+    """K15: a `valid_until` that does not read as a date is not proof the record is current, so it
+    is marked expired (the indexer refuses such a memo; this pins the lookup's own answer)."""
+
+    class _Store:
+        tenant = "t"
+
+        def record_chunks(self, code_files: list[str] | None = None) -> list[Chunk]:
+            return [Chunk("c", "m.md", "", {"recall_record": BUG_002, "file": "m.md", "valid_until": "soon"})]
+
+        def supersession_all(self) -> tuple[dict[str, str], frozenset[str], dict[str, Any]]:
+            return {}, frozenset(), {}
+
+    found = _by_id(lookup_records(_Store(), ids=[BUG_002["id"]], now=AFTER_ALL))
+    assert found[BUG_002["id"]].get("expired") is True, "an unreadable valid_until read as current"
