@@ -492,7 +492,8 @@ class EmbeddingProfile:
         That is the answer to what those fields are for: they are not documentation, they are
         key material, and a change in any of them re-partitions the cache rather than silently
         serving vectors produced under the old value. ``dependencies`` carries the inference
-        library version, so a fastembed upgrade costs a re-embed, deliberately, because ONNX
+        library version, and for a FastEmbed profile the onnxruntime and tokenizers versions
+        beside it, so an upgrade of any of the three costs a re-embed, deliberately, because ONNX
         runtime changes are free to move the last bits of a vector and a cache cannot tell.
 
         Stability is the contract. Cached vectors outlive the process that wrote them, so

@@ -237,10 +237,18 @@ def test_a_built_embedder_carries_the_registry_identity_verbatim(
     # is only knowable at build time. Since the provider moves vectors — measured: CPU vs CUDA
     # changed top-45 membership on 2 of 64 queries — it is identity, so `build` must add it. What
     # "verbatim" protects is every field the registry DOES declare, all asserted above and all
-    # unchanged. This assertion is pinned to the exact key set rather than widened to a superset,
+    # unchanged. The same holds for the installed onnxruntime and tokenizers versions, which move
+    # vectors too and are only knowable on the host that builds the embedder.
+    # This assertion is pinned to the exact key set rather than widened to a superset,
     # so a future entry sneaking into a registered profile's dependencies still fails here.
     deps = dict(profile.dependencies)
-    assert deps.keys() == {"fastembed", "onnx-providers-source", "onnx-providers"}
+    assert deps.keys() == {
+        "fastembed",
+        "onnxruntime",
+        "tokenizers",
+        "onnx-providers-source",
+        "onnx-providers",
+    }
     assert deps["fastembed"], "the registry's own dependency entry must survive the wrap"
     # Whichever way the stub resolves, the two provider fields must AGREE about whether the
     # session was readable — a source of "session" alongside a value of "unavailable" (or the
