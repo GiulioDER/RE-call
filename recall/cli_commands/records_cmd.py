@@ -15,10 +15,17 @@ from pathlib import Path
 from typing import Any
 
 from recall.backends import lite_route_refusal, open_legacy_store
+from recall.cli_commands._lite import lite_read_meta
 from recall.lite import is_lite_dsn, lite_dsn_path
 from recall.records import RECORD_KINDS, RecordsQueryError, lookup_records
 from recall.runtime_route import RouteConfigurationError, RuntimeRoute, resolve_runtime_route
-from recall.store import DEFAULT_TABLE, PgVectorStore
+from recall.security_policy import (
+    AccessContext,
+    SourceSecurityPolicy,
+    access_context_from_environment,
+    load_source_policy,
+)
+from recall.store import PgVectorStore
 from recall.trust import terminal_safe
 
 
@@ -67,14 +74,36 @@ def _read_anchors(spec: str) -> Any:
         raise SystemExit(f"recall records: cannot read anchors from {spec!r}: {exc}") from exc
 
 
-def _lookup(store: Any, args: argparse.Namespace, anchors: Any) -> dict[str, Any]:
+def _lookup(
+    store: Any,
+    args: argparse.Namespace,
+    anchors: Any,
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> dict[str, Any]:
     if not args.all_records:
-        return lookup_records(store, repo=args.repo, anchors=anchors, ids=args.ids, kinds=args.kinds)
+        return lookup_records(
+            store,
+            repo=args.repo,
+            anchors=anchors,
+            ids=args.ids,
+            kinds=args.kinds,
+            security_policy=security_policy,
+            access_context=access_context,
+        )
     # One lookup, one snapshot, every record. Paging by separate calls read a separate snapshot per
     # page, and a legacy store has no generation id to tell them apart, so an index run landing
     # between pages duplicated or skipped records with `truncated` still false. A round-trip check
     # reads every record such a dump lacks as missing.
-    return lookup_records(store, repo=args.repo, kinds=args.kinds, all_records=True, limit=None)
+    return lookup_records(
+        store,
+        repo=args.repo,
+        kinds=args.kinds,
+        all_records=True,
+        limit=None,
+        security_policy=security_policy,
+        access_context=access_context,
+    )
 
 
 def _cmd_records(args: argparse.Namespace) -> None:
@@ -85,28 +114,29 @@ def _cmd_records(args: argparse.Namespace) -> None:
         raise SystemExit(f"recall records: {exc}") from exc
     if (refusal := lite_route_refusal(args.dsn, route)) is not None:
         raise SystemExit(refusal)
+    # The source policy `recall search` applies (RECALL_SOURCE_POLICY_FILE), so the CLI answers
+    # what the MCP tool answers under the same policy: a denied record is left out and a denied
+    # successor reads `<withheld>`.
+    security_policy = load_source_policy()
+    access_context = (
+        access_context_from_environment(args.tenant, purpose="retrieval")
+        if security_policy is not None
+        else None
+    )
     # No embedder: the lookup reads metadata only, so the width is a placeholder on PostgreSQL and
     # the width the file records on a lite store.
     dimension = 1
     if is_lite_dsn(args.dsn):
-        from recall.lite.inspect import lite_file_meta
-
-        if args.table != DEFAULT_TABLE:
-            raise SystemExit(
-                f"recall records: a lite store ({args.dsn}) has one table, '{DEFAULT_TABLE}'; "
-                f"--table {args.table!r} cannot be honoured. Use another sqlite:/// file instead"
-            )
-        path = lite_dsn_path(args.dsn)
-        if not path.exists():
-            # An empty corpus, as an empty PostgreSQL table reads; a lookup must not create the file.
+        meta = lite_read_meta("recall records", args)
+        if meta is None:
+            # A lookup must not create the file.
             _print({"tenant_id": args.tenant, "generation_id": None, "truncated": False, "records": []}, args)
             return
-        meta = lite_file_meta(path)
-        if meta is None or "dim" not in meta:
-            raise SystemExit(f"{path} is not a lite store (it has no RE-call meta table); nothing was read or written")
         if meta.get("tenant") != args.tenant:
             held = terminal_safe(meta.get("tenant"))
-            raise SystemExit(f"recall records: {path} holds tenant {held!r}; pass --tenant {held} to read it")
+            raise SystemExit(
+                f"recall records: {lite_dsn_path(args.dsn)} holds tenant {held!r}; pass --tenant {held} to read it"
+            )
         dimension = int(meta["dim"])
     if route.uses_generation:
         from recall.generation_store import GenerationStore
@@ -116,7 +146,7 @@ def _cmd_records(args: argparse.Namespace) -> None:
         store_context = open_legacy_store(args.dsn, dim=dimension, table=args.table, tenant=args.tenant)
     with store_context as store:
         try:
-            result = _lookup(store, args, anchors)
+            result = _lookup(store, args, anchors, security_policy, access_context)
         except RecordsQueryError as exc:
             raise SystemExit(f"recall records: {exc}") from exc
     _print(result, args)

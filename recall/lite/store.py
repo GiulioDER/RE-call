@@ -934,13 +934,16 @@ class LiteStore:
         finally:
             reader.close()
 
-    def record_chunks(self) -> list[Chunk]:
-        """Every chunk carrying an audit record or a code anchor, without passage text: the read behind
+    def record_chunks(self, code_files: Sequence[str] | None = None) -> list[Chunk]:
+        """Every chunk carrying an audit record or a code anchor (with `code_files`, only the code
+        anchors in those files), without passage text: the read behind
         `recall.records.lookup_records`, the same rows its PostgreSQL query returns."""
+        from recall.records import record_rows_condition
+
+        condition, params = record_rows_condition("sqlite", code_files)
         rows = self._metadata_values(
-            "SELECT id, source, metadata FROM chunks "
-            "WHERE json_type(metadata, '$.recall_record') IS NOT NULL "
-            "OR json_type(metadata, '$.code_anchor') IS NOT NULL ORDER BY id"
+            f"SELECT id, source, metadata FROM chunks WHERE {condition} ORDER BY id",  # noqa: S608  # a fixed condition, values bound
+            params,
         )
         return [Chunk(id=cid, source=source, text="", metadata=json.loads(metadata)) for cid, source, metadata in rows]
 
