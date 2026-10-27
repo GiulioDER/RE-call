@@ -17,7 +17,7 @@ import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from recall.errors import RecallError
@@ -27,6 +27,7 @@ __all__ = [
     "ConfigUnavailable",
     "RegisteredServer",
     "local_report",
+    "launcher_of",
     "registered_servers",
     "remote_report",
     "server_report",
@@ -36,6 +37,10 @@ REPORT_MODULE = "recall_mcp.config_report"
 DEFAULT_REMOTE_COMMAND = f"python3 -m {REPORT_MODULE} --json"
 REPORT_TIMEOUT_SECONDS = 30
 REPORT_VERSION = 1
+#: What an exit code says, given in place of the child's stderr.
+_EXIT_CAUSES = {255: "ssh could not connect or log in", 127: "a command was not found", 126: "a command could not run"}
+#: Programs a launch command can go through, so the server's settings live where they run.
+_LAUNCHERS = frozenset({"ssh", "bash", "sh", "zsh", "cmd", "powershell", "pwsh", "wsl", "docker", "podman"})
 
 
 class ConfigUnavailable(RuntimeError, RecallError):
@@ -62,9 +67,13 @@ def _run(argv: list[str], stdin: str | None = None) -> dict[str, Any]:
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ConfigUnavailable(f"{type(exc).__name__}: could not run the report") from exc
     if done.returncode != 0:
-        # Only the last line of stderr, and only its start: a traceback could quote an argument.
-        last = (done.stderr.strip().splitlines() or ["no output"])[-1][:200]
-        raise ConfigUnavailable(f"the report exited with {done.returncode}: {last}")
+        # Never the child's stderr: a shell sourcing an environment file prints a malformed line's
+        # value (`def: command not found`), ssh prints the host's address, and a traceback can quote
+        # an argument, none of it redacted. The exit code says which kind of failure it was.
+        cause = _EXIT_CAUSES.get(done.returncode, "the report failed")
+        if done.returncode == 255 and argv[:1] != ["ssh"]:
+            cause = "the report failed"  # 255 means ssh only when ssh ran
+        raise ConfigUnavailable(f"{cause} (exit {done.returncode}); run the command by hand to see why")
     try:
         report = json.loads(done.stdout)
     except ValueError as exc:
@@ -79,13 +88,33 @@ def local_report() -> dict[str, Any]:
     return _run([sys.executable, "-m", REPORT_MODULE, "--json"])
 
 
+def launcher_of(argv: list[str]) -> str | None:
+    """`ssh`, or the shell or container a launch command goes through, else None.
+
+    Such a server reads its settings where that command runs (`ssh host '. ~/.env && exec ...'`),
+    so its registered `env` block is not its configuration.
+    """
+    found: list[str] = []
+    for word in " ".join(argv).split():
+        name = PurePath(word.strip("'\"")).name.lower().removesuffix(".exe")
+        if name in _LAUNCHERS:
+            found.append(name)
+    return "ssh" if "ssh" in found else (found[0] if found else None)
+
+
 def server_report(server: RegisteredServer) -> dict[str, Any]:
-    """A registered server's `env` and launch command, redacted by the report process."""
+    """A registered server's `env` and launch command, redacted by the report process.
+
+    `launched_through` names the ssh or shell the command goes through, when it does: the report
+    then covers the env block and command as registered, not the settings the server runs with.
+    """
     env = server.entry.get("env")
     args = server.entry.get("args")
     argv = [str(server.entry.get("command", ""))] + ([str(a) for a in args] if isinstance(args, list) else [])
     payload = json.dumps({"env": dict(env) if isinstance(env, Mapping) else {}, "argv": argv})
-    return _run([sys.executable, "-m", REPORT_MODULE, "--json", "--env-from-stdin"], stdin=payload)
+    report = _run([sys.executable, "-m", REPORT_MODULE, "--json", "--env-from-stdin"], stdin=payload)
+    report["launched_through"] = launcher_of(argv)
+    return report
 
 
 def remote_report(host: str, command: str = DEFAULT_REMOTE_COMMAND) -> dict[str, Any]:

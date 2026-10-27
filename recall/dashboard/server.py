@@ -1363,15 +1363,25 @@ class DashboardApp:
     def _config_report_html(label: str, report: Mapping[str, Any], *, show_all: bool) -> str:
         """One redacted report as a card. Values arrive redacted; everything is still escaped."""
         problem = report.get("problem")
-        status = (
-            f"<p class='warn-text'>The server would refuse to start: {_e(problem)}</p>"
-            if problem else "<p class='ok-text'>Valid: the server's startup checks pass.</p>"
-        )
+        launcher = report.get("launched_through")
+        if launcher:
+            # Its settings are read where the command runs, often another host's environment file,
+            # so a verdict on the registered env block would be a verdict on the wrong thing.
+            status = (
+                f"<p class='warn-text'>Not checked: this server is launched through {_e(launcher)}, so it reads its "
+                "settings where that command runs. Shown here: only the env block and command as registered. "
+                "For a server on another host, start the dashboard with <code>--config-host</code>.</p>"
+            )
+        elif problem:
+            status = f"<p class='warn-text'>The server would refuse to start: {_e(problem)}</p>"
+        else:
+            status = "<p class='ok-text'>Valid: the server's settings validation passes.</p>"
         argv = report.get("argv")
         command = f"<p class='muted'>launch command</p><pre>{_e(' '.join(str(a) for a in argv))}</pre>" if argv else ""
         unknown = report.get("unknown_recall_variables") or []
         unknown_html = (
-            "<p class='warn-text'>Set but not in the schema, so nothing reads them (a typo?): "
+            "<p class='muted'>Set, but not in the MCP server's settings schema (a typo, or a variable "
+            "another part of RE-call reads, such as the CLI or this dashboard): "
             + ", ".join(f"<code>{_e(name)}</code>" for name in unknown) + "</p>"
         ) if unknown else ""
         rows: list[str] = []
@@ -1420,13 +1430,16 @@ class DashboardApp:
         body = (
             f"<p>{toggle}</p>" + "".join(cards)
             + "<p class='muted'>Each report comes from <code>python -m recall_mcp.config_report</code>, run where the values "
-            "live, so a secret is withheld before it reaches this page. Read-only: change settings where they are set.</p>"
+            "live. It withholds a value whose key is flagged secret or named like a credential, and replaces "
+            "credential shapes it recognises in the values it shows (URL userinfo, credential query parameters, "
+            "keyword passwords, authorization values); a credential in any other shape is shown. "
+            "Read-only: change settings where they are set.</p>"
         )
         return self._html(
             self._shell(
                 title="RE-call · configuration", active="config", root=self.root, pending=0,
                 eyebrow="system · configuration", heading="Configuration",
-                lede="What RE-call runs with here, in each registered MCP server, and on the remote host, with every secret withheld.",
+                lede="What RE-call runs with here, in each registered MCP server, and on the remote host, with credential values withheld.",
                 body=body,
             )
         )
