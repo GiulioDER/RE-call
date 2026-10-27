@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from recall_mcp import desktop_ingest as _s5b_desktop_ingest
-
 from types import SimpleNamespace
 
 import recall_mcp.compat as compat
@@ -13,12 +11,13 @@ import recall_mcp.lifecycle as lifecycle
 import recall_mcp.models as models
 import recall_mcp.provenance as provenance
 import recall_mcp.query_construction_api as query_construction_api
-import recall_mcp.reasoning_common as reasoning_common
 import recall_mcp.reasoning_admin as reasoning_admin
 import recall_mcp.reasoning_api as reasoning_api
+import recall_mcp.reasoning_common as reasoning_common
 import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
 import recall_mcp.status as status
+from recall_mcp import desktop_ingest as _desktop_ingest
 
 
 def test_legacy_service_search_forwards_to_retrieval(monkeypatch) -> None:
@@ -49,7 +48,7 @@ def test_legacy_service_search_forwards_the_settings_environment_snapshot(monkey
 
 def test_generation_boundary_forwards_without_requiring_service_at_import_time(monkeypatch) -> None:
     sentinel = object()
-    monkeypatch.setattr(_s5b_desktop_ingest, "generation_ingest", lambda *args: sentinel)
+    monkeypatch.setattr(_desktop_ingest, "generation_ingest", lambda *args: sentinel)
 
     assert generation_admin.generation_ingest("store", "embedder", "stage", "text") is sentinel
 
@@ -62,7 +61,7 @@ def test_generation_boundary_forwards_the_settings_environment_snapshot(monkeypa
         captured["kwargs"] = kwargs
         return "sentinel"
 
-    monkeypatch.setattr(_s5b_desktop_ingest, "generation_ingest", fake_ingest)
+    monkeypatch.setattr(_desktop_ingest, "generation_ingest", fake_ingest)
     environment = {"RECALL_MCP_TOOLS": "search", "RECALL_INDEX_MODE": "generation"}
 
     assert (
