@@ -8,9 +8,9 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 342
+Modules: 343
 Cross package edges: 359
-Source tree fingerprint: `2996250ebf55f6c151ae0b64721cd2795b9aef865c2b3b80ab4a1908d6ecc058`
+Source tree fingerprint: `804e719564ca53e8f9ff6fe33c5783f1a810dc3a629db661a595cc2e262fb1b4`
 
 ## Highest fan in modules
 
@@ -63,7 +63,7 @@ Source tree fingerprint: `2996250ebf55f6c151ae0b64721cd2795b9aef865c2b3b80ab4a19
 |---:|---|
 | 59 | `recall_mcp.service` |
 | 58 | `recall_mcp.server` |
-| 28 | `recall.cli_commands.index_search` |
+| 29 | `recall.cli_commands.index_search` |
 | 23 | `recall_mcp.retrieval` |
 | 22 | `recall.generations` |
 | 22 | `recall.trust` |
@@ -76,12 +76,12 @@ Source tree fingerprint: `2996250ebf55f6c151ae0b64721cd2795b9aef865c2b3b80ab4a19
 | 17 | `recall_mcp.indexing` |
 | 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall_mcp.semantic_graph_cache` |
+| 15 | `recall.generation_store` |
 | 15 | `recall.wizard.headless` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.dashboard.server` |
 | 14 | `recall.eval.promotion.__main__` |
-| 14 | `recall.generation_store` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.lite.refresh` |
@@ -100,7 +100,7 @@ Source tree fingerprint: `2996250ebf55f6c151ae0b64721cd2795b9aef865c2b3b80ab4a19
 | 11 | `recall.cli_commands.reasoning_cmd` |
 | 11 | `recall.desktop.ui` |
 | 11 | `recall.lite.calibration` |
-| 11 | `recall.wizard.pipeline` |
+| 11 | `recall.lite.store` |
 
 ## Cross package edges
 
@@ -494,6 +494,7 @@ They are observations, not automatic failures.
 | `recall.claude_code` | 5 | 116 |
 | `recall.cli` | 5 | 96 |
 | `recall.cli_commands` | 0 | 0 |
+| `recall.cli_commands._lite` | 3 | 94 |
 | `recall.cli_commands._shared` | 10 | 104 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
 | `recall.cli_commands.calibration_cmd` | 17 | 193 |
@@ -503,13 +504,13 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 11 | 108 |
 | `recall.cli_commands.graph_cmd` | 1 | 94 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 32 |
-| `recall.cli_commands.index_search` | 28 | 116 |
+| `recall.cli_commands.index_search` | 29 | 117 |
 | `recall.cli_commands.lint_check` | 7 | 108 |
 | `recall.cli_commands.lite_cmd` | 8 | 118 |
 | `recall.cli_commands.manifest_cmd` | 4 | 46 |
 | `recall.cli_commands.provenance_cmd` | 12 | 123 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 153 |
-| `recall.cli_commands.records_cmd` | 8 | 105 |
+| `recall.cli_commands.records_cmd` | 9 | 106 |
 | `recall.cli_commands.schema_cmd` | 2 | 105 |
 | `recall.cli_commands.secret_cmd` | 1 | 3 |
 | `recall.cli_commands.setup_wizard` | 16 | 162 |
@@ -607,7 +608,7 @@ They are observations, not automatic failures.
 | `recall.fix` | 7 | 27 |
 | `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 94 |
-| `recall.generation_store` | 14 | 93 |
+| `recall.generation_store` | 15 | 93 |
 | `recall.generation_types` | 2 | 13 |
 | `recall.generations` | 22 | 93 |
 | `recall.graph_first` | 2 | 28 |
@@ -630,7 +631,7 @@ They are observations, not automatic failures.
 | `recall.lite.receipts` | 3 | 93 |
 | `recall.lite.refresh` | 13 | 93 |
 | `recall.lite.setup` | 10 | 117 |
-| `recall.lite.store` | 10 | 93 |
+| `recall.lite.store` | 11 | 93 |
 | `recall.lite.writer_lock` | 1 | 93 |
 | `recall.manifest` | 3 | 14 |
 | `recall.memory_index` | 6 | 44 |
@@ -681,9 +682,9 @@ They are observations, not automatic failures.
 | `recall.reasoning_proposals._providers` | 3 | 34 |
 | `recall.reasoning_proposals.types` | 2 | 28 |
 | `recall.reasoning_response` | 7 | 106 |
-| `recall.records` | 6 | 32 |
-| `recall.records_files` | 4 | 35 |
-| `recall.related` | 8 | 97 |
+| `recall.records` | 7 | 33 |
+| `recall.records_files` | 4 | 36 |
+| `recall.related` | 9 | 97 |
 | `recall.rerank` | 4 | 15 |
 | `recall.retrieval_plan` | 1 | 1 |
 | `recall.retrieval_slo` | 0 | 0 |
