@@ -200,9 +200,12 @@ echo "mutating ${#patterns[@]} function(s) in ${#files[@]} file(s) against ${#te
 run_log="$(mktemp)"
 # A budget inside the job's timeout. When the runner kills a job at its timeout it shows "cancelled"
 # and reports nothing; a run stopped here reports every mutant it finished. SIGINT because that is
-# the signal mutmut handles: it stops its workers and keeps the results already saved (mutmut
-# 3.8.0, the `except KeyboardInterrupt` in `_run`). timeout(1) answers 124 when the budget ran out,
-# and 137 if the run then ignored SIGINT for --kill-after and was killed.
+# the signal mutmut handles, but only once it prints "Running mutation testing": from there it stops
+# its workers and keeps the results already saved (mutmut 3.8.0, the `except KeyboardInterrupt` in
+# `_run`). Before that, while it generates mutants, filters them with the type checker or runs the
+# stats and clean tests, SIGINT goes unhandled and nothing is saved, so a run stopped then tested no
+# mutant and is reported as such. timeout(1) answers 124 when the budget ran out, and 137 if the run
+# then ignored SIGINT for --kill-after and was killed (CI run 40530796478, in the type-check filter).
 # Into a file, then printed, rather than through `| tee`: a process that outlives mutmut keeps a
 # pipe open and tee waits for it, so the budget would stop mutmut and still hold the step until the
 # job's timeout (reproduced on 2026-10-02 with a backgrounded child, 5 s past a 1 s budget).
@@ -213,6 +216,15 @@ set -e
 cat "$run_log"
 budget_reached=0
 if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+  if ! grep -q "Running mutation testing" "$run_log"; then
+    {
+      echo
+      echo "Mutated: $(printf '`%s` ' "${files[@]}")"
+      echo
+      echo "**Time budget reached before mutation testing began** (MUTATION_BUDGET_SECONDS=$BUDGET): mutmut was still preparing (generating mutants, filtering them with the type checker, or running the stats and clean tests), so no mutant was tested and there are no results. Raise the budget or run \`MUTATE_FILES=\"...\" bash scripts/mutation_changed.sh\` on a Linux host."
+    } >>"$SUMMARY"
+    exit 0
+  fi
   budget_reached=1
 elif [ "$status" -ne 0 ]; then
   if grep -q "nothing matches" "$run_log"; then
