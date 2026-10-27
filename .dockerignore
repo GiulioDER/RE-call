@@ -3,6 +3,10 @@
 .github
 .claude
 .claude/**
+.recall
+.recall/**
+**/.recall
+**/.recall/**
 .agents
 .agents/**
 .codex
@@ -47,6 +51,14 @@ build
 *.sqlite
 *.sqlite3
 *.db
+*.db-wal
+*.db-shm
+*.sqlite3-wal
+*.sqlite3-shm
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite3-wal
+**/*.sqlite3-shm
 *.bin
 *.pt
 *.safetensors

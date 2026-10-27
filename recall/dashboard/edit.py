@@ -50,6 +50,7 @@ from recall.lint import (
     supersession_graph_of,
 )
 from recall.rewrite import RewriteRefused, _derived_value, set_derived_status
+from recall.state_dir import make_parent
 from recall.stale_reports import StaleReportRefused, resolve_memo
 from recall.truth_extraction.types import STATUS_VOCABULARY
 
@@ -305,7 +306,7 @@ class EditLedger:
 
     def __init__(self, root: Path) -> None:
         path = root / _LEDGER
-        path.parent.mkdir(parents=True, exist_ok=True)
+        make_parent(path)
         # Recovery must distinguish a dead writer from one between its durable prepare
         # and replacement. A separate database holds a process-shared reservation across
         # commits on the history database, and SQLite releases it after process death.

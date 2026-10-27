@@ -30,7 +30,7 @@ What it reads, and what it does not:
    permission decision, so the client's normal permission evaluation still applies; and it always
    exits 0.
 2. **It keeps every field of the original `tool_input`.** `updatedInput` replaces the whole input.
-3. **It fails open within about one second.** Any error, an unreadable source, or a wall clock
+3. **It fails open within about three seconds.** Any error, an unreadable source, or a wall clock
    past the budget leaves the prompt unchanged and appends one line naming the reason to
    `<claude config home>/logs/recall-auditor-brief.log`. The work runs on a daemon thread the hook
    stops waiting for, so even a source that hangs cannot hold the launch.
@@ -99,7 +99,10 @@ LOG_LINE_CHARS = 500
 #: Wall clock for the whole hook, from entry. `RECALL_AUDITOR_BRIEF_BUDGET` overrides it, within
 #: (0, `MAX_BUDGET_SECONDS`]: a thread join cannot wait longer than the platform's time limit, and
 #: a budget past the client's hook timeout would have the client kill the hook with no log line.
-BUDGET_SECONDS = 1.0
+#: Sized for a CCA L1 dispatch, which launches its auditors at once: measured 2026-10-27 on the
+#: Windows workstation, nine hooks at once against a 21-file diff spent 0.75 to 1.14 s in git and
+#: 0.3 s on anchors, so 1 s briefed 0 of 9 and 3 s 9 of 9, still inside a 5 s client timeout.
+BUDGET_SECONDS = 3.0
 MAX_BUDGET_SECONDS = 30.0
 LOG_NAME = "recall-auditor-brief.log"
 #: The parsed-memo cache, one file per memo directory, beside the log under the client's config home.

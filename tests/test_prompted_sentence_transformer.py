@@ -7,9 +7,13 @@ the index and the search path call: `embed_with_cache(..., purpose="passage")` a
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import math
+import re
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -231,3 +235,67 @@ def test_the_labelled_harness_measures_the_spelling_it_was_given(stub_st):
     from recall.eval.labelled import _make_embedder
 
     assert isinstance(_make_embedder(f"st-prompted:{BGE}"), PromptedSentenceTransformerEmbedder)
+
+
+#: A digest of every field of each pinned prompt set, keyed by model and version and transcribed by
+#: hand. The prompt text is not part of the embedder's identity: its name and profile carry the
+#: version in place of the text, so an entry edited in place keeps the identity of the vectors
+#: written under the old prompt. Changing an entry means a new version string and a new row here.
+_PROMPT_SET_DIGESTS = {
+    ("BAAI/bge-large-en-v1.5", "published-v1"): "18f15574500e9bed",
+    ("BAAI/bge-small-en-v1.5", "published-v1"): "a170099a4754064a",
+    ("Qwen/Qwen3-Embedding-0.6B", "published-v1"): "4f8244473bb35840",
+    ("Snowflake/snowflake-arctic-embed-l-v2.0", "published-v1"): "6db055d3da786682",
+    ("voyageai/voyage-4-nano", "published-v1"): "1c732685f8443311",
+}
+
+
+def _prompt_set_digest(prompts) -> str:
+    return hashlib.sha256(repr(dataclasses.astuple(prompts)).encode()).hexdigest()[:16]
+
+
+@pytest.mark.parametrize("model", sorted(PUBLISHED_PROMPTS))
+def test_a_changed_prompt_set_needs_a_new_version(model):
+    """Each pinned prompt set still matches the digest recorded for its model and version.
+
+    Failure mode caught: a query or document prompt edited without a version bump keeps the
+    embedder's name, profile id and fingerprint, so a store built under the old prompt keeps
+    serving as trusted while queries are encoded under the new one.
+
+    Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: editing `_BGE_QUERY` in
+    `recall/embedding_prompts.py` (dropping "relevant") with the version left at published-v1
+    failed both bge cases at the digest assertion. Restored, passes.
+    """
+    prompts = PUBLISHED_PROMPTS[model]
+    key = (model, prompts.version)
+    assert key in _PROMPT_SET_DIGESTS, f"{model} {prompts.version}: record its digest here"
+    assert _prompt_set_digest(prompts) == _PROMPT_SET_DIGESTS[key], (
+        f"{model}: a field changed under version {prompts.version!r}; give the entry a new version "
+        "(or, if a field was added to PromptSet itself, re-transcribe every digest here)"
+    )
+
+
+def test_every_prompted_model_has_a_licence_row():
+    """docs/MODEL_LICENSES.md has a row for every model `st-prompted:` can load.
+
+    Failure mode caught: a model added to PUBLISHED_PROMPTS without its licence read off the model
+    card, which is how four of them shipped.
+
+    It reads only its own section, because `BAAI/bge-small-en-v1.5` also appears in the default
+    stack's table, which would satisfy a whole-file search with the row here deleted.
+
+    Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: deleting the
+    bge-small-en-v1.5 row from this section (the default stack's row left in place), and separately
+    emptying the Qwen3-Embedding-0.6B licence cell, each failed at the `not missing` assertion
+    naming that model. Restored, passes.
+    """
+    doc = Path(__file__).resolve().parents[1] / "docs" / "MODEL_LICENSES.md"
+    text = doc.read_text(encoding="utf-8")
+    start = text.index("## Local embedders with published prompts")
+    end = text.find("\n## ", start + 1)
+    section = text[start:] if end == -1 else text[start:end]
+    missing = sorted(
+        model for model in PUBLISHED_PROMPTS
+        if not re.search(rf"^\| `{re.escape(model)}` \| [^|\s][^|]*\|", section, re.M)
+    )
+    assert not missing, f"docs/MODEL_LICENSES.md has no licence row for {missing}"

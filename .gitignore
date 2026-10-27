@@ -22,9 +22,10 @@ benchmarks/finetune/model*/
 benchmarks/finetune/_ce_run/
 calibration.json
 .claude/
-# RE-call's own per-folder state, wherever it appears: the review sidecar `recall dashboard` and
-# `recall_report_stale` keep beside a memo folder (reports, rejections, edits), and the SQLite store
-# `recall setup --lite` creates. All of it holds memo text or vectors, so none of it is committed.
+# RE-call's own per-folder state, wherever it appears: the review sidecars `recall dashboard` and
+# `recall_report_stale` keep beside a memo folder (reports, rejections, edits, lint dismissals), and
+# the SQLite store `recall setup --lite` creates. All of it holds memo text or vectors, so none of it
+# is committed. Not covered: `.recall-authors.json`, which sits beside the memos it describes.
 .recall/
 results/scale*/corpus/
 results/scale*/.recall-synthetic
