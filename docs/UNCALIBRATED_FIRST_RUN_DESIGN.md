@@ -36,7 +36,7 @@ a **tenant**.
 | Missing `generation_id` is `null` in `SearchResult`, while the optional explanation labels it `"legacy"` | the `generation_id=result.generation_id` field of the `SearchResult` that `search_memory` builds (in `recall_mcp/retrieval.py`) | confirmed. The two fields intentionally preserve different compatibility contracts |
 | `promote()` refuses in production, needs a flag otherwise | `GenerationManager.promote` (in `recall/generations.py`) | 🔁 **no longer true.** Confirmed when written. `promote()` now admits a generation whose published calibration certified and is still bound, and `unsafe_development` is refused in production rather than being the other way through. See F2 |
 | No generation means `INDEX_NOT_READY` **at the readiness endpoint** | `recall/readiness.py:116` | confirmed, but this is **not** the search path. See Q2 |
-| `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:759` | confirmed |
+| `calibration = None` is deliberate, and names an open design question | `recall/cli_commands/index_search.py:747` | confirmed |
 | Legacy `chunks` has no `source_sha256` **column** | `recall/store.py` (`DEFAULT_TABLE`) vs `recall_chunks_v1` | confirmed as stated, and **narrower than "nothing to reuse"**: the metadata carries `content_hash`, which is what F3 is about |
 
 ### Four findings that change the available answers
@@ -230,7 +230,7 @@ redirected. Section 6's claim that policy 1 is untouched does not survive withou
 
 ### Q: Is there an honest install time calibration binding that does not need a full build?
 
-**Yes, and `recall/cli_commands/index_search.py:759` was right to refuse the version that would have been dishonest.**
+**Yes, and `recall/cli_commands/index_search.py:747` was right to refuse the version that would have been dishonest.**
 
 The comment says: "Resolve that by deciding where install-time calibration binds, not by reinstating
 the line below." My answer is that **there is no honest process global calibration and there should

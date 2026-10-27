@@ -34,16 +34,17 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from importlib import resources
-from typing import Any
+from typing import Any, Literal
 
 from recall.errors import RecallError
 from recall.frontmatter import RECORD_KEY, RECORD_LABEL_KEYS, supersedes_targets
 from recall.observability import get_logger
+from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.supersession import store_supersession_graph
 from recall.types import Chunk
 
@@ -168,13 +169,8 @@ def _errors(value: Any, schema: Mapping[str, Any], path: str) -> list[str]:
     if isinstance(value, list):
         if len(value) < schema.get("minItems", 0):
             errors.append(f"{where}: fewer than {schema['minItems']} items")
-        if schema.get("uniqueItems"):
-            seen: list[Any] = []
-            for item in value:
-                if any(_equal(item, other) for other in seen):
-                    errors.append(f"{where}: items are not unique")
-                    break
-                seen.append(item)
+        if schema.get("uniqueItems") and not _unique(value):
+            errors.append(f"{where}: items are not unique")
         if "items" in schema:
             for index, item in enumerate(value):
                 errors.extend(_errors(item, schema["items"], f"{path}[{index}]"))
@@ -191,6 +187,30 @@ def _errors(value: Any, schema: Mapping[str, Any], path: str) -> list[str]:
     return errors
 
 
+def _unique(items: Sequence[Any]) -> bool:
+    """Whether no two of `items` are equal as `_equal` judges them, in linear time for scalars.
+
+    A pairwise check was quadratic, and the schema caps no array: one memo with thousands of
+    distinct `caused_by` ids held the index run (and the tenant's writer lock) for minutes. A
+    scalar is keyed by its JSON type, so ``1`` and ``True`` stay distinct while ``1`` and ``1.0``
+    collide, as `_equal` has them; only objects and arrays, which no version 1 array holds, are
+    still compared pairwise, among themselves.
+    """
+    seen: set[tuple[str, object]] = set()
+    containers: list[Any] = []
+    for item in items:
+        if isinstance(item, (dict, list)):
+            if any(_equal(item, other) for other in containers):
+                return False
+            containers.append(item)
+            continue
+        key = ("bool" if isinstance(item, bool) else "scalar", item)
+        if key in seen:
+            return False
+        seen.add(key)
+    return True
+
+
 def record_problem(value: Any) -> str | None:
     """Why `value` is not an admissible `recall_record`, or None when it is."""
     if isinstance(value, Mapping) and "__parse_error__" in value:
@@ -203,22 +223,29 @@ def record_problem(value: Any) -> str | None:
             f"recall_record version {version!r} is not one this RE-call reads "
             f"(it reads version {RECORD_VERSION}); the record was refused, not partly read"
         )
-    if _holds_nul(value):
-        # `\u0000` is valid JSON and decodes to U+0000, which PostgreSQL jsonb refuses: stored,
-        # it would fail the whole index run or generation build on PostgreSQL while a lite store
-        # accepted it. Refused here, so both stores index the memo without it.
-        return "recall_record holds U+0000 (NUL), which PostgreSQL cannot store"
+    if _holds_unstorable(value):
+        # JSON escapes decode to U+0000 and to unpaired surrogates, both of which PostgreSQL jsonb
+        # refuses: stored, either would fail the whole index run or generation build on
+        # PostgreSQL while a lite store accepted it. Refused here, so both stores index the memo
+        # without it.
+        return f"recall_record holds {_UNSTORABLE_TEXT}, which PostgreSQL cannot store"
     errors = _errors(value, record_schema(), "")
     return "; ".join(errors[:3]) if errors else None
 
 
-def _holds_nul(value: object) -> bool:
-    """Whether any string in `value`, key or value, contains U+0000. Iterative: no depth limit."""
+#: What `_holds_unstorable` looks for, as a refusal names it.
+_UNSTORABLE_TEXT = "U+0000 (NUL) or an unpaired UTF-16 surrogate"
+_UNSTORABLE = re.compile("[\x00\ud800-\udfff]")
+
+
+def _holds_unstorable(value: object) -> bool:
+    """Whether any string in `value`, key or value, holds a character PostgreSQL jsonb refuses:
+    U+0000, or a lone surrogate (U+D800 to U+DFFF). Iterative: no depth limit."""
     stack = [value]
     while stack:
         item = stack.pop()
         if isinstance(item, str):
-            if "\x00" in item:
+            if _UNSTORABLE.search(item):
                 return True
         elif isinstance(item, dict):
             stack.extend(item.keys())
@@ -232,12 +259,16 @@ def admit_record(meta: Mapping[str, object], source: str) -> dict[str, object]:
     """`meta` with its `recall_record` kept when valid, else removed with a warning naming `source`.
 
     The record's `name` and `description` labels (kept by the parser only beside a record) leave
-    with it, so metadata never carries labels for a record it does not hold.
+    with it, so metadata never carries labels for a record it does not hold. A label is decoded
+    from a JSON string, so it can hold the same unstorable text a record can; a record whose label
+    does is refused with it, never kept without its label.
     """
     admitted = dict(meta)
     if RECORD_KEY not in admitted:
         return admitted
     problem = record_problem(admitted[RECORD_KEY])
+    if problem is None and _holds_unstorable([admitted.get(key) for key in RECORD_LABEL_KEYS]):
+        problem = f"its name or description holds {_UNSTORABLE_TEXT}, which PostgreSQL cannot store"
     if problem is None:
         return admitted
     _log.warning("%s: recall_record ignored, the document is indexed without it: %s", source, problem)
@@ -486,8 +517,8 @@ def lookup_records(
     all_records: bool = False,
     limit: int | None = MAX_RECORDS,
     offset: int = 0,
-    security_policy: Any = None,
-    access_context: Any = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Records matching `anchors` (with `repo`), or `ids`, or every record; the C5 envelope.
@@ -507,6 +538,11 @@ def lookup_records(
     store's supersession graph the way the trust gate reads it: a successor hides its predecessor
     only inside its own validity window, a chain names its deepest valid member, and a path two
     roots hold is keyed by its source.
+
+    With a `security_policy` (and its `access_context`), a record in a file the caller may not
+    read is left out before any edge is derived, so it is never returned and never named in
+    another record's `caused`; a successor the caller may not read is reported as ``"<withheld>"``
+    (`WITHHELD`), never as None, which would present a superseded record as current.
     """
     forms = sum(x for x in (anchors is not None, ids is not None, bool(all_records)))
     if forms != 1:
@@ -523,18 +559,31 @@ def lookup_records(
     query_anchors = validated_anchor_query(repo, anchors) if anchors is not None else None
     wanted_ids = set(_string_list(ids, "ids")) if ids is not None else None
     wanted_kinds = validated_kinds(kinds)
-    if security_policy is not None and access_context is None:
-        raise RecordsQueryError("access_context is required when security_policy is configured")
+    policy: tuple[SourceSecurityPolicy, AccessContext] | None = None
+    if security_policy is not None:
+        if access_context is None:
+            raise RecordsQueryError("access_context is required when security_policy is configured")
+        policy = (security_policy, access_context)
+    # Which code-anchor rows can match: none when `kinds` leaves code out, and only the asked
+    # files' for an anchor query. Every chunk of a code tenant carries an anchor, so reading them
+    # all for a query that can only match a few files read the whole tenant. Filtering by the
+    # anchor's file keeps every chunk of a code record, so `chunk_ids` stays complete; an id query
+    # still reads them all, because a code record's id is a chunk id, not a file.
+    code_files: list[str] | None = None
+    if wanted_kinds is not None and "code" not in wanted_kinds:
+        code_files = []
+    elif query_anchors is not None:
+        code_files = sorted({query["file"] for query in query_anchors})
 
     snapshot = getattr(store, "snapshot", None)
     if callable(snapshot):
         with snapshot():
             generation_id = _generation_id(store)
-            chunks = _record_chunks(store)
+            chunks = _record_chunks(store, code_files=code_files)
             graph = store_supersession_graph(store)
     else:
         generation_id = _generation_id(store)
-        chunks = _record_chunks(store)
+        chunks = _record_chunks(store, code_files=code_files)
         graph = store_supersession_graph(store)
     instant = as_utc(now)
 
@@ -556,7 +605,7 @@ def lookup_records(
     # The source policy applies BEFORE any edge is derived: a record the caller may not read must
     # not surface through another record's `caused` list or `superseded_by` either.
     def allowed(file: str) -> bool:
-        return security_policy is None or bool(security_policy.decide(file, access_context).allowed)
+        return policy is None or policy[0].decide(file, policy[1]).allowed
 
     groups = {key: members for key, members in groups.items() if allowed(_file_of(members[0][0]))}
     by_source = {key: members[0] for key, members in groups.items()}
@@ -610,8 +659,43 @@ def lookup_records(
     }
 
 
-def _record_chunks(store: Any) -> list[Chunk]:
-    """Every chunk carrying an audit record or a code anchor, without passage text.
+def record_rows_condition(
+    dialect: Literal["postgres", "sqlite"], code_files: Collection[str] | None = None
+) -> tuple[str, tuple[object, ...]]:
+    """The SQL condition selecting the chunks a records lookup reads, and its parameters.
+
+    The one statement of which rows can be records (a chunk carrying `recall_record`, or a code
+    chunk's `code_anchor`), shared by the legacy table's read below, `GenerationStore` and
+    `LiteStore`, so the three cannot select different rows. `code_files`, when given, keeps only
+    the code-anchor rows whose anchor names one of those files; empty, it keeps none.
+    """
+    files = list(code_files or ())
+    parts: list[str] = []
+    params: list[object] = []
+    if dialect == "postgres":
+        parts.append("metadata ? %s")
+        params.append(RECORD_KEY)
+        if code_files is None:
+            parts.append("metadata ? %s")
+            params.append(CODE_ANCHOR_KEY)
+        elif files:
+            parts.append("metadata -> %s ->> 'file' = ANY(%s)")
+            params.extend([CODE_ANCHOR_KEY, files])
+    else:
+        parts.append("json_type(metadata, ?) IS NOT NULL")
+        params.append(f"$.{RECORD_KEY}")
+        if code_files is None:
+            parts.append("json_type(metadata, ?) IS NOT NULL")
+            params.append(f"$.{CODE_ANCHOR_KEY}")
+        elif files:
+            parts.append(f"json_extract(metadata, ?) IN ({', '.join('?' * len(files))})")
+            params.extend([f"$.{CODE_ANCHOR_KEY}.file", *files])
+    return "(" + " OR ".join(parts) + ")", tuple(params)
+
+
+def _record_chunks(store: Any, *, code_files: Collection[str] | None = None) -> list[Chunk]:
+    """Every chunk carrying an audit record or a code anchor, without passage text; with
+    `code_files`, only the code anchors in those files (`record_rows_condition`).
 
     `LiteStore` and `GenerationStore` answer this themselves. The legacy PostgreSQL store is asked
     here, through its own connection helper, rather than by a method on `PgVectorStore`: that
@@ -620,18 +704,18 @@ def _record_chunks(store: Any) -> list[Chunk]:
     """
     reader = getattr(store, "record_chunks", None)
     if callable(reader):
-        return list(reader())
+        return list(reader(code_files=code_files))
     from recall.store import PgVectorStore
 
     if not isinstance(store, PgVectorStore):
         raise RecordsQueryError(f"{type(store).__name__} cannot answer a records lookup")
     table, tenant = store.table, store.tenant
+    condition, params = record_rows_condition("postgres", code_files)
     rows = store._with_retry(
         lambda conn: conn.execute(
             f"SELECT id, source, metadata FROM {table} "  # noqa: S608  # a validated identifier
-            "WHERE tenant_id = %s AND (metadata ? 'recall_record' OR metadata ? 'code_anchor') "
-            "ORDER BY id",
-            (tenant,),
+            f"WHERE tenant_id = %s AND {condition} ORDER BY id",
+            (tenant, *params),
         ).fetchall()
     )
     return [Chunk(id=row[0], source=row[1], text="", metadata=row[2] or {}) for row in rows]
@@ -663,6 +747,7 @@ __all__ = [
     "match_candidates",
     "record_parts",
     "record_problem",
+    "record_rows_condition",
     "record_schema",
     "validated_anchor_query",
     "validated_kinds",

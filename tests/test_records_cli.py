@@ -9,6 +9,8 @@ Invariants and the failure each one catches:
 - C3 a lite file that does not exist lists nothing and is not created.
 - C4 the command is classified for lite (served), and the generation route is refused by name.
 - C5 under RECALL_INDEX_MODE=generation on PostgreSQL it reads the active generation (DB suite).
+- C6 under RECALL_SOURCE_POLICY_FILE it answers what the MCP tool answers: a denied record is
+  left out, never named in `caused`, and a denied successor reads `<withheld>`.
 
 Red proof, recorded on the deployment host inside the test bounds (C1 and C5 2026-10-22, the
 rest 2026-10-21):
@@ -23,6 +25,8 @@ rest 2026-10-21):
   positive and the lesson are printed too.
 - C4 `...::test_records_is_served_on_lite_and_refuses_the_generation_route`: `records` removed
   from `LITE_SERVED`.
+- C6 `...::test_the_source_policy_applies_as_it_does_to_the_mcp_tool` (CCA run 20261026T220018Z (PR 977 audit), 2026-10-26 on the deployment host inside the test bounds): on the pre-fix
+  `_cmd_records`, which loaded no policy: "a denied record was returned by ['--all', '--json']".
 """
 
 from __future__ import annotations
@@ -123,3 +127,30 @@ def test_records_is_served_on_lite_and_refuses_the_generation_route(
     monkeypatch.setenv("RECALL_INDEX_MODE", "generation")
     out = run_cli(["--dsn", lite_dsn(tmp_path / "memory.db"), "records", "--all"])
     assert "EXIT" in out and "no generations" in out, out
+
+
+def test_the_source_policy_applies_as_it_does_to_the_mcp_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C6: under RECALL_SOURCE_POLICY_FILE the CLI answers what the MCP tool answers, as
+    `recall search` does: a denied record is left out, never named in `caused`, and a denied
+    successor reads `<withheld>`."""
+    base = _indexed(tmp_path)  # indexed before the policy exists, so every memo is stored
+    denied = "RE-call__abcdef012345__BUG-002.md"
+    rules = [
+        {"prefix": name, "purposes": ["retrieval"], "principals": [], "redactions": []}
+        for name in EXPECTED
+        if name != denied
+    ]
+    policy = tmp_path / "policy.json"
+    policy.write_text(json.dumps({"default_deny": True, "rules": rules}), encoding="utf-8")
+    monkeypatch.setenv("RECALL_SOURCE_POLICY_FILE", str(policy))
+    for argv in (["--all", "--json"], ["--id", EXPECTED[denied]["id"], "--json"]):
+        envelope = json.loads(run_cli([*base, "records", *argv]))
+        found = {r["recall_record"]["id"]: r for r in envelope["records"]}
+        assert EXPECTED[denied]["id"] not in found, f"a denied record was returned by {argv}"
+    found = {r["recall_record"]["id"]: r for r in json.loads(run_cli([*base, "records", "--all", "--json"]))["records"]}
+    assert found[EXPECTED["RE-call__0123456789ab__BUG-001.md"]["id"]]["caused"] == [], (
+        "a denied record was named through `caused`"
+    )
+    assert found[EXPECTED["RE-call__fedcba987654__P2-4.md"]["id"]]["superseded_by"] == "<withheld>"

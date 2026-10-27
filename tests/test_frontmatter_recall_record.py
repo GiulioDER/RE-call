@@ -20,6 +20,13 @@ Invariants and the failure each one catches:
 - R9 a record holding U+0000 (written by `json.dumps` as the escape `\\u0000`) is refused with a
   reason on both stores: PostgreSQL jsonb cannot store it, so admitting it failed the whole
   generation build there while a lite store accepted it (R2's `nul` case is the lite half).
+- R10 a `name` or `description` holding U+0000 or a lone surrogate (decoded from a JSON escape, so
+  the file holds no such byte) refuses its record, which leaves with its labels.
+- R11 R9 for a lone surrogate in the record and for both kinds of unstorable label: the
+  PostgreSQL generation build indexes the memo without its record instead of failing (R2's
+  `surrogate` case and R10 are the lite half).
+- R12 `uniqueItems` is checked in linear time: a record with thousands of distinct `caused_by`
+  ids validates without comparing every pair.
 
 Red proof, recorded 2026-10-21 on the deployment host inside the test bounds, each test failing
 in its own assertion, then restored and green:
@@ -46,6 +53,15 @@ in its own assertion, then restored and green:
   `...::test_a_nul_record_does_not_fail_a_postgres_generation_build`: the `_holds_nul` check in
   `record_problem` disabled: lite stores the record ("an invalid record was stored"), and the
   PostgreSQL build raises ("a NUL in a recall_record failed the generation build").
+- R2[surrogate], R10, R11, R12 (CCA run 20261026T220018Z (PR 977 audit), 2026-10-26 on the deployment host inside the test bounds), each run on the pre-fix production files with the
+  new tests, failing in its own assertion, then green on the fix:
+  `...::test_invalid_record_warns_and_indexes_without_it[surrogate]`: "an invalid record was
+  stored"; `...::test_an_unstorable_label_refuses_its_record[nul-label]` and `[surrogate-label]`:
+  "a record with an unstorable label was stored"; `...::test_unstorable_text_does_not_fail_a_postgres_generation_build`
+  (all three cases): PostgreSQL itself refused the build, "Unicode low surrogate must follow a
+  high surrogate" and "\\u0000 cannot be converted to text"; `...::test_uniqueness_is_checked_in_linear_time`:
+  "1999015 comparisons for 2000 distinct ids". Mutation on the fix, `_UNSTORABLE` narrowed to
+  NUL: R2[surrogate], R10[surrogate-label] and R11[surrogate-record] red again.
 """
 
 from __future__ import annotations
@@ -138,6 +154,12 @@ def _index_one(tmp_path: Path, text: str) -> tuple[LiteStore, Path]:
             "U+0000",
             id="nul",
         ),
+        pytest.param(
+            # `json.dumps` writes a lone surrogate as its escape too; jsonb refuses it as it does NUL.
+            json.dumps({**EXPECTED["RE-call__0123456789ab__BUG-001.md"], "summary": "before" + chr(0xD800) + "after"}),
+            "unpaired UTF-16 surrogate",
+            id="surrogate",
+        ),
     ],
 )
 def test_invalid_record_warns_and_indexes_without_it(
@@ -207,6 +229,97 @@ def test_a_nul_record_does_not_fail_a_postgres_generation_build(
     assert rows and not any(row[0] for row in rows), "the memo must be indexed without its record"
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert any("U+0000" in w for w in warnings), warnings
+
+
+#: A memo's `description`, written by CCA as a JSON string literal, holding what jsonb refuses.
+UNSTORABLE_LABELS = [
+    pytest.param("before" + chr(0) + "after", id="nul-label"),
+    pytest.param("before" + chr(0xDC00) + "after", id="surrogate-label"),
+]
+
+
+def _memo_with_description(description: str) -> str:
+    record = json.dumps(EXPECTED["RE-call__0123456789ab__BUG-001.md"])
+    return (
+        f"---\nname: broken-memo\ndescription: {json.dumps(description)}\nvalid_from: 2026-10-21\n"
+        f"recall_record: {record}\n---\n\n# A memo\n\nIts body is still evidence.\n"
+    )
+
+
+@pytest.mark.parametrize("description", UNSTORABLE_LABELS)
+def test_an_unstorable_label_refuses_its_record(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, description: str
+) -> None:
+    """R10: a label is decoded from a JSON string, so its escapes become the characters jsonb
+    refuses although the file holds no such byte; the record leaves with its labels."""
+    with caplog.at_level(logging.WARNING, logger="recall.records"):
+        store, memo = _index_one(tmp_path, _memo_with_description(description))
+    chunks = list(store.iter_chunks())
+    assert chunks, "the memo itself must still be indexed"
+    assert all(RECORD_KEY not in c.metadata for c in chunks), "a record with an unstorable label was stored"
+    assert all("description" not in c.metadata for c in chunks), "an unstorable label was stored"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(str(memo) in w and "PostgreSQL cannot store" in w for w in warnings), warnings
+
+
+@requires_db
+@pytest.mark.parametrize(
+    "memo",
+    [
+        pytest.param(
+            _memo_with_record(
+                json.dumps({**EXPECTED["RE-call__0123456789ab__BUG-001.md"], "summary": "a" + chr(0xD800) + "b"})
+            ),
+            id="surrogate-record",
+        ),
+        *(pytest.param(_memo_with_description(p.values[0]), id=p.id) for p in UNSTORABLE_LABELS),
+    ],
+)
+def test_unstorable_text_does_not_fail_a_postgres_generation_build(
+    manager, caplog: pytest.LogCaptureFixture, memo: str  # noqa: F811  # the imported fixture
+) -> None:
+    """R11: R9 for the other text jsonb refuses, a lone surrogate and a decoded label."""
+    data = memo.encode("utf-8")
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    with caplog.at_level(logging.WARNING, logger="recall.records"):
+        try:
+            generation = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+        except Exception as exc:  # noqa: BLE001  # any failure of the build is the defect
+            pytest.fail(f"unstorable text in a recall_record or its label failed the generation build: {exc!r}")
+    with manager._connect() as conn:
+        rows = conn.execute(
+            "SELECT metadata ? 'recall_record' FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (manager.tenant_id, generation),
+        ).fetchall()
+    assert rows and not any(row[0] for row in rows), "the memo must be indexed without its record"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("PostgreSQL cannot store" in w for w in warnings), warnings
+
+
+def test_uniqueness_is_checked_in_linear_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R12: `uniqueItems` compared every pair, and the schema caps no array, so one memo with a
+    few thousand distinct `caused_by` ids held the index run for minutes. Counted, not timed."""
+    import recall.records as records
+
+    calls = 0
+    real_equal = records._equal
+
+    def counted(a: object, b: object) -> bool:
+        nonlocal calls
+        calls += 1
+        return real_equal(a, b)
+
+    monkeypatch.setattr(records, "_equal", counted)
+    many = [f"RE-call:{i:012x}:BUG-{i:04d}" for i in range(2000)]
+    assert record_problem({**EXPECTED["RE-call__abcdef012345__BUG-002.md"], "caused_by": many}) is None
+    assert calls < 2000, f"{calls} comparisons for 2000 distinct ids: uniqueness is quadratic"
+    # The judgement itself is `_equal`'s: JSON types stay distinct, equal numbers collide.
+    assert records._unique([1, True, "1", None, 0, False])
+    assert not records._unique([1, 1.0])
+    assert not records._unique(["a", "b", "a"])
+    assert not records._unique([{"a": [1]}, {"a": [1]}])
 
 
 @requires_db
