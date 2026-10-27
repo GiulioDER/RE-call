@@ -49,6 +49,7 @@ restored byte for byte and green:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -185,15 +186,36 @@ def test_report_text_is_escaped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         f"Authorization: Bearer {PLACEHOLDER}",
         f"postgresql://h/db?sslmode=require&sslpassword={PLACEHOLDER}",
         f"host=a;sslpassword={PLACEHOLDER}",
+        f"postgresql://u:pa#{PLACEHOLDER}@db/recall",
+        f"postgresql://u:pa?{PLACEHOLDER}@db/recall",
+        f"https://h.example/x?token=ab#{PLACEHOLDER}",
+        f"https://u:p@h.example?token=ab@{PLACEHOLDER}",
+        f"https://h.example/x?token=a#Bearer {PLACEHOLDER}",
+        f"Authorization: Bearer token=?{PLACEHOLDER}",
+        f"Bearer https://u:{PLACEHOLDER}@h.example/x",
+        f"Basic password= {PLACEHOLDER}",
+        f"Bearer Bearer {PLACEHOLDER}",
+        f"?token=https://=;@{PLACEHOLDER}",
+        f"h&key=Basic sig=Bearer {PLACEHOLDER}",
     ],
 )
 def test_a_shown_value_loses_every_credential_shape(value: str) -> None:
     """F6. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: restoring the
-    #903 `redact_value` (a `user:password@` rule and an unquoted keyword rule only) failed every
-    parameter at "a credential survived in a shown value". Restored, passes. The readability side
+    #903 `redact_value` (a `user:password@` rule and an unquoted keyword rule only) failed the first
+    eight parameters at "a credential survived in a shown value" (#903 itself redacts the
+    `sslpassword` and the `#`/`?` ones). Restored, passes. The readability side
     (`test_ordinary_urls_stay_readable`) failed on `?author=` with a query rule that matched a
     credential word anywhere in the parameter name. The `sslpassword` parameters (found in review)
-    failed at "a credential survived in a shown value" without `(?:ssl)?` in the query rule."""
+    failed at "a credential survived in a shown value" without `(?:ssl)?` in the query rule. The
+    `#` and `?` parameters (found by the security review of the committed fix) failed the same way
+    with `?#` excluded from the userinfo and `#` ending a query value; #903 itself redacted them.
+    `https://u:p@...?token=ab@...` (found by the audit of that fix) failed with the userinfo rule
+    run before the query rule; the readable `?x=a@b` URLs failed with a userinfo rule that let `?`
+    in before a `:`. `?token=a#Bearer ...` (found in review) failed with the authorization rule
+    applied only after the span step, and the four `Bearer`/`Basic` parameters after it failed with
+    the rules applied one after another instead of as one set of spans. `?token=https://=;@...`
+    failed with a single pass of the span step, and `Basic sig=Bearer ...` with authorization
+    matches that could not overlap."""
     from recall_mcp.config_report import redact_value
 
     assert PLACEHOLDER not in redact_value(value), "a credential survived in a shown value"
@@ -206,7 +228,8 @@ def test_ordinary_urls_stay_readable() -> None:
     from recall_mcp.config_report import redact_value
 
     for plain in ("https://api.openai.com/v1", "https://h.example/x?lang=it&top=5", "https://host/path/@user",
-                  "https://h.example/x?author=me&design=a&keyword=k"):
+                  "https://h.example/x?author=me&design=a&keyword=k", "https://host.example?x=a@b",
+                  "postgresql://dbhost?user=bob@corp.example", "https://host.example#me@x"):
         assert redact_value(plain) == plain
 
 
@@ -288,3 +311,57 @@ def test_a_server_launched_through_ssh_is_not_called_valid(tmp_path: Path, monke
     assert "default" in everything.body.decode()
     assert config.launcher_of(["bash", "-lc", "ssh host 'exec python -m recall_mcp.server'"]) == "ssh"
     assert config.launcher_of(["python", "-m", "recall_mcp.server"]) is None
+
+
+#: #903's own redaction rules, as merged at 8c11a14ae, kept here as the reference: no later change
+#: may show a value these two hid.
+_REFERENCE_URL_PASSWORD = re.compile(r"(?P<head>[a-z][a-z0-9+.-]*://[^/@\s:]*:)(?P<pw>[^/@\s]+)(?P<at>@)", re.I)
+_REFERENCE_KEYWORD_PASSWORD = re.compile(
+    r"(?P<head>(?:^|[\s?&;])(?:password|passwd|sslpassword|api_key|apikey|token|secret)=)(?P<pw>[^\s&;]+)", re.I
+)
+
+
+def _reference_redact(value: str) -> str:
+    value = _REFERENCE_URL_PASSWORD.sub(lambda m: f"{m.group('head')}***{m.group('at')}", value)
+    return _REFERENCE_KEYWORD_PASSWORD.sub(lambda m: f"{m.group('head')}***", value)
+
+
+def _reference_shapes() -> list[str]:
+    """Values built from every shape the reference rules cover, with awkward characters around
+    the secret: the URL password rule's three forms, and each keyword in each position."""
+    chars = ["", "@", "?", "#", ":", "&", ";", "=", "%", "!", "&token=y", ";key=y", "?sig=y"]
+    out = []
+    for before in chars:
+        for after in chars:
+            secret = f"p{before}{PLACEHOLDER}{after}q"
+            out += [f"postgresql://u:{secret}@db/recall", f"postgresql://u:{secret}@db", f"redis://:{secret}@h:6379/0"]
+    for word in ("password", "passwd", "sslpassword", "api_key", "apikey", "token", "secret", "PASSWORD", "Token"):
+        for sep in ("", "?", "&", ";", " "):
+            for c in ("", "#", "?", "@", "=", ":", "'", '"', "%"):
+                out += [
+                    f"x{sep}{word}=v{c}{PLACEHOLDER}", f"{word}=v{c}{PLACEHOLDER}",
+                    f"https://h/x?a=1{sep if sep in '&;' else '&'}{word}=v{c}{PLACEHOLDER}",
+                    f"host=db {word}=v{c}{PLACEHOLDER} port=1",
+                ]
+    return out
+
+
+def test_every_shape_903_redacted_is_still_redacted() -> None:
+    r"""F11: parity with #903's own rules. Every generated value they hid is still hidden.
+
+    Failure mode caught: a later narrowing of a regex (the committed fix after #903 excluded `?#`
+    from the URL password and ended a query value at `#`) shows credentials #903 withheld, with
+    every hand-picked test still green.
+
+    Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: restoring a5399dc96's
+    `_URL_USERINFO` (`[^\s/?#]*`), and separately its `_QUERY_CREDENTIAL` value (`[^&\s#;]+`), each
+    failed at "a shape #903 redacted is shown again" (141 and 63 shapes); applying the two rules one
+    after the other, query first, failed on passwords holding `&token=`, `;key=` or `?sig=`.
+    Restored, passes.
+    """
+    from recall_mcp.config_report import redact_value
+
+    shapes = _reference_shapes()
+    assert len(shapes) > 1500
+    leaked = [v for v in shapes if PLACEHOLDER not in _reference_redact(v) and PLACEHOLDER in redact_value(v)]
+    assert not leaked, f"a shape #903 redacted is shown again ({len(leaked)}): {leaked[:5]}"

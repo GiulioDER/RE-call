@@ -58,16 +58,25 @@ _FLAG_WORD = (
     r"(?:key|(?:[\w-]*[-_])?(?:api[-_]?key|access[-_]?key|secret[-_]?key|private[-_]?key|token|secret"
     r"|password|passwd|pass|pwd|bearer))"
 )
-#: Everything between `scheme://` and the `@` before the host: `user:password@`, `token@`, and a
-#: password holding an unencoded `@` (the last `@` before the path ends the userinfo).
-_URL_USERINFO = re.compile(r"(?P<head>[a-z][a-z0-9+.-]*://)(?P<userinfo>[^\s/?#]*)@", re.I)
+#: Everything between `scheme://` and the `@` before the host: `token@`, or `user:password@` where
+#: the PASSWORD may hold an unencoded `@`, `?` or `#` (the last `@` before the path ends it). A `?`
+#: or `#` counts as userinfo only after the `:`, so in `https://host?x=a@b` or
+#: `postgresql://dbhost?user=bob@corp.com` the `@` belongs to the query and the host stays shown.
+#: With a port (`dbhost:5432?user=bob@corp.com`, `host:443#me@x`) the `:` cannot be told from a
+#: password's, so the
+#: host, port and query are withheld up to that `@`: over-redaction, chosen over showing a password
+#: that starts with digits and holds a `?`.
+_URL_USERINFO = re.compile(
+    r"(?P<head>[a-z][a-z0-9+.-]*://)(?P<userinfo>[^\s/?#:]*:[^\s/]*|[^\s/?#]*)@", re.I
+)
 #: A query parameter whose NAME ends in a whole credential word: `?key=`, `?apiKey=`,
 #: `?access_token=`, `&sig=`, `X-Amz-Signature=`, `X-Amz-Credential=`, `?password=`, libpq's
-#: `?sslpassword=`. `?author=`,
+#: `?sslpassword=`. The value runs to the next `&`, `;` or whitespace, through any `#` or `@` in it.
+#: `?author=`,
 #: `&design=` and `&keyword=` stay readable.
 _QUERY_CREDENTIAL = re.compile(
     r"(?P<head>[?&;](?:[\w.-]*[_.-])?(?:api_?key|key|token|secret|(?:ssl)?passw(?:or)?d|pwd|sig|signature|auth"
-    r"|credentials?)=)(?P<value>[^&\s#;]+)",
+    r"|credentials?)=)(?P<value>[^&\s;]+)",
     re.I,
 )
 #: libpq keyword form, `host=x password=y` or `password = 'a b'`, as `recall.store` parses it.
@@ -77,7 +86,15 @@ _KEYWORD_PASSWORD = re.compile(
     re.I,
 )
 #: An HTTP authorization value: `Authorization: Bearer x`, `Basic x`.
-_AUTHORIZATION = re.compile(r"(?P<head>\b(?:Bearer|Basic)\s+)[A-Za-z0-9._~+/=-]+", re.I)
+#: The value is never the scheme word itself, so in `Bearer Bearer x` it is `x`. Matched inside a
+#: lookahead so overlapping matches are all found: in `Basic sig=Bearer x` one value runs over the
+#: next `Bearer`, and its own value `x` must still be withheld.
+_AUTHORIZATION = re.compile(
+    r"(?=(?P<head>\b(?:Bearer|Basic)\s+)(?P<value>(?!(?:Bearer|Basic)\b)[A-Za-z0-9._~+/=-]+))", re.I
+)
+
+#: Enough for any nesting a configuration value holds; each pass only withholds more.
+_REDACTION_PASSES = 4
 
 _SCHEMA = {spec.name: spec for spec in ENVIRONMENT_SCHEMA}
 
@@ -90,13 +107,46 @@ def withheld(name: str) -> bool:
     return name not in _NOT_A_CREDENTIAL and bool(_CREDENTIAL_NAME.search(name))
 
 
+def _withhold_spans(value: str) -> str:
+    """One pass: every rule matched on `value` as given, overlapping spans withheld together."""
+    spans = sorted(
+        [m.span("userinfo") for m in _URL_USERINFO.finditer(value)]
+        + [m.span("value") for m in _QUERY_CREDENTIAL.finditer(value)]
+        + [m.span("pw") for m in _KEYWORD_PASSWORD.finditer(value)]
+        + [m.span("value") for m in _AUTHORIZATION.finditer(value)]
+    )
+    merged: list[list[int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    pieces: list[str] = []
+    at = 0
+    for start, end in merged:
+        pieces += [value[at:start], "***"]
+        at = end
+    return "".join(pieces) + value[at:]
+
+
 def redact_value(value: str) -> str:
     """`value` with URL userinfo, credential query parameters, libpq keyword passwords and
-    authorization values replaced by `***`."""
-    value = _URL_USERINFO.sub(lambda m: f"{m.group('head')}***@", value)
-    value = _QUERY_CREDENTIAL.sub(lambda m: f"{m.group('head')}***", value)
-    value = _KEYWORD_PASSWORD.sub(lambda m: f"{m.group('head')}***", value)
-    return _AUTHORIZATION.sub(lambda m: f"{m.group('head')}***", value)
+    authorization values replaced by `***`.
+
+    Every rule is matched on the value as given, and the spans are withheld together where they
+    overlap. Applied one after another, each rule's `***` hides a match another rule needed: a query
+    value can hold an `@` (`?token=a@b`), a password can hold a query (`u:p&token=x@db`), and an
+    authorization value can run into a following `token=` or URL. Where spans overlap, what lies
+    between them is withheld too (`postgresql://***` for `u:p&token=x@db/recall`). The pass repeats
+    until nothing changes, because a value nested in another (a URL inside a query value) only
+    becomes a match once the outer one is withheld; each pass only withholds more.
+    """
+    for _ in range(_REDACTION_PASSES):
+        redacted = _withhold_spans(value)
+        if redacted == value:
+            break
+        value = redacted
+    return value
 
 
 #: `NAME=value` inside an argument, as an ssh command string or `env NAME=value` carries it.
