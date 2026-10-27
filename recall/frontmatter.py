@@ -3,7 +3,8 @@
 A document may begin with a ``---`` line, followed by ``key: value`` lines, closed by ``---``.
 Only VALIDITY_KEYS and the namespaced ``recall_graph`` JSON object are meaningful to recall;
 the graph object may additionally carry an authored ``authority`` tier and exact source
-``depends_on`` references. Unknown keys are ignored and the returned body always excludes the block. Dates are ISO
+``depends_on`` references. An audit record, ``recall_record``, is one more one-line JSON object,
+returned as written (see `recall.records`). Unknown keys are ignored and the returned body always excludes the block. Dates are ISO
 ``YYYY-MM-DD``, interpreted in UTC: ``valid_from`` starts at 00:00:00 (inclusive),
 ``valid_until`` ends at 23:59:59.999999 (inclusive end of day). ``recall_graph`` must be a
 single line of JSON so this deliberately small parser does not pretend to be a YAML parser.
@@ -20,8 +21,19 @@ from datetime import datetime, time, timezone
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
+from recall.errors import RecallError
+
 VALIDITY_KEYS = ("valid_from", "valid_until", "supersedes")
+#: The one validity key that may hold several values. Read it with `supersedes_targets`.
+SUPERSEDES = "supersedes"
 GRAPH_KEY = "recall_graph"
+#: An audit record: one line of JSON, kept exactly as authored. `recall.records.admit_record`
+#: validates it where metadata is written; this parser only reads it. Metadata, not a truth claim:
+#: it never touches validity, which stays in `valid_from` and `supersedes`.
+RECORD_KEY = "recall_record"
+#: The memo labels a record is returned with. Kept ONLY beside a `recall_record`, so the metadata
+#: of every other document is unchanged by this parser learning them.
+RECORD_LABEL_KEYS = ("name", "description")
 Authority = Literal[
     "policy",
     "user_confirmed_decision",
@@ -130,6 +142,10 @@ _SEQUENCE_ITEM = re.compile(r"-(\s|$)")
 
 #: The closing bracket of a flow collection written across several lines, at column 0. Same
 #: ordering argument as `_SEQUENCE_ITEM`: it belongs to the key that opened the collection.
+#: One item of a block sequence, at any indent: ``  - name.md``. Used only for `supersedes`,
+#: right after its key line, so a bullet anywhere else is never read as a reference.
+_BLOCK_ITEM = re.compile(r"^\s*-\s+(\S.*?)\s*$")
+
 _FLOW_CLOSER = re.compile(r"[\]}],?\s*$")
 
 #: The line separators `str.splitlines` honours and ``split("\n")`` does not. `document_title`
@@ -289,11 +305,30 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
         return {}, text
     lines = text.split("\n")
     meta: dict[str, object] = {}
-    for line in lines[1:span]:
+    labels: dict[str, str] = {}
+    targets: list[str] | None = None
+    block = lines[1:span]
+    index = 0
+    while index < len(block):
+        line = block[index]
+        index += 1
         if ":" in line:
             key, _, value = line.partition(":")
             key = key.strip()
-            if key in VALIDITY_KEYS:
+            if key == SUPERSEDES:
+                # Every spelling the spec allows (section 5: the key repeated, or a sequence
+                # value) accumulates into one list, so no form silently loses a target: a
+                # repeated key used to keep only its last line, and a block sequence read as
+                # the empty string, which says "supersedes nothing".
+                targets = targets if targets is not None else []
+                value = value.strip()
+                if value:
+                    targets.extend(_reference_items(value))
+                else:
+                    while index < len(block) and (item := _BLOCK_ITEM.match(block[index])):
+                        targets.append(_unquote(item.group(1).strip()))
+                        index += 1
+            elif key in VALIDITY_KEYS:
                 meta[key] = _unquote(value.strip())
             elif key in FACET_KEYS:
                 value = _unquote(value.strip())
@@ -316,7 +351,102 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
                     meta[key] = {"__parse_error__": "recall_graph must be one-line JSON"}
                 else:
                     meta[key] = parsed
+            elif key == RECORD_KEY:
+                try:
+                    meta[key] = json.loads(value.strip())
+                except (ValueError, RecursionError):
+                    # Kept as a marker, so the writer of chunk metadata can warn naming the file
+                    # (`recall.records.admit_record`) rather than the record vanishing in silence.
+                    # RecursionError too: a line nested thousands deep is not JSON this code can
+                    # read, and it must not stop the index run or the generation build.
+                    meta[key] = {"__parse_error__": "recall_record must be one line of JSON"}
+            elif key in RECORD_LABEL_KEYS and line[:1].strip():
+                labels[key] = _label_value(value.strip())
+    if targets is not None:
+        meta[SUPERSEDES] = _supersedes_value(targets)
+    if RECORD_KEY in meta:
+        meta.update(labels)
     return meta, "\n".join(lines[span + 1 :]).lstrip("\n")
+
+
+def _label_value(value: str) -> str:
+    """A `name` or `description` value: a double-quoted one decoded as JSON, else unquoted.
+
+    CCA writes a description as a JSON string literal, which is also a YAML double-quoted scalar,
+    so an escaped quote inside it (``\\"``) reads back as the quote it stands for.
+    """
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(decoded, str):
+                return decoded
+    return _unquote(value)
+
+
+def _flow_items(value: str) -> list[str] | None:
+    """The items of a one-line flow sequence ``[a.md, b.md]``, or None when `value` is not one.
+
+    ``[[name]]`` and ``[name]`` are NOT sequences: both are how authors write a single
+    wikilink, and `supersedes_key` has always read them as one reference. A comma is what
+    separates the two readings, which is why ``[name]`` stays one reference and ``[]`` is an
+    empty sequence. A file name containing a comma inside single brackets is the one spelling
+    read differently from before, and it never resolved: `supersedes_key` kept the comma.
+    """
+    v = value.strip()
+    if len(v) < 2 or v[0] != "[" or v[-1] != "]" or v.startswith("[["):
+        return None
+    inner = v[1:-1]
+    if inner.strip() and "," not in inner:
+        return None
+    return [_unquote(item.strip()) for item in inner.split(",") if item.strip()]
+
+
+def _reference_items(value: str) -> list[str]:
+    """One `supersedes` value as its references: a flow sequence's items, else the value."""
+    items = _flow_items(value)
+    if items is not None:
+        return items
+    single = _unquote(value.strip())
+    return [single] if single else []
+
+
+def _supersedes_value(targets: Sequence[str]) -> str | list[str]:
+    """What `parse_frontmatter` stores: ``""``, one reference as a str, or a list of two or more.
+
+    One reference stays a plain string ON PURPOSE. It is what every memo declared before this
+    key could hold more than one, and chunk metadata is copied from here into the index, so a
+    list there would change the stored metadata of every chunk of every memo that declares a
+    single edge. Duplicates (the same document spelled twice) are dropped, first spelling kept.
+    Read the value through `supersedes_targets`, never by its type.
+    """
+    unique: list[str] = []
+    seen: set[str] = set()
+    for target in targets:
+        key = supersedes_key(target)
+        if target and key not in seen:
+            seen.add(key)
+            unique.append(target)
+    if not unique:
+        return ""
+    return unique[0] if len(unique) == 1 else unique
+
+
+def supersedes_targets(value: object) -> tuple[str, ...]:
+    """Every reference a `supersedes` value declares, in order. The ONE reader of its shape.
+
+    Accepts what the parser stores (``""``, a str, a list), what a JSONB round trip returns,
+    and a str still holding a flow sequence, which is what a chunk indexed before this change
+    carries. Anything else declares nothing. Readers that tested ``isinstance(value, str)``
+    dropped every list in silence; that is the failure this function exists to end.
+    """
+    if isinstance(value, str):
+        return tuple(_reference_items(value)) if value.strip() else ()
+    if isinstance(value, (list, tuple)):
+        return tuple(item.strip() for item in value if isinstance(item, str) and item.strip())
+    return ()
 
 
 # --- writing the block back, on bytes ------------------------------------------------------------
@@ -464,6 +594,177 @@ def insert_frontmatter_line(raw: bytes, key: str, value: str) -> bytes:
     return bom + b"---" + newline + entry + newline + b"---" + newline + body
 
 
+class SupersedesDeclaresNothing(ValueError, RecallError):
+    """The memo carries `supersedes:` with no reference: a human saying it supersedes nothing."""
+
+
+def add_supersedes_target(raw: bytes, target: str) -> bytes | None:
+    """Declare one more `supersedes` reference in `raw`, or return None if it already declares it.
+
+    The key holds several references (Validity Frontmatter 1.0, section 5), so a second edge is
+    an addition rather than a conflict. Three shapes, each edited in place on bytes for the
+    reason `insert_frontmatter_line` gives:
+
+    - no `supersedes` key: one ``supersedes: target`` line, exactly as before;
+    - one `supersedes` key (a scalar, a flow sequence or a block sequence): rewritten as a block
+      sequence holding the existing references and `target`, at the key's own indent, so a key
+      nested under `metadata:` stays nested;
+    - the key repeated (the other spelling the spec allows): one more ``supersedes:`` line after
+      the last, keeping the author's style.
+
+    A present but empty key raises `SupersedesDeclaresNothing` rather than being filled in:
+    ``supersedes:`` with nothing after it is a declaration that the memo supersedes nothing, and
+    overwriting it is a decision for the human who wrote it.
+    """
+    if has_line_break(target):
+        raise ValueError(f"supersedes value {target!r} contains a line break and would split the block")
+    bom, body = split_bom(raw)
+    text = body.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    meta, _ = parse_frontmatter(text)
+    if SUPERSEDES not in meta:
+        return insert_frontmatter_line(raw, SUPERSEDES, target)
+    existing = supersedes_targets(meta[SUPERSEDES])
+    if not existing:
+        raise SupersedesDeclaresNothing("the memo declares `supersedes:` with no reference")
+    if supersedes_key(target) in {supersedes_key(item) for item in existing}:
+        return None
+
+    span = frontmatter_span(text)
+    assert span is not None  # the parser found the key, so there is a block
+    text_lines = text.split("\n")
+    lines = split_lines(body)
+    newline = dominant_newline(body)
+    key_lines = [
+        index
+        for index in range(1, span)
+        if ":" in text_lines[index] and text_lines[index].partition(":")[0].strip() == SUPERSEDES
+    ]
+    last = key_lines[-1]
+    terminator = line_terminator(lines[last], newline)
+    indent = text_lines[last][: len(text_lines[last]) - len(text_lines[last].lstrip())]
+    if len(key_lines) > 1:
+        entry = f"{indent}{SUPERSEDES}: {target}".encode("utf-8") + terminator
+        return bom + b"".join(lines[: last + 1] + [entry] + lines[last + 1 :])
+
+    end = last + 1
+    item_indent = indent + "  "
+    if not text_lines[last].partition(":")[2].strip():
+        while end < span and _BLOCK_ITEM.match(text_lines[end]):
+            end += 1
+        if end > last + 1:
+            first_item = text_lines[last + 1]
+            item_indent = first_item[: len(first_item) - len(first_item.lstrip())]
+    rewritten = [f"{indent}{SUPERSEDES}:".encode("utf-8") + terminator] + [
+        f"{item_indent}- {item}".encode("utf-8") + terminator for item in (*existing, target)
+    ]
+    return bom + b"".join(lines[:last] + rewritten + lines[end:])
+
+
+def _key_lines(text_lines: list[str], span: int, key: str) -> list[int]:
+    """Indices of the frontmatter lines that declare `key`, at any indent, inside the block."""
+    return [
+        index
+        for index in range(1, span)
+        if ":" in text_lines[index] and text_lines[index].partition(":")[0].strip() == key
+    ]
+
+
+def _key_extent(text_lines: list[str], span: int, index: int) -> int:
+    """One past the last line belonging to the key at `index`: its block-sequence items, if any."""
+    end = index + 1
+    if not text_lines[index].partition(":")[2].strip():
+        while end < span and _BLOCK_ITEM.match(text_lines[end]):
+            end += 1
+    return end
+
+
+def remove_supersedes_target(raw: bytes, target: str) -> bytes | None:
+    """Withdraw one `supersedes` reference from `raw`, or return None if it does not declare it.
+
+    The inverse of `add_supersedes_target`, on bytes for the same reason. Every spelling of the
+    key (a scalar, a flow or block sequence, the key repeated) is replaced by one declaration of
+    the references that remain, at the first key's indent and with its line terminator: a single
+    remaining reference as a scalar, several as a block sequence. When none remain the key is
+    removed outright, never left empty, because an empty `supersedes:` declares that the memo
+    supersedes nothing, which is a different statement from not declaring anything.
+    """
+    bom, body = split_bom(raw)
+    text = body.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    meta, _ = parse_frontmatter(text)
+    if SUPERSEDES not in meta:
+        return None
+    existing = supersedes_targets(meta[SUPERSEDES])
+    wanted = supersedes_key(target)
+    remaining = [item for item in existing if supersedes_key(item) != wanted]
+    if len(remaining) == len(existing):
+        return None
+    span = frontmatter_span(text)
+    assert span is not None  # the parser found the key, so there is a block
+    text_lines = text.split("\n")
+    lines = split_lines(body)
+    newline = dominant_newline(body)
+    key_lines = _key_lines(text_lines, span, SUPERSEDES)
+    first = key_lines[0]
+    terminator = line_terminator(lines[first], newline)
+    indent = text_lines[first][: len(text_lines[first]) - len(text_lines[first].lstrip())]
+    drop: set[int] = set()
+    for index in key_lines:
+        drop.update(range(index, _key_extent(text_lines, span, index)))
+    if not remaining:
+        replacement: list[bytes] = []
+    elif len(remaining) == 1:
+        replacement = [f"{indent}{SUPERSEDES}: {remaining[0]}".encode("utf-8") + terminator]
+    else:
+        replacement = [f"{indent}{SUPERSEDES}:".encode("utf-8") + terminator] + [
+            f"{indent}  - {item}".encode("utf-8") + terminator for item in remaining
+        ]
+    kept = [line for index, line in enumerate(lines[:first]) if index not in drop]
+    rest = [line for index, line in enumerate(lines[first:], start=first) if index not in drop]
+    return bom + b"".join(kept + replacement + rest)
+
+
+def set_frontmatter_scalar(raw: bytes, key: str, value: str | None) -> bytes | None:
+    """Set the single-valued frontmatter `key` to `value`, or remove it when `value` is None.
+
+    Returns None when nothing would change. An existing declaration keeps its line, its indent and
+    its terminator, and only the value changes; a repeated key is collapsed onto the first line,
+    since a single-valued key declared twice is ambiguous. Absent keys are inserted by
+    `insert_frontmatter_line`, so a memo with no block gains one. Values carrying a line break are
+    refused for the reason that function gives.
+    """
+    if value is not None and has_line_break(value):
+        raise ValueError(f"{key} value {value!r} contains a line break and would split the block")
+    bom, body = split_bom(raw)
+    text = body.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    span = frontmatter_span(text)
+    if span is None:
+        return None if value is None else insert_frontmatter_line(raw, key, value)
+    text_lines = text.split("\n")
+    key_lines = _key_lines(text_lines, span, key)
+    if not key_lines:
+        return None if value is None else insert_frontmatter_line(raw, key, value)
+    lines = split_lines(body)
+    newline = dominant_newline(body)
+    first = key_lines[0]
+    current = text_lines[first].partition(":")[2].strip()
+    if value is not None and len(key_lines) == 1 and _unquote(current) == value:
+        return None
+    drop: set[int] = set()
+    for index in key_lines:
+        drop.update(range(index, _key_extent(text_lines, span, index)))
+    replacement: list[bytes] = []
+    if value is not None:
+        indent = text_lines[first][: len(text_lines[first]) - len(text_lines[first].lstrip())]
+        replacement = [f"{indent}{key}: {value}".encode("utf-8") + line_terminator(lines[first], newline)]
+    out: list[bytes] = []
+    for index, line in enumerate(lines):
+        if index == first:
+            out.extend(replacement)
+        if index not in drop:
+            out.append(line)
+    return bom + b"".join(out)
+
+
 def _parse_date(value: str, key: str) -> datetime:
     try:
         d = datetime.strptime(value, "%Y-%m-%d")
@@ -475,13 +776,22 @@ def _parse_date(value: str, key: str) -> datetime:
 def validity_bounds(meta: dict) -> tuple[datetime | None, datetime | None]:
     """Interpret a chunk's validity metadata as tz-aware UTC (start, end) bounds.
 
-    Either bound is None when its key is absent. Raises ValueError on a malformed date.
+    Either bound is None when its key is absent. Raises ValueError on a malformed date, and on an
+    empty window (`valid_from` after `valid_until`), which the validity-frontmatter spec 1.0
+    (section 5.2, test vector 4) makes `invalid_metadata`: such a document can never be valid,
+    and reporting it `expired` or `not_yet_valid` gave the wrong reason (its appendix note D).
+    Compared on the bounds, so a one-day window (both keys the same date) stays valid all day.
     """
     start = end = None
     if v := meta.get("valid_from"):
         start = _parse_date(str(v), "valid_from")
     if v := meta.get("valid_until"):
         end = datetime.combine(_parse_date(str(v), "valid_until").date(), time.max, timezone.utc)
+    if start is not None and end is not None and start > end:
+        raise ValueError(
+            f"empty validity window: valid_until {meta.get('valid_until')!s} is before "
+            f"valid_from {meta.get('valid_from')!s}"
+        )
     return start, end
 
 

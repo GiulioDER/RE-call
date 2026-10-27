@@ -69,5 +69,5 @@ def test_questions_without_text_are_dropped() -> None:
     assert adversarial == []
 
 
-def test_modes_are_the_expected_four() -> None:
-    assert MODES == ("default", "calibrated", "entail", "both")
+def test_modes_are_the_expected_two() -> None:
+    assert MODES == ("default", "calibrated")

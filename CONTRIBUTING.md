@@ -153,6 +153,14 @@ python scripts/check_requirements_hashes.py requirements.lock.txt
 uvx pip-audit --requirement requirements.lock.txt --no-deps
 ```
 
+That last command reports the pillow advisories CI accepts while fastembed caps pillow below a
+fixed release. To see exactly what CI ignores, and why, run the script the job runs; it prints its
+decision for each advisory and the `--ignore-vuln` arguments it would pass:
+
+```bash
+uv run --no-project --with packaging==26.2 python scripts/capped_audit_ignores.py requirements.lock.txt --cap pillow:fastembed
+```
+
 `requirements.lock.txt` is gitignored: it is a throwaway on the CI runner, and a committed copy
 would be a second, silently drifting source of truth beside `uv.lock`.
 
@@ -182,6 +190,19 @@ to write to, which can be the shared `docker compose up -d` container. It runs k
 `fastembed` embedder; it adds a Voyage row only if `VOYAGE_API_KEY` is set. It writes
 `results/RESULTS.md` and charts — if your change touches retrieval, trust verdicts, or calibration,
 re-run it and look at whether the numbers moved before claiming they didn't.
+
+## License and the Contributor License Agreement
+
+RE-call is open source under the AGPL-3.0 and is also offered under a commercial license (see
+[COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md)). Contributions are accepted under the
+[Contributor License Agreement](CLA.md): you keep the copyright in your work and grant the
+maintainer the right to distribute it under both licenses. Agree once, by putting this sentence in
+the description of your first pull request or in a comment on it:
+
+> I have read CLA.md and I agree to its terms for this and my future contributions to RE-call.
+
+A pull request from a contributor who has not agreed is not merged. If any part of a contribution
+is not your own work, say so in the pull request and name its source and license.
 
 ## Before opening a PR
 

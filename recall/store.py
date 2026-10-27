@@ -18,12 +18,34 @@ from pgvector import SparseVector, Vector
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
-from recall.frontmatter import supersedes_key
-from recall.constants import (
-    IDEMPOTENCY_RECEIPT_RETENTION_SECONDS,
-    MAX_IDEMPOTENCY_RESULT_BYTES,
+from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS
+from recall.idempotency_receipts import check_receipt_matches, check_result_size, receipt_key_hash
+from recall.supersession import (  # noqa: F401  # re-exported: public names of this module
+    EdgeCandidates,
+    SupersessionGraph,
+    resolve_supersession_graph,
+    supersession_rows_sql,
+    _basename,
+    _resolve_rows,
+    resolve_supersession,
+    SUPERSEDES_TARGET_ROWS_SQL,
+    resolve_supersession_candidates,
 )
-from recall.errors import IdempotencyConflict
+from recall.supersession_records import (
+    PG_RECORD_REVISION_SQL,
+    erasure_subjects,
+    pg_delete_removals,
+    pg_records,
+    records_matching,
+)
+from recall.db_constants import (  # noqa: F401  # re-exported: public names of this module
+    _PG_MAX_INT,
+    DEFAULT_SCHEMA_LOCK_TIMEOUT_MS,
+    DEFAULT_TABLE,
+    DEFAULT_TENANT,
+    TENANT_GUC,
+    _schema_lock_timeout_ms,
+)
 from recall.lineage import canonical_sha256
 from recall.observability import METRICS, _payload_bytes, current_performance_trace, get_logger
 from recall.scope import Scope, coerce_scope, group_expression
@@ -379,47 +401,6 @@ TIMED_PUBLIC_METHODS = (
     "cosines_for",
 )
 
-#: How long schema DDL may WAIT FOR A LOCK before giving up (ms). Not a bound on the work — the
-#: HNSW build is deliberately unbounded, see `ensure_schema` — only on queueing. Short on purpose:
-#: waiting on a lock is never progress, the DDL is idempotent and retried on the next open, and a
-#: fast failure is diagnosable where an indefinite stall is not. Overridable because it can refuse
-#: where the previous code waited: `0` restores the old unbounded wait.
-DEFAULT_SCHEMA_LOCK_TIMEOUT_MS = 5000
-#: PostgreSQL stores `lock_timeout` as a signed 32-bit int; anything larger is a parameter error.
-_PG_MAX_INT = 2147483647
-
-
-def _schema_lock_timeout_ms() -> int:
-    """`RECALL_SCHEMA_LOCK_TIMEOUT_MS`, non-negative; anything malformed falls back to default.
-
-    Read per call rather than at import so a long-lived process can be retuned without a reload —
-    the same convention `RECALL_MAX_PRUNE_FRACTION` and `RECALL_INDEX_MAX_FILES` follow.
-    """
-    raw = os.environ.get("RECALL_SCHEMA_LOCK_TIMEOUT_MS")
-    if raw is None:
-        return DEFAULT_SCHEMA_LOCK_TIMEOUT_MS
-    try:
-        value = int(raw)
-    except ValueError:
-        _log.warning("ignoring malformed RECALL_SCHEMA_LOCK_TIMEOUT_MS=%r", raw)
-        return DEFAULT_SCHEMA_LOCK_TIMEOUT_MS
-    if value < 0:
-        _log.warning("ignoring negative RECALL_SCHEMA_LOCK_TIMEOUT_MS=%r", raw)
-        return DEFAULT_SCHEMA_LOCK_TIMEOUT_MS
-    if value > _PG_MAX_INT:
-        # Above PostgreSQL's integer range `SET lock_timeout` raises InvalidParameterValue, which
-        # would make ensure_schema fail outright — a knob for loosening a bound must not be able
-        # to break the thing it loosens. Clamped, not rejected: the intent ("effectively never")
-        # is unambiguous, and 24.8 days of lock wait is indistinguishable from it.
-        _log.warning(
-            "clamping RECALL_SCHEMA_LOCK_TIMEOUT_MS=%r to %d (PostgreSQL integer range)",
-            raw,
-            _PG_MAX_INT,
-        )
-        return _PG_MAX_INT
-    return value
-
-
 _log = get_logger("store")
 
 
@@ -459,16 +440,6 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
     _log.warning(msg)
     return msg
 
-
-#: Tenant assigned to rows written before tenancy existed, and the default for a
-#: single-tenant deployment — so an upgrade changes nothing for an existing install.
-DEFAULT_TENANT = "default"
-#: Default table name. Named rather than repeated as a literal so a caller that needs to pass it
-#: explicitly (see `recall_mcp.stores`) cannot drift from the constructor's default.
-DEFAULT_TABLE = "chunks"
-#: Postgres session variable the row-level-security policy reads. A custom GUC (it must contain
-#: a dot) set per connection, so the policy compares against the connection's own tenant.
-TENANT_GUC = "recall.tenant_id"
 
 #: Opt-out for `require_secure_dsn`. Named so it cannot be set by accident, and so its presence
 #: in a deploy is a visible, greppable decision rather than an oversight.
@@ -652,158 +623,6 @@ def require_secure_dsn(dsn: str) -> None:
     )
 
 
-def _basename(file: str) -> str:
-    """Stem of a root-relative (posix) file identifier — the key a `supersedes:` target resolves
-    to. A stem rather than a full basename so `name`, `name.md`, `[name]` and `[[name]]` all
-    designate the same document; see `supersedes_key`."""
-    return supersedes_key(file)
-
-
-#: A superseded file -> every document claiming to supersede it, in scan order, each with when
-#: that claim was first written (``None`` when unknown). A LIST rather than one winner, because
-#: choosing a single superseder discards the information a point-in-time replay needs: where two
-#: documents supersede the same target, the one live at a past instant is often not the one live
-#: today, and picking by any time-independent rule answers a different question.
-EdgeCandidates = dict[str, list[tuple[str, "datetime | None"]]]
-
-
-def resolve_supersession_candidates(
-    rows: list[tuple[str | None, str | None, datetime | None]],
-) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
-    """``(winner, unresolved, candidates)`` from ``(file, supersedes, first_indexed)`` rows.
-
-    An edge ``A -> B`` becomes assertable when B is written, because the claim lives in B's
-    `supersedes:` frontmatter. So it is dated by the EARLIEST `indexed_at` among the chunks of B
-    that CARRY that claim: a chunk existing implies the frontmatter existed, and the earliest is
-    the conservative reading. Per claim, not per file, because one file can carry several
-    different `supersedes` values without any authoring mistake (`Indexer._prune_vanished` notes a
-    corpus may be indexed under several roots, and `metadata['file']` is root-relative while
-    `replace_sources` deletes by absolute `source`).
-
-    ⚠️ **Known limit: this dates the CHUNK's first write, not the CLAIM's.** Chunk ids are derived
-    from the file path, so editing a memo preserves them and `replace_sources` restores the
-    original `first_indexed_at`. Adding a `supersedes:` line to a memo that already existed
-    therefore back-dates the new edge to that memo's CREATION, and a replay between the two
-    reports `superseded` at a moment the claim had not been made. Dating the claim rather than the
-    row needs a per-(file, supersedes) first-seen, which this column is the wrong shape to carry:
-    `first_indexed_at` answers "when did this row appear", which is the right input for the hit
-    path and an approximation for the edge path. Stated rather than left to be discovered.
-
-    `winner` is what `supersession()` has always returned and is unchanged. `candidates` is the
-    superset a replay needs; see `recall.trust.resolve_successor` for how it is consumed.
-
-    Dates come from `first_indexed_at`, the FIRST write, preserved across re-indexing. Using
-    `indexed_at` (the last write) meant editing a superseding memo re-dated its edge, so a past
-    replay dropped a long-standing claim and served the stale memory as current.
-
-    Pure and DB-free, so the rule is unit-testable without a database.
-    """
-    winner, unresolved, candidates = _resolve_rows(rows)
-    return winner, unresolved, candidates
-
-
-def _resolve_rows(
-    rows: list[tuple[str | None, str | None, datetime | None]],
-) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
-    """The one resolution pass. `resolve_supersession` and the candidate map both come from here.
-
-    Deriving them separately is what made the previous version wrong twice: two functions matching
-    claims to targets by their own copy of the rule can disagree, and did (a normalised lookup
-    against a raw dangling key, and a per-file minimum against a per-claim group). One pass cannot.
-
-    `winner` reproduces last-row-wins EXACTLY, including the case where one file claims the same
-    target twice, so callers who never ask for a past instant see no change at all.
-    """
-    # DEDUPED. `rows` carries one entry per (file, supersedes) pair, so a file asserting two
-    # different claims appeared TWICE and made ITSELF read as an ambiguous basename: its own
-    # incoming edge was dropped and it was named in `unresolved`, telling the operator to
-    # disambiguate a basename that exactly one document carries. Ambiguity is a property of two
-    # FILES sharing a stem, never of one file carrying two claims.
-    files = list(dict.fromkeys(f for f, _s, _d in rows if f))
-    by_base: dict[str, list[str]] = {}
-    for f in files:
-        by_base.setdefault(_basename(f), []).append(f)
-
-    winner: dict[str, str] = {}
-    unresolved: set[str] = set()
-    order: dict[str, list[str]] = {}
-    when: dict[tuple[str, str], datetime | None] = {}
-
-    for file, supersedes, first_indexed in rows:
-        if not file or not supersedes:
-            continue
-        target_basename = _basename(supersedes)
-        matches = by_base.get(target_basename, [])
-        if len(matches) == 1:
-            key = matches[0]
-        elif len(matches) == 0:
-            # Dangling: key on the raw basename as written. Normalisation exists to make MATCHING
-            # tolerant of how humans spell a reference; this key matches no real file either way,
-            # so it keeps the author's form rather than inventing a normalised one.
-            key = supersedes.rsplit("/", 1)[-1]
-        else:
-            # Ambiguous: don't guess — but don't stay silent either. Dropping the edge alone
-            # would leave the (possibly superseded) memories looking perfectly `ok`, which is
-            # the same wrong answer the trust layer exists to prevent. Naming them lets the
-            # read path fail closed and tell the operator what to fix.
-            unresolved.update(matches)
-            continue
-
-        winner[key] = file  # last row wins, exactly as before
-        slot = order.setdefault(key, [])
-        if file in slot:
-            slot.remove(file)
-        slot.append(file)
-        pair = (key, file)
-        if pair in when:
-            prev = when[pair]
-            # An undated row makes the whole claim undated. Fail closed: unknown age keeps
-            # demoting rather than silently reviving a memory the corpus marks as stale.
-            when[pair] = (
-                min(prev, first_indexed) if prev is not None and first_indexed is not None else None
-            )
-        else:
-            when[pair] = first_indexed
-
-    candidates: EdgeCandidates = {
-        target: [(f, when[(target, f)]) for f in claimants] for target, claimants in order.items()
-    }
-    return winner, frozenset(unresolved), candidates
-
-
-def resolve_supersession(
-    rows: list[tuple[str | None, str | None]],
-) -> tuple[dict[str, str], frozenset[str]]:
-    """Build the superseded -> superseding map from ``(file, supersedes)`` rows.
-
-    ``file`` is a root-relative path; ``supersedes`` references its target by basename (the
-    authoring convention). Three cases:
-
-    - **Unambiguous** (exactly one indexed file bears that basename): resolve to its
-      root-relative path. This is the fix for the original bug — a naive basename key would
-      have collided with an unrelated same-named file in another directory.
-    - **Dangling** (no indexed file bears that basename — the predecessor was never indexed,
-      or was deleted): fall back to the raw basename as the key. There is nothing to
-      disambiguate, so this cannot mis-map; dropping it would just as silently discard a valid
-      supersession claim (e.g. a memo intentionally superseding a doc that was since removed).
-    - **Ambiguous** (two or more indexed files share that basename): do not guess — a silent
-      mis-map to the wrong file is worse than a broken chain, since we cannot tell which one the
-      author meant. The candidates are returned in ``unresolved`` so the read path can fail
-      closed on them; dropping the edge and saying nothing would leave a possibly-superseded
-      memory looking perfectly healthy.
-
-    Both keys and values in the mapping are root-relative paths (or a bare basename for the
-    dangling case). ``unresolved`` holds root-relative paths.
-
-    Pure and DB-free so the resolution rule can be unit-tested without a database.
-
-    A thin projection of `resolve_supersession_candidates`, deliberately: the resolution rule
-    lives in exactly one place so the winner map and the candidate map cannot drift apart.
-    """
-    winner, unresolved, _candidates = _resolve_rows([(f, s, None) for f, s in rows])
-    return winner, unresolved
-
-
 def _ef_search_multiplier() -> int:
     """How far past `k` to widen an unfiltered HNSW scan; see DEFAULT_HNSW_EF_SEARCH_MULTIPLIER.
 
@@ -948,7 +767,7 @@ class PgVectorStore:
         self._dependency_mode = dependency_mode
         self._statement_timeout_ms = statement_timeout_ms
         self._connect_timeout_s = connect_timeout_s
-        #: (fingerprint, edges, unresolved, candidates) — see `supersession_all()`. The fingerprint is what
+        #: (fingerprint, SupersessionGraph): see `supersession_graph()`. The fingerprint is what
         #: makes the cache safe to reuse across processes.
         self._supersession_cache: tuple | None = None
         #: Count of full supersession scans actually performed (cache misses). Surfaced so a
@@ -1676,19 +1495,45 @@ class PgVectorStore:
         self._with_retry(_op)
         return event_id
 
+    def recorded_memo_journals(self, sources: Sequence[str]) -> set[str]:
+        """The `sources` a forget recorded deleting as assistant memos (`forget_memo_journal`)."""
+        if not sources:
+            return set()
+
+        def _op(conn: "psycopg.Connection") -> set[str]:
+            rows = conn.execute(
+                "SELECT DISTINCT source_uri FROM recall_audit_events WHERE tenant_id = %s "
+                "AND event_type = 'forget_memo_journal' AND source_uri = ANY(%s)",
+                (self._tenant, list(sources)),
+            ).fetchall()
+            return {str(source) for (source,) in rows if source}
+
+        return self._with_retry(_op)
+
+    def forgotten_source_aliases(self, sources: Sequence[str]) -> set[str]:
+        """Recover card names recorded before these exact sources were forgotten."""
+        if not sources:
+            return set()
+
+        def _op(conn: "psycopg.Connection") -> set[str]:
+            rows = conn.execute(
+                "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
+                "AND event_type = 'forget_source_aliases' AND source_uri = ANY(%s)",
+                (self._tenant, list(sources)),
+            ).fetchall()
+            return {name for (payload,) in rows for name in payload.get("aliases", ())
+                    if isinstance(name, str)}
+
+        return self._with_retry(_op)
+
     @staticmethod
     def _operation_receipt_event_id(idempotency_key: str, operation: str = "legacy") -> str:
         """Derive one bounded, nonrevealing audit identity from the request key.
 
-        ``operation`` remains an accepted compatibility argument for callers that used the old
-        operation-scoped identity. New receipts deliberately ignore it so one idempotency key
-        cannot be reused for a different mutation operation.
+        Kept for existing callers; the rule is `recall.idempotency_receipts.receipt_key_hash`,
+        which the lite store uses too.
         """
-        if not isinstance(idempotency_key, str) or not idempotency_key:
-            raise ValueError("idempotency_key must be a non-empty str")
-        if not isinstance(operation, str) or not operation:
-            raise ValueError("operation must be a non-empty str")
-        return "idem_" + canonical_sha256({"idempotency_key": idempotency_key})
+        return receipt_key_hash(idempotency_key, operation)
 
     def get_operation_receipt(
         self,
@@ -1710,10 +1555,9 @@ class PgVectorStore:
             ).fetchone()
             if not row or row[0] is None:
                 return None
-            if operation != "legacy" and row[1] != operation:
-                raise IdempotencyConflict()
-            if request_fingerprint is not None and row[2] != request_fingerprint:
-                raise IdempotencyConflict()
+            check_receipt_matches(
+                row[1], row[2], operation=operation, request_fingerprint=request_fingerprint
+            )
             return str(row[0])
 
         return self._with_retry(_op)
@@ -1747,8 +1591,7 @@ class PgVectorStore:
         """Persist a completed mutation response before any cache response is attempted."""
         if request_fingerprint is None:
             request_fingerprint = ""
-        if len(result.encode("utf-8")) > MAX_IDEMPOTENCY_RESULT_BYTES:
-            raise ValueError("idempotent mutation result exceeds the 512 KiB replay limit")
+        check_result_size(result)
         key_hash = self._operation_receipt_event_id(idempotency_key, operation)
 
         def _op(conn: "psycopg.Connection") -> None:
@@ -2808,10 +2651,15 @@ class PgVectorStore:
         self._with_retry(_op)
         return len(chunks)
 
-    def delete_sources(self, sources: list[str]) -> int:
+    def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
         """Delete every chunk belonging to the given `source` values; returns rows removed.
 
         Standalone removal API (the Indexer uses the atomic `replace_sources` instead).
+
+        A memo that declared `supersedes:` leaves a `SupersessionRecord` in the same transaction
+        (`recall.supersession_records`): a forget keeps retired what it retired, and `withdraw`
+        gives that back instead and splices its chain. `withdraw` also covers a source with no
+        rows left that a record stands in for.
 
         ⚠️ The returned count can UNDERCOUNT after a reconnect-retry. The delete and its sidecar
         scrub now share a transaction whose COMMIT runs inside the retried op, so a connection
@@ -2830,21 +2678,22 @@ class PgVectorStore:
         # within `with self._pool.connection()`, so nothing from the cursor may escape it.
         def _op(conn: "psycopg.Connection") -> int:
             with conn.transaction():
-                rows = conn.execute(
-                    f"DELETE FROM {self._table} "
-                    f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
-                    (self._tenant, sources),
-                ).fetchall()
-                self._scrub_sparse_rows(conn, self._table, [row[0] for row in rows])
-                return len(rows)
+                ids = pg_delete_removals(conn, self._tenant, self._table, sources, withdraw=withdraw)
+                self._scrub_sparse_rows(conn, self._table, ids)
+                return len(ids)
 
         return self._with_retry(_op)
 
-    def delete_sources_across(self, tables: list[str], sources: list[str]) -> int:
-        """Atomically erase tenant sources from active and shadow generation tables."""
+    def delete_sources_across(
+        self, tables: list[str], sources: list[str], *, withdraw: bool = False
+    ) -> int:
+        """Atomically erase tenant sources from active and shadow generation tables.
+
+        Each table keeps its own `SupersessionRecord`s, as `delete_sources` does.
+        """
         if not sources:
             return 0
-        from recall.control_plane import validate_table_name
+        from recall.sql_identifiers import validate_table_name
 
         unique_tables = list(dict.fromkeys(tables))
         if not unique_tables:
@@ -2862,15 +2711,11 @@ class PgVectorStore:
             removed = 0
             with conn.transaction():
                 for table in unique_tables:
-                    rows = conn.execute(
-                        f"DELETE FROM {table} "
-                        f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
-                        (self._tenant, sources),
-                    ).fetchall()
+                    ids = pg_delete_removals(conn, self._tenant, table, sources, withdraw=withdraw)
                     # Under THAT table's name: the sidecar keys shadow-table rows by the
                     # chunk_table column, so each table scrubs its own.
-                    self._scrub_sparse_rows(conn, table, [row[0] for row in rows])
-                    removed += len(rows)
+                    self._scrub_sparse_rows(conn, table, ids)
+                    removed += len(ids)
             return removed
 
         return self._with_retry(_op)
@@ -2930,21 +2775,22 @@ class PgVectorStore:
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         """The supersession relation: ``(edges, unresolved)``.
 
-        `edges` maps superseded file -> superseding file (both root-relative). `unresolved`
-        names the files an edge pointed at but could not identify, so the read path can fail
-        closed on them rather than serve them as healthy.
+        `edges` maps superseded file -> superseding file. Both are root-relative, except a path
+        that two roots hold, which is keyed by its absolute source so the two stay two documents
+        (`SupersessionGraph.collided`). `unresolved` names the files an edge pointed at but could
+        not identify, so the read path can fail closed on them rather than serve them as healthy.
+        These edges carry no validity windows; the window rule needs `supersession_graph()`.
 
-
-        The ``supersedes:`` frontmatter references its target by basename (the authoring
-        convention), but files are identified by their root-relative path so same-named files in
-        different directories cannot collide. This resolves each basename reference to the unique
-        file that bears it: an AMBIGUOUS target (a basename shared by two files) is skipped
-        rather than mis-mapped — the same refusal `recall lint` makes when it flags
-        ``ambiguous-supersedes-target`` — so a stray sibling can never be silently marked
-        superseded. Only the ambiguous case is skipped. A DANGLING target (no such basename in
-        the corpus) is instead kept, as an edge keyed on the raw basename it was written as:
-        harmless, because that key matches no indexed file, and dropping it would silently
-        discard a valid supersession claim (e.g. a memo superseding a doc since removed).
+        A ``supersedes:`` reference is matched by the rule `recall.supersession._resolve_rows`
+        states (changed 2026-10-21): a reference naming a folder by its folded path, any
+        reference by its folded stem, the claimant never its own candidate. An AMBIGUOUS target
+        (several candidates) is skipped rather than mis-mapped, so a stray sibling can never be
+        silently marked superseded; `recall lint`'s ``ambiguous-supersedes-target`` still flags
+        by stem alone, so it can flag a reference this resolves by path. Only the ambiguous case
+        is skipped. A DANGLING target (no such file in the corpus) is instead kept, as an edge
+        keyed on the raw name it was written as: harmless, because that key matches no indexed
+        file, and dropping it would silently discard a valid supersession claim (e.g. a memo
+        superseding a doc since removed).
 
         The result is cached, but the cache is VALIDATED against the table on every call rather
         than trusted. It previously was not: it was invalidated only by this instance's own
@@ -2985,8 +2831,10 @@ class PgVectorStore:
         `b2.md` survived, so a replay of Tuesday saw a single edge dated Wednesday, dropped it,
         and answered `ok` when `a.md` was in fact superseded by `b1.md`. Renaming the two files
         flipped the answer, which is what showed the axis was wrong. `resolve_successor` now picks
-        the claim that was live at the instant. `edges` is unchanged, so callers who never replay
-        see exactly what they saw before.
+        the claim that was live at the instant. `edges` is still last-row-wins over the scan, so
+        a caller who never replays sees the scan-order winner; which file a reference matches is
+        `_resolve_rows`' rule, changed 2026-10-21 (folded paths, a self-claim dropped, roots kept
+        apart).
 
         This is the only accessor. A second one returning just the dates existed briefly and had
         to warn, in its own docstring, that pairing it with `supersession()` reintroduced the
@@ -3018,48 +2866,45 @@ class PgVectorStore:
         `ON CONFLICT` alone cannot cover because the row is gone before the insert runs.
         """
 
-        def _op(
-            conn: "psycopg.Connection",
-        ) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
+        return self.supersession_graph().parts()
+
+    def supersession_graph(self) -> SupersessionGraph:
+        """The resolved graph behind `supersession_all()`, with each claimant's validity window.
+
+        The same validated cache and the same single scan, so the windows and the edges always
+        describe one corpus state; `recall.trust` reads this, and the three-part accessors are
+        projections of it. A copy, for the reason `supersession_all` gives.
+        """
+
+        def _op(conn: "psycopg.Connection") -> SupersessionGraph:
+            # The record revision rides in the same statement: a withdrawal of a memo already gone
+            # writes a record and deletes no row, so the table's own fingerprint would not move.
             fingerprint = conn.execute(
-                f"SELECT max(indexed_at), count(*) FROM {self._table} WHERE tenant_id = %s",
-                (self._tenant,),
+                f"SELECT max(indexed_at), count(*), ({PG_RECORD_REVISION_SQL}) "
+                f"FROM {self._table} WHERE tenant_id = %s",
+                (self._tenant, self._tenant),
             ).fetchone()
             cached = self._supersession_cache
             if cached is not None and cached[0] == fingerprint:
-                return cached[1], cached[2], cached[3]
+                graph: SupersessionGraph = cached[1]
+                return graph
             rows = conn.execute(
-                f"""
-                SELECT metadata->>'file' AS file,
-                       metadata->>'supersedes' AS supersedes,
-                       -- COALESCE, mirroring the hit path's fallback: a row predating the
-                       -- column has no first write recorded, and its last write is the only
-                       -- evidence there is. Without this a migrated corpus dates every edge
-                       -- NULL, which reads as 'undated' and ignores known_as_of entirely.
-                       min(COALESCE(first_indexed_at, indexed_at)) AS first_indexed
-                FROM {self._table}
-                WHERE tenant_id = %s AND metadata ? 'file'
-                GROUP BY 1, 2
-                ORDER BY 1, 2
-                """,
+                supersession_rows_sql(self._table, source_column="source", scope="c.tenant_id = %s"),
                 (self._tenant,),
             ).fetchall()
             self._supersession_scans += 1
             METRICS.increment("recall_supersession_scans_total")
-            edges, unresolved, candidates = resolve_supersession_candidates(rows)
-            self._supersession_cache = (fingerprint, edges, unresolved, candidates)
-            return edges, unresolved, candidates
+            graph = resolve_supersession_graph(
+                rows, pg_records(conn, self._tenant, self.record_scope), self._tenant
+            )
+            self._supersession_cache = (fingerprint, graph)
+            return graph
 
-        edges, unresolved, candidates = self._with_retry(_op)
         # COPIES. This is public, and the cache is process-wide and validated by fingerprint
         # rather than rebuilt, so handing out the live structures would let one caller's mutation
         # survive every later cache hit and redirect other callers' supersession verdicts. The
         # candidate LISTS are copied too, because a shallow `dict()` would still share them.
-        return (
-            dict(edges),
-            unresolved,
-            {target: list(claims) for target, claims in candidates.items()},
-        )
+        return self._with_retry(_op).copy()
 
     # `supersession_dates()` deliberately does NOT exist. It was a second accessor onto the same
     # cache, and its own docstring had to warn that pairing it with `supersession()` reintroduced
@@ -3194,6 +3039,61 @@ class PgVectorStore:
                 if source not in bucket:
                     bucket.append(source)
         return resolved
+
+    #: The chunk table a `SupersessionRecord` of this store is scoped to.
+    @property
+    def record_scope(self) -> str:
+        return self._table
+
+    def recorded_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """`sources_for_identifiers` for memos that are no longer indexed but that a
+        `SupersessionRecord` still stands for: what a withdrawal of a memo forgotten or pruned
+        earlier names. Matches every record's `file` or `source`; a memo indexed again under
+        the same name is found by `sources_for_identifiers` as well."""
+        if not identifiers:
+            return {}
+        records = self._with_retry(lambda conn: pg_records(conn, self._tenant, self.record_scope))
+        return records_matching(records, identifiers)
+
+    def erasure_subjects(self, sources: list[str], *, recorded: bool = False) -> dict[str, set[str]]:
+        """`{source: {name, ...}}`: every name a source security policy decides `sources` by
+        (`recall.supersession_records.erasure_subjects` states the rule).
+
+        What an erasure must authorize after `sources_for_identifiers` resolved the names it was
+        asked for: a name matches a row by its `file` OR its `source`, so the rows it reaches can
+        be authorized by names the caller never gave. With `recorded`, the names of the
+        `SupersessionRecord`s standing for `sources` count too, as a withdrawal reaches them.
+        """
+        if not sources:
+            return {}
+        rows = self._erasure_subject_rows(sources)
+        records = (
+            self._with_retry(lambda conn: pg_records(conn, self._tenant, self.record_scope, sources))
+            if recorded
+            else []
+        )
+        return erasure_subjects(rows, records)
+
+    def _erasure_subject_rows(self, sources: list[str]) -> list[tuple[Any, ...]]:
+        """`(source, file)` for every row of `sources` in this tenant."""
+        return list(
+            self._with_retry(
+                lambda conn: conn.execute(
+                    f"SELECT DISTINCT source, metadata->>'file' FROM {self._table} "
+                    "WHERE tenant_id = %s AND source = ANY(%s)",
+                    (self._tenant, sources),
+                ).fetchall()
+            )
+        )
+
+    def served_identifiers(self, identifiers: list[str]) -> set[str]:
+        """The identifiers (a row's `file` or its `source`) this store serves now.
+
+        What `recall_current_facts` asks to hide a fact whose every memo is gone
+        (`recall.provenance_controller.absent_fact_ids`). Here every row is served, so it is the
+        keys of `sources_for_identifiers`; `GenerationStore` narrows it to its pinned generation.
+        """
+        return set(self.sources_for_identifiers(list(identifiers)))
 
     def project_file_hashes(self, project: str) -> dict[str, str]:
         """`{root-relative file: content hash}` for one declared project.

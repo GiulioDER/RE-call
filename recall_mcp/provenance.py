@@ -6,15 +6,23 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from recall import eval_clock
 from recall.evidence import cards_from_trusted_result
 from recall.fact_ledger import PostgresFactLedger
+from recall.fact_retraction import served_sources
 from recall.frontmatter import validity_bounds
-from recall.provenance_cards import PostgresEvidenceCardStore, _put_cards
+from recall.generations import NoActiveGeneration
+from recall.provenance_cards import PostgresEvidenceCardStore
+from recall_mcp.evidence_cards import register_evidence_cards  # re-exported
 from recall.provenance_controller import (
+    EvidenceCardResolver,
     FactApplicationRequest,
+    FactLedger,
     ProvenanceController,
+    current_fact_listing,
+    listing_payload,
     source_digest,
 )
 from recall.trust_policy import TrustPolicy
@@ -22,6 +30,7 @@ from recall.types import AtomicFact, EvidenceCard
 from recall_mcp.settings import runtime_environment
 
 if TYPE_CHECKING:
+    from recall.lite import LiteStore
     from recall.embeddings import Embedder
     from recall.security_policy import AccessContext, SourceSecurityPolicy
     from recall.store import PgVectorStore
@@ -35,38 +44,22 @@ def _fact_write_dsn(store: PgVectorStore) -> str:
     return configured.strip() if configured and configured.strip() else store.dsn
 
 
-def register_evidence_cards(
-    cards: Sequence[EvidenceCard], *, store: PgVectorStore | None = None
-) -> None:
-    """Persist server-created cards when a PostgreSQL store is available.
+def _fact_backends(store: PgVectorStore | LiteStore) -> tuple[FactLedger, EvidenceCardResolver]:
+    """The ledger and card store for `store`: the lite file's own, or the PostgreSQL ones.
 
-    Only the PostgreSQL store is written. A process-wide in-memory `EvidenceCardStore` was also
-    filled here on every `recall_evidence` call and read by nothing (`apply_fact_memory` resolves
-    cards from PostgreSQL), so it grew without bound for the life of the server.
+    A lite file serves one local client, so `RECALL_FACT_WRITE_DSN` (a separate controller role
+    on PostgreSQL) has nothing to name there and is not read.
     """
-    if store is None:
-        return
-    tenant = getattr(store, "tenant", None)
-    borrow = getattr(store, "_with_retry", None)
-    if isinstance(tenant, str) and callable(borrow):
-        # On the store's own tenant-bound connection: the separate card store opened a new
-        # psycopg connection, set the tenant and a timeout, and closed it, on every
-        # `recall_evidence` call. Same DSN, so the same role and the same RLS policy.
-        materialized = tuple(cards)
-        if any(card.tenant_id != tenant for card in materialized):
-            raise ValueError("evidence card tenant mismatch")
-        if not materialized:
-            return
+    from recall.lite import LiteStore
 
-        def _op(conn: Any) -> None:
-            with conn.transaction():
-                _put_cards(conn, tenant, materialized)
+    if isinstance(store, LiteStore):
+        from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
 
-        borrow(_op)
-        return
-    dsn = getattr(store, "dsn", None)
-    if isinstance(dsn, str) and isinstance(tenant, str):
-        PostgresEvidenceCardStore(dsn, tenant_id=tenant).put(cards)
+        return LiteFactLedger(store), LiteEvidenceCardStore(store)
+    return (
+        PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant),
+        PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant),
+    )
 
 
 def apply_fact_memory(
@@ -84,7 +77,7 @@ def apply_fact_memory(
     """Apply one structured fact through the external provenance controller."""
     fact = AtomicFact.from_payload(dict(claim))
     request = FactApplicationRequest(fact, tuple(evidence_card_ids), request_id)
-    ledger = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant)
+    ledger, card_store = _fact_backends(store)
 
     def revalidate_card(card: EvidenceCard) -> EvidenceCard | None:
         chunk = store.chunk_by_id(card.chunk_id)
@@ -153,7 +146,7 @@ def apply_fact_memory(
         )
 
     def fresh_search(_fact: AtomicFact, _request: FactApplicationRequest) -> Sequence[str]:
-        from recall_mcp.service import _retrieve_trusted
+        from recall_mcp.retrieval import _retrieve_trusted
 
         query = f"{_fact.subject} {_fact.predicate} {json.dumps(_fact.object, ensure_ascii=False)}"
         retrieval = _retrieve_trusted(
@@ -171,7 +164,6 @@ def apply_fact_memory(
         register_evidence_cards(cards, store=store)
         return tuple(card.card_id for card in cards)
 
-    card_store = PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant)
     controller = ProvenanceController(
         tenant_id=store.tenant,
         generation_id=store.generation_id,
@@ -181,6 +173,7 @@ def apply_fact_memory(
         card_revalidator=revalidate_card,
         fresh_search=fresh_search,
         writer=writer,
+        served_sources=served_sources(store),
     )
     decision = controller.apply_fact(request)
     return {
@@ -196,27 +189,55 @@ def apply_fact_memory(
 
 
 def current_facts_memory(
-    store: PgVectorStore, *, as_of: datetime | None = None
+    store: PgVectorStore, *, as_of: datetime | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> dict[str, object]:
-    """Return the ledger's deterministic current fact projection for this tenant."""
-    instant = as_of or datetime.now(UTC)
-    events = PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant).current(
-        tenant_id=store.tenant, now=instant
-    )
+    """Return the ledger's deterministic current fact projection for this tenant.
+
+    A fact none of whose memos the store serves now (deleted, pruned, or left out of the active
+    generation) is not listed, and is listed again when a memo returns
+    (`recall.fact_retraction`). A fact lists its memos in `sources`. Facts that conflict, with no
+    supersession between their memos, are listed under `contested` and not under `facts`
+    (`recall.provenance_controller.split_contested`).
+
+    `served_state` says how far the answer was checked against what the store serves: `ok`,
+    `degraded` when a lookup failed (each named in `served_lookups_failed`: a failed `presence` or
+    `supersession` check hides nothing it would have hidden, a failed `admission` or `content`
+    check lists no stated fact), or `unchecked` for a store with no lookup, read as the ledger
+    alone. Added for review of PR 946, so a client can tell a quiet answer from an incomplete one.
+    """
+    if security_policy is not None:
+        if access_context is None or access_context.tenant != store.tenant:
+            raise PermissionError("a matching source access context is required for current facts")
+    instant = as_of or eval_clock.now() or datetime.now(UTC)
+    failures: list[str] = []
+    served = served_sources(store, failures=failures)
+    ledger = _fact_backends(store)[0]
+    # The listing rule and its payload are shared with `recall provenance current`
+    # (`recall.provenance_controller.current_fact_listing`), so the two cannot disagree.
+    events, evidence = current_fact_listing(ledger, store.tenant, instant, served)
+    permitted = None
+    if security_policy is not None:
+        assert access_context is not None
+        policy, context = security_policy, access_context
+
+        def permitted(name: str) -> bool:
+            decision = policy.decide(name, context)
+            # Structured values cannot safely be projected through a text redaction rule.
+            return decision.allowed and not decision.redactions
+
+    try:
+        generation_id: str | None = store.generation_id
+    except NoActiveGeneration:
+        # The ledger is tenant scoped and answers before any generation is promoted; say there
+        # is no serving generation rather than raise or name a generation that does not exist.
+        generation_id = None
     return {
         "tenant_id": store.tenant,
-        "generation_id": store.generation_id,
+        "generation_id": generation_id,
         "as_of": instant.isoformat(),
-        "facts": [
-            {
-                "event_id": event.event_id,
-                "fact_id": event.fact_id,
-                "fact": event.fact.to_payload() if event.fact else None,
-                "evidence_card_ids": [card.card_id for card in event.evidence_cards],
-                "generation_id": event.generation_id,
-                "writer": event.writer,
-                "asserted_at": event.created_at.isoformat(),
-            }
-            for event in events
-        ],
+        **listing_payload(events, evidence, permitted),
+        "served_state": "unchecked" if served is None else ("degraded" if failures else "ok"),
+        "served_lookups_failed": list(failures),
     }

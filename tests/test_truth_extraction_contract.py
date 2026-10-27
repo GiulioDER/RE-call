@@ -413,6 +413,32 @@ def test_deterministic_engine_refuses_passive_voice_rather_than_inverting_it() -
     assert rejected == ()
 
 
+@pytest.mark.parametrize("body", [
+    "This memo never supersedes archive_policy_2026-01-05.md.\n",
+    "If the review passes, this memo supersedes archive_policy_2026-01-05.md.\n",
+    "Nothing supersedes archive_policy_2026-01-05.md.\n",
+    "If the review passes; this memo supersedes archive_policy_2026-01-05.md.\n",
+])
+def test_deterministic_engine_refuses_an_unasserted_supersession_cue(body: str) -> None:
+    """The engine behind `recall rewrite plan` names no edge from a negated or conditional cue.
+
+    It kept its own copy of the cue regex, so the refusal `recall lint --fix` gained did not reach
+    it, and a reviewer of `rewrite plan` was offered "this supersedes X" from "This never
+    supersedes X" (audit finding DOC-001 of 2026-10-21).
+
+    Red: baseline, branch head 4b68f972b,
+    `tests/test_truth_extraction_contract.py::test_deterministic_engine_refuses_an_unasserted_supersession_cue`
+    failed on every case with one supersession claim accepted; target
+    `recall.truth_extraction._engine.DeterministicExtractionEngine.run`. The last case, a condition
+    before a semicolon (CODE-002), also failed against 5a4aa2e85, whose
+    `recall.supersession_cues.unasserted` ended the sentence at the semicolon.
+    """
+    accepted, rejected = _deterministic_claims(body)
+
+    assert [claim for claim in accepted if claim.kind == "supersession"] == []
+    assert rejected == ()
+
+
 # --- engine resolution -----------------------------------------------------------------------
 
 

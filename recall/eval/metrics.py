@@ -163,6 +163,8 @@ def bootstrap_ci(
     returns the (lower, upper) percentiles for the given confidence level. This puts an honest
     uncertainty band on the headline rates (answerable/unanswerable/trust accuracy) which, on a
     ~25-query eval set, are otherwise reported as deceptively precise point estimates.
+    The percentile bootstrap is B. Efron, "Bootstrap Methods: Another Look at the Jackknife",
+    The Annals of Statistics 7(1), 1979.
 
     Returns ``(nan, nan)`` on empty input (no data -> no interval), matching `fraction_true`.
     ``seed`` makes the interval reproducible run-to-run. Dependency-free (stdlib ``random``),
@@ -188,6 +190,9 @@ def wilson_ci(
     flags: list[bool], *, confidence: float = 0.95
 ) -> tuple[float, float]:
     """Wilson score interval for the mean of boolean flags (a binomial proportion).
+
+    E. B. Wilson, "Probable Inference, the Law of Succession, and Statistical Inference", Journal
+    of the American Statistical Association 22(158), 1927.
 
     Preferred over `bootstrap_ci` for every rate this eval publishes, because the eval's
     per-class samples are tiny (n=2 for abstention, n=4 for successor accuracy) and often

@@ -20,7 +20,7 @@ from recall.errors import RecallError
 from recall._env import truthy
 
 if TYPE_CHECKING:
-    from recall_mcp.service import EvidenceResult, SearchResult
+    from recall_mcp.models import EvidenceResult, SearchResult
 
 _LOCALE_RE = re.compile(r"^[A-Za-z0-9_]{2,32}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})

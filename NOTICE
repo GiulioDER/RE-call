@@ -1,9 +1,11 @@
 RE-call: Retrieval-Augmented Self-Recall
-Required Notice: Copyright 2026 Giulio D'Erme
+Copyright 2026 Giulio D'Erme
 
-This distribution is RE-call by Giulio D'Erme.
+This distribution is RE-call by Giulio D'Erme, licensed under the GNU Affero General Public
+License v3.0 (see LICENSE). A commercial license is available from the copyright holder (see
+COMMERCIAL_LICENSE.md).
 
-If you redistribute a copy, modified copy, or derivative work, preserve this notice together with
-the PolyForm Noncommercial License 1.0.0 text.
+As permitted by section 7(b) of that license, copies, modified copies, and works based on RE-call
+must preserve this notice and the author attribution it contains.
 
 If you write about the project in public material, please cite RE-call and credit Giulio D'Erme.

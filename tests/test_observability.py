@@ -131,11 +131,22 @@ def test_logging_does_not_propagate_to_the_root_logger():
 
 def test_library_does_not_configure_logging_on_import():
     """A library that attaches handlers on import hijacks the host application's logging."""
-    import importlib
+    import subprocess
+    import sys
 
-    logging.getLogger(LOGGER_NAME).handlers.clear()
-    importlib.reload(importlib.import_module("recall.store"))
-    assert logging.getLogger(LOGGER_NAME).handlers == []
+    # Reloading in this process changes PgVectorStore's identity beneath already
+    # imported subclasses and fixtures. A fresh interpreter observes the import
+    # contract without changing the module used by later database tests (TEST-001).
+    subprocess.run(
+        [sys.executable, "-c", (
+            "import importlib, logging; "
+            "from recall.observability import LOGGER_NAME; "
+            "logging.getLogger(LOGGER_NAME).handlers.clear(); "
+            "importlib.reload(importlib.import_module('recall.store')); "
+            "assert logging.getLogger(LOGGER_NAME).handlers == []"
+        )],
+        check=True,
+    )
 
 
 # --------------------------------------------------------------------------------------------

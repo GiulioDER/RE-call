@@ -21,6 +21,14 @@ The refusal rules:
 name must resolve to exactly one file in the corpus. A bare `DEPRECATED` with no target is
 reported as needing a human, never guessed at.
 
+**A cue the sentence does not assert is refused**: "this never supersedes X", "if the canary
+fails, this would be replaced by Y". The words and their scope are `recall.supersession_cues`,
+shared with the deterministic proposal rules.
+
+**Nothing is written that a reviewer did not pick.** `recall lint --fix` prints each proposal
+with an id and the sentence it came from; `--apply` takes the ids to write, and an edge that
+would close a supersession cycle is refused at the write.
+
 **Direction follows the marker's voice**, and it decides WHICH FILE is edited:
 
 - *"this supersedes X"* → `supersedes: X` goes on **this** memo.
@@ -31,6 +39,7 @@ reported as needing a human, never guessed at.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,15 +48,26 @@ from recall.atomic_write import atomic_write_bytes
 from recall.document import parse_document
 from recall.frontmatter import (
     NAME_STAND_IN_MARK,
+    SupersedesDeclaresNothing,
+    add_supersedes_target,
     encodable_name,
     has_line_break,
-    insert_frontmatter_line,
     supersedes_key,
+    supersedes_targets,
     writable_reference,
 )
-from recall.lint import DEFAULT_GLOB
+from recall.lint import (
+    DEFAULT_GLOB,
+    SENTENCE_LOOKBACK,
+    corpus_frontmatter,
+    describe_cycle,
+    sentence_around,
+    supersession_cycle_closed_by,
+    supersession_graph_of,
+)
 from recall.observability import get_logger
 from recall.errors import RecallError
+from recall.supersession_cues import unasserted
 
 _log = get_logger("fix")
 
@@ -68,12 +88,21 @@ _PASSIVE = r"(?:superseded\s+by|superceded\s+by|replaced\s+by)"
 #: `curate_wallets.wallet_weight = clamp(...)`. None of it could ever resolve to a file, so
 #: nothing unsafe was written, but the SKIP list became noise no human could act on. A proposal
 #: tool whose output must itself be filtered has not saved anyone any work.
-_REF = (
-    r"\[\[([^\]\n]{1,120})\]\]"
-    r"|([A-Za-z0-9][\w\-]{5,}\.md)"
-    r"|([a-z][a-z0-9]*(?:[_\-][a-z0-9]+)*[_\-]20\d\d(?:[_\-]\d\d){0,2})"
+_REF_FORMS = (
+    r"\[\[([^\]\n]{1,120})\]\]",
+    r"([A-Za-z0-9][\w\-]{5,}\.md)",
+    r"([a-z][a-z0-9]*(?:[_\-][a-z0-9]+)*[_\-]20\d\d(?:[_\-]\d\d){0,2})",
 )
+_REF = "|".join(_REF_FORMS)
 
+#: The references above, for MASKING only: each alternative may start only at the start of a token,
+#: so a memo holding one very long token is scanned once rather than once per character. Matching
+#: still uses `_REF`, whose spans start after a cue and so are already anchored. Built from
+#: `_REF_FORMS`, so the two cannot come to read different forms.
+_REF_MASK_RE = re.compile(
+    "|".join((_REF_FORMS[0], *(rf"(?<![\w\-]){form}" for form in _REF_FORMS[1:]))),
+    re.IGNORECASE,
+)
 _PASSIVE_RE = re.compile(
     rf"(?P<marker>{_PASSIVE})[^\n.;]{{0,40}}?(?:{_REF})", re.IGNORECASE
 )
@@ -86,6 +115,18 @@ class UnreadableMemo(ValueError, RecallError):
     """`apply_proposal` was pointed at a memo it will not rewrite, and said which and why."""
 
 
+class SupersessionCycle(UnreadableMemo):
+    """The memo reads fine, but the edge would close a supersession cycle.
+
+    A subclass, so every caller that reports `UnreadableMemo` as SKIP still does, and a library
+    caller can tell this refusal from an encoding one without reading the message.
+    """
+
+
+#: Hex digits of a proposal id: the ten `recall lint --fix` prints and `--apply` takes back.
+PROPOSAL_ID_HEX_DIGITS = 10
+
+
 @dataclass(frozen=True)
 class Proposal:
     """One edge to declare. `edit_file` is the memo that gains `supersedes: <target>`."""
@@ -93,7 +134,22 @@ class Proposal:
     edit_file: str      # root-relative path of the file to modify
     target: str         # value to write for `supersedes:`
     evidence_file: str  # the memo whose prose stated the relation
-    evidence: str       # the matched phrase, so a human can judge it
+    evidence: str       # the sentence that states it, on one line, cut to `_EVIDENCE_LIMIT`
+                        # characters around the cue when longer, so a human can judge it
+
+    @property
+    def id(self) -> str:
+        """The name `recall lint --fix --apply` selects this edge by.
+
+        Derived from the edge AND the sentence a reviewer read, not from a position in the list,
+        so an id taken from a dry run cannot select a different edge once the corpus has moved:
+        a memo added in between renumbers a list, and an edited sentence changes the id. It
+        hashes `evidence` as shown, so re-wrapping the sentence, or editing a long one outside
+        the excerpt shown, leaves the id as it was.
+        """
+        joined = "\0".join((self.edit_file, self.target, self.evidence_file, self.evidence))
+        digest = hashlib.sha256(joined.encode("utf-8", "surrogatepass")).hexdigest()
+        return digest[:PROPOSAL_ID_HEX_DIGITS]
 
 
 @dataclass(frozen=True)
@@ -115,7 +171,7 @@ def _is_index(rel: str) -> bool:
                for n in _INDEX_NAMES)
 
 
-def _first_ref(match: re.Match) -> str | None:
+def _first_ref(match: re.Match[str]) -> str | None:
     """The document reference in a marker match.
 
     Skips group 1, which is the named `marker` group — the verb phrase itself is never the
@@ -150,16 +206,27 @@ def _is_reported_speech(body: str, marker_start: int) -> bool:
     that merely NARRATES it invented a second, false claimant for an edge another memo already
     declares correctly — the worst kind of false positive, because it looks authoritative.
     """
-    head = body[:marker_start]
-    cut = max((head.rfind(c) for c in _CLAUSE_END), default=-1)
-    return bool(_OTHER_DOC.search(head[cut + 1:]))
+    # The clause end is looked for in the `SENTENCE_LOOKBACK` characters behind the marker first,
+    # so a memo with many cues is read once rather than once per cue; failing that, all of it.
+    lo = max(0, marker_start - SENTENCE_LOOKBACK)
+    near = body[lo:marker_start]
+    cut = max((near.rfind(c) for c in _CLAUSE_END), default=-1)
+    if cut >= 0:
+        cut += lo
+    elif lo:
+        cut = max((body.rfind(c, 0, lo) for c in _CLAUSE_END), default=-1)
+    # Searched in place: the character before `cut + 1` is a clause end, never a word character,
+    # so `\b` there reads as it did at the start of the sliced head.
+    return bool(_OTHER_DOC.search(body, cut + 1, marker_start))
 
 
 #: Qualifiers that weaken the claim from "replaces" to "relates to".
-_HEDGE_BEFORE = re.compile(
-    r"\b(?:partially|partly|largely|mostly|arguably|effectively|broadly|possibly)\s+$",
-    re.IGNORECASE,
+_HEDGE_WORDS = (
+    "partially", "partly", "largely", "mostly", "arguably", "effectively", "broadly", "possibly",
 )
+_HEDGE_BEFORE = re.compile(rf"\b(?:{'|'.join(_HEDGE_WORDS)})\s+$", re.IGNORECASE)
+#: The longest hedge word, which bounds how far before the whitespace a hedge can begin.
+_HEDGE_WORD_MAX = max(len(word) for word in _HEDGE_WORDS)
 #: "supersedes/augments X", "supersedes or augments X" — the author declined to commit.
 _HEDGE_AFTER = re.compile(r"^\s*(?:/|\bor\b)\s*\w+", re.IGNORECASE)
 
@@ -175,7 +242,20 @@ def _is_hedged(body: str, marker_start: int, after: str) -> bool:
     A hedge is the author saying they are not sure. Resolving it for them is exactly the kind of
     confident wrong answer this project exists to avoid.
     """
-    return bool(_HEDGE_BEFORE.search(body[:marker_start]) or _HEDGE_AFTER.match(after))
+    return bool(_hedged_before(body, marker_start) or _HEDGE_AFTER.match(after))
+
+
+def _hedged_before(body: str, marker_start: int) -> bool:
+    """`_HEDGE_BEFORE` against ``body[:marker_start]``, read from the hedge word on.
+
+    A match ends in the whitespace run that ends at the marker and begins at the word before that
+    run, at most `_HEDGE_WORD_MAX` characters long, so it is searched from there rather than from
+    the start of the memo; `\\b` and `$` read the same in place as on the slice.
+    """
+    run = marker_start
+    while run and body[run - 1].isspace():
+        run -= 1
+    return bool(_HEDGE_BEFORE.search(body, max(0, run - _HEDGE_WORD_MAX), marker_start))
 
 
 def _is_partial_scope(between: str) -> bool:
@@ -188,7 +268,7 @@ def _is_partial_scope(between: str) -> bool:
     return bool(_PARTIAL_SCOPE.search(between))
 
 
-def _accept(body: str, m: re.Match) -> str | None:
+def _accept(body: str, m: re.Match[str]) -> str | None:
     """The reference this match declares, or None when the sentence does not declare one."""
     ref = _first_ref(m)
     if not ref:
@@ -200,7 +280,44 @@ def _accept(body: str, m: re.Match) -> str | None:
     between = body[marker_end:ref_start]
     if _is_hedged(body, m.start(), between) or _is_partial_scope(between):
         return None
+    # "This never supersedes [[x]]" and "if the canary fails, this would be replaced by [[y]]"
+    # name the relation without asserting it. Both were proposed, and an applied edge demotes the
+    # memo it names, so a negated or conditional cue goes back to a human like a hedged one.
+    if unasserted(body, (m.start("marker"), marker_end), (ref_start, m.end()), _REF_MASK_RE):
+        return None
     return ref
+
+
+#: The longest evidence sentence shown whole; a longer one is cut around the cue.
+_EVIDENCE_LIMIT = 400
+
+
+def _evidence(body: str, m: re.Match[str]) -> str:
+    """The sentence holding the match, on one line, so a reviewer judges the claim and not a name.
+
+    The dry run printed only the reference, so "This never supersedes [[x]]" was reviewed as
+    "x". Whitespace is collapsed because memos wrap their prose.
+    """
+    sentence = " ".join(sentence_around(body, m.start(), m.end()).split())
+    if len(sentence) <= _EVIDENCE_LIMIT:
+        return sentence
+    at = max(sentence.find(" ".join(m.group(0).split())), 0)
+    start = max(0, at - _EVIDENCE_LIMIT // 2)
+    end = min(len(sentence), start + _EVIDENCE_LIMIT)
+    return ("…" if start else "") + sentence[start:end] + ("…" if end < len(sentence) else "")
+
+
+def _edges_with_evidence(
+    body: str,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """`extract_edges`, with the sentence that states each edge beside its reference."""
+    active = [(r, _evidence(body, m)) for m in _ACTIVE_RE.finditer(body) if (r := _accept(body, m))]
+    passive = [(r, _evidence(body, m)) for m in _PASSIVE_RE.finditer(body) if (r := _accept(body, m))]
+    # "superseded by X" also matches the active pattern's bare "supersede" stem in some
+    # phrasings; passive wins, since its voice is the more specific reading.
+    passive_keys = {supersedes_key(p) for p, _evidence_text in passive}
+    active = [(a, e) for a, e in active if supersedes_key(a) not in passive_keys]
+    return active, passive
 
 
 def extract_edges(body: str) -> tuple[list[str], list[str]]:
@@ -209,13 +326,8 @@ def extract_edges(body: str) -> tuple[list[str], list[str]]:
     Pure and file-free so the direction rule — the part that would silently invert the
     supersession graph if wrong — is testable on strings alone.
     """
-    active = [r for m in _ACTIVE_RE.finditer(body) if (r := _accept(body, m))]
-    passive = [r for m in _PASSIVE_RE.finditer(body) if (r := _accept(body, m))]
-    # "superseded by X" also matches the active pattern's bare "supersede" stem in some
-    # phrasings; passive wins, since its voice is the more specific reading.
-    passive_keys = {supersedes_key(p) for p in passive}
-    active = [a for a in active if supersedes_key(a) not in passive_keys]
-    return active, passive
+    active, passive = _edges_with_evidence(body)
+    return [r for r, _e in active], [r for r, _e in passive]
 
 
 def propose_fixes(
@@ -230,7 +342,12 @@ def propose_fixes(
     for f in files:
         by_key.setdefault(supersedes_key(f.name), []).append(rel[f])
 
-    existing: dict[str, str] = {}
+    #: What each memo already declares, as resolution keys. The key holds several references,
+    #: so a memo that declares one is NOT closed to a second: only the same edge is skipped.
+    existing: dict[str, set[str]] = {}
+    #: Memos carrying `supersedes:` with no reference, which is a human saying "supersedes
+    #: nothing". Filling that in is the human's call, never this tool's.
+    declares_nothing: set[str] = set()
     bodies: dict[str, str] = {}
     for f in files:
         try:
@@ -239,9 +356,12 @@ def propose_fixes(
         except (UnicodeDecodeError, OSError):
             continue
         bodies[rel[f]] = body
-        target = meta.get("supersedes")
-        if isinstance(target, str) and target:
-            existing[rel[f]] = target
+        if "supersedes" in meta:
+            declared = supersedes_targets(meta["supersedes"])
+            if declared:
+                existing[rel[f]] = {supersedes_key(item) for item in declared}
+            else:
+                declares_nothing.add(rel[f])
 
     proposals: list[Proposal] = []
     unfixable: list[Unfixable] = []
@@ -260,11 +380,11 @@ def propose_fixes(
             # corpus `closed_hypotheses_index.md` listing an archived memo was read as
             # "the archive supersedes the index" — syntactically valid, semantically backwards.
             continue
-        active, passive = extract_edges(body)
+        active, passive = _edges_with_evidence(body)
         if not active and not passive:
             continue
-        for ref, edit_file, target_name in (
-            [(r, name, r) for r in active] + [(r, None, r) for r in passive]
+        for ref, edit_file, target_name, evidence in (
+            [(r, name, r, e) for r, e in active] + [(r, None, r, e) for r, e in passive]
         ):
             key = supersedes_key(ref)
             candidates = by_key.get(key, [])
@@ -308,11 +428,17 @@ def propose_fixes(
                         f"first; the edge can be declared once it has a name a memo can hold",
                     ))
                     continue
-            if writer in existing:
+            if writer in declares_nothing:
                 unfixable.append(Unfixable(
                     writer,
-                    f"already declares supersedes: {existing[writer]!r} — refusing to overwrite",
+                    "declares `supersedes:` with no reference, which says it supersedes "
+                    "nothing — refusing to overwrite",
                 ))
+                continue
+            if supersedes_key(value) in existing.get(writer, ()):
+                # This exact edge is already declared: nothing to propose, but reported, so
+                # re-running after an apply shows the edge rather than silently dropping it.
+                unfixable.append(Unfixable(writer, f"already declares supersedes: {value!r}"))
                 continue
             pair = (writer, supersedes_key(value))
             if pair in seen:
@@ -345,7 +471,7 @@ def propose_fixes(
                 refused.setdefault((pair, name), (name, value, writer))
                 continue
             seen.add(pair)
-            proposals.append(Proposal(writer, value, name, ref))
+            proposals.append(Proposal(writer, value, name, evidence))
     for (pair, _source_key), (source, value, writer) in refused.items():
         if pair in seen:
             continue  # another spelling of this same edge was declared correctly
@@ -356,7 +482,7 @@ def propose_fixes(
     return proposals, unfixable
 
 
-def apply_proposal(root: Path, p: Proposal) -> None:
+def apply_proposal(root: Path, p: Proposal, *, glob: str = DEFAULT_GLOB) -> None:
     """Insert `supersedes: <target>` into `p.edit_file`'s frontmatter, preserving everything else.
 
     Rewrites only the frontmatter block: a file without one gains a minimal block above its
@@ -388,6 +514,12 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     resolves for nobody, and it is the one a reviewer can hand back after reading it in a
     report, so "is not valid UTF-8" would be a false thing to say about the value in front of
     them and would name nothing they could act on.
+
+    Last, an edge that would close a supersession cycle is refused with `SupersessionCycle`, before
+    the write rather than as a `recall lint` error after it. The cycle is judged on every memo
+    under `root` that `DEFAULT_GLOB` or `glob` selects: search and a plain `recall lint` read
+    every memo, so a cycle through one outside a narrower `--glob` is still a cycle, and a `glob`
+    that selects other files (`**/*.txt`) adds those to the graph rather than replacing it.
     """
     if NAME_STAND_IN_MARK in p.target:
         # The marker is stripped from the message: it carries a NUL, which is there to keep two
@@ -407,7 +539,7 @@ def apply_proposal(root: Path, p: Proposal) -> None:
     f = root / p.edit_file if root.is_dir() else root
     raw = f.read_bytes()
     try:
-        text = raw.decode("utf-8-sig")
+        raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         # `propose_fixes` skips a file it cannot decode, so such a file never appears in
         # `existing` and its authored `supersedes:` is invisible to the overwrite refusal — but it
@@ -417,10 +549,42 @@ def apply_proposal(root: Path, p: Proposal) -> None:
         # every time. The old `read_text` raised here; keep refusing, with a message that says
         # which file and why.
         raise UnreadableMemo(f"{p.edit_file} is not valid UTF-8 ({exc.reason})") from exc
-    if parse_document(text).meta.get("supersedes"):
-        # Re-checked against THIS file rather than the corpus-wide scan, for the same reason:
-        # the scan's view can be missing a file it could not read at the time.
-        raise UnreadableMemo(f"{p.edit_file} already declares supersedes — refusing to overwrite")
+    # Re-checked against THIS file rather than the corpus-wide scan, for the same reason: the
+    # scan's view can be missing a file it could not read at the time. A second, different
+    # reference is an addition; the same one is already there; an empty key is refused.
+    try:
+        updated = add_supersedes_target(raw, p.target)
+    except SupersedesDeclaresNothing as exc:
+        raise UnreadableMemo(
+            f"{p.edit_file} declares `supersedes:` with no reference — refusing to overwrite"
+        ) from exc
     line = f"supersedes: {p.target}"
-    atomic_write_bytes(f, insert_frontmatter_line(raw, "supersedes", p.target))
+    if updated is None:
+        _log.info("%s already declares %s", p.edit_file, line)
+        return
+    # Read from disk for every edge, not once per run: an edge written earlier in the same run is
+    # part of the graph the next one is judged against.
+    # A tuple, not a set: the order fixes which chain a refusal names when two close the cycle.
+    globs = (DEFAULT_GLOB,) if glob == DEFAULT_GLOB else (DEFAULT_GLOB, glob)
+    documents = {f: meta for g in globs for f, meta in corpus_frontmatter(root, g)}
+    graph = supersession_graph_of((f.name, meta) for f, meta in documents.items())
+    chain = supersession_cycle_closed_by(graph, p.edit_file, p.target)
+    if chain is not None:
+        raise SupersessionCycle(
+            f"{p.edit_file} cannot declare supersedes: {p.target!r}: "
+            + describe_cycle(p.edit_file, p.target, chain)
+        )
+    # The scan above reads the whole corpus, so it is the window in which an editor, an agent or
+    # a session hook can save this memo. Writing `updated` then would put back the bytes read
+    # before that save; refuse instead, so the next run judges the memo as it now is.
+    try:
+        current = f.read_bytes()
+    except OSError as exc:
+        raise UnreadableMemo(
+            f"{p.edit_file} could not be read again before the write ({exc.strerror or exc}); "
+            f"run again"
+        ) from exc
+    if current != raw:
+        raise UnreadableMemo(f"{p.edit_file} changed while its edge was being checked; run again")
+    atomic_write_bytes(f, updated)
     _log.info("declared %s in %s", line, p.edit_file)

@@ -61,8 +61,13 @@ def _target(prefix: str = "mig_"):
 
 
 def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
+    """FIX-004/FIX-005 add revision and concurrent latest-record-index migrations.
+
+    Removing only the two new migration files and their manifest entries must fail this strict
+    inventory assertion. The mutation RED/GREEN receipt is recorded with the audit.
+    """
     migrations = load_migrations()
-    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 26)]
+    assert [m.version for m in migrations] == [f"{n:04d}" for n in range(1, 36)]
     assert migrations[0].transactional
     assert migrations[7].transactional
     assert all(m.concurrent_index for m in (*migrations[1:7], *migrations[8:10]))
@@ -78,6 +83,16 @@ def test_packaged_migrations_have_committed_checksums_and_explicit_modes():
     assert migrations[21].transactional  # 0022_provenance_protected_append
     assert migrations[22].transactional  # 0023_provenance_deterministic_hardening
     assert migrations[24].transactional  # 0025_allow_supersedes_graph_relations
+    assert migrations[25].transactional  # 0026_fact_ledger_retraction
+    assert migrations[26].transactional  # 0027_fact_ledger_gc_retraction
+    assert migrations[27].transactional  # 0028_validate_fact_ledger_retraction
+    assert migrations[28].transactional  # 0029_fact_value_redaction
+    assert migrations[29].transactional  # 0030_fact_current_table
+    assert migrations[30].concurrent_index == "recall_fact_ledger_order_idx"  # 0031_fact_ledger_order_index
+    assert migrations[31].transactional  # 0032_fact_ledger_withdrawal
+    assert migrations[32].transactional  # 0033_validate_fact_ledger_withdrawal
+    assert migrations[33].transactional  # 0034_supersession_revision
+    assert migrations[34].concurrent_index == "recall_supersession_latest_idx"  # 0035
     assert len({m.checksum for m in migrations}) == len(migrations)
 
 
@@ -498,8 +513,11 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
 
     v0.13 shipped migrations 0001 through 0024. Building that exact checkpoint with the package
     loader temporarily limited to those immutable migration objects is safer than duplicating
-    twenty-four SQL files in a test. The current package then applies 0025, preserving an existing
-    authored relation while allowing the newly supported ``supersedes`` relation.
+    twenty-four SQL files in a test. The current package then applies 0025 to 0035, preserving an
+    existing authored relation while allowing the newly supported ``supersedes`` relation.
+
+    FIX-004/FIX-005 extend the strict upgrade inventory by 0034/0035 without weakening any row
+    preservation assertion. Removing those new files and manifest entries supplies mutation RED.
     """
     import recall.schema as schema_module
 
@@ -539,7 +557,9 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
             )
 
         applied = apply_migrations(dsn, table="chunks", dim=DIM)
-        assert [migration.version for migration in applied] == ["0025"]
+        assert [migration.version for migration in applied] == [
+            "0025", "0026", "0027", "0028", "0029", "0030", "0031", "0032", "0033", "0034", "0035",
+        ]
 
         with psycopg.connect(dsn, autocommit=True) as conn:
             conn.execute(
@@ -555,6 +575,109 @@ def test_previous_release_checkpoint_upgrades_without_losing_graph_rows(monkeypa
                 (tenant, generation),
             ).fetchall()
         assert relations == [("existing", "supports"), ("successor", "supersedes")]
+
+
+@requires_db
+def test_0029_lands_last_on_a_database_already_at_0033(monkeypatch):
+    """A database migrated to 0033 before 0029 existed (PR 950 held the number) takes it last.
+
+    Master shipped 0030 to 0033 while 0029 was unmerged, so a database built then has every
+    migration but 0029. Invariants: the upgrade applies 0029 alone; it keeps 0032's `withdrawn`
+    event type (0029 replaces the ledger's trigger functions, never its constraints); and on that
+    database a tenant erase of an asserted, then withdrawn, fact renames the withdrawal with its
+    assertion, so the withdrawal still names a ledger event.
+
+    Red proof, 2026-10-24 on the remote test host, each mutation alone with its checksum updated,
+    on a database that never applied the real 0029, then restored: 0029 with migration 0026's event-type constraint appended (no `withdrawn`)
+    fails on "applying 0029 after 0033 lost 0032's withdrawn event type"; 0029's
+    `recall_redact_fact_values` without its `withdrawn` branch fails on "the tenant erase was
+    refused" (the function holds the renamed withdrawal to its old ids).
+    """
+    import recall.schema as schema_module
+    from recall.fact_ledger import PostgresFactLedger
+    from recall.fact_redaction import TENANT_ERASE_WRITER, PostgresFactRedactor
+    from recall.provenance_cards import PostgresEvidenceCardStore
+    from recall.provenance_controller import (
+        FactApplicationRequest,
+        ProvenanceController,
+        withdrawn_event_ids,
+    )
+    from recall.types import AtomicFact
+    from tests.fact_fixtures import NOW, evidence_card
+
+    without = tuple(m for m in load_migrations() if m.version != "0029")
+    tenant = "gap-" + uuid.uuid4().hex[:10]
+    with _fresh_database(prefix="gap0029_") as dsn:
+        monkeypatch.setattr(schema_module, "load_migrations", lambda: without)
+        assert apply_migrations(dsn, table="chunks", dim=DIM)
+        monkeypatch.undo()
+
+        applied = apply_migrations(dsn, table="chunks", dim=DIM)
+        assert [migration.version for migration in applied] == ["0029"]
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname = 'recall_fact_ledger_events_event_type_check'"
+            ).fetchone()
+        assert row is not None and "withdrawn" in row[0], (
+            "applying 0029 after 0033 lost 0032's withdrawn event type"
+        )
+
+        fact = AtomicFact(namespace="memory", subject="user", predicate="door_code", object="4512")
+        cards = PostgresEvidenceCardStore(dsn, tenant_id=tenant)
+        card = evidence_card(fact, tenant=tenant, generation="g1", chunk="chunk-a", source="a.md")
+        cards.put((card,))
+        ledger = PostgresFactLedger(dsn, tenant_id=tenant)
+        ProvenanceController(
+            tenant_id=tenant, generation_id="g1", cards=cards, ledger=ledger,
+            source_digest_for=lambda _card: "digest", now=lambda: NOW, writer="gap-test",
+        ).apply_fact(FactApplicationRequest(fact, (card.card_id,), "r1"))
+        assert ledger.withdraw_forgotten(tenant_id=tenant, touched=lambda _c: True, gone=lambda _c: True)
+
+        try:
+            report = PostgresFactRedactor(dsn, tenant_id=tenant).redact(
+                everything=True, reason="tenant_erase", writer=TENANT_ERASE_WRITER
+            )
+        except psycopg.Error as exc:
+            pytest.fail(f"the tenant erase was refused: {exc}")
+        assert report.facts_redacted == 1
+        events = PostgresFactLedger(dsn, tenant_id=tenant).events
+        named = withdrawn_event_ids(events)
+        assert named and named <= {event.event_id for event in events}, (
+            "the withdrawal names an assertion the ledger no longer holds"
+        )
+
+
+@requires_db
+def test_the_ledger_order_index_serves_the_replay_without_a_sort():
+    """Migration 0031 builds an index that serves one tenant's ledger in `created_at, event_id` order.
+
+    That ordering is what the ledger replay, `recall provenance rebuild` and the reconcile read
+    (`recall.fact_current`), and `(tenant_id, fact_id, created_at)` cannot serve it. On a fresh
+    database migrated to head, the index exists and is valid, and with sequential scans and sorts
+    priced out the replay query's plan reads it and sorts nothing.
+
+    Red proof, 2026-10-22 on the remote test host, each mutation alone with its checksum updated:
+    0031 deleted (with its checksums.json entry) fails "left no valid index"; 0031 built on
+    `(tenant_id, created_at)` only leaves an Incremental Sort on `event_id`, failing the plan
+    assertion.
+    """
+    with _fresh_database(prefix="ledgeridx_") as dsn:
+        apply_migrations(dsn, table="chunks", dim=DIM)
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                "WHERE c.relname = 'recall_fact_ledger_order_idx'"
+            ).fetchone()
+            assert row is not None and row[0], "migration 0031 left no valid recall_fact_ledger_order_idx"
+            conn.execute("SET enable_seqscan = off")
+            conn.execute("SET enable_bitmapscan = off")
+            conn.execute("SET enable_sort = off")
+            plan = "\n".join(str(line[0]) for line in conn.execute(
+                "EXPLAIN SELECT event_id FROM recall_fact_ledger_events "
+                "WHERE tenant_id = 'probe' ORDER BY created_at, event_id"
+            ).fetchall())
+        assert "recall_fact_ledger_order_idx" in plan and "Sort" not in plan, plan
 
 
 @requires_db

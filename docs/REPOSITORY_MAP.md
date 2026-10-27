@@ -24,11 +24,14 @@ Agent SDK.
 | Path | Role | Stability |
 |---|---|---|
 | `recall/` | Core Python library. | Supported API is listed in [API.md](API.md). |
+| `recall/lite/` | Single-file SQLite storage, calibration, refresh, and write coordination. | Local project memory; see [INSTALLATION.md](INSTALLATION.md#local-memory-in-one-file). |
 | `recall_mcp/` | MCP server and tool implementation. | Supported MCP tools are listed in [API.md](API.md). |
+| `recall_agent/` | In-process tools for the Claude Agent SDK. | See [USING_WITH_AGENT_SDK.md](USING_WITH_AGENT_SDK.md). |
 | `recall_hooks/` | Claude Code session hooks (deliberately import-light; shipped in the wheel). | Supported through the plugin. |
 | `recall_interop/` | Interop adapters used by benchmark harnesses. | Repository support, not packaged library API. |
 | `recall_consistency/` | Repository consistency checks. | Repository support, not packaged library API. |
 | `plugin/` | The Claude Code plugin: MCP wiring, hooks, and the RE-call skills. | Supported; see [../plugin/README.md](../plugin/README.md). |
+| `codex-plugin/` | The Codex plugin bundle and matching portable skills. | See [CODEX_RECALL_INTEGRATION.md](CODEX_RECALL_INTEGRATION.md). |
 | `site/` | Source of the setup guide published at giulioder.github.io/RE-call. | Published on every push to master. |
 | `hooks/` | Deployable copies of repository guard hooks. | Repository support. |
 | `packaging/` | Windows installer packaging. | Release tooling. |

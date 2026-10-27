@@ -92,7 +92,7 @@ _SUPERSESSION_SQL = """
 """
 
 
-# Every statement here interpolates only ``store._table``, which ``PgVectorStore.__init__`` has
+# Every statement here interpolates only ``store.table``, which ``PgVectorStore.__init__`` has
 # already refused unless it is a plain SQL identifier; every value travels as a bound parameter.
 
 
@@ -112,7 +112,7 @@ def cacheable(store: object) -> bool:
 
 
 def _key(store: PgVectorStore) -> tuple[str, str, str]:
-    return (store._dsn, store._table, store._tenant)
+    return (store.dsn, store.table, store.tenant)
 
 
 def _fingerprint_of(rows: Iterable[tuple[int, datetime | None]]) -> Fingerprint:
@@ -134,8 +134,8 @@ def _normalise(row: Sequence[Any]) -> Fingerprint:
 
 def current_fingerprint(store: PgVectorStore) -> Fingerprint:
     """One aggregate row: far cheaper than reading, decoding and tokenising every chunk."""
-    sql = _FINGERPRINT_SQL.format(table=store._table)
-    row = store._with_retry(lambda conn: conn.execute(sql, (store._tenant,)).fetchone())
+    sql = _FINGERPRINT_SQL.format(table=store.table)
+    row = store._with_retry(lambda conn: conn.execute(sql, (store.tenant,)).fetchone())
     if row is None:  # an aggregate always returns one row; this names the impossible case
         raise RuntimeError("the fingerprint aggregate returned no row")
     return _normalise(row)
@@ -151,8 +151,8 @@ def _read_all(store: PgVectorStore) -> tuple[list[tuple[Chunk, int]], Fingerprin
                 cur.itersize = 1000
                 cur.execute(
                     f"SELECT id, source, text, metadata, xmin::text::bigint, indexed_at "  # noqa: S608
-                    f"FROM {store._table} WHERE tenant_id = %s ORDER BY id",
-                    (store._tenant,),
+                    f"FROM {store.table} WHERE tenant_id = %s ORDER BY id",
+                    (store.tenant,),
                 )
                 for cid, source, text, metadata, xmin, indexed_at in cur:
                     rows.append(
@@ -166,9 +166,9 @@ def _read_versions(store: PgVectorStore) -> tuple[dict[str, int], Fingerprint]:
     """Every row's id and version, and their fingerprint, in one statement."""
     fetched = store._with_retry(
         lambda conn: conn.execute(
-            f"SELECT id, xmin::text::bigint, indexed_at FROM {store._table} "  # noqa: S608
+            f"SELECT id, xmin::text::bigint, indexed_at FROM {store.table} "  # noqa: S608
             "WHERE tenant_id = %s",
-            (store._tenant,),
+            (store.tenant,),
         ).fetchall()
     )
     versions = {str(row[0]): int(row[1]) for row in fetched}
@@ -178,9 +178,9 @@ def _read_versions(store: PgVectorStore) -> tuple[dict[str, int], Fingerprint]:
 def _read_rows(store: PgVectorStore, ids: Sequence[str]) -> dict[str, tuple[Chunk, int]]:
     fetched = store._with_retry(
         lambda conn: conn.execute(
-            f"SELECT id, source, text, metadata, xmin::text::bigint FROM {store._table} "  # noqa: S608
+            f"SELECT id, source, text, metadata, xmin::text::bigint FROM {store.table} "  # noqa: S608
             "WHERE tenant_id = %s AND id = ANY(%s)",
-            (store._tenant, list(ids)),
+            (store.tenant, list(ids)),
         ).fetchall()
     )
     return {
@@ -500,9 +500,9 @@ class TenantSearchCache:
         if cached is not None and cached[0] == fingerprint and cached[1] == epoch:
             self.stats["supersession_hit"] += 1
             return cached[2]
-        sql = _SUPERSESSION_SQL.format(table=store._table)
+        sql = _SUPERSESSION_SQL.format(table=store.table)
         row = store._with_retry(
-            lambda conn: conn.execute(sql, {"tenant": store._tenant}).fetchone()
+            lambda conn: conn.execute(sql, {"tenant": store.tenant}).fetchone()
         )
         if row is None:  # the statement is a cross join of two aggregates: always one row
             raise RuntimeError("the supersession aggregate returned no row")

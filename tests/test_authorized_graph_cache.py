@@ -20,6 +20,8 @@ Red proofs (2026-09-23, base ``c7f2b9bc``):
 
 from __future__ import annotations
 
+from recall_mcp import graph_projection as _s5b_graph_projection
+
 import pytest
 
 import recall_mcp.service as service
@@ -67,7 +69,7 @@ def _graph():
 @pytest.fixture(autouse=True)
 def _cached_projection(monkeypatch):
     service._reset_graph_projection_cache()
-    monkeypatch.setattr(service, "project_store_graph", lambda store, **kwargs: _graph())
+    monkeypatch.setattr(_s5b_graph_projection, "project_store_graph", lambda store, **kwargs: _graph())
     yield
     service._reset_graph_projection_cache()
 

@@ -81,6 +81,7 @@ import json
 import math
 import re
 import sys
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -117,6 +118,19 @@ FIELD_WEIGHT = 3
 
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
 DESCRIPTION_RE = re.compile(r"^description:\s*(.+)$", re.MULTILINE)
+
+#: A memo's frontmatter: the block between the opening `---` and the next one.
+FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.DOTALL)
+#: The provenance fields a memo states about itself, read from the frontmatter only, so a date
+#: quoted in the body can never be mistaken for the memo's own.
+VALID_FROM_RE = re.compile(r"^\s*valid_from:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.MULTILINE)
+MODIFIED_RE = re.compile(r"^\s*modified:\s*['\"]?(\d{4}-\d{2}-\d{2})", re.MULTILINE)
+SESSION_RE = re.compile(r"^\s*originSessionId:\s*['\"]?([0-9A-Za-z]{8})", re.MULTILINE)
+#: Memos written by the dated convention carry the day in the file name.
+NAME_DATE_RE = re.compile(r"\A(\d{4}-\d{2}-\d{2})-")
+#: A correction appended in place, the `🔁 Corrected 2026-08-25` convention, with its date on the
+#: same line as the marker.
+CORRECTION_RE = re.compile("\U0001f501" r"[^\n]*?(\d{4}-\d{2}-\d{2})")
 
 #: Function words plus the conversational filler a prompt is made of. Not a linguistic stoplist:
 #: every word here was watched matching a memo for no reason during development.
@@ -313,15 +327,70 @@ def rank(
     return [row for row in scored[:k] if row[2] >= floor]
 
 
-def render(hits: list[tuple[str, str, float]], store: Path) -> str:
+def provenance(path: Path) -> str:
+    """The dates a memo states about itself, as one bracketed stamp. Nothing is inferred.
+
+    🔑 **Why a stamp, and why this one.** An undated record reads as current: the model trusts a
+    stale fact as readily as a fresh one. RE-call measured the same thing on its own reader: with
+    each returned item prefixed by its date, LoCoMo temporal accuracy rose 53.75 points over
+    undated content (memo `2026-09-24-c9-textual-reader-sees-no-dates`), and the date had to be
+    IN the text, because an optional side field is not shown to every reader.
+
+    ⛔ **Each date is labelled with the field it came from, and none is guessed.** The AML
+    organiser's issue 9 asks for exactly this: keep when an event happened apart from when the
+    record was stored, and never add an inferred date. T-1 broke that rule by dating the words of
+    an album title (`2026-10-09-t1-annotates-relative-words-inside-names`). So `valid from` is
+    the frontmatter's own claim about the fact, `written` is the date in the file name, `modified`
+    is the frontmatter's record time, and `corrected` is the latest dated 🔁 marker in the body.
+    File mtime is NOT used: on this store it clusters on bulk-copy days (64 memos share one), so
+    it would be a confident wrong date. A memo with none of these says `undated`.
+    """
+
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "[undated]"
+    head_match = FRONTMATTER_RE.search(raw)
+    head = head_match.group(1) if head_match else ""
+    body = raw[head_match.end():] if head_match else raw
+    parts: list[str] = []
+    name_date = NAME_DATE_RE.match(path.stem)
+    if name_date:
+        parts.append(f"written {name_date.group(1)}")
+    valid_from = VALID_FROM_RE.search(head)
+    if valid_from and not (name_date and valid_from.group(1) == name_date.group(1)):
+        parts.append(f"valid from {valid_from.group(1)}")
+    modified = MODIFIED_RE.search(head)
+    corrections = CORRECTION_RE.findall(body)
+    if modified:
+        parts.append(f"modified {modified.group(1)}")
+    if corrections:
+        count = len(corrections)
+        parts.append(f"corrected {count}x, last {max(corrections)}")
+    if not parts:
+        return "[undated]"
+    session = SESSION_RE.search(head)
+    if session:
+        parts.append(f"session {session.group(1)}")
+    return "[" + "; ".join(parts) + "]"
+
+
+def render(
+    hits: list[tuple[str, str, float]], store: Path, today: date | None = None
+) -> str:
     """The injected text.
 
     It names the files rather than pasting them. A memo is up to several thousand words and most
     hits do not apply; a one-line summary is enough to decide, and the path is enough to read the
     rest. Saying up front that most will not apply is what makes an irrelevant hit cheap to drop
     instead of something to be reconciled.
+
+    Each hit leads with its `provenance` stamp, and the block states today's date, which is the
+    `question_date` half of RE-call's dated reader contract (`recall.evidence.DATED_READER_CONTRACT`):
+    a date is only useful beside the date it is compared with.
     """
 
+    today = today or date.today()
     lines = [
         "Project memory was searched with this prompt before you saw it. "
         f"{len(hits)} prior record(s) came back. Most searches return nothing that applies, so "
@@ -331,11 +400,17 @@ def render(hits: list[tuple[str, str, float]], store: Path) -> str:
         "decision, re-run a measurement, or rebuild something that already exists. Read the file "
         "before proposing anything that touches its subject.",
         "",
+        f"Today is {today.isoformat()}. Each record leads with the dates it states about itself, "
+        "and none is inferred. A claim is as old as its last date: when two records disagree, the "
+        "later one is the current fact, and an old or undated claim about behaviour or a number "
+        "is to be re-measured before it is relied on.",
+        "",
     ]
     for stem, summary, score in hits:
-        lines.append(f"- {stem} (score {score:.1f})")
+        path = store / (stem + ".md")
+        lines.append(f"- {provenance(path)} {stem} (score {score:.1f})")
         lines.append(f"  {summary[:SUMMARY_CHARS]}")
-        lines.append(f"  {store / (stem + '.md')}")
+        lines.append(f"  {path}")
     return "\n".join(lines)
 
 
@@ -384,6 +459,7 @@ __all__ = [
     "find_store",
     "load_memos",
     "project_slug",
+    "provenance",
     "rank",
     "render",
     "settings",

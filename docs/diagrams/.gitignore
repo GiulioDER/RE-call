@@ -1,0 +1,7 @@
+# Archify writes a delivery receipt beside each rendered page. It records absolute local paths,
+# which must never enter this public tree, and it is regenerated on every render anyway.
+*.delivery.json
+*.finalize.json
+*.finalize-summary.json
+*.browser-check.json
+*.visual-check.*

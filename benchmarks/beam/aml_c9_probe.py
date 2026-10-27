@@ -14,7 +14,9 @@ What is copied from AML's public pipeline (``AML-memory/agent-memory-leaderboard
 for both roles (Qwen3-14B, thinking off, temperature 0, 512 answer tokens). What is NOT known and
 is assumed: how the platform joins ``data[].content`` into the answer context (here: in returned
 order, separated by blank lines, content only, no ``created_at``) and which judge model the
-platform really configures.
+platform really configures. The answer and judge prompts are BEAM's own (mohammadtavakoli78/BEAM,
+MIT); their sources, licences and the small differences from the source text are recorded in
+``benchmarks/beam/NOTICE.md``.
 
 Two arms answer from the SAME retrieved 100 items, so they differ only in order:
 ``returned`` (C9's rank order, what AML sees) and ``chronological`` (batch order, then position in

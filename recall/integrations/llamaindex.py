@@ -9,7 +9,7 @@ ordinary vector retriever in exactly one way, and it is the whole point of RE-ca
 It runs ``trusted_search`` (verdict + confidence + provenance per hit, valid hits ordered first, an
 explicit abstention when none remain) and maps the decision onto LlamaIndex's contract: an
 abstention becomes an empty ``list[NodeWithScore]``, so a query engine synthesises from nothing
-rather than from a stale, superseded or unentailed memory. Each node carries the trust signal in
+rather than from a stale or superseded memory. Each node carries the trust signal in
 ``metadata`` (``recall_verdict``, ``recall_confidence``, ``recall_cosine``, ``superseded_by`` …);
 its ``score`` is the cosine similarity.
 
@@ -121,7 +121,6 @@ class RecallRetriever(BaseRetriever):
         source: str | None = None,
         calibration: Calibration | None = None,
         reranker: Reranker | None = None,
-        entailment: Any | None = None,
         return_abstention_reason: bool = False,
         include_untrusted: bool = False,
         callback_manager: CallbackManager | None = None,
@@ -132,9 +131,7 @@ class RecallRetriever(BaseRetriever):
         """Build a retriever that calls :func:`recall.trust.trusted_search` on each query.
 
         ``store`` and ``embedder`` are captured by reference; their lifecycle is the caller's.
-        ``entailment`` is the optional near-miss judge (see :mod:`recall.entailment`), left untyped
-        here so importing the adapter does not pull in the ``entail`` extra. ``include_untrusted``
-        opts a live-store retriever into serving trust-refused hits (with an in-band warning) — the
+        ``include_untrusted`` opts a live-store retriever into serving trust-refused hits (with an in-band warning) — the
         same escape hatch the constructor exposes, reachable through the documented factory.
         ``document_expansion`` opts relational queries into source-scoped retrieval before the
         trust layer evaluates the complete candidate set.
@@ -150,7 +147,6 @@ class RecallRetriever(BaseRetriever):
                 source=source,
                 calibration=calibration,
                 reranker=reranker,
-                entailment=entailment,
                 policy=policy,
                 document_expansion=document_expansion,
                 structural_expansion=structural_expansion,

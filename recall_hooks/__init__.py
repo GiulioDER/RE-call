@@ -286,8 +286,9 @@ def session_start(payload: dict[str, Any]) -> int:
         f"RE-call memory is available for {project}: {count} indexed chunks. "
         "Call `recall_search` before proposing an idea, forming a hypothesis, or "
         "repeating past work, and treat an `abstained: true` result as 'no supported "
-        "answer' rather than as an empty one. This corpus is uncalibrated, so trust "
-        "thresholds are defaults rather than fitted to it."
+        "answer' rather than as an empty one. This count is cached configuration, not live "
+        "readiness or trust evidence. Use `recall_stats` for freshness and the live retrieval "
+        "verdict for calibration and trust."
         if count
         else ""
     )
@@ -396,7 +397,7 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     memory_dir = Path(str(cwd)) / "memory"
     if memory_dir.is_dir():
         try:
-            from recall.setup import index_memory_directory
+            from recall.memory_index import index_memory_directory
 
             index_memory_directory(
                 dsn=str(dsn),
@@ -500,21 +501,72 @@ def _auth_command(args: list[str]) -> int:
     return credentials.login(config, args[1:])
 
 
+def _pre_tool_use(payload: dict[str, Any]) -> int:
+    """`PreToolUse`: general knowledge first, then write time, printed as ONE JSON object.
+
+    Two sources can speak on the same event and a client reads one document from stdout, so each
+    returns its text and this joins them with a blank line. Each source has its own guarded import
+    AND its own `try`: an older install that lacks a module, or a source that raises, must not
+    silence the other, and neither may fail the tool call. General knowledge runs first and needs
+    nothing the write-time gates check (`dsn`, `project_root`), so it works in every project.
+
+    When only write time speaks, the printed object is byte-identical to what
+    `write_time.pre_tool_use` prints, which is what the write-time tests and real clients see.
+    """
+    texts: list[str] = []
+    try:
+        from .general_knowledge import pre_tool_use_context
+
+        text = pre_tool_use_context(payload)
+        if text:
+            texts.append(text)
+    except Exception:  # BROAD-CATCH: fail-open (ImportError from an older checkout included)
+        pass
+    try:
+        from .write_time import context_for
+
+        text = context_for(payload)
+        if text:
+            texts.append(text)
+    except Exception:  # BROAD-CATCH: fail-open (ImportError from an older checkout included)
+        pass
+    if texts:
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": "\n\n".join(texts),
+            }
+        }))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves.
 
-    Also carries the three subcommands a person runs rather than a hook: `login`, `logout` and
-    `auth-headers`. See `_auth_command` for why they are dispatched before stdin is read and why
-    they fail loudly where an event stays silent.
+    Also carries the four subcommands a person runs rather than a hook: `login`, `logout`,
+    `auth-headers` and `warm-auditor-brief`. All four are dispatched before stdin is read, and fail
+    loudly where an event stays silent; see `_auth_command` for why. `warm-auditor-brief`'s import
+    is not guarded, so a copy of this package without the auditor brief hook says so.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         return 0
     if args[0] in {"login", "logout", "auth-headers"}:
         return _auth_command(args)
+    if args[0] == "warm-auditor-brief":
+        # A command a person runs, so it is dispatched before the stdin read, like the three above.
+        from .auditor_brief import warm
+
+        return warm()
     try:
-        payload = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
+        # Bytes, decoded as UTF-8, which is what the client writes. `json.load(sys.stdin)` decoded
+        # with the console code page (cp1252 on Windows), and `pre-agent` writes the prompt back,
+        # so every non-ASCII character came back as mojibake. A stream with no byte buffer (a
+        # test's StringIO) is read as text.
+        buffer = getattr(sys.stdin, "buffer", None)
+        raw = buffer.read().decode("utf-8-sig") if buffer is not None else sys.stdin.read()
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):  # UnicodeDecodeError is a ValueError
         payload = {}
     if not isinstance(payload, dict):
         payload = {}
@@ -534,14 +586,18 @@ def main(argv: list[str] | None = None) -> int:
     # The deterministic fix belongs at the call site rather than here: invoke with `-P`, which
     # stops the cwd being prepended, and point `PYTHONPATH` at the copy you mean to run.
     if args[0] == "pre-tool-use":
-        # Imported HERE, not at module scope. This dispatch is shared with SessionStart, whose
-        # whole design is that it imports nothing it does not need, and `write_time` is only
-        # reached on its own event.
+        return _pre_tool_use(payload)
+    if args[0] == "post-tool-use-failure":
+        # Its own guarded import AND its own `try`, like `_pre_tool_use`: an older install that
+        # lacks the module, or a hook that raises, is silence and exit 0, never a failed hook. The
+        # module is imported here only, so a command that SUCCEEDS (`pre-tool-use` alone) never pays
+        # for the failure path, and neither does any other event.
         try:
-            from .write_time import pre_tool_use
-        except ImportError:
+            from .general_knowledge import post_tool_use_failure
+
+            return post_tool_use_failure(payload)
+        except Exception:  # BROAD-CATCH: fail-open (ImportError from an older checkout included)
             return 0
-        return pre_tool_use(payload)
     if args[0] == "write-time-relay":
         from .relay import main as relay_main
 
@@ -554,6 +610,13 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             return 0
         return user_prompt_submit(payload)
+    if args[0] == "pre-agent":
+        # Same reason as above: only an `Agent` launch pays for git and the memo directory.
+        try:
+            from .auditor_brief import pre_agent
+        except ImportError:
+            return 0
+        return pre_agent(payload)
     return 0
 
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from recall_mcp import factories as _s5b_factories
+from recall_mcp import reasoning_diagnostics as _s5b_reasoning_diagnostics
+
 from datetime import UTC, datetime, timedelta
 
 from recall.calibration import Calibration
@@ -109,8 +112,8 @@ def test_source_admission_payload_preserves_pool_order_and_trust_verdict(monkeyp
         dim = 2
         name = "test"
 
-    monkeypatch.setattr(service, "trusted_search", fake_trusted_search)
-    monkeypatch.setattr(service, "_build_reranker", lambda profile, env: None)
+    monkeypatch.setattr(_s5b_reasoning_diagnostics, "trusted_search", fake_trusted_search)
+    monkeypatch.setattr(_s5b_factories, "_build_reranker", lambda profile, env: None)
     payload = service._source_admission_benchmark_audit_payload(
         object(),
         Embedder(),
@@ -197,8 +200,8 @@ def test_source_admission_payload_reads_generation_calibration_when_not_injected
         kwargs["pre_trust_transform"](raw)
         return TrustedResult(query, [], True, "empty", False, _staleness())
 
-    monkeypatch.setattr(service, "trusted_search", fake_trusted_search)
-    monkeypatch.setattr(service, "_build_reranker", lambda profile, env: None)
+    monkeypatch.setattr(_s5b_reasoning_diagnostics, "trusted_search", fake_trusted_search)
+    monkeypatch.setattr(_s5b_factories, "_build_reranker", lambda profile, env: None)
 
     payload = service._source_admission_benchmark_audit_payload(
         Store(), Embedder(), "question", [0.2, 0.8], None, None, None, service.FAST_PROFILE

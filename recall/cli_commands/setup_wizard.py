@@ -18,13 +18,13 @@ from recall.store import (
 )
 from recall.trust_policy import TrustPolicy
 
-from recall.cli_commands._shared import _entailment_judge, _make_embedder, _run_queries
+from recall.cli_commands._shared import _make_embedder, _run_queries
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     # Deliberately does NOT say "wizard": `recall wizard` is a different command, and `recall
     # --help` listed both describing themselves as the install wizard with no way to tell which.
-    sub.add_parser(
+    p_setup = sub.add_parser(
         "setup",
         help="configure recall interactively and write a local .env file",
         # The canonical install, and the one the README and the epilogue in `recall.cli` both send
@@ -32,7 +32,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         # description at all, which meant `recall setup --help` printed four lines and none of them
         # mentioned that it writes `.env`, touches the schema, or edits the Claude Code config.
         description=(
-            "The guided install. Asks which embedder, reranker and entailment judge you need, "
+            "The guided install. Asks which embedder and reranker you need, "
             "prepares the database schema at that embedder's width, offers to fit an abstention "
             "threshold against your own corpus, and offers to register the MCP server and session "
             "hooks with Claude Code. Writes a local .env with the answers; every step that touches "
@@ -40,9 +40,33 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "to check the result. If you want this scripted rather than asked, `recall wizard` "
             "runs the same engine from a JSON config."
         ),
-    ).set_defaults(
+    )
+    p_setup.set_defaults(
         _opens_db=True,  # the wizard connects when the operator accepts the calibrate prompt
         func=_cmd_setup,
+    )
+    p_setup.add_argument(
+        "--lite",
+        action="store_true",
+        help="no database server and no Docker: keep this project's memory in one SQLite file "
+        "(.recall/memory.db), index the memory folder, calibrate it, and register the MCP server "
+        "for this project. Asks nothing.",
+    )
+    p_setup.add_argument(
+        "--memory",
+        default=None,
+        help="with --lite: the folder of notes to index (default: RECALL_INDEX_ROOT, else the "
+        "current directory)",
+    )
+    p_setup.add_argument(
+        "--store",
+        default=None,
+        help="with --lite: the SQLite file (default: .recall/memory.db in the current directory)",
+    )
+    p_setup.add_argument(
+        "--no-register",
+        action="store_true",
+        help="with --lite: build and calibrate the store but leave the Claude Code config alone",
     )
 
     # The headless installer path. Separate from `setup`, which is the interactive configuration
@@ -185,6 +209,9 @@ def register_quickstart(sub: argparse._SubParsersAction[argparse.ArgumentParser]
 
 
 def _cmd_setup(args: argparse.Namespace) -> None:
+    if args.lite:
+        _setup_lite(args)
+        return
     from recall.setup import run_setup_wizard
 
     # Pass the caller's table through: the wizard checks the chosen embedder's width against
@@ -195,6 +222,52 @@ def _cmd_setup(args: argparse.Namespace) -> None:
         tenant=args.tenant,
         table=args.table,
     )
+
+
+def _setup_lite(args: argparse.Namespace) -> None:
+    """`recall setup --lite`: see `recall.lite.setup`."""
+    import os
+    from pathlib import Path
+
+    from recall.lite import LiteWriterBusy
+    from recall.lite.setup import run_lite_setup
+    from recall.lite.writer_lock import queued_notice
+
+    project_root = Path.cwd()
+    memory = Path(args.memory or os.environ.get("RECALL_INDEX_ROOT") or project_root)
+    try:
+        embedder = _make_embedder(args.embedder)
+    except Exception as exc:  # BROAD-CATCH: fail-open  # an unusable embedder is advice, not a traceback
+        raise SystemExit(
+            f"recall setup --lite: the embedder {args.embedder!r} is not usable here ({exc}). "
+            'The local default needs: pip install "recall-rag[fastembed,mcp]"'
+        ) from exc
+    try:
+        report = run_lite_setup(
+            project_root=project_root,
+            memory=memory,
+            embedder=embedder,
+            embedder_name=args.embedder,
+            store_path=Path(args.store) if args.store else None,
+            register=not args.no_register,
+            on_queued=queued_notice("recall setup --lite"),
+        )
+    except NotADirectoryError as exc:
+        raise SystemExit(f"recall setup --lite: {exc}; pass --memory <folder of notes>") from exc
+    except LiteWriterBusy as exc:
+        # Another client (a running MCP server indexing, say) holds the store; the message names
+        # it and says to retry, which is advice, not a traceback.
+        raise SystemExit(f"recall setup --lite: {exc}") from exc
+    except ValueError as exc:
+        raise SystemExit(f"recall setup --lite: {exc}") from exc
+    print(report.render())
+    print()
+    if report.registration is not None and report.registration.recorded:
+        print("Restart Claude Code in this project to load the server.")
+    if report.followup_env:
+        print("Use the configured commands above to check the store and open its dashboard.")
+    else:
+        print("Set this store's DSN and model settings before running recall doctor or recall dashboard.")
 
 
 def _cmd_quickstart(args: argparse.Namespace) -> None:
@@ -327,7 +400,6 @@ def _quickstart(args: argparse.Namespace) -> None:
             embedder,
             list(DEMO_QUERIES),
             None,
-            _entailment_judge(),
             policy=TrustPolicy.development(),
         )
 

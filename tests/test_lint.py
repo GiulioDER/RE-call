@@ -72,7 +72,7 @@ def test_version_siblings_with_edge_are_clean(tmp_path):
 
 
 def test_closure_prose_without_edge_is_a_warning(tmp_path):
-    _write(tmp_path, "closed.md", "This lane is now superseded by the new approach.")
+    _write(tmp_path, "closed.md", "This lane is now superseded by [[new_approach]].")
     issues = lint_corpus(tmp_path)
     assert _codes(issues) == {"closure-marker-unlinked"}
     assert issues[0].level == "warning"
@@ -83,6 +83,36 @@ def test_closure_prose_with_edge_is_clean(tmp_path):
     _write(tmp_path, "closed.md",
            "---\nsupersedes: old.md\n---\nThis lane is now superseded by the new approach.")
     assert lint_corpus(tmp_path) == []
+
+
+def test_a_marker_that_names_no_memo_is_ordinary_english(tmp_path):
+    """Red proof, 2026-10-07: with `closure_marker_naming_a_memo` returning the first
+    CLOSURE_MARKERS match whatever surrounds it (the rule before this change), this failed with
+    the warning present. Ordinary uses measured on a real store: "an env block replaces the
+    environment", "the proxy replaces both"."""
+    _write(tmp_path, "env.md", "The env block replaces the environment; it does not extend it.")
+    assert lint_corpus(tmp_path) == []
+
+
+def test_a_marker_and_a_memo_in_different_sentences_is_silent(tmp_path):
+    """Red proof, 2026-10-07: with `_sentence_around` returning the whole prose, this failed with
+    the warning present. The link is related reading, not the replaced memo."""
+    _write(tmp_path, "proxy.md", "The proxy replaces both models. See [[proxy-costs]] for the bill.")
+    assert lint_corpus(tmp_path) == []
+
+
+def test_a_marker_inside_a_memo_name_is_not_prose(tmp_path):
+    """Red proof, 2026-10-07: with the inside-a-reference skip removed, this failed with the
+    warning present, because the link's own name contains "replaces"."""
+    _write(tmp_path, "see.md", "Related: [[an-mcp-env-block-replaces-the-environment]].")
+    assert lint_corpus(tmp_path) == []
+
+
+def test_a_marker_wrapped_onto_the_next_line_stays_in_its_sentence(tmp_path):
+    """Red proof, 2026-10-07: with a single newline counted as a sentence end, this failed with
+    no warning. Memos wrap prose at about 100 columns, so a line break is not a boundary."""
+    _write(tmp_path, "new.md", "This decision\nsupersedes the one in\n[[old-decision]], which stood until May.")
+    assert _codes(lint_corpus(tmp_path)) == {"closure-marker-unlinked"}
 
 
 def test_cycle_still_reported_when_a_member_has_a_second_superseder(tmp_path):
@@ -100,7 +130,7 @@ def test_same_filename_in_two_subdirs_does_not_shadow_checks(tmp_path):
     # losing sub1's closure-marker warning entirely
     (tmp_path / "sub1").mkdir()
     (tmp_path / "sub2").mkdir()
-    _write(tmp_path / "sub1", "x.md", "This memo is deprecated and replaced by a new one.")
+    _write(tmp_path / "sub1", "x.md", "This memo is deprecated and replaced by y.md.")
     _write(tmp_path / "sub2", "x.md", "a perfectly healthy unrelated note")
     issues = lint_corpus(tmp_path)
     assert "closure-marker-unlinked" in _codes(issues)
@@ -200,3 +230,69 @@ def test_lint_echoes_the_authored_form_in_a_dangling_error(tmp_path):
     )
     dangling = [i for i in lint_corpus(tmp_path) if i.code == "dangling-supersedes"]
     assert dangling and "[[ghost]]" in dangling[0].message
+
+
+# --- the cycle check every writer asks before it writes (supersession audit 2026-10-21) ----------
+
+#: b supersedes c, c supersedes a; d stands outside every chain.
+_CHAIN = {"a.md": [], "b.md": ["c.md"], "c.md": ["a.md"], "d.md": []}
+
+
+def _declare(tmp_path, declared: dict[str, list[str]]) -> None:
+    for name, targets in declared.items():
+        head = f"---\nsupersedes: [{', '.join(targets)}]\n---\n" if targets else ""
+        _write(tmp_path, name, f"{head}# {name}")
+
+
+@pytest.mark.parametrize("superseder,target,expected", [
+    ("a.md", "b", ("b", "c", "a")),   # b supersedes c supersedes a: a supersedes b closes it
+    ("a.md", "c", ("c", "a")),
+    ("a.md", "a", ("a",)),            # a self-edge is the shortest cycle
+    ("c.md", "a", None),              # already declared, in the same direction: no new cycle
+    ("d.md", "a", None),              # d is outside every chain
+    ("b.md", "d", None),
+])
+def test_the_cycle_check_agrees_with_what_lint_reports_after_the_write(
+    tmp_path, superseder, target, expected
+):
+    """`supersession_cycle_closed_by` names a chain exactly when writing the edge makes
+    `lint_corpus` report a cycle (or a self-edge) it did not report before.
+
+    Red: mutation of `recall.lint.supersession_cycle_closed_by` searching from the target instead
+    of the superseder (`start, goal = goal, start` after the self-edge check):
+    `tests/test_lint.py::test_the_cycle_check_agrees_with_what_lint_reports_after_the_write`
+    failed for `("a.md", "b", ...)` with `None == ('b', 'c', 'a')`.
+    """
+    from recall.lint import supersession_cycle_closed_by, supersession_graph
+
+    _declare(tmp_path, _CHAIN)
+    assert lint_corpus(tmp_path) == []
+
+    assert supersession_cycle_closed_by(supersession_graph(tmp_path), superseder, target) == expected
+
+    after = {**_CHAIN, superseder: [*_CHAIN[superseder], f"{target}.md"]}
+    _declare(tmp_path, after)
+    codes = _codes(lint_corpus(tmp_path))
+    assert ("supersession-cycle" in codes or "self-supersedes" in codes) == (expected is not None)
+
+
+def test_describe_cycle_keys_its_names_and_says_when_the_chain_is_transitive():
+    """A writer passes `describe_cycle` the names it gave the cycle check, and a chain of three or
+    more is named as reached through the memos between, since the target declares no edge to the
+    superseder itself.
+
+    Red: baseline 8e10eea6a,
+    `tests/test_lint.py::test_describe_cycle_keys_its_names_and_says_when_the_chain_is_transitive`
+    failed at the first assertion with the names printed as given (`a.md`, `[[b]]`); target
+    `recall.lint.describe_cycle` (CCA deferred findings CODE-006 and DOC-012). Red also by mutation
+    dropping the transitive wording (`through = ""`): it failed at the second assertion, the
+    message saying "already supersedes it (b -> c -> a)".
+    """
+    from recall.lint import describe_cycle
+
+    message = describe_cycle("a.md", "[[b]]", ("b", "c", "a"))
+    assert message.startswith("declaring that a supersedes b would close a supersession cycle")
+    assert "because b already supersedes it through c (b -> c -> a)" in message
+    direct = describe_cycle("a.md", "b.md", ("b", "a"))
+    assert "because b already supersedes it (b -> a)" in direct
+    assert describe_cycle("a.md", "a.md", ("a",)) == "a memo cannot supersede itself"

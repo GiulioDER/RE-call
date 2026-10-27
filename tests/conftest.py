@@ -659,6 +659,23 @@ def _disable_shared_embedding_cache(monkeypatch) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _confine_general_knowledge(tmp_path, monkeypatch) -> Iterator[None]:
+    """Point the general-knowledge corpus and its event log at a per-test directory, for EVERY test.
+
+    Unset, `recall_hooks.general_knowledge.knowledge_home` resolves to the operator's own
+    `~/.claude/general-knowledge`, so a hook test that did not think about it would read the real,
+    private corpus and inject real entries into its assertions; and `log_path` resolves to the
+    operator's own `general-knowledge.jsonl`, which a hook test would append fixture events to.
+    Both are reached by OMISSION, so the confinement is autouse: a new test inherits it without
+    knowing the variables exist. A test that needs its own home sets the variable in its body (that
+    runs after this fixture and wins) or passes `home` explicitly.
+    """
+    monkeypatch.setenv("RECALL_GENERAL_KNOWLEDGE_HOME", str(tmp_path / "general-knowledge-home"))
+    monkeypatch.setenv("RECALL_GENERAL_KNOWLEDGE_LOG", str(tmp_path / "general-knowledge-log.jsonl"))
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_voyage_tokenizer_download(monkeypatch) -> Iterator[None]:
     """Keep `VoyageContextualizedEmbedder` from downloading Voyage's tokenizer in any test.
 
@@ -666,7 +683,11 @@ def _no_voyage_tokenizer_download(monkeypatch) -> Iterator[None]:
     Face on first use, which would make a test depend on the network and on the machine's hub
     cache. Here the loader reports it unavailable, so the embedder takes its UTF-8 byte bound,
     which is deterministic. A test of the loader itself can monkeypatch it back.
+
+    Two bindings: the embedder calls the one in its own module, and `recall.multimodal` looks the
+    loader up through `recall.embeddings` at call time.
     """
+    monkeypatch.setattr("recall.embedding_providers.voyage._voyage_token_counter", lambda model: None)
     monkeypatch.setattr("recall.embeddings._voyage_token_counter", lambda model: None)
     yield
 

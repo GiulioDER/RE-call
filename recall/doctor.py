@@ -789,7 +789,7 @@ def run_checks(
     report.add(_package_check())
     report.add(_console_scripts_check())
     report.add(_embedder_check(embedder))
-    report.add(_docker_check())
+    from recall.lite import is_lite_dsn
 
     # ⚠️ **Read the server's variables, but do NOT let them steer this CLI (F02).** Defaulting
     # `--table`/`--tenant` from the environment in `recall/cli.py` was the obvious fix and is
@@ -812,6 +812,26 @@ def run_checks(
                 "doctor   (to diagnose the corpus the server actually opens)",
             )
         )
+
+    if is_lite_dsn(dsn):
+        # One SQLite file: no Docker, no server, no migrations, no row-level security. The file
+        # is read read-only, so this command still writes nothing.
+        report.add(Check("docker", "skip", "not needed: the lite store is one SQLite file"))
+        for check in _lite_checks(dsn, tenant=tenant, table=table):
+            report.add(check)
+        report.add(
+            Check(
+                "trust mode",
+                "ok",
+                "strict (refuses an uncalibrated corpus)"
+                if policy.strict
+                else "development (answers an uncalibrated corpus as DEGRADED)",
+            )
+        )
+        for check in _claude_code_checks(Path(project_root or Path.cwd()).resolve()):
+            report.add(check)
+        return report
+    report.add(_docker_check())
 
     # ONE connection for the server facts and the corpus counts both, opened here so an unreachable
     # database is reported once and waited for once. See `_database_checks`.
@@ -872,6 +892,117 @@ def run_checks(
     for check in _claude_code_checks(Path(project_root or Path.cwd()).resolve()):
         report.add(check)
     return report
+
+
+def _lite_checks(dsn: str, *, tenant: str, table: str = DEFAULT_TABLE) -> Iterator[Check]:
+    """The lite store's file, corpus and calibration, from a read-only look at the file."""
+    from recall.calibration_v2 import CalibrationStatus
+    from recall.lite import LITE_DSN_PREFIX
+    from recall.lite.inspect import inspect_lite_file
+
+    if table != DEFAULT_TABLE:
+        yield Check(
+            "database", "fail", f"a lite store has one table, {DEFAULT_TABLE!r}; got {table!r}",
+            f"recall --table {DEFAULT_TABLE} --tenant {tenant} doctor",
+        )
+        yield Check("corpus", "skip", "skipped: the requested table is unsupported")
+        return
+    found = inspect_lite_file(dsn[len(LITE_DSN_PREFIX):])
+    if not found.exists:
+        yield Check(
+            "database",
+            "warn",
+            f"lite store: no file yet at {found.path}",
+            "recall index <your memory folder>   (creates the file, indexes it and calibrates it)",
+        )
+        yield Check("corpus", "skip", "skipped: there is no store file yet")
+        return
+    if found.error is not None:
+        yield Check(
+            "database",
+            "fail",
+            f"lite store {found.path} cannot be read: {found.error}",
+            "point RECALL_SERVING_DSN at another file, or move this one aside and re-index",
+        )
+        yield Check("corpus", "skip", "skipped: the store file is unreadable")
+        return
+    yield Check("database", "ok", f"lite store {found.path} (SQLite, no server needed)")
+    if found.tenant is not None and found.tenant != tenant:
+        yield Check(
+            "corpus",
+            "fail",
+            f"the file holds tenant {found.tenant!r}, this command asked for {tenant!r}",
+            f"recall --tenant {found.tenant} doctor",
+        )
+        return
+    if not found.chunks:
+        yield Check("corpus", "warn", "the store is empty", "recall index <your memory folder>")
+    else:
+        yield Check(
+            "corpus", "ok", f"{found.chunks} chunk(s) from {found.sources} source(s), {found.dim}-wide embeddings"
+        )
+    if found.calibration is CalibrationStatus.CERTIFIED and found.carried_delta is not None:
+        yield Check(
+            "calibration",
+            "ok",
+            f"carried forward: the memory changed by {found.carried_delta:.0%} of its sources since the fit "
+            f"and its threshold {found.threshold:.3f} still re-verifies (separability {found.separability:.3f})",
+        )
+    elif found.calibration is CalibrationStatus.CERTIFIED:
+        yield Check(
+            "calibration",
+            "ok",
+            f"certified for this corpus: threshold {found.threshold:.3f}, separability {found.separability:.3f}",
+        )
+    elif found.calibration is CalibrationStatus.MISSING:
+        yield Check(
+            "calibration",
+            "warn",
+            "none yet: strict search refuses until memory holds enough text to test itself (about 20 memos)",
+            "recall index <your memory folder>   (calibrates automatically after indexing)",
+        )
+    elif found.calibration is CalibrationStatus.STALE:
+        yield Check(
+            "calibration",
+            "warn",
+            "fitted to an earlier version of the memory, and its threshold no longer re-verifies on this one",
+            "recall index <your memory folder>   (refits it)",
+        )
+    else:
+        yield Check(
+            "calibration",
+            "warn",
+            "fitted to this corpus and did not certify, so strict search refuses",
+            "add more memos and re-index; or RECALL_TRUST_MODE=development to inspect results as DEGRADED",
+        )
+    yield _lite_refresh_check(found.path)
+
+
+def _lite_refresh_check(path: Path) -> Check:
+    """The last refresh of the memo folder (automatic or `recall lite refresh`), from its state file."""
+    from recall.lite.refresh import read_state, snapshot
+
+    state = read_state(path)
+    last, success, roots = state.get("last"), state.get("last_success"), state.get("roots")
+    if not isinstance(last, dict):
+        return Check("refresh", "skip", "no refresh of the memo folder recorded yet")
+    when, reason = last.get("finished_utc"), last.get("reason")
+    # A failure is over once the folder is back to what the last success indexed (a revert, or a
+    # person's refresh): a refresh that finds nothing changed writes nothing to say so.
+    superseded = (
+        isinstance(success, dict)
+        and isinstance(roots, list)
+        and all(isinstance(r, str) for r in roots)
+        and snapshot(roots).fingerprint == success.get("fingerprint")
+    )
+    if last.get("outcome") == "failed" and not superseded:
+        return Check(
+            "refresh",
+            "warn",
+            f"the last refresh failed at {when}, so newer memos are not searchable: {reason}",
+            "recall lite refresh --check   (then fix the cause, or run `recall lite refresh` by hand)",
+        )
+    return Check("refresh", "ok", f"last refresh {last.get('outcome')} at {when}: {reason}")
 
 
 def _migration_check_for(conn: Any, dsn: str, *, table: str) -> Check:

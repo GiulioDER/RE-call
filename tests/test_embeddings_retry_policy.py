@@ -25,6 +25,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import recall.embedding_core
 import recall.embeddings
 from recall.embeddings import OpenAICompatEmbedder, VoyageEmbedder
 from tests.provider_stub_helpers import EMBEDDINGS_OK, ProviderStub, provider_stub
@@ -49,7 +50,7 @@ def instant_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     also leaves the call to ``sleep`` in place, which keeps the test honest about the number of
     delays the policy takes.
     """
-    monkeypatch.setattr(recall.embeddings.random, "uniform", lambda _a, _b: 0.0)
+    monkeypatch.setattr(recall.embedding_core.random, "uniform", lambda _a, _b: 0.0)
 
 
 def _armed(stub: ProviderStub, status: int, message: str) -> OpenAICompatEmbedder:

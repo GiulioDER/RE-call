@@ -6,13 +6,13 @@ import hashlib
 import os
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from typing import Any, cast
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 import psycopg
 from pgvector.psycopg import register_vector
@@ -22,20 +22,34 @@ from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextu
 from recall.build_progress import BuildCounters, BuildPlan, BuildProgressSink
 from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
+from recall.records import admit_record
 from recall.embeddings import (
     Embedder,
+    EmbeddingProfile,
     embed_document_groups,
     embedding_profile,
     embedding_profile_id,
 )
-from recall.errors import RecallError
+from recall.generation_types import (  # noqa: F401  # re-exported: public names of this module
+    BuildStats,
+    ConcurrentIngest,
+    ErasureResult,
+    GenerationError,
+    GenerationNotFound,
+    GenerationRecord,
+    InvalidGenerationTransition,
+    NoActiveGeneration,
+    UnsafePromotion,
+    ValidationResult,
+)
 from recall.extraction import (
     ExtractedBlock,
     ExtractedDocument,
+    _decode_text,
     chunk_extracted_document,
     strip_nul_from_blocks,
 )
-from recall.frontmatter import legacy_pairing_differs, validity_bounds
+from recall.frontmatter import RECORD_KEY, SUPERSEDES, legacy_pairing_differs, validity_bounds
 from recall.lineage import (
     GenerationState,
     IndexManifestV1,
@@ -47,7 +61,8 @@ from recall.manifest import ManifestObjectV1, ObjectReader, VerifiedObject
 from recall.observability import METRICS, get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
-from recall.types import Chunk
+from recall.supersession_records import pg_delete_removals, pg_record_removals
+from recall.types import Chunk, EvidenceCard
 
 Chunker = Callable[[str], list[str]]
 
@@ -117,10 +132,12 @@ def _decoded_secure_text(
     verified: VerifiedObject,
     policy: SourceSecurityPolicy | None,
     context: AccessContext | None,
+    *,
+    preserve_bom: bool = False,
 ) -> tuple[str, tuple[ExtractedBlock, ...]]:
     """A fetched object's text as generation build reads it: UTF 8, NUL free, then secured."""
     try:
-        text = verified.data.decode("utf-8-sig")
+        text = verified.data.decode("utf-8" if preserve_bom else "utf-8-sig")
     except UnicodeDecodeError as exc:
         raise GenerationError(f"{entry.uri} is not valid UTF-8 text") from exc
     # The blocks too: a document with table blocks is chunked from them rather than from `text`,
@@ -137,30 +154,6 @@ def _decoded_secure_text(
     )
 
 
-class GenerationError(RuntimeError, RecallError):
-    """A generation lifecycle invariant was violated."""
-
-
-class GenerationNotFound(GenerationError):
-    pass
-
-
-class InvalidGenerationTransition(GenerationError):
-    pass
-
-
-class UnsafePromotion(GenerationError):
-    pass
-
-
-class ConcurrentIngest(GenerationError):
-    """Another upload holds this tenant's bounded ingest lock."""
-
-
-class NoActiveGeneration(GenerationError):
-    pass
-
-
 @dataclass(frozen=True)
 class _PreparedSource:
     entry: Any
@@ -170,46 +163,51 @@ class _PreparedSource:
 
 
 @dataclass(frozen=True)
-class GenerationRecord:
-    tenant_id: str
-    generation_id: str
-    state: GenerationState
-    pipeline_fingerprint: str
-    corpus_fingerprint: str
-    manifest_digest: str
-    corpus_version: str
-    parent_generation_id: str | None
-    failure_reason: str | None
-    created_at: datetime
-    activated_at: datetime | None
-    retired_at: datetime | None
+class _BuildInputs:
+    """What every source of one build shares, resolved and checked once before the first."""
+
+    pipeline: PipelineIdentity
+    chunker: Chunker
+    context_policy: ContextPolicy
+    provenance: dict | None
+    relative_paths: dict[str, str]
+    security_policy_digest: str | None
+    grouped_passages: bool
+    group_keys: dict[str, str]
+    group_fingerprints: dict[str, str]
 
 
-@dataclass(frozen=True)
-class BuildStats:
-    generation_id: str
-    objects: int
-    chunks: int
-    reused_objects: int
-    reused_chunks: int
-    tombstoned_objects: int
-    empty_objects: int
-
-
-@dataclass(frozen=True)
-class ValidationResult:
-    generation_id: str
-    sources: int
-    chunks: int
-    state: GenerationState
-
-
-@dataclass(frozen=True)
-class ErasureResult:
-    source_uri: str
-    generations: tuple[str, ...]
-    chunks_removed: int
-    event_id: str
+def _context_groups(
+    manifest: "IndexManifestV1", runtime_profile: EmbeddingProfile, grouped_passages: bool
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Each object's context group, and each group's fingerprint when the embedder groups passages."""
+    group_keys = {
+        entry.uri: (entry.context_group_id or entry.uri) for entry in manifest.objects
+    }
+    group_fingerprints: dict[str, str] = {}
+    if grouped_passages:
+        grouping_policy = str(
+            dict(runtime_profile.dependencies).get(
+                "grouping_policy", "manifest-context-group-v1"
+            )
+        )
+        members: dict[str, list[Any]] = {}
+        for entry in manifest.objects:
+            members.setdefault(group_keys[entry.uri], []).append(entry)
+        group_fingerprints = {
+            key: canonical_sha256(
+                {
+                    "grouping_policy": grouping_policy,
+                    "group_id": key,
+                    "members": [
+                        {"uri": item.uri, "version_id": item.version_id, "sha256": item.sha256}
+                        for item in values
+                    ],
+                }
+            )
+            for key, values in members.items()
+        }
+    return group_keys, group_fingerprints
 
 
 #: The media types whose body is derived by `parse_frontmatter`. Anything else is chunked as it
@@ -218,7 +216,21 @@ _MARKDOWN_MEDIA_TYPES = frozenset({"text/markdown", "text/x-markdown"})
 _BODY_RULE_VERSION_KEY = "body_rule_version"
 _BODY_RULE_VERSION = "frontmatter-pairing-2026-08-11"
 _METADATA_RULE_VERSION_KEY = "metadata_rule_version"
-_METADATA_RULE_VERSION = "relative-file-paths-2026-08-29"
+#: Bump whenever the code that derives chunk metadata from a document changes, so sources whose
+#: bytes are unchanged are re-derived instead of reused. "recall-record-2026-10-21": the parser
+#: learned `recall_record` (`recall.records`), the previous value being
+#: "relative-file-paths-2026-08-29".
+_METADATA_RULE_VERSION = "recall-record-2026-10-21"
+#: The rule before `recall_record`. Two changes since it move derived metadata without moving
+#: any reuse term (pipeline fingerprint, body rule, policy digest, context group, sha256): the
+#: record parser (#977) and the reading of `supersedes` (#864, 2026-10-02, which bumped nothing:
+#: a block sequence, a repeated key or a flow list stored under this rule reads differently now).
+#: Both act only on a markdown document whose front matter declares the key, so every other
+#: source's chunks stamped with this version are still what this code derives: `_reuse_source`
+#: accepts them and restamps them. The global bump re-derived, and re-embedded through any cache
+#: miss, every source of every tenant. A later bump narrows the same way only after checking,
+#: as here, every un-fingerprinted derivation change since the rule it accepts.
+_PRE_RECORD_METADATA_RULE_VERSION = "relative-file-paths-2026-08-29"
 
 
 def manifest_relative_paths(manifest: "IndexManifestV1") -> dict[str, str]:
@@ -247,6 +259,26 @@ def manifest_relative_paths(manifest: "IndexManifestV1") -> dict[str, str]:
         except ValueError:
             relative[entry.uri] = path.name
     return relative
+
+
+def _metadata_rules_accepted(media_type: str, text: str | None) -> tuple[str, ...]:
+    """The metadata rule versions a source's earlier chunks may carry and still be reused.
+
+    Only the current rule for a markdown document whose front matter declares `recall_record` or
+    `supersedes`, the two keys whose reading changed without a reuse term (see
+    `_PRE_RECORD_METADATA_RULE_VERSION`); `text` None, a markdown text not read yet, counts as
+    declaring, so an unknown is never reused on a guess. Also the rule before them for anything
+    else, which neither change can have reached. A substring test first: this runs per source of
+    every build, and most documents declare neither key.
+    """
+    if media_type not in _MARKDOWN_MEDIA_TYPES:
+        return (_METADATA_RULE_VERSION, _PRE_RECORD_METADATA_RULE_VERSION)
+    if text is None or (
+        (RECORD_KEY in text or SUPERSEDES in text)
+        and not {RECORD_KEY, SUPERSEDES}.isdisjoint(parse_document(text).meta)
+    ):
+        return (_METADATA_RULE_VERSION,)
+    return (_METADATA_RULE_VERSION, _PRE_RECORD_METADATA_RULE_VERSION)
 
 
 def _body_rule_changed(media_type: str, text: str) -> bool:
@@ -378,6 +410,15 @@ class GenerationManager:
         self._dsn = dsn
         self.tenant_id = tenant_id
         self.actor = actor
+        #: Facts the last `gc` retracted for good; -1 when its retraction failed (the next gc retries).
+        self.last_gc_facts_retracted = 0
+        #: Facts the last promote or rollback recorded from what the activated generation's memos
+        #: state (`recall.stated_facts`); 0 when stating is off; -1 when recording failed (the next
+        #: activation retries, since nothing was appended for the facts it missed).
+        self.last_stated_facts = 0
+        #: Records the last successful promotion committed for memos the outgoing generation held
+        #: and the promoted one leaves out (`_record_omitted_supersession`).
+        self.last_omitted_records = 0
         self.environment = (environment or os.environ.get("RECALL_ENV", "development")).lower()
         if self.environment not in {"development", "test", "production"}:
             raise ValueError("environment must be development, test, or production")
@@ -634,8 +675,11 @@ class GenerationManager:
         object_version_id: str,
         *,
         require_body_rule_version: str | None = None,
+        accepted_metadata_rules: Sequence[str] = (_METADATA_RULE_VERSION,),
         security_policy_digest: str | None = None,
         context_group_fingerprint: str | None = None,
+        require_code_anchor_repo: bool = False,
+        code_anchor_repo: str | None = None,
     ) -> int:
         source = conn.execute(
             "SELECT c.generation_id FROM recall_chunks_v1 c "
@@ -644,9 +688,11 @@ class GenerationManager:
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
             "AND ((%s::text IS NULL AND c.metadata ->> %s IS NULL) "
             "OR (%s::text IS NOT NULL AND c.metadata ->> %s = %s)) "
-            "AND c.metadata ->> %s = %s "
+            "AND c.metadata ->> %s = ANY(%s) "
             "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
+            "AND (NOT %s OR c.metadata -> 'code_anchor' ->> 'repo' "
+            "IS NOT DISTINCT FROM %s::text) "
             "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
             (
@@ -659,13 +705,15 @@ class GenerationManager:
                 _BODY_RULE_VERSION_KEY,
                 require_body_rule_version,
                 _METADATA_RULE_VERSION_KEY,
-                _METADATA_RULE_VERSION,
+                list(accepted_metadata_rules),
                 security_policy_digest,
                 "security_policy_digest",
                 security_policy_digest,
                 context_group_fingerprint,
                 "context_group_fingerprint",
                 context_group_fingerprint,
+                require_code_anchor_repo,
+                code_anchor_repo,
                 pipeline_fingerprint,
             ),
         ).fetchone()
@@ -677,13 +725,19 @@ class GenerationManager:
             "source_sha256, chunk_ordinal, text, metadata, embedding, indexed_at, "
             "first_indexed_at, tsv) "
             "SELECT tenant_id, %s, chunk_id, source_uri, %s, source_sha256, chunk_ordinal, "
-            "text, metadata || jsonb_build_object('reused_from_generation', generation_id), "
+            # Restamped with the current rule: a chunk set reused under an earlier rule that the
+            # change could not reach is what this rule derives, and a later narrowed bump must
+            # see it as such.
+            "text, metadata || jsonb_build_object('reused_from_generation', generation_id, "
+            "%s::text, %s::text), "
             "embedding, clock_timestamp(), COALESCE(first_indexed_at, indexed_at), tsv "
             "FROM recall_chunks_v1 "
             "WHERE tenant_id = %s AND generation_id = %s AND source_uri = %s",
             (
                 generation_id,
                 object_version_id,
+                _METADATA_RULE_VERSION_KEY,
+                _METADATA_RULE_VERSION,
                 self.tenant_id,
                 str(source[0]),
                 source_uri,
@@ -705,8 +759,9 @@ class GenerationManager:
         Read-only, one connection, and bounded by the generation index: it reads only the
         generations that already carry this pipeline fingerprint, which is the first thing
         `_reuse_source` requires. It then applies the other reuse conditions per object, all
-        except the markdown body rule (which needs each document's text), so the count is an
-        upper bound.
+        except the markdown body rule and the narrowed metadata rule (which need each document's
+        text: a memo declaring `recall_record` or `supersedes` is counted reusable under the rule
+        before them, which `_reuse_source` refuses), so the count is an upper bound.
 
         Best-effort by design: a failure is reported in the plan and never fails the build,
         because the plan only describes the work.
@@ -766,7 +821,7 @@ class GenerationManager:
         for entry in manifest.objects:
             wanted_group = group_fingerprints.get(entry.uri) if group_fingerprints else None
             if any(
-                rule == _METADATA_RULE_VERSION
+                rule in (_METADATA_RULE_VERSION, _PRE_RECORD_METADATA_RULE_VERSION)
                 and (security_policy_digest is None or digest == security_policy_digest)
                 and (wanted_group is None or group == wanted_group)
                 for rule, digest, group in available.get((entry.uri, entry.sha256), [])
@@ -857,6 +912,278 @@ class GenerationManager:
             )
         return len(chunks)
 
+    def _check_build_identity(
+        self,
+        pipeline: PipelineIdentity,
+        embedder: Embedder,
+        security_policy: SourceSecurityPolicy | None,
+        security_context: AccessContext | None,
+    ) -> tuple[EmbeddingProfile, ContextPolicy, str, str | None]:
+        """Refuse a build whose embedder, context or security inputs do not match the pipeline."""
+        if embedder.dim != pipeline.embedder.dimension:
+            raise GenerationError(
+                f"embedder dimension {embedder.dim} does not match pipeline identity "
+                f"{pipeline.embedder.dimension}"
+            )
+        if embedder.name != pipeline.embedder.model:
+            raise GenerationError(
+                f"embedder implementation {embedder.name!r} does not match pipeline model "
+                f"{pipeline.embedder.model!r}"
+            )
+        runtime_profile = embedding_profile(embedder)
+        if pipeline.embedder.profile_id is not None:
+            if embedding_profile_id(embedder) != pipeline.embedder.profile_id:
+                raise GenerationError(
+                    f"embedder profile {embedding_profile_id(embedder)!r} does not match "
+                    f"pipeline profile {pipeline.embedder.profile_id!r}"
+                )
+            if runtime_profile.context_version != pipeline.embedder.context_version:
+                raise GenerationError(
+                    f"embedder context {runtime_profile.context_version!r} does not match "
+                    f"pipeline context {pipeline.embedder.context_version!r}"
+                )
+            if (
+                pipeline.embedder.profile_fingerprint is not None
+                and runtime_profile.fingerprint() != pipeline.embedder.profile_fingerprint
+            ):
+                raise GenerationError(
+                    "embedder profile fingerprint does not match the pipeline identity"
+                )
+        context_policy = _context_policy_for_pipeline(pipeline)
+        fts_language = pipeline.fts_configuration.get("language")
+        if not isinstance(fts_language, str):
+            raise GenerationError("pipeline FTS language is malformed")
+        if security_policy is not None:
+            if security_context is None:
+                raise GenerationError(
+                    "source security policy requires an access context for generation builds"
+                )
+            if security_context.tenant != self.tenant_id:
+                raise GenerationError("source security context tenant does not match generation")
+        security_policy_digest = security_policy.digest if security_policy is not None else None
+        return runtime_profile, context_policy, fts_language, security_policy_digest
+
+
+    def _chunks_for_source(
+        self,
+        inputs: _BuildInputs,
+        entry: ManifestObjectV1,
+        verified: VerifiedObject,
+        text: str,
+        redacted_blocks: Any,
+        body_rule_changed: bool,
+    ) -> tuple[list[Chunk], list[str]] | None:
+        """The chunks of one fetched source and the texts to embed for them; None when empty."""
+        pipeline = inputs.pipeline
+        chunker = inputs.chunker
+        context_policy = inputs.context_policy
+        provenance = inputs.provenance
+        relative_paths = inputs.relative_paths
+        security_policy_digest = inputs.security_policy_digest
+        grouped_passages = inputs.grouped_passages
+        group_keys = inputs.group_keys
+        group_fingerprints = inputs.group_fingerprints
+        metadata: dict[str, Any] = dict(verified.metadata)
+        body = text
+        if entry.media_type in _MARKDOWN_MEDIA_TYPES:
+            # Not optional. `recall index` is refused under RECALL_ENV=production
+            # (`recall/cli.py:1209`), so hooking only the index path would leave the one
+            # build path that runs in production reading derived blocks as evidence.
+            document = parse_document(text)
+            metadata = {**metadata, **admit_record(document.meta, entry.uri)}
+            body = document.human_body
+            try:
+                validity_bounds(metadata)
+            except ValueError as exc:
+                raise GenerationError(f"{entry.uri}: {exc}") from exc
+        # Stamped here, after frontmatter has been read and before any chunk is built,
+        # so every chunk of every document carries it and no document can override it.
+        metadata = with_provenance(metadata, provenance or {})
+        metadata[_METADATA_RULE_VERSION_KEY] = _METADATA_RULE_VERSION
+        piece_metadata: list[dict[str, Any]] = []
+        has_structured_tables = (
+            entry.media_type not in _MARKDOWN_MEDIA_TYPES
+            and bool(verified.blocks)
+            and any(block.kind == "table" for block in verified.blocks)
+        )
+        if has_structured_tables:
+            configuration = pipeline.chunker.configuration
+            max_chars = configuration.get("max_chars", DEFAULT_TABLE_MAX_CHARS)
+            overlap = configuration.get("overlap", DEFAULT_TABLE_OVERLAP)
+            if type(max_chars) is not int or type(overlap) is not int:
+                raise GenerationError("chunker configuration has non integer table bounds")
+            extracted_document = ExtractedDocument(
+                text,
+                str(metadata.get("media_type", entry.media_type)),
+                metadata,
+                redacted_blocks,
+            )
+            typed_chunks = chunk_extracted_document(
+                extracted_document,
+                max_chars=max_chars,
+                overlap=overlap,
+            )
+            pieces = [piece for piece, _ in typed_chunks]
+            piece_metadata = [chunk_meta for _, chunk_meta in typed_chunks]
+        elif callable(getattr(chunker, "pieces", None)):
+            # The anchored code chunker needs the file and the repository, which the text does
+            # not carry. The path is the one stored as `file` below, decoded, since a manifest URI
+            # is percent-encoded and an anchor names the path as the repository spells it.
+            typed_pieces = chunker.pieces(  # type: ignore[attr-defined]
+                body,
+                file=unquote(relative_paths[entry.uri]),
+                repo=(provenance or {}).get("project"),
+            )
+            pieces = [piece for piece, _ in typed_pieces]
+            piece_metadata = [piece_meta for _, piece_meta in typed_pieces]
+        else:
+            pieces = chunker(body)
+            piece_metadata = [{} for _ in pieces]
+        if not pieces:
+            return None
+        structured: list[StructuredChunk] = []
+        embedding_texts = list(pieces)
+        if entry.media_type in _MARKDOWN_MEDIA_TYPES:
+            structured, embedding_texts = contextual_passages(
+                text,
+                body,
+                pieces,
+                _context_source(entry.uri),
+                context_policy,
+            )
+        chunks: list[Chunk] = []
+        for ordinal, piece in enumerate(pieces):
+            structured_chunk = structured[ordinal] if structured else None
+            chunk_id = hashlib.sha256(
+                canonical_json(
+                    {
+                        "source_uri": entry.uri,
+                        "source_sha256": entry.sha256,
+                        "pipeline_fingerprint": pipeline.fingerprint,
+                        "ordinal": ordinal,
+                        "text": piece,
+                    }
+                )
+            ).hexdigest()
+            chunks.append(
+                Chunk(
+                    id=chunk_id,
+                    source=entry.uri,
+                    text=piece,
+                    metadata={
+                        **metadata,
+                        **piece_metadata[ordinal],
+                        **(
+                            {_BODY_RULE_VERSION_KEY: _BODY_RULE_VERSION}
+                            if body_rule_changed
+                            else {}
+                        ),
+                        "file": relative_paths[entry.uri],
+                        "ord": ordinal,
+                        "content_hash": entry.sha256,
+                        **(
+                            {"security_policy_digest": security_policy_digest}
+                            if security_policy_digest is not None
+                            else {}
+                        ),
+                        "object_version_id": entry.version_id,
+                        "context_mode": context_policy.mode,
+                        "context_version": pipeline.embedder.context_version,
+                        "text_start": (
+                            structured_chunk.start if structured_chunk is not None else None
+                        ),
+                        "text_end": (
+                            structured_chunk.end if structured_chunk is not None else None
+                        ),
+                        "heading_hierarchy": (
+                            list(structured_chunk.headings)
+                            if structured_chunk is not None
+                            else []
+                        ),
+                        **(
+                            {"embedding_profile": pipeline.embedder.profile_id}
+                            if pipeline.embedder.profile_id is not None
+                            else {}
+                        ),
+                        **(
+                            {
+                                "context_group_id": group_keys[entry.uri],
+                                "context_group_fingerprint": group_fingerprints[
+                                    group_keys[entry.uri]
+                                ],
+                            }
+                            if grouped_passages
+                            else {}
+                        ),
+                    },
+                )
+            )
+        return chunks, embedding_texts
+
+
+    def _build_semantic_graph(
+        self, generation_id: str, pipeline: PipelineIdentity
+    ) -> SemanticGraphProjection:
+        """Build and store the semantic graph over the chunks this build wrote."""
+        with self._connect() as conn, conn.transaction():
+            graph_started = time.perf_counter()
+            current = self._require_generation(conn, generation_id)
+            rows = conn.execute(
+                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
+                (self.tenant_id, generation_id),
+            ).fetchall()
+            graph_chunks = [
+                Chunk(
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    row[3] if isinstance(row[3], dict) else {},
+                )
+                for row in rows
+            ]
+            try:
+                semantic_graph = build_semantic_graph(
+                    graph_chunks,
+                    tenant_id=self.tenant_id,
+                    generation_id=generation_id,
+                    pipeline_fingerprint=pipeline.fingerprint,
+                    corpus_fingerprint=current.corpus_fingerprint,
+                )
+                write_semantic_graph(conn, semantic_graph)
+            except BaseException:
+                METRICS.increment("recall_graph_build_failure_total")
+                METRICS.observe(
+                    "recall_graph_latency_ms",
+                    (time.perf_counter() - graph_started) * 1000.0,
+                )
+                raise
+            METRICS.increment("recall_graph_build_total")
+            METRICS.observe(
+                "recall_graph_latency_ms", (time.perf_counter() - graph_started) * 1000.0
+            )
+        return semantic_graph
+
+
+    def _mark_validating(self, generation_id: str, summary: dict[str, Any]) -> None:
+        """Move the generation from building to validating, recording what the build wrote."""
+        with self._connect() as conn, conn.transaction():
+            current = self._require_generation(conn, generation_id, lock=True)
+            if current.state != GenerationState.BUILDING:
+                raise InvalidGenerationTransition(
+                    f"generation changed to {current.state.value} during build"
+                )
+            conn.execute(
+                "UPDATE recall_generations SET state = 'validating', "
+                "validating_at = clock_timestamp(), validation_summary = %s "
+                "WHERE tenant_id = %s AND generation_id = %s",
+                (Jsonb(summary), self.tenant_id, generation_id),
+            )
+            self._audit(
+                conn, "generation_built", generation_id=generation_id, payload=summary
+            )
+
+
     def build(
         self,
         generation_id: str,
@@ -902,76 +1229,13 @@ class GenerationManager:
                         f"build requires building state, found {record.state.value}"
                     )
                 manifest, pipeline = self._load_identity(conn, generation_id)
-            if embedder.dim != pipeline.embedder.dimension:
-                raise GenerationError(
-                    f"embedder dimension {embedder.dim} does not match pipeline identity "
-                    f"{pipeline.embedder.dimension}"
-                )
-            if embedder.name != pipeline.embedder.model:
-                raise GenerationError(
-                    f"embedder implementation {embedder.name!r} does not match pipeline model "
-                    f"{pipeline.embedder.model!r}"
-                )
-            runtime_profile = embedding_profile(embedder)
-            if pipeline.embedder.profile_id is not None:
-                if embedding_profile_id(embedder) != pipeline.embedder.profile_id:
-                    raise GenerationError(
-                        f"embedder profile {embedding_profile_id(embedder)!r} does not match "
-                        f"pipeline profile {pipeline.embedder.profile_id!r}"
-                    )
-                if runtime_profile.context_version != pipeline.embedder.context_version:
-                    raise GenerationError(
-                        f"embedder context {runtime_profile.context_version!r} does not match "
-                        f"pipeline context {pipeline.embedder.context_version!r}"
-                    )
-                if (
-                    pipeline.embedder.profile_fingerprint is not None
-                    and runtime_profile.fingerprint() != pipeline.embedder.profile_fingerprint
-                ):
-                    raise GenerationError(
-                        "embedder profile fingerprint does not match the pipeline identity"
-                    )
-            context_policy = _context_policy_for_pipeline(pipeline)
-            fts_language = pipeline.fts_configuration.get("language")
-            if not isinstance(fts_language, str):
-                raise GenerationError("pipeline FTS language is malformed")
-            if security_policy is not None:
-                if security_context is None:
-                    raise GenerationError(
-                        "source security policy requires an access context for generation builds"
-                    )
-                if security_context.tenant != self.tenant_id:
-                    raise GenerationError("source security context tenant does not match generation")
-            security_policy_digest = security_policy.digest if security_policy is not None else None
+            runtime_profile, context_policy, fts_language, security_policy_digest = (
+                self._check_build_identity(pipeline, embedder, security_policy, security_context)
+            )
 
             relative_paths = manifest_relative_paths(manifest)
             grouped_passages = callable(getattr(embedder, "embed_document_groups", None))
-            group_keys = {
-                entry.uri: (entry.context_group_id or entry.uri) for entry in manifest.objects
-            }
-            group_fingerprints: dict[str, str] = {}
-            if grouped_passages:
-                grouping_policy = str(
-                    dict(runtime_profile.dependencies).get(
-                        "grouping_policy", "manifest-context-group-v1"
-                    )
-                )
-                members: dict[str, list[Any]] = {}
-                for entry in manifest.objects:
-                    members.setdefault(group_keys[entry.uri], []).append(entry)
-                group_fingerprints = {
-                    key: canonical_sha256(
-                        {
-                            "grouping_policy": grouping_policy,
-                            "group_id": key,
-                            "members": [
-                                {"uri": item.uri, "version_id": item.version_id, "sha256": item.sha256}
-                                for item in values
-                            ],
-                        }
-                    )
-                    for key, values in members.items()
-                }
+            group_keys, group_fingerprints = _context_groups(manifest, runtime_profile, grouped_passages)
             pending_grouped: dict[str, list[_PreparedSource]] = {}
             total_objects = len(manifest.objects)
             if progress is not None:
@@ -991,6 +1255,17 @@ class GenerationManager:
                         cache_enabled=cache is not None,
                     )
                 )
+            inputs = _BuildInputs(
+                pipeline=pipeline,
+                chunker=chunker,
+                context_policy=context_policy,
+                provenance=provenance,
+                relative_paths=relative_paths,
+                security_policy_digest=security_policy_digest,
+                grouped_passages=grouped_passages,
+                group_keys=group_keys,
+                group_fingerprints=group_fingerprints,
+            )
             for done, entry in enumerate(manifest.objects):
                 if progress is not None:
                     progress.update(_counters(done), stage="reading", current=entry.uri)
@@ -1009,6 +1284,10 @@ class GenerationManager:
                 # is known NOT to be reused. The bytes are verified before reuse either way.
                 fetch_original = getattr(reader, "_fetch_original", None)
                 extract = getattr(reader, "_extract", None)
+                anchored_python = (
+                    callable(getattr(chunker, "pieces", None))
+                    and PurePosixPath(unquote(relative_source)).suffix == ".py"
+                )
                 extract_after_reuse = (
                     entry.media_type not in _MARKDOWN_MEDIA_TYPES
                     and callable(fetch_original)
@@ -1020,7 +1299,8 @@ class GenerationManager:
                 else:
                     verified = reader.fetch(entry)
                     text, redacted_blocks = _decoded_secure_text(
-                        entry, relative_source, verified, security_policy, security_context
+                        entry, relative_source, verified, security_policy, security_context,
+                        preserve_bom=anchored_python,
                     )
 
                 with self._connect() as conn, conn.transaction():
@@ -1041,12 +1321,17 @@ class GenerationManager:
                         require_body_rule_version=(
                             _BODY_RULE_VERSION if body_rule_changed else None
                         ),
+                        accepted_metadata_rules=_metadata_rules_accepted(
+                            entry.media_type, None if extract_after_reuse else text
+                        ),
                         security_policy_digest=security_policy_digest,
                         context_group_fingerprint=(
                             group_fingerprints[group_keys[entry.uri]]
                             if grouped_passages
                             else None
                         ),
+                        require_code_anchor_repo=anchored_python,
+                        code_anchor_repo=(provenance or {}).get("project"),
                     )
                     if reused:
                         reused_objects += 1
@@ -1057,135 +1342,29 @@ class GenerationManager:
 
                 if extract_after_reuse:
                     assert callable(extract)
+                    # Code anchors describe the verified source, whose outer whitespace and BOM
+                    # extraction would discard. Authorization and redaction still run below.
                     verified = extract(entry, original)
+                    if anchored_python:
+                        # Keep extraction's validation, bounds and metadata, but hash the source.
+                        try:
+                            source_text = original.data.decode("utf-8")
+                        except UnicodeDecodeError:
+                            # The extracting reader also accepts legacy text encodings. Decode
+                            # as it does, without the document-level whitespace trimming.
+                            source_text = _decode_text(original.data)
+                        verified = replace(verified, data=source_text.encode("utf-8"))
                     text, redacted_blocks = _decoded_secure_text(
-                        entry, relative_source, verified, security_policy, security_context
+                        entry, relative_source, verified, security_policy, security_context,
+                        preserve_bom=anchored_python,
                     )
-                metadata: dict[str, Any] = dict(verified.metadata)
-                body = text
-                if entry.media_type in _MARKDOWN_MEDIA_TYPES:
-                    # Not optional. `recall index` is refused under RECALL_ENV=production
-                    # (`recall/cli.py:1209`), so hooking only the index path would leave the one
-                    # build path that runs in production reading derived blocks as evidence.
-                    document = parse_document(text)
-                    metadata = {**metadata, **document.meta}
-                    body = document.human_body
-                    try:
-                        validity_bounds(metadata)
-                    except ValueError as exc:
-                        raise GenerationError(f"{entry.uri}: {exc}") from exc
-                # Stamped here, after frontmatter has been read and before any chunk is built,
-                # so every chunk of every document carries it and no document can override it.
-                metadata = with_provenance(metadata, provenance or {})
-                metadata[_METADATA_RULE_VERSION_KEY] = _METADATA_RULE_VERSION
-                piece_metadata: list[dict[str, Any]] = []
-                has_structured_tables = (
-                    entry.media_type not in _MARKDOWN_MEDIA_TYPES
-                    and bool(verified.blocks)
-                    and any(block.kind == "table" for block in verified.blocks)
+                source_chunks = self._chunks_for_source(
+                    inputs, entry, verified, text, redacted_blocks, body_rule_changed
                 )
-                if has_structured_tables:
-                    configuration = pipeline.chunker.configuration
-                    max_chars = configuration.get("max_chars", DEFAULT_TABLE_MAX_CHARS)
-                    overlap = configuration.get("overlap", DEFAULT_TABLE_OVERLAP)
-                    if type(max_chars) is not int or type(overlap) is not int:
-                        raise GenerationError("chunker configuration has non integer table bounds")
-                    extracted_document = ExtractedDocument(
-                        text,
-                        str(metadata.get("media_type", entry.media_type)),
-                        metadata,
-                        redacted_blocks,
-                    )
-                    typed_chunks = chunk_extracted_document(
-                        extracted_document,
-                        max_chars=max_chars,
-                        overlap=overlap,
-                    )
-                    pieces = [piece for piece, _ in typed_chunks]
-                    piece_metadata = [chunk_meta for _, chunk_meta in typed_chunks]
-                else:
-                    pieces = chunker(body)
-                    piece_metadata = [{} for _ in pieces]
-                if not pieces:
+                if source_chunks is None:
                     empty += 1
                     continue
-                structured: list[StructuredChunk] = []
-                embedding_texts = list(pieces)
-                if entry.media_type in _MARKDOWN_MEDIA_TYPES:
-                    structured, embedding_texts = contextual_passages(
-                        text,
-                        body,
-                        pieces,
-                        _context_source(entry.uri),
-                        context_policy,
-                    )
-                chunks: list[Chunk] = []
-                for ordinal, piece in enumerate(pieces):
-                    structured_chunk = structured[ordinal] if structured else None
-                    chunk_id = hashlib.sha256(
-                        canonical_json(
-                            {
-                                "source_uri": entry.uri,
-                                "source_sha256": entry.sha256,
-                                "pipeline_fingerprint": pipeline.fingerprint,
-                                "ordinal": ordinal,
-                                "text": piece,
-                            }
-                        )
-                    ).hexdigest()
-                    chunks.append(
-                        Chunk(
-                            id=chunk_id,
-                            source=entry.uri,
-                            text=piece,
-                            metadata={
-                                **metadata,
-                                **piece_metadata[ordinal],
-                                **(
-                                    {_BODY_RULE_VERSION_KEY: _BODY_RULE_VERSION}
-                                    if body_rule_changed
-                                    else {}
-                                ),
-                                "file": relative_paths[entry.uri],
-                                "ord": ordinal,
-                                "content_hash": entry.sha256,
-                                **(
-                                    {"security_policy_digest": security_policy_digest}
-                                    if security_policy_digest is not None
-                                    else {}
-                                ),
-                                "object_version_id": entry.version_id,
-                                "context_mode": context_policy.mode,
-                                "context_version": pipeline.embedder.context_version,
-                                "text_start": (
-                                    structured_chunk.start if structured_chunk is not None else None
-                                ),
-                                "text_end": (
-                                    structured_chunk.end if structured_chunk is not None else None
-                                ),
-                                "heading_hierarchy": (
-                                    list(structured_chunk.headings)
-                                    if structured_chunk is not None
-                                    else []
-                                ),
-                                **(
-                                    {"embedding_profile": pipeline.embedder.profile_id}
-                                    if pipeline.embedder.profile_id is not None
-                                    else {}
-                                ),
-                                **(
-                                    {
-                                        "context_group_id": group_keys[entry.uri],
-                                        "context_group_fingerprint": group_fingerprints[
-                                            group_keys[entry.uri]
-                                        ],
-                                    }
-                                    if grouped_passages
-                                    else {}
-                                ),
-                            },
-                        )
-                    )
+                chunks, embedding_texts = source_chunks
                 # PASSAGE encoding: these vectors are what a query is matched against. With an
                 # asymmetric model the query encoder produces a different vector for the same
                 # text, and a generation built with the wrong one is the right width, scores in
@@ -1261,43 +1440,7 @@ class GenerationManager:
 
             if progress is not None:
                 progress.update(_counters(total_objects), stage="building semantic graph")
-            with self._connect() as conn, conn.transaction():
-                graph_started = time.perf_counter()
-                current = self._require_generation(conn, generation_id)
-                rows = conn.execute(
-                    "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
-                    "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
-                    (self.tenant_id, generation_id),
-                ).fetchall()
-                graph_chunks = [
-                    Chunk(
-                        str(row[0]),
-                        str(row[1]),
-                        str(row[2]),
-                        row[3] if isinstance(row[3], dict) else {},
-                    )
-                    for row in rows
-                ]
-                try:
-                    semantic_graph = build_semantic_graph(
-                        graph_chunks,
-                        tenant_id=self.tenant_id,
-                        generation_id=generation_id,
-                        pipeline_fingerprint=pipeline.fingerprint,
-                        corpus_fingerprint=current.corpus_fingerprint,
-                    )
-                    write_semantic_graph(conn, semantic_graph)
-                except BaseException:
-                    METRICS.increment("recall_graph_build_failure_total")
-                    METRICS.observe(
-                        "recall_graph_latency_ms",
-                        (time.perf_counter() - graph_started) * 1000.0,
-                    )
-                    raise
-                METRICS.increment("recall_graph_build_total")
-                METRICS.observe(
-                    "recall_graph_latency_ms", (time.perf_counter() - graph_started) * 1000.0
-                )
+            semantic_graph = self._build_semantic_graph(generation_id, pipeline)
             summary = {
                 "objects": len(manifest.objects),
                 "chunks": chunks_written,
@@ -1308,21 +1451,7 @@ class GenerationManager:
                 "indexed_sources": sorted(indexed_sources),
                 "semantic_graph": _semantic_graph_marker(semantic_graph),
             }
-            with self._connect() as conn, conn.transaction():
-                current = self._require_generation(conn, generation_id, lock=True)
-                if current.state != GenerationState.BUILDING:
-                    raise InvalidGenerationTransition(
-                        f"generation changed to {current.state.value} during build"
-                    )
-                conn.execute(
-                    "UPDATE recall_generations SET state = 'validating', "
-                    "validating_at = clock_timestamp(), validation_summary = %s "
-                    "WHERE tenant_id = %s AND generation_id = %s",
-                    (Jsonb(summary), self.tenant_id, generation_id),
-                )
-                self._audit(
-                    conn, "generation_built", generation_id=generation_id, payload=summary
-                )
+            self._mark_validating(generation_id, summary)
             self._refresh_chunk_statistics()
             if progress is not None:
                 progress.finished(_counters(total_objects))
@@ -1651,6 +1780,9 @@ class GenerationManager:
             if self.certification_required:
                 self.require_certified_for_production(generation_id, conn=conn)
             active = str(state[0]) if state and state[0] else None
+            # The incoming generation must never serve without the claims its omitted memos
+            # keep retired. An append failure rolls back the publication with these records.
+            omitted_records = self._record_omitted_supersession(conn, active, generation_id)
             if active:
                 conn.execute(
                     "UPDATE recall_generations SET state = 'retired', "
@@ -1676,6 +1808,48 @@ class GenerationManager:
                 generation_id=generation_id,
                 payload={"previous_generation_id": active},
             )
+        self.last_omitted_records = omitted_records
+        # After the commit, best effort, as `gc` retracts: the activation is what serves the memos,
+        # and recording what they state must never undo or fail it.
+        self.last_stated_facts = self._record_stated_facts_after_activation(generation_id)
+
+    def _record_omitted_supersession(
+        self, conn: psycopg.Connection, outgoing: str | None, incoming: str
+    ) -> int:
+        """Keep retired what a memo left out of the promoted generation retired.
+
+        A memo deleted from disk is pruned by the indexer on a lite or legacy store, which writes a
+        forget record (`recall.supersession.SupersessionRecord`); on a generation store the same
+        deletion is a source the next promoted generation simply lacks. So the forward promotion
+        writes the same records, from the outgoing generation's rows, which a retired generation
+        keeps until gc. A rollback writes none: it restores the previous generation, whose memos
+        are then indexed again and decide with their own claims. The caller's publication
+        transaction owns this connection: a recording failure must abort that transaction.
+        """
+        if not outgoing or outgoing == incoming:
+            return 0
+        omitted = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT DISTINCT c.source_uri FROM recall_chunks_v1 AS c "
+                "WHERE c.tenant_id = %s AND c.generation_id = %s AND NOT EXISTS ("
+                "SELECT 1 FROM recall_chunks_v1 AS n WHERE n.tenant_id = c.tenant_id "
+                "AND n.generation_id = %s AND n.source_uri = c.source_uri)",
+                (self.tenant_id, outgoing, incoming),
+            ).fetchall()
+        ]
+        if not omitted:
+            return 0
+        return pg_record_removals(
+            conn,
+            tenant=self.tenant_id,
+            table="recall_chunks_v1",
+            source_column="source_uri",
+            scope="c.tenant_id = %s AND c.generation_id = %s AND c.source_uri = ANY(%s)",
+            params=(self.tenant_id, outgoing, omitted),
+            sources=omitted,
+            withdraw=False,
+        )
 
     def rollback(self, *, provisional_reason: str | None = None) -> str:
         with self._connect() as conn, conn.transaction():
@@ -1726,7 +1900,35 @@ class GenerationManager:
                     ),
                 },
             )
-            return previous
+        # After the commit, as promote does: the rolled back generation's memos may state facts no
+        # event records yet (it was built before stating was on, or under another rule).
+        self.last_stated_facts = self._record_stated_facts_after_activation(previous)
+        return previous
+
+    def record_stated_facts(self, generation_id: str, *, env: Mapping[str, str] | None = None) -> int:
+        """Record the facts the memos of `generation_id` state (`recall.stated_facts`).
+
+        Reads that generation's chunks through a `GenerationStore` fixed to it, opened with the
+        metadata-only sentinel dimension `recall scopes` uses: no vector is read. Returns the facts
+        newly recorded; 0 when stating is off for this tenant; -1 when recording failed.
+        """
+        from recall.generation_store import GenerationStore
+        from recall.stated_facts import reconcile_stated_facts
+
+        # Kept in its own name rather than `with ... as`: the inherited `__enter__` answers a plain
+        # PgVectorStore, which has no `set_fixed_generation`.
+        store = GenerationStore(self._dsn, 1, tenant=self.tenant_id)
+        with store:
+            store.set_fixed_generation(generation_id)
+            report = reconcile_stated_facts(store, env=env)
+        return report.facts_stated if report.enabled else 0
+
+    def _record_stated_facts_after_activation(self, generation_id: str) -> int:
+        try:
+            return self.record_stated_facts(generation_id)
+        except Exception:  # BROAD-CATCH: error-translation  # counted, retried by the next activation
+            _log.exception("recording the stated facts of %r failed for %r", generation_id, self.tenant_id)
+            return -1
 
     def active_generation_id(self) -> str:
         with self._connect() as conn:
@@ -1785,12 +1987,19 @@ class GenerationManager:
             raise NoActiveGeneration(f"tenant {self.tenant_id!r} has no active generation")
         return IndexManifestV1.from_dict(row[0])
 
-    def forget(self, source_uri: str, *, legacy_table: str | None = None) -> ErasureResult:
+    def forget(
+        self, source_uri: str, *, legacy_table: str | None = None, withdraw: bool = False
+    ) -> ErasureResult:
         """Erase a source from every generation, and tombstone it against future builds.
 
         `legacy_table` additionally erases the adopted v0.8 rows, which migration 0008 leaves
         in place and which remain readable through the legacy API. Pass it whenever the caller
         knows the migration target, or the erasure is only partial.
+
+        A memo that declared `supersedes:` leaves a `SupersessionRecord` in the same transaction
+        (`recall.supersession_records`), read from the active generation's copy of it, else the
+        newest generation's: a forget keeps retired what it retired, `withdraw` gives that back
+        and splices its chain, and also covers a source a record already stands in for.
         """
         if not source_uri:
             raise ValueError("source_uri must be non-empty")
@@ -1873,6 +2082,24 @@ class GenerationManager:
                             "corpus_fingerprint": effective_fingerprint,
                         },
                     )
+            holder = conn.execute(
+                "SELECT c.generation_id FROM recall_chunks_v1 AS c "
+                "JOIN recall_generations AS g "
+                "  ON g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id "
+                "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.generation_id = ANY(%s) "
+                "ORDER BY (c.generation_id = %s) DESC, g.created_at DESC LIMIT 1",
+                (self.tenant_id, source_uri, list(selected), state[0] if state else None),
+            ).fetchone()
+            pg_record_removals(
+                conn,
+                tenant=self.tenant_id,
+                table="recall_chunks_v1",
+                source_column="source_uri",
+                scope="c.tenant_id = %s AND c.generation_id = %s AND c.source_uri = ANY(%s)",
+                params=(self.tenant_id, holder[0] if holder else None, [source_uri]),
+                sources=[source_uri],
+                withdraw=withdraw,
+            )
             removed = 0
             if selected:
                 rows = conn.execute(
@@ -1916,13 +2143,15 @@ class GenerationManager:
                     "SELECT to_regclass(%s) IS NOT NULL", (legacy_table,)
                 ).fetchone()
                 if exists and exists[0]:
-                    legacy_rows = conn.execute(
-                        psycopg.sql.SQL(
-                            "DELETE FROM {} WHERE tenant_id = %s AND source = %s RETURNING id"
-                        ).format(psycopg.sql.Identifier(legacy_table)),
-                        (self.tenant_id, source_uri),
-                    ).fetchall()
-                    removed += len(legacy_rows)
+                    legacy_ids = pg_delete_removals(
+                        conn,
+                        tenant=self.tenant_id,
+                        table=legacy_table,
+                        sources=[source_uri],
+                        withdraw=withdraw,
+                        quote_table=True,
+                    )
+                    removed += len(legacy_ids)
             return ErasureResult(source_uri, tuple(sorted(selected)), removed, event_id)
 
     def gc(
@@ -1978,4 +2207,80 @@ class GenerationManager:
                 )
                 self._scrub_sparse_rows(conn, [str(row[0]) for row in chunk_rows])
                 self._audit(conn, "generation_gc", payload={"generation_ids": delete})
-            return tuple(delete)
+        # After the commit: the deletion is what makes a memo unrecoverable, and the retraction is
+        # best effort. Every gc runs it, deleting or not, so one that failed is completed by the
+        # next (it reads the collected generations from the audit trail, not from this call).
+        try:
+            self.last_gc_facts_retracted = self.retract_collected_facts()
+        except Exception:  # BROAD-CATCH: error-translation  # counted, retried by the next gc
+            _log.exception("retracting the facts of collected generations failed for %r", self.tenant_id)
+            self.last_gc_facts_retracted = -1
+        return tuple(delete)
+
+    def retract_collected_facts(
+        self, *, env: Mapping[str, str] | None = None, collected: Collection[str] | None = None
+    ) -> int:
+        """Retract, for good, the facts whose memos gc has removed from every generation.
+
+        A memo a promoted generation left out stays recoverable while any generation holds it (a
+        rollback re-activates it), so until then its facts are only hidden at read time
+        (`recall.provenance_controller.absent_fact_ids`). Once gc deletes the last generation
+        holding it, nothing can bring it back, and this appends a permanent `retracted` event
+        (SOURCE_REMOVED, writer `recall_generation_gc`) for every live application of each fact
+        that has a card from a collected generation and whose every card names a memo no
+        remaining generation holds. A card whose name was not known when this started (applied
+        meanwhile) counts as held. Returns the number of facts retracted.
+
+        `collected` defaults to every generation any gc of this tenant deleted, read from the
+        audit trail, which is what lets a later gc finish a retraction an earlier one failed.
+        """
+        from recall.fact_ledger import GC_RETRACTION_WRITER, PostgresFactLedger
+        from recall.fact_retraction import FACT_WRITE_DSN_ENV
+        from recall.provenance_controller import DecisionCode
+
+        environment = os.environ if env is None else env
+        dsn = environment.get(FACT_WRITE_DSN_ENV, "").strip() or self._dsn
+        ledger = PostgresFactLedger(dsn, tenant_id=self.tenant_id)
+        names = sorted({
+            card.source
+            for event in ledger.events
+            if event.event_type == "asserted"
+            for card in event.evidence_cards
+        })
+        if not names:
+            return 0
+        with self._connect() as conn:
+            if collected is None:
+                collected = {
+                    str(generation_id)
+                    for (payload,) in conn.execute(
+                        "SELECT payload FROM recall_audit_events "
+                        "WHERE tenant_id = %s AND event_type = 'generation_gc'",
+                        (self.tenant_id,),
+                    ).fetchall()
+                    for generation_id in (payload or {}).get("generation_ids", ())
+                }
+            if not collected:
+                return 0
+            rows = conn.execute(
+                "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
+                (self.tenant_id, names, names),
+            ).fetchall()
+        held = {str(value) for row in rows for value in row if value is not None}
+        known = set(names)
+        removed = set(collected)
+
+        def gone(card: EvidenceCard) -> bool:
+            # GC cannot establish the absence of evidence outside the generations it collected
+            # (legacy tables can still hold it), so that evidence conservatively survives.
+            return card.generation_id in removed and card.source in known and card.source not in held
+
+        def touched(card: EvidenceCard) -> bool:
+            return card.generation_id in removed
+
+        written = ledger.retract_forgotten(
+            tenant_id=self.tenant_id, touched=touched, gone=gone,
+            writer=GC_RETRACTION_WRITER, decision_code=DecisionCode.SOURCE_REMOVED,
+        )
+        return len({fact_id for event in written for fact_id in event.supersedes_fact_ids})

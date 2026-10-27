@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, get_args
+
+from recall.support import CalibrationCoverage, QuerySupport
 
 Authority = Literal[
     "policy",
@@ -48,11 +51,31 @@ def _utc_datetime(value: datetime | None) -> datetime | None:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
+#: How many values a fact's predicate holds at once: ``single`` (a new value contradicts the old),
+#: ``set`` (a second email is a second email) or ``event`` (a second visit is a second visit).
+FactCardinality = Literal["single", "set", "event"]
+#: The same values as a tuple, derived from the type so the two cannot drift (2026-10-21 audit,
+#: CODE-005).
+FACT_CARDINALITIES: tuple[FactCardinality, ...] = get_args(FactCardinality)
+
+
+def _nfc(value: Any) -> Any:
+    """`value` with every string in it NFC-normalised, containers rebuilt in their own type."""
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value)
+    if isinstance(value, dict):
+        return {_nfc(key): _nfc(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_nfc(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_nfc(item) for item in value)
+    return value
+
+
 def source_content_digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 #: Trust verdict for a retrieved hit. Only ``ok`` hits should be relied on.
-#: ``not_entailed`` (optional entailment stage): semantically close but does not answer the query.
 #: ``ambiguous_supersession``: a supersession edge points at this memory's basename, but the
 #: corpus carries that basename in more than one directory. Which document the author meant is
 #: unanswerable, so the hit fails closed rather than being served with a guessed successor — or,
@@ -75,9 +98,12 @@ Verdict = Literal[
     "low_confidence",
     "invalid_metadata",
     "ambiguous_supersession",
-    "not_entailed",
     "unverified",
     "dependency_invalidated",
+    #: the question names a term (an identifier, a code, a capitalised name) that occurs nowhere
+    #: in this memory, so no hit can be about its subject however well it scores. See
+    #: `recall.unknown_terms`.
+    "unknown_term",
 ]
 
 
@@ -100,17 +126,24 @@ class AtomicFact:
     context: dict[str, Any] = field(default_factory=dict)
     valid_from: datetime | None = None
     valid_until: datetime | None = None
+    #: The fact's own `FACT_CARDINALITIES` value; None defers to its predicate's
+    #: (`recall.provenance_controller.predicate_cardinality`). Recorded in the payload only when
+    #: set, so every fact that declares none keeps the identity it always had.
+    cardinality: str | None = None
 
     def __post_init__(self) -> None:
+        # NFC at construction, so every comparison sees one spelling: the identity and the
+        # conflict key already compared NFC forms, and `facts_conflict` compared the raw strings,
+        # so an NFD subject shared a key with its NFC twin and never conflicted with it.
         for name in ("namespace", "subject", "predicate"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
-            object.__setattr__(self, name, value.strip())
-        if not isinstance(self.context, dict):
-            object.__setattr__(self, "context", dict(self.context))
-        else:
-            object.__setattr__(self, "context", dict(self.context))
+            object.__setattr__(self, name, unicodedata.normalize("NFC", value.strip()))
+        object.__setattr__(self, "object", _nfc(self.object))
+        object.__setattr__(self, "context", _nfc(dict(self.context)))
+        if self.cardinality is not None and self.cardinality not in FACT_CARDINALITIES:
+            raise ValueError(f"cardinality must be one of {', '.join(FACT_CARDINALITIES)}")
         valid_from = _utc_datetime(self.valid_from)
         valid_until = _utc_datetime(self.valid_until)
         object.__setattr__(self, "valid_from", valid_from)
@@ -127,6 +160,7 @@ class AtomicFact:
             "context": self.context,
             "valid_from": self.valid_from.isoformat() if self.valid_from else None,
             "valid_until": self.valid_until.isoformat() if self.valid_until else None,
+            **({"cardinality": self.cardinality} if self.cardinality is not None else {}),
         }
 
     @classmethod
@@ -147,6 +181,9 @@ class AtomicFact:
             context=dict(payload.get("context") or {}),
             valid_from=parse_time(payload.get("valid_from")),
             valid_until=parse_time(payload.get("valid_until")),
+            cardinality=(
+                str(payload["cardinality"]) if payload.get("cardinality") is not None else None
+            ),
         )
 
 
@@ -238,6 +275,68 @@ class EvidenceCard:
         )
 
 
+#: The keys a redacted card keeps (`recall.fact_redaction`): its identity, its memo's name, and
+#: which redaction erased the rest. Migration 0029's triggers admit exactly this shape.
+REDACTED_CARD_KEYS = ("card_id", "generation_id", "redacted", "redaction_id", "source", "tenant_id")
+#: The keys a redacted fact payload keeps: the fresh fact id its events pair on, and the redaction.
+REDACTED_FACT_KEYS = ("fact_id", "redacted", "redaction_id")
+
+
+def is_redaction_marker(value: object) -> bool:
+    """Whether a stored fact or card payload is one `recall.fact_redaction` wrote in its place."""
+    return isinstance(value, Mapping) and value.get("redacted") is True
+
+
+@dataclass(frozen=True)
+class RedactedEvidenceCard(EvidenceCard):
+    """A card whose content `recall_forget` erased: the memo's name and the card's place remain.
+
+    Its id is a fresh random one, not a hash of content it no longer holds, so the content check
+    `EvidenceCard` makes is skipped. It supports no fact, is never live, and serializes back to
+    the marker it was read from.
+    """
+
+    redaction_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.card_id or not self.redaction_id:
+            raise ValueError("a redacted evidence card needs its id and its redaction id")
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "card_id": self.card_id,
+            "generation_id": self.generation_id,
+            "redacted": True,
+            "redaction_id": self.redaction_id,
+            "source": self.source,
+            "tenant_id": self.tenant_id,
+        }
+
+    @classmethod
+    def from_marker(cls, payload: Mapping[str, Any]) -> RedactedEvidenceCard:
+        return cls(
+            card_id=str(payload["card_id"]),
+            chunk_id="redacted",
+            source=str(payload["source"]),
+            source_digest="redacted",
+            valid_from=None,
+            valid_until=None,
+            first_indexed_at=None,
+            indexed_at=None,
+            tenant_id=str(payload["tenant_id"]),
+            generation_id=str(payload["generation_id"]),
+            pipeline_fingerprint=None,
+            corpus_fingerprint=None,
+            calibration_id=None,
+            calibration_status="redacted",
+            trust_state="redacted",
+            verdict="unverified",
+            confidence=0.0,
+            rank=1,
+            redaction_id=str(payload["redaction_id"]),
+        )
+
+
 @dataclass(frozen=True)
 class ScoredChunk:
     chunk: Chunk
@@ -272,6 +371,10 @@ class RetrievalDiagnostics:
     reranking_ran: bool = False
     stage_ms: dict[str, float] = field(default_factory=dict)
     max_dense_score: float | None = None
+    #: `checked`, `unavailable` (the store cannot answer a vocabulary question), `disabled`
+    #: (RECALL_UNKNOWN_TERM_GATE=0), or `not_run` (a path that never reached the gate).
+    unknown_term_check: str = "not_run"
+    unknown_terms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -300,7 +403,10 @@ class Validity:
 
     valid_from: datetime | None
     valid_until: datetime | None
-    superseded_by: str | None  # terminal successor file, when superseded
+    #: When superseded, the deepest member of the chain that is valid at the evaluation
+    #: instant (`recall.supersession.successor_path`), which is the terminal successor when every
+    #: window is unknown; an absolute source for a path two roots hold.
+    superseded_by: str | None
 
 
 @dataclass(frozen=True)
@@ -345,6 +451,9 @@ class TrustedResult:
     trust_state: str = "trusted"
     #: The stable `TrustFailureCode` value when degraded, else None. See `recall.trust_policy`.
     failure_code: str | None = None
+
+    query_support: QuerySupport = field(default_factory=QuerySupport)
+    calibration_coverage: CalibrationCoverage = field(default_factory=CalibrationCoverage)
 
     @property
     def calibrated(self) -> bool:

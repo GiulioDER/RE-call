@@ -7,10 +7,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 
 from recall.calibration import Calibration
+from recall.frontmatter import RECORD_KEY
 from recall.lineage import canonical_sha256
 from recall.security_policy import AccessContext, SourceSecurityPolicy
-from recall.store import EdgeCandidates
-from recall.trust import evaluate
+from recall.supersession import EdgeCandidates, SupersessionGraph, store_supersession_graph
+from recall.trust_gate import evaluate
 from recall.trust_policy import TrustFailureCode, TrustPolicy, TrustRefusal, TrustState, code_for_status
 from recall.types import (
     Chunk,
@@ -21,7 +22,8 @@ from recall.types import (
     TrustedHit,
 )
 
-RelatedRelation = Literal["source", "ordinal", "supersession"]
+RelatedRelation = Literal["source", "ordinal", "supersession", "caused_by"]
+RELATED_RELATIONS: frozenset[str] = frozenset({"source", "ordinal", "supersession", "caused_by"})
 MAX_RELATED_ITEMS = 50
 
 
@@ -58,6 +60,76 @@ def _ordinal(chunk: Chunk) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def _record_edges(chunk: Chunk) -> tuple[str | None, frozenset[str]]:
+    """The chunk's audit record id and the ids its `caused_by` names (`recall.records`)."""
+    record = chunk.metadata.get(RECORD_KEY)
+    if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+        return None, frozenset()
+    causes = record.get("caused_by")
+    if not isinstance(causes, list):
+        return record["id"], frozenset()
+    return record["id"], frozenset(c for c in causes if isinstance(c, str))
+
+
+def _caused_by_candidates(
+    store: RelatedStore, seed_record: str, seed_causes: frozenset[str]
+) -> list[Chunk] | None:
+    """The chunks a `caused_by` match can accept, text included, or None to scan the corpus.
+
+    Found among the record chunks, read without text (`recall.records`), and only those fetched
+    by id: the full scan read every chunk's text to keep a handful. None when the store can list
+    its record chunks or fetch by id in neither way, so the caller falls back to the scan.
+    """
+    from recall.records import RecordsQueryError, _record_chunks
+
+    try:
+        # Memo records only: a code anchor carries no `caused_by` and is never named by one.
+        light = _record_chunks(store, code_files=())
+    except RecordsQueryError:
+        return None
+    ids: list[str] = []
+    for chunk in light:
+        record_id, causes = _record_edges(chunk)
+        if record_id is not None and (record_id in seed_causes or seed_record in causes):
+            ids.append(chunk.id)
+    by_ids = getattr(store, "chunks_by_ids", None)
+    if callable(by_ids):
+        found = by_ids(ids) if ids else {}
+        return [found[chunk_id] for chunk_id in ids if chunk_id in found]
+    by_id = getattr(store, "chunk_by_id", None)
+    if callable(by_id):
+        return [chunk for chunk_id in ids if (chunk := by_id(chunk_id)) is not None]
+    return None
+
+
+def _lineage(graph: SupersessionGraph, seed: str) -> frozenset[str]:
+    """Every document on `seed`'s supersession lineage, both ways, the whole chain.
+
+    One hop answered "what replaced this" with the direct successor even when that had itself
+    been replaced, so the document actually current was never among the related items.
+    """
+    claimants: dict[str, set[str]] = {}
+    for target, claims in graph.candidates.items():
+        claimants.setdefault(target, set()).update(f for f, _when in claims)
+    for target, claimant in graph.edges.items():
+        claimants.setdefault(target, set()).add(claimant)
+    predecessors: dict[str, set[str]] = {}
+    for target, group in claimants.items():
+        for claimant in group:
+            predecessors.setdefault(claimant, set()).add(target)
+    seen = {seed}
+    frontier = [seed]
+    while frontier:
+        following: list[str] = []
+        for node in frontier:
+            for neighbour in claimants.get(node, set()) | predecessors.get(node, set()):
+                if neighbour not in seen:
+                    seen.add(neighbour)
+                    following.append(neighbour)
+        frontier = following
+    return frozenset(seen - {seed})
+
+
 def _generation_binding(store: RelatedStore) -> dict[str, str]:
     reader = getattr(store, "generation_binding", None)
     if callable(reader):
@@ -91,8 +163,8 @@ def trusted_related(
         raise ValueError("max_items must be a positive int")
     if max_items > MAX_RELATED_ITEMS:
         raise ValueError(f"max_items must be <= {MAX_RELATED_ITEMS}")
-    if relation not in {"source", "ordinal", "supersession"}:
-        raise ValueError("relation must be source, ordinal, or supersession")
+    if relation not in RELATED_RELATIONS:
+        raise ValueError("relation must be source, ordinal, supersession, or caused_by")
     snapshot = getattr(store, "snapshot", None)
     if _generation_snapshot and callable(snapshot):
         with snapshot():
@@ -165,20 +237,27 @@ def trusted_related(
         if not security_policy.decide(seed_file, access_context).allowed:
             raise PermissionError("related seed is outside the authorized source scope")
     seed_ord = _ordinal(seed)
+    graph = SupersessionGraph()
+    linked: frozenset[str] = frozenset()
     if relation == "supersession":
-        edges, unresolved, edge_candidates = store.supersession_all()
+        graph = store_supersession_graph(store)
         # The only files the supersession match below can accept. When there are none, no chunk
         # can match, so the full-corpus scan the store falls back to is skipped: the common case,
         # since most documents are neither superseded nor superseding.
-        linked = {
-            *(f for f in (edges.get(seed_file),) if f),
-            *(f for f, successor in edges.items() if successor == seed_file),
-            *(successor for successor, _when in edge_candidates.get(seed_file, ())),
-        }
+        linked = _lineage(graph, graph.key(seed_file, seed.source))
         if not linked:
             candidates_iter = ()
-    else:
-        edges, unresolved, edge_candidates = {}, frozenset(), {}
+    # `caused_by` is a regression edge between audit records, read both ways: the records the seed
+    # was caused by, and the records the seed's fix caused. A seed with no record has neither.
+    seed_record, seed_causes = _record_edges(seed)
+    if relation == "caused_by":
+        # Audit records are superseded and retracted like any memo, so the trust gate needs the
+        # graph here too: with an empty one, a retracted record came back as current evidence.
+        graph = store_supersession_graph(store)
+        if seed_record is None:
+            candidates_iter = ()
+        elif candidates_iter is None:
+            candidates_iter = _caused_by_candidates(store, seed_record, seed_causes)
     if candidates_iter is None:
         candidates_iter = store.iter_chunks()
     related: list[ScoredChunk] = []
@@ -191,15 +270,14 @@ def trusted_related(
         adjacent = (
             seed_ord is not None and ordinal is not None and abs(ordinal - seed_ord) <= 2
         )
-        supersession = (
-            file == edges.get(seed_file)
-            or seed_file == edges.get(file)
-            or any(successor == file for successor, _when in edge_candidates.get(seed_file, ()))
-        )
+        supersession = relation == "supersession" and graph.key(file, chunk.source) in linked
+        record_id, causes = _record_edges(chunk) if relation == "caused_by" else (None, frozenset())
         matches = {
             "source": same_source,
             "ordinal": same_source and adjacent,
             "supersession": supersession,
+            "caused_by": record_id is not None
+            and (record_id in seed_causes or (seed_record is not None and seed_record in causes)),
         }
         if matches[relation]:
             if security_policy is not None:
@@ -215,7 +293,10 @@ def trusted_related(
                 )
             )
     related.sort(key=lambda item: (abs((_ordinal(item.chunk) or 0) - (seed_ord or 0)), item.chunk.id))
-    related = related[:max_items]
+    if relation != "supersession":
+        related = related[:max_items]
+    # A supersession lineage is trusted WHOLE and truncated after: cut first, a long predecessor
+    # filled every slot and the successor the trust gate would serve was never evaluated.
     instant = now or datetime.now(UTC)
     if instant.tzinfo is None:
         instant = instant.replace(tzinfo=UTC)
@@ -232,11 +313,9 @@ def trusted_related(
                 candidate_pool_size=len(related),
             ),
         ),
-        edges,
+        graph,
         calibration,
         instant,
-        unresolved=unresolved,
-        edge_candidates=edge_candidates,
         generation_binding=binding,
     )
     if failure_code is not None:
@@ -252,7 +331,8 @@ def trusted_related(
                 abstained=False,
                 reason="",
             )
-    ok = tuple(hit for hit in trusted.hits if hit.verdict == "ok")
+    ok = tuple(hit for hit in trusted.hits if hit.verdict == "ok")[:max_items]
+    rejected = sum(1 for hit in trusted.hits if hit.verdict != "ok")
     explanation = None
     if explain:
         explanation = {
@@ -261,7 +341,7 @@ def trusted_related(
             "relation": relation,
             "candidate_count": len(related),
             "trusted_count": len(ok),
-            "rejected_count": len(related) - len(ok),
+            "rejected_count": rejected,
             "generation_id": binding.get("generation_id", "legacy"),
             "explanation_id": "rx_" + canonical_sha256(
                 {"seed": seed_chunk_id, "relation": relation, "generation": binding}
@@ -271,10 +351,16 @@ def trusted_related(
         seed_chunk_id=seed_chunk_id,
         relation=relation,
         items=ok,
-        rejected_count=len(related) - len(ok),
+        rejected_count=rejected,
         generation_id=binding.get("generation_id", "legacy"),
         explanation=explanation,
     )
 
 
-__all__ = ["MAX_RELATED_ITEMS", "RelatedEvidenceResult", "RelatedRelation", "trusted_related"]
+__all__ = [
+    "MAX_RELATED_ITEMS",
+    "RELATED_RELATIONS",
+    "RelatedEvidenceResult",
+    "RelatedRelation",
+    "trusted_related",
+]

@@ -275,6 +275,12 @@ def test_the_bundle_cannot_contain_a_passage_that_was_not_retrieved() -> None:
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
+    # Under mutation testing (`scripts/mutation_changed.sh`) mutmut rewrites this module and adds
+    # exactly one import, its trampoline, which the allowlist below would otherwise refuse before
+    # any mutant runs: the mutation job then fails with "failed to collect stats" and mutates
+    # nothing. That one name is dropped, exactly, and nothing else is: a store imported under any
+    # name still fails. Seen on PR 849, whose docstring edit put this module in the mutated set.
+    imported.discard("mutmut.mutation.trampoline")
 
     # An ALLOWLIST, not a denylist. The denylist that stood here first was unfireable — emptying
     # it changed no test, because this assertion already refuses everything not named below —

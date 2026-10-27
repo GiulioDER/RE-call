@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 import recall_hooks
 
 
@@ -105,7 +107,7 @@ def test_pre_compact_indexes_and_refreshes_like_session_end(
     indexed: list[Path] = []
     refreshed: list[int] = []
     monkeypatch.setattr(
-        "recall.setup.index_memory_directory",
+        "recall.memory_index.index_memory_directory",
         lambda **kw: indexed.append(kw["memory_dir"]),
     )
     monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: refreshed.append(1))
@@ -139,7 +141,7 @@ def test_local_hook_passes_configured_tenant_and_table_to_indexer(
     def capture(**kwargs: Any) -> None:
         seen.update(kwargs)
 
-    monkeypatch.setattr("recall.setup.index_memory_directory", capture)
+    monkeypatch.setattr("recall.memory_index.index_memory_directory", capture)
     monkeypatch.setattr(recall_hooks, "refresh_stats", lambda config=None: 0)
 
     assert recall_hooks.pre_compact({"cwd": str(tmp_path)}) == 0
@@ -161,7 +163,7 @@ def test_pre_compact_never_returns_a_blocking_exit_code(tmp_path: Path, monkeypa
     def explode(**kwargs: Any) -> None:
         raise RuntimeError("embedder could not be resolved")
 
-    monkeypatch.setattr("recall.setup.index_memory_directory", explode)
+    monkeypatch.setattr("recall.memory_index.index_memory_directory", explode)
 
     assert recall_hooks.pre_compact({"cwd": str(tmp_path)}) == 0
     # And with nothing configured at all.
@@ -208,3 +210,41 @@ def test_the_hook_path_does_not_import_the_recall_package() -> None:
         check=True,
     )
     assert result.stdout.strip() == "False"
+
+
+_HOOK_SUBMODULES = (
+    "recall_hooks.prompt_time",
+    "recall_hooks.write_time",
+    "recall_hooks.relay",
+    "recall_hooks.hosted",
+    "recall_hooks.credentials",
+    "recall_hooks.screening",
+    "recall_hooks.mcp_cleanup",
+    "recall_hooks.codex",
+)
+
+
+@pytest.mark.parametrize("module", _HOOK_SUBMODULES)
+def test_no_hook_submodule_imports_the_recall_package_or_psycopg(module: str) -> None:
+    """Each hook submodule, imported on its own, stays clear of `recall` and `psycopg`.
+
+    Invariant: the per-prompt and per-tool hook paths cost an interpreter start, not a package
+    load. `test_the_hook_path_does_not_import_the_recall_package` imports only the package root,
+    so a module-scope `from recall.x import y` in a submodule the root loads lazily passed it.
+
+    Red proof, 2026-10-01, against origin/master 5a8fcaba with one mutation per run: adding
+    `import recall.errors` at module scope of `recall_hooks/relay.py` failed
+    `[recall_hooks.relay]` at the final assertion with `['recall', 'psycopg'] == []` (the package
+    init loads psycopg); adding `import psycopg`
+    to `recall_hooks/prompt_time.py` failed `[recall_hooks.prompt_time]` the same way with
+    `['psycopg'] == []`.
+    """
+    probe = (
+        f"import sys, {module}; "
+        "print(','.join(m for m in ('recall', 'psycopg') if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    loaded = [name for name in result.stdout.strip().split(",") if name]
+    assert loaded == []

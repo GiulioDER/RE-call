@@ -1,3 +1,5 @@
+from recall_mcp import graph_projection as _s5b_graph_projection
+from recall_mcp import retrieval as _s5b_retrieval
 import hashlib
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
@@ -773,7 +775,7 @@ def test_one_hop_expansion_applies_source_authorization_before_admission(monkeyp
     def fake_retrieve(*_args, **_kwargs):
         return type("Retrieved", (), {"result": retrieval})()
 
-    monkeypatch.setattr(service, "_retrieve_trusted", fake_retrieve)
+    monkeypatch.setattr(_s5b_retrieval, "_retrieve_trusted", fake_retrieve)
     response = service.reasoning_query(
         Store(),
         type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
@@ -1176,7 +1178,15 @@ def test_temporal_and_supersession_neighbors_are_filtered_before_budget():
             return projection.readiness()
 
         def supersession_all(self):
-            return {"superseded": "replacement"}, frozenset(), {}
+            # Keyed on the root-relative FILE, the shape every store returns. This was keyed on
+            # the stem `superseded`, which matched the filter's own stem lookup and hid that the
+            # filter never fired against a real store (2026-10-21 supersession audit, P2 #15).
+            return {"superseded.md": "replacement.md"}, frozenset(), {}
+
+        def chunk_metadata_by_ids(self, ids):
+            # The text-free read the pre-budget filter takes a chunk's file from, as
+            # `PgVectorStore` and `GenerationStore` serve it.
+            return {c.id: Chunk(c.id, c.source, "", c.metadata) for c in chunks if c.id in ids}
 
         def cosines_for(self, ids, vec):
             del vec
@@ -1221,7 +1231,10 @@ def test_temporal_and_supersession_neighbors_are_filtered_before_budget():
     assert [hit.chunk.id for hit in result.retrieval.hits] == ["seed", "live"]
     assert scored_ids == ["live"]
     assert dict(result.admission_rejections)["temporal_expired"] >= 1
-    assert dict(result.admission_rejections)["superseded"] >= 1
+    # `.get`, so a filter that never fires fails HERE as an assertion (red, 2026-10-21: on master
+    # `67ffcce59` with the file-keyed fixture below, and with the pre-budget `superseded_ids`
+    # check removed from `recall_mcp.graph_expansion._materialize_candidates`).
+    assert dict(result.admission_rejections).get("superseded", 0) >= 1
     assert dict(result.admission_rejections).get("budget", 0) == 0
 
 
@@ -1777,7 +1790,7 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
         def supersession(self):
             return {}, frozenset()
 
-    monkeypatch.setattr(service, "project_store_graph", lambda *_args, **_kwargs: projected)
+    monkeypatch.setattr(_s5b_graph_projection, "project_store_graph", lambda *_args, **_kwargs: projected)
     seed = TrustedHit(
         chunks[0],
         1.0,
@@ -1828,7 +1841,7 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
     class Retrieved:
         result = retrieval
 
-    monkeypatch.setattr(service, "_retrieve_trusted", lambda *_args, **_kwargs: Retrieved())
+    monkeypatch.setattr(_s5b_retrieval, "_retrieve_trusted", lambda *_args, **_kwargs: Retrieved())
     response = service.reasoning_query(
         Store(),
         type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),

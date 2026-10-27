@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://giulioder.github.io/RE-call/corpus.html">
 <title>Your memory · RE-call setup</title>
 <meta name="description" content="How to go from one example memory file to a real RE-call corpus: one durable fact per file, the frontmatter convention, a folder layout that survives growth, and how to keep it current.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,6 +21,7 @@
     <nav>
       <a href="download.html">Download</a>
       <a href="readme.html">README</a>
+      <a href="how-it-works.html">How it works</a>
       <a href="start.html">Install</a>
       <a href="corpus.html" aria-current="page">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
@@ -59,6 +61,7 @@
   <p class="lede">You have a working install and one example memory. Everything below is about the decisions that are cheap now and expensive in six months: what goes in a file, how many facts it holds, and how you find it again.</p>
 </section>
 
+<section class="shell-narrow" style="padding-bottom: 2rem;"><div class="notice notice--signal"><p class="notice-title">Lite keeps the configured memo folder current</p><p>Edit your original memos in that folder. The MCP server refreshes changed content and refits calibration when needed. Use <a href="start.html#lite-maintenance">Lite refresh and backup instructions</a> for explicit checks; PostgreSQL CLI examples below need their own database configuration.</p></div></section>
 <div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
 
   <!-- Contents rail -->
@@ -489,7 +492,7 @@ metadata:
             </div>
           </div>
 
-          <p><code>lint</code> looks over a whole corpus for broken or missing supersession edges. <code>--fix</code> proposes the frontmatter edge for each closure it can prove, and it is a dry run by default, printing the plan and changing nothing until you add <code>--apply</code>.</p>
+          <p><code>lint</code> looks over a whole corpus for broken or missing supersession edges. <code>--fix</code> proposes the frontmatter edge for each closure it can prove, and it is a dry run by default, printing the plan with an id beside each edge and changing nothing until you add <code>--apply</code> with the ids of the edges you reviewed, for example <code>--apply 3f2a91c0d4</code>.</p>
 
           <p><code>check</code> is the write time version, and it needs no database at all. You point it at the files you are about to commit and it asks for the supersession edge while you still know the answer. <code>--strict</code> makes it exit with a failure when a memo needs an edge, which is what turns it into a pre-commit hook.</p>
 
@@ -540,7 +543,7 @@ metadata:
       <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
       <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
     </nav>
-    <small>PolyForm Noncommercial</small>
+    <small>AGPL-3.0 or commercial license</small>
   </div>
 </footer>
 

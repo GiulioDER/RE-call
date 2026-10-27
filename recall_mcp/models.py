@@ -6,12 +6,21 @@ Moved out of `recall_mcp.service` unchanged; that module re-exports every name h
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
+from recall.support import CalibrationCoverage, QuerySupport
 from recall.types import DecisionState
 
+_UNKNOWN_TERM_CHECK_DESCRIPTION = (
+    "Vocabulary check: checked | unavailable | disabled | not_run. Unavailable means "
+    "the backend or constrained scope cannot safely check vocabulary, not that a term "
+    "was absent. This optional check does not replace calibration or trust state."
+)
 
 class SearchHit(BaseModel):
+    revision: str | None = Field(default=None, description="SHA-256 of the indexed source representation, when known (Markdown normalizes BOM, NUL and newlines); a correction precondition, not a trust verdict.")
     chunk_id: str | None = Field(default=None, description="Stable retrieved chunk identifier.")
     source: str = Field(description="Where this memory came from (file/source id).")
     score: float | None = Field(default=None, description="True dense cosine similarity in [-1, 1].")
@@ -22,8 +31,8 @@ class SearchHit(BaseModel):
     verdict: str = Field(
         description="Trust verdict: ok | superseded | expired | not_yet_valid | low_confidence "
         "| ambiguous_supersession "
-        "| invalid_metadata | dependency_invalidated | not_entailed. Only 'ok' hits should be "
-        "relied on."
+        "| invalid_metadata | dependency_invalidated | unknown_term. Only 'ok' hits should be "
+        "relied on for the present state. Historical candidates require a validity check."
     )
     superseded_by: str | None = Field(
         default=None, description="File of the memory that replaces this one, when superseded."
@@ -48,15 +57,62 @@ class SearchHit(BaseModel):
     )
 
 
+class SearchEvidence(BaseModel):
+    """What may be cited for the present state, by the rule `recall_evidence` applies.
+
+    Built from the same trusted result by `recall.evidence.build_evidence_bundle`, so it adds no
+    retrieval and no write. Measured 2026-10-10: given the search result, no model asked for the
+    separate evidence bundle before answering (0 to 10% of conversations for a frontier and a 9B
+    model, with the tool description and the routing guide in front of them), so the part of the
+    bundle a model needs to answer comes with the search. Card warrants, which `recall_evidence`
+    registers in the store, and its rendered answer prompt stay with that tool.
+    """
+
+    decision: str = Field(
+        description="answer | abstain. 'abstain' means no present-state citation is supported."
+    )
+    reason_code: str | None = Field(
+        default=None,
+        description="Why nothing is citable: corpus_gap | no_supporting_evidence | "
+        "evidence_budget_exhausted. Null when the decision is 'answer'.",
+    )
+    citable: list[str] = Field(
+        default_factory=list,
+        description="The chunk_id of every hit a present-state answer may rely on, in retrieval "
+        "order: the hits the trust layer cleared, and no others.",
+    )
+
+
+class HistoricalSearchEvidence(BaseModel):
+    """Relevant archived assertions, not an unconditional statement of what held at a time.
+
+    Only certified superseded or expired hits at or above the threshold enter. Consumers must match
+    the requested instant to the hit's validity bounds before citing it as a fact at that time.
+    Without that support, a candidate may describe an archived assertion only.
+    """
+
+    candidates: list[str] = Field(
+        description="Archived chunk identifiers eligible for a historical validity check, "
+        "in retrieval order. These do not override present-state evidence.citable.",
+    )
+    scope: Literal["historical_only"] = "historical_only"
+    requires_validity_check: Literal[True] = True
+
+
 class SearchResult(BaseModel):
+    query_support: QuerySupport = Field(default_factory=QuerySupport)
+    calibration_coverage: CalibrationCoverage = Field(default_factory=CalibrationCoverage)
+
     query: str
     decision_state: DecisionState | None = Field(
         default=None,
-        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
-        "legacy payloads may omit it and yield null; do not infer support from hit count.",
+        description="supported | corpus_gap | no_supporting_evidence. Retrieval eligibility only, not semantic answerability; "
+        "for the present state. Legacy payloads may omit it and yield null; do not infer "
+        "support from hit count.",
     )
     abstained: bool = Field(
-        description="True when NO valid hit survived — say you don't know instead of answering."
+        description="True when no present-state hit is eligible for citation. Historical candidates, "
+        "when present, remain conditional on a validity check.",
     )
     reason: str = Field(description="Why the search abstained; empty otherwise.")
     calibrated: bool = Field(
@@ -80,6 +136,10 @@ class SearchResult(BaseModel):
     pipeline_fingerprint: str | None = None
     corpus_fingerprint: str | None = None
     query_set_digest: str | None = None
+    unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
+    unknown_terms: list[str] = Field(
+        default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
+    )
     gap_warning: bool = Field(description="True when the memory probably lacks a relevant answer.")
     stale: bool = Field(
         description="True when the memory index is older than the freshness window."
@@ -109,7 +169,7 @@ class SearchResult(BaseModel):
         default_factory=dict,
         description="Per-stage wall time in milliseconds: admission_wait, query_embedding, "
         "dense_retrieval, sparse_retrieval, learned_sparse_retrieval, fusion, reranking, "
-        "trust_evaluation, entailment, evidence_assembly. Every key is present on every response, including "
+        "trust_evaluation, evidence_assembly. Every key is present on every response, including "
         "for a retrieval leg the configuration switched off: such a leg reports ~0 rather than "
         "dropping its key, so an absent series never has to be read as either. Stage names are "
         "library constants and carry no corpus-derived text.",
@@ -135,6 +195,16 @@ class SearchResult(BaseModel):
         "nothing.",
     )
     hits: list[SearchHit]
+    evidence: SearchEvidence | None = Field(
+        default=None,
+        description="What a present-state answer may cite (see SearchEvidence). Null when "
+        "the server runs with RECALL_SEARCH_EVIDENCE=off.",
+    )
+    historical: HistoricalSearchEvidence | None = Field(
+        default=None,
+        description="Conditional historical candidates from this search. Null without certified "
+        "relevant archived records or when RECALL_SEARCH_EVIDENCE=off. Never present-state evidence.",
+    )
     explanation: dict[str, object] | None = None
     related_items: list[SearchHit] = Field(default_factory=list)
     related_diagnostics: list[str] = Field(default_factory=list)
@@ -144,6 +214,13 @@ class SearchResult(BaseModel):
             "Versioned request aware route diagnostic. It names the selected physical tenant "
             "legs and their bounded limits, without comparing scores across tenants."
         ),
+    )
+    refresh_warning: str | None = Field(
+        default=None,
+        description="Lite store only: set while the automatic refresh of the memo folder is "
+        "failing (over the index budget, denied by the source policy, the embedder down). Memos "
+        "changed since the last successful refresh are not searchable until it is fixed; tell "
+        "the user, and see `recall lite refresh --check`. Null when refreshes succeed.",
     )
 
 
@@ -213,10 +290,13 @@ class EvidenceResult(BaseModel):
     the search; this response is about what may be cited.
     """
 
+    query_support: QuerySupport = Field(default_factory=QuerySupport)
+    calibration_coverage: CalibrationCoverage = Field(default_factory=CalibrationCoverage)
+
     query: str
     decision_state: DecisionState | None = Field(
         default=None,
-        description="supported | corpus_gap | no_supporting_evidence. Explicit support state; "
+        description="supported | corpus_gap | no_supporting_evidence. Retrieval eligibility only, not semantic answerability; "
         "legacy payloads may omit it and yield null.",
     )
     decision: str = Field(
@@ -252,6 +332,10 @@ class EvidenceResult(BaseModel):
         default=None,
         description="Index generation identity, or null when the caller supplied no generation.",
     )
+    unknown_term_check: str = Field(default="not_run", description=_UNKNOWN_TERM_CHECK_DESCRIPTION)
+    unknown_terms: list[str] = Field(
+        default_factory=list, description="Entity-like query tokens the completed vocabulary check found absent."
+    )
     system_prompt: str = Field(description="Fixed library-authored instruction. No corpus input.")
     user_message: str = Field(description="Delimited, JSON-escaped evidence payload.")
     items: list[EvidenceItemModel]
@@ -273,6 +357,13 @@ class EvidenceResult(BaseModel):
             "Versioned request aware route diagnostic. It names the selected physical tenant "
             "legs and their bounded limits, without comparing scores across tenants."
         ),
+    )
+    refresh_warning: str | None = Field(
+        default=None,
+        description="Lite store only: set while the automatic refresh of the memo folder is "
+        "failing (over the index budget, denied by the source policy, the embedder down). Memos "
+        "changed since the last successful refresh are not searchable until it is fixed; tell "
+        "the user, and see `recall lite refresh --check`. Null when refreshes succeed.",
     )
 
 
@@ -402,6 +493,60 @@ class ForgetResult(BaseModel):
         description="Staged upload files removed from the tenant upload tree after erasure. "
         "-1 means cleanup failed and must be retried before re-indexing.",
     )
+    facts_retracted: int = Field(
+        default=0,
+        description="Facts in the fact ledger retracted because every piece of their evidence "
+        "was in these (or earlier forgotten) sources; recall_current_facts no longer lists them. "
+        "A fact with evidence in a memo that survives stays. -1 means the retraction FAILED and "
+        "this forget must be re-run with the same source names.",
+    )
+    facts_redacted: int = Field(
+        default=0,
+        description="Fact values erased from the fact ledger because these sources supplied them: "
+        "the value, every evidence card citing these sources and the replay receipts echoing "
+        "them are rewritten in place under fresh ids, so the ledger no longer holds the value or a "
+        "hash of it. A value a surviving memo also states stays. -1 means the erasure FAILED (or "
+        "was not attempted because the retraction failed) and this forget must be re-run with "
+        "the same source names.",
+    )
+
+
+class WithdrawResult(BaseModel):
+    chunks_removed: int = Field(
+        description="Number of chunks permanently deleted, across every matched source."
+    )
+    sources_withdrawn: list[str] = Field(
+        description="Requested sources that were withdrawn: indexed ones are deleted, and one "
+        "already forgotten or pruned has its record turned into a withdrawal."
+    )
+    sources_not_found: list[str] = Field(
+        default_factory=list,
+        description="Requested sources that matched no chunk and no record of a removed memo for "
+        "this tenant: a typo, or a source never indexed here.",
+    )
+    message: str = Field(description="Human-readable summary of what was withdrawn.")
+    outbox_events_scrubbed: int = Field(
+        default=0,
+        description="As recall_forget's: pending migration-outbox records scrubbed of these "
+        "sources; -1 means the scrub FAILED and must be re-run before the next replay.",
+    )
+    staged_files_removed: int = Field(
+        default=0,
+        description="Staged upload files removed after erasure; -1 means cleanup failed.",
+    )
+    facts_withdrawn: int = Field(
+        default=0,
+        description="Facts in the fact ledger withdrawn because every piece of their evidence was "
+        "in these sources: no longer listed, and their own supersession effects are undone. "
+        "What they superseded is current again only if no other assertion keeps it retired. -1 means "
+        "the withdrawal FAILED and this withdraw must be re-run with the same source names.",
+    )
+    facts_redacted: int = Field(
+        default=0,
+        description="As recall_forget's: fact values erased from the fact ledger because these "
+        "sources supplied them. -1 means the erasure FAILED (or was not attempted because the "
+        "withdrawal failed) and this withdraw must be re-run with the same source names.",
+    )
 
 
 class MemoryStatsResult(BaseModel):
@@ -417,6 +562,13 @@ class MemoryStatsResult(BaseModel):
         description="Process metrics since start: counters (searches, abstentions, gap warnings, "
         "verdicts by kind, database reconnects) and latency percentiles. Surfaced here so an "
         "operator can read them without a scrape endpoint.",
+    )
+    refresh: dict[str, object] | None = Field(
+        default=None,
+        description="Lite store only: the last refresh from the memo folder that ran, automatic "
+        "or `recall lite refresh` (outcome, reason, counts, calibration status and its reason). A "
+        "check that found nothing changed is not recorded. Null on any other store, and before "
+        "the first refresh.",
     )
 
 

@@ -117,6 +117,9 @@ def test_the_generation_store_widens_a_filtered_scan_for_a_large_k(monkeypatch) 
 
     from recall.generation_store import GenerationStore
 
+    # The HNSW path on purpose: generation-scoped dense search is exact by default since
+    # 2026-10-01, and the widening this test pins belongs to the HNSW path an operator can opt into.
+    monkeypatch.setenv("RECALL_GENERATION_DENSE_SEARCH", "hnsw")
     monkeypatch.delenv("RECALL_HNSW_EF_SEARCH_FILTERED", raising=False)
     monkeypatch.delenv("RECALL_HNSW_EF_SEARCH_MULTIPLIER", raising=False)
     monkeypatch.delenv("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", raising=False)

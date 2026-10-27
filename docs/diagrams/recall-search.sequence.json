@@ -1,0 +1,404 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "One recall_search call: pin, certify, retrieve, verdict",
+    "output": "docs/diagrams/recall-search.html",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      696
+    ],
+    "repository": {
+      "url": "https://github.com/GiulioDER/RE-call",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "0d5d407b731e62e3929589bdc30b1a60fc46cf4b"
+    }
+  },
+  "participants": [
+    {
+      "id": "agent",
+      "type": "external",
+      "label": "Agent",
+      "sublabel": "MCP client"
+    },
+    {
+      "id": "mcp",
+      "type": "frontend",
+      "label": "MCP server",
+      "sublabel": "recall_search",
+      "sources": [
+        {
+          "path": "recall_mcp/server.py",
+          "line": 1509,
+          "end_line": 1591,
+          "label": "recall_search tool"
+        },
+        {
+          "path": "recall_mcp/server.py",
+          "line": 1486,
+          "end_line": 1487,
+          "label": "TrustRefusal to ToolError"
+        },
+        {
+          "path": "recall_mcp/retrieval.py",
+          "line": 664,
+          "end_line": 668,
+          "label": "SearchResult, abstained"
+        }
+      ]
+    },
+    {
+      "id": "trusted",
+      "type": "backend",
+      "label": "Trusted search",
+      "sublabel": "recall/trust.py",
+      "sources": [
+        {
+          "path": "recall/trust.py",
+          "line": 266,
+          "end_line": 292,
+          "label": "snapshot, then search"
+        },
+        {
+          "path": "recall/trust.py",
+          "line": 339,
+          "end_line": 346,
+          "label": "resolve calibration"
+        },
+        {
+          "path": "recall/trust.py",
+          "line": 455,
+          "end_line": 456,
+          "label": "strict: raise TrustRefusal"
+        }
+      ]
+    },
+    {
+      "id": "gate",
+      "type": "security",
+      "label": "Trust gate",
+      "sublabel": "evaluate",
+      "sources": [
+        {
+          "path": "recall/trust_gate.py",
+          "line": 286,
+          "end_line": 288,
+          "label": "verdict per hit"
+        },
+        {
+          "path": "recall/trust_gate.py",
+          "line": 344,
+          "label": "abstained = not ok"
+        },
+        {
+          "path": "recall/trust_gate.py",
+          "line": 369,
+          "end_line": 372,
+          "label": "ok hits first"
+        }
+      ]
+    },
+    {
+      "id": "retriever",
+      "type": "backend",
+      "label": "Retriever",
+      "sublabel": "hybrid, RRF",
+      "sources": [
+        {
+          "path": "recall/retriever.py",
+          "line": 550,
+          "end_line": 577,
+          "label": "query vector, two legs"
+        },
+        {
+          "path": "recall/retriever.py",
+          "line": 638,
+          "label": "RRF fusion"
+        },
+        {
+          "path": "recall/retriever.py",
+          "line": 667,
+          "label": "optional rerank"
+        }
+      ]
+    },
+    {
+      "id": "embedder",
+      "type": "backend",
+      "label": "Embedder",
+      "sublabel": "same model as build",
+      "sources": [
+        {
+          "path": "recall/embedding_core.py",
+          "line": 668,
+          "label": "embed_query"
+        },
+        {
+          "path": "recall/retriever.py",
+          "line": 550,
+          "label": "called by the retriever"
+        }
+      ]
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "Store",
+      "sublabel": "Postgres, pinned gen",
+      "sources": [
+        {
+          "path": "recall/generation_store.py",
+          "line": 236,
+          "end_line": 256,
+          "label": "snapshot pin"
+        },
+        {
+          "path": "recall/generation_store.py",
+          "line": 441,
+          "end_line": 466,
+          "label": "resolve_calibration"
+        },
+        {
+          "path": "recall/generation_store.py",
+          "line": 530,
+          "end_line": 683,
+          "label": "dense + full text SQL"
+        }
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "from": 158,
+      "to": 292,
+      "label": "Pin and certify"
+    },
+    {
+      "from": 298,
+      "to": 346,
+      "label": "Strict refusal, only if not certified"
+    },
+    {
+      "from": 354,
+      "to": 514,
+      "label": "Retrieve"
+    },
+    {
+      "from": 522,
+      "to": 598,
+      "label": "Verdict"
+    }
+  ],
+  "messages": [
+    {
+      "id": "call",
+      "from": "agent",
+      "to": "mcp",
+      "y": 168,
+      "label": "recall_search(query, k)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "search",
+      "from": "mcp",
+      "to": "trusted",
+      "y": 196,
+      "label": "trusted_search",
+      "variant": "emphasis"
+    },
+    {
+      "id": "pin",
+      "from": "trusted",
+      "to": "store",
+      "y": 224,
+      "label": "snapshot(): pin active generation",
+      "variant": "default"
+    },
+    {
+      "id": "resolve",
+      "from": "trusted",
+      "to": "store",
+      "y": 252,
+      "label": "resolve_calibration()",
+      "variant": "security"
+    },
+    {
+      "id": "threshold",
+      "from": "store",
+      "to": "trusted",
+      "y": 280,
+      "label": "status + certified threshold",
+      "variant": "return",
+      "note": "Trusted search then compares the runtime embedder with the model this generation was built with"
+    },
+    {
+      "id": "refuse",
+      "from": "trusted",
+      "to": "mcp",
+      "y": 308,
+      "label": "TrustRefusal",
+      "variant": "security",
+      "note": "Strict policy, no certified calibration or a model mismatch: refused before anything is retrieved"
+    },
+    {
+      "id": "refuse-error",
+      "from": "mcp",
+      "to": "agent",
+      "y": 336,
+      "label": "error: trust_refusal",
+      "variant": "security"
+    },
+    {
+      "id": "retrieve",
+      "from": "trusted",
+      "to": "retriever",
+      "y": 364,
+      "label": "search(query, k)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "embed",
+      "from": "retriever",
+      "to": "embedder",
+      "y": 392,
+      "label": "embed_query",
+      "variant": "default"
+    },
+    {
+      "id": "vector",
+      "from": "embedder",
+      "to": "retriever",
+      "y": 420,
+      "label": "query vector",
+      "variant": "return"
+    },
+    {
+      "id": "legs",
+      "from": "retriever",
+      "to": "store",
+      "y": 448,
+      "label": "dense + full text legs",
+      "variant": "emphasis",
+      "note": "Both SQL legs filter on the pinned generation id"
+    },
+    {
+      "id": "legs-back",
+      "from": "store",
+      "to": "retriever",
+      "y": 476,
+      "label": "two ranked lists",
+      "variant": "return"
+    },
+    {
+      "id": "fused",
+      "from": "retriever",
+      "to": "trusted",
+      "y": 504,
+      "label": "RRF fused hits",
+      "variant": "return",
+      "note": "A reranker reorders the fused hits only when one is configured"
+    },
+    {
+      "id": "evaluate",
+      "from": "trusted",
+      "to": "gate",
+      "y": 532,
+      "label": "evaluate(hits, threshold)",
+      "variant": "security",
+      "note": "Each hit gets a verdict; abstained is true when no hit is ok"
+    },
+    {
+      "id": "result",
+      "from": "trusted",
+      "to": "mcp",
+      "y": 560,
+      "label": "TrustedResult, ok hits first",
+      "variant": "return"
+    },
+    {
+      "id": "answer",
+      "from": "mcp",
+      "to": "agent",
+      "y": 588,
+      "label": "hits, or abstained + reason",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "mcp",
+      "from": 163,
+      "to": 594,
+      "type": "frontend"
+    },
+    {
+      "participant": "trusted",
+      "from": 191,
+      "to": 566,
+      "type": "backend"
+    },
+    {
+      "participant": "store",
+      "from": 219,
+      "to": 286,
+      "type": "database"
+    },
+    {
+      "participant": "retriever",
+      "from": 359,
+      "to": 510,
+      "type": "backend"
+    },
+    {
+      "participant": "embedder",
+      "from": 387,
+      "to": 426,
+      "type": "backend"
+    },
+    {
+      "participant": "store",
+      "from": 443,
+      "to": 482,
+      "type": "database"
+    },
+    {
+      "participant": "gate",
+      "from": 527,
+      "to": 544,
+      "type": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Pin and certify",
+      "items": [
+        "The whole search runs against one generation, read once from the tenant state",
+        "The threshold comes from that generation's published calibration",
+        "A different embedder than the one that built the generation voids the threshold"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Refuse, abstain, answer",
+      "items": [
+        "Refuse: under strict trust, an uncertified or mismatched generation is never searched",
+        "Abstain: retrieval ran but no hit earned verdict ok, so the reason is returned",
+        "Answer: ok hits first, then superseded or expired ones, each with provenance"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Retrieve",
+      "items": [
+        "The query is embedded once, as a query rather than a passage",
+        "Dense cosine and Postgres full text each return candidates from the pinned generation",
+        "Reciprocal rank fusion merges the two lists; a reranker is opt in"
+      ]
+    }
+  ]
+}

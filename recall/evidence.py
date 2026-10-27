@@ -3,14 +3,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 import re
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from recall.errors import RecallError
 from recall.types import (
     AtomicFact,
+    CalibrationCoverage,
+    QuerySupport,
     DecisionState,
     EvidenceCard,
     TrustedHit,
@@ -113,6 +115,8 @@ class EvidenceBundle:
     #: The stable `TrustFailureCode` value when degraded, else None. See `recall.trust_policy`.
     failure_code: str | None = None
     cards: tuple[EvidenceCard, ...] = ()
+    query_support: QuerySupport = field(default_factory=QuerySupport)
+    calibration_coverage: CalibrationCoverage = field(default_factory=CalibrationCoverage)
 
 
 @dataclass(frozen=True)
@@ -120,6 +124,9 @@ class AnswerEnvelope:
     answer: str | None
     citations: tuple[str, ...]
     insufficient_evidence: bool
+    #: Only the ``dated-premise`` profile sets it: that the question assumes something the evidence
+    #: shows is no longer current, and what the evidence says instead. None everywhere else.
+    premise_correction: str | None = None
 
 
 @dataclass(frozen=True)
@@ -227,19 +234,22 @@ SYSTEM_PROMPT = (
 #: The answer profiles. ``dated`` (the default for `recall_reasoning_query` since 2026-09-29) is
 #: `render_dated_evidence_prompt`; ``plain`` (``RECALL_REASONING_ANSWER_PROFILE=plain``, the opt-out)
 #: is `render_evidence_prompt`, unchanged.
-ANSWER_PROFILES: tuple[str, ...] = ("plain", "dated")
+ANSWER_PROFILES: tuple[str, ...] = ("plain", "dated", "dated-premise")
 
 #: The reading instructions the ``dated`` profile appends AFTER the unchanged `SYSTEM_PROMPT`, so
 #: the safety contract (untrusted data, citations, the envelope) still comes first. Library
 #: authored and fixed, like `SYSTEM_PROMPT`: no corpus value is interpolated into either.
 #:
-#: Adapted from vectorize-io/hindsight's reader contract and measured twice before it became the
-#: default, same evidence and model per arm: on 120 LongMemEval-S questions (DeepSeek v4.1 flash)
-#: accuracy rose 0.525 to 0.633 (paired +0.108, 95% CI +0.033 to +0.183), mostly because the plain
-#: prompt declined questions its evidence covered; on 720 LoCoMo questions (Gemini 2.5 Flash) 0.424
-#: to 0.608 (+0.185, CI +0.150 to +0.221), mostly by dating temporal answers (0.12 to 0.51). The
-#: question's date on its own moved nothing measurable, so the date and these instructions ship
-#: together. The text is byte for byte the measured one; change it only with a new measurement.
+#: Adapted from the reader contract of vectorize-io/hindsight
+#: (https://github.com/vectorize-io/hindsight, MIT licence, Copyright (c) 2025 Vectorize AI, Inc.;
+#: credited in THIRD_PARTY_NOTICES.md and docs/PRIOR_ART.md). It was measured twice before it
+#: became the default, same evidence and model per arm: on 120 LongMemEval-S questions (DeepSeek
+#: v4.1 flash) accuracy rose 0.525 to 0.633 (paired +0.108, 95% CI +0.033 to +0.183), mostly because
+#: the plain prompt declined questions its evidence covered; on 720 LoCoMo questions (Gemini 2.5
+#: Flash) 0.424 to 0.608 (+0.185, CI +0.150 to +0.221), mostly by dating temporal answers (0.12 to
+#: 0.51). The question's date on its own moved nothing measurable, so the date and these
+#: instructions ship together. The text is byte for byte the measured one; change it only with a
+#: new measurement.
 DATED_READER_CONTRACT = """
 
 How to read the evidence:
@@ -261,6 +271,40 @@ How to read the evidence:
 #: The ``dated`` profile's whole system message, built once from two library constants and returned
 #: by identity, so its path has no interpolation site either.
 DATED_SYSTEM_PROMPT = SYSTEM_PROMPT + DATED_READER_CONTRACT
+
+#: The instructions the opt-in ``dated-premise`` profile appends AFTER `DATED_SYSTEM_PROMPT`: what to
+#: do when the question takes for granted a state the evidence shows has changed. The envelope gains
+#: ``premise_correction`` (`parse_premise_answer_envelope`), and the payload gains
+#: ``superseded_notice`` when `stale_premise_notice` finds that the question matched a superseded
+#: memory whose successor is in the evidence. The structure names the evidence; the reader phrases.
+#:
+#: Measured before it was added (the maintainer's research log, SP-2, 2026-10-23), same stores,
+#: reader (gpt-4o-mini) and judge as the baseline: on 400 STALE instances (arXiv 2605.06527), with a
+#: declared ``supersedes`` and successor expansion, stale-premise queries passed 149/400 against 0/400
+#: for ``dated``; with the contract but no notice, 1/400, because the reader wrote corrections without
+#: citing anything and a citation-checking path refuses them (hence `ground_premise_correction`). On
+#: 200 ordinary FactConsolidation questions the profile scored 190 against 176 for ``dated``. The text
+#: is byte for byte the measured one; change it only with a new measurement.
+PREMISE_READER_CONTRACT = """
+
+When the question takes something for granted:
+8. A question can assume a fact about the past or the present. If the newest evidence shows that the
+   assumption is no longer true, do not answer as if it held, and do not only decline. Put one or two
+   sentences in `premise_correction`: what the question assumes, that it is no longer current, and what
+   the newest evidence says instead, and cite that evidence in `citations`.
+9. If `superseded_notice` is present, the question matched older memory that has been replaced by the
+   listed evidence items. Read those items and check whether the question assumes the older state.
+10. If nothing in the evidence contradicts the question's assumption, set `premise_correction` to null
+   and follow the rules above.
+11. `premise_correction` may come with an answer (when the question can still be answered for the
+   current state) or with `insufficient_evidence=true` and `answer=null`; either way cite the evidence
+   the correction rests on. For a correction this replaces the instruction above to give no citations
+   when the evidence is insufficient.
+12. Always return all four fields: `answer`, `citations`, `insufficient_evidence` and
+   `premise_correction`."""
+
+#: The ``dated-premise`` profile's whole system message, a library constant returned by identity.
+DATED_PREMISE_SYSTEM_PROMPT = DATED_SYSTEM_PROMPT + PREMISE_READER_CONTRACT
 
 
 def _reason_code(result: TrustedResult) -> str | None:
@@ -386,6 +430,8 @@ def build_evidence_bundle(
             items=(),
             trust_state=result.trust_state,
             failure_code=result.failure_code,
+            query_support=result.query_support,
+            calibration_coverage=result.calibration_coverage,
         )
     trusted = [hit for hit in result.hits if hit.verdict == "ok"]
     missing_slots: tuple[str, ...] = ()
@@ -411,6 +457,8 @@ def build_evidence_bundle(
                 items=(),
                 trust_state=result.trust_state,
                 failure_code=result.failure_code,
+                query_support=result.query_support,
+                calibration_coverage=result.calibration_coverage,
             )
     elif policy.selection_mode == "beam":
         trusted = _select_beam_hits(trusted, policy)
@@ -475,6 +523,8 @@ def build_evidence_bundle(
         items=tuple(selected),
         trust_state=result.trust_state,
         failure_code=result.failure_code,
+        query_support=result.query_support,
+        calibration_coverage=result.calibration_coverage,
         cards=cards_from_trusted_result(result),
     )
 
@@ -641,6 +691,11 @@ def render_dated_evidence_prompt(bundle: EvidenceBundle, question_date: str) -> 
     ``indexed_at`` with the build time, so labelling it "when it was said" would give a rebuilt
     corpus one date for everything.
     """
+    return DATED_SYSTEM_PROMPT, f"{EVIDENCE_OPEN}{_encode(_dated_data(bundle, question_date))}{EVIDENCE_CLOSE}"
+
+
+def _dated_data(bundle: EvidenceBundle, question_date: str) -> dict[str, object]:
+    """The ``dated`` profile's data payload, shared by `render_dated_premise_prompt`."""
     if not question_date:
         raise ValueError("the dated answer profile requires question_date")
     first_written = {card.chunk_id: card.first_indexed_at for card in bundle.cards}
@@ -650,7 +705,7 @@ def render_dated_evidence_prompt(bundle: EvidenceBundle, question_date: str) -> 
         date = item.valid_from or first_written.get(item.chunk_id) or item.indexed_at
         payload["date"] = date.isoformat() if isinstance(date, datetime) else None
         evidence.append(payload)
-    data: dict[str, object] = {
+    return {
         "query": bundle.query,
         "question_date": question_date,
         "evidence": evidence,
@@ -660,7 +715,64 @@ def render_dated_evidence_prompt(bundle: EvidenceBundle, question_date: str) -> 
             "insufficient_evidence": "boolean",
         },
     }
-    return DATED_SYSTEM_PROMPT, f"{EVIDENCE_OPEN}{_encode(data)}{EVIDENCE_CLOSE}"
+
+
+def _same_source(left: str | None, right: str | None) -> bool:
+    """Compare complete source or root-relative file identities, normalizing separators only."""
+    if not left or not right:
+        return False
+    left, right = left.replace("\\", "/"), right.replace("\\", "/")
+    return left == right
+
+
+def stale_premise_notice(result: TrustedResult, bundle: EvidenceBundle) -> tuple[str, ...]:
+    """Evidence chunk ids whose memo replaced a ``superseded`` hit of this question. No model.
+
+    A question that retrieved a superseded memory may be assuming the older state; when that
+    memory's successor (`Validity.superseded_by`) contributed an item to the bundle, the ids of
+    those items are the notice the ``dated-premise`` profile hands the reader, and the citations
+    `ground_premise_correction` gives a correction the reader left uncited. It names the successor
+    only: no superseded text crosses the boundary, so `build_evidence_bundle`'s rule that only
+    ``ok`` hits reach a generator is unchanged. Empty when nothing was superseded or the successor
+    is not in the bundle (successor expansion is what makes it reliably present).
+    """
+    successors = [
+        hit.validity.superseded_by
+        for hit in result.hits
+        if hit.verdict == "superseded" and hit.validity.superseded_by
+    ]
+    # EvidenceItem.source is a display label and can lose the root when filenames collide.
+    # Recover each selected item's original identities through its exact trusted chunk id.
+    trusted = {hit.chunk.id: hit for hit in result.hits if hit.verdict == "ok"}
+    return tuple(
+        item.chunk_id
+        for item in bundle.items
+        if (hit := trusted.get(item.chunk_id)) is not None
+        and any(
+            _same_source(hit.provenance.source, successor) or _same_source(hit.provenance.file, successor)
+            for successor in successors
+        )
+    )
+
+
+def render_dated_premise_prompt(
+    bundle: EvidenceBundle, question_date: str, notice: Sequence[str] = ()
+) -> tuple[str, str]:
+    """The opt-in ``dated-premise`` profile: the ``dated`` prompt plus `PREMISE_READER_CONTRACT`.
+
+    The system message is :data:`DATED_PREMISE_SYSTEM_PROMPT`, returned by identity. The payload is
+    the ``dated`` one, with ``premise_correction`` added to its answer schema and, when ``notice``
+    (from `stale_premise_notice`) is non-empty, ``superseded_notice`` naming those chunk ids. Both
+    are library-built; no corpus value reaches the instruction channel.
+    """
+    data = _dated_data(bundle, question_date)
+    data["answer_schema"] = {
+        **cast(dict[str, str], data["answer_schema"]),
+        "premise_correction": "string or null",
+    }
+    if notice:
+        data["superseded_notice"] = {"replaced_by": list(notice)}
+    return DATED_PREMISE_SYSTEM_PROMPT, f"{EVIDENCE_OPEN}{_encode(data)}{EVIDENCE_CLOSE}"
 
 
 def normalize_citations(envelope: AnswerEnvelope) -> AnswerEnvelope:
@@ -681,7 +793,8 @@ def normalize_citations(envelope: AnswerEnvelope) -> AnswerEnvelope:
             unique.append(citation)
     if len(unique) == len(envelope.citations):
         return envelope
-    return AnswerEnvelope(envelope.answer, tuple(unique), envelope.insufficient_evidence)
+    # `replace`, not a rebuild from three fields, so a premise correction survives normalisation.
+    return replace(envelope, citations=tuple(unique))
 
 
 def validate_answer(envelope: AnswerEnvelope, bundle: EvidenceBundle) -> ValidationResult:
@@ -694,9 +807,8 @@ def validate_answer(envelope: AnswerEnvelope, bundle: EvidenceBundle) -> Validat
     What this does **not** check, and must never be read as checking: whether a cited passage
     entails, supports, or is even topically related to the answer text. A valid result means the
     answer is well-formed and every identifier in it exists — nothing about whether the answer is
-    true. Entailment is a separate, opt-in stage (:mod:`recall.entailment`) applied to retrieval,
-    and a structural pass that implied it would be the most expensive kind of wrong answer this
-    library can produce.
+    true. Nothing in this library checks entailment, and a structural pass that implied it would
+    be the most expensive kind of wrong answer this library can produce.
     """
     errors: list[str] = []
     if bundle.decision == "abstain" and not envelope.insufficient_evidence:
@@ -725,6 +837,8 @@ def validate_answer(envelope: AnswerEnvelope, bundle: EvidenceBundle) -> Validat
 def parse_answer_envelope(value: str | dict[str, object] | AnswerEnvelope) -> AnswerEnvelope:
     """Parse a strict answer envelope, rejecting added fields and coercion."""
     if isinstance(value, AnswerEnvelope):
+        if value.premise_correction is not None:
+            raise EvidenceValidationError("premise_correction requires the dated-premise profile")
         return value
     if isinstance(value, str):
         try:
@@ -749,6 +863,74 @@ def parse_answer_envelope(value: str | dict[str, object] | AnswerEnvelope) -> An
     if not isinstance(insufficient, bool):
         raise EvidenceValidationError("insufficient_evidence must be a boolean")
     return AnswerEnvelope(answer, tuple(citations), insufficient)
+
+
+def parse_premise_answer_envelope(value: str | dict[str, object] | AnswerEnvelope) -> AnswerEnvelope:
+    """The ``dated-premise`` envelope: the three keys plus ``premise_correction``, strictly typed.
+
+    One omission is accepted: the three keys alone read as ``premise_correction: null``, because a
+    reader with nothing to correct left the fourth key out in 5 of 12 rows of SP-2's smoke. Any
+    other key set is refused, as `parse_answer_envelope` refuses one. An empty correction is null.
+    """
+    if isinstance(value, AnswerEnvelope):
+        return value
+    if isinstance(value, str):
+        try:
+            raw = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise EvidenceValidationError("generator output is not valid JSON") from exc
+    else:
+        raw = value
+    if not isinstance(raw, dict):
+        raise EvidenceValidationError("generator output must be an object")
+    fields = set(raw)
+    if fields not in ({"answer", "citations", "insufficient_evidence"},
+                      {"answer", "citations", "insufficient_evidence", "premise_correction"}):
+        raise EvidenceValidationError("generator output fields do not match the premise answer envelope")
+    correction = raw.get("premise_correction")
+    if correction is not None and not isinstance(correction, str):
+        raise EvidenceValidationError("premise_correction must be a string or null")
+    base = parse_answer_envelope({key: raw[key] for key in ("answer", "citations", "insufficient_evidence")})
+    return replace(base, premise_correction=correction if correction and correction.strip() else None)
+
+
+def ground_premise_correction(envelope: AnswerEnvelope, notice: Sequence[str]) -> tuple[AnswerEnvelope, bool]:
+    """Cite the structural notice for a correction the reader left uncited; True when it did.
+
+    SP-2 measured why this exists: with no notice the reader wrote corrections that cited nothing
+    and were all refused (1/400 stale premises passed); with the notice supplying the citations,
+    149/400. The notice names the successor's evidence, which is exactly what a correction of a
+    superseded premise rests on. Without a notice nothing is added and validation refuses it.
+    """
+    if envelope.premise_correction and not envelope.citations and notice:
+        return replace(envelope, citations=tuple(notice)), True
+    return envelope, False
+
+
+def validate_premise_answer(envelope: AnswerEnvelope, bundle: EvidenceBundle) -> ValidationResult:
+    """`validate_answer`'s rules, except that a correction must cite and may accompany an abstention.
+
+    STRUCTURAL ONLY, like `validate_answer`: identifiers resolve; nothing checks that the cited
+    items support the correction.
+    """
+    if envelope.premise_correction is None:
+        return validate_answer(envelope, bundle)
+    errors: list[str] = []
+    if bundle.decision != "answer":
+        errors.append("a premise correction requires an answerable evidence bundle")
+    if not envelope.citations:
+        errors.append("a premise correction requires at least one citation")
+    if envelope.insufficient_evidence:
+        if envelope.answer not in (None, ""):
+            errors.append("an insufficient evidence response cannot contain an answer")
+    elif not envelope.answer or not envelope.answer.strip():
+        errors.append("an answer response requires non-empty answer text")
+    if len(set(envelope.citations)) != len(envelope.citations):
+        errors.append("citations must not be duplicated")
+    unknown = sorted(set(envelope.citations) - {item.chunk_id for item in bundle.items})
+    if unknown:
+        errors.append("unknown citation ids: " + ", ".join(unknown))
+    return ValidationResult(valid=not errors, errors=tuple(errors))
 
 
 def generate_from_evidence(

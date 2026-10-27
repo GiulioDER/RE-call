@@ -22,7 +22,14 @@ from recall.dependency_invalidation import (
 from recall.frontmatter import supersedes_key, validity_bounds
 from recall.lineage import canonical_sha256
 from recall.semantic_graph import SemanticGraphProjection
-from recall.store import EdgeCandidates, resolve_supersession_candidates
+from recall.supersession import (
+    EdgeCandidates,
+    SupersessionGraph,
+    chunk_supersedes_targets,
+    parse_window,
+    reference_stem_key,
+    resolve_supersession_graph,
+)
 from recall.types import AtomicFact, Chunk
 
 GRAPH_SCHEMA_VERSION = 2
@@ -229,11 +236,21 @@ class ReasoningGraphProjection:
         )
 
     def authored_supersession_map(self) -> dict[str, str]:
-        return {
-            edge.from_file: edge.to_file
-            for edge in self.authored_edges
-            if edge.kind == "authored_supersedes" and edge.to_file is not None
-        }
+        """Superseded file -> superseding file, one winner per target by the stores' rule.
+
+        Of several claimants of one target, the store's `supersession()` keeps the last scan row,
+        and its scan is ordered by claimant file, so the winner is the greatest claimant. Taking
+        the last EDGE instead depended on how the edges happened to be sorted (by date), so the
+        two answered fan-in differently.
+        """
+        winners: dict[str, str] = {}
+        for edge in self.authored_edges:
+            if edge.kind != "authored_supersedes" or edge.to_file is None:
+                continue
+            current = winners.get(edge.from_file)
+            if current is None or edge.to_file > current:
+                winners[edge.from_file] = edge.to_file
+        return winners
 
 
 def _fingerprint_value(value: Any) -> Any:
@@ -429,12 +446,14 @@ def _chunk_nodes(
     *,
     tenant_id: str,
     generation_id: str,
+    supersession: SupersessionGraph,
     include_text: bool = False,
 ) -> tuple[list[ReasoningGraphNode], list[ReasoningGraphDiagnostic]]:
     nodes: list[ReasoningGraphNode] = []
     diagnostics: list[ReasoningGraphDiagnostic] = []
     for chunk in sorted(chunks, key=lambda item: item.id):
         file = _source_file(chunk)
+        reference = supersession.key(file, chunk.source)
         valid_from: datetime | None = None
         valid_until: datetime | None = None
         authority = "unknown"
@@ -456,13 +475,13 @@ def _chunk_nodes(
                         generation_id=generation_id,
                         kind="malformed_metadata",
                         node_ids=(node_id,),
-                        reference=file,
+                        reference=reference,
                     ),
                     kind="malformed_metadata",
                     tenant_id=tenant_id,
                     generation_id=generation_id,
                     node_ids=(node_id,),
-                    reference=file,
+                    reference=reference,
                     message=str(exc),
                 )
             )
@@ -484,13 +503,13 @@ def _chunk_nodes(
                         generation_id=generation_id,
                         kind="malformed_metadata",
                         node_ids=(node_id,),
-                        reference=f"{file}:recall_graph",
+                        reference=f"{reference}:recall_graph",
                     ),
                     kind="malformed_metadata",
                     tenant_id=tenant_id,
                     generation_id=generation_id,
                     node_ids=(node_id,),
-                    reference=f"{file}:recall_graph",
+                    reference=f"{reference}:recall_graph",
                     message=str(exc),
                 )
             )
@@ -534,23 +553,37 @@ def _chunk_nodes(
     return nodes, diagnostics
 
 
-def _supersession_rows(chunks: list[Chunk]) -> list[tuple[str | None, str | None, datetime | None]]:
+def _supersession_rows(
+    chunks: list[Chunk],
+) -> list[tuple[str | None, str | None, datetime | None, str, object, object]]:
     # This fallback path is undated by design: chunk metadata carries no asserted_at, so
-    # every row it yields is (file, supersedes, None). The store path supplies real
+    # every row it yields is (file, supersedes, None, ...). The store path supplies real
     # asserted_at values, and because asserted_at participates in _edge_id, the two paths
     # hash different edge identities for the same authored data. Populating dates here
     # would silently change every fallback edge id, so the third element must stay None.
-    pairs: dict[tuple[str | None, str | None], None] = {}
+    # The source and the validity bounds ARE carried, as the store's scan carries them, so the
+    # shared resolver tells two roots apart and reads each successor's window the same way.
+    # Keep distinct raw windows, including malformed ones, for the resolver's parsed-window
+    # comparison. The fingerprint only deduplicates raw pairs and makes their order stable.
+    pairs: dict[tuple[str | None, str | None, str, str], tuple[object, object]] = {}
     for chunk in chunks:
         file = chunk.metadata.get("file")
-        supersedes = chunk.metadata.get("supersedes")
         if not isinstance(file, str):
             file = None
-        if not isinstance(supersedes, str):
-            supersedes = None
-        pairs.setdefault((file, supersedes), None)
-    ordered = sorted(pairs, key=lambda pair: (pair[0] or "", pair[1] or ""))
-    return [(file, supersedes, None) for file, supersedes in ordered]
+        # One row per declared reference, as the store's scan yields; a memo declaring none
+        # still yields its (file, None) row, because every file must reach the resolver.
+        targets = chunk_supersedes_targets(chunk.metadata)
+        bounds = (chunk.metadata.get("valid_from"), chunk.metadata.get("valid_until"))
+        window_key = canonical_sha256(_fingerprint_value(bounds))
+        for supersedes in targets or (None,):
+            pairs.setdefault(
+                (file, supersedes, chunk.source, window_key), bounds,
+            )
+    ordered = sorted(pairs, key=lambda key: (key[0] or "", key[1] or "", key[2], key[3]))
+    return [
+        (file, supersedes, None, source, *pairs[(file, supersedes, source, window_key)])
+        for file, supersedes, source, window_key in ordered
+    ]
 
 
 def _authored_edges(
@@ -560,25 +593,28 @@ def _authored_edges(
     chunks: list[Chunk],
     candidates: EdgeCandidates,
     source_node_by_file: dict[str, str],
+    supersession: SupersessionGraph,
 ) -> tuple[list[ReasoningGraphEdge], list[ReasoningGraphDiagnostic]]:
     refs_by_claim: dict[tuple[str, str], str] = {}
+    files_by_key: dict[str, str] = {}
+    temporal_by_file: dict[str, tuple[datetime | None, datetime | None] | None] = {}
+    # Include chunks without metadata claims: a caller can supply authored candidates directly.
+    # Parsing and disagreement stay conservative for every copy, including malformed bounds.
     for chunk in chunks:
         file = chunk.metadata.get("file")
-        supersedes = chunk.metadata.get("supersedes")
-        if isinstance(file, str) and isinstance(supersedes, str) and supersedes:
-            refs_by_claim.setdefault((file, supersedes_key(supersedes)), supersedes)
+        if isinstance(file, str):
+            key = supersession.key(file, chunk.source)
+            files_by_key[key] = file
+            window = parse_window(chunk.metadata.get("valid_from"), chunk.metadata.get("valid_until"))
+            if key not in temporal_by_file:
+                temporal_by_file[key] = window
+            elif temporal_by_file[key] != window:
+                temporal_by_file[key] = None
+            for supersedes in chunk_supersedes_targets(chunk.metadata):
+                refs_by_claim.setdefault((key, reference_stem_key(supersedes)), supersedes)
 
     edges: list[ReasoningGraphEdge] = []
     diagnostics: list[ReasoningGraphDiagnostic] = []
-    temporal_by_file: dict[str, tuple[datetime | None, datetime | None]] = {}
-    for chunk in chunks:
-        file = chunk.metadata.get("file")
-        if not isinstance(file, str):
-            continue
-        try:
-            temporal_by_file[file] = validity_bounds(chunk.metadata)
-        except ValueError:
-            continue
     for target in sorted(candidates):
         for superseding, asserted_at in sorted(
             candidates[target],
@@ -588,8 +624,8 @@ def _authored_edges(
                 item[0],
             ),
         ):
-            authored_reference = refs_by_claim.get((superseding, supersedes_key(target)), target)
-            valid_from, valid_until = temporal_by_file.get(superseding, (None, None))
+            authored_reference = refs_by_claim.get((superseding, reference_stem_key(target)), target)
+            valid_from, valid_until = temporal_by_file.get(superseding) or (None, None)
             edge_id = _edge_id(
                 tenant_id=tenant_id,
                 generation_id=generation_id,
@@ -612,7 +648,7 @@ def _authored_edges(
                     authored_reference=authored_reference,
                     asserted_at=asserted_at,
                     provenance={
-                        "authored_in_file": superseding,
+                        "authored_in_file": files_by_key.get(superseding, superseding),
                         "authored_reference": authored_reference,
                     },
                     effective_at=valid_from,
@@ -707,9 +743,13 @@ def _graph_diagnostics(
     source_nodes: tuple[ReasoningGraphNode, ...],
     authored_edges: tuple[ReasoningGraphEdge, ...],
     unresolved: frozenset[str],
+    supersession: SupersessionGraph,
 ) -> list[ReasoningGraphDiagnostic]:
     diagnostics: list[ReasoningGraphDiagnostic] = []
-    node_by_file = {node.file: node.id for node in source_nodes if node.file is not None}
+    node_by_file = {
+        supersession.key(node.file, node.source): node.id
+        for node in source_nodes if node.file is not None
+    }
 
     for file in sorted(unresolved):
         diagnostics.append(
@@ -847,13 +887,18 @@ def _graph_diagnostics(
                 )
             )
 
-    stems: dict[str, list[str]] = {}
+    # Grouped the way the resolver matches a reference (case-folded, NFC), so files that collide
+    # for it are reported here too; the reference stays the stem as the first file spells it.
+    stems: dict[str, list[tuple[str, str]]] = {}
     for node in source_nodes:
         if node.file:
-            stems.setdefault(supersedes_key(node.file), []).append(node.file)
-    for stem, files in sorted(stems.items()):
-        if len(files) > 1:
-            node_ids = tuple(node_by_file[file] for file in sorted(files))
+            stems.setdefault(reference_stem_key(node.file), []).append((node.file, node.id))
+    for copies in (stems[key] for key in sorted(stems)):
+        stem = supersedes_key(min(file for file, _node_id in copies))
+        # Copies of one path are distinct, source-qualified documents. The resolver can select
+        # the claimant's own root; only different paths sharing a stem remain ambiguous here.
+        if len({file for file, _node_id in copies}) > 1:
+            node_ids = tuple(node_id for _file, node_id in sorted(copies))
             diagnostics.append(
                 ReasoningGraphDiagnostic(
                     id=_diagnostic_id(
@@ -889,6 +934,9 @@ def build_reasoning_graph(
 ) -> ReasoningGraphProjection:
     """Project chunks and authored metadata into an immutable graph value."""
     ordered_chunks = sorted(chunks, key=lambda item: item.id)
+    # The same per-copy keys as the stores, even when a store supplies
+    # dated candidates below. Fallback rows stay undated; supplied assertion dates stay intact.
+    supersession = resolve_supersession_graph(_supersession_rows(ordered_chunks))
     source_nodes, source_node_by_source = _source_nodes(
         ordered_chunks, tenant_id=tenant_id, generation_id=generation_id
     )
@@ -897,16 +945,19 @@ def build_reasoning_graph(
         for node in source_nodes
         if node.file is not None
     }
+    source_node_by_key = {
+        supersession.key(node.file, node.source): source_node_by_source[node.source]
+        for node in source_nodes if node.file is not None
+    }
     chunk_nodes, metadata_diagnostics = _chunk_nodes(
         ordered_chunks,
         tenant_id=tenant_id,
         generation_id=generation_id,
+        supersession=supersession,
         include_text=include_text,
     )
     if authored_edge_candidates is None or unresolved_references is None:
-        _winner, unresolved, candidates = resolve_supersession_candidates(
-            _supersession_rows(ordered_chunks)
-        )
+        _winner, unresolved, candidates = supersession.parts()
     else:
         unresolved = unresolved_references
         candidates = authored_edge_candidates
@@ -915,7 +966,8 @@ def build_reasoning_graph(
         generation_id=generation_id,
         chunks=ordered_chunks,
         candidates=candidates,
-        source_node_by_file=source_node_by_file,
+        source_node_by_file=source_node_by_key,
+        supersession=supersession,
     )
     dependency_edges, dependency_diagnostics = _dependency_edges(
         tenant_id=tenant_id,
@@ -938,6 +990,7 @@ def build_reasoning_graph(
                     source_nodes=source_nodes_tuple,
                     authored_edges=authored_edges,
                     unresolved=unresolved,
+                    supersession=supersession,
                 ),
             ],
             key=lambda diag: diag.id,

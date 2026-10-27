@@ -2,11 +2,16 @@
 
 The MCP registration is the artifact that decides whether any of the preceding work is reachable.
 Every variable below is set in the server's OWN `env` block rather than left to the operator's
-shell,
-because a stdio server launched with an explicit `env` inherits nothing: a corpus that searches
-correctly from the terminal answered `INDEX_NOT_READY` through the client for exactly that reason.
-That per-block isolation is also what lets one machine serve `docs` in production mode and `memory`
-in development mode at the same time.
+shell, because the client's environment is not that shell: a corpus that searches correctly from
+the terminal answered `INDEX_NOT_READY` through the client for exactly that reason. That per-block
+isolation is also what lets one machine serve `docs` in production mode and `memory` in development
+mode at the same time.
+
+🔁 Corrected 2026-10-08: this said "a stdio server launched with an explicit `env` inherits
+nothing". Measured that day, Claude Code 2.1.238 and 2.1.293 lay the block OVER the client's own
+environment, in local scope, with `--mcp-config` and with `--bare`. A launch that does replace it is
+still possible (another client, an older build, a `subprocess` with `env=`), which is what
+`server_os_env` is for.
 
 **The rule this module exists to enforce: a server block is only written for a tenant that can
 actually answer.** Three cases, and they are not interchangeable:
@@ -43,6 +48,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,10 +59,12 @@ __all__ = [
     "SmokeResult",
     "UnservableTenant",
     "LocalScopeRegistration",
+    "SERVER_OS_ENV",
     "claude_config_path",
     "mcp_config",
     "register_local_scope",
     "server_blocks",
+    "server_os_env",
     "write_project_files",
     "write_runtime_profile",
 ]
@@ -240,6 +248,52 @@ def _legacy_block(
     )
 
 
+#: What a server needs from the OS when a client starts it with ONLY its registered `env`.
+#:
+#: Measured 2026-10-08 on Windows by starting `python -m recall_mcp.server` with the `RECALL_*`
+#: variables alone: without APPDATA, Python cannot find the user site-packages and the server dies on
+#: `No module named 'anyio'`; with APPDATA but without SystemRoot, Windows sockets fail with
+#: `WinError 10106`. Both messages read as a broken install. The temp, cache and home variables are
+#: where a local embedding model and the embedding cache live.
+#:
+#: Current Claude Code MERGES the block over its own environment (measured the same day, 2.1.238 and
+#: 2.1.293), so there these are the values the server would have inherited anyway, frozen at install
+#: time. They are written for a launch that does replace: another client, an older build, or a
+#: harness that copies the entry into a `subprocess` with `env=`.
+#:
+#: PATH is deliberately NOT here: the server runs no programs, and a PATH frozen at install time
+#: goes stale when the user installs or upgrades anything.
+SERVER_OS_ENV: tuple[str, ...] = (
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "HOME",
+    "XDG_CACHE_HOME",
+    "XDG_DATA_HOME",
+)
+
+
+def server_os_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """The variables in `SERVER_OS_ENV` that are set, plus `PYTHONSAFEPATH=1`.
+
+    `PYTHONSAFEPATH=1` keeps the working directory off `sys.path`. A client starts the server in the
+    SESSION's directory rather than the entry's `cwd`, and a project that holds its own `recall/`
+    package would otherwise shadow the installed one (measured 2026-08-22 in a benchmark sandbox:
+    `No module named 'recall.calibration'`).
+
+    The one list for every installer that registers a server, the wizard here and `recall setup
+    --lite` alike, so the two cannot drift apart.
+    """
+    source = os.environ if environ is None else environ
+    found = {name: source[name] for name in SERVER_OS_ENV if source.get(name)}
+    return {**found, "PYTHONSAFEPATH": "1"}
+
+
 def mcp_config(
     blocks: tuple[ServerBlock, ...], *, project_root: Path, interpreter: str | None = None
 ) -> dict[str, object]:
@@ -254,6 +308,11 @@ def mcp_config(
 
     `args` stays a list so a path containing spaces — `C:\\Program Files\\...` — is never re-split
     by a shell.
+
+    The OS passthrough from `server_os_env` is added HERE, the one place that renders a host
+    launch, and not to `ServerBlock.env`: that dict also becomes the environment of the Docker
+    stack's Linux containers (`headless.py` hands it to `StackSpec`), where a Windows APPDATA means
+    nothing, and the install report prints it. A block's own value wins a collision.
     """
     return {
         "mcpServers": {
@@ -262,7 +321,7 @@ def mcp_config(
                 "command": interpreter or sys.executable,
                 "args": ["-m", "recall_mcp.server"],
                 "cwd": str(project_root),
-                "env": dict(block.env),
+                "env": {**server_os_env(), **block.env},
             }
             for block in blocks
         }
@@ -284,8 +343,8 @@ def write_project_files(
     project's `CLAUDE.md` would destroy work no installer has any business touching.
 
     `.env` carries the serving DSN and embedder for the CLI, not for the MCP servers. The servers get
-    their variables in their own `env` blocks, because a stdio server launched with an explicit `env`
-    inherits nothing, so `.env` alone would leave them on defaults.
+    their variables in their own `env` blocks, because the client's environment is not the shell
+    that read `.env`, so `.env` alone would leave them on defaults.
 
     **`project_root` is created if it is absent, and exactly one level of it.** Nothing else creates
     it: the directory used to appear as a side effect of the deleted `write_mcp_config`, which did

@@ -6,6 +6,11 @@ question the corpus cannot answer is refused rather than answered from the neare
 
 ## Install for Claude Code
 
+For a local SQLite store, [install Lite from source](../docs/LITE.md) and run
+`recall setup --lite --memory ./notes`. The published `0.14.0` wheel predates Lite. Setup registers
+a project server directly; this plugin is optional. If using its server instead, pass
+`--no-register` to setup and use the printed SQLite DSN in the plugin's Database DSN setting.
+
 **Install the package first.** This plugin is a client, not an engine: its MCP server and its
 hooks are the console scripts `recall-mcp` and `recall-hooks`, invoked by bare name. The plugin
 delegates to the same `recall_hooks` implementation used by Claude Code. A plugin
@@ -16,7 +21,9 @@ look like.
 
 ## Install for Codex
 
-Install the Python package and run `recall setup` from the project. When Codex is detected, the
+For Lite, use [manual MCP wiring](../docs/LITE.md#connect-another-client); Lite setup does not
+install Codex hooks or its plugin. For PostgreSQL, install the Python package and run
+`recall setup` from the project. When Codex is detected, the
 wizard automatically installs the Codex plugin bundle, registers its MCP server, and merges the
 same lifecycle hooks into `CODEX_HOME/hooks.json`. Restart Codex after setup. The Codex bundle uses
 `recall-codex-mcp` and `recall-codex-hooks`; Claude's bundle continues to use `recall-mcp` and
@@ -56,6 +63,15 @@ printed at the end of that command. Get the table or the tenant wrong and the se
 cleanly, answers, and finds nothing: there is no error to read, because an empty answer from the
 wrong table looks exactly like an empty corpus.
 
+## Without a database server
+
+`recall setup --lite --memory <folder of notes>` keeps the project's memory in one SQLite file,
+`.recall/memory.db`, indexes and calibrates it, and registers the server for that project by itself,
+so the plugin's own server is optional there. To use the plugin's server instead, run it with
+`--no-register` and paste the `sqlite:///` address it prints as the **Database DSN**; keep table
+`chunks`, tenant `default` and trust mode `strict`. Use the [Lite source install](../docs/LITE.md),
+then follow its refresh, update, and backup instructions.
+
 ## What the database has to look like
 
 `recall quickstart` above starts a throwaway PostgreSQL, indexes a sample corpus, answers three
@@ -82,24 +98,30 @@ can never be retrieved beside your real memory from the same database.
 **An MCP server** exposing `recall_search` and the rest of the tool surface, so Claude can query
 memory as a tool.
 
-**Five hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
+**Six hooks**, which are no-ops until `recall setup` has run, and fail open in every case:
 
 | Event | What it does |
 |---|---|
 | `SessionStart` | Injects a short digest of project memory before the first turn |
 | `UserPromptSubmit` | Searches the project's memo files with your prompt and names prior records that bear on it |
 | `PreToolUse` | Searches memory with the text Claude is about to write, on every write |
+| `PostToolUseFailure` | After a failed shell command, offers the operator's general knowledge entries that match the error (only with an operator index) |
 | `PreCompact` | Saves memory before a compaction discards the detail behind it |
 | `SessionEnd` | Closes this session's owned MCP transports, then indexes the session so the next one can find it |
+
+The Codex bundle also registers `PostToolUse` for proven shell failures and `SubagentStart`
+for advisory auditor context. Its adapter reuses the shared failure and auditor handlers.
+See [Codex integration](../docs/CODEX_RECALL_INTEGRATION.md) for payload compatibility and upgrade steps.
 
 The two retrieval hooks answer different questions and are separately switchable in
 `~/.claude/recall-hook.json` (`write_time.enabled`, `prompt_time.enabled`). `PreToolUse` uses the
 draft text, which is what reaches a hazard; `UserPromptSubmit` uses your words, which is what
 reaches a decision the project already made.
 
-**Three skills**, `check-memory-before-acting`, `keep-memory-current`, and `re-call`, teach Claude
+**Five skills**, `check-memory-before-acting`, `keep-memory-current`, `re-call`, `session-open`,
+and `session-close`, teach Claude
 when to search, how to preserve durable memory, and how to use RE-call's retrieval and refresh
-lifecycle. Installing the plugin loads all three automatically. The first
+lifecycle and session checklists. Installing the plugin loads all five automatically. The first
 skill teaches Claude *when* to search and, more
 importantly, *how*. That second half is not decoration: measured over 54 paired sessions, the
 memory layer eliminated a class of known hazard when the relevant memo reached the agent, and

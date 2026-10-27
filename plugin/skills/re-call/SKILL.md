@@ -32,7 +32,7 @@ newer instruction wins and the memory should be corrected.
 
 Budget: at most two RE-call calls for this read path. Do not use reasoning, maintenance, mutation,
 calibration, indexing, ingestion, or erasure tools unless the task explicitly requires that
-separate operation.
+separate operation. The end-of-task report below is the one standing exception.
 
 ## Verify and close the loop
 
@@ -52,6 +52,20 @@ After writing a memo, run the configured RE-call refresh. Verify retrieval with 
 from the memo; a file on disk or a row count alone does not prove that the next session can find it.
 If refresh refuses, reports a stale corpus, or lacks a capability, report that state and do not
 start a second indexing or embedding run while one is active.
+
+## Report what memory did
+
+When a task that searched memory is finished, and `recall_report_use` is available, call it once.
+Set `effect` to `helped`, `no_difference`, or `misled`. List in `used` the sources you actually
+relied on and in `wrong` any retrieved source that was wrong, outdated, or misleading, each named
+exactly as search returned it. Set `task_succeeded` only when you know the outcome, and `query` to
+the search you made. Report `no_difference` as readily as `helped`: the counts mean nothing if only
+successes are reported. Do not report a task that did not search memory, and do not report a task
+twice.
+
+If two retrieved memories state different versions of the same fact and one clearly replaces the
+other, also call `recall_report_stale` with a verbatim quote from each. Neither report changes
+memory or search results; a person reviews them.
 
 ## Boundaries
 

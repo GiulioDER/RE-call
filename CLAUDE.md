@@ -121,9 +121,6 @@ when `find_spec("voyageai")` is None, even though it never imports the SDK. A sp
   worker count or the DSN shape.
 - **Read the skip count before calling a run green.** A few dozen skips is healthy; several hundred
   means the DB tests never ran, and the reason is printed in the skip text.
-- `tests/test_entailment.py::test_qnli_judge_separates_answering_from_adjacent_text` downloads a
-  model from HuggingFace, so a green run needs the network. Check the failure text before assuming
-  a regression.
 - Lint is `python -m ruff check .`. **Never run `ruff format`**: most files do not conform to it
   and CI only ever runs `ruff check`.
 - Types are a CI gate too, and ruff does not check them: `python -m mypy` (or `make typecheck`).

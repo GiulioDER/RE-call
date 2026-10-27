@@ -114,7 +114,6 @@ def test_from_store_wires_trusted_search(monkeypatch: pytest.MonkeyPatch) -> Non
         "STORE",
         "EMBEDDER",
         k=3,
-        entailment="JUDGE",
         document_expansion=expansion,
         structural_expansion=structural,
     )
@@ -124,7 +123,6 @@ def test_from_store_wires_trusted_search(monkeypatch: pytest.MonkeyPatch) -> Non
     assert captured["embedder"] == "EMBEDDER"
     assert captured["query"] == "how many rps?"
     assert captured["k"] == 3
-    assert captured["entailment"] == "JUDGE"
     assert captured["document_expansion"] == expansion
     assert captured["structural_expansion"] == structural
     assert nodes[0].node.metadata["recall_verdict"] == "ok"

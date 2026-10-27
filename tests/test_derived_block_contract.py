@@ -676,12 +676,17 @@ def test_a_block_does_not_trip_the_prose_closure_warning(tmp_path: Path) -> None
     regresses. A `note:` is free text and is never normalised, so it reaches the rendered block
     verbatim; unstripped, this file would earn a `closure-marker-unlinked` warning it does not
     deserve.
+
+    Since 2026-10-07 the warning needs a memo named in the marker's sentence, so the note names
+    one; without it this test would pass whether or not the block is stripped. Red proof that day:
+    with `parse_document` returning the unsplit body as `human_body`, it failed with the warning
+    present.
     """
     _write(
         tmp_path,
         "memo_2026-06-01.md",
         "# Memo\n\nA settled question.\n\n"
-        + _block(_entry(note="replaces the earlier retention window")),
+        + _block(_entry(note="replaces [[retention_2026-05-01]], the earlier window")),
     )
     assert [i.code for i in lint_corpus(tmp_path)] == []
 
@@ -691,7 +696,7 @@ def test_the_closure_warning_still_fires_on_real_prose(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "memo_2026-06-01.md",
-        "# Memo\n\nThis replaces the earlier retention window.\n",
+        "# Memo\n\nThis replaces [[retention_2026-05-01]], the earlier window.\n",
     )
     assert [i.code for i in lint_corpus(tmp_path)] == ["closure-marker-unlinked"]
 

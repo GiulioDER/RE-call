@@ -1,15 +1,64 @@
-# RE-call Hosted 1.0 vendor integration
+# RE-call Hosted 1.0: method and integration
 
 ## Product identity
 
-`RE-call Hosted 1.0` is the fixed hosted distribution of the open source RE-call project. The
-hosted product uses the public RE-call storage and retrieval layers plus the `recall_aml` API,
-compiler, query planning, and evidence packing package in the same repository. The evaluated
-deployment reports its immutable Git commit and prompt digest through `/version`.
+`RE-call Hosted 1.0` is the fixed hosted distribution of the open source RE-call project: the
+public RE-call storage and retrieval layers plus the `recall_aml` package in the same repository.
+A deployment's build identity is the Git commit that `/version` reports as `git_commit`. The
+`version` field stays `1.0.0` on every build, so it does not identify one. The fixed commit of each
+AML run is listed under [Runs of record](#runs-of-record). To cite RE-call, use
+[CITATION.cff](../CITATION.cff).
 
 The service is intended to remain reachable and configuration frozen for at least 30 days after
 an AML submission. A release candidate must not be submitted until the contract, isolation,
 concurrency, latency, persistence, and recovery gates in the committed preregistration pass.
+
+## Method
+
+RE-call Hosted stores what a user said and returns it as dated evidence. It never writes an
+answer. Six design choices define the method.
+
+```mermaid
+flowchart LR
+  subgraph add["Add"]
+    msgs["Messages"] --> win["Word windows<br/>160 words, stride 120"]
+    win --> views["Atomic views<br/>no model"]
+    msgs -. "compiler on" .-> rec["Records citing<br/>server anchors"]
+    rec --> grf["Graph sidecar"]
+    msgs --> img["Original images<br/>voyage-multimodal-3.5"]
+  end
+  subgraph search["Search"]
+    q["Query"] --> route{"Router"}
+    route --> code["Code route<br/>voyage-code-4 + BM25"]
+    route --> ctx["Context route<br/>voyage-context-4 + BM25"]
+    code --> fuse["Rank fusion<br/>within the route"]
+    ctx --> fuse
+    fuse --> lift["Atomic rescue<br/>top five fixed"]
+    lift -. "Full 2" .-> rr["Voyage rerank-3"]
+    lift --> promote["Graph promotion<br/>at most two"]
+    rr --> promote
+    promote --> leg["Image leg"]
+    leg --> out["Dated evidence<br/>at most top_k"]
+  end
+  win -.-> code
+  views -.-> lift
+  grf -.-> promote
+  img -.-> leg
+```
+
+1. Compiled records hold only source text the server verified: the model cites anchor identifiers
+   the server created, and the server builds every quote from them (see [Add](#add)).
+2. A deterministic router ranks each query in one embedding space, so the ranking never mixes
+   scores from different models, and the routing itself uses no model.
+3. Every item carries the date a reader needs, including the date a relative phrase refers to.
+4. Each Add builds its own atomic views, so a Search between two Adds already uses them, and the
+   rescue cannot change the fused top five. In the Full 2 runs the reranker that follows may.
+5. The model cannot draw a graph edge: edges come only from verified evidence spans, and
+   promotion can only reorder windows that retrieval already found. Each of these rules, and the
+   raw ranking served on failure, has a mutation test that fails when the rule is broken
+   ([receipts](results/aml-graph-v1/RED_PROOF_RECEIPTS.md)).
+6. The image leg searches wherever the user's memory holds images, not only when a question names
+   a visual word, and leaves the ranking of a user without images unchanged.
 
 ## API
 
@@ -34,9 +83,8 @@ a dedicated credential.
 }
 ```
 
-The service returns HTTP 200 only after the active variant's evidence and retrieval sidecars have
-been persisted and made searchable. Coding compiler variants also persist compiled or deterministic
-fallback records. An identical
+The service returns HTTP 200 only after the Add's evidence, and its compiled records when the
+compiler is on, have been persisted and made searchable. An identical
 `request_id` replay returns the stored original response. Reusing the key with a different body
 returns HTTP 409. The maximum request body is 44 MiB so that 30 MiB of decoded inline images can
 survive Base64 expansion plus JSON framing. That body limit is the only bound on an Add's size:
@@ -83,18 +131,12 @@ or backfill that cannot start within the response budget, change nothing and are
 `options` is an optional array of answer choice strings and is omitted for open questions. The
 response is `{ "data": [...] }` in product rank order. Every item contains at least `id` and
 `content`; optional ranking and provenance fields may also be present. Each item is stored memory
-evidence, not a generated answer. Text packing variants return no more than the requested `top_k`,
-12 items, or the active character budget, whichever limit is reached first. Multimodal preservation
-variants use the requested `top_k` plus the decoded response-media budget.
-
-The response headers `X-Recall-Facet-Fallback` and `X-Recall-Reranker-Fallback` are each `0` or `1`
-and report whether that request used the corresponding deterministic fallback. They are operational
-metadata and do not change the AML JSON body.
+evidence, not a generated answer. The response holds at most `top_k` items, and one that carries
+images is also bounded by the decoded response media budget.
 
 ### Multimodal content
 
-The experimental `MM0_caption`, `MM1_preserve`, and `MM2_dual` variants accept the AML ordered
-content shape in both Add messages and the Search query:
+C9 accepts the AML ordered content shape in both Add messages and the Search query:
 
 ```json
 [
@@ -105,15 +147,14 @@ content shape in both Add messages and the Search query:
 ```
 
 Only inline Base64 JPEG, PNG, and WebP images are accepted. Each decoded image is limited to 10
-MiB. One Add request and one Search response are each limited to 30 MiB of decoded images.
-`MM0_caption` uses supplied text and deliberately drops images. `MM1_preserve` stores each original
-image once per tenant under its SHA256 and reconstructs the exact ordered parts. `MM2_dual` adds a
-separate `voyage-multimodal-3.5` vector tenant and fuses its candidate order with text retrieval.
-The main text chunks contain only source text and opaque media references, never Base64.
+MiB. One Add request and one Search response are each limited to 30 MiB of decoded images. C9
+stores each original image once per tenant under its SHA256, reconstructs the exact ordered parts
+at Search, and embeds image-bearing messages with `voyage-multimodal-3.5` in a separate vector
+tenant. The main text chunks contain only source text and opaque media references, never Base64.
 
-Voyage multimodal embeddings are part of the Industry configuration. The current AML Academic and
-Open Source form says any model used during Add or Search must be `gpt-4o-mini`; this repository
-does not claim that Voyage is eligible for those tracks without written organizer confirmation.
+AML's rule for the Open-source Methods division is that every generative model used during Add or
+Search is `gpt-4o-mini`. The Voyage models RE-call uses are embedding models, and each one is named
+in the method disclosure of the run that used it.
 
 ### `GET /health`
 
@@ -123,11 +164,15 @@ variant. Dependency failures prevent startup or return HTTP 503.
 
 ### `GET /version`
 
-Returns product version, Git commit, schema version, embedding profile, retrieval profile,
-generation model, reranker, compiler prompt digest, facet planner prompt digest, and the Add
-response budget in seconds (`add_response_budget_seconds`, 0 when off), and the tenant queue
-budget in seconds (`tenant_lock_wait_seconds`, 0 when off). It contains no
-credential, database URL, host inventory, or other infrastructure identifier.
+Returns the product name and version, `git_commit`, the schema version, the `variant` and its
+profiles, `active_components`, the generation model, the prompt digests, the Add response budget
+in seconds (`add_response_budget_seconds`, 0 when off), and the tenant queue budget in seconds
+(`tenant_lock_wait_seconds`, 0 when off). It contains no credential, database URL, host inventory,
+or other infrastructure identifier.
+
+`active_components` is the field that shows which stages run. `retrieval_profile` is a fixed label
+present in every build. `reranker` names the reranker model the service loaded (`voyage:rerank-3` at
+`625b7138`), and only `active_components.reranker` says whether it runs.
 
 ### `POST /v1/delete`
 
@@ -136,40 +181,144 @@ learned sparse sidecars if present, and Add replay receipts. Other user tenants 
 
 ## Model and retrieval configuration
 
-Every generative Add and Search operation uses OpenAI `gpt-4o-mini` through OpenRouter, with the
-fixed OpenRouter model identifier `openai/gpt-4o-mini`, temperature zero, and a structured JSON
-response. In the submitted product variant, Add stores ordered raw messages and up to eight
-`CodingMemoryRecord` objects per session. Each generated record must cite at least one exact source
-span by message ordinal and character offsets. A mismatched ordinal, boundary, or quote rejects the
-record. Unsupported entities are removed, while outcome and validation fields survive only when
-their exact text occurs in one source message. Failed compilation degrades to a deterministic
-technical extract, never to an unsuccessful Add.
+### Runs of record
 
-Raw message content is segmented at 4,500 characters. Including the maximum role and timestamp
-prefix, every segment remains returnable by the smallest registered 5,000 character evidence arm.
+Every AML Cycle 2 Full that RE-call ran, except the first Multimodal Full, was served by the
+variant `C9_routed_specialists_grounded_graph_atomic`, and both second Fulls, which have not run
+yet, will be served by it too, selected with
+`RECALL_AML_VARIANT=C9_routed_specialists_grounded_graph_atomic`. Each fixed commit is a signed tag
+in this repository.
 
-The `hosted-quality` profile uses `voyage-4` passage and query embeddings, PostgreSQL lexical
-retrieval, 100 candidates per retrieval leg, reciprocal rank fusion, and `voyage:rerank-2.5` over
-the complete fused pool. A reranker failure serves the deterministic fused order. Query planning
-may add at most four evidence-seeking facets and cannot return an answer. Packing removes near
-duplicates and superseded evidence, preserves session diversity, rescues raw evidence, and caps
-the returned pack at 12 items and 7,000 characters by default.
+| Track | Run | Fixed commit | Tag | Compiler |
+|---|---|---|---|---|
+| Textual | Full 1 | `3eb447c4ea1f04f41f941ad8f089c9a02106e763` | `aml-c2-full1-textual` | on |
+| Coding | Full 1 | `1f8666df2b04c34efd33153f0751c624fb17b8f6` | `aml-c2-full1-coding` | on |
+| Multimodal | Full 2 | `625b71381c2f5c7de6d34c8dc5b9f45e08370b58` | `aml-c2-full2-625b7138` | off |
+| Textual | Full 2 | `625b71381c2f5c7de6d34c8dc5b9f45e08370b58` | `aml-c2-full2-625b7138` | off |
 
-Packing preserves the strongest two thirds of the ranked item budget as a relevance core. It then
-prefers previously unseen sessions before returning to repeated sessions. This prevents diversity
-from displacing multi-record evidence needed to resolve one task while still broadening the tail.
+Both Full 2 runs also set `RECALL_AML_ROUTE_GATES=data`, `RECALL_AML_T1_GATE=content`,
+`RECALL_AML_T1_RENDER=v2`, `RECALL_AML_COMPILER=0`, `RECALL_AML_RERANKER=1`,
+`RECALL_AML_RERANK_MODEL=rerank-3` and `RECALL_AML_FEEDBACK_GUARD=1`, so `/version` reports
+`route_gates` `data`, `multimodal_scope` `dual`, `reranker` `voyage:rerank-3`, and
+`active_components.compiler` `false` and `active_components.reranker` `true`. The tag
+`aml-c2-full2` on `225e7509` marks an earlier plan for Multimodal Full 2; no run uses it. The tag
+`aml-c2-full2-b712ec33` marks the build served from 2026-10-20 until `625b7138` replaced it on
+2026-10-21; both Full 2 runs use `625b7138`.
 
-## Engineering experience representation experiment
+Two builds are outside this table. The first Adds of Textual Full 1 were served by the earlier
+build `efb79146` (tag `aml-c2-full1-textual-early`) before `3eb447c4` was deployed. Multimodal
+Full 1 ran the earlier variant `C8_routed_specialists_grounded_graph` at `5d82b516` (tag
+`aml-c2-full1-multimodal`), with the compiler on.
 
-The internal `E0_raw`, `E1_compiled`, and `E2_compiled_raw` variants isolate the representation
-decision described in the 2026-09-17 preregistration. They keep query facets, reranking, and compact
-packing disabled, so their only intended difference is whether Add persists raw message segments,
-compiled records, or both. `E1_compiled` permits an Add response with `raw_count` equal to zero and
-remains searchable through generated or deterministic fallback records.
+C9's fields are `HostedVariant` in `recall_aml/variants.py`. The three commits define it the same
+way except where the sections below name a commit. `625b7138` is `225e7509` plus two switches, both
+off unless set, the reranker switch (`recall_aml/rerank_switch.py`) and the feedback rule
+(`recall_aml/feedback_guard.py`), and the fixes of a code audit: a compiler switched off is neither
+required nor probed at start, an image-only query is not reranked, the reranker has a 15 second
+timeout, every Search has one time budget (`recall_aml/search_deadline.py`), and an unreadable image
+is dropped from an Add rather than failing it.
 
-These variants are experimental configurations, not three distinct AML submissions. The selected
-representation must pass retrieval replay and executable task gates before it is promoted into the
-single hosted candidate used for Smoke and Full evaluation.
+### License
+
+Every commit named above carries the PolyForm Noncommercial License 1.0.0 in its tree: each is on,
+or branched from, the history before the project moved to AGPL-3.0-only.
+[`LICENSE_GRANT_AGPL.md`](../LICENSE_GRANT_AGPL.md),
+dated 5 October 2026, additionally licenses each of them under AGPL-3.0-only and names each one by
+its full commit hash.
+
+### Models
+
+The only generative model is OpenAI `gpt-4o-mini` through OpenRouter, with the fixed model
+identifier `openai/gpt-4o-mini`, temperature zero, and a JSON object response. It is called by the
+Add compiler and, when the compiler is on, by one readiness check at service start that compiles a
+fixed test sentence (`recall_aml/readiness.py`) and never sees evaluation data. In both Full 2 runs
+the compiler is off, so no generative model runs during Add, Search or service start. Search never
+calls one. Both Full 2 runs also reorder candidates with the Voyage reranker `rerank-3`.
+
+The embedding models are Voyage AI models, one per route:
+
+| Route | Model | Profile | What it searches |
+|---|---|---|---|
+| code (the default) | `voyage-code-4` | `voyage-code-4-v1` | the tenant's raw windows |
+| context | `voyage-context-4` | `voyage-context-4-v1` | a separate tenant holding the same windows and the compiled records |
+| image leg | `voyage-multimodal-3.5` | `voyage-multimodal-3.5-v2` | vectors of the image-bearing messages |
+
+The graph sidecar described below embeds its compiled records with `voyage-code-4`.
+
+### Add
+
+The messages of an Add are joined in order and stored as overlapping windows of 160 words with a
+stride of 120, in a store isolated per `user_id`. Window text holds message content only, with no
+role or timestamp.
+
+The Add also builds atomic views from its own raw windows, with no model: short spans (profile
+`aml-add-micro-v1`), each linked to its parent window and stored in an isolated tenant.
+
+In the Full 2 runs, an Add message that records an earlier answer reporting a failure, about a
+question this user was already asked, is not stored. Two record shapes are recognised: a message
+whose text is a JSON object with a question, the model's answer and its outcome, and a judge verdict
+line, the shapes the public AgentMemoryBench protocol (solomoon313/AgentMemoryBench, MIT) writes. A
+failed record that also carries the reference answer is kept, and every other message is stored
+unchanged.
+
+When the compiler is on, the server cuts the Add's messages into evidence anchors with identifiers
+it creates. The model returns at most eight records, each citing one to eight of those identifiers,
+and the server builds each record's evidence spans from the cited anchors, so every span is an
+exact slice of a source message. A record that cites no supplied anchor is rejected, and a failed
+compile stores no records. At `3eb447c4` the model also writes each record's fields; from
+`1f8666df` (`anchor_compile_output="select"`) it writes only the kind and the anchor identifiers.
+Also from `1f8666df`, the Add's own anchors are bounded to 150,000 encoded characters (a longer Add
+is compiled from its first and last anchors), the earlier records sent with it to 145,000, and a
+compile refused for exhausted provider credit (HTTP 402) stops the Add with a retryable 503,
+storing nothing.
+
+Compiled records go to a graph sidecar tenant. Each carries `references` relations to the raw
+windows its evidence spans fall in, and the server resolves both ends of every relation from its
+own chunk identifiers. With the compiler off the sidecar stays empty.
+
+### Search
+
+A deterministic router (`route_query` in `recall_aml/specialists.py`) picks one route per query.
+A query that carries an image takes the multimodal route, which searches the code route's store
+and adds the image leg. Text with a visual word (image, photo, screenshot, chart and similar) also
+takes the multimodal route under the default route gates, and the code route under `data`.
+Otherwise text with a code signal takes the code route, text with a conversational memory signal
+and no code signal takes the context route, and anything else takes the code route.
+
+On the chosen route, exact dense retrieval and canonical BM25 (`k1` 1.5, `b` 0.75) each return 100
+candidates, and reciprocal rank fusion with constant 60 merges them. Ties on the code route follow
+a fixed window order.
+
+After fusion, atomic rescue can lift the parent window of an atomic view that matches the query,
+never into the first five positions. In the Full 2 runs, Voyage `rerank-3` then reorders the whole
+candidate pool, except for a query that is only an image, which keeps its fused order; a reranker
+failure or timeout serves the fused order. Graph promotion then lets the compiled records nearest the
+query move at most two raw windows they reference, which must already be in the ranking, never
+into the first eight positions; if it fails, the raw ranking is served. The image leg fuses
+`voyage-multimodal-3.5` hits into the ranking: under the default route gates (Textual and Coding
+Full 1) on the multimodal route only, and under `data` (both Full 2 runs) on every Search of a
+tenant that holds image vectors. A tenant without images gets the text ranking unchanged.
+
+Compiled records that a later record supersedes are left out unless the query asks about the
+past. An image-bearing message is returned as its ordered parts with its original images; from
+`625b7138`, an image that only the image leg found is returned as its image, not as placeholder
+text. Every
+item carries the time of its source messages in `created_at`, and each text item's content begins
+with that date.
+
+From `1f8666df`, a relative time phrase in a returned text item keeps its wording, and the date it
+refers to, computed from the item's own date, follows it in brackets. Under the default gate this
+skips the code route. Both Full 2 runs use the `content` gate, which covers every route but leaves
+code-like items and phrases alone, and the `v2` rendering, which keeps week expressions relative to
+an anchor date. Nothing stored, embedded, or ranked changes.
+
+### Variants that served no AML run
+
+With `RECALL_AML_VARIANT` unset the service runs `A4_pack_7000`, the profile this section used to
+describe: `voyage-context-4` embeddings, query facets, `voyage:rerank-2.5` over the fused pool, a
+pack capped at 12 items and 7,000 characters, and deterministic fallback records when a compile
+fails. No AML Cycle 2 run used it. It and the other experimental variants are defined in
+`recall_aml/variants.py`.
 
 ## Capacity, timeouts, and rate limits
 
@@ -190,33 +339,30 @@ query over 20,000 characters keeps its first 10,000 and last 9,999, and a blank 
 does an Add answered pending (`X-Recall-Add-Pending: 1`, see `POST /v1/add`), which is not a failure,
 and an Add answered `tenant_busy` (`Retry-After: 60`, see `POST /v1/add`), which stored nothing. A
 Search whose query embedding does not answer within the service's Search time budget (90 seconds)
-returns 503 `{"error": "search_deadline"}` with `Retry-After: 5`; it is safe to resend.
+returns 503 `{"error": "search_deadline"}` with `Retry-After: 5`; it is safe to resend. Within that
+budget a rerank or image search that runs out of time is skipped, and a query with text is served
+its text ranking.
 Authentication failures return HTTP 401.
 
-Add compilation makes at most three provider attempts with an eight second timeout per attempt.
-The anchored compiler used by C8 and C9 also makes at most three, twelve seconds each, and sends
-every evidence anchor of the Add on the first. If that attempt fails and the encoded anchors exceed
+The C8 and C9 compiler makes at most three provider attempts, twelve seconds each, and sends every
+evidence anchor of the Add on the first. If that attempt fails and the encoded anchors exceed
 300,000 characters, the remaining attempts send the session's first and last anchors that fit the
 budget instead, because an over-long prompt is refused by the model's context window every time.
 Within one Add, independent Voyage embedding requests are sent four at a time
 (`RECALL_VOYAGE_PARALLEL_REQUESTS`, 1 to 16; 1 restores the sequential behaviour). The vectors are
 the ones a sequential run returns; only the wall time of a large Add changes.
-Search facet planning makes one attempt with a two second timeout, then immediately uses the
-original query and reports the fallback. The shorter Search policy prevents an optional planner
-outage from consuming the five second product latency gate by itself.
 
 ## Data handling
 
-Exact text message content is sent through OpenRouter to the configured OpenAI `gpt-4o-mini`
-compiler when the active coding variant enables it, and to the Voyage embedding service. In
-`MM2_dual`, ordered text and image Data URIs are sent to Voyage's multimodal embedding endpoint.
-Images above Voyage's 16 million pixel input limit are proportionally resized only for that
-transient embedding request. RE-call stores and returns the exact original image bytes. Evidence
-is stored in the dedicated PostgreSQL evaluation database. Search candidates
-are sent to the configured Voyage reranker when the active variant enables it. Application logs contain only
-truncated user, request, and query
-digests, counts, latency, fallback flags, and error classes. They never contain messages, queries,
-model output, API keys, or database URLs.
+Exact text message content is sent through OpenRouter to `gpt-4o-mini` when the compiler is on,
+and to the Voyage embedding service. Ordered text and image Data URIs are sent to Voyage's
+multimodal embedding endpoint. Images above Voyage's 16 million pixel input limit are
+proportionally resized only for that transient embedding request. RE-call stores and returns the
+exact original image bytes. Search queries are sent to Voyage only, and in the Full 2 runs the
+candidate text that `rerank-3` reorders is sent to Voyage as well. Evidence is stored in the
+dedicated PostgreSQL evaluation database. Application logs contain only truncated user, request,
+and query digests, counts, latency, fallback flags, and error classes. They never contain messages,
+queries, model output, API keys, or database URLs.
 
 The internal tenant is `aml_` plus the SHA256 digest of the exact `user_id`. Multimodal media and
 vectors use deterministic `_media` and `_mm` tenant suffixes under the same user boundary.
@@ -224,42 +370,7 @@ PostgreSQL row level security applies the tenant inside each pooled transaction.
 exact `session_id` only as evidence metadata so a result can identify its source session. The Delete
 endpoint erases the primary tenant and both multimodal sidecars without affecting another user.
 
-## Measured multimodal admission result
-
-Measured on 2026-09-20 at exact RE-call commit
-`61dc7b8d0cbb8714904a1e07e40819c76a1c1971`, the frozen public MemEye Brand pilot completed all
-three arms and passed its independent audit. The mechanical verdict was `NO_GAIN`.
-
-`MM0_caption`, `MM1_preserve`, and `MM2_dual` achieved mean debiased exact match of `0.4655`,
-`0.4310`, and `0.4741`, respectively. All three achieved any-clue Recall at 10 of `0.9655` and
-Recall at 100 of `1.0`. Dual retrieval improved answer exact match over preservation by `0.0431`,
-but it produced no Recall at 10 gain. Preservation regressed answer exact match by `0.0345`
-relative to captions. Every contract, isolation, cleanup, identity, and response-budget check
-passed.
-
-This is directional evidence from one public MemEye scenario, not an AML hosted result or
-leaderboard score. The frozen gate did not authorize scientific promotion or the full
-eight-scenario follow-up. The user nevertheless retained `MM2_dual` as the preferred operational
-multimodal candidate because it had the strongest measured answer accuracy without reducing
-Recall at 10 or Recall at 100. This explicit operational selection preserves the `NO_GAIN`
-verdict and does not claim that the registered retrieval gate passed.
-
-Select the retained multimodal configuration only for a multimodal deployment:
-
-```bash
-RECALL_AML_VARIANT=MM2_dual
-```
-
-The global hosted default remains unchanged, so this track-specific choice cannot affect textual
-or coding deployments. Recompute the selector and audit with the commands in
-[`2026-09-20-aml-multimodal-memeye-brand-v2.md`](preregistrations/2026-09-20-aml-multimodal-memeye-brand-v2.md).
-
-### Routed specialist use and embedding reuse
-
-`C7_routed_specialists` incorporates the retained MM2 behavior as its visual route while keeping
-Code4 as the conservative default and Context4 for explicit conversational memory. MM2 does not
-enter a coding query's candidate pool. Each route performs rank fusion only inside the selected
-specialist path, so heterogeneous cosine scores are never compared or averaged.
+## Embedding cache
 
 Hosted deployments may opt into the shared content addressed cache with:
 
@@ -280,4 +391,4 @@ The evaluated endpoint, image, commit, environment digest, and retrieval configu
 before submission. The service is monitored through `/health`; it restarts on process failure and
 uses a Cloudflare Tunnel for public HTTPS. No feature, model, prompt, candidate width, context
 budget, or index generation changes during the 30 day availability commitment. Emergency security
-or availability repairs require a new product version and are disclosed to AML.
+or availability repairs require a new fixed commit and are disclosed to AML.

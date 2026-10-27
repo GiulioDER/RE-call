@@ -1,5 +1,9 @@
 # The installation wizard
 
+This page describes the PostgreSQL installer. For local SQLite memory without a database server,
+use [RE-call Lite](LITE.md). `recall setup --lite` is a separate noninteractive path and does not
+run the PostgreSQL wizard or its automatic Codex integration.
+
 > **When to prefer this page:** the canonical interactive install is `recall setup` (the README's
 > "full install"). This page is for the scriptable form of the same install — CI, provisioning,
 > or a config you want to review before it runs. For the manual command-by-command path instead,
@@ -333,9 +337,9 @@ HSM, so none of these routes end with a file you keep.
 | [Azure Artifact Signing](https://azure.microsoft.com/en-us/products/artifact-signing) (was Trusted Signing) | $9.99/month basic | **individual sign-up is US and Canada only**; the organisation route wants verifiable business history |
 | A CA directly (DigiCert, Sectigo, SSL.com) | a few hundred a year | you buy and manage the token or cloud HSM yourself |
 
-The SignPath Foundation route needs a recognized open source licence. RE-call's current
-PolyForm Noncommercial licence is source available rather than OSI approved, so eligibility must
-be rechecked before applying. That is an application somebody has to make and be approved for; it
+The SignPath Foundation route needs a recognized open source licence. RE-call is licensed under
+the AGPL-3.0, which is OSI approved, so the licence no longer blocks that route; its other
+conditions must still be checked before applying. That is an application somebody has to make and be approved for; it
 is not something the build can arrange for itself.
 
 ### What is already wired

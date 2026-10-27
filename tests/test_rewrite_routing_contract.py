@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from recall.frontmatter import validity_bounds
+from recall.frontmatter import parse_frontmatter, validity_bounds
 from recall.promotion import (
     PromotedFact,
     accept_reviewed_proposal,
@@ -241,3 +241,38 @@ def test_plan_rewrite_still_puts_supersedes_on_the_superseding_memo(tmp_path: Pa
     plan = plan_rewrite(tmp_path, fact)
     assert plan.edit_file.endswith("new.md")
     assert plan.value == "old.md"
+
+
+def test_a_bound_that_would_empty_the_validity_window_is_refused(tmp_path: Path):
+    """Node tests/test_rewrite_routing_contract.py::test_a_bound_that_would_empty_the_validity_window_is_refused.
+
+    `route_relation` checks a date alone; beside the memo's other bound it can make an empty
+    window (`valid_from` after `valid_until`), which `validity_bounds` refuses since 2026-10-22
+    (validity-frontmatter spec 1.0, test vector 4), and `recall index` with it, for the whole
+    corpus. Red against master ``52be498cc`` with this test copied in: fails on "a bound that
+    empties the window was written". Red, mutation removing the new `validity_bounds` call from
+    `apply_rewrite`: the same line. A one-day window stays writable.
+    """
+    from recall.rewrite import apply_rewrite
+
+    memo = tmp_path / "memo.md"
+    memo.write_text("---\nvalid_from: 2026-12-01\n---\nBody.\n", encoding="utf-8", newline="\n")
+    refused = apply_rewrite(
+        tmp_path,
+        _fact(relation="declares_validity", subject_id="memo.md", object_id="valid_until:2026-11-01"),
+        apply=True,
+    )
+    assert refused.written is False, "a bound that empties the window was written"
+    assert "empty validity window" in (refused.refusal or "")
+    assert "valid_until" not in memo.read_text(encoding="utf-8")
+
+    one_day = apply_rewrite(
+        tmp_path,
+        _fact(relation="declares_validity", subject_id="memo.md", object_id="valid_until:2026-12-01"),
+        apply=True,
+    )
+    assert one_day.written is True, one_day.refusal
+    assert validity_bounds(parse_frontmatter(memo.read_text(encoding="utf-8"))[0]) == (
+        datetime(2026, 12, 1, tzinfo=timezone.utc),
+        datetime(2026, 12, 1, 23, 59, 59, 999999, tzinfo=timezone.utc),
+    )

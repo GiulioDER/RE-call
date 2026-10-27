@@ -1,0 +1,17 @@
+# squawk configuration for scripts/lint_migrations.sh. Each exclusion was measured on 2026-10-01
+# against the 25 existing migrations with squawk 2.66.0.
+#
+# require-lock-timeout, require-statement-timeout: the runner sets both per connection
+#   (recall/schema.py); statement_timeout = 0 is deliberate, since an HNSW build can take hours.
+# ban-char-field: the char(n) columns hold fixed-length digests, where the fixed width is the point.
+# prefer-bigint-over-int: the int columns are dimensions, counts and ordinals, nowhere near 2^31.
+excluded_rules = [
+    "require-lock-timeout",
+    "require-statement-timeout",
+    "ban-char-field",
+    "prefer-bigint-over-int",
+]
+
+# The lowest PostgreSQL the schema-migrations CI job runs, so version-dependent rules (for example
+# a column added with a constant default) are judged against the oldest server we support.
+pg_version = "16"

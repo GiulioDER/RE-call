@@ -317,7 +317,7 @@ def test_a_transient_failure_is_retried_and_a_permanent_one_is_not(monkeypatch):
     # `sleep=time.sleep` as a keyword DEFAULT at definition time, so rebinding the module
     # attribute does nothing and this test really slept for about a second. Patching the jitter
     # draw works because it is resolved at call time, and it makes every backoff zero length.
-    monkeypatch.setattr("recall.embeddings.random.uniform", lambda _a, _b: 0.0)
+    monkeypatch.setattr("recall.embedding_core.random.uniform", lambda _a, _b: 0.0)
 
     monkeypatch.setattr(openai, "OpenAI", _make(TimeoutError("timed out")))
     engine = resolve_extraction_engine(env)

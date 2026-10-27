@@ -496,7 +496,7 @@ def test_a_changed_model_file_invalidates_the_cached_digest(tmp_path, monkeypatc
 
     from recall.embeddings import embedder_artifact_digest
 
-    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    monkeypatch.setattr("recall.embedding_core._ARTIFACT_DIGESTS", {})
     model_dir = tmp_path / "snapshots" / "rev"
     model_dir.mkdir(parents=True)
     (model_dir / "model.onnx").write_bytes(b"weights v1")
@@ -528,9 +528,10 @@ def test_the_unchanged_case_is_still_served_from_cache(tmp_path, monkeypatch) ->
     Hashing a 67 MB snapshot costs about a second, and `generation_ingest` asks per upload. Asserted
     by counting calls to the hasher rather than by timing, which would be flaky.
     """
+    import recall.embedding_core as embedding_core
     import recall.embeddings as embeddings
 
-    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    monkeypatch.setattr("recall.embedding_core._ARTIFACT_DIGESTS", {})
     model_dir = tmp_path / "snapshots" / "rev"
     model_dir.mkdir(parents=True)
     (model_dir / "model.onnx").write_bytes(b"weights")
@@ -543,7 +544,7 @@ def test_the_unchanged_case_is_still_served_from_cache(tmp_path, monkeypatch) ->
         calls.append(1)
         return real(path, **kwargs)
 
-    monkeypatch.setattr(embeddings, "artifact_tree_sha256", _counted)
+    monkeypatch.setattr(embedding_core, "artifact_tree_sha256", _counted)
 
     for _ in range(5):
         embeddings.embedder_artifact_digest(embedder)
@@ -559,17 +560,18 @@ def test_a_directory_that_cannot_be_signed_is_not_cached(tmp_path, monkeypatch) 
     If the signature cannot be read, there is no way to notice the next change, so caching would
     reintroduce the original defect for exactly the directories whose state is least knowable.
     """
+    import recall.embedding_core as embedding_core
     import recall.embeddings as embeddings
 
-    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    monkeypatch.setattr("recall.embedding_core._ARTIFACT_DIGESTS", {})
     model_dir = tmp_path / "snapshots" / "rev"
     model_dir.mkdir(parents=True)
     (model_dir / "model.onnx").write_bytes(b"weights")
     embedder = _stub_embedder(model_dir)
 
-    monkeypatch.setattr(embeddings, "_artifact_signature", lambda path: None)
+    monkeypatch.setattr(embedding_core, "_artifact_signature", lambda path: None)
     assert embeddings.embedder_artifact_digest(embedder) is not None
-    assert embeddings._ARTIFACT_DIGESTS == {}, (
+    assert embedding_core._ARTIFACT_DIGESTS == {}, (
         "an unsignable directory was cached, so it can never be invalidated"
     )
 
@@ -586,7 +588,7 @@ def test_a_same_size_rewrite_is_still_noticed(tmp_path, monkeypatch) -> None:
 
     from recall.embeddings import embedder_artifact_digest
 
-    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    monkeypatch.setattr("recall.embedding_core._ARTIFACT_DIGESTS", {})
     model_dir = tmp_path / "snapshots" / "rev"
     model_dir.mkdir(parents=True)
     (model_dir / "model.onnx").write_bytes(b"AAAAAAAAAA")
@@ -613,7 +615,7 @@ def test_removing_an_empty_older_file_is_still_noticed(tmp_path, monkeypatch) ->
 
     from recall.embeddings import embedder_artifact_digest
 
-    monkeypatch.setattr("recall.embeddings._ARTIFACT_DIGESTS", {})
+    monkeypatch.setattr("recall.embedding_core._ARTIFACT_DIGESTS", {})
     model_dir = tmp_path / "snapshots" / "rev"
     model_dir.mkdir(parents=True)
     placeholder = model_dir / "empty.bin"

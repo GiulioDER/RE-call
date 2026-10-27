@@ -16,20 +16,29 @@ step over `HybridRetriever.search()`:
 from __future__ import annotations
 
 import os
-import re
 import time
 from collections.abc import Callable, Mapping
-import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from recall import eval_clock
 from recall.observability import METRICS
-from recall.promotion import reviewed_promotion_is_trusted_metadata
+from recall.trust_verdicts import (  # noqa: F401  # re-exported: public names of this module
+    _ANSI_SEQUENCE,
+    MAX_REF_CHARS,
+    abstain_reason,
+    decision_state_for,
+    is_trusted,
+    marked_text,
+    metadata_is_trusted,
+    safe_ref,
+    servable_hits,
+    terminal_safe,
+)
 
-if TYPE_CHECKING:  # avoid a runtime import cycle: entailment imports trust's abstain wording
+if TYPE_CHECKING:
     from recall.decision_ledger import DecisionLedger
-    from recall.entailment import EntailmentJudge
 
 from recall.calibration import Calibration
 from recall.atomic_rescue import (
@@ -42,12 +51,9 @@ from recall.atomic_rescue import (
 )
 from recall.dependency_invalidation import (
     DependencyProjection,
-    authority_from_metadata,
-    dependencies_from_metadata,
-    source_file,
 )
+from recall.embedding_core import profile_lineage_mismatch
 from recall.embeddings import Embedder, embed_query, embedding_profile_id
-from recall.frontmatter import validity_bounds
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.observability import get_logger
 from recall.rerank import Reranker
@@ -65,6 +71,9 @@ from recall.retriever import (
 from recall.scope import Scope, coerce_scope
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates, PgVectorStore
+from recall.supersession import SupersessionGraph, stored_supersession_graph
+from recall.support import calibration_coverage
+from recall.unknown_terms import apply_unknown_term_gate, check_unknown_terms
 from recall.trust_policy import (
     TrustFailureCode,
     TrustPolicy,
@@ -72,21 +81,22 @@ from recall.trust_policy import (
     TrustState,
     code_for_status,
 )
+from recall.trust_gate import (  # noqa: F401  # re-exported: tests and benchmarks import _verdict here
+    _UNCALIBRATED,
+    _record_metrics,
+    _verdict,
+    evaluate,
+    order_promoted,
+    resolve_successor,
+)
 from recall.types import (
-    Authority,
-    Provenance,
     RetrievalResult,
     ScoredChunk,
-    TrustedHit,
     TrustedResult,
-    Validity,
-    Verdict,
-    DecisionState,
 )
 
 _log = get_logger("trust")
 
-_UNCALIBRATED = Calibration(embedder="uncalibrated", threshold=DEFAULT_GAP_THRESHOLD)
 
 #: Embedder names already warned about, so a long-running process says this once per model rather
 #: than once per query. Not thread-guarded: a duplicate warning under a race is harmless, a lock in
@@ -96,7 +106,6 @@ _WARNED_UNCALIBRATED: set[str] = set()
 #: Store types already warned about for a point-in-time query they can only half-answer. Same
 #: once-per-process, unguarded rationale as `_WARNED_UNCALIBRATED`.
 _WARNED_NO_EDGE_DATES: set[str] = set()
-
 
 
 class _RequestQueryMemo:
@@ -121,14 +130,6 @@ class _RequestQueryMemo:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
-
-
-def _as_utc(value: datetime) -> datetime:
-    """A naive datetime read as UTC. One helper, because the three comparison sites in this
-    module (`now`, `known_as_of`, and each candidate's date) all put a caller-supplied instant
-    against a TIMESTAMPTZ from the store, and normalising some of them raises where normalising
-    none of them did not."""
-    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _warn_no_edge_dates(store_type: str) -> None:
@@ -185,583 +186,6 @@ def _warn_uncalibrated(embedder_name: str) -> None:
     )
 
 
-#: ANSI escape sequences a terminal ACTS on: CSI (`\x1b[…`), OSC (`\x1b]…` up to BEL or ST), and
-#: the two-character forms. Matched as whole sequences so nothing is left behind to re-arm.
-_ANSI_SEQUENCE = re.compile(
-    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI — cursor moves, erases, colours
-    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC — window title, hyperlinks
-    r"|\x1b[@-Z\\-_]"  # two-character escapes
-)
-
-
-def resolve_successor(
-    file: str,
-    supersession: dict[str, str],
-    edge_candidates: EdgeCandidates | None = None,
-    known_as_of: datetime | None = None,
-) -> str | None:
-    """Terminal successor of `file` in the supersession chain, or None if it has none.
-
-    A cycle (a.md -> b.md -> a.md) cannot loop: the walk stops on the first revisit and the
-    cycle member resolves to its direct successor. A self-claim (`supersedes:` the file's own
-    name — an authoring mistake) is ignored: a document cannot supersede itself.
-
-    With `known_as_of`, the walk sees only the edges asserted by that instant, so a point-in-time
-    replay resolves to the successor that was current *then*. The filter is applied per STEP
-    rather than to the final answer: in a chain a -> b -> c where only the first edge predates the
-    instant, the answer is `b`. Gating the terminal successor instead would answer `c`, a document
-    that had not yet superseded anything.
-
-    An edge with no recorded date applies, which is the inverse of the rule for hits with no
-    recorded write time at all and deliberately so. Both are fail-closed: hiding a hit of unknown age would
-    silently empty result sets for stores predating the column, while ignoring an edge of unknown
-    age would serve a memory the corpus explicitly marks as stale.
-    """
-
-    def step(cur: str) -> str | None:
-        """The next file in the chain, as it stood at `known_as_of`.
-
-        With no instant to replay, this is `supersession[cur]` and nothing else happens. With one,
-        it is the LIVE claim: of every document claiming to supersede `cur`, those asserted at or
-        before the instant, and among them the one asserted LAST.
-
-        Choosing among candidates is the whole point. `supersession` keeps a single winner per
-        target, picked by scan order, which is a time-independent rule and therefore answers a
-        different question: where two documents supersede one target, the winner today is often
-        not the one live at a past instant, and gating that single winner drops a real edge and
-        reports the stale memory as current.
-
-        ⚠️ **So asking about NOW two ways can give two answers, deliberately.** With fan-in where
-        the later-asserted claim is not the last scan row, a plain search follows `supersession`
-        and answers the scan-order winner, while `known_as_of=<any instant after both>` answers
-        the latest-ASSERTED one. By this function's own argument the replay answer is the better
-        one, but `supersession()` is not changed to match: it is what every existing caller
-        already gets, and silently re-answering it would be the behaviour change this whole branch
-        has been avoiding. Pinned by `test_replay_at_now_may_differ_from_a_plain_search`.
-        """
-        if known_as_of is None or edge_candidates is None:
-            return supersession.get(cur)
-        claims = edge_candidates.get(cur)
-        if claims is None:
-            # ABSENT from the map. Candidates and `supersession` come from one pass, so this means
-            # hand-built, inconsistent input. Fail closed: keep demoting.
-            return supersession.get(cur)
-        if not claims:
-            # PRESENT but empty is a different signal, and conflating the two silently ignored
-            # `known_as_of` for that step. `_resolve_rows` never emits an empty list, so this only
-            # reaches a caller who built one, and the only thing it can mean is "no claim".
-            return None
-        live = [(f, when) for f, when in claims if when is None or when <= known_as_of]
-        if not live:
-            return None
-        best, best_when = live[0]
-        for f, when in live[1:]:
-            # An undated claim is of unknown age and loses to any dated one, so a known assertion
-            # decides the answer where one exists. Ties go to the later scan position, which is
-            # the same rule `supersession`'s single winner uses.
-            if best_when is None or (when is not None and when >= best_when):
-                best, best_when = f, when
-        return best
-
-    first = step(file)
-    if first in (None, file):
-        return None
-    seen = {file}
-    cur = file
-    while True:
-        nxt = step(cur)
-        if nxt is None:
-            return cur
-        if nxt in seen:
-            return first
-        seen.add(nxt)
-        cur = nxt
-
-
-def _verdict(
-    hit: ScoredChunk,
-    supersession: dict[str, str],
-    threshold: float,
-    now: datetime,
-    unresolved: frozenset[str] = frozenset(),
-    known_as_of: datetime | None = None,
-    edge_candidates: EdgeCandidates | None = None,
-) -> tuple[Verdict, Validity]:
-    meta = hit.chunk.metadata
-    file = meta.get("file")
-    try:
-        start, end = validity_bounds(meta)
-    except ValueError:
-        # Malformed validity metadata (reachable via direct store.upsert, which bypasses the
-        # Indexer's fail-fast). Fail CLOSED per hit: an unparseable window must not read as
-        # trustworthy, and one bad row must not crash every search that retrieves it.
-        return "invalid_metadata", Validity(valid_from=None, valid_until=None, superseded_by=None)
-    # Read INSIDE the `known_as_of` guard, not before it. The original condition short-circuited
-    # on `known_as_of is not None`, so a hit carrying no write time at all never had the attribute
-    # touched; hoisting the lookup out broke duck-typed hits that had never needed one. And
-    # `getattr` on both, because adding a field to `ScoredChunk` must not turn a working search
-    # into an AttributeError — the same rule the `embedder.name` lookup below follows.
-    first_known = None
-    if known_as_of is not None:
-        # Explicit None test, not `or`: truthiness cannot tell "this store has no such column"
-        # from "something between the store and here dropped the field", and the second is what
-        # actually happened once — the retriever rebuilt hits from a hand-written field list and
-        # silently lost it, so the fallback below became the ONLY branch production ever took.
-        first_known = getattr(hit, "first_indexed_at", None)
-        if first_known is None:
-            first_known = getattr(hit, "indexed_at", None)
-    if known_as_of is not None and first_known is not None and first_known > known_as_of:
-        # TRANSACTION time, checked BEFORE supersession on purpose: a memory written after the
-        # as-of instant did not exist yet, and whether it was later superseded is not a question
-        # that can be asked about something that had not been written. Ordering it after
-        # `superseded` would report the fate of a memory the caller cannot see.
-        #
-        # FIRST write, not last. `indexed_at` moves forward every time a document is re-indexed,
-        # so using it here claimed a memo edited today did not exist last month, and every replay
-        # before the edit reported an empty store. The fallback to `indexed_at` is for stores
-        # predating the column, where it is the only evidence available and is exactly what the
-        # migration backfills.
-        #
-        # A row with NEITHER is left alone rather than hidden: defaulting an unknown write time to
-        # "after the as-of" would silently empty a result set for callers whose data predates both.
-        return (
-            "not_yet_known",
-            Validity(valid_from=start, valid_until=end, superseded_by=None),
-        )
-    if file is not None and file in unresolved:
-        # A supersession edge points at this memory's basename, but several documents carry it.
-        # Serving it as ``ok`` because the edge could not be resolved would be the silent
-        # wrong-answer this whole layer exists to prevent.
-        return (
-            "ambiguous_supersession",
-            Validity(valid_from=start, valid_until=end, superseded_by=None),
-        )
-    successor = (
-        resolve_successor(file, supersession, edge_candidates, known_as_of) if file else None
-    )
-    validity = Validity(valid_from=start, valid_until=end, superseded_by=successor)
-    if successor is not None:
-        return "superseded", validity
-    if end is not None and now > end:
-        return "expired", validity
-    if start is not None and now < start:
-        return "not_yet_valid", validity
-    if getattr(hit, "score_kind", "dense_cosine") == "dense_cosine" and hit.score < threshold:
-        return "low_confidence", validity
-    return "ok", validity
-
-
-#: Longest corpus-controlled identifier rendered into agent-facing prose. Real memo paths sit far
-#: below this; the bound exists so a hostile 10 KB file name cannot bury the sentence it appears
-#: in under its own payload.
-MAX_REF_CHARS = 120
-
-
-def terminal_safe(value: str | None) -> str:
-    """Strip anything a terminal would interpret rather than display.
-
-    The sibling of `safe_ref` for the OTHER interpreter this library writes to. `recall.cli`
-    prints corpus-controlled strings — file names, successor names, chunk previews — and a
-    terminal executes ANSI escapes: `\\x1b[2K\\r` erases the line just written, `\\x1b[1A` moves
-    up over it. A corpus can therefore make `recall lint` render a clean report while scrolling
-    away the issues it just found.
-
-    A filter, not a renderer: unlike `safe_ref` it adds no quotes and no length bound, because
-    the CLI's own format strings already do the layout and an operator reading their own corpus
-    should see the name they wrote.
-
-    Whole SEQUENCES go, not just the `\\x1b` that introduces them. Dropping the escape byte alone
-    is the tempting one-liner and it is wrong twice over: it leaves `[2K` behind as literal
-    garbage in the operator's output, and it leaves a payload that becomes live again the moment
-    anything upstream reinserts an escape byte. Removing the sequence removes both.
-    """
-    if value is None:
-        return ""
-    cleaned = _ANSI_SEQUENCE.sub("", str(value))
-    return "".join(
-        ch for ch in cleaned if not unicodedata.category(ch).startswith(("Cc", "Cf", "Zl", "Zp"))
-    )
-
-
-def safe_ref(value: str | None) -> str:
-    """Render a corpus-controlled identifier for inclusion in agent-facing prose.
-
-    `provenance.file` and `validity.superseded_by` are `metadata['file']` — a path chosen by
-    whoever can write a file into the corpus — and they are interpolated into `reason`, which
-    `recall_mcp.service.search_memory` folds into `advice`, the field `recall_search` tells the
-    model to obey. That is untrusted input reaching an instruction channel, so it is treated as
-    data being quoted rather than as prose being continued.
-
-    No attempt is made to recognise malicious wording; that is unwinnable and would fail exactly
-    when it mattered. What is removed instead are the three properties that let corpus text
-    impersonate this library's own voice:
-
-    - **Control characters and line breaks.** A newline is what turns an identifier into what
-      looks like a fresh instruction on its own line. Dropped by Unicode category, which also
-      takes the bidirectional overrides (`Cf`) that can visually reorder a line into something
-      other than what it says.
-    - **Length.** Bounded, so a payload cannot push the real message out of view.
-    - **Undelimited placement.** Quoted, so it reads as a quoted name — and the delimiter is
-      stripped from the body, because a quote that the value can close is not a delimiter.
-
-    `None` renders as ``unknown`` rather than the string ``"None"``: a hit whose provenance is
-    missing should say so, not name a file that does not exist.
-    """
-    if value is None:
-        return "unknown"
-    cleaned = "".join(
-        " " if ch.isspace() else ch
-        for ch in str(value)
-        if not unicodedata.category(ch).startswith(("Cc", "Cf", "Zl", "Zp"))
-    )
-    # The delimiter is REMOVED from the body, not escaped: an escape (`\"`) still puts the
-    # closing character in the string, and the reader that matters here is a language model
-    # rather than a parser that honours backslashes.
-    cleaned = " ".join(cleaned.replace('"', "'").split())
-    if not cleaned:
-        return "unknown"
-    if len(cleaned) > MAX_REF_CHARS:
-        cleaned = cleaned[:MAX_REF_CHARS] + "…"
-    return f'"{cleaned}"'
-
-
-def is_trusted(hit: TrustedHit) -> bool:
-    """Whether a hit may be relied on — the single definition of ``ok`` the adapters share."""
-    return hit.verdict == "ok"
-
-
-def metadata_is_trusted(value: object) -> bool:
-    """Only reviewed promotions may be treated as trusted inferred metadata."""
-
-    return reviewed_promotion_is_trusted_metadata(value)
-
-
-def marked_text(hit: TrustedHit) -> str:
-    """The hit's text, carrying an IN-BAND warning when its verdict is not ``ok``.
-
-    Exists because out-of-band metadata is exactly what failed at the framework boundary. Both
-    adapters attach `recall_verdict` to a Document/Node's `metadata`, but LangChain's stock
-    `stuff_documents_chain` and LlamaIndex's default node handling render `page_content` / `text`
-    alone into the prompt — so the memory arrived and the warning did not. A caller who
-    deliberately opts into untrusted hits gets the warning where the model will actually see it.
-
-    The successor file is corpus-controlled, so it goes through `safe_ref` for the same reason
-    `abstain_reason` does.
-    """
-    if is_trusted(hit):
-        return hit.chunk.text
-    if hit.verdict == "unverified":
-        # A different sentence on purpose. Every other verdict means the trust layer ran and
-        # judged this memory; `unverified` means it never ran, so "did NOT pass the trust layer"
-        # would be a false statement about a check that was skipped, not failed. That is
-        # requirement 13's distinction, and it has to survive into the prompt, because the prompt
-        # is the only place a model will ever see it.
-        return (
-            "[RE-CALL WARNING — the trust layer did not run for this memory: no certified "
-            "calibration was available, so it was NOT judged at all. This is a degraded "
-            "development-mode result; treat it as unverified context and do not rely on it.]\n"
-            f"{hit.chunk.text}"
-        )
-    detail = ""
-    if hit.verdict == "superseded" and hit.validity.superseded_by:
-        detail = f" by {safe_ref(hit.validity.superseded_by)}"
-    return (
-        f"[RE-CALL WARNING — this memory is {hit.verdict}{detail}. It did NOT pass the trust "
-        f"layer; treat it as untrusted context and do not rely on it.]\n{hit.chunk.text}"
-    )
-
-
-def servable_hits(hits: list[TrustedHit], *, include_untrusted: bool = False) -> list[TrustedHit]:
-    """The hits an adapter may hand to a chain.
-
-    `TrustedResult.hits` is `ok + rest`, so a result with ONE valid hit does not abstain and
-    carries every superseded/expired/invalid hit along with it. Serving that list wholesale made
-    the adapters inconsistent with themselves: the same superseded memo was withheld when nothing
-    else matched (abstention -> empty) and forwarded when something unrelated did. Nobody chose
-    that rule; it fell out of reusing the list.
-    """
-    return list(hits) if include_untrusted else [h for h in hits if is_trusted(h)]
-
-
-def abstain_reason(hits: list[TrustedHit]) -> str:
-    if not hits:
-        return "no memory retrieved at all"
-    best = max(hits, key=lambda h: h.cosine)
-    file = safe_ref(best.provenance.file)
-    if best.verdict == "superseded":
-        return (
-            f"best candidate ({file}) is superseded by "
-            f"{safe_ref(best.validity.superseded_by)} — consult the successor, not this memory"
-        )
-    if best.verdict == "expired":
-        return f"best candidate ({file}) is outside its validity window (expired)"
-    if best.verdict == "not_yet_valid":
-        return f"best candidate ({file}) is not yet valid"
-    if best.verdict == "not_yet_known":
-        # Distinct wording from `not_yet_valid` on purpose. That one means the fact was not true
-        # yet; this one means the memory had not been WRITTEN yet. A caller replaying a past
-        # decision needs to tell "we had no such memory then" apart from "we had it and it did not
-        # apply", because only the first exonerates the decision.
-        return (
-            f"best candidate ({file}) was written after the as-of instant — it did not exist "
-            f"yet, so it cannot explain a decision made then"
-        )
-    if best.verdict == "invalid_metadata":
-        return f"best candidate ({file}) carries malformed validity metadata"
-    if best.verdict == "ambiguous_supersession":
-        return (
-            f"a supersession edge points at the best candidate ({file}) by a "
-            f"basename that more than one document carries, so the edge cannot be resolved — "
-            f"disambiguate the corpus rather than trusting either copy"
-        )
-    if best.verdict == "dependency_invalidated":
-        reason = best.invalidation
-        if reason is not None:
-            return (
-                f"best candidate ({file}) depends on {safe_ref(reason.dependency)}, which is "
-                f"{reason.cause}; update the dependency chain before relying on this memory"
-            )
-        return f"best candidate ({file}) has an invalid dependency chain"
-    return "no hit above the calibrated confidence threshold (probable corpus gap)"
-
-
-def decision_state_for(hits: list[TrustedHit], *, gap_warning: bool) -> DecisionState:
-    """Classify support without encoding the result in a human readable reason string."""
-    if any(hit.verdict == "ok" for hit in hits):
-        return "supported"
-    if not hits or gap_warning:
-        return "corpus_gap"
-    return "no_supporting_evidence"
-
-
-def evaluate(
-    result: RetrievalResult,
-    supersession: dict[str, str],
-    calibration: Calibration | None,
-    now: datetime,
-    unresolved: frozenset[str] = frozenset(),
-    known_as_of: datetime | None = None,
-    edge_candidates: EdgeCandidates | None = None,
-    calibration_id: str | None = None,
-    calibration_status: str | None = None,
-    generation_binding: dict[str, str] | None = None,
-    query_set_digest: str | None = None,
-    dependency_projection: DependencyProjection | None = None,
-    dependency_mode: str = "off",
-    record_metrics: bool = True,
-) -> TrustedResult:
-    """Pure trust evaluation of a retrieval result (no DB access, no clock reads).
-
-    Two independent time axes, which is what makes this bi-temporal:
-
-    - ``now`` is **valid time**: when a fact was true. It drives ``expired`` and ``not_yet_valid``
-      from the memory's own declared `valid_from` / `valid_until`.
-    - ``known_as_of`` is **transaction time**: when the memory was written. It drives
-      ``not_yet_known`` from the store's `indexed_at`, and answers a different question, *what did
-      we know at that moment*, rather than *what was true*.
-
-    They compose: ``evaluate(..., now=june, known_as_of=tuesday)`` asks what we believed on Tuesday
-    about the state of the world in June. Passing neither leaves behaviour exactly as before.
-
-    **``edge_candidates`` rewinds supersession too**, when supplied. `trusted_search` gets it from
-    `PgVectorStore.supersession_all()` whenever `known_as_of` is set, the store exposes that
-    method and the retrieval returned hits; a store without it logs a warning and rewinds hits
-    only. An edge becomes
-    assertable when the superseding document is written, so its `indexed_at` dates the edge; a
-    chain resolves per step, to the successor current at the instant. Point-in-time replay is
-    then honest about which memories existed *and* about which were current.
-
-    Transaction time comes from `first_indexed_at`, the FIRST write, preserved across
-    re-indexing. `indexed_at` is the LAST write and using it here claimed a memo edited today had
-    never existed before the edit, so every replay of an earlier instant reported an empty store.
-    A hit carrying neither is left visible rather than hidden.
-
-    Narrower residues, both fail-closed: an edge whose superseding file has no recorded date
-    applies unconditionally, and ``unresolved`` is not rewound, so an ambiguous claim written
-    after the instant still forces an abstention at it.
-
-    Omitting ``edge_candidates`` keeps the old behaviour exactly, so no caller changes.
-
-    ``record_metrics=False`` supports a private diagnostic pass over already fetched candidates.
-    It changes only counters. Verdicts, ordering, abstention, and returned metadata stay identical.
-
-    Verdict precedence per hit: invalid_metadata > not_yet_known > superseded > expired /
-    not_yet_valid > low_confidence > ok.
-    Successor promotion: when a superseded hit scored above the threshold (it would have been
-    the confident answer), its retrieved successor is promoted from ``low_confidence`` to
-    ``ok`` even if its own wording scores lower — the explicit supersession edge transfers the
-    topical relevance the stale memory proved. Hits are then reordered valid-first so the
-    successor outranks the stale memory. `abstained` is True when no hit earned verdict ``ok``.
-    A tz-naive `now` is interpreted as UTC.
-    """
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=UTC)
-    if known_as_of is not None:
-        # BOTH operands, and NOT only when `known_as_of` happened to be naive. Nesting the
-        # `edge_candidates` half inside that branch left the mirror combination raising: an AWARE
-        # `known_as_of` against a naive hand-built date map still hit the comparison, so the more
-        # careful caller was the one that crashed. Two rounds of review to get one comment to
-        # match its own code.
-        known_as_of = _as_utc(known_as_of)
-        if edge_candidates:
-            edge_candidates = {
-                target: [(f, None if w is None else _as_utc(w)) for f, w in claims]
-                for target, claims in edge_candidates.items()
-            }
-    cal = calibration or _UNCALIBRATED
-    trusted: list[TrustedHit] = []
-    for hit in result.hits:
-        verdict, validity = _verdict(
-            hit, supersession, cal.threshold, now, unresolved, known_as_of, edge_candidates
-        )
-        meta = hit.chunk.metadata
-        authority: Authority = "unknown"
-        dependencies: tuple[str, ...] = ()
-        metadata_error = False
-        try:
-            authority = authority_from_metadata(meta)
-            dependencies = dependencies_from_metadata(meta)
-        except ValueError:
-            metadata_error = True
-            verdict = "invalid_metadata"
-        invalidation = None
-        if (
-            not metadata_error
-            and dependency_mode == "enforce"
-            and dependency_projection is not None
-        ):
-            invalidation = dependency_projection.reason_for(source_file(hit.chunk))
-            if invalidation is not None and verdict == "ok":
-                verdict = "dependency_invalidated"
-        trusted.append(
-            TrustedHit(
-                chunk=hit.chunk,
-                cosine=hit.score,
-                confidence=cal.confidence(hit.score),
-                verdict=verdict,
-                provenance=Provenance(
-                    source=hit.chunk.source,
-                    file=meta.get("file"),
-                    ord=meta.get("ord"),
-                    indexed_at=hit.indexed_at,
-                    first_indexed_at=getattr(hit, "first_indexed_at", None),
-                ),
-                validity=validity,
-                authority=authority,
-                dependencies=dependencies,
-                invalidation=invalidation,
-            )
-        )
-    invalidated_files = {
-        h.provenance.file for h in trusted if h.verdict == "dependency_invalidated"
-    }
-    promoted_files = {
-        h.validity.superseded_by
-        for h in trusted
-        if h.verdict == "superseded" and h.cosine >= cal.threshold
-    } - invalidated_files
-    trusted = [
-        replace(h, verdict="ok")
-        if h.verdict == "low_confidence" and h.provenance.file in promoted_files
-        else h
-        for h in trusted
-    ]
-    ok = [h for h in trusted if h.verdict == "ok"]
-    rest = [h for h in trusted if h.verdict != "ok"]
-    abstained = not ok
-    decision_state = decision_state_for(trusted, gap_warning=result.gap_warning)
-    # The operational questions this library exists to answer — how often does it abstain, and
-    # what is it demoting — are answerable only if they are counted where the decision is made.
-    if record_metrics:
-        METRICS.increment("recall_searches_total")
-        if abstained:
-            METRICS.increment("recall_abstentions_total")
-        if result.gap_warning:
-            METRICS.increment("recall_gap_warnings_total")
-        if result.staleness.stale:
-            METRICS.increment("recall_stale_results_total")
-        for trusted_hit in trusted:  # not `hit`: that name is bound to a ScoredChunk above
-            METRICS.increment("recall_verdicts_total", verdict=trusted_hit.verdict)
-            METRICS.increment("recall_authority_records_total", authority=trusted_hit.authority)
-            if (
-                trusted_hit.invalidation is not None
-                and trusted_hit.verdict == "dependency_invalidated"
-            ):
-                METRICS.increment(
-                    "recall_dependency_invalidations_total",
-                    cause=trusted_hit.invalidation.cause,
-                )
-                if len(trusted_hit.invalidation.path) > 2:
-                    METRICS.increment("recall_dependency_transitive_invalidations_total")
-    return TrustedResult(
-        query=result.query,
-        hits=ok + rest,
-        abstained=abstained,
-        reason=abstain_reason(rest) if abstained else "",
-        decision_state=decision_state,
-        gap_warning=result.gap_warning,
-        staleness=result.staleness,
-        diagnostics=result.diagnostics,
-        calibration_id=calibration_id,
-        calibration_status=(
-            calibration_status
-            if calibration_status is not None
-            else ("legacy_unbound" if calibration is not None else "missing")
-        ),
-        tenant_id=(generation_binding or {}).get("tenant_id"),
-        generation_id=(generation_binding or {}).get("generation_id"),
-        pipeline_fingerprint=(generation_binding or {}).get("pipeline_fingerprint"),
-        corpus_fingerprint=(generation_binding or {}).get("corpus_fingerprint"),
-        query_set_digest=query_set_digest,
-    )
-
-
-def order_promoted(
-    trusted: TrustedResult, pool_index: dict[str, int], ordering: str
-) -> TrustedResult:
-    """Reorder the verdict-`ok` hits according to `SuccessorExpansionPolicy.ordering`.
-
-    `evaluate` returns ``ok + rest`` with pool position preserved inside each group, so a fetched
-    successor, appended last by the expander, is last among `ok` however relevant it is. Measured
-    over 6 absent-successor queries: promoted 6 of 6, then ranked 5, 5, 5, 5 and 2.
-
-    `pool_index` must be built from the RetrievalResult BEFORE `evaluate`, because ``ok + rest``
-    has already destroyed the interleaving this needs: the predecessor sits in `rest` and its
-    position relative to the `ok` hits is not recoverable afterwards.
-
-    A successor inherits the LOWEST pool index among the superseded hits naming it. A document is
-    several chunks, and the rank it earned is the best one any of them reached, not the last.
-
-    `rest` is never reordered. It is the demoted material, and its order is not a claim.
-    """
-    if ordering == "pool":
-        return trusted
-    ok = [hit for hit in trusted.hits if hit.verdict == "ok"]
-    rest = [hit for hit in trusted.hits if hit.verdict != "ok"]
-    if not ok:
-        return trusted
-    inherited: dict[str, int] = {}
-    for hit in trusted.hits:
-        target = hit.validity.superseded_by
-        index = pool_index.get(hit.chunk.id)
-        if not target or index is None:
-            continue
-        if index < inherited.get(target, index + 1):
-            inherited[target] = index
-    # A hit the pool never saw sorts last rather than first. Reachable only if a caller hands in a
-    # partial index, and defaulting to 0 there would silently promote an unknown to the top.
-    last = len(pool_index) + 1
-
-    def _own(hit: TrustedHit) -> int:
-        return pool_index.get(hit.chunk.id, last)
-
-    if ordering == "promoted_first":
-        ok.sort(key=lambda hit: (0 if hit.provenance.file in inherited else 1, _own(hit)))
-    else:  # "inherit"
-        ok.sort(key=lambda hit: inherited.get(hit.provenance.file or "", _own(hit)))
-    return replace(trusted, hits=ok + rest)
-
-
 def _with_stage_ms(trusted: TrustedResult, stage: str, started: float) -> TrustedResult:
     """``trusted`` with ``stage`` timed from ``started`` to now, in milliseconds (3 decimals)."""
     stage_ms = dict(trusted.diagnostics.stage_ms)
@@ -805,7 +229,6 @@ def _trusted_search(
     reranker: Reranker | None = None,
     now: datetime | None = None,
     known_as_of: datetime | None = None,
-    entailment: EntailmentJudge | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     retrieval_profile: str = "legacy",
     index_generation: str = "legacy",
@@ -860,7 +283,6 @@ def _trusted_search(
                 now=now,
                 known_as_of=known_as_of,
                 reranker=reranker,
-                entailment=entailment,
                 candidate_k=candidate_k,
                 retrieval_profile=retrieval_profile,
                 index_generation=index_generation,
@@ -991,28 +413,44 @@ def _trusted_search(
     # `if control_plane is not None`, and a stdio server has none; its sibling check on the
     # calibration's identity is documented in `recall_mcp/server.py` as unreachable from startup.
     # Nothing on that path compared the model at all.
+    #
+    # The PROFILE is compared too, because name and dimension cannot separate two profiles of one
+    # model: `voyage-4-v1` and `voyage-4-retrieval-v1` are both `voyage:voyage-4` at 1024, one
+    # sending Voyage an `input_type` and one not. A generation that recorded no profile (every
+    # legacy build) is compared on name and dimension only, as before.
     binding = generation_binding or {}
     expected_model = binding.get("embedder_model")
     expected_dim = binding.get("embedder_dimension")
+    profile_mismatch = profile_lineage_mismatch(
+        embedder,
+        binding.get("embedder_profile_id"),
+        binding.get("embedder_profile_fingerprint"),
+    )
     model_mismatch = (
-        expected_model is not None and str(getattr(embedder, "name", "")) != expected_model
-    ) or (expected_dim is not None and str(getattr(embedder, "dim", "")) != expected_dim)
+        (expected_model is not None and str(getattr(embedder, "name", "")) != expected_model)
+        or (expected_dim is not None and str(getattr(embedder, "dim", "")) != expected_dim)
+        or profile_mismatch is not None
+    )
     if model_mismatch:
         # `embedder.name` against the manifest's `model`, which is the SAME comparison
         # `CalibrationRepository.calibrate` makes before it will fit a threshold at all. Using
-        # `embedding_profile_id` here would be wrong: it returns a registered profile id when one
-        # exists and the bare name otherwise, so it does not spell what the manifest stores.
+        # `embedding_profile_id` against `model` would be wrong: it returns a registered profile
+        # id when one exists and the bare name otherwise, so it does not spell what the manifest
+        # stores there. Against the recorded PROFILE it is right, and `profile_lineage_mismatch`
+        # uses it, because that is the value the build records as `profile_id`.
         #
         # Deliberately NOT raising or counting here: the existing block below already does both,
         # and doing it twice would double-count `recall_degraded_searches_total` and give the
         # refusal two exit points to keep in step.
         _log.warning(
             "runtime embedder %r does not match generation %r, which was built with %r at "
-            "dimension %s; cosines from two models are not comparable and no threshold applies",
+            "dimension %s (%s); cosines from two encoders are not comparable and no threshold "
+            "applies",
             getattr(embedder, "name", "?"),
             binding.get("generation_id"),
             expected_model,
             expected_dim,
+            profile_mismatch or "model or dimension differs",
         )
         # Degraded mode still answers, but it must not APPLY a threshold fitted for another
         # model, nor name the artifact as if it had. `calibration_status` is deliberately left as
@@ -1211,12 +649,20 @@ def _trusted_search(
     # defensively: `store` is duck-typed in
     # several places (tests and downstream adapters implement only the read surface they need),
     # and a store without the method degrades to exactly the pre-change behaviour.
-    supersession: dict[str, str] = {}
+    #
+    # The GRAPH where the store has one (every shipped store does): the same scan with each
+    # claimant's validity window, so a successor hides its predecessor only while it is itself
+    # valid at the evaluation instant, and with each file keyed by its root as well as its path.
+    supersession: dict[str, str] | SupersessionGraph = {}
     unresolved: frozenset[str] = frozenset()
     edge_candidates: EdgeCandidates | None = None
+    evaluation_now = now or datetime.now(UTC)
     if result.hits:
+        graph = stored_supersession_graph(store)
         fetch_all = getattr(store, "supersession_all", None) if known_as_of is not None else None
-        if fetch_all is not None:
+        if graph is not None:
+            supersession = graph
+        elif fetch_all is not None:
             supersession, unresolved, edge_candidates = fetch_all()
         else:
             if known_as_of is not None:
@@ -1235,6 +681,11 @@ def _trusted_search(
             # `superseded` per-hit, so this may fetch for a hit replayed before its own write.
             # That costs one scoped search and cannot change a verdict, which is the right side
             # to err on while the cheaper check is the one that would need the hit dates.
+            if isinstance(supersession, SupersessionGraph):
+                # A file two roots hold names no one document, so there is nothing to fetch.
+                if file in supersession.unresolved or file in supersession.collided:
+                    return None
+                return supersession.successor(file, now=evaluation_now, known_as_of=known_as_of)
             if file in unresolved:
                 return None
             return resolve_successor(file, supersession, edge_candidates, known_as_of)
@@ -1248,7 +699,6 @@ def _trusted_search(
         # so graph expansion cannot accidentally treat untrusted evidence as already cleared.
         result = pre_trust_transform(result)
     trust_started = time.perf_counter()
-    evaluation_now = now or datetime.now(UTC)
     trusted = evaluate(
         result,
         supersession,
@@ -1263,7 +713,9 @@ def _trusted_search(
         query_set_digest,
         dependency_projection=dependency_projection,
         dependency_mode=configured_dependency_mode,
+        record_metrics=False,
     )
+    trusted = replace(trusted, calibration_coverage=calibration_coverage(store, calibration_id))
     trusted = _with_stage_ms(trusted, "trust_evaluation", trust_started)
     if successor_expansion is not None and successor_expansion.ordering != "pool":
         # `result` is the POST-expansion pool and is still in pool order here, which is exactly
@@ -1273,6 +725,14 @@ def _trusted_search(
             {hit.chunk.id: index for index, hit in enumerate(result.hits)},
             successor_expansion.ordering,
         )
+    # After every verdict `evaluate` can give and before degradation, which overwrites verdicts:
+    # a question naming a term the memory never contained cannot be answered by any hit, whatever
+    # its score. A store that cannot answer the vocabulary question is reported, not changed.
+    unknown_term_check = check_unknown_terms(store, query, environment_source, scope=coerce_scope(scope, source))
+    trusted = apply_unknown_term_gate(trusted, unknown_term_check)
+    # Preserve evaluate's counting semantics, but count the vocabulary-adjusted decision
+    # once. The existing development degradation below remains outside those counters.
+    _record_metrics(trusted)
     if failure_code is not None:
         # Development degradation. Reached only when the policy explicitly allows it, since
         # strict already raised above. The result is ALWAYS marked degraded and is never
@@ -1312,6 +772,7 @@ def _trusted_search(
             dependency_mode=configured_dependency_mode,
             record_metrics=False,
         )
+        candidate_trusted = apply_unknown_term_gate(candidate_trusted, unknown_term_check)
         if failure_code is not None:
             candidate_trusted = _degraded(
                 candidate_trusted, failure_code, calibration_missing=calibration is None
@@ -1320,12 +781,7 @@ def _trusted_search(
             candidate_trusted, "source_conditioning_trace_trust", candidate_trace_started
         )
         candidate_trace_callback(candidate_trace, candidate_trusted, cal)
-    entailment_started = time.perf_counter()
-    if entailment is not None:
-        from recall.entailment import apply_entailment
-
-        trusted = apply_entailment(trusted, entailment)
-    return _with_stage_ms(trusted, "entailment", entailment_started)
+    return trusted
 
 
 def trusted_search(
@@ -1339,7 +795,6 @@ def trusted_search(
     reranker: Reranker | None = None,
     now: datetime | None = None,
     known_as_of: datetime | None = None,
-    entailment: EntailmentJudge | None = None,
     candidate_k: int = DEFAULT_CANDIDATE_K,
     retrieval_profile: str = "legacy",
     index_generation: str = "legacy",
@@ -1360,10 +815,6 @@ def trusted_search(
 ) -> TrustedResult:
     """Hybrid search + trust evaluation in one call — the recommended agent-facing entry point.
 
-    `entailment` is OFF by default: when a judge is passed, verdict-ok hits that do not entail
-    an answer to the query are demoted to ``not_entailed`` (see `recall.entailment`) — the
-    near-miss guard the cosine threshold cannot provide. Costs one judge pass per ok hit.
-
     `candidate_k` is the per-leg pool size handed to the retriever (default the library's own
     ``DEFAULT_CANDIDATE_K``). It is exposed so a caller that widened the pool for its other
     retrievals — e.g. an eval sweep — can hold this call to the SAME pool, rather than silently
@@ -1382,6 +833,11 @@ def trusted_search(
     the search. Everything it records is what this function was about to return anyway; the only
     thing enabling it changes is that the record now outlives the stack frame.
     """
+    # Under an evaluation clock (`recall.eval_clock`) the search runs at the evaluation time, as
+    # valid time and as known-as-of time both; a caller that passes either keeps its own.
+    if (clock := eval_clock.now() if now is None or known_as_of is None else None) is not None:
+        now = now or clock
+        known_as_of = known_as_of or clock
     # ONE argument list, built once. Two verbatim copies of a 17-argument pass-through (plus the
     # two signatures) meant a new parameter needed four synchronized edits with nothing checking
     # they agree; a parameter silently dropped from one copy would surface only as the ledger
@@ -1394,7 +850,6 @@ def trusted_search(
         reranker=reranker,
         now=now,
         known_as_of=known_as_of,
-        entailment=entailment,
         candidate_k=candidate_k,
         retrieval_profile=retrieval_profile,
         index_generation=index_generation,

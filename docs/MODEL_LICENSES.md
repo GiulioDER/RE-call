@@ -1,6 +1,6 @@
 # Model licences
 
-RE-call is source available under the **PolyForm Noncommercial License 1.0.0**. It ships **no model weights**. Every model below is downloaded from
+RE-call is licensed under the **GNU Affero General Public License v3.0**, with a commercial license available. It ships **no model weights**. Every model below is downloaded from
 HuggingFace by the user at runtime, so RE-call redistributes nothing and this document is
 guidance for adopters rather than a licence obligation of the package.
 
@@ -49,6 +49,29 @@ model and serving commercial search from the resulting index is commercial use o
 even though no weights ship in the product. Whether the stored vectors are themselves "adapted
 material" under SA is legally unsettled, which is an additional reason not to build a product on
 one.
+
+## Tokenizers downloaded at run time
+
+Two Voyage AI tokenizers are fetched from Hugging Face the first time a Voyage request has to be
+sized. No model weights come with them: they hold only the tokenizer files, and they are used for
+nothing but counting tokens so that a request stays within the model's input limit. The embeddings
+themselves are computed by Voyage AI's hosted API (see `THIRD_PARTY_NOTICES.md`).
+
+| tokenizer | licence | loaded by |
+|---|---|---|
+| `MongoDB/voyage-context-4` | Apache-2.0 | `recall.embedding_providers.voyage._voyage_token_counter` (re-exported as `recall.embeddings._voyage_token_counter`), for `VoyageContextualizedEmbedder` |
+| `MongoDB/voyage-multimodal-3.5` | **none declared** on its page | `recall.multimodal.lazy_voyage_text_counter`, which calls the same loader, for the multimodal embedder in `recall.multimodal` and `recall_aml.multimodal` |
+
+The loader asks for `voyageai/<model>` through `tokenizers.Tokenizer.from_pretrained`, and Hugging
+Face redirects that name to the `MongoDB/<model>` repository above (both checked 2026-10-20).
+
+⚠️ **Neither is pinned to a revision.** The loader passes no `revision`, so each first load takes
+whatever `main` holds at that moment, and a later change to either repository changes the count
+without any change here. Seen on 2026-10-20 at `main`: `voyage-context-4` at
+`8ca946072a18e398cd61f2ad0243b56d0350b1db`, `voyage-multimodal-3.5` at
+`e33df0507cb152ea6fc576e5d96d9c51443e4191`. If either cannot be loaded the counter falls back to a
+UTF-8 byte bound with a warning, so an unavailable tokenizer degrades the split rather than the
+request.
 
 ## How the code enforces this
 

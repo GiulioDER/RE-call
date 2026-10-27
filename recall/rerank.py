@@ -25,7 +25,7 @@ class NoOpReranker:
 DEFAULT_RERANKER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 #: Pinned Hub commit of the DEFAULT reranker. An unpinned Hub reference is mutable — the repo
 #: owner (or a compromise) can swap the weights and every consumer silently picks them up on the
-#: next cold cache. Pinning makes the resolved artifact immutable (mirrors DEFAULT_QNLI_REVISION).
+#: next cold cache. Pinning makes the resolved artifact immutable.
 DEFAULT_RERANKER_REVISION = "c5ee24cb16019beea0893ab7796b1df96625c6b8"
 COREB_CODE_RERANKER_MODEL = "hq-bench/coreb-code-reranker"
 COREB_CODE_RERANKER_REVISION = "24d2ad50bb4a53149cfd3c42c0e966e954cdbcf1"

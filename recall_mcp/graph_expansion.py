@@ -12,7 +12,6 @@ from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, Callable, Mapping, Sequence
-from typing import cast
 
 from recall.calibration import Calibration
 from recall.reasoning import ReasoningRequest, SemanticGraphExpansionResult
@@ -20,6 +19,8 @@ from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.embeddings import Embedder
 from recall.store import PgVectorStore
 from recall.store import EdgeCandidates
+from recall.frontmatter import validity_bounds
+from recall.supersession import SupersessionGraph, store_supersession_graph
 from recall.trust import is_trusted
 from recall.types import Chunk, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
 
@@ -61,6 +62,47 @@ class GraphExpansionDependencies:
     graph_diagnostic_only_relations: frozenset[str]
     max_graph_rescoring_candidates: int
     relation_kinds: frozenset[str]
+
+
+def temporal_bounds(
+    valid_from: object, valid_until: object
+) -> tuple[datetime | None, datetime | None]:
+    """A chunk's validity bounds, read as the trust gate reads them.
+
+    A bare ``YYYY-MM-DD`` is read by `validity_bounds`, so `valid_until` runs to the END of its
+    day: parsed as midnight, a neighbour was rejected as expired on its last valid day, which the
+    trust pass would have served. A full ISO datetime keeps the parse it had. Raises ValueError
+    or TypeError on a value that is neither.
+    """
+    try:
+        return validity_bounds({"valid_from": valid_from, "valid_until": valid_until})
+    except ValueError:
+        pass
+    start = datetime.fromisoformat(str(valid_from).replace("Z", "+00:00")) if valid_from else None
+    end = datetime.fromisoformat(str(valid_until).replace("Z", "+00:00")) if valid_until else None
+    if start is not None and start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    if end is not None and end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    if start is not None and end is not None and start > end:
+        # An empty window, which the trust pass verdicts `invalid_metadata`: rejected as invalid,
+        # not as expired or not yet valid by a midnight reading of the bare dates.
+        raise ValueError("empty validity window: valid_from is after valid_until")
+    return start, end
+
+
+def _chunk_is_superseded(
+    chunk: Chunk, graph: SupersessionGraph, as_of: datetime, known_as_of: datetime | None
+) -> bool:
+    """Whether the trust pass will verdict this chunk `superseded`: keyed by its file (by its
+    source where two roots hold that file) and under the window rule, exactly as `evaluate`."""
+    file_value = chunk.metadata.get("file") or chunk.source
+    if not isinstance(file_value, str) or not file_value:
+        return False
+    key = graph.key(file_value, chunk.source)
+    if key in graph.unresolved:
+        return False
+    return graph.successor(key, now=as_of, known_as_of=known_as_of) is not None
 
 
 @dataclass
@@ -308,6 +350,7 @@ class RelationAdmission:
     unresolved: frozenset[str]
     edge_candidates: EdgeCandidates
     relation_count: int
+    graph: SupersessionGraph = field(default_factory=SupersessionGraph)
 
 
 def _admit_relations(
@@ -331,21 +374,10 @@ def _admit_relations(
     candidate_relations_by_chunk: dict[str, list[Any]] = {}
     neighboring_entities: set[str] = set()
     relation_count = 0
-    supersession: dict[str, str] = {}
-    unresolved: frozenset[str] = frozenset()
-    edge_candidates: EdgeCandidates = {}
-    supersession_reader = getattr(store, "supersession_all", None)
-    if callable(supersession_reader):
-        supersession_result = supersession_reader()
-        if isinstance(supersession_result, tuple) and len(supersession_result) >= 2:
-            supersession = dict(supersession_result[0])
-            unresolved = frozenset(supersession_result[1])
-            if len(supersession_result) >= 3 and isinstance(supersession_result[2], Mapping):
-                edge_candidates = cast(EdgeCandidates, supersession_result[2])
-    else:
-        supersession_reader = getattr(store, "supersession", None)
-        if callable(supersession_reader):
-            supersession, unresolved = supersession_reader()
+    graph = store_supersession_graph(store)
+    supersession: dict[str, str] = dict(graph.edges)
+    unresolved: frozenset[str] = graph.unresolved
+    edge_candidates: EdgeCandidates = graph.candidates
 
     ambiguous_entities = indexes.ambiguous_entities
     chunks_by_entity = indexes.chunks_by_entity
@@ -432,6 +464,7 @@ def _admit_relations(
         unresolved=unresolved,
         edge_candidates=edge_candidates,
         relation_count=relation_count,
+        graph=graph,
     )
 
 
@@ -562,7 +595,7 @@ def _assemble_trusted_expansion(
     request: ReasoningRequest,
     scored_candidates: ScoredGraphCandidates,
     candidates_by_chunk: Mapping[str, GraphCandidate],
-    supersession: Mapping[str, str],
+    supersession: Mapping[str, str] | SupersessionGraph,
     active_calibration: Calibration | None,
     as_of: datetime,
     unresolved: frozenset[str],
@@ -729,8 +762,12 @@ def _retain_loaded_candidates(
     supersedes_key: Callable[..., Any],
     resolve_successor: Callable[..., Any],
     stats: ExpansionStats,
+    graph: SupersessionGraph | None = None,
 ) -> CandidateMaterialization:
     """Recheck loaded metadata, then build structural state for admitted chunks."""
+    del supersedes_key, resolve_successor
+    if graph is None:
+        graph = SupersessionGraph.from_parts(supersession, candidates=edge_candidates)
     retained_chunks = dict(chunks_by_id)
     for chunk_id in tuple(candidates_by_chunk):
         chunk = retained_chunks.get(chunk_id)
@@ -740,23 +777,9 @@ def _retain_loaded_candidates(
         window = indexes.validity_by_chunk.get(chunk_id)
         if window is None or window == (None, None):
             try:
-                valid_from = chunk.metadata.get("valid_from")
-                valid_until = chunk.metadata.get("valid_until")
-                start = (
-                    datetime.fromisoformat(str(valid_from).replace("Z", "+00:00"))
-                    if valid_from
-                    else None
+                window = temporal_bounds(
+                    chunk.metadata.get("valid_from"), chunk.metadata.get("valid_until")
                 )
-                end = (
-                    datetime.fromisoformat(str(valid_until).replace("Z", "+00:00"))
-                    if valid_until
-                    else None
-                )
-                if start is not None and start.tzinfo is None:
-                    start = start.replace(tzinfo=UTC)
-                if end is not None and end.tzinfo is None:
-                    end = end.replace(tzinfo=UTC)
-                window = (start, end)
             except (TypeError, ValueError):
                 stats.reject("invalid_temporal_metadata")
                 del candidates_by_chunk[chunk_id]
@@ -770,17 +793,11 @@ def _retain_loaded_candidates(
             stats.reject("temporal_expired")
             del candidates_by_chunk[chunk_id]
             continue
-        file_value = chunk.metadata.get("file") or chunk.source
-        if isinstance(file_value, str):
-            successor = resolve_successor(
-                supersedes_key(file_value),
-                supersession,
-                edge_candidates,
-                request.known_as_of,
-            )
-            if successor is not None:
-                stats.reject("superseded")
-                del candidates_by_chunk[chunk_id]
+        # By the chunk's FILE, as the trust pass keys it. This looked up `supersedes_key(file)`,
+        # a stem, in a map keyed on root-relative paths, so it never fired.
+        if _chunk_is_superseded(chunk, graph, as_of, request.known_as_of):
+            stats.reject("superseded")
+            del candidates_by_chunk[chunk_id]
 
     admitted_candidates: dict[str, GraphCandidate] = {}
     for chunk_id in sorted(candidates_by_chunk):
@@ -838,8 +855,24 @@ def _materialize_candidates(
     supersedes_key: Callable[..., Any],
     resolve_successor: Callable[..., Any],
     excluded_chunk_ids: frozenset[str],
+    graph: SupersessionGraph | None = None,
 ) -> CandidateMaterialization:
     """Filter graph metadata, fetch only bounded text, authorize it, and build candidate state."""
+    if graph is None:
+        graph = SupersessionGraph.from_parts(supersession, candidates=edge_candidates)
+    # Superseded neighbours are dropped BEFORE the budget, so they cannot take candidate, fetch
+    # and context slots. The persisted graph names a chunk by id only, so its file comes from one
+    # text-free metadata read, and only when the corpus has an edge at all.
+    superseded_ids: set[str] = set()
+    metadata_reader = getattr(store, "chunk_metadata_by_ids", None)
+    if graph.edges and callable(metadata_reader) and candidate_relations_by_chunk:
+        with generation_scope(store, request.generation.generation_id):
+            loaded = metadata_reader(tuple(sorted(candidate_relations_by_chunk)))
+        for chunk in loaded.values() if isinstance(loaded, Mapping) else loaded:
+            if isinstance(chunk, Chunk) and _chunk_is_superseded(
+                chunk, graph, as_of, request.known_as_of
+            ):
+                superseded_ids.add(chunk.id)
     candidate_ids: list[str] = []
     for chunk_id in sorted(candidate_relations_by_chunk):
         window = indexes.validity_by_chunk.get(chunk_id)
@@ -851,13 +884,7 @@ def _materialize_candidates(
             if valid_until is not None and as_of > valid_until:
                 stats.reject("temporal_expired")
                 continue
-        successor = resolve_successor(
-            supersedes_key(chunk_id),
-            supersession,
-            edge_candidates,
-            request.known_as_of,
-        )
-        if successor is not None:
+        if chunk_id in superseded_ids:
             stats.reject("superseded")
             continue
         candidate_ids.append(chunk_id)
@@ -931,6 +958,7 @@ def _materialize_candidates(
         supersedes_key=supersedes_key,
         resolve_successor=resolve_successor,
         stats=stats,
+        graph=graph,
     )
     if not metadata_only:
         return retained
@@ -1207,6 +1235,7 @@ def expand_semantic_graph(
     supersession = dict(admission.supersession)
     unresolved = admission.unresolved
     edge_candidates = admission.edge_candidates
+    supersession_graph = admission.graph
 
     materialized = _materialize_candidates(
         store=store,
@@ -1229,6 +1258,7 @@ def expand_semantic_graph(
         supersedes_key=supersedes_key,
         resolve_successor=resolve_successor,
         excluded_chunk_ids=excluded_chunk_ids,
+        graph=supersession_graph,
     )
     candidates_by_chunk = dict(materialized.candidates_by_chunk)
     chunks_by_id = dict(materialized.chunks_by_id)
@@ -1315,7 +1345,7 @@ def expand_semantic_graph(
         request=request,
         scored_candidates=scored_candidates,
         candidates_by_chunk=candidates_by_chunk,
-        supersession=supersession,
+        supersession=supersession_graph,
         active_calibration=active_calibration,
         as_of=as_of,
         unresolved=unresolved,

@@ -37,9 +37,9 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_current_facts",
         "recall_apply_fact",
         "recall_related",
+        # Exact-key lookup of audit records (`recall.records`); no embedding, read only.
+        "recall_records",
         "recall_current_state",
-        "recall_current_facts",
-        "recall_apply_fact",
         "recall_reasoning_query",
         # Added when #516 landed. Absent from this list the tool is not merely
         # unselectable, it is never registered at all, so every per-tool test in
@@ -50,6 +50,10 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_reasoning_projection",
         "recall_reasoning_proposals",
         "recall_rewrite_plan",
+        # Writes one row to the `.recall` report queue for a person to review; never a memo.
+        "recall_report_stale",
+        # Appends one agent-reported `use_report` row to the audit ledger; never a memo.
+        "recall_report_use",
         "recall_reasoning_audit",
         "recall_index",
         "recall_tenants",
@@ -59,8 +63,14 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         "recall_calibration_run",
         "recall_calibration_publish",
         "recall_forget",
+        # Erases as recall_forget does, then gives back what the memo superseded; same scope.
+        "recall_withdraw",
         "recall_inventory",
         "recall_stats",
+        # The assistant surface (`recall_mcp.assistant`): registered only on a lite server whose
+        # RECALL_ASSISTANT_MEMOS names a memo folder, so `all` adds nothing anywhere else.
+        "recall_remember",
+        "recall_forget_memo",
     }
 )
 
@@ -78,7 +88,25 @@ TOOL_PRESETS: Mapping[str, frozenset[str]] = {
             "recall_stats",
         }
     ),
+    # Exactly the tools an assistant on the assistant surface uses, and no others. Its two write
+    # tools need RECALL_ASSISTANT_MEMOS; without it this serves the four read and fact tools.
+    "assistant": frozenset(
+        {
+            "recall_search",
+            "recall_evidence",
+            "recall_apply_fact",
+            "recall_current_facts",
+            "recall_remember",
+            "recall_forget_memo",
+        }
+    ),
 }
+
+#: Tools a lite server (one SQLite file, `sqlite:///`) does not register. A lite calibration that
+#: certifies is in force the moment it is saved, so there is nothing to publish; leaving the tool
+#: unregistered keeps a client from offering a call that can only fail. The fact-ledger tools are
+#: served: `recall.lite.facts` keeps the ledger and the evidence cards in the same file.
+LITE_UNSERVED_TOOLS: frozenset[str] = frozenset({"recall_calibration_publish"})
 
 #: The variable a deployment sets. Unset means every tool, so this cannot change an existing
 #: install's behaviour by being introduced.

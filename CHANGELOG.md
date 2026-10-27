@@ -8,6 +8,336 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
+  answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
+  a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for
+  a memo stating a `fact` gains `fact_key`: the key, its state, the values in force and the
+  supersession left to settle. The new deterministic rule `deterministic.stated_key_successor`
+  (`recall.declared_keys.successor_pairs`) proposes, for review only, that of the memos stating one
+  single-valued key each supersedes the one of the latest earlier `valid_from`, whatever the value;
+  it never writes an edge.
+- Add general knowledge hooks to `recall_hooks`: an operator-curated, prebuilt `index.json` of
+  procedures and warnings is injected as context before a matching `Bash` or `PowerShell` command
+  (`PreToolUse`, trigger keyed) and after a failed one (`PostToolUseFailure`, ranked against the
+  error by lexical BM25). At most two entries per call, each once per session, one event log line per
+  trigger or failure. Injection needs the operator's own index, and the repository ships no
+  entries. A registered failure hook still logs diagnostics without an index unless disabled.
+  It never denies a call, never raises, loads no
+  embedder and makes no network call. The `general_knowledge` block of `recall-hook.json` switches
+  it off (`enabled: false`); a `recall-hook.json` that cannot be read or parsed (or is not a JSON
+  object), a block that is not an object, or an `enabled` that is not a boolean also disables it,
+  and only a missing file means the enabled default. A reinstall keeps the block as it was, and
+  over a file it cannot read it writes the block as off. `recall setup` and the plugin register
+  `PowerShell` in the `PreToolUse` matcher and a `PostToolUseFailure` hook for `Bash` and
+  `PowerShell`. Terminal colour codes (which PowerShell puts in its error text) are removed before
+  a failure is signed or ranked. A failure signature names the program a command runs (past `cd`,
+  `export`, `source` and the like, `timeout`, and `python -m`) and the line that says what failed
+  (a traceback's exception line, else the last line with an error word), not the first line. It
+  keeps no identifying data: an ssh host that is an address or a dotted name is `ssh:<host>`, and
+  addresses, mailboxes, key fingerprints, credential values and long tokens become placeholders.
+- New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
+  subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
+  the local CCA memo directory with no network or embedding. Never false positives, never a
+  permission decision, fails open within about a second. Settings: `RECALL_AUDITOR_TYPES`,
+  `RECALL_AUDITOR_MEMOS`, `CCA_BUGS_DIR`, `RECALL_AUDITOR_BRIEF_BUDGET`; the command
+  `python -m recall_hooks warm-auditor-brief` fills its memo cache. See
+  `docs/AUDIT_MEMORY_DESIGN.md`, "Auditor brief hook".
+- Add the opt-in `dated-premise` answer profile for `recall_reasoning_query`
+  (`RECALL_REASONING_ANSWER_PROFILE=dated-premise`): when a question assumes something the evidence
+  shows is no longer current, the response has outcome `corrected` and a cited `premise_correction`
+  instead of an answer built on the old state or an abstention. Whether a superseded memory matched
+  the question is decided structurally and its successor's evidence is named to the reader
+  (`diagnostics.premise_notice`). The default `dated` profile, its prompt and its three-key envelope
+  are unchanged.
+- Search and evidence now report unchecked semantic query support separately from retrieval
+  eligibility, and carry calibration-bound synthetic near-miss coverage when available. Missing
+  measurements remain unmeasured and report failures are unavailable. Existing retrieval decisions,
+  certification and citation eligibility are unchanged. The compact assistant surface and CLI
+  expose the same distinction. No verifier or additional model call is enabled.
+- Add optional memo correction receipts, revision preconditions and persistent request identities;
+  refuse a missing or already superseded correction target on every call, legacy calls included;
+  calls without the new parameters keep the `{memo_id}` reply.
+- **PostgreSQL generations now refuse by name, as Lite does, a strict search naming an entity-like
+  term absent from the generation's vocabulary** (`unknown_term`). This changes verdicts: it is on
+  by default and `RECALL_UNKNOWN_TERM_GATE=0` disables it. Each `calibrate()` fit also measures
+  synthetic near-miss coverage, stored as an audit event and reported on search results as
+  `calibration_coverage`; it never gates.
+- `recall calibration near-miss` scores a held-out near-miss question set against a calibration and
+  reports a certificate (`near_miss_certificate` in status); `recall calibration served-gap`
+  compares the served top-k maximum with the exact maximum calibration sampled. Both report only.
+- **Forgetting a memo keeps retired what it superseded, in the document graph as in the fact
+  ledger; the new `recall withdraw` / `recall_withdraw` gives it back** (owner decision,
+  2026-10-22). A delete used to remove a memo's `supersedes:` claim with its chunks, so the memo it
+  replaced was served as current again (a privacy forget of "moved to Rome" brought Paris back, and
+  forgetting the middle of a chain left two current versions), while the fact ledger already kept
+  it retired. Every delete now writes a supersession record (names and dates, no text) to the audit
+  ledger in the same transaction: `recall_forget`, `recall forget`, the lite memo tools, `recall
+  generation forget`, the indexer's prune of a file gone from disk, and a source a promoted
+  generation leaves out all keep the memo's claims standing as a ghost while no memo by its name
+  is indexed. Withdraw voids them and splices the chain; in the ledger it appends a `withdrawn`
+  event (migrations 0032 and 0033) that also undoes the supersession the fact made. **Deploying
+  needs `--with-migrations`.**
+
+### Security
+
+* **`opentelemetry-api` is locked at 1.45.1, up from 1.44.0** (CVE-2026-114603). It reaches RE-call
+  only through `mcp`; the dependency audit refuses 1.44.0 since the advisory was published.
+* **`mcp` is pinned at 2.2.0, up from 2.1.0** (GHSA-84m7-p3x7-pcfv, CVE-2026-59951). In 2.1.0 a
+  stateful Streamable HTTP server never reclaimed session state, so a client able to reach the
+  endpoint could grow its memory without bound. RE-call's HTTP server runs stateless by default
+  and is exposed only when `RECALL_MCP_STATELESS=0` is set; the stdio servers are not affected.
+
+* **`recall forget` erases the fact values a forgotten memo supplied** (migration 0029). It used
+  to retract them, which hid them, while the value stayed in the append-only fact ledger, in every
+  evidence card citing the memo and in replay receipts, and the ids hashing it let a low-entropy
+  value be recovered by enumeration. Those are now rewritten in place under fresh random ids
+  (`facts_redacted` in the result), the triggers still refusing any other change; a lite store
+  also zeroes the freed bytes, and `--vacuum` compacts the file. `recall provenance erase` does the
+  same for a whole tenant. `recall withdraw` erases them the same way, and a `withdrawn` event
+  follows the assertion it names to its new id, as a retraction does. The materialized current
+  facts (0030) are rebuilt in the same transaction, since their ids hash the erased values. A
+  database already at 0033 applies 0029 last. Apply it with `--with-migrations` and re-run
+  `recall schema grants --controller`. PostgreSQL's dead row versions, WAL, replicas and backups
+  stay the operator's to manage.
+
+* **`recall_forget_memo` also erases the request journal's hashes of the memo.** The assistant's
+  request journal (`.recall-authors.json`) kept a forgotten memo's request identity, an unsalted
+  SHA-256 over its bytes, and a correction kept one over the corrected memo's revision, so a
+  guessable template turned either into an enumeration oracle for a short value. A forgotten
+  memo's requests now keep only their memo id, state and time, and any retry of one is refused as
+  forgotten; a correction of it keeps a hash of its own content, so a lost reply is still replayed.
+  A memo published but never indexed (a crash after publication with no refresh since) is now
+  forgotten instead of refused, so its retry can no longer store it.
+  The journal's hashes of a memo go however it leaves the index: the generic forget (`recall
+  forget`, `recall_forget`) erases them too, and so does the next index that prunes a memo deleted
+  by hand. `recall_forget_memo` also refuses when rows hold the memo's bytes under its file name
+  from another path, not only under its stored name. Since 2026-10-27 a forget erases the journal only of memos its own store held: the ones it deletes, and names it recorded deleting earlier (a `forget_memo_journal` audit event written before the rows go), so a re-run still completes a failed erasure while a forget in another store can no longer name this folder's memo.
+
+### Added
+
+* **Current facts are materialized, so a read no longer replays the tenant's history.** Migration
+  0030 adds `recall_fact_current` (one row per effective interval of each applied assertion: its own
+  window less the windows of the successors that hide it), `recall_fact_current_events` and
+  `recall_fact_current_state`, on PostgreSQL and in a lite file alike; migration 0031 builds the
+  ledger's `(tenant_id, created_at, event_id)` index CONCURRENTLY for the replay. `current()`, the fact
+  projection `recall_current_facts` serves and the conflict check of `recall_apply_fact` read them
+  whenever they reflect every event of the tenant, and replay the ledger otherwise, so the answer is
+  the same either way; the conflict check reads one conflict key instead of the tenant. Each append
+  materializes what it wrote in its own transaction, and a failure there leaves the tables behind
+  without failing the append. `recall provenance rebuild` rebuilds them from the ledger (`--reconcile`
+  files only what they lack, `--check` reports, and `--check --verify` recomputes every row from the
+  ledger and compares, exiting 1 on a difference, so an edited table is found even when the counts
+  agree), on PostgreSQL and on a `sqlite:///` store. The tables hold ids and hashes, never a fact value. Grants: `recall schema grants --controller` now includes
+  them, and `--strict` serving grants read them only; re-run both after migrating.
+* **The lite store keeps itself current with its memo folder.** The MCP server refreshes a
+  `recall setup --lite` store when it starts and, before a search, when the folder changed (at most
+  every `RECALL_LITE_REFRESH_INTERVAL` seconds, thirty by default, waiting up to
+  `RECALL_LITE_REFRESH_WAIT`, three): it indexes what changed under the store's write lane and
+  refits the calibration. Like `recall_index`, it applies the source policy and refuses a folder
+  over `RECALL_INDEX_MAX_FILES` or `RECALL_INDEX_MAX_BYTES`. While refreshing fails, search answers
+  carry a `refresh_warning` and `recall doctor` reports it. `recall lite refresh [--check]` does the
+  same by hand; `RECALL_LITE_AUTO_REFRESH=0` turns the automatic refresh off. On a lite server,
+  `recall_index` now files every memo under its path relative to `RECALL_INDEX_ROOT`, as the refresh
+  does, so `recall_forget` takes that name whichever indexed the memo first.
+
+### Changed
+
+* **`recall_apply_fact` no longer reads every fact current in the tenant.** On a ledger with a
+  key-scoped read (lite and PostgreSQL), the controller decided on the claim's conflict key but
+  first read and discarded the tenant's whole `current()`, which decoded every current fact. The key
+  read is now the read a write fails closed on, so a ledger that cannot answer it still refuses with
+  `ledger_unavailable` and appends nothing, and an apply no longer grows with the number of facts
+  current. A ledger without a key-scoped read is still read through `current()` first.
+* **BREAKING: every tool that writes a `supersedes:` edge is gated, so none demotes a current memo
+  by mistake.** `recall lint --fix`, the deterministic extraction engine behind
+  `recall rewrite plan`, and the deterministic proposal rule behind `recall reasoning proposals`
+  and the MCP `recall_rewrite_plan` tool no longer propose an edge from a cue the sentence does
+  not assert ("this never supersedes X", "nothing replaces X", "if the canary fails, this would be
+  replaced by Y", "if the canary fails; this is replaced by Y"); a cue more than 2,000 characters
+  into an unbroken line is refused rather than judged on part of it. The extraction engine's
+  revision is now `truth-extraction-rules-v2`, so cached extractions are recomputed. The `lint --fix` dry run shows each edge with an id and the sentence
+  it came from, and `--apply` now takes the ids to write, directly after it
+  (`recall lint <path> --fix --apply <id>,<id>`). A bare `--apply`, which wrote every proposal,
+  and `--apply` without `--fix`, which was ignored, now exit 2 and write nothing. The
+  direct-reference rule takes a document named right before the cue as the superseder ("new.md
+  replaces old.md" in meeting notes), proposes it as `requires_review` with that document among
+  its evidence ids, proposes nothing when another document is named elsewhere in the sentence,
+  and skips a stem two files share. `lint --fix --apply`, `rewrite apply` and the dashboard's
+  edit, undo and review actions refuse an edge that would close a supersession cycle in the
+  whole corpus, before the write. A negation is not hidden by an aside right before the cue or its
+  `be`, `being` or `been` ("this has not (as of today) been superseded by Y", "it is not, however,
+  superseded by Y"), and the
+  direct-reference rule judges a condition that falls past the 4,000 characters it reads cues
+  from. `--apply` takes ids copied with the brackets the dry run prints, and refuses a repeated
+  `--apply` and an id two proposals share. `lint --fix --apply` skips a memo saved while its edge
+  was being checked rather than overwrite the save, and `recall.fix.apply_proposal` raises
+  `recall.fix.SupersessionCycle`, a subclass of `UnreadableMemo`, for a cycle. The dashboard
+  judges a memo named in another case, on a filesystem that ignores case, as the file it opens.
+  `recall lint`, `recall lint --fix` and the dashboard's triage read at most 2,000 characters
+  behind each cue to find its sentence when a sentence end lies within them, instead of the whole
+  memo before it, with the same results as before.
+* The deterministic proposal rules behind `recall reasoning proposals` and `recall_rewrite_plan`
+  pair memos by different keys. A `status:` or `verdict:` line names a state, not a decision
+  subject, so two unrelated memos that both say "Status: done" are no longer paired, and a memo
+  whose only such line is a status now takes its file name (without folder or version) as its
+  subject, which the repeated-subject and contradictory-windows rules group by (so `flag_v1.md`
+  "Status: enabled" and `flag_v2.md` "Status: disabled" are now compared). A version is `v` and
+  digits after a separator, so `ipv4.md` and `ipv6.md` are not two versions of one memo. The
+  repeated-subject rule proposes only when both memos are dated and the later one starts strictly
+  later. Temporal ordering now groups by the file name without its version, in its folder, so it
+  pairs a file's versions whose decision lines are worded apart, and it no longer proposes again
+  an edge the repeated-subject rule proposes. The Session 3 control artifact drops its two
+  `temporal_ordering` proposals (referrals 4 to 2), and every other proposal id is unchanged.
+* **The deterministic proposal rules read a folder as the scope of a name.** A version series is
+  one folder's files (`a/plan_v1.md` and `b/plan_v2.md` are no longer two versions of one plan),
+  and a decision subject, or the file name a memo with no decision line falls back to, is shared
+  only inside one folder, so two folders' status-only `decisions.md`, or two teams'
+  `decision: retention`, are neither superseded nor contradicted by each other. Within a folder
+  the rules pair more in two places: `plan_V2.md` is a version, as `plan_v2.md` is, and two
+  memos with the same start now both get a later third as successor instead of one of them.
+  Two memos that share only a file name are proposed by temporal ordering (0.64) rather than as a
+  repeated decision subject (0.72). When the version and date rules emit exact opposite pairs,
+  the version proposal is `requires_review` and both proposals say the two disagree; a
+  disagreement across a longer chain is not detected. Version-only filenames such as
+  `a/V1.md` and `b/V2.md` also retain their folder scope despite their empty versionless base.
+  The rules' revision is now `session3-v3`, which changes every deterministic proposal
+  id; the Session 3 control artifact keeps its six proposals and its scores under new ids.
+* **A successor hides what it supersedes only while the successor itself is valid.** A memo
+  `supersedes:` another from next month leaves it current until then, an expired time-bounded
+  successor gives its predecessor back, and a correction for 2020 to 2022 leaves today's memo alone;
+  a successor whose window cannot be read still applies at every instant. The same rule holds in
+  the fact ledger, where a successor now hides the ASSERTIONS recorded before it, so a value
+  asserted again after its successor (Paris, Rome, Paris) is current again, and in memo-level
+  retirement of stated facts, which also follows the chain search follows. Search,
+  `recall_current_state`, graph expansion, related evidence, the reasoning graph and planner, the
+  semantic graph and the dashboard's corpus page now resolve `supersedes:` with one rule
+  (`recall.supersession.ReferenceIndex`): a reference naming a folder by its root-relative path,
+  any reference by its stem, case-insensitive and NFC, a self-claim dropped, and two roots holding
+  one path kept apart. A bare name is never matched by path, so several files sharing its stem stay
+  ambiguous. Semantic lint folds references the same way but matches by stem alone; `recall lint`
+  and the dashboard's graph and triage pages keep their own matcher. A low-scoring successor whose
+  dependency is invalidated is no longer promoted to `ok`. In dependency invalidation each root's
+  copy of a path is its own document, and a `depends_on` reference resolves to the dependent's own
+  root's copy first, else to the one copy outside an upload staging root; several such copies, or
+  only an upload's, leave it unresolved, which invalidates the dependent. A second value of a set-valued predicate
+  such as `email` is no contradiction, while a fact declaring a cardinality its rival does not share
+  still conflicts; facts are NFC-normalised when built; an authored link can supersede an expired or
+  future value it overlaps; and a value asserted again that names a successor of its earlier
+  assertion is recorded, not dropped as a DUPLICATE. New API: `SupersessionGraph` with each store's
+  `supersession_graph()`, `recall.supersession.store_supersession_graph` and
+  `stored_supersession_graph`, `AtomicFact.cardinality`
+  and `recall.provenance_controller.predicate_cardinality`.
+* **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
+  from this one on are open source under the GNU Affero General Public License v3.0, which permits
+  commercial use on its conditions; closed source products and proprietary hosted services can
+  take a separate commercial license instead (see `COMMERCIAL_LICENSE.md`). Outside contributions
+  are accepted under a Contributor License Agreement (`CLA.md`), so contributed code can be offered
+  under both. Release 0.14.0 remains under the PolyForm Noncommercial License 1.0.0 and, by the
+  grant in `LICENSE_GRANT_AGPL.md`, is also available under the AGPL-3.0, as is every other version
+  published under PolyForm. Earlier releases keep the MIT or Apache 2.0 terms they were published
+  under.
+
+* **The supersession arbiter checks direction with the model.** A pair that passes the gate gets a
+  second question, which note holds the more current version, and is proposed only when the model's
+  answer, backed by a verbatim quote, matches the metadata's newer note. Direction from `modified:`
+  stamps put living memos backwards: on one memory store, 9 of 99 directed pairs. The check stopped
+  8 of those 9 and dropped 1 of the 90 correct pairs, for one extra call per proposal.
+  `RECALL_ARBITER_DIRECTION_CHECK=0` turns it off. Cached answers from earlier runs stay valid.
+
+* **`supersedes:` holds several references.** One memo may replace two: write
+  `supersedes: [a.md, b.md]`, a block sequence (`supersedes:` then `- a.md` lines), or the key
+  repeated, as Validity Frontmatter 1.0 section 5 allows. Every reader sees every reference: the
+  store's supersession scan, the reasoning graph, current state, `lint`, `rewrite verify`,
+  `lint --fix`, `rewrite apply` and the supersession arbiter. Before this, a block sequence read
+  as "supersedes nothing", a repeated key kept only its last line, and a memo that already
+  declared one edge refused a second. A memo that declares one reference keeps the plain string
+  it always had, so existing chunk metadata does not change. Compiled AML records, which store a
+  list of record ids under the same key, declare nothing to these readers; see Fixed.
+
+* **Generation-scoped dense search is exact by design.** `GenerationStore.query_dense` now scans
+  the active generation exactly instead of walking the shared HNSW index, unless
+  `RECALL_GENERATION_DENSE_SEARCH=hnsw`. On a copy of a production table (753k rows across many
+  tenants and retained generations), the filtered HNSW walk returned 0.875 of one tenant's true
+  top 20 at the default tuning and 0.918 at the maximum `ef_search`, while the exact scan took 50
+  to 276 ms. Production was already served the exact plan, but only through a cached generic
+  plan; a planner statistic could have switched it to HNSW silently. Results now equal the exact
+  scan's by construction.
+
+### Fixed
+
+* **A request id names one application.** A request id already used for another fact, or for the
+  same fact on other cards, was answered allowed `DUPLICATE` with the earlier event and recorded
+  nothing; it is now refused `REQUEST_ID_REUSED` and not recorded, while the same request sent again
+  is still an idempotent `DUPLICATE`. A request id of a form the ledger mints for its own events
+  (`<id>:supersession`, `retraction:<event id>`, `stated:<hash>`) is refused `REQUEST_ID_RESERVED`:
+  PostgreSQL, SQLite and lite answered it `DUPLICATE`, and the in-memory ledger appended a second
+  row under it. Neither code is ever written to the ledger, so no migration is needed.
+* **A memo that states a fact through a DUPLICATE is one of its sources.** A new value whose memo
+  links it now supersedes the fact, where it was refused `CONTRADICTION_WITHOUT_SUPERSESSION`, and
+  `recall_current_facts` cites in `evidence_card_ids` the live cards of every application of a
+  fact, as `sources` already did, so a first memo the store no longer serves is no longer cited.
+* **An empty validity window is invalid metadata.** A memo whose `valid_from` is after its
+  `valid_until` is verdicted `invalid_metadata`, as Validity Frontmatter 1.0 requires (test vector
+  4), where search reported `expired` or `not_yet_valid`. `recall index`, generation builds and the
+  lite refresh refuse it as they refuse a malformed date, `recall lint` reports it as
+  `invalid-date`, and the lite memo writer, `recall rewrite apply` and the dashboard refuse to write
+  one. A one-day window (both keys the same date) stays valid all day.
+* **A fact applied under several requests is listed once.** Applying a fact that is already in
+  force records a DUPLICATE event, and `recall_current_facts`, `recall provenance current` and the
+  controller's conflict check listed that event beside the original, so the fact appeared once per
+  request. Worse, a replacement that linked the original's evidence was then refused with
+  `CONTRADICTION_WITHOUT_SUPERSESSION`, because the one fact counted as two conflicts. The current
+  and candidate projections now skip DUPLICATE events on every ledger (PostgreSQL, SQLite and in
+  memory); the events stay in the ledger.
+
+* **ATM-Bench Recall@10 is 90.0995, not 92.8924.** The figure published in `docs/ATM_BENCH.md`,
+  `docs/EVIDENCE.md`, the site and the board submission is Hit@10, the share of questions with at
+  least one gold item in the top 10, because `benchmarks/atm_bench.py::metrics_for` stores that
+  indicator under the key `Recall@10`. The board's Recall@10 is the mean fraction of gold items found;
+  the benchmark's own evaluator gives 90.0995 on the same frozen run
+  (`results/atm/atm_recall_rescore_20261004.json`). QS is unchanged. The board's maintainer found it.
+
+* **Compiled AML records no longer make dangling supersession claims.** The store's scan read
+  their `supersedes` list of record ids as text, so every compiled record claimed to supersede a
+  file named `[]` or `["mem_…"]`. Nothing matched those names, but they filled
+  `supersession_all`'s edges and candidates, and a reasoning graph built from the store reported
+  edges its own in-memory fallback did not. Each compiled record now yields one row declaring
+  nothing, as the Python readers already read it. The array is deliberately not expanded either:
+  the ids name chunks whose files are `{chunk_id}.md`, so expanding would create live edges.
+  `recall_aml` resolves its own supersession and does not call this scan, so what it serves does
+  not change.
+
+* **An MCP server's first search no longer peaks at about 820 MB.** Loading the atomic rescue
+  matrix validated it with whole-matrix `np.isfinite` and `np.linalg.norm`, each building a
+  temporary as large as the matrix, in every serving process. The checks now run over 16 MiB row
+  blocks, in the same order and with the same errors. Measured on the memory corpus with
+  identical search results: first-search peak 820 MB to 509 MB, steady resident set unchanged
+  within 13 MB.
+
+### Removed
+
+* **The QNLI entailment judge is gone (breaking).** It was an optional, off by default stage that
+  demoted hits a `cross-encoder/qnli-distilroberta-base` model judged as not answering the query.
+  Measured as an evidence admission stage on the AML Coding screen of 2026-09-19 it cut present
+  complete coverage from 0.92 to 0.42 and MRR from 0.50 to 0.36, and raised Search p95 from 0.5 s
+  to 37 s, and no deployment ran it by default. Removed with it: `recall.entailment`, the
+  `recall search --entail` flag, the setup wizard's judge question, the desktop app's "Local
+  entailment judge" option, the `entail` extra, the `RECALL_ENTAILMENT`, `RECALL_ENTAILMENT_MODEL`
+  and `RECALL_ENTAILMENT_REVISION` variables, the `not_entailed` verdict, the `entailment` key in
+  per-stage timings, the `entailment=` parameter of `trusted_search` and of the LangChain and
+  LlamaIndex retrievers, and the `recall.eval` LoCoMo entailment sweep. **A configuration that still
+  sets `RECALL_ENTAILMENT` to a true value now refuses** at `recall search` and at MCP server
+  startup, naming the variable, because silently dropping a stricter filter would widen what that
+  deployment is served. A false value (`0`, the value `recall setup` used to write) or an unset
+  variable is accepted. Committed result artifacts that measured the judge are kept unchanged.
+
+* **pypdf is no longer installed by the `documents` extra.** It was never imported: PDF text has
+  always come from pdfplumber, which does not depend on it. It stayed only because a capability
+  check confirmed it was present, and 6.16.1 carried eight denial-of-service advisories
+  (CVE-2026-102993 to CVE-2026-102999 and CVE-2026-103000). The capability check and the generated
+  Dockerfile's post-install import now assert `pdfplumber` instead, so a missing `documents` extra
+  still fails the image build. Nothing extracted changes.
+
 ### Changed
 
 * **`recall setup` withholds the two heaviest local models on machines under 8 GB of RAM.** The

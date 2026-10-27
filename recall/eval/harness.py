@@ -15,7 +15,6 @@ import math
 
 from recall.calibration import Calibration, from_samples
 from recall.embeddings import Embedder, embedding_profile_id
-from recall.entailment import EntailmentJudge
 from recall.eval.calibrate import measure_top_cosines
 from recall.eval.metrics import (
     abstention_accuracy,
@@ -43,7 +42,7 @@ from recall.store import (
     STORE_QUERY_METRIC,
     PgVectorStore,
 )
-from recall.timing import TimedEmbedder, TimedReranker, TimingStats, timed_call
+from recall.timing import TimedEmbedder, TimedReranker
 from recall.eval._research_trust import research_search
 from recall.types import ScoredChunk, TrustedHit, TrustedResult
 
@@ -216,14 +215,12 @@ def run_ablations(
     return results
 
 
-#: Abstention arms. A = the calibrated cosine threshold (status quo). B = threshold plus
-#: the entailment judge. C = the judge alone (threshold disabled) — the ablation proving any
-#: near-miss win is the judge's, not the threshold's. Single definition: `arm_setup` and the
-#: chart colors are keyed by these constants so a typo cannot desynchronize them.
+#: Abstention arms. One remains: the calibrated cosine threshold. The two arms that ran the
+#: QNLI entailment judge (`threshold+entail`, `entail-only`) went with the judge when it was
+#: removed; their published rows stay in the committed results. The arm name is kept on every
+#: row so the output keeps its shape.
 ARM_THRESHOLD = "threshold"
-ARM_STACKED = "threshold+entail"
-ARM_ENTAIL_ONLY = "entail-only"
-ARMS = [ARM_THRESHOLD, ARM_STACKED, ARM_ENTAIL_ONLY]
+ARMS = [ARM_THRESHOLD]
 
 
 @dataclass
@@ -234,12 +231,7 @@ class NearMissEvalResult:
     gap_fcr: float                # classic far-gap queries answered confidently — must not regress
     false_abstain: float          # answerable queries wrongly abstained — must not regress
     mrr_answerable: float
-    entail_latency_ms_mean: float  # judge stage, averaged over the queries the judge actually
-    #                                RAN on (threshold-abstained queries never reach it) — a
-    #                                different denominator than query_latency_ms_mean, so in the
-    #                                stacked arm this can EXCEED the all-queries total mean.
-    #                                0.0 for the threshold arm.
-    query_latency_ms_mean: float   # full research_search (+judge) wall time, mean over ALL queries
+    query_latency_ms_mean: float   # full research_search wall time, mean over ALL queries
 
 
 def _loo_calibrations(
@@ -267,44 +259,23 @@ def _loo_calibrations(
     return out
 
 
-class _TimedJudge:
-    """Wraps a judge to measure its wall time — the honest cost column of the results table.
-
-    Built on the shared ``timing.timed_call`` utility (same primitive as ``TimedEmbedder`` /
-    ``TimedReranker``); ``samples_ms`` is kept so per-call latencies remain available to callers.
-    """
-
-    def __init__(self, inner: EntailmentJudge) -> None:
-        self._inner = inner
-        self._stats = TimingStats()
-        self.samples_ms: list[float] = []
-
-    def judge(self, query: str, texts: list[str]) -> list[bool]:
-        out = timed_call(self._stats, lambda: self._inner.judge(query, texts))
-        self.samples_ms.append(self._stats.last_ms)
-        return out
-
-
 def run_nearmiss_eval(
-    dsn: str, embedders: list[Embedder], judge: EntailmentJudge,
+    dsn: str, embedders: list[Embedder],
     corpus_dir: Path | None = None, queries_path: Path | None = None,
     nearmiss_path: Path | None = None, k: int = 10,
     store_factory: Callable[[Embedder], AbstractContextManager[PgVectorStore]] | None = None,
 ) -> list[NearMissEvalResult]:
-    """Score the three abstention arms per embedder on answerable / far-gap / near-miss queries.
+    """Score the calibrated threshold per embedder on answerable / far-gap / near-miss queries.
 
     The calibration is built ONLY from the labeled answerable/unanswerable queries in
     `queries.json` — the near-miss set is a held-out challenge set and must never tune the
-    threshold it challenges. "Confident" for every arm means `research_search` did not abstain;
-    the entailment arms share the SAME judge instance across embedders with no per-embedder
-    adjustment — that transfer is the property under test.
+    threshold it challenges. "Confident" means `research_search` did not abstain.
 
     The near-miss set being held out does NOT make the other two columns held out. `gap_fcr` and
     `false_abstain` are measured on the very queries the threshold is fitted to, so a threshold
     that merely memorised them would score perfectly. Both are therefore measured under
     LEAVE-ONE-OUT: the calibration judging a query is refitted with that query's sample removed
-    (`_loo_calibrations`), so no query is ever scored by a threshold that saw it. The entail-only
-    arm is exempt — its threshold is a fixed -1.0 that is fitted to nothing.
+    (`_loo_calibrations`), so no query is ever scored by a threshold that saw it.
 
     `store_factory` is a TEST SEAM, not a serving feature. Every existing caller omits it and
     gets EXACTLY today's behaviour: `None` (the default) builds the same corpus-indexed
@@ -347,23 +318,13 @@ def run_nearmiss_eval(
             ans_cals = _loo_calibrations(
                 profile_id, ans_cos, unans_cos, hold_out_unanswerable=False
             )
-            # threshold -1 passes every cosine: isolates the judge in the entail-only arm
-            permissive = Calibration(embedder=profile_id, threshold=-1.0, scale=cal.scale)
-            # third element: whether this arm's threshold was FITTED to the eval samples, and so
+            # second element: whether this arm's threshold was FITTED to the eval samples, and so
             # must be swapped for the leave-one-out refit when scoring them.
             arm_setup = {
-                ARM_THRESHOLD: (cal, None, True),
-                ARM_STACKED: (cal, judge, True),
-                ARM_ENTAIL_ONLY: (permissive, judge, False),
+                ARM_THRESHOLD: (cal, True),
             }
-            # Each arm re-runs retrieval end-to-end ON PURPOSE: query_latency_ms_mean must
-            # measure real per-arm wall time, and the judge is deliberately un-memoized so
-            # its latency column counts model passes, not cache hits. Sharing arm A's
-            # results with arm B would save ~1/3 of the retrieval cost at the price of
-            # fabricating the latency columns.
             for arm in ARMS:
-                arm_cal, arm_judge, arm_is_fitted = arm_setup[arm]
-                timed = _TimedJudge(arm_judge) if arm_judge is not None else None
+                arm_cal, arm_is_fitted = arm_setup[arm]
                 q_times: list[float] = []
 
                 def _search(
@@ -373,7 +334,6 @@ def run_nearmiss_eval(
                     _arm_is_fitted: bool = arm_is_fitted,
                     _arm_cal: Calibration = arm_cal,
                     _emb: Embedder = emb,
-                    _timed: _TimedJudge | None = timed,
                     _q_times: list[float] = q_times,
                 ) -> TrustedResult:
                     # loo_cal is the refit that never saw this query; fall back to the arm's own
@@ -381,9 +341,7 @@ def run_nearmiss_eval(
                     # hold a sample out (see _loo_calibrations).
                     use = loo_cal if (_arm_is_fitted and loo_cal is not None) else _arm_cal
                     t0 = time.perf_counter()
-                    res = research_search(
-                        store, _emb, text, k=k, calibration=use, entailment=_timed
-                    )
+                    res = research_search(store, _emb, text, k=k, calibration=use)
                     _q_times.append((time.perf_counter() - t0) * 1000.0)
                     return res
 
@@ -407,9 +365,6 @@ def run_nearmiss_eval(
                         gap_fcr=gap_false_confident_rate(gap_confident),
                         false_abstain=false_abstain_rate(abst_flags),
                         mrr_answerable=mean(mrrs) if mrrs else 0.0,
-                        entail_latency_ms_mean=(
-                            mean(timed.samples_ms) if timed and timed.samples_ms else 0.0
-                        ),
                         query_latency_ms_mean=mean(q_times) if q_times else 0.0,
                     )
                 )
@@ -419,14 +374,14 @@ def run_nearmiss_eval(
 def nearmiss_results_to_markdown(results: list[NearMissEvalResult]) -> str:
     lines = [
         "| embedder | arm | near-miss FCR | gap FCR | false-abstain | MRR ans | "
-        "judge ms (judged calls) | total ms/query |",
-        "|---|---|---|---|---|---|---|---|",
+        "total ms/query |",
+        "|---|---|---|---|---|---|---|",
     ]
     for r in results:
         lines.append(
             f"| {r.embedder} | {r.arm} | {_fmt_rate(r.nearmiss_fcr)} | {_fmt_rate(r.gap_fcr)} | "
             f"{_fmt_rate(r.false_abstain)} | {_fmt_rate(r.mrr_answerable, 3)} | "
-            f"{r.entail_latency_ms_mean:.0f} | {r.query_latency_ms_mean:.0f} |"
+            f"{r.query_latency_ms_mean:.0f} |"
         )
     return "\n".join(lines)
 
@@ -668,14 +623,14 @@ def save_nearmiss_chart(results: list[NearMissEvalResult], out_dir: Path) -> Pat
 
     out_dir.mkdir(parents=True, exist_ok=True)
     embs = list(dict.fromkeys(r.embedder for r in results))
-    colors = {ARM_THRESHOLD: "#c44e52", ARM_STACKED: "#55a868", ARM_ENTAIL_ONLY: "#4c72b0"}
+    colors = {ARM_THRESHOLD: "#c44e52"}
     width = 0.8 / max(1, len(ARMS))
     fig, ax = plt.subplots(figsize=(max(5, len(embs) * 2.2), 4))
     for j, arm in enumerate(ARMS):
         xs, vals = [], []
         for i, e in enumerate(embs):
             row = next((r for r in results if r.embedder == e and r.arm == arm), None)
-            x = i + (j - 1) * width
+            x = i + (j - (len(ARMS) - 1) / 2) * width
             if row is None or math.isnan(row.nearmiss_fcr):
                 # no data must NOT render as a zero-height bar — on a lower-is-better chart
                 # that reads as a PERFECT score (same rationale as fraction_true's NaN)

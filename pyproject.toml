@@ -9,7 +9,7 @@ version = "0.14.0"
 description = "Trustworthy retrieval for an AI agent's own memory — verdict, confidence and provenance per hit, or an explicit abstention"
 readme = "README.md"
 requires-python = ">=3.11"
-license = "PolyForm-Noncommercial-1.0.0"
+license = "AGPL-3.0-only"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "Giulio D'Erme" }]
 keywords = [
@@ -41,6 +41,11 @@ dependencies = [
     # `import recall_agent` raised ModuleNotFoundError: pydantic. Relying on somebody else's
     # transitive for a module-scope import is a dependency whether or not it is declared.
     "pydantic>=2",
+    # `recall.lite.store.LiteStore` keeps its dense leg as one float32 matrix and needs numpy on its
+    # first write. pgvector 0.5.0 no longer pulls numpy in, so a core-only install raised
+    # ModuleNotFoundError: numpy there (PR 894, verified 2026-10-07). The zero-setup install is the
+    # lite store, so numpy belongs to the base install rather than to an extra.
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]
@@ -89,14 +94,12 @@ fastembed = [
 agent-ab = ["scipy>=1.11"]
 # Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
 documents = [
-    # pypdf is capped at the major ON PURPOSE, and the reason is silence rather than breakage.
-    # Its output is extracted TEXT, which feeds chunking and therefore what the corpus contains:
-    # a major that changes layout handling or whitespace does not raise, it quietly re-chunks
-    # every PDF-derived document and moves embeddings that nothing re-verifies. So a major is a
-    # re-index-and-compare, not a resolver decision. Capped 2026-09-02 as a deliberate guard, NOT
-    # on evidence of a specific break; 6.16.1 resolves unchanged under it. `.github/dependabot.yml`
-    # carries the matching ignore rule and must lose it in the same change if this cap is lifted.
-    "pypdf>=5.0,<7",
+    # pypdf was removed from this extra on 2026-10-01. It was declared, capped `<7` on the belief
+    # that its text fed chunking, and never imported: PDF text comes from pdfplumber in
+    # `recall/extraction.py`, which depends on pdfminer.six and pypdfium2, not pypdf. Its only use
+    # was a capability probe that confirmed it was installed. It left when 6.16.1 collected eight
+    # DoS advisories (CVE-2026-102993 to 102999 and CVE-2026-103000) that the deliberate Dependabot
+    # ignore rule had kept silent, so the safest version of an unused dependency is none.
     "pdfplumber>=0.11",
     "python-docx>=1.1",
     "openpyxl>=3.1",
@@ -116,7 +119,7 @@ pool = ["psycopg-pool>=3.2"]
 # `recall_mcp.limits.RateLimited` carries the `ToolError` base to survive this; the pin is what
 # makes the next such change arrive as a deliberate bump with a test run behind it.
 mcp = [
-    "mcp==2.1.0",
+    "mcp==2.2.0",
     "psycopg-pool>=3.2",
     "PyJWT[crypto]>=2.10.1,<3",
     # MCP server and HTTP client modules import these packages directly.
@@ -131,8 +134,9 @@ mcp = [
 # `requests` is what `recall._voyage_http` speaks HTTP with, stated rather than inherited from
 # voyageai. The SDK itself stays: its version is part of every Voyage profile's identity.
 voyage = ["voyageai>=0.2.2", "requests>=2.31"]
-# Atomic rescue keeps NumPy optional so the default-off path preserves the base install and import
-# surface. Operators enabling the generation-bound artifact install this extra explicitly.
+# Operators enabling the generation-bound atomic rescue artifact install this extra explicitly.
+# NumPy is also a core dependency now (LiteStore); it stays listed here so the extra states what
+# atomic rescue needs on its own.
 # threadpoolctl bounds the BLAS pool of the view-matrix product (`recall.atomic_rescue._view_scores`).
 atomic = ["numpy>=1.26", "threadpoolctl>=3.1"]
 # OpenAI-compatible embeddings, including OpenRouter-hosted models.
@@ -153,9 +157,8 @@ s3 = ["boto3>=1.35"]
 aws = ["boto3>=1.35", "redis[hiredis]>=5,<9"]
 # Learned sparse retrieval uses transformers directly. Model weights are user-provisioned.
 sparse = ["transformers>=4.40,<6", "torch>=2.0,<3"]
-# Keep rerank, entail, and finetune sentence-transformers floors in step.
+# Keep rerank and finetune sentence-transformers floors in step.
 rerank = ["sentence-transformers>=3.0"]
-entail = ["sentence-transformers>=3.0"]
 eval = ["matplotlib>=3.7", "numpy"]
 # Model backed truth extraction. Runs on the ingest path only, never the query path, and is
 # OFF unless RECALL_TRUTH_EXTRACTION is set. Shares the `bench` extra's openai floor.
@@ -192,7 +195,7 @@ dev = [
     # lever on its wall clock is running it in parallel. `tests/conftest.py::_isolate_xdist_worker`
     # is what makes that safe against a shared database; see the note there.
     "pytest-xdist>=3.6",
-    "mcp==2.1.0", "psycopg-pool>=3.2",
+    "mcp==2.2.0", "psycopg-pool>=3.2",
     "python-dotenv>=1.0",
     "PyJWT[crypto]>=2.10.1,<3",
     "langchain-core>=0.3",
@@ -205,6 +208,10 @@ dev = [
     # The contract suite exercises exact reader token accounting. Keep this direct in dev rather
     # than relying on the unrelated LlamaIndex dependency that used to pull it in transitively.
     "tiktoken==0.14.0",
+    # The type checker CI gates on, pinned exactly so a new release reaches the gate only through a
+    # Dependabot PR that runs it. Unpinned, mypy 2.4.0 (released 2026-10-01 20:39 UTC) turned the
+    # `typecheck` job red mid-afternoon on a line no PR had touched (#847).
+    "mypy==2.4.0",
 ]
 # Architecture, dependency, dead code, and test quality tools. This stays separate from `dev` so
 # the normal product test environment does not gain analysis dependencies by accident.
@@ -217,7 +224,7 @@ analysis = [
     "pytest-benchmark>=5,<6",
 ]
 # Optional Windows desktop shell. Keeping this separate preserves the small library install.
-desktop = ["PySide6>=6.7", "keyring>=25", "mcp==2.1.0", "fastembed>=0.3,<1"]
+desktop = ["PySide6>=6.7", "keyring>=25", "mcp==2.2.0", "fastembed>=0.3,<1"]
 
 # Declared LAST among the `[project]` sub-tables: every bare key above (`dependencies`,
 # `classifiers`, …) belongs to `[project]`, and opening a sub-table earlier would silently
@@ -226,7 +233,7 @@ desktop = ["PySide6>=6.7", "keyring>=25", "mcp==2.1.0", "fastembed>=0.3,<1"]
 Homepage = "https://github.com/GiulioDER/RE-call"
 Documentation = "https://giulioder.github.io/RE-call/"
 Source = "https://github.com/GiulioDER/RE-call"
-License = "https://polyformproject.org/licenses/noncommercial/1.0.0"
+License = "https://www.gnu.org/licenses/agpl-3.0.html"
 Commercial = "https://github.com/GiulioDER/RE-call/blob/master/COMMERCIAL_LICENSE.md"
 Issues = "https://github.com/GiulioDER/RE-call/issues"
 Changelog = "https://github.com/GiulioDER/RE-call/blob/master/CHANGELOG.md"
@@ -411,6 +418,7 @@ root_packages = [
     "recall_hooks",
     "recall_interop",
     "recall_consistency",
+    "recall_aml",
 ]
 exclude_type_checking_imports = true
 
@@ -428,15 +436,55 @@ type = "forbidden"
 source_modules = ["recall_mcp", "recall_agent"]
 forbidden_modules = ["recall_hooks"]
 
+# The AML benchmark service is an adapter ON TOP of the product, shipped beside it. Product code
+# depending on it would make an official benchmark endpoint part of every install's import graph.
+[[tool.importlinter.contracts]]
+id = "product-does-not-import-aml"
+name = "Product packages do not import the AML benchmark service"
+type = "forbidden"
+source_modules = ["recall", "recall_mcp", "recall_agent", "recall_hooks"]
+forbidden_modules = ["recall_aml"]
+
+# recall_aml serves official runs, so its dependencies stay on the stable core: not the MCP server,
+# not the research package, not repository-only support code.
+[[tool.importlinter.contracts]]
+id = "aml-depends-only-on-the-core"
+name = "The AML benchmark service does not import the MCP server or research code"
+type = "forbidden"
+source_modules = ["recall_aml"]
+forbidden_modules = ["recall_mcp", "recall.eval", "recall_interop", "recall_consistency"]
+
+# The library does not depend on the server built on it. The CLI command modules are surfaces that
+# drive server tools in-process and are the listed exceptions, with one research driver the wheel
+# excludes; anything else that needs MCP code is a sign the code belongs in `recall`. Remove an
+# exception when its import goes away.
+[[tool.importlinter.contracts]]
+id = "library-does-not-import-the-mcp-server"
+name = "The recall library does not import the MCP server package, except CLI surfaces"
+type = "forbidden"
+source_modules = ["recall"]
+forbidden_modules = ["recall_mcp"]
+ignore_imports = [
+    "recall.cli_commands.index_search -> recall_mcp.lifecycle",
+    "recall.cli_commands.index_search -> recall_mcp.translation",
+    "recall.cli_commands.calibration_cmd -> recall_mcp.service",
+    "recall.cli_commands.provenance_cmd -> recall_mcp.provenance",
+    "recall.cli_commands.reasoning_cmd -> recall_mcp.graph_projection",
+    "recall.cli_commands.reasoning_cmd -> recall_mcp.reasoning_admin",
+    "recall.cli_commands.reasoning_cmd -> recall_mcp.reasoning_api",
+    "recall.enterprise_cli -> recall_mcp.factories",
+    "recall.eval.promotion.__main__ -> recall_mcp.factories",
+]
+
 [tool.deptry]
 extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
 known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks", "recall_aml"]
 optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "bench", "eval", "finetune"]
 # These are deliberate boundaries rather than missing declarations. The GUI and LlamaIndex
-# adapters are optional runtime surfaces, `pypdf` remains in the documents compatibility probe,
+# adapters are optional runtime surfaces,
 # evaluation plotting is intentionally development only, and promotion imports application supplied
 # modules at runtime. The lean CI job intentionally does not install those optional surfaces.
-per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6", "pypdf"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
+per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
 package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "pillow" = "PIL", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
 
 [tool.ruff.lint]
@@ -454,7 +502,14 @@ package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claud
 # injection, plus the weak-cipher and cleartext-protocol rules) find ZERO across this repository
 # today, so the gate costs nothing now and refuses the day somebody adds the first one. That is the
 # whole value: it is a ratchet, not a cleanup.
-select = ["E4", "E7", "E9", "F", "S"]
+select = ["E4", "E7", "E9", "F", "S", "B", "ASYNC"]
+#
+# `B` (flake8-bugbear) and `ASYNC` (flake8-async) added 2026-10-01 as a ratchet, sized first with
+# `python -m ruff check --select B,ASYNC --statistics .`: 167 hits, of which the ignores below take
+# 145 and the remaining 22 were fixed or annotated in the same change. What they buy is the classes
+# with ZERO hits today that refuse the first one tomorrow: mutable default arguments (B006),
+# `except` clauses that can never match (B030), `assert False` (B011), `return` inside `finally`
+# (B012), and blocking calls inside the MCP server's async tools (ASYNC2xx).
 
 # Rules excluded with the reason, rather than a bare list. Each was measured across the repository
 # on 2026-08-26; re-measure any of them with `python -m ruff check --select S### --statistics .`
@@ -498,6 +553,26 @@ ignore = [
     # redirects, cap the body) that these call sites route through, which is a larger change than
     # turning a linter on.
     "S310",
+    # Bugbear rules measured 2026-10-01 and excluded as style rather than defect classes:
+    # B905 `zip()` without `strict=` (81 hits; most pair sequences built side by side), B009/B010
+    # `getattr`/`setattr` with a constant (26; used deliberately against optional SDK attributes),
+    # B007 unused loop variable (11).
+    "B905", "B009", "B010", "B007",
+    # B023 (closure does not bind loop variable): 27 hits, every one read on 2026-10-01 and every
+    # one a FALSE positive. Each closure or lambda is called inside the iteration that defines it
+    # (a thread pool that joins before the loop continues, or a lambda invoked in the same pass),
+    # so it cannot see a later value. Excluded rather than annotated 27 times; re-measure with
+    # `python -m ruff check --select B023 .` before reconsidering.
+    "B023",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# Frozen dataclasses used as argument defaults (B008). Immutable, so one shared instance is safe.
+extend-immutable-calls = [
+    "recall.context.ContextPolicy",
+    "recall.evidence.EvidencePolicy",
+    "recall.reasoning.ReasoningPolicy",
+    "recall.reasoning_planner.ReasoningBudget",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -527,9 +602,12 @@ ignore = [
 # S104 fires on the `0.0.0.0` in `test_streamable_http_run_passes_transport_security`, which
 # asserts the bind address is PASSED THROUGH to the transport. The literal is the fixture.
 "tests/**" = ["S104", "S105", "S106", "S107", "S608"]
-"benchmarks/**" = ["S105", "S106", "S107", "S608"]
+# ASYNC2xx in harness code: `Path.exists`/`open` inside an async driver of a benchmark or agent A/B
+# run, where blocking the loop for a stat call costs nothing measurable. The shipped packages had no
+# ASYNC hits on 2026-10-01 and stay fully checked.
+"benchmarks/**" = ["S105", "S106", "S107", "S608", "ASYNC230", "ASYNC240"]
 "results/**" = ["S105", "S106", "S107", "S608"]
-"scripts/**" = ["S105", "S106", "S107", "S608"]
+"scripts/**" = ["S105", "S106", "S107", "S608", "ASYNC230", "ASYNC240"]
 
 # Static typing. 81% of this package's functions already carried a return annotation before this
 # section existed, and nothing checked any of them — which is the state where the annotations are
@@ -592,6 +670,12 @@ no_implicit_optional = true
 # making. `follow_imports = skip` rather than plain `ignore_missing_imports` so the result does
 # NOT depend on whether the extra happens to be installed — a local run with `[fastembed]` and a
 # CI run without it must agree, or the gate is advisory.
+[[tool.mypy.overrides]]
+# The published runners stay frozen even when maintained modules import them. Discovery's
+# exclude above does not apply to followed imports; preserve their types for the importers.
+module = ["benchmarks.atm_bench", "benchmarks.atm_full_run"]
+ignore_errors = true
+
 [[tool.mypy.overrides]]
 module = [
     # `agent` extra, deliberately excluded from `dev` so CI proves the SDK-absent import path.

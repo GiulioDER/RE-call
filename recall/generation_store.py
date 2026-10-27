@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import psycopg
 from pgvector import Vector
 
-from recall.generations import NoActiveGeneration
+from recall.generation_types import NoActiveGeneration
 from recall.semantic_graph import (
     GraphReadiness,
     SemanticGraphProjection,
@@ -31,14 +32,46 @@ from recall.store import (
     PgVectorStore,
     _EXACT_SCAN_GUARDS,
     _HNSW_FILTERED_TUNING_SQL,
-    resolve_supersession_candidates,
+    SupersessionGraph,
+    resolve_supersession_graph,
+    supersession_rows_sql,
 )
+from recall.supersession import SupersessionRecord
+from recall.supersession_records import pg_record_revision, pg_records
+from recall.support import COVERAGE_EVENT, latest_calibration_event
 from recall.types import Chunk, ScoredChunk
 from recall.errors import RecallError
 
 if TYPE_CHECKING:
     from recall.calibration_v2 import CalibrationResolution
     from recall.pool import SharedPool
+
+
+#: Which path a generation-scoped dense query takes. `exact` (the default) scans the generation
+#: exactly; `hnsw` walks the shared HNSW index under `_hnsw_filtered_tuning`.
+#:
+#: Exact by default because, measured 2026-10-01 on a copy of the production table (753k rows, many
+#: tenants and retained generations), the filtered HNSW walk returned 0.875 of the true top 20 for
+#: the memory tenant at the production tuning, 0.918 at the maximum `ef_search` of 1,000, and 0.954
+#: for the code tenant at every setting tried, while the exact scan took 50 to 276 ms per query.
+#: Before this, production served the exact plan anyway, but only by accident: a pooled
+#: connection's prepared statement falls back to a cached generic plan, which is exact, and a
+#: planner statistic that made the generic plan dearer would have switched the leg to HNSW
+#: silently. Set `hnsw` only for a tenant large enough that the exact scan is too slow, and measure
+#: its recall first (`scripts/check_hnsw_recall.py`).
+GENERATION_DENSE_SEARCH_ENV = "RECALL_GENERATION_DENSE_SEARCH"
+_GENERATION_DENSE_SEARCH_VALUES = frozenset({"exact", "hnsw"})
+
+
+def _generation_dense_search() -> str:
+    """The configured path, read fresh on every call, as the HNSW knobs are."""
+    value = os.environ.get(GENERATION_DENSE_SEARCH_ENV, "exact")
+    if value not in _GENERATION_DENSE_SEARCH_VALUES:
+        raise ValueError(
+            f"{GENERATION_DENSE_SEARCH_ENV}={value!r} is not one of "
+            f"{sorted(_GENERATION_DENSE_SEARCH_VALUES)}"
+        )
+    return value
 
 
 class ImmutableGenerationError(RuntimeError, RecallError):
@@ -66,6 +99,14 @@ LIVE_MANIFEST_STATES = ("building", "validating", "ready", "active", "retired")
 #: administrative action. Thirty seconds keeps that window shorter than any human loop while
 #: removing the per query round trips from `trusted_search`.
 CALIBRATION_RESOLUTION_TTL_S = 30.0
+
+
+#: How long a search reuses a calibration's near-miss coverage report before reading it again.
+_COVERAGE_TTL_S = 300.0
+#: At most this many index misses per query are confirmed against chunk text. Each confirmation is
+#: an unindexed scan of the generation's text, so the cap bounds a query's cost; a miss beyond it
+#: stays unknown, which is what the index alone answered, so the cap never answers more.
+_CONFIRM_LIMIT = 8
 
 
 class GenerationStore(PgVectorStore):
@@ -109,6 +150,7 @@ class GenerationStore(PgVectorStore):
         self._graph_readiness_cache: tuple[tuple[str, str], GraphReadiness] | None = None
         self._binding_cache: tuple[tuple[str, str], dict[str, str]] | None = None
         self._newest_indexed_at_cache: tuple[tuple[str, str], datetime | None] | None = None
+        self._coverage_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
 
     def _reset_tenant_state(self) -> None:
         """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
@@ -133,6 +175,7 @@ class GenerationStore(PgVectorStore):
         self._graph_readiness_cache = None
         self._binding_cache = None
         self._newest_indexed_at_cache = None
+        self._coverage_cache = {}
 
     def check_schema(self) -> None:
         from recall.schema import check_schema
@@ -228,6 +271,17 @@ class GenerationStore(PgVectorStore):
 
     def _generation_id(self) -> str:
         return self._pinned_generation.get() or self._fixed_generation or self.active_generation_id()
+
+    @property
+    def generation_id(self) -> str:
+        """The generation this store reads: pinned, else fixed, else the active one.
+
+        The base property returns the constructor's `generation_id`, which `GenerationStore` never
+        passes, so it answered the default `"legacy"` on every production store. Fact application
+        built its provenance controller from it, and every evidence card (bound to the real
+        generation) was then refused as `GENERATION_MISMATCH`.
+        """
+        return self._generation_id()
 
     def set_fixed_generation(self, generation_id: str) -> None:
         """Pin this read-only store to one immutable generation for its whole process.
@@ -328,6 +382,15 @@ class GenerationStore(PgVectorStore):
             dimension = embedder.get("dimension")
             if isinstance(dimension, int):
                 binding["embedder_dimension"] = str(dimension)
+            # The profile separates what `model` cannot: two profiles of one model (Voyage with
+            # and without `input_type`) share it. Absent on every generation a legacy embedder
+            # built, and the gate then compares model and dimension exactly as before.
+            profile_id = str(embedder.get("profile_id") or "").strip()
+            if profile_id:
+                binding["embedder_profile_id"] = profile_id
+            profile_fingerprint = str(embedder.get("profile_fingerprint") or "").strip()
+            if profile_fingerprint:
+                binding["embedder_profile_fingerprint"] = profile_fingerprint
         # Keyed on the fingerprint the ROW carries, not the pinned one: an erasure landing
         # between the snapshot and this read must not file the newer row under the older key.
         self._binding_cache = ((generation_id, binding["corpus_fingerprint"]), dict(binding))
@@ -482,7 +545,11 @@ class GenerationStore(PgVectorStore):
         Overriding the PUBLIC method (as this did) silently drops the timing, and
         `RECALL_ENV=production` selects exactly this class — so the metric fired on a laptop and
         recorded nothing in production, with an empty series and a free store reading the same.
+
+        Exact unless `RECALL_GENERATION_DENSE_SEARCH=hnsw`; see `GENERATION_DENSE_SEARCH_ENV`.
         """
+        if _generation_dense_search() == "exact":
+            return self._query_dense_exact(vector, k, source, scope)
         generation_id = self._generation_id()
         # `source_uri`, not `source`: this table names the column differently from the legacy
         # one, and the predicate is told which rather than guessing. Everything else about a
@@ -592,6 +659,93 @@ class GenerationStore(PgVectorStore):
 
         row = self._with_retry(_op)
         return 0.0 if row is None or row[0] is None else float(row[0])
+
+    def unknown_terms(self, tokens: Sequence[str]) -> list[str]:
+        """The tokens that occur nowhere in this generation, judged by its full-text vocabulary.
+
+        The PostgreSQL side of `recall.unknown_terms`, and the lite store's rule
+        (`LiteStore.unknown_terms`) on the generation's own `tsv` column: a token is split into the
+        lexemes of the generation's full-text configuration (the same `to_tsvector` the sparse leg
+        uses), and it is unknown if any of them occurs in no chunk of the generation. The GIN index
+        on `tsv` answers each lexeme, so no migration and no vocabulary table are needed.
+
+        One deliberate difference: a token the configuration drops entirely (a stop word written
+        in capitals, "THE") has no lexeme to look for and is never reported unknown, where the
+        lite tokenizer, which drops nothing, would have one. Refusing on a word the index could
+        never hold would refuse real answers.
+
+        A token whose lexemes miss is then confirmed against the chunk TEXT before it is reported:
+        PostgreSQL's default parser keeps a file name, host, e-mail address or dotted name whole
+        (`README.md` is the one lexeme 'readme.md', never 'readm'), so a term that occurs only
+        inside one has no lexeme of its own, while the lite tokenizer splits on the punctuation and
+        finds it. The confirmation is a case-insensitive whole-word match bounded by any
+        non-alphanumeric character, and it runs only for the tokens the index could not find, at most
+        `_CONFIRM_LIMIT` per query, because each is an unindexed scan of the generation's text.
+        Tokens hold letters and digits only (`entity_like_tokens`), so none can carry regex syntax.
+        """
+        if not tokens:
+            return []
+        generation_id = self._generation_id()
+        sql = """
+            WITH config AS (
+                SELECT (pipeline_identity #>> '{fts_configuration,language}')::regconfig AS language
+                FROM recall_generations
+                WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s
+            ), lex AS (
+                SELECT t.token, t.ord, l.lexeme
+                FROM unnest(%(tokens)s::text[]) WITH ORDINALITY AS t(token, ord)
+                CROSS JOIN config
+                CROSS JOIN LATERAL unnest(to_tsvector(config.language, t.token))
+                    AS l(lexeme, positions, weights)
+            )
+            SELECT lex.token, min(lex.ord) AS ord
+            FROM lex
+            WHERE NOT EXISTS (
+                SELECT 1 FROM recall_chunks_v1 c
+                WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+                  AND c.tsv @@ quote_literal(lex.lexeme)::tsquery
+            )
+            GROUP BY lex.token
+            ORDER BY ord
+        """
+        params = {"tokens": list(tokens), "tenant": self._tenant, "generation": generation_id}
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
+        missing = [str(row[0]) for row in rows]
+        if not missing:
+            return []
+        confirm = """
+            SELECT t.token
+            FROM unnest(%(tokens)s::text[]) WITH ORDINALITY AS t(token, ord)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM recall_chunks_v1 c
+                WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
+                  AND c.text ~* ('(^|[^[:alnum:]])' || t.token || '([^[:alnum:]]|$)')
+            )
+            ORDER BY t.ord
+        """
+        checked, unchecked = missing[:_CONFIRM_LIMIT], missing[_CONFIRM_LIMIT:]
+        params["tokens"] = checked
+        absent = self._with_retry(lambda conn: conn.execute(confirm, params).fetchall())
+        return [str(row[0]) for row in absent] + unchecked
+
+    def near_miss_coverage(self, calibration_id: str) -> dict[str, Any] | None:
+        """The near-miss coverage measured with `calibration_id` (`recall.near_miss`), or None.
+
+        The PostgreSQL side of `LiteStore.near_miss_coverage`: `CalibrationRepository.calibrate`
+        appends the report as one audit event, and `recall.support.calibration_coverage` reads it
+        here for every search, so it is kept for `_COVERAGE_TTL_S` per calibration id rather than
+        queried each time. A report never changes a verdict; a stale read only delays a report.
+        """
+        cached = self._coverage_cache.get(calibration_id)
+        now = monotonic()
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+        report = self._with_retry(
+            lambda conn: latest_calibration_event(conn, self._tenant, COVERAGE_EVENT, calibration_id)
+        )
+        self._coverage_cache[calibration_id] = (now + _COVERAGE_TTL_S, report)
+        return report
 
     def _query_sparse(
         self,
@@ -921,35 +1075,47 @@ class GenerationStore(PgVectorStore):
         Callers receive copies because the result is public and graph expansion adds its own
         candidate structures to the returned values.
         """
-        identity = self._serving_identity()
+        return self.supersession_graph().parts()
+
+    def supersession_graph(self) -> SupersessionGraph:
+        """The resolved graph behind `supersession_all()`, with each claimant's validity window.
+
+        One cache entry per serving identity, as `supersession_all` describes; the three-part
+        accessors are projections of it. Callers receive a copy.
+        """
+        # The tenant's record revision is part of the key: a withdrawal of a memo every generation
+        # has already lost writes a record and erases nothing, so the corpus fingerprint stays.
+        # One primary-key lookup; the records themselves are read only when the key moves.
+        records_seen = self._with_retry(lambda conn: pg_record_revision(conn, self._tenant))
+        identity = (*self._serving_identity(), records_seen)
         generation_id = identity[0]
         cached = self._supersession_cache
         if cached is not None and cached[0] == identity:
-            edges, unresolved, candidates = cached[1], cached[2], cached[3]
-            return (
-                dict(edges),
-                unresolved,
-                {target: list(claims) for target, claims in candidates.items()},
-            )
+            graph: SupersessionGraph = cached[1]
+            return graph.copy()
 
-        rows = self._with_retry(
-            lambda conn: conn.execute(
-                "SELECT metadata->>'file', metadata->>'supersedes', "
-                "min(COALESCE(first_indexed_at, indexed_at)) "
-                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
-                "AND metadata ? 'file' GROUP BY 1, 2 ORDER BY 1, 2",
+        def _scan(conn: psycopg.Connection) -> tuple[list[Any], list[SupersessionRecord]]:
+            rows = conn.execute(
+                supersession_rows_sql(
+                    "recall_chunks_v1",
+                    source_column="source_uri",
+                    scope="c.tenant_id = %s AND c.generation_id = %s",
+                ),
                 (self._tenant, generation_id),
             ).fetchall()
-        )
+            return rows, pg_records(conn, self._tenant, self.record_scope)
+
+        rows, records = self._with_retry(_scan)
         self._supersession_scans += 1
         METRICS.increment("recall_supersession_scans_total")
-        edges, unresolved, candidates = resolve_supersession_candidates(rows)
-        self._supersession_cache = (identity, edges, unresolved, candidates)
-        return (
-            dict(edges),
-            unresolved,
-            {target: list(claims) for target, claims in candidates.items()},
-        )
+        graph = resolve_supersession_graph(rows, records, self._tenant)
+        self._supersession_cache = (identity, graph)
+        return graph.copy()
+
+    @property
+    def record_scope(self) -> str:
+        """Every generation of the tenant shares one set of `SupersessionRecord`s."""
+        return "recall_chunks_v1"
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve erasure identifiers to source URIs, across everything the tenant holds.
@@ -975,16 +1141,7 @@ class GenerationStore(PgVectorStore):
         )
         rows += self._legacy_rows_for_identifiers(identifiers)
         requested = set(identifiers)
-        resolved: dict[str, list[str]] = {}
-        for source, file in rows:
-            for identifier in {file, source} & requested:
-                # De-duplicate, as the base implementation does. Now that this spans every
-                # generation and the legacy table, one source legitimately appears more than
-                # once: under different `metadata->>'file'` values in different generations, or
-                # in both recall_chunks_v1 and the adopted v0.8 table.
-                bucket = resolved.setdefault(str(identifier), [])
-                if str(source) not in bucket:
-                    bucket.append(str(source))
+        resolved = _bucket_sources(rows, requested)
         unresolved = requested - set(resolved)
         if unresolved:
             # Chunk rows are not the corpus. An object that chunks to nothing has no rows, and
@@ -996,6 +1153,45 @@ class GenerationStore(PgVectorStore):
             for identifier in self.manifest_uris_matching(sorted(unresolved)):
                 resolved[identifier] = [identifier]
         return resolved
+
+    def _erasure_subject_rows(self, sources: list[str]) -> list[tuple[Any, ...]]:
+        """`(source, file)` for `sources` across everything the tenant holds, as
+        `sources_for_identifiers` resolves: every generation and the adopted v0.8 table."""
+        rows: list[tuple[Any, ...]] = list(
+            self._with_retry(
+                lambda conn: conn.execute(
+                    "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
+                    "WHERE tenant_id = %s AND source_uri = ANY(%s)",
+                    (self._tenant, sources),
+                ).fetchall()
+            )
+        )
+        return rows + self._legacy_rows_for_identifiers(sources)
+
+    def record_chunks(self, code_files: Sequence[str] | None = None) -> list[Chunk]:
+        """Every chunk of the served generation carrying an audit record or a code anchor (with
+        `code_files`, only the code anchors in those files), without passage text: the read behind
+        `recall.records.lookup_records`."""
+        from recall.records import record_rows_condition
+
+        generation_id = self._generation_id()
+        condition, params = record_rows_condition("postgres", code_files)
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT chunk_id, source_uri, metadata FROM recall_chunks_v1 "  # noqa: S608  # a fixed condition, values bound
+                f"WHERE tenant_id = %s AND generation_id = %s AND {condition} ORDER BY chunk_id",
+                (self._tenant, generation_id, *params),
+            ).fetchall()
+        )
+        return [
+            Chunk(
+                str(chunk_id),
+                str(source),
+                "",
+                metadata if isinstance(metadata, dict) else json.loads(metadata),
+            )
+            for chunk_id, source, metadata in rows
+        ]
 
     def iter_chunks(self, batch_size: int = 1000) -> Iterator[Chunk]:
         if batch_size < 1:
@@ -1245,6 +1441,40 @@ class GenerationStore(PgVectorStore):
         }
         return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
 
+    def served_identifiers(self, identifiers: list[str]) -> set[str]:
+        """The identifiers (`file` or `source_uri`) the pinned generation serves.
+
+        Not `sources_for_identifiers`, which spans every generation on purpose (erasure must reach
+        them all): a memo the promoted generation left out is not served even while a retired
+        generation still holds its rows, and is served again after a rollback to one that does.
+        The keys of `served_sources_for_identifiers`, so the two can never disagree.
+        """
+        return set(self.served_sources_for_identifiers(identifiers))
+
+    def served_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """Resolve identifiers (`file` or `source_uri`) to source URIs in the pinned generation only.
+
+        `sources_for_identifiers` spans every generation, the adopted legacy table and the manifest
+        on purpose, because erasure must reach them all. A question about what is SERVED must not:
+        a generation names its memos relative to its manifest's common directory, so one name can
+        mean different files in different generations, and a retired generation's namesake then
+        decided whether a served memo could state or supersede facts (review of PR 935). This is
+        the resolver the read-time fact checks use (`recall.fact_retraction.served_sources`).
+        """
+        wanted = list(dict.fromkeys(identifiers))
+        if not wanted:
+            return {}
+        generation_id = self._generation_id()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s "
+                "AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
+                (self._tenant, generation_id, wanted, wanted),
+            ).fetchall()
+        )
+        return _bucket_sources(rows, set(wanted))
+
     def chunk_by_id(self, chunk_id: str) -> Chunk | None:
         """Compatibility wrapper over the generation scoped batch accessor."""
         return self.chunks_by_ids((chunk_id,)).get(chunk_id)
@@ -1257,7 +1487,9 @@ class GenerationStore(PgVectorStore):
     ) -> int:
         raise ImmutableGenerationError("active generations are read only")
 
-    def delete_sources(self, sources: list[str]) -> int:
+    def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
+        """Erase `sources` through `GenerationManager.forget`, which tombstones each one and
+        writes its `SupersessionRecord` (`withdraw`: a withdrawal rather than a forget)."""
         from recall.generations import GenerationManager
 
         manager = GenerationManager(
@@ -1266,9 +1498,100 @@ class GenerationStore(PgVectorStore):
             actor="generation-store-forget",
         )
         return sum(
-            manager.forget(source, legacy_table=self._migration_target).chunks_removed
+            manager.forget(
+                source, legacy_table=self._migration_target, withdraw=withdraw
+            ).chunks_removed
             for source in sources
         )
 
     def touch_files(self, files: list[str]) -> int:
         raise ImmutableGenerationError("immutable generations cannot be touched")
+
+    # The base methods below address the legacy chunk table by its `id` and `source` columns,
+    # which `recall_chunks_v1` does not have, or write to it. Inherited unchanged they failed with
+    # `UndefinedColumn` or, for `migrate_schema`, ran DDL against the shared generation table.
+    # Each is refused here by name so the failure says which surface to use instead.
+
+    def migrate_schema(self, migration_dsn: str | None = None) -> None:
+        raise ImmutableGenerationError(
+            "GenerationStore never migrates; run `recall schema apply` with the migration role"
+        )
+
+    def delete_tenant_data(self) -> int:
+        raise ImmutableGenerationError(
+            "generation rows are removed by `recall generation forget` and `generation gc`"
+        )
+
+    def delete_sources_across(
+        self, tables: list[str], sources: list[str], *, withdraw: bool = False
+    ) -> int:
+        raise ImmutableGenerationError(
+            "erase generation sources through `delete_sources`, which runs GenerationManager.forget"
+        )
+
+    def upsert_sparse(self, profile_id: str, vectors: dict[str, dict[int, float]]) -> int:
+        raise ImmutableGenerationError("active generations are read only")
+
+    def chunks_for_source(self, source: str) -> list[Chunk]:
+        raise NotImplementedError("chunks_for_source reads the legacy chunk table only")
+
+    def source_chunk_texts(self, source: str) -> list[str]:
+        """The text of one served source, chunk by chunk in ordinal order, from the pinned generation.
+
+        Read-only and bounded to one exact source, so a caller can check a quote against what
+        search actually served (`recall_report_stale` does) without reading the whole tenant.
+        """
+        if not isinstance(source, str) or not source:
+            raise ValueError("source must be a non-empty string")
+        generation_id = self._generation_id()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT text FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s AND source_uri = %s ORDER BY chunk_ordinal, chunk_id",
+                (self._tenant, generation_id, source),
+            ).fetchall()
+        )
+        return [str(row[0]) for row in rows]
+
+    def compiled_chunks_for_source_newest_first(
+        self,
+        source: str,
+        *,
+        limit: int,
+        before: tuple[datetime, str] | None = None,
+    ) -> list[tuple[datetime, Chunk]]:
+        raise NotImplementedError(
+            "compiled_chunks_for_source_newest_first reads the legacy chunk table only"
+        )
+
+    def sparse_covered_sources(self, profile_id: str) -> set[str]:
+        raise NotImplementedError("learned sparse sidecars exist for the legacy chunk table only")
+
+    def _query_learned_sparse(
+        self,
+        weights: dict[int, float],
+        k: int,
+        profile_id: str,
+        source: str | None = None,
+        vec: list[float] | None = None,
+        scope: Scope | None = None,
+    ) -> list[ScoredChunk]:
+        raise NotImplementedError("learned sparse retrieval is not served from generations")
+
+    def project_file_hashes(self, project: str) -> dict[str, str]:
+        raise NotImplementedError("project_file_hashes reads the legacy chunk table only")
+
+
+def _bucket_sources(rows: Iterable[Sequence[Any]], requested: set[str]) -> dict[str, list[str]]:
+    """`{identifier: [source, ...]}` from `(source, file)` rows, for the requested identifiers.
+
+    Each source once per identifier: across generations and the adopted v0.8 table one source
+    legitimately appears more than once, under different `metadata->>'file'` values.
+    """
+    resolved: dict[str, list[str]] = {}
+    for source, file in rows:
+        for identifier in {file, source} & requested:
+            bucket = resolved.setdefault(str(identifier), [])
+            if str(source) not in bucket:
+                bucket.append(str(source))
+    return resolved

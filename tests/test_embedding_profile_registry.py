@@ -10,6 +10,7 @@ These tests pin the properties that make a second copy impossible to reintroduce
 """
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,9 @@ EXPECTED_IDS = (
     "voyage-code-4-v1",
     "voyage-3-v1",
     "voyage-4-v1",
+    "voyage-4-retrieval-v1",
+    "voyage-4-large-retrieval-v1",
+    "voyage-code-3-retrieval-v1",
     "voyage-context-4-v1",
     "voyage-multimodal-3.5-v1",
     "openai-text-embedding-3-small-v1",
@@ -61,6 +65,9 @@ EXPECTED_HOSTED_IDS = frozenset({
     "voyage-code-4-v1",
     "voyage-3-v1",
     "voyage-4-v1",
+    "voyage-4-retrieval-v1",
+    "voyage-4-large-retrieval-v1",
+    "voyage-code-3-retrieval-v1",
     "voyage-context-4-v1",
     "voyage-multimodal-3.5-v1",
     "openai-text-embedding-3-small-v1",
@@ -181,7 +188,7 @@ def test_a_pinned_digest_refuses_a_different_operator_supplied_one() -> None:
 
 def test_registered_profiles_are_immutable() -> None:
     entry = registered_profile("bge-small-symmetric-v1")
-    with pytest.raises(Exception):
+    with pytest.raises(dataclasses.FrozenInstanceError):
         entry.dimension = 512  # type: ignore[misc]
 
 

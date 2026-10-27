@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import cast
 
 from recall.cache import default_cache
 from recall.context import context_policy_for_profile
@@ -23,6 +25,9 @@ from recall.index import (
 from recall.index_lock import ConcurrentIndex
 from recall.retriever import DocumentExpansionPolicy
 from recall.scope import Scope
+from recall.backends import lite_route_refusal, open_legacy_store, write_session
+from recall.lite import LiteStore, LiteWriterBusy, is_lite_dsn, lite_dsn_path
+from recall.lite.writer_lock import queued_notice
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
@@ -30,14 +35,14 @@ from recall.types import TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
 from recall.security_policy import access_context_from_environment, load_source_policy
 from recall.control_plane import ControlPlane
-from recall_mcp.service import forget_memory
+from recall_mcp.lifecycle import forget_memory, withdraw_memory
 from recall._env import env_is_production
 
 from recall.cli_commands._shared import (
     _cli_trust,
-    _entailment_judge,
     _make_embedder,
     _print_result,
+    _refuse_removed_entailment,
     _run_queries,
     _positive_int,
 )
@@ -128,7 +133,17 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "build will re-admit that URI even if the file is there; nothing deletes a tombstone "
             "and there is no `unforget`. Name a source exactly as stored, which is the `source` "
             "field printed by `recall search`; a source this store has never seen is reported as NOT "
-            "erased and NOT tombstoned rather than acted on."
+            "erased and NOT tombstoned rather than acted on, though the facts it supplied are still "
+            "erased, which is how a forget whose fact erasure failed is completed. The fact values "
+            "these sources supplied are erased with them: a fact whose only evidence they were is "
+            "retracted, so it is no longer listed, and its value, every evidence card citing these "
+            "sources and the replay receipts echoing them are rewritten in place under fresh ids, "
+            "so the fact ledger keeps the shape of its history and not the value. A value another "
+            "surviving memo also states stays. On a lite store the freed bytes are zeroed in the "
+            "file and its write-ahead log; PostgreSQL keeps dead row versions until VACUUM, and its "
+            "WAL, replicas and backups are the operator's to manage. Whatever a forgotten memo "
+            "superseded stays retired: to give it back, because the memo was a mistake, use "
+            "`recall withdraw`."
         ),
         help="permanently delete indexed memory for the given source(s) — irreversible",
     )
@@ -148,6 +163,47 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "irreversible, and it is also invoked from scripts, so a typo or an unattended "
         "run must not silently wipe a corpus. Re-run with --yes once the preview looks right.",
     )
+    p_forget.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="lite store only: VACUUM the file after the forget, which rewrites it without its "
+        "free pages. The bytes the forget freed are already zeroed without it; VACUUM also "
+        "compacts the file and needs about its size again in free disk.",
+    )
+
+    p_withdraw = sub.add_parser(
+        "withdraw",
+        description=(
+            "Withdraw memory that was a MISTAKE: erase the named source(s) exactly as `recall "
+            "forget` does (IRREVERSIBLE, tombstoned under RECALL_ENV=production), and give back "
+            "what they superseded. `forget` keeps retired whatever a memo superseded; `withdraw` "
+            "voids its `supersedes:` claims, so what it replaced is current again, and whatever "
+            "superseded it now supersedes what it replaced (in a -> b -> c, withdrawing b leaves a "
+            "retired by c). In the fact ledger each fact it alone supported is withdrawn, which "
+            "also undoes the supersession that fact made, and the fact values these sources "
+            "supplied are erased as `recall forget` erases them. A memo forgotten or pruned "
+            "earlier can be withdrawn by the name it had."
+        ),
+        help="erase memory that was a mistake and bring back what it replaced — irreversible",
+    )
+    p_withdraw.set_defaults(_opens_db=True, func=_cmd_withdraw)
+    p_withdraw.add_argument(
+        "sources",
+        nargs="+",
+        help="source value(s) to withdraw, exactly as stored (see the `source` field in "
+        "`recall search` output)",
+    )
+    p_withdraw.add_argument(
+        "--yes",
+        action="store_true",
+        help="actually withdraw. Without this flag, withdraw only PREVIEWS what it would do and "
+        "changes nothing, for the reason `recall forget --yes` gives.",
+    )
+    p_withdraw.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="lite store only: VACUUM the file after the withdrawal, as `recall forget --vacuum` does.",
+    )
 
     p_search = sub.add_parser(
         "search",
@@ -164,18 +220,6 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_search.set_defaults(_opens_db=True, func=_cmd_search)
     p_search.add_argument("query")
     p_search.add_argument("-k", type=int, default=5)
-    p_search.add_argument(
-        "--entail",
-        action="store_true",
-        # No install command in this string, deliberately. argparse wraps help through
-        # `textwrap.wrap`, which defaults to `break_on_hyphens=True`, so `recall-rag[entail]`
-        # renders as `recall-` / `rag[entail]` at COLUMNS 63-69 and 111-123 — including 120,
-        # which is a very common terminal width. A command that arrives pre-broken is worse
-        # than no command. The exact line lives in the ImportError that fires when the extra is
-        # actually missing (`recall/entailment.py`), which argparse never touches.
-        help="opt-in entailment stage: demote hits that don't answer the query "
-        "(requires the entail extra; downloads the QNLI judge on first use)",
-    )
     p_search.add_argument(
         "--evidence",
         action="store_true",
@@ -209,8 +253,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="list the folders or facets you can filter a search by",
         description=(
             "Print what --folder and --facet can be given for this corpus, with the number of "
-            "chunks and documents behind each. Read-only and cheap: no embedder, no query, no "
-            "vectors. Run it before guessing a scope, because a scope that does not exist "
+            "chunks and documents behind each. Cheap and changes no memory: no embedder, no "
+            "query, no vectors (opening a lite file still sets its journal mode and records its "
+            "identity, as every lite command does). Run it before guessing a scope, because a scope that does not exist "
             "returns an empty result and an empty result is also what a corpus with no answer "
             "returns."
         ),
@@ -329,7 +374,7 @@ def _cmd_index(args: argparse.Namespace) -> None:
         if security_policy is not None
         else None
     )
-    with PgVectorStore(
+    with open_legacy_store(
         args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
     ) as store:
         store.check_schema()
@@ -340,42 +385,95 @@ def _cmd_index(args: argparse.Namespace) -> None:
         # Cached by default: re-indexing a corpus is the common case, most of a corpus is
         # unchanged between runs, and an unchanged chunk has one right vector. `RECALL_EMBED_CACHE`
         # names another path or switches it off; see `recall.cache.default_cache_path`.
-        with default_cache() as cache:
-            indexer = Indexer(
-                store,
-                embedder,
-                chunker=chunker,
-                cache=cache,
-                context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-                allow_prune=args.allow_prune,
-                project=args.project,
-                indexed_commit=commit,
-                batch_chunks=args.batch_chunks,
-                security_policy=security_policy,
-                security_context=security_context,
-            )
-            try:
-                stats = indexer.index_path(args.path, glob=args.glob)
-            except PruneGuardTripped as exc:
-                # The message carries the recovery instructions; a traceback would bury them.
-                raise SystemExit(str(exc)) from exc
-            except ConcurrentIndex as exc:
-                # Same reasoning: this is an expected outcome of two sessions closing at once,
-                # not a defect, and its message names the holder and what to do about it.
-                raise SystemExit(str(exc)) from exc
-        # `files` counts what was RE-indexed, not what is in the index, so an unchanged
-        # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
-        # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
-        # reporting it only through a log record meant a deletion could happen in silence.
-        print(_index_summary(stats))
+        # A lite file's write lane is held for the whole run, calibration included, so two
+        # sessions indexing one file take turns (`recall.lite.writer_lock`); Postgres has its own.
+        try:
+            with write_session(store, "index", on_queued=queued_notice("recall index")):
+                with default_cache() as cache:
+                    indexer = Indexer(
+                        store,
+                        embedder,
+                        chunker=chunker,
+                        cache=cache,
+                        context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
+                        allow_prune=args.allow_prune,
+                        project=args.project,
+                        indexed_commit=commit,
+                        batch_chunks=args.batch_chunks,
+                        security_policy=security_policy,
+                        security_context=security_context,
+                    )
+                    try:
+                        stats = indexer.index_path(args.path, glob=args.glob)
+                    except PruneGuardTripped as exc:
+                        # The message carries the recovery instructions; a traceback would bury them.
+                        raise SystemExit(str(exc)) from exc
+                    except ConcurrentIndex as exc:
+                        # Same reasoning: this is an expected outcome of two sessions closing at once,
+                        # not a defect, and its message names the holder and what to do about it.
+                        raise SystemExit(str(exc)) from exc
+                # `files` counts what was RE-indexed, not what is in the index, so an unchanged
+                # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
+                # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
+                # reporting it only through a log record meant a deletion could happen in silence.
+                print(_index_summary(stats))
+                if isinstance(store, LiteStore):
+                    # A lite install has nobody to run a calibration by hand, so indexing fits one
+                    # whenever the corpus changed, and says whether strict search can now answer.
+                    from recall.lite.calibration import ensure_calibrated
+
+                    outcome = ensure_calibrated(store, embedder)
+                    print(f"calibration: {outcome.status.value}: {outcome.reason}")
+                from recall.stated_facts import reconcile_stated_facts
+
+                stated = reconcile_stated_facts(store)
+                # A lite store always says (stating is on there by default); the legacy table
+                # only once the operator turned it on.
+                if stated.enabled or isinstance(store, LiteStore):
+                    print(stated.render())
+        except LiteWriterBusy as exc:
+            raise SystemExit(str(exc)) from exc
+
+
+def _check_lite_forget_target(dsn: str, tenant: str, command: str = "forget") -> None:
+    """Refuse a lite file forget must not open, checked without writing to it.
+
+    Opening a `LiteStore` creates the file, its directories and its schema, and stamps a tenant and
+    a width into it, so a dry run on a mistyped path built a store there and called the source a
+    typo. A missing file, a file that is not a lite store, or another tenant's file is refused
+    untouched instead.
+    """
+    from recall.lite import LITE_DSN_PREFIX
+    from recall.lite.inspect import lite_file_meta
+
+    path = Path(dsn[len(LITE_DSN_PREFIX):])
+    if not path.exists():
+        raise SystemExit(f"{command}: {path} does not exist; nothing deleted or created")
+    meta = lite_file_meta(path)
+    if meta is None or "dim" not in meta:
+        raise SystemExit(f"{command}: {path} is not a lite store (it has no RE-call meta table); nothing deleted or written")
+    if meta.get("tenant") != tenant:
+        raise SystemExit(
+            f"{command}: {path} holds tenant {meta.get('tenant')!r}, not {tenant!r}; pass --tenant "
+            f"{meta.get('tenant')}; nothing deleted"
+        )
 
 
 def _cmd_forget(args: argparse.Namespace) -> None:
+    _cmd_remove(args, withdraw=False)
+
+
+def _cmd_withdraw(args: argparse.Namespace) -> None:
+    _cmd_remove(args, withdraw=True)
+
+
+def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
+    """`recall forget`, or with `withdraw`, `recall withdraw`: one preview-then-erase flow."""
     from recall.generation_store import GenerationStore
     from recall.generations import NoActiveGeneration
 
+    command = "withdraw" if withdraw else "forget"
     route = _runtime_route(args)
-    embedder = _make_embedder(args.embedder)
     security_policy = load_source_policy()
     security_context = (
         access_context_from_environment(args.tenant, purpose="erasure")
@@ -383,6 +481,18 @@ def _cmd_forget(args: argparse.Namespace) -> None:
         else None
     )
     generation_mode = route.uses_generation
+    if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+        raise SystemExit(refusal)
+    if is_lite_dsn(args.dsn):
+        _check_lite_forget_target(args.dsn, args.tenant, command)
+    elif getattr(args, "vacuum", False):
+        raise SystemExit(
+            f"{command}: --vacuum applies to a lite store; on PostgreSQL, VACUUM the fact tables "
+            "yourself (dead row versions stay until it runs); nothing deleted"
+        )
+    # After the refusals: building an embedder loads a model or sends a billed probe, and erasure
+    # embeds nothing; a refused command must not pay for it.
+    embedder = _make_embedder(args.embedder)
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
@@ -391,7 +501,7 @@ def _cmd_forget(args: argparse.Namespace) -> None:
     forget_store: PgVectorStore = (
         gen_store
         if gen_store is not None
-        else PgVectorStore(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
+        else open_legacy_store(args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant)
     )
     with forget_store as store:
         store.check_schema()
@@ -401,7 +511,7 @@ def _cmd_forget(args: argparse.Namespace) -> None:
         # per-source loop, and printed nothing at all.
         if any(not source.strip() for source in requested):
             raise SystemExit(
-                "forget: empty source argument (an unset shell variable?); nothing deleted"
+                f"{command}: empty source argument (an unset shell variable?); nothing deleted"
             )
         if security_policy is not None:
             assert security_context is not None
@@ -411,7 +521,7 @@ def _cmd_forget(args: argparse.Namespace) -> None:
                 if not security_policy.decide(source, security_context).allowed
             ]
             if denied:
-                raise SystemExit("forget: source authorization denied for " + ", ".join(denied))
+                raise SystemExit(f"{command}: source authorization denied for " + ", ".join(denied))
         if gen_store is not None:
             # Widen the existence check, do not drop it, and ask the right question.
             # `source_content_hashes()` is scoped to ONE generation, so FILTERING on it
@@ -431,6 +541,10 @@ def _cmd_forget(args: argparse.Namespace) -> None:
                 | gen_store.manifest_uris_matching(list(requested))
                 | gen_store.sources_in_legacy_table()
             )
+            if withdraw:
+                # A memo every generation lost (forgotten, or left out of a promotion) is still
+                # withdrawable by the name its record keeps.
+                known |= set(gen_store.recorded_sources_for_identifiers(list(requested)))
             targets = [s for s in requested if s in known]
             unseen = [s for s in requested if s not in known]
             unseen_note = (
@@ -442,16 +556,35 @@ def _cmd_forget(args: argparse.Namespace) -> None:
             # tenant owns and an absent source really is a typo. Computed here rather than
             # above because the generation branch never reads it, and on a GenerationStore
             # it costs an active-generation lookup plus a DISTINCT scan.
+            present = getattr(store, "sources_present", None)
             try:
-                visible_now = set(store.source_content_hashes())
+                # A lite store answers from its source index; PostgreSQL lists its sources.
+                visible_now = present(requested) if present is not None else set(store.source_content_hashes())
             except NoActiveGeneration:
                 visible_now = set()
+            if withdraw:
+                visible_now = set(visible_now) | set(store.recorded_sources_for_identifiers(requested))
             targets = [s for s in requested if s in visible_now]
             unseen = [s for s in requested if s not in visible_now]
             unseen_note = f"not found (check for typos): {', '.join(unseen)}"
+        if security_policy is not None and targets:
+            # The names checked above are the sources' own; their rows are authorized by their
+            # `file` (`PgVectorStore.erasure_subjects`), which the policy may deny.
+            assert security_context is not None
+            subjects = store.erasure_subjects(targets, recorded=withdraw)
+            denied = sorted(
+                {
+                    name
+                    for source in targets
+                    for name in subjects.get(source, ())
+                    if not security_policy.decide(name, security_context).allowed
+                }
+            )
+            if denied:
+                raise SystemExit(f"{command}: source authorization denied for " + ", ".join(denied))
         if not args.yes:
             print(
-                f"DRY RUN: would forget {len(targets)} source(s): "
+                f"DRY RUN: would {command} {len(targets)} source(s): "
                 f"{', '.join(targets) if targets else '(none)'}"
             )
             if unseen:
@@ -461,17 +594,26 @@ def _cmd_forget(args: argparse.Namespace) -> None:
             # One source per call: `delete_sources` commits a separate transaction each,
             # so a failure part way through leaves the earlier ones erased. Reporting from
             # a finally means a partial erasure is never silent.
-            if targets:
-                receipt = forget_memory(
-                    store,
-                    targets,
-                    control_plane=ControlPlane(args.dsn) if gen_store is not None else None,
-                    security_policy=security_policy,
-                    security_context=security_context,
-                )
-                print(receipt.message[:1].lower() + receipt.message[1:])
+            # A forget passes an unseen name on too: nothing of it is deleted or tombstoned (it
+            # resolves to no rows), but the facts its memo supplied are retracted and erased,
+            # which is how a forget whose fact erasure failed after its chunks went is completed.
+            # A withdraw does not: an unseen name has no record to withdraw.
+            names = targets if withdraw else [*targets, *unseen]
+            if names:
+                control_plane = ControlPlane(args.dsn) if gen_store is not None else None
+                remove = withdraw_memory if withdraw else forget_memory
+                message = remove(
+                    store, names, control_plane=control_plane,
+                    security_policy=security_policy, security_context=security_context,
+                ).message
+                print(message[:1].lower() + message[1:])
             if unseen:
                 print(unseen_note)
+            if getattr(args, "vacuum", False):
+                vacuum = getattr(store, "vacuum", None)
+                if callable(vacuum):
+                    vacuum()
+                    print("vacuumed the lite store file")
 
 
 def refusal_message(exc: TrustRefusal) -> str:
@@ -536,6 +678,32 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
     # minimal install without optional embedding packages. The sentinel dimension is unused here;
     # schema compatibility is checked by embedding commands that actually consume vectors.
     metadata_dimension = 1
+    if is_lite_dsn(args.dsn):
+        from recall.cli_commands._lite import lite_read_meta
+        from recall.runtime_route import RouteConfigurationError
+
+        try:
+            route = _runtime_route(args)
+        except RouteConfigurationError as exc:
+            raise SystemExit(f"recall scopes: {exc}") from exc
+        if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+            raise SystemExit(refusal)
+        meta = lite_read_meta("recall scopes", args)
+        if meta is None:
+            # Listing must not create the file.
+            _print_scopes(args.dimension, [], 0)
+            return
+        path = lite_dsn_path(args.dsn)
+        if meta.get("tenant") != args.tenant:
+            # As on PostgreSQL, a tenant with no rows lists nothing; a lite file holds one tenant.
+            held = terminal_safe(meta.get("tenant"))
+            print(f"{path} holds tenant {held!r}; pass --tenant {held} to list it", file=sys.stderr)
+            _print_scopes(args.dimension, [], 0)
+            return
+        with open_legacy_store(args.dsn, dim=int(meta["dim"]), table=args.table, tenant=args.tenant) as store:
+            rows, undeclared = cast("LiteStore", store).scope_summary(args.dimension)
+        _print_scopes(args.dimension, rows, undeclared)
+        return
     if env_is_production():
         from recall.generation_store import GenerationStore
 
@@ -549,17 +717,21 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
     with store_context as store:
         rows = store.scope_inventory(args.dimension)
         undeclared = store.scope_undeclared_count(args.dimension)
+    _print_scopes(args.dimension, rows, undeclared)
 
-    label = "folder" if args.dimension == "folder" else "facet"
+
+def _print_scopes(dimension: str, rows: list[tuple[str, int, int]], undeclared: int) -> None:
+    label = "folder" if dimension == "folder" else "facet"
     if not rows:
         print(f"no {label} values in this corpus")
     else:
-        width = max(len(value) if value else len("(root)") for value, _c, _d in rows)
+        # Values come from indexed metadata, so a file name or facet can carry terminal escapes:
+        # printed as text, never interpreted. The root folder's value is the empty string, which
+        # prints as nothing and reads as a rendering bug, so it is named.
+        shown_rows = [(terminal_safe(value) if value else "(root)", chunks, documents) for value, chunks, documents in rows]
+        width = max(len(shown) for shown, _c, _d in shown_rows)
         print(f"{label:<{width}}  {'chunks':>7}  {'docs':>5}")
-        for value, chunks, documents in rows:
-            # The root folder's value is the empty string, which prints as nothing and reads as a
-            # rendering bug. Named, so the listing shows every value it counted.
-            shown = value if value else "(root)"
+        for shown, chunks, documents in shown_rows:
             print(f"{shown:<{width}}  {chunks:>7}  {documents:>5}")
     if undeclared:
         # Stated as its own line, never as a row: "no facet" is not a facet, and a corpus indexed
@@ -584,6 +756,9 @@ def _search_scope(args: argparse.Namespace) -> Scope | None:
 
 
 def _cmd_search(args: argparse.Namespace) -> None:
+    # First, before any model or database work: a configuration that still asks for the removed
+    # entailment judge is refused rather than served the wider, unjudged results.
+    _refuse_removed_entailment()
     route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
@@ -599,17 +774,8 @@ def _cmd_search(args: argparse.Namespace) -> None:
     # `recall calibrate` writes is therefore not read back by this path. Resolve that by
     # deciding where install-time calibration binds, not by reinstating the line below.
     calibration = None
-    # `resolve_entailment_judge` reads RECALL_ENTAILMENT (the opt-in the setup wizard
-    # writes) plus RECALL_ENTAILMENT_MODEL / _REVISION. Constructing QnliEntailmentJudge()
-    # directly ignored all three, so a pinned model was silently replaced by the default
-    # download. The explicit --entail flag still forces it on when the env says nothing.
-    # `--entail` resolves with the opt-in FORCED and never consults the env's own value,
-    # so a malformed RECALL_ENTAILMENT cannot defeat an explicit flag. Checking the plain
-    # resolver first would refuse before the flag was ever considered. Forcing goes THROUGH
-    # the resolver rather than constructing the judge bare, because the bare form ignores
-    # RECALL_ENTAILMENT_MODEL/_REVISION — the defect this block exists to fix. `recall
-    # setup` writes RECALL_ENTAILMENT="0", so the forcing path is the common one.
-    entail_judge = _entailment_judge(force=True) if args.entail else _entailment_judge()
+    if (refusal := lite_route_refusal(args.dsn, route)) is not None:
+        raise SystemExit(refusal)
     if route.uses_generation:
         from recall.generation_store import GenerationStore
 
@@ -617,7 +783,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
             args.dsn, embedder.dim, tenant=args.tenant
         )
     else:
-        store_context = PgVectorStore(
+        store_context = open_legacy_store(
             args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
         )
     with store_context as store:
@@ -648,7 +814,6 @@ def _cmd_search(args: argparse.Namespace) -> None:
                 k=max(1, args.k),
                 scope=_search_scope(args),
                 calibration=_search_calibration,
-                entailment=entail_judge,
                 policy=_search_policy,
                 security_policy=source_security_policy,
                 access_context=source_access_context,
@@ -678,10 +843,10 @@ def _cmd_demo(args: argparse.Namespace) -> None:
     calibration = None
     if route.uses_generation:
         raise SystemExit(f"{route.describe()}: the filesystem demo is unavailable")
-    # Resolved BEFORE the store opens and the corpus is indexed: a bad
-    # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
+    # Checked BEFORE the store opens and the corpus is indexed: a configuration that still asks
+    # for the removed entailment judge is refused, and failing after the expensive work is the
     # shape `search` already avoids.
-    _demo_judge = _entailment_judge()
+    _refuse_removed_entailment()
     with PgVectorStore(
         args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
     ) as store:
@@ -706,7 +871,6 @@ def _cmd_demo(args: argparse.Namespace) -> None:
                 "how do we handle llamas on mars?",
             ],
             calibration,
-            _demo_judge,
         )
 
 
@@ -719,10 +883,10 @@ def _cmd_code(args: argparse.Namespace) -> None:
         raise SystemExit(f"{route.describe()}: local source indexing is unavailable")
     # index recall's own package source (content-agnostic engine, code-aware chunking)
     src = Path(__file__).resolve().parents[1]
-    # Resolved BEFORE the store opens and the corpus is indexed: a bad
-    # RECALL_ENTAILMENT value raises, and failing after the expensive work is the
+    # Checked BEFORE the store opens and the corpus is indexed: a configuration that still asks
+    # for the removed entailment judge is refused, and failing after the expensive work is the
     # shape `search` already avoids.
-    _demo_judge = _entailment_judge()
+    _refuse_removed_entailment()
     with PgVectorStore(
         args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
     ) as store:
@@ -743,7 +907,6 @@ def _cmd_code(args: argparse.Namespace) -> None:
                 "how does cross-encoder reranking reorder hits?",
             ],
             calibration,
-            _demo_judge,
         )
 def _runtime_route(args: argparse.Namespace) -> RuntimeRoute:
     """Use the route resolved by `recall.cli`, with a library-test fallback."""

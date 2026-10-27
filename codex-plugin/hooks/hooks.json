@@ -16,7 +16,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|BashOutput",
+        "matcher": "^(Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|BashOutput|apply_patch)$",
         "hooks": [
           {
             "type": "command",
@@ -64,6 +64,33 @@
             "args": ["session-end"],
             "timeout": 15,
             "statusMessage": "Indexing session into recall"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Bash|PowerShell)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-codex-hooks",
+            "args": ["post-tool-use"],
+            "timeout": 5,
+            "statusMessage": "Checking lessons after shell failures"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "recall-codex-hooks",
+            "args": ["subagent-start"],
+            "timeout": 5,
+            "statusMessage": "Adding prior bugs to auditor context"
           }
         ]
       }

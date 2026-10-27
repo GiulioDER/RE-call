@@ -3,6 +3,54 @@
 This is the detailed environment reference. The root `.env.example` keeps the short copyable
 template, while this file records the operational rationale behind each group.
 
+## Lite store and maintenance
+
+See [LITE.md](LITE.md) for source installation, client configuration, updates, and backup and restore.
+Lite setup prints the absolute SQLite DSN and configured diagnostic commands. The CLI does not
+read the MCP registration, so apply those settings when running CLI searches or doctor.
+
+| Variable | Default or setup value | Purpose |
+|---|---|---|
+| `RECALL_SERVING_DSN` | Setup prints `sqlite:///<absolute-path>` | Select the local store; use the same file in every client and CLI command. |
+| `RECALL_INDEX_ROOT` | The folder passed to Lite setup | Memo root for automatic refresh and source names. |
+| `RECALL_TRUST_MODE` | Setup writes `strict` | Require certification; do not relax it to hide a calibration failure. |
+| `RECALL_ENV` | Setup writes `development` | Local operating mode, separate from strict trust. |
+| `RECALL_INDEX_MODE` | Setup writes `legacy` | Lite uses its single-file corpus, not PostgreSQL generations. |
+| `RECALL_LITE_AUTO_REFRESH` | On | Refresh at MCP startup and before retrieval when memos changed; `0` disables both triggers. |
+| `RECALL_LITE_REFRESH_INTERVAL` | `30` seconds | Minimum interval between checks before retrieval. |
+| `RECALL_LITE_REFRESH_WAIT` | `3` seconds | How long a retrieval waits for a detected refresh. |
+| `RECALL_LITE_WRITE_WAIT` | `300` seconds | Maximum wait in the local writer queue. |
+| `RECALL_LITE_REFIT_WAIT` | `120` seconds | Maximum wait in the separate calibration queue. |
+| `RECALL_INDEX_MAX_FILES` | `2000` | File budget for automatic refresh and MCP indexing. |
+| `RECALL_INDEX_MAX_BYTES` | `20000000` bytes | Byte budget for automatic refresh and MCP indexing. |
+
+Set refresh overrides in the MCP server environment and restart the client. Manual
+`recall lite refresh --store <file> --memory <folder>` warns and proceeds when the folder exceeds
+the indexing budgets; `--check` writes nothing. A refresh failure appears in `refresh_warning`,
+doctor, and `recall_stats`. See [API.md](API.md) for command results and refusal behavior.
+
+## Unknown-term vocabulary gate
+
+`RECALL_UNKNOWN_TERM_GATE` defaults to `1`. Set it to `0`, `false`, `no`, or `off` to disable it;
+matching ignores case and surrounding whitespace. Other values enable it. Library callers may
+pass an explicit environment mapping, which takes precedence over the process environment.
+
+The gate checks entity-like query tokens against the entire Lite FTS5 vocabulary using its own
+tokenizer and stemming. Tokens have at least three characters and contain a letter and a digit,
+are all-capital names, or contain an inner capital. Plain words are not checked. An absent token
+demotes otherwise `ok` hits to `unknown_term` and abstains. It is a vocabulary heuristic and
+cannot establish that a passage states an answer, resolve aliases, or reject every near-miss.
+
+A PostgreSQL generation store checks the same tokens against the active generation's full-text
+index (`tsv`) with that generation's text configuration. A token the configuration drops entirely
+(a stop word in capitals) is never reported absent. The legacy PostgreSQL route lacks the
+capability and reports `unknown_term_check="unavailable"`.
+Constrained source, folder, facet or authorization searches also report `unavailable` because
+consulting a global vocabulary could disclose excluded sources. Their verdicts stay unchanged.
+Completed, disabled and unreached checks report `checked`, `disabled` and `not_run`, respectively.
+Search and evidence responses carry these states plus `unknown_terms`; an unavailable check is
+not a claim that a term is absent. Calibration and strict trust refusal remain independent.
+
 ## Root Template Notes
 
 Copy `.env.example` to `.env` and fill it in. The `.env` file is only read by local entry points via
@@ -41,6 +89,9 @@ OPENROUTER_API_KEY=
 # RECALL_EMBEDDER=gemini-embedding-2 # OpenRouter google/gemini-embedding-2
 # RECALL_EMBEDDER=openrouter:<provider/model>  # any other OpenRouter embedding model
 # RECALL_EMBED_DIMENSIONS=1536       # optional for OpenAI-compatible embedders
+# RECALL_EMBEDDER=st-prompted:<hf-id>  # a local model with its published query/document prompts,
+#                                    # pinned in recall/embedding_prompts.py; its own name and
+#                                    # fingerprint, never the same identity as st:<hf-id>
 # RECALL_EMBEDDER=sfr-code           # Salesforce/SFR-Embedding-Code-2B_R, research/Gemma terms
 # RECALL_ACCEPT_RESEARCH_MODEL_LICENSE=1
 # RECALL_ACCEPT_REMOTE_MODEL_CODE=1  # required only for models that need trust_remote_code
@@ -134,6 +185,11 @@ OPENROUTER_API_KEY=
 #                                                      # as a 1000x understatement.
 #                                                      # REFUSED under PROVIDER=ollama, where
 #                                                      # inference is local and cost is 0.0.
+# RECALL_REASONING_ANSWER_PROFILE=dated                # dated (default) | plain | dated-premise.
+#                                                      # dated-premise is opt-in: a question that
+#                                                      # assumes a state the evidence shows has
+#                                                      # changed gets outcome `corrected` with a
+#                                                      # cited `premise_correction` (docs/REASONING_API.md).
 #
 # For PROVIDER=openai the bare legacy RECALL_REASONING_BASE_URL and RECALL_REASONING_TIMEOUT are
 # accepted as fallbacks alongside the legacy key, as a matched TRIO. Taking only the legacy key
@@ -317,6 +373,12 @@ OPENROUTER_API_KEY=
 # artifact tree to point at and no bytes to hash, so RECALL_MODEL_CACHE and RECALL_MODEL_SHA256
 # are not merely optional here, they are refused.
 #   voyage-code-3-v1, voyage-3-v1                      RECALL_EMBEDDER=voyage,     VOYAGE_API_KEY
+#   voyage-4-retrieval-v1, voyage-4-large-retrieval-v1, voyage-code-3-retrieval-v1
+#     The same RECALL_EMBEDDER=voyage selection, with Voyage's input_type sent ("query" for
+#     queries, "document" for passages), which Voyage recommends for retrieval. Use these for a
+#     NEW corpus or a model comparison. They are not interchangeable with the untyped ids above:
+#     a corpus built under one is served under that same id. A `voyage:<model>` spelling with no
+#     RECALL_EMBED_PROFILE stays untyped.
 #   voyage-multimodal-3.5-v1                            RECALL_EMBEDDER=voyage-multimodal, VOYAGE_API_KEY
 #   openai-text-embedding-3-small-v1                   RECALL_EMBEDDER=openai      OPENROUTER_API_KEY
 #   openai-text-embedding-3-large-v1                     or =openrouter

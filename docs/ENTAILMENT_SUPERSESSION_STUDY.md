@@ -1,5 +1,9 @@
 # What the comments taught me: entailment vs. threshold, and write-time supersession
 
+> **Historical.** The QNLI entailment stage this study describes was removed from RE-call on
+> 2026-10-01 (see the CHANGELOG). The measurements below are kept as the record of what it did;
+> the install command and the `recall/entailment.py` references no longer apply.
+
 > Phase-0 study of the two strongest objections raised against the RE-call design — run on the
 > same harness, reported whether the numbers flattered the objections or not.
 

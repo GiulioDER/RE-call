@@ -38,6 +38,7 @@ from recall_aml.window_compose import render_facts
 MULTIMODAL_EMBEDDING_MODEL = "voyage-multimodal-3.5"
 MULTIMODAL_EMBEDDING_PROFILE = "voyage-multimodal-3.5-v2"
 MULTIMODAL_DIMENSION = 1024
+#: Reciprocal rank fusion (G. V. Cormack, C. L. A. Clarke and S. Büttcher, SIGIR 2009).
 MULTIMODAL_RRF_CONSTANT = 60
 RAW_SEGMENT_CHARS = 4_500
 MAX_RESPONSE_MEDIA_BYTES = 30 * 1024 * 1024

@@ -106,7 +106,7 @@ def test_the_operator_still_gets_the_full_path_in_the_log(tmp_path, monkeypatch,
     monkeypatch.setenv("RECALL_INDEX_ROOT", str(root))
 
     with caplog.at_level("WARNING", logger="recall.mcp.service"):
-        with pytest.raises(Exception):
+        with pytest.raises((PruneGuardTripped, ValueError)):
             index_memory(store, _NullEmbedder(), str(root))
 
     assert "server-side-corpus-directory" in caplog.text, "the operator lost the diagnosis"

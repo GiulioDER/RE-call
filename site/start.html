@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://giulioder.github.io/RE-call/start.html">
 <title>Install RE-call · Setup guide</title>
-<meta name="description" content="The complete RE-call install: start the database, install the package, run the wizard, index your first memory, and connect Claude Code. To just see it work first, run recall quickstart.">
+<meta name="description" content="Install RE-call Lite with local SQLite memory and automatic refresh, or choose PostgreSQL for shared serving. Includes updates, backups, and client setup.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
@@ -20,6 +21,7 @@
     <nav>
       <a href="download.html">Download</a>
       <a href="readme.html">README</a>
+      <a href="how-it-works.html">How it works</a>
       <a href="start.html" aria-current="page">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
@@ -56,24 +58,71 @@
   <p class="eyebrow">The install path</p>
   <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 18ch; margin-bottom: 1.5rem;">From nothing to a memory that answers you.</h1>
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
-  <p class="lede">This is the full install: your own notes, a threshold fitted to them, and Claude Code wired up. Do the steps in order. Each one gives you something you can check before moving on, so you never get three steps deep before finding out something went wrong.</p>
+  <p class="lede">Start with Lite for one project on your machine: a SQLite file, local embeddings, and automatic memo refresh. Choose PostgreSQL for immutable generations, multiple tenants, or authenticated serving.</p>
 
   <div class="notice" style="margin-top: 2rem;">
-    <p class="notice-title">Only want to see whether it works? Two commands will do that</p>
-    <p><code>pip install "recall-rag[fastembed]"</code> then <code>recall quickstart</code> starts its own database, indexes a sample corpus and answers three questions. It calibrates nothing and wires nothing, so it is a demonstration rather than an install, and <code>recall quickstart --remove</code> deletes everything it created. Come back here when you want it pointed at your own notes.</p>
+    <p class="notice-title">Choose your edition</p>
+    <p><a href="#lite">Install Lite</a> for local memory without Docker, or <a href="#postgresql">follow the PostgreSQL guide</a> below. The separate <code>recall quickstart</code> demo needs Docker or an existing PostgreSQL database and is not a prerequisite for Lite.</p>
   </div>
 
   <div class="notice notice--signal" style="margin-top: 2rem;">
-    <p class="notice-title">The current release uses the same install path on every platform</p>
-    <p>The current GitHub release does not include a standalone Windows installer. Use the PyPI install below on Windows, macOS or Linux, then run the guided setup. See the <a href="download.html">current release page</a> for package links.</p>
+    <p class="notice-title">Lite needs the source build</p>
+    <p>The published <code>0.14.0</code> PyPI wheel predates Lite. Use the source installation below for Lite; the PyPI commands in the PostgreSQL guide install the published server edition. There is no standalone Windows installer in that release.</p>
   </div>
+</section>
+
+
+<section id="lite" class="band band--tint">
+  <div class="shell-narrow">
+    <p class="eyebrow eyebrow--signal">RE-call Lite</p>
+    <h2>One project's memory in one local file.</h2>
+    <p>You need Python 3.11 or newer, Git, and a folder of Markdown memos. Lite needs no PostgreSQL server or Docker. The first local embedding run downloads model files.</p>
+    <h3>Install the source build</h3>
+    <div class="terminal terminal--command" data-os-group><div class="terminal-bar"><div class="terminal-tabs" role="tablist" aria-label="Operating system"><button class="terminal-tab" type="button" role="tab" data-os="windows">Windows</button><button class="terminal-tab" type="button" role="tab" data-os="macos">macOS</button><button class="terminal-tab" type="button" role="tab" data-os="linux">Linux</button></div><button class="copy-button" type="button">Copy</button></div><div class="terminal-body"><div data-os-pane="windows" role="tabpanel"><pre><span class="line">git clone https://github.com/GiulioDER/RE-call.git re-call</span><span class="line">cd re-call</span><span class="line">python -m venv .venv</span><span class="line">.\.venv\Scripts\Activate.ps1</span><span class="line">python -m pip install &quot;.[fastembed,mcp]&quot;</span></pre></div><div data-os-pane="macos" role="tabpanel" hidden><pre><span class="line">git clone https://github.com/GiulioDER/RE-call.git re-call</span><span class="line">cd re-call</span><span class="line">python3 -m venv .venv</span><span class="line">. .venv/bin/activate</span><span class="line">python -m pip install &quot;.[fastembed,mcp]&quot;</span></pre></div><div data-os-pane="linux" role="tabpanel" hidden><pre><span class="line">git clone https://github.com/GiulioDER/RE-call.git re-call</span><span class="line">cd re-call</span><span class="line">python3 -m venv .venv</span><span class="line">. .venv/bin/activate</span><span class="line">python -m pip install &quot;.[fastembed,mcp]&quot;</span></pre></div></div></div>
+    <h3>Point it at your notes</h3>
+    <p>Keep this environment active, change to your own project, and create a <code>notes</code> folder or choose an existing memo folder. Replace <code>./notes</code> below if needed. Keep the installed environment at this path, since the client uses its Python interpreter.</p>
+    <div class="terminal terminal--command">
+        <div class="terminal-bar"><span class="terminal-label">From your own project, with the environment active</span><button class="copy-button" type="button">Copy</button></div>
+        <div class="terminal-body"><pre><span class="line">recall setup --help</span><span class="line">recall setup --lite --memory ./notes</span></pre></div>
+      </div>
+    <p>The help must list <code>--lite</code>. Setup creates <code>.recall/memory.db</code>, indexes your notes, attempts automatic calibration, and registers <code>recall-memory</code> with Claude Code for this project. Inspect the calibration and registration results, then restart Claude Code in the same project.</p>
+    <div class="notice notice--signal">
+      <p class="notice-title">Indexed does not always mean certified</p>
+      <p>Strict trust stays on. A small or unsuitable corpus may not certify yet. Read the calibration reason, add substantive memos, and refresh. Keep <code>RECALL_TRUST_MODE=strict</code>; the separate local setting <code>RECALL_ENV=development</code> does not turn trust off.</p>
+    </div>
+    <p>Add <code>.recall/</code> to your project's <code>.gitignore</code>, since it contains memo text, vectors, and SQLite sidecars. Keep the database on a local disk. Multiple clients on this machine can share it through queued writes; network shares and writers on different machines are unsupported.</p>
+    <h3>Check the store and connect clients</h3>
+    <p>Use the configured doctor and read-only dashboard commands printed by setup. A plain <code>recall doctor</code> in a fresh shell can inspect PostgreSQL instead: the CLI does not read the MCP client's registered environment. Apply setup's printed settings for CLI searches too.</p>
+    <p>Lite setup registers Claude Code only. For CLI use or another MCP client, add <code>--no-register</code>. Codex and Claude Desktop can launch the same stdio server using the absolute interpreter, SQLite DSN, and memo root from setup; follow <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md#connect-another-client">the client wiring guide</a>. The plugin and its hooks are optional and separate.</p>
+    <h3 id="lite-maintenance">Keep it current</h3>
+    <p>Edit your memos normally. The MCP server refreshes on startup and checks for changes before searches, re-indexing changed content and refitting calibration when needed. For a manual check or refresh, keep the memo folder explicit:</p>
+    <div class="terminal terminal--command">
+        <div class="terminal-bar"><span class="terminal-label">From your project</span><button class="copy-button" type="button">Copy</button></div>
+        <div class="terminal-body"><pre><span class="line">recall lite refresh --store .recall/memory.db --memory ./notes --check</span><span class="line">recall lite refresh --store .recall/memory.db --memory ./notes</span></pre></div>
+      </div>
+    <p>A check exits <code>0</code> when current and <code>1</code> for changed, never refreshed, or missing input. A writing refresh returns <code>0</code> for refreshed, unchanged, or coalesced work, <code>1</code> for failure, and <code>3</code> when busy. Read its calibration result separately. Failed automatic refreshes appear as <code>refresh_warning</code>, in doctor, and in <code>recall_stats</code>.</p>
+    <h3>Update and back up</h3>
+    <p>Back up the original memos and the store. Stop all clients, refresh jobs, and dashboards before copying the entire <code>.recall/</code> directory, including any remaining SQLite sidecars. The database also holds fact ledger data that re-indexing notes alone does not recreate.</p>
+    <p>To update, read the changelog, stop clients, activate the same environment, and run from the clean source clone:</p>
+    <div class="terminal terminal--command">
+        <div class="terminal-bar"><span class="terminal-label">From the clean source clone, with the environment active</span><button class="copy-button" type="button">Copy</button></div>
+        <div class="terminal-body"><pre><span class="line">git pull --ff-only</span><span class="line">python -m pip install --upgrade &quot;.[fastembed,mcp]&quot;</span></pre></div>
+      </div>
+    <p>Return to your project, repeat setup with the same memo folder and store, inspect the report, and restart clients. Use the printed doctor command and freshness check. Keep the same embedder; choose a separate store when changing models.</p>
+    <p>The <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md">Lite guide</a> covers restore, custom store paths, refresh budgets, and troubleshooting. Need shared serving, authentication, or generations? Continue with PostgreSQL below.</p>
+  </div>
+</section>
+<section id="postgresql" class="shell" style="padding-block: 3rem;">
+  <p class="eyebrow">PostgreSQL edition</p>
+  <h2>A database server for shared memory and immutable generations.</h2>
+  <p>The remaining steps use PostgreSQL with pgvector. Docker is one way to provide it; an existing compatible database works too. Lite users can finish above.</p>
 </section>
 
 <div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
 
   <!-- Progress rail -->
   <aside class="rail" data-rail>
-    <p class="rail-title">Progress</p>
+    <p class="rail-title">PostgreSQL steps</p>
     <ol>
       <li><a href="#step-1">Start the database</a></li>
       <li><a href="#step-2">Install RE-call</a></li>
@@ -95,7 +144,7 @@
         <h2>Before you start</h2>
       </div>
       <div class="step-body">
-        <p class="step-what">You need two things installed, and a terminal open. On Windows that is PowerShell, on macOS and Linux it is Terminal. Everything below is typed there.</p>
+        <p class="step-what">For the PostgreSQL path below, you need Python, a database, and a terminal open. On Windows that is PowerShell, on macOS and Linux it is Terminal. Everything below is typed there.</p>
 
         <div class="table-wrap">
           <table>
@@ -334,11 +383,6 @@
                   <td>Choose the sparse retrieval backend</td>
                   <td><strong>1</strong>, postgres fts</td>
                   <td>Uses the database you already have. The alternative needs an NVIDIA GPU.</td>
-                </tr>
-                <tr>
-                  <td>Enable the entailment judge?</td>
-                  <td><strong>N</strong></td>
-                  <td>An extra check on whether a result really supports an answer. Useful later, another model download now. You may not be asked this at all.</td>
                 </tr>
                 <tr>
                   <td>Enable the optional reasoning arm?</td>
@@ -708,7 +752,7 @@ refuses rather than assuming it.</span>
       <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
       <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
     </nav>
-    <small>PolyForm Noncommercial</small>
+    <small>AGPL-3.0 or commercial license</small>
   </div>
 </footer>
 

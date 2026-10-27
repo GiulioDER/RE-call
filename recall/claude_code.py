@@ -59,7 +59,7 @@ import os
 import shutil
 import sys
 
-from recall.store import DEFAULT_TABLE
+from recall.db_constants import DEFAULT_TABLE
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -87,6 +87,12 @@ HOOK_MODULE = "recall_hooks"
 #: room for a slow first connection without letting a wedged database stall a session; the
 #: handler's own cooldown is what stops the unreachable case repeating on every call.
 PRE_TOOL_USE_TIMEOUT_SECONDS = 5
+
+#: A PostToolUseFailure hook runs only after a shell command failed, and the agent waits on it.
+#: Measured 2026-10-23: 300.8 ms median for the whole process against a 30-entry index, of which
+#: about 285 ms is interpreter and package import. Five seconds matches PreToolUse and leaves a
+#: wide margin for a larger index without letting a stuck hook hold the session.
+POST_TOOL_USE_FAILURE_TIMEOUT_SECONDS = 5
 
 #: A session-start hook runs before the user's first turn, so its cost is felt every single time
 #: Claude opens. The documented default timeout is 600 seconds, which for this event is a way to
@@ -495,13 +501,36 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                 # Alphabetic, `|`-separated: a matcher of only letters, digits, `_`, `-`, spaces,
                 # `,` and `|` is read as exact strings rather than as a regular expression, and
                 # adding a `.` or `*` would silently move it onto the regex path.
-                "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|BashOutput",
+                #
+                # `PowerShell` is the shell tool on Windows without Git Bash, and a hook matching
+                # only `Bash` never fires there. Write time ignores it (it reads `Bash` commands
+                # only); general knowledge matches its command like any other shell's.
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash|BashOutput|PowerShell",
                 "hooks": [
                     {
                         "type": "command",
                         "command": python_executable,
                         "args": ["-m", HOOK_MODULE, "pre-tool-use"],
                         "timeout": PRE_TOOL_USE_TIMEOUT_SECONDS,
+                    }
+                ],
+            }
+        ],
+        # General knowledge after a shell command FAILED: the error text is ranked against the
+        # operator's entries (see `recall_hooks/general_knowledge.py`). Without an index it injects
+        # no context, but still logs the signature when enabled. It fires only on a failure, so
+        # a command that succeeds never
+        # starts this interpreter. Synchronous, because `additionalContext` that arrives after the
+        # next turn has started is context the model never saw.
+        "PostToolUseFailure": [
+            {
+                "matcher": "Bash|PowerShell",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": python_executable,
+                        "args": ["-m", HOOK_MODULE, "post-tool-use-failure"],
+                        "timeout": POST_TOOL_USE_FAILURE_TIMEOUT_SECONDS,
                     }
                 ],
             }
@@ -780,6 +809,26 @@ def _write_hook_config(
         # over the network with the draft; `prompt_time` reads local memo files with the prompt.
         "prompt_time": {"enabled": bool(prompt_time)},
     }
+    # The `general_knowledge` block is the operator's, not the installer's: no install option sets
+    # it, and an absent block means ENABLED, so rewriting the file without it would turn an explicit
+    # `enabled: false` back on at the next install or upgrade. Carry it forward exactly as found
+    # (even malformed, since a malformed block also means off). A missing file carries nothing.
+    #
+    # A file that EXISTS but cannot be read or parsed, or is not an object, is read by the hook as
+    # general knowledge OFF (only a missing file means the enabled default). Rewriting it clean
+    # without a block would switch injection on, so that state is written down explicitly instead.
+    previous: Any = None
+    unreadable = False
+    try:
+        previous = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        previous = None
+    except (OSError, ValueError, RecursionError):
+        unreadable = True
+    if isinstance(previous, dict) and "general_knowledge" in previous:
+        config["general_knowledge"] = previous["general_knowledge"]
+    elif unreadable or (previous is not None and not isinstance(previous, dict)):
+        config["general_knowledge"] = {"enabled": False}
     _write_json(path, config)
     try:
         path.chmod(0o600)

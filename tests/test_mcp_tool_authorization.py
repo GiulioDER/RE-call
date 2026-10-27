@@ -94,6 +94,7 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     ),
     "recall_current_facts": (SCOPE_READ, "read", {}),
     "recall_related": (SCOPE_READ, "read", {"seed_chunk_id": "c1"}),
+    "recall_records": (SCOPE_READ, "read", {"ids": ["RE-call:x:BUG-1"]}),
     "recall_current_state": (SCOPE_READ, "read", {}),
     "recall_reasoning_query": (SCOPE_READ, "read", {"query": "q"}),
     "recall_query_construction_challenge": (
@@ -114,12 +115,27 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     "recall_job_status": (SCOPE_READ, "read", {"job_id": "job-1"}),
     "recall_calibration_status": (SCOPE_READ, "read", {}),
     "recall_index": (SCOPE_WRITE, "write", {"path": "corpus"}),
+    # WRITE: it adds a row to the review queue. It never edits a memo; a person does that later.
+    "recall_report_stale": (
+        SCOPE_WRITE,
+        "write",
+        {
+            "stale_source": "old.md",
+            "replacing_source": "new.md",
+            "stale_quote": "an outdated statement of the fact",
+            "current_quote": "the statement that replaces it",
+        },
+    ),
+    # WRITE: it appends one row to the audit ledger. It never edits a memo or a verdict.
+    "recall_report_use": (SCOPE_WRITE, "write", {"task": "fix the port", "effect": "no_difference"}),
     "recall_ingest": (SCOPE_WRITE, "write", {"files": [{"name": "memo.md", "content_b64": "bWVtb3J5"}]}),
     "recall_calibration_run": (SCOPE_WRITE, "write", {}),
     # ADMIN, not write: publishing flips what the whole tenant serves. `run` stays write
     # because it produces a draft and changes nothing served.
     "recall_calibration_publish": (SCOPE_ADMIN, "admin", {"calibration_id": "cal-1"}),
     "recall_forget": (SCOPE_FORGET, "forget", {"sources": ["f.md"]}),
+    # FORGET, as recall_forget: it erases the memo first, and only then differs in what it gives back.
+    "recall_withdraw": (SCOPE_FORGET, "forget", {"sources": ["f.md"]}),
 }
 CASES = [pytest.param(name, id=name) for name in TOOLS]
 
@@ -144,7 +160,7 @@ _OTHER = "globex"
 #: dual-write). Deliberately a fixed anchor rather than a derivation — see assertion (b) in
 #: `test_a_tool_resolves_every_store_it_touches_for_the_callers_own_tenant` for why a derived version
 #: cannot catch the deletion it exists to catch.
-_DUAL_WRITING_TOOLS = {"recall_index", "recall_forget"}
+_DUAL_WRITING_TOOLS = {"recall_index", "recall_forget", "recall_withdraw"}
 
 
 def _service_entry_points() -> tuple[str, ...]:
@@ -171,8 +187,11 @@ def _service_entry_points() -> tuple[str, ...]:
         provenance,
         reasoning_admin,
         reasoning_api,
+        related_api,
         retrieval,
+        stale_reports_api,
         status,
+        use_reports_api,
     )
 
     boundary_modules = {
@@ -184,8 +203,11 @@ def _service_entry_points() -> tuple[str, ...]:
         provenance.__name__,
         reasoning_admin.__name__,
         reasoning_api.__name__,
+        related_api.__name__,
         retrieval.__name__,
+        stale_reports_api.__name__,
         status.__name__,
+        use_reports_api.__name__,
     }
     names = []
     for name in dir(service_module):

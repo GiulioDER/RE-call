@@ -35,3 +35,15 @@ def test_the_description_is_verbatim_from_the_server_docstring(description: str)
         "recall_agent._descriptions has drifted from the recall_mcp/server.py docstring; "
         "update whichever surface changed so both say the same thing"
     )
+
+
+def test_search_description_qualifies_historical_citations() -> None:
+    """DOC-001: models must receive the same conditional historical contract as the response.
+
+    Red proof: PR HEAD 0367a335's exposed search description unconditionally forbids historical
+    citations, failing the assertion 'tool description omits historical eligibility'.
+    The existing parity test independently pins the canonical MCP source to this description.
+    """
+    assert "historical.candidates" in RECALL_SEARCH_DESCRIPTION, (
+        "tool description omits historical eligibility")
+    assert "valid_from" in RECALL_SEARCH_DESCRIPTION and "valid_until" in RECALL_SEARCH_DESCRIPTION

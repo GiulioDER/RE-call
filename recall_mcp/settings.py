@@ -17,6 +17,10 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from recall.multimodal import MultimodalTenantConfig
+from recall.ops.secret_mapping import (  # noqa: F401  # re-exported
+    SECRET_DESTINATIONS,
+    secret_mapping_from_env,
+)
 from recall.paged_evidence import paged_evidence_mode
 from recall.federation import FederationConfig
 from recall.trust_policy import TrustPolicy
@@ -30,24 +34,6 @@ DEFAULT_MAX_TENANTS = 1000
 DEFAULT_READINESS_TENANT_PROBES = 3
 MAX_READINESS_TENANT_PROBES = 10
 DEFAULT_STATEMENT_TIMEOUT_MS = 15_000
-
-# These are the only process environment destinations that may receive a value fetched from AWS.
-# In particular, deployment mode, trust policy, authentication selectors and OIDC policy are not
-# secret destinations and cannot be overridden by a secret payload.
-SECRET_DESTINATIONS = frozenset(
-    {
-        "RECALL_SERVING_DSN",
-        "RECALL_MIGRATION_DSN",
-        "RECALL_FACT_WRITE_DSN",
-        "RECALL_REDIS_URL",
-        "VOYAGE_API_KEY",
-        "OPENROUTER_API_KEY",
-        "OPENAI_API_KEY",
-        "RECALL_REASONING_EXPANSION_API_KEY",
-        "RECALL_REASONING_ANSWER_API_KEY",
-    }
-)
-
 
 @dataclass(frozen=True)
 class EnvironmentSpec:
@@ -69,7 +55,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_SERVING_DSN", "Core runtime", "serving database URL", secret=True),
     EnvironmentSpec("RECALL_MIGRATION_DSN", "Core runtime", "migration database URL", secret=True),
     EnvironmentSpec("RECALL_FACT_WRITE_DSN", "Core runtime", "isolated fact write database URL", secret=True),
-    EnvironmentSpec("RECALL_DSN", "Core runtime", "legacy database URL alias"),
+    EnvironmentSpec("RECALL_DSN", "Core runtime", "legacy database URL alias", secret=True),
     EnvironmentSpec("RECALL_EMBEDDER", "Core runtime", "embedding backend", "fastembed"),
     EnvironmentSpec("RECALL_EMBED_PROFILE", "Core runtime", "registered embedding profile"),
     EnvironmentSpec("RECALL_MODEL_CACHE", "Core runtime", "local model cache"),
@@ -86,6 +72,11 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_MAX_PRUNE_FRACTION", "Core runtime", "maximum source prune fraction", "0.5"),
     EnvironmentSpec("RECALL_INDEX_ALLOW_CONCURRENT", "Core runtime", "disable the single writer lock"),
     EnvironmentSpec("RECALL_DEPENDENCY_INVALIDATION", "Core runtime", "dependency invalidation mode", "off"),
+    EnvironmentSpec(
+        "RECALL_UNKNOWN_TERM_GATE", "Retrieval",
+        "global vocabulary gate (Lite and PostgreSQL generations); 0, false, no or off disables; constrained scopes and unsupported stores report unavailable",
+        "1",
+    ),
     EnvironmentSpec("RECALL_INDEX_MAX_FILES", "Core runtime", "maximum files per indexing request", "2000"),
     EnvironmentSpec("RECALL_INDEX_MAX_BYTES", "Core runtime", "maximum bytes per indexing request", "20000000"),
     EnvironmentSpec("RECALL_EMBED_DIMENSIONS", "Core runtime", "hosted embedding dimensions"),
@@ -163,7 +154,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_REASONING_EXPANSION_COST_PER_1K_TOKENS", "Reasoning", "reasoning cost metadata"),
     EnvironmentSpec("RECALL_REASONING_MODEL", "Reasoning", "legacy reasoning model"),
     EnvironmentSpec("RECALL_REASONING_BASE_URL", "Reasoning", "legacy reasoning base URL"),
-    EnvironmentSpec("RECALL_REASONING_API_KEY", "Reasoning", "legacy reasoning API key"),
+    EnvironmentSpec("RECALL_REASONING_API_KEY", "Reasoning", "legacy reasoning API key", secret=True),
     EnvironmentSpec("RECALL_REASONING_TIMEOUT", "Reasoning", "legacy reasoning timeout", "30"),
     EnvironmentSpec("RECALL_TRANSLATION_ENABLED", "Translation", "enable translation", "0"),
     EnvironmentSpec("RECALL_TRANSLATION_ENDPOINT", "Translation", "translation endpoint"),
@@ -199,12 +190,10 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_RERANK_THREADS", "Retrieval", "reranker threads", "1"),
     EnvironmentSpec("RECALL_RERANK_PATH", "Retrieval", "local reranker path"),
     EnvironmentSpec("RECALL_RERANK_SHA256", "Retrieval", "local reranker digest"),
-    EnvironmentSpec("RECALL_ENTAILMENT", "Retrieval", "enable entailment judge"),
-    EnvironmentSpec("RECALL_ENTAILMENT_MODEL", "Retrieval", "entailment model"),
-    EnvironmentSpec("RECALL_ENTAILMENT_REVISION", "Retrieval", "entailment revision"),
     EnvironmentSpec("RECALL_HNSW_EF_SEARCH_MULTIPLIER", "Retrieval", "HNSW candidate widening"),
     EnvironmentSpec("RECALL_HNSW_EF_SEARCH_FILTERED", "Retrieval", "filtered HNSW search width"),
     EnvironmentSpec("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "Retrieval", "filtered HNSW iterative scan"),
+    EnvironmentSpec("RECALL_GENERATION_DENSE_SEARCH", "Retrieval", "generation dense search, exact or hnsw", "exact"),
     EnvironmentSpec("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "Retrieval", "opt in calibrated graph tail replacement"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_MODE", "Retrieval", "off or sampled shadow source conditioning", "off"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_ARTIFACT", "Retrieval", "versioned source conditioning model artifact"),
@@ -382,30 +371,6 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
 _RUNTIME_SETTINGS: ContextVar["Settings | None"] = ContextVar(
     "recall_runtime_settings", default=None
 )
-
-
-def secret_mapping_from_env(source: Mapping[str, str] | None = None) -> dict[str, str]:
-    source = os.environ if source is None else source
-    raw = str(source.get("RECALL_AWS_SECRET_MAPPING", "")).strip()
-    if not raw:
-        return {}
-    try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError("RECALL_AWS_SECRET_MAPPING must be a JSON object") from exc
-    if not isinstance(decoded, dict) or not all(
-        isinstance(key, str) and isinstance(value, str) and value.strip()
-        for key, value in decoded.items()
-    ):
-        raise ValueError("RECALL_AWS_SECRET_MAPPING must map environment names to secret names")
-    unknown = sorted(set(decoded) - SECRET_DESTINATIONS)
-    if unknown:
-        allowed = ", ".join(sorted(SECRET_DESTINATIONS))
-        raise ValueError(
-            "RECALL_AWS_SECRET_MAPPING contains forbidden destination(s): "
-            f"{', '.join(unknown)}; allowed destinations are {allowed}"
-        )
-    return {str(key): str(value) for key, value in decoded.items()}
 
 
 class _SecretResolver(Protocol):

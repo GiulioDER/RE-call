@@ -280,7 +280,7 @@ def _cmd_readiness(
     from recall.calibration import load_for as calibration_load_for
     from recall.embeddings import embedding_profile_id
     from recall.readiness import check_enterprise_readiness
-    from recall_mcp.service import make_profile_embedder
+    from recall_mcp.factories import make_profile_embedder
 
     route = control.route(tenant)
     if route is None:

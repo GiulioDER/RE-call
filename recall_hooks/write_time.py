@@ -282,30 +282,37 @@ def render(hits: list[tuple[str, str, float]]) -> str:
     return "\n".join(lines)
 
 
-def pre_tool_use(payload: dict[str, Any]) -> int:
-    """Entry point. Returns 0 always: this hook cannot fail a tool call, only decline to speak."""
+def context_for(payload: dict[str, Any]) -> str | None:
+    """The text this hook would inject for `payload`, or None when it declines to speak.
+
+    Split out of :func:`pre_tool_use` so the dispatcher can combine this text with another
+    `PreToolUse` source (general knowledge) into ONE JSON object: two printed objects on stdout
+    are not a document a client can parse. Every gate (configuration, project scope, `enabled`,
+    `min_chars`, cooldown) and the relay path live here unchanged, and none of them can stop the
+    other source, because the dispatcher asks that one first.
+    """
 
     tool_name = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
-        return 0
+        return None
 
     config = load_config()
     if not config.get("dsn"):
         # Unconfigured is silent BY DESIGN: a checkout that has not run the installer must behave
         # exactly as it would without this hook.
-        return 0
+        return None
     if not _event_is_in_configured_project(config, payload):
-        return 0
+        return None
     options = settings(config)
     if not options["enabled"]:
-        return 0
+        return None
 
     query = payload_of(tool_name, tool_input).strip()
     if len(query) < options["min_chars"]:
-        return 0
+        return None
     if _in_cooldown():
-        return 0
+        return None
 
     try:
         if options["connection_mode"] == "relay":
@@ -323,22 +330,30 @@ def pre_tool_use(payload: dict[str, Any]) -> int:
         # revoked role and a stopped container all cost the same wall clock on every tool call,
         # and all of them are things the user fixes elsewhere rather than mid-session.
         _start_cooldown(options["cooldown_seconds"])
-        return 0
+        return None
     _clear_cooldown()
     if not hits:
-        return 0
+        return None
+    return render(hits)
 
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": render(hits),
-        }
-    }))
+
+def pre_tool_use(payload: dict[str, Any]) -> int:
+    """Entry point. Returns 0 always: this hook cannot fail a tool call, only decline to speak."""
+
+    text = context_for(payload)
+    if text:
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": text,
+            }
+        }))
     return 0
 
 
 __all__ = [
     "MIN_QUERY_CHARS",
+    "context_for",
     "payload_of",
     "pre_tool_use",
     "render",

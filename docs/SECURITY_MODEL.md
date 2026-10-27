@@ -21,6 +21,11 @@ array. The policy is enforced by legacy and generation CLI paths as well as MCP 
 reasoning, inventory, indexing, ingest, and forget operations. Enterprise operators must set the
 policy before serving; malformed booleans and non string arrays are refused at load time.
 
+A forget or withdraw is decided on the names it was given AND on every name the rows it would
+remove are authorized by: a row's root-relative `file`, or its `source` without one, and for a
+withdrawal the same two names in the record of a memo forgotten earlier. One denied name refuses
+the whole call before anything is deleted.
+
 ## The corpus is the asset
 
 The thing this library retrieves is **an agent's own memory** — accumulated decisions, closed
@@ -137,6 +142,47 @@ your memory verbatim is the entire point of the library. Treat retrieved text as
 prompt construction: delimit it, and never concatenate it into a system prompt. That is the
 caller's boundary to hold, not one this library can hold for you.
 
+## Supersession is an assertion by whoever writes the corpus
+
+A document marks another as stale by naming it in its `supersedes:` front matter (`VALIDITY_KEYS`
+in `recall/frontmatter.py`). The claim is not verified against anything. The store collects it from
+every indexed document (`resolve_supersession_candidates` in `recall/supersession.py`), and
+`resolve_successor` in `recall/supersession.py` applies it with no check of who wrote it or whether
+the successor is more correct than its target. That is deliberate, because supersession exists so
+an author can retire a memory without deleting it, but it has a consequence worth stating plainly:
+
+**Anyone who can write a document into the corpus can demote any other document in it.** A planted
+note that declares `supersedes: <stem of a true memory>` turns that memory's hits into
+`superseded`, and when a demoted hit cleared the calibrated threshold, the planted successor is
+served as `ok` even if its own score is below it (the `promoted_files` step in
+`recall.trust_gate.evaluate`). A planted document that reuses the target's file name has a weaker
+effect: the reference becomes ambiguous, the documents sharing that name are reported as
+`ambiguous_supersession`, and none of them is served as `ok`. Either way the outcome is a refusal or
+a wrong current answer, and nothing in the result distinguishes it from a legitimate update.
+
+Since the window rule (2026-10-21) a planted successor demotes its target only while the planted
+document's own `valid_from` and `valid_until` hold, and one whose window cannot be parsed demotes
+at every instant, as before. References are matched case-insensitively and NFC-folded, an exact
+root-relative path first, so a planted `NOTES.md` now collides with `notes.md` (ambiguity, a
+refusal) where it did not before, while a path-qualified reference names one file.
+
+**The agent-facing write paths carry the same authority.** `recall_ingest` indexes uploaded file
+contents through the same pipeline, and `recall_index` indexes files under `RECALL_INDEX_ROOT`, so
+a `supersedes:` line written by an agent counts exactly as one written by a person. Over `stdio`
+neither tool checks a scope; over authenticated HTTP both require `recall:write`. Both are in the
+default tool surface, and `RECALL_MCP_TOOLS=search` or `read` removes them. Provenance is handled
+differently: `Indexer.apply_provenance` in `recall/index.py` writes it last, so a document cannot
+relabel its own origin, but supersession does not consult provenance. In a memory corpus, where
+agents are the usual writers, the realistic form of this attack is an agent persuaded by text it
+retrieved or browsed into writing a memory that retires a true one.
+
+So corpus write access is the trust boundary for validity, exactly as it is for content. Hold it
+the same way: index only directories whose writers you trust (`RECALL_INDEX_ROOT`, and the source
+policy above), and do not index text an outside party can place there, such as scraped pages,
+inbound email or a shared folder, into a tenant whose supersession you rely on. `recall lint`
+reports dangling and ambiguous `supersedes:` targets; run it when a search unexpectedly changes
+what it calls current.
+
 ## Cloud embeddings are a real egress boundary
 
 `recall.embeddings.VoyageEmbedder` sends the **text of every chunk** to Voyage's API
@@ -221,9 +267,8 @@ a code-audit tool, its job is to score *this* library against *its own* labelled
 `make eval` or `python -m recall.eval.scale` is running project code you can read in full, against a
 disposable database.
 
-The one thing worth knowing: the optional near-miss stage (`recall.entailment.QnliEntailmentJudge`)
-and the local embedder (`FastEmbedEmbedder`) both load models via `sentence-transformers` /
-`fastembed`, which download model weights from the Hugging Face Hub on first use if not already
+The one thing worth knowing: the optional reranker and the local embedder (`FastEmbedEmbedder`)
+load models via `sentence-transformers` / `fastembed`, which download model weights from the Hugging Face Hub on first use if not already
 cached. That is a network fetch of model artifacts, not of your corpus — but it does mean the first
 run of `make eval` (or any code path that constructs those classes) is not fully offline.
 

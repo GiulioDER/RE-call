@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from recall_mcp import graph_projection as _s5b_graph_projection
+from recall_mcp import reasoning_engine as _s5b_reasoning_engine
+from recall_mcp import retrieval as _s5b_retrieval
+
 from datetime import UTC, datetime, timedelta
 
 from recall.semantic_graph import build_semantic_graph
@@ -231,9 +235,9 @@ def test_reasoning_proposals_receive_an_authorized_graph(monkeypatch):
         proposal_provider(request, authorized, retrieval)
         return ()
 
-    monkeypatch.setattr(service, "_retrieve_trusted", fake_retrieve)
-    monkeypatch.setattr(service, "_store_graph", lambda *_args, **_kwargs: graph)
-    monkeypatch.setattr(service, "reason", fake_reason)
+    monkeypatch.setattr(_s5b_retrieval, "_retrieve_trusted", fake_retrieve)
+    monkeypatch.setattr(_s5b_graph_projection, "_store_graph", lambda *_args, **_kwargs: graph)
+    monkeypatch.setattr(_s5b_reasoning_engine, "reason", fake_reason)
 
     assert service.reasoning_query(
         Store(),

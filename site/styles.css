@@ -52,7 +52,7 @@
 html {
   scroll-behavior: smooth;
   /* Anchored steps must not hide under the sticky masthead. */
-  scroll-padding-top: 6rem;
+  scroll-padding-top: 7rem;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -175,12 +175,17 @@ p {
   border-bottom-color: var(--line);
 }
 
+/* Two rows at every width: the wordmark and language control on top, the nav underneath at full
+   width. One row stopped fitting the shell once the nav reached nine links; it spilled past the
+   shell and scrolled the whole page sideways from 1280px up to roughly 1470px. */
 .masthead-inner {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 2rem;
-  height: 4.5rem;
+  row-gap: 0.35rem;
+  padding-block: 0.65rem;
 }
 
 .wordmark {
@@ -227,6 +232,20 @@ p {
   align-items: center;
   gap: 1.75rem;
   font-size: 0.9375rem;
+  order: 3;
+  flex-basis: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  padding-block: 0.35rem;
+  scrollbar-width: none;
+}
+
+.masthead nav::-webkit-scrollbar {
+  display: none;
+}
+
+.masthead .language-control {
+  margin-left: auto;
 }
 
 .masthead nav a {
@@ -267,32 +286,6 @@ p {
 .masthead nav a[aria-current="page"]::after,
 .masthead nav a:hover::after {
   transform: scaleX(1);
-}
-
-@media (max-width: 1280px) {
-  .masthead-inner {
-    height: auto;
-    flex-wrap: wrap;
-    row-gap: 0.35rem;
-    padding-block: 0.65rem;
-  }
-
-  .masthead nav {
-    order: 3;
-    flex-basis: 100%;
-    min-width: 0;
-    overflow-x: auto;
-    padding-block: 0.35rem;
-    scrollbar-width: none;
-  }
-
-  .masthead nav::-webkit-scrollbar {
-    display: none;
-  }
-
-  .masthead .language-control {
-    margin-left: auto;
-  }
 }
 
 /* Mobile nav collapses to a horizontally scrollable strip rather than a
@@ -744,7 +737,7 @@ p {
 
 .step {
   position: relative;
-  scroll-margin-top: 6rem;
+  scroll-margin-top: 7rem;
 }
 
 .step-head {

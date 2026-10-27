@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://giulioder.github.io/RE-call/calibration.html">
 <title>Calibration · RE-call setup</title>
 <meta name="description" content="Optional, and after your install already works: measure how confident a result must be before RE-call answers instead of abstaining, then stop running in development mode.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,6 +21,7 @@
     <nav>
       <a href="download.html">Download</a>
       <a href="readme.html">README</a>
+      <a href="how-it-works.html">How it works</a>
       <a href="start.html">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
@@ -53,12 +55,13 @@
 <main>
 
 <section class="shell" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(2rem, 5vw, 3.5rem);">
-  <p class="eyebrow">Optional, and after the install works</p>
+  <p class="eyebrow">PostgreSQL calibration and Lite guidance</p>
   <h1 style="font-size: clamp(2.25rem, 6vw, 4.25rem); max-width: 20ch; margin-bottom: 1.5rem;">Measure the number that decides when to refuse.</h1>
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
-  <p class="lede">Nobody needs this page to get RE-call working. You need it when you want the answers to be trustworthy rather than merely plausible, and when you are ready to stop running in development mode.</p>
+  <p class="lede">Lite attempts calibration automatically during setup and refresh, with strict trust enabled. The manual commands below cover PostgreSQL: fitting and publishing calibration for a served generation.</p>
 </section>
 
+<section class="shell-narrow" style="padding-bottom: 2rem;"><div class="notice notice--signal"><p class="notice-title">Using Lite?</p><p>Read the calibration result from setup or refresh. An indexed corpus may still be too small or unsuitable to certify. Add substantive memos and refresh while keeping strict trust enabled. Lite does not use the PostgreSQL generation and publish commands below. See <a href="start.html#lite-maintenance">Lite maintenance</a> and <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md">calibration coverage and limits</a>.</p></div></section>
 <div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
 
   <!-- Progress rail -->
@@ -93,8 +96,8 @@
           <p>You give it questions you already know the answers to, and questions you already know your memory cannot answer. It runs both sets against your corpus, looks at how the two score distributions sit relative to each other, and picks the threshold that separates them best. It also reports how well they separate at all, which is the part that tells you whether the number is worth having.</p>
 
           <div class="notice">
-            <p class="notice-title">This is optional, and it comes last</p>
-            <p>If you followed <a href="start.html">the install path</a>, you already have a working memory that indexes and searches. Nothing here is required to keep that working. Come back when the corpus holds material you would be unhappy to see answered wrongly.</p>
+            <p class="notice-title">Demonstration mode is not certified serving</p>
+            <p>The PostgreSQL walkthrough first demonstrates search in development trust. To serve trusted answers in strict mode, publish calibration bound to the active generation. The demo threshold does not certify your corpus.</p>
           </div>
 
           <details class="why">
@@ -590,7 +593,7 @@
       <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
       <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
     </nav>
-    <small>PolyForm Noncommercial</small>
+    <small>AGPL-3.0 or commercial license</small>
   </div>
 </footer>
 

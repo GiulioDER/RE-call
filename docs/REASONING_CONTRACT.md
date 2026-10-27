@@ -35,14 +35,8 @@ Trust contract:
 * Development degradation is explicit through `trust_state="degraded"` and `failure_code`.
 * `Verdict` is corpus trust state, not reasoning state. Current values include `ok`, `superseded`,
   `expired`, `not_yet_valid`, `not_yet_known`, `low_confidence`, `invalid_metadata`,
-  `ambiguous_supersession`, `not_entailed`, and `unverified`.
-
-Entailment contract:
-
-* `recall.entailment.apply_entailment()` is an optional post processing stage.
-* It judges only verdict `ok` hits.
-* Non entailed hits are demoted to `not_entailed`.
-* The stage is off by default and must not alter retrieval behavior unless explicitly supplied.
+  `ambiguous_supersession`, and `unverified`. (`not_entailed` belonged to the optional entailment
+  stage, which has been removed.)
 
 Evidence contract:
 
@@ -160,6 +154,13 @@ ambiguous.
 The system found contradictions, likely supersession, security sensitive ambiguity, stale corpus
 state, or another condition that should be handled by a human before the answer is trusted.
 
+`corrected` (opt-in, the `dated-premise` answer profile):
+
+The question takes for granted something the certified evidence shows is no longer current. The
+system says so and states what the newest evidence says, with citations, instead of answering as if
+the premise held or only abstaining. Whether a superseded memory matched the question is decided
+structurally (its declared successor is in the evidence), not by the model.
+
 ## Invariants
 
 Every reasoning output must distinguish authored evidence from inferred structure.
@@ -178,7 +179,7 @@ No untrusted corpus text may enter system instructions, MCP advice, tool descrip
 controlled prompt text.
 
 Reasoning cannot promote `unverified`, `low_confidence`, `expired`, `superseded`,
-`ambiguous_supersession`, `invalid_metadata`, `not_yet_known`, `not_yet_valid`, or `not_entailed`
+`ambiguous_supersession`, `invalid_metadata`, `not_yet_known`, or `not_yet_valid`
 hits into authored evidence.
 
 Reasoning graphs are immutable per index generation.

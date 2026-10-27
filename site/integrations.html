@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://giulioder.github.io/RE-call/integrations.html">
 <title>Integrations · RE-call</title>
 <meta name="description" content="Use RE-call from LangChain, LlamaIndex, the Claude Agent SDK or any MCP client: trust-evaluated memories with verdict, confidence and provenance, or nothing at all when the corpus cannot answer.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -15,8 +16,6 @@
   .integrations { max-width: 44rem; }
   .integrations h2 { font-size: 1.5rem; margin-top: 3rem; margin-bottom: 0.85rem; }
   .integrations p, .integrations li { max-width: 65ch; }
-  .integrations table { border-collapse: collapse; font-size: 0.9rem; margin: 1.25rem 0; }
-  .integrations th, .integrations td { text-align: left; padding: 0.5rem 1rem 0.5rem 0; border-bottom: 1px solid rgba(127,127,127,.25); vertical-align: top; }
 </style>
 </head>
 <body>
@@ -27,6 +26,7 @@
     <nav>
       <a href="download.html">Download</a>
       <a href="readme.html">README</a>
+      <a href="how-it-works.html">How it works</a>
       <a href="start.html">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
@@ -47,7 +47,7 @@
   <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
   <p class="lede">RE-call ships retrievers for LangChain and LlamaIndex, in-process tools for the Claude Agent SDK, and an MCP server for any MCP client. All of them return the same thing: trust-evaluated memories carrying verdict, confidence, cosine and provenance, or an explicit abstention when the corpus cannot answer. The adapters depend only on each framework's core package.</p>
 
-  <p>Every integration sits on the same store: your own PostgreSQL with pgvector. Set one up first with the <a href="start.html">install guide</a>, or in one command with <code>recall quickstart</code>.</p>
+  <p>MCP clients can use a local Lite file or PostgreSQL. For Lite, follow the <a href="start.html#lite">source installation</a> and <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md#connect-another-client">manual client wiring</a>; Lite setup registers Claude Code only. The framework examples below show PostgreSQL stores. The separate <code>recall quickstart</code> command is a PostgreSQL demo, not a required Lite step.</p>
 
   <h2 id="langchain">LangChain</h2>
 
@@ -117,13 +117,17 @@
 
   <h2>What all of them share</h2>
 
-  <table>
-    <tr><th>Behaviour</th><th>Meaning</th></tr>
-    <tr><td>Verdicts per hit</td><td>A superseded, expired, not-yet-valid or low-confidence memory is surfaced as such, not flattened into an ordinary result.</td></tr>
-    <tr><td>Explicit abstention</td><td>Below the calibrated threshold the caller gets a refusal with a reason, never the nearest neighbour.</td></tr>
-    <tr><td>Local by default</td><td>Memory builds and answers on your PostgreSQL with local embeddings; no memory layer LLM call.</td></tr>
-    <tr><td>Tenancy</td><td>Tenant scoping enforced with row-level security in the database, not in adapter code.</td></tr>
-  </table>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Behaviour</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td>Verdicts per hit</td><td>A superseded, expired, not-yet-valid or low-confidence memory is surfaced as such, not flattened into an ordinary result.</td></tr>
+        <tr><td>Explicit abstention</td><td>Below the calibrated threshold the caller gets a refusal with a reason, never the nearest neighbour.</td></tr>
+        <tr><td>Local by default</td><td>Memory builds and answers on your PostgreSQL with local embeddings; no memory layer LLM call.</td></tr>
+        <tr><td>Tenancy</td><td>Tenant scoping enforced with row-level security in the database, not in adapter code.</td></tr>
+      </tbody>
+    </table>
+  </div>
 
   <p>API reference for both adapters: <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/API.md">docs/API.md</a>.</p>
 
@@ -139,7 +143,7 @@
       <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
       <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
     </nav>
-    <small>PolyForm Noncommercial</small>
+    <small>AGPL-3.0 or commercial license</small>
   </div>
 </footer>
 

@@ -97,6 +97,31 @@ def test_postgres_cards_and_ledger_are_tenant_scoped_and_direct_assertion_is_ref
     assert other_tenant.resolve(card.card_id) is None
 
 
+def test_postgres_apply_fact_never_reads_the_tenants_current_facts():
+    """PERF-003 on PostgreSQL: `apply_fact` decides on the claim's conflict key
+    (`conflict_history`) and never calls `current()`, which decoded every fact current in the
+    tenant to be discarded, at about 0.3 ms per fact.
+
+    Red proof, 2026-10-22: against master `e5d87caba`, whose `ProvenanceController._in_force`
+    read `ledger.current(...)` before `conflict_history`, `current` was called once, failing
+    `assert reads == []`.
+    """
+    tenant, generation, claim, card = _fixture()
+    controller, request = _controller(tenant, generation, claim, card, f"request-{uuid4().hex}")
+    reads = []
+
+    class CountingLedger(PostgresFactLedger):
+        def current(self, **kwargs):
+            reads.append(kwargs)
+            return super().current(**kwargs)
+
+    controller.ledger = CountingLedger(TEST_DSN, tenant_id=tenant)
+    decision = controller.apply_fact(request)
+
+    assert decision.allowed and decision.code == DecisionCode.APPLIED
+    assert reads == []
+
+
 def test_postgres_conflicting_applications_serialize_at_the_ledger():
     tenant, generation, claim, card = _fixture()
     cards = PostgresEvidenceCardStore(TEST_DSN, tenant_id=tenant)
@@ -435,3 +460,24 @@ def test_wizard_configures_the_strict_fact_boundary_for_distinct_roles():
                 ).fetchone():
                     admin.execute(sql.SQL("DROP OWNED BY {} ").format(sql.Identifier(role)))
                     admin.execute(sql.SQL("DROP ROLE IF EXISTS {} ").format(sql.Identifier(role)))
+
+
+def test_postgres_a_fact_applied_under_two_requests_is_listed_once():
+    """PostgreSQL's current projection lists a fact once, however many requests applied it.
+
+    Red proof (2026-10-13): baseline `asserts_fact` in recall/provenance_controller.py reduced to
+    `event.event_type == "asserted"` (the filter `PostgresFactLedger._project_current` used on
+    origin/master 86219d6d2); the final assertion failed with the r2 DUPLICATE event listed too.
+    Restored, passes.
+    """
+    tenant, generation, claim, card = _fixture()
+    first, first_request = _controller(tenant, generation, claim, card, f"r1-{uuid4().hex}")
+    second, second_request = _controller(tenant, generation, claim, card, f"r2-{uuid4().hex}")
+
+    assert first.apply_fact(first_request).code == DecisionCode.APPLIED
+    assert second.apply_fact(second_request).code == DecisionCode.DUPLICATE
+
+    current = PostgresFactLedger(TEST_DSN, tenant_id=tenant).current(tenant_id=tenant, now=NOW)
+    assert [(event.request_id, event.decision_code) for event in current] == [
+        (first_request.request_id, DecisionCode.APPLIED)
+    ]

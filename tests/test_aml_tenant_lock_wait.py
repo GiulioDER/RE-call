@@ -182,8 +182,8 @@ def _add_body(request_id: str, user_id: str) -> dict:
     }
 
 
-async def _until(condition, timeout: float = 2.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
+async def _until(condition, within: float = 2.0) -> None:
+    deadline = asyncio.get_running_loop().time() + within
     while not condition():
         if asyncio.get_running_loop().time() > deadline:
             raise AssertionError("precondition not reached")

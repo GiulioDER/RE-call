@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol
 
-from recall_mcp.settings import secret_mapping_from_env
+from recall.ops.secret_mapping import secret_mapping_from_env
 
 
 class SecretProvider(Protocol):

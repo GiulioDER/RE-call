@@ -6,6 +6,12 @@ surfaced closed decision (that isn't a `gap_warning`) tells it to back off inste
 
 Works with **Claude Code** and **Claude Desktop** — both take the same MCP server block.
 
+For one project's local memory, [install Lite from source](LITE.md) and run
+`recall setup --lite --memory ./notes`. This registers Claude Code directly with strict trust and
+automatic memo refresh; no PostgreSQL or plugin is required. For Claude Desktop, use
+[Lite's manual client wiring](LITE.md#connect-another-client). The schema commands and PostgreSQL
+configuration below apply to the server edition.
+
 **On Claude Code, the plugin is the short path** — it wires the server, the session hooks and a
 skill that teaches Claude when to search, and keeps the DSN in your OS keychain:
 
@@ -14,7 +20,8 @@ skill that teaches Claude when to search, and keeps the DSN in your OS keychain:
 /plugin install recall@re-call
 ```
 
-You still need a database first (`recall quickstart` makes a throwaway one). See
+You still need a configured store first. Lite uses the SQLite DSN printed by setup; PostgreSQL
+uses its own database (`recall quickstart` makes a throwaway demo). See
 [plugin/README.md](../plugin/README.md). Everything below is the manual wiring, for other
 clients and for anyone who wants to see what the plugin writes.
 
@@ -165,7 +172,8 @@ one that honoured it.
 | **`recall_search`** | Before proposing an idea, forming a hypothesis, or repeating past work. Use it to check what memory already says, and follow the returned `advice`. |
 | **`recall_evidence`** | When the agent is about to answer from memory. It returns a citable evidence bundle plus `system_prompt` and `user_message`; the client remains the generator. |
 | **`recall_index`** | To add a markdown file/folder to memory (bounded by `RECALL_INDEX_ROOT`). |
-| **`recall_forget`** | To permanently delete indexed memory for source values returned by `recall_search`. Requires `recall:forget` on authenticated transports; irreversible, so check the returned `sources_not_found` before assuming a request matched. |
+| **`recall_forget`** | To permanently delete indexed memory for source values returned by `recall_search`. Requires `recall:forget` on authenticated transports; irreversible, so check the returned `sources_not_found` before assuming a request matched. A fact whose only evidence was a forgotten source is retracted and no longer listed, and its value is erased from the fact ledger (`facts_redacted`). Whatever a forgotten memory superseded stays retired. |
+| **`recall_withdraw`** | When a memory was a MISTAKE and what it replaced should be current again. Erases it as `recall_forget` does (same scope, fact values included), then voids its `supersedes:` claims and splices the chain (withdrawing B in A -> B -> C leaves A retired by C); a memory forgotten earlier is withdrawn by the name it had. |
 | **`recall_stats`** | To check how much memory exists and whether the index is stale. |
 | **`recall_reasoning_query`** | When the agent explicitly needs the reasoning layer. It runs over trusted retrieval, obeys the configured policy and budget, and returns cited output, review state, clarification, or abstention. |
 | **`recall_reasoning_projection`** | To inspect the generation-bound reasoning graph projection without answering. |
@@ -257,14 +265,15 @@ for the ~30-line pattern: search first; if a non-gap closed decision surfaces, b
 ## Session hooks: what makes the tools get used
 
 Registering the server makes the tools *available*. It does not make Claude reach for them, and it
-does not keep the corpus current. `recall setup` also offers five hooks, written into
+does not keep the corpus current. `recall setup` also offers six hooks, written into
 `~/.claude/settings.json`:
 
 | Event | What it does | Why there |
 |---|---|---|
 | `SessionStart` | Injects a one-line digest naming the indexed chunk count and the standing instruction | The only event that can add context before the first turn |
 | `UserPromptSubmit` | Searches the project's memo files with the prompt and names up to three prior records | The only event that carries a query and still precedes every proposal in the turn |
-| `PreToolUse` | Searches the corpus with the text about to be written and injects what comes back | An agent that has to decide to search mostly does not |
+| `PreToolUse` | Searches the corpus with the text about to be written and injects what comes back; also matches shell commands against the operator's general knowledge index, if there is one | An agent that has to decide to search mostly does not |
+| `PostToolUseFailure` | After a failed `Bash` or `PowerShell` command, ranks the operator's general knowledge entries against the error; without an index it injects no context, but still logs the signature when enabled | A hazard nobody knew to look up is cheapest to name right after it bites |
 | `PreCompact` | Indexes `memory/` | Compaction is where a long session loses the detail behind its conclusions |
 | `SessionEnd` | Closes this session's owned MCP transports, indexes `memory/`, and refreshes the cached count | Releases the MCP session and closes the write-to-searchable loop |
 
@@ -320,7 +329,7 @@ python -c "from recall.claude_code import uninstall; uninstall()"
 
 ## 5. Configure your project's memory files
 
-`recall setup` offers to scaffold two files after the embedder/reranker/entailment prompts:
+`recall setup` offers to scaffold two files after the embedder and reranker prompts:
 
 - A `<!-- recall setup begin -->` / `<!-- recall setup end -->` block appended to `CLAUDE.md`
   (created if missing) telling Claude when to call `recall_search`/`recall_evidence` and how to

@@ -352,8 +352,8 @@ def build_history_query(history: "Sequence[str]") -> str:
 def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
     """Fuse several best-first ID rankings into one score map (Reciprocal Rank Fusion).
 
-    Each input list is an independent ranking, best first. Every id accrues
-    ``1 / (k + rank)`` from each list it appears in; `k` (default 60, the standard RRF
+    Cormack, Clarke and Büttcher, SIGIR 2009. Each input list is a ranking, best first; an id
+    accrues ``1 / (k + rank)`` from each list it appears in; `k` (default 60, the standard RRF
     damping constant — unrelated to the caller's result-count `k`) softens the weight of
     top ranks so no single ranking dominates. The returned dict is UNSORTED; callers sort
     by value descending.
@@ -534,7 +534,8 @@ class HybridRetriever:
         # source=None)` signature. Sending `scope=` unconditionally would break every one of them
         # on queries that do not use scoping at all, which is a cost paid by callers who asked for
         # nothing. A store that has not been taught the new keyword now fails only when a folder
-        # or facet is actually requested, which is exactly where a failure is informative.
+        # or facet or an authorization constraint is requested, which is exactly
+        # where a failure is informative.
         # `Any`, not `object`: this dict holds ONE of two differently-typed arguments chosen by
         # key, which is precisely what a splat cannot express to a type checker. With `object`,
         # mypy rejects the call against both `source: str | None` and `scope: Scope | None`, and
@@ -542,7 +543,12 @@ class HybridRetriever:
         # a real readability cost for a guarantee the branch above already provides.
         legs_scope: dict[str, Any] = (
             {"source": effective.source}
-            if effective.folder is None and effective.facet is None
+            if (
+                effective.folder is None
+                and effective.facet is None
+                and effective.source_prefixes is None
+                and effective.security_policy_digest is None
+            )
             else {"scope": effective}
         )
         timings: dict[str, float] = {}

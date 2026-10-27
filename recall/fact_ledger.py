@@ -13,6 +13,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from typing import Any
@@ -31,17 +32,122 @@ from recall.provenance_controller import (
     FactApplicationPermit,
     _consume_permit,
     _as_utc,
+    FactSupersession,
+    ServedSources,
+    absent_fact_ids,
+    asserts_fact,
+    fact_supersession,
+    ordered_after,
+    project_candidates,
+    project_current,
+    repeats_assertion,
+    unresolved_conflicts,
+    retracted_keys,
+    retraction_key,
+    replays_request,
+    RETRACTION_REQUEST_PREFIX,
+    SUPERSESSION_REQUEST_SUFFIX,
+    WITHDRAWAL_REQUEST_PREFIX,
+    withdrawn_event_ids,
     canonical_json,
     evidence_card_from_payload,
     fact_conflict_key,
     fact_identity,
-    facts_conflict,
 )
 from recall.schema import FACT_LEDGER_APPEND_FUNCTION, FACT_MATERIALIZATION_APPEND_FUNCTION
-from recall.types import AtomicFact, EvidenceCard
+from recall.types import AtomicFact, EvidenceCard, is_redaction_marker
 
 
 FACT_LEDGER_TABLE = "recall_fact_ledger_events"
+
+#: The SQLite stand-in for PostgreSQL's transaction-local `recall.redaction` setting (migration
+#: 0029): a row exists only inside the transaction `recall.fact_redaction` erases values in, so no
+#: other connection ever sees one. A main-schema table, because SQLite refuses a trigger in the
+#: main schema that reads a TEMP table ("cannot reference objects in database temp").
+SQLITE_REDACTION_SESSION_DDL = """
+CREATE TABLE IF NOT EXISTS recall_redaction_session (redaction_id TEXT NOT NULL);
+"""
+
+# The SQLite ledger table: `SQLiteFactLedger` and the lite store's `recall.lite.facts` both run it.
+# Its triggers refuse every UPDATE and DELETE, except an UPDATE made while a redaction session row
+# exists that changes only what a redaction erases, into the marker shape (migration 0029's rule).
+SQLITE_FACT_LEDGER_DDL = SQLITE_REDACTION_SESSION_DDL + f"""
+CREATE TABLE IF NOT EXISTS {FACT_LEDGER_TABLE} (
+    event_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    generation_id TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained', 'retracted', 'withdrawn')),
+    fact_id TEXT,
+    fact TEXT,
+    evidence_cards TEXT NOT NULL,
+    supersedes_fact_ids TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    writer TEXT NOT NULL,
+    decision_code TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    controller_version INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (tenant_id, request_id),
+    -- PostgreSQL's recall_fact_ledger_fact_shape (migrations 0018, 0026 and 0032); a table made before it lacks it.
+    CHECK ((event_type IN ('asserted', 'rejected') AND fact IS NOT NULL) OR event_type IN ('superseded', 'abstained', 'retracted', 'withdrawn'))
+);
+CREATE INDEX IF NOT EXISTS recall_fact_ledger_current_idx
+    ON {FACT_LEDGER_TABLE} (tenant_id, fact_id, created_at);
+CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_update BEFORE UPDATE ON {FACT_LEDGER_TABLE}
+WHEN NOT EXISTS (SELECT 1 FROM recall_redaction_session)
+BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_redaction_shape BEFORE UPDATE ON {FACT_LEDGER_TABLE}
+WHEN EXISTS (SELECT 1 FROM recall_redaction_session) AND NOT (
+    NEW.tenant_id IS OLD.tenant_id AND NEW.generation_id IS OLD.generation_id
+    AND NEW.event_type IS OLD.event_type AND NEW.writer IS OLD.writer
+    AND NEW.decision_code IS OLD.decision_code AND NEW.policy_version IS OLD.policy_version
+    AND NEW.controller_version IS OLD.controller_version AND NEW.created_at IS OLD.created_at
+    AND NEW.event_id GLOB 'evt_*' AND length(NEW.request_id) > 0
+    AND (NEW.fact IS OLD.fact OR (
+        OLD.fact IS NOT NULL
+        AND json_extract(NEW.fact, '$.redacted') IS 1
+        AND json_extract(NEW.fact, '$.redaction_id') IS (SELECT max(redaction_id) FROM recall_redaction_session)
+        AND json_extract(NEW.fact, '$.fact_id') IS NEW.fact_id
+        AND (SELECT count(*) FROM json_each(NEW.fact)) = 3))
+    AND (NEW.fact_id IS OLD.fact_id OR NEW.fact IS NOT OLD.fact)
+    AND json_array_length(NEW.evidence_cards) = json_array_length(OLD.evidence_cards)
+    AND json_array_length(NEW.supersedes_fact_ids) = json_array_length(OLD.supersedes_fact_ids)
+    AND NOT EXISTS (
+        SELECT 1 FROM json_each(NEW.evidence_cards) AS n JOIN json_each(OLD.evidence_cards) AS o ON n.key = o.key
+        WHERE n.value IS NOT o.value AND NOT (
+            json_extract(n.value, '$.redacted') IS 1
+            AND json_extract(n.value, '$.redaction_id') IS (SELECT max(redaction_id) FROM recall_redaction_session)
+            AND json_extract(n.value, '$.tenant_id') IS json_extract(o.value, '$.tenant_id')
+            AND json_extract(n.value, '$.generation_id') IS json_extract(o.value, '$.generation_id')
+            AND json_extract(n.value, '$.source') IS json_extract(o.value, '$.source')
+            AND (SELECT count(*) FROM json_each(n.value)) = 6))
+)
+BEGIN SELECT RAISE(ABORT, 'recall fact ledger redaction may change only what it erases'); END;
+CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_delete BEFORE DELETE ON {FACT_LEDGER_TABLE}
+BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
+"""
+
+#: The ledger's update triggers, by name: an old file's unconditional `no_update` is replaced by
+#: these (`recall.lite.facts`), and a table rebuild drops them with the table's other triggers.
+SQLITE_FACT_LEDGER_TRIGGERS = (
+    "recall_fact_ledger_no_update", "recall_fact_ledger_redaction_shape", "recall_fact_ledger_no_delete",
+)
+
+
+def _decode_fact(payload: object) -> tuple[AtomicFact | None, str | None, str | None]:
+    """`(fact, fact_id, redaction_id)` for a stored fact payload.
+
+    A payload `recall_forget` erased (`recall.fact_redaction`) has no fact; its id is the fresh one
+    the redaction recorded, which the `retracted` and `superseded` events naming it were given too.
+    """
+    if isinstance(payload, Mapping):
+        if is_redaction_marker(payload):
+            return None, str(payload["fact_id"]), str(payload["redaction_id"])
+        fact = AtomicFact.from_payload(payload) if payload else None
+        return fact, (fact_identity(fact) if fact else None), None
+    if payload:
+        raise ValueError("a ledger fact payload must be a JSON object")
+    return None, None, None
 
 
 def _parse_time(value: object) -> datetime | None:
@@ -57,7 +163,7 @@ def _event_from_row(row: tuple[Any, ...]) -> FactEvent:
         event_id, event_type, tenant_id, generation_id, fact_json, cards_json, supersedes_json,
         request_id, writer, decision_code, policy_version, controller_version, created_at,
     ) = row
-    fact = AtomicFact.from_payload(fact_json) if fact_json else None
+    fact, fact_id, redaction_id = _decode_fact(fact_json)
     cards = tuple(evidence_card_from_payload(item) for item in (cards_json or ()))
     created = _parse_time(created_at) if isinstance(created_at, str) else created_at
     if not isinstance(created, datetime):
@@ -68,7 +174,7 @@ def _event_from_row(row: tuple[Any, ...]) -> FactEvent:
         tenant_id=str(tenant_id),
         generation_id=str(generation_id),
         fact=fact,
-        fact_id=fact_identity(fact) if fact else None,
+        fact_id=fact_id,
         evidence_cards=cards,
         supersedes_fact_ids=tuple(supersedes_json or ()),
         request_id=str(request_id),
@@ -77,7 +183,14 @@ def _event_from_row(row: tuple[Any, ...]) -> FactEvent:
         policy_version=str(policy_version),
         controller_version=int(controller_version),
         created_at=_as_utc(created),
+        redaction_id=redaction_id,
     )
+
+
+def _fact_payload(event: FactEvent) -> dict[str, Any] | None:
+    if event.redaction_id is not None and event.fact is None and event.fact_id is not None:
+        return {"fact_id": event.fact_id, "redacted": True, "redaction_id": event.redaction_id}
+    return event.fact.to_payload() if event.fact else None
 
 
 def _event_to_payload(event: FactEvent) -> dict[str, Any]:
@@ -86,7 +199,7 @@ def _event_to_payload(event: FactEvent) -> dict[str, Any]:
         "event_type": event.event_type,
         "tenant_id": event.tenant_id,
         "generation_id": event.generation_id,
-        "fact": event.fact.to_payload() if event.fact else None,
+        "fact": _fact_payload(event),
         "evidence_cards": [card.to_payload() for card in event.evidence_cards],
         "supersedes_fact_ids": list(event.supersedes_fact_ids),
         "request_id": event.request_id,
@@ -99,8 +212,7 @@ def _event_to_payload(event: FactEvent) -> dict[str, Any]:
 
 
 def _event_from_payload(payload: dict[str, Any]) -> FactEvent:
-    fact_payload = payload.get("fact")
-    fact = AtomicFact.from_payload(fact_payload) if fact_payload else None
+    fact, fact_id, redaction_id = _decode_fact(payload.get("fact"))
     cards = tuple(evidence_card_from_payload(item) for item in payload.get("evidence_cards", ()))
     created = _parse_time(payload.get("created_at"))
     if created is None:
@@ -111,7 +223,8 @@ def _event_from_payload(payload: dict[str, Any]) -> FactEvent:
         tenant_id=str(payload["tenant_id"]),
         generation_id=str(payload["generation_id"]),
         fact=fact,
-        fact_id=fact_identity(fact) if fact else None,
+        fact_id=fact_id,
+        redaction_id=redaction_id,
         evidence_cards=cards,
         supersedes_fact_ids=tuple(payload.get("supersedes_fact_ids", ())),
         request_id=str(payload["request_id"]),
@@ -121,6 +234,196 @@ def _event_from_payload(payload: dict[str, Any]) -> FactEvent:
         controller_version=int(payload["controller_version"]),
         created_at=_as_utc(created),
     )
+
+
+LEDGER_COLUMNS = (
+    "event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
+    "supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
+    "controller_version, created_at"
+)
+
+
+def decode_ledger_row(row: Sequence[Any]) -> FactEvent:
+    """A ledger row whose JSON columns are TEXT (SQLite) rather than decoded JSONB."""
+    values = list(row)
+    values[4] = json.loads(values[4]) if values[4] else None
+    values[5] = json.loads(values[5])
+    values[6] = json.loads(values[6])
+    return _event_from_row(tuple(values))
+
+
+#: The writer `recall_forget` records on the retractions it appends.
+RETRACTION_WRITER = "recall_forget"
+#: The writer `generation gc` records when it retracts the facts of a memo no generation holds.
+GC_RETRACTION_WRITER = "recall_generation_gc"
+#: The decision codes a `retracted` event may carry (migration 0027 enforces the same pairing):
+#: SOURCE_FORGOTTEN for `recall_forget`, SOURCE_REMOVED for a memo gc removed from every generation.
+RETRACTION_CODES = frozenset({DecisionCode.SOURCE_FORGOTTEN, DecisionCode.SOURCE_REMOVED})
+
+
+def plan_retractions(
+    events: Sequence[FactEvent],
+    *,
+    touched: Callable[[EvidenceCard], bool],
+    gone: Callable[[EvidenceCard], bool],
+) -> tuple[FactEvent, ...]:
+    """The live assertions a forget retracts: every one of each fact it leaves without evidence.
+
+    A fact is retracted when at least one of its cards names a source this forget erased
+    (`touched`) and every card on every live assertion of it, the APPLIED one and any DUPLICATE
+    re-application alike, names a source that is gone. One surviving card keeps the fact, so a
+    fact two memos support survives forgetting one of them. A value its successors hide over its
+    whole window is left as it is: forgetting never makes a fact current again. One hidden only
+    part of the time (a successor that starts next month) is still in force and is retracted.
+    """
+    index = fact_supersession(events)
+    hidden = {
+        event.event_id
+        for event in events
+        if asserts_fact(event) and event.fact is not None and not index.in_force(event)
+    }
+    retracted = retracted_keys(events)
+    live: dict[str, list[FactEvent]] = {}
+    for event in events:
+        if (
+            event.event_type == "asserted"
+            and event.fact is not None  # a redacted assertion was retracted or erased already
+            and event.fact_id is not None
+            and event.event_id not in hidden
+            and retraction_key(event) not in retracted
+        ):
+            live.setdefault(event.fact_id, []).append(event)
+    planned: list[FactEvent] = []
+    for assertions in live.values():
+        cards = [card for event in assertions for card in event.evidence_cards]
+        if cards and any(touched(card) for card in cards) and all(gone(card) for card in cards):
+            planned.extend(assertions)
+    return tuple(planned)
+
+
+#: The writer `recall_withdraw` records on the withdrawals it appends.
+WITHDRAWAL_WRITER = "recall_withdraw"
+
+
+def plan_withdrawals(
+    events: Sequence[FactEvent],
+    *,
+    touched: Callable[[EvidenceCard], bool],
+    gone: Callable[[EvidenceCard], bool],
+) -> tuple[FactEvent, ...]:
+    """The assertions a withdrawal of memos takes back (owner decision, 2026-10-22).
+
+    An application is withdrawn when one of its cards names a memo this withdrawal names or
+    erases (`touched`) and every one of its cards is gone, and no live application of the same
+    fact still has a card that is not: a fact another memo still states stays, and so does the
+    supersession it made. Unlike `plan_retractions`, an application its successors hide, or one an
+    earlier forget retracted, is withdrawn too, since withdrawing is what undoes the supersession
+    it made (`fact_supersession`): withdrawing the middle of a chain, or a memo forgotten earlier,
+    must reach it. An application of another memo that was forgotten, not withdrawn, keeps its
+    supersession. One already withdrawn is never planned again.
+    """
+    withdrawn = withdrawn_event_ids(events)
+    retracted = retracted_keys(events)
+    by_fact: dict[str, list[FactEvent]] = {}
+    for event in events:
+        if event.event_type == "asserted" and event.fact_id is not None and event.event_id not in withdrawn:
+            by_fact.setdefault(event.fact_id, []).append(event)
+    planned: list[FactEvent] = []
+    for applications in by_fact.values():
+        if any(
+            retraction_key(event) not in retracted and not all(gone(card) for card in event.evidence_cards)
+            for event in applications
+        ):
+            continue
+        planned.extend(
+            event
+            for event in applications
+            if event.evidence_cards
+            and any(touched(card) for card in event.evidence_cards)
+            and all(gone(card) for card in event.evidence_cards)
+        )
+    return tuple(planned)
+
+
+def withdrawal_ids(tenant_id: str, assertion: FactEvent) -> tuple[str, str]:
+    """The event id and request id of the `withdrawn` event for `assertion`, on every backend.
+
+    The request id names the assertion's event id (`WITHDRAWAL_REQUEST_PREFIX`), which is how
+    the event identifies what it takes back without carrying the assertion's cards.
+    """
+    request_id = WITHDRAWAL_REQUEST_PREFIX + assertion.event_id
+    return decision_event_id(tenant_id, request_id, "withdrawn"), request_id
+
+
+def retraction_ids(tenant_id: str, assertion: FactEvent) -> tuple[str, str]:
+    """The event id and request id of the `retracted` event for `assertion`, on every backend.
+
+    One retraction per assertion, ever: the request id is unique per tenant, and a retracted
+    assertion is never planned again, so a forget run twice appends nothing the second time.
+    """
+    request_id = RETRACTION_REQUEST_PREFIX + assertion.event_id
+    return decision_event_id(tenant_id, request_id, "retracted"), request_id
+
+
+def assertion_event_id(tenant_id: str, fact: AtomicFact, request_id: str) -> str:
+    """The id of an `asserted` event: the same on every backend for the same application."""
+    return "evt_" + hashlib.sha256(
+        f"{tenant_id}\0{fact_identity(fact)}\0{request_id}\0asserted".encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def assertion_is_duplicate(
+    candidates: Sequence[FactEvent],
+    fact: AtomicFact,
+    supersedes_fact_ids: Sequence[str],
+    absent: frozenset[str] = frozenset(),
+    *,
+    history: Sequence[FactEvent],
+    stated: bool = False,
+    index: FactSupersession | None = None,
+    moment: datetime | None = None,
+) -> bool:
+    """Whether `fact` repeats a current candidate; refuses one it contradicts without superseding.
+
+    The decision every ledger makes before it appends an `asserted` event, so that PostgreSQL and
+    a lite store decide the same application the same way. A fact in `absent` (its memos are
+    not served now) still makes a re-application a DUPLICATE, so it is never listed twice when its
+    memo returns, but it is never a conflict: a deleted memo cannot block a new value.
+
+    `stated` is the path a memo's own facts take (`recall.stated_facts`): a disagreement is
+    recorded, not refused, and the projection lists both values as contested
+    (`recall.provenance_controller.split_contested`).
+
+    A repeat is a DUPLICATE only when it adds nothing (`repeats_assertion`). A conflict is judged
+    over `history` as if `fact` were already recorded (`unresolved_conflicts`), the rule the
+    controller refuses on; `index` is that history's supersession index, when the caller has it.
+    The fallback that judged `candidates` alone was unreachable once every ledger passed its
+    history, and was removed (2026-10-21 audit, CODE-003).
+    """
+    if repeats_assertion(candidates, fact, supersedes_fact_ids):
+        return True
+    if stated:
+        return False
+    if unresolved_conflicts(history, fact, supersedes_fact_ids, absent, moment=moment, index=index):
+        raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
+    return False
+
+
+def supersession_ids(event_id: str, request_id: str) -> tuple[str, str]:
+    """The event id and request id of the `superseded` event that follows an applied assertion."""
+    return event_id + "_sup", request_id + SUPERSESSION_REQUEST_SUFFIX
+
+
+def decision_event_type(decision_code: str) -> str:
+    """A refusal is `abstained` when fresh evidence was insufficient, `rejected` otherwise."""
+    return "abstained" if decision_code == DecisionCode.FRESH_SEARCH_INSUFFICIENT else "rejected"
+
+
+def decision_event_id(tenant_id: str, request_id: str, event_type: str) -> str:
+    """The id of a refusal event: the same on every backend for the same request."""
+    return "evt_" + hashlib.sha256(
+        f"{tenant_id}\0{request_id}\0{event_type}".encode("utf-8")
+    ).hexdigest()[:32]
 
 
 class SQLiteFactLedger(InMemoryFactLedger):
@@ -134,50 +437,13 @@ class SQLiteFactLedger(InMemoryFactLedger):
         self.tenant_id = tenant_id
         self._sqlite_lock = threading.RLock()
         self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-        self._conn.execute(
-            """CREATE TABLE IF NOT EXISTS recall_fact_ledger_events (
-                event_id TEXT PRIMARY KEY,
-                tenant_id TEXT NOT NULL,
-                generation_id TEXT NOT NULL,
-                event_type TEXT NOT NULL CHECK (event_type IN ('asserted', 'superseded', 'rejected', 'abstained')),
-                fact_id TEXT,
-                fact TEXT,
-                evidence_cards TEXT NOT NULL,
-                supersedes_fact_ids TEXT NOT NULL,
-                request_id TEXT NOT NULL,
-                writer TEXT NOT NULL,
-                decision_code TEXT NOT NULL,
-                policy_version TEXT NOT NULL,
-                controller_version INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE (tenant_id, request_id)
-            )"""
-        )
-        self._conn.execute(
-            "CREATE INDEX IF NOT EXISTS recall_fact_ledger_current_idx "
-            "ON recall_fact_ledger_events (tenant_id, fact_id, created_at)"
-        )
-        self._conn.executescript(
-            """CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_update
-               BEFORE UPDATE ON recall_fact_ledger_events
-               BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;
-               CREATE TRIGGER IF NOT EXISTS recall_fact_ledger_no_delete
-               BEFORE DELETE ON recall_fact_ledger_events
-               BEGIN SELECT RAISE(ABORT, 'recall fact ledger is append-only'); END;"""
-        )
+        self._conn.executescript(SQLITE_FACT_LEDGER_DDL)
         rows = self._conn.execute(
-            "SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
-            "supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
-            "controller_version, created_at FROM recall_fact_ledger_events "
-            "WHERE tenant_id = ? ORDER BY created_at, event_id",
+            f"SELECT {LEDGER_COLUMNS} FROM {FACT_LEDGER_TABLE} WHERE tenant_id = ? ORDER BY created_at, event_id",
             (tenant_id,),
         ).fetchall()
         for row in rows:
-            values = list(row)
-            values[4] = json.loads(values[4]) if values[4] else None
-            values[5] = json.loads(values[5])
-            values[6] = json.loads(values[6])
-            event = _event_from_row(tuple(values))
+            event = decode_ledger_row(row)
             self._events.append(event)
             self._by_request[event.request_id] = event
 
@@ -202,20 +468,13 @@ class SQLiteFactLedger(InMemoryFactLedger):
 
     def _reload_from_db(self) -> None:
         rows = self._conn.execute(
-            "SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
-            "supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
-            "controller_version, created_at FROM recall_fact_ledger_events "
-            "WHERE tenant_id = ? ORDER BY created_at, event_id",
+            f"SELECT {LEDGER_COLUMNS} FROM {FACT_LEDGER_TABLE} WHERE tenant_id = ? ORDER BY created_at, event_id",
             (self.tenant_id,),
         ).fetchall()
         events: list[FactEvent] = []
         requests: dict[str, FactEvent] = {}
         for row in rows:
-            values = list(row)
-            values[4] = json.loads(values[4]) if values[4] else None
-            values[5] = json.loads(values[5])
-            values[6] = json.loads(values[6])
-            event = _event_from_row(tuple(values))
+            event = decode_ledger_row(row)
             events.append(event)
             requests[event.request_id] = event
         self._events[:] = events
@@ -269,19 +528,12 @@ class SQLiteFactLedger(InMemoryFactLedger):
             raise ValueError("ledger tenant mismatch")
         with self._sqlite_lock:
             row = self._conn.execute(
-                "SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
-                "supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
-                "controller_version, created_at FROM recall_fact_ledger_events "
-                "WHERE tenant_id = ? AND request_id = ?",
+                f"SELECT {LEDGER_COLUMNS} FROM {FACT_LEDGER_TABLE} WHERE tenant_id = ? AND request_id = ?",
                 (tenant_id, request_id),
             ).fetchone()
             if row is None:
                 return None
-            values = list(row)
-            values[4] = json.loads(values[4]) if values[4] else None
-            values[5] = json.loads(values[5])
-            values[6] = json.loads(values[6])
-            return _event_from_row(tuple(values))
+            return decode_ledger_row(row)
 
     def close(self) -> None:
         with self._sqlite_lock:
@@ -550,9 +802,19 @@ class SQLiteMaterializationOutbox(InMemoryMaterializationOutbox):
 
 
 class PostgresFactLedger:
-    """Production append-only ledger with serializable per-fact application."""
+    """Production append-only ledger with serializable per-fact application.
 
-    def __init__(self, dsn: str, *, tenant_id: str, statement_timeout_ms: int = 15000) -> None:
+    Reads and conflict checks are answered from the materialized current facts
+    (`recall.fact_current`) whenever those reflect every event of the tenant, and replay the
+    history otherwise. With `materialize` (the default) every append attempts to materialize the events
+    it wrote, in a savepoint in its own transaction. If materialization fails, the append
+    commits and reads replay until reconciliation or rebuilding repairs the derived tables.
+    `last_read` says which way the latest read went: ``"table"`` or ``"replay"``.
+    """
+
+    def __init__(
+        self, dsn: str, *, tenant_id: str, statement_timeout_ms: int = 15000, materialize: bool = True,
+    ) -> None:
         if not dsn or not tenant_id:
             raise ValueError("dsn and tenant_id must be non-empty")
         if statement_timeout_ms < 1:
@@ -560,6 +822,8 @@ class PostgresFactLedger:
         self.dsn = dsn
         self.tenant_id = tenant_id
         self.statement_timeout_ms = statement_timeout_ms
+        self.materialize = materialize
+        self.last_read: str | None = None
 
     def _connect(self) -> psycopg.Connection:
         conn = psycopg.connect(self.dsn, autocommit=True, connect_timeout=10)
@@ -569,11 +833,7 @@ class PostgresFactLedger:
 
     @staticmethod
     def _select_sql() -> str:
-        return (
-            f"SELECT event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
-            f"supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
-            f"controller_version, created_at FROM {FACT_LEDGER_TABLE}"
-        )
+        return f"SELECT {LEDGER_COLUMNS} FROM {FACT_LEDGER_TABLE}"
 
     def _events(self, conn: psycopg.Connection, *, request_id: str | None = None) -> list[FactEvent]:
         suffix = " WHERE tenant_id = %s"
@@ -584,52 +844,67 @@ class PostgresFactLedger:
         rows = conn.execute(self._select_sql() + suffix + " ORDER BY created_at, event_id", params).fetchall()
         return [_event_from_row(row) for row in rows]
 
-    @staticmethod
-    def _project_current(events: list[FactEvent], now: datetime) -> tuple[FactEvent, ...]:
-        superseded = {
-            fact_id
-            for event in events
-            if event.event_type == "superseded"
-            for fact_id in event.supersedes_fact_ids
-        }
-        instant = _as_utc(now)
-        return tuple(
-            event for event in events
-            if event.event_type == "asserted"
-            and event.fact_id not in superseded
-            and event.fact is not None
-            and (event.fact.valid_from is None or instant >= _as_utc(event.fact.valid_from))
-            and (event.fact.valid_until is None or instant < _as_utc(event.fact.valid_until))
-        )
-
     @property
     def events(self) -> tuple[FactEvent, ...]:
         """Read the tenant's immutable event stream for recovery reconciliation."""
         with self._connect() as conn:
             return tuple(self._events(conn))
 
-    def current(self, *, tenant_id: str, now: datetime) -> tuple[FactEvent, ...]:
+    def current(
+        self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
+    ) -> tuple[FactEvent, ...]:
+        return self.current_view(tenant_id=tenant_id, now=now, served=served)[0]
+
+    def current_view(
+        self, *, tenant_id: str, now: datetime, served: ServedSources | None = None
+    ) -> tuple[tuple[FactEvent, ...], tuple[FactEvent, ...]]:
+        """`current`, and the events `live_sources` must read to name the sources of what it lists.
+
+        From the materialized current facts when they reflect the whole ledger (the second item is
+        then each listed fact's live assertions), else from the history replayed (the second item
+        is the history). Either way the answer is `project_current`'s.
+        """
+        from recall.fact_current import pg_current_view
+
         if tenant_id != self.tenant_id:
             raise ValueError("ledger tenant mismatch")
+        events: list[FactEvent] = []
         with self._connect() as conn:
-            events = self._events(conn)
-        return self._project_current(events, now)
+            view = pg_current_view(conn, self.tenant_id, now, served)
+            if view is None:
+                events = self._events(conn)
+        if view is not None:
+            self.last_read = "table"
+            return view.current, view.support
+        self.last_read = "replay"
+        return project_current(events, now, served), tuple(events)
 
-    @staticmethod
-    def _project_candidates(events: list[FactEvent]) -> tuple[FactEvent, ...]:
-        superseded = {
-            fact_id
-            for event in events
-            if event.event_type == "superseded"
-            for fact_id in event.supersedes_fact_ids
-        }
-        return tuple(
-            event
-            for event in events
-            if event.event_type == "asserted"
-            and event.fact_id not in superseded
-            and event.fact is not None
-        )
+    def conflict_history(self, *, tenant_id: str, fact: AtomicFact) -> tuple[FactEvent, ...]:
+        """The events a conflict check for `fact` must read, in ledger order.
+
+        Its conflict key's events when the materialized current facts reflect the whole ledger,
+        else the tenant's history: every rule the check applies reads only the claim's key
+        (`recall.fact_current.key_history`), so it decides the same on either.
+        """
+        if tenant_id != self.tenant_id:
+            raise ValueError("ledger tenant mismatch")
+        with self._connect() as conn, conn.transaction():
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            return tuple(self._history(conn, fact))
+
+    def _history(self, conn: psycopg.Connection, fact: AtomicFact) -> list[FactEvent]:
+        from recall.fact_current import pg_key_history
+
+        history = pg_key_history(conn, self.tenant_id, fact)
+        self.last_read = "replay" if history is None else "table"
+        return self._events(conn) if history is None else history
+
+    def _materialized(self, conn: psycopg.Connection, events: Sequence[FactEvent]) -> None:
+        """Materialize what this transaction appended (`recall.fact_current`); never raises."""
+        if self.materialize:
+            from recall.fact_current import pg_materialize_appended
+
+            pg_materialize_appended(conn, self.tenant_id, events)
 
     def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None:
         if tenant_id != self.tenant_id:
@@ -652,6 +927,7 @@ class PostgresFactLedger:
         writer: str,
         decision_code: str,
         now: datetime,
+        policy_version: str = CONTROLLER_POLICY_VERSION,
     ) -> FactEvent:
         conn.execute(
             f"SELECT {FACT_LEDGER_APPEND_FUNCTION}(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
@@ -661,7 +937,7 @@ class PostgresFactLedger:
                 Jsonb(fact.to_payload()) if fact else None,
                 Jsonb([card.to_payload() for card in cards]),
                 Jsonb(list(supersedes_fact_ids)), request_id, writer, decision_code,
-                CONTROLLER_POLICY_VERSION, CONTROLLER_SCHEMA_VERSION, _as_utc(now),
+                policy_version, CONTROLLER_SCHEMA_VERSION, _as_utc(now),
             ),
         )
         return FactEvent(
@@ -669,7 +945,7 @@ class PostgresFactLedger:
             generation_id=generation_id, fact=fact, fact_id=fact_identity(fact) if fact else None,
             evidence_cards=cards, supersedes_fact_ids=supersedes_fact_ids,
             request_id=request_id, writer=writer, decision_code=decision_code,
-            policy_version=CONTROLLER_POLICY_VERSION, controller_version=CONTROLLER_SCHEMA_VERSION,
+            policy_version=policy_version, controller_version=CONTROLLER_SCHEMA_VERSION,
             created_at=_as_utc(now),
         )
 
@@ -682,14 +958,14 @@ class PostgresFactLedger:
         controller_version: int = CONTROLLER_SCHEMA_VERSION,
         now: datetime | None = None,
         materialization_outbox: Any | None = None,
+        served: ServedSources | None = None,
+        stated: bool = False,
     ) -> LedgerApplyResult:
-        del policy_version, controller_version
+        del controller_version
         if tenant_id != self.tenant_id:
             raise ValueError("ledger tenant mismatch")
         moment = _as_utc(now or datetime.now(UTC))
-        event_id = "evt_" + hashlib.sha256(
-            f"{self.tenant_id}\0{fact_identity(fact)}\0{request_id}\0asserted".encode("utf-8")
-        ).hexdigest()[:32]
+        event_id = assertion_event_id(self.tenant_id, fact, request_id)
         with self._connect() as conn, conn.transaction():
             _consume_permit(
                 permit,
@@ -705,37 +981,51 @@ class PostgresFactLedger:
             )
             prior = self._events(conn, request_id=request_id)
             if prior:
+                if not replays_request(prior[0], fact, cards):
+                    raise ValueError(DecisionCode.REQUEST_ID_REUSED)
                 if materialization_outbox is not None:
                     self._enqueue_materialization(conn, materialization_outbox, prior[0])
                 return LedgerApplyResult(prior[0], duplicate=True)
-            history = self._events(conn)
-            candidates = self._project_candidates(history)
-            if any(event.fact_id == fact_identity(fact) for event in candidates):
+            # The claim's conflict key only, when the current facts reflect the whole ledger: under
+            # the key's lock nothing else can change it, and nothing outside it bears on the rules.
+            history = self._history(conn, fact)
+            index = fact_supersession(history)
+            candidates = project_candidates(history, index=index)
+            moment = ordered_after(moment, history, fact)
+            absent = absent_fact_ids(history, served, moment)
+            if assertion_is_duplicate(
+                candidates, fact, supersedes_fact_ids, absent, stated=stated, index=index,
+                history=history, moment=moment,
+            ):
                 event = self._insert(
                     conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
                     fact=fact, cards=cards, supersedes_fact_ids=(), request_id=request_id,
                     writer=writer, decision_code=DecisionCode.DUPLICATE, now=moment,
+                    policy_version=policy_version,
                 )
                 if materialization_outbox is not None:
                     self._enqueue_materialization(conn, materialization_outbox, event)
+                self._materialized(conn, (event,))
                 return LedgerApplyResult(event, duplicate=True)
-            conflicts = tuple(event for event in candidates if event.fact and facts_conflict(event.fact, fact))
-            if {event.fact_id for event in conflicts} - set(supersedes_fact_ids):
-                raise ValueError(DecisionCode.CONTRADICTION_WITHOUT_SUPERSESSION)
             event = self._insert(
                 conn, event_id=event_id, event_type="asserted", generation_id=generation_id,
                 fact=fact, cards=cards, supersedes_fact_ids=supersedes_fact_ids,
                 request_id=request_id, writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
+                policy_version=policy_version,
             )
+            appended = [event]
             if supersedes_fact_ids:
-                self._insert(
-                    conn, event_id=event_id + "_sup", event_type="superseded",
+                sup_event_id, sup_request_id = supersession_ids(event_id, request_id)
+                appended.append(self._insert(
+                    conn, event_id=sup_event_id, event_type="superseded",
                     generation_id=generation_id, fact=None, cards=cards,
-                    supersedes_fact_ids=supersedes_fact_ids, request_id=request_id + ":supersession",
+                    supersedes_fact_ids=supersedes_fact_ids, request_id=sup_request_id,
                     writer=writer, decision_code=DecisionCode.APPLIED, now=moment,
-                )
+                    policy_version=policy_version,
+                ))
             if materialization_outbox is not None:
                 self._enqueue_materialization(conn, materialization_outbox, event)
+            self._materialized(conn, appended)
             return LedgerApplyResult(event)
 
     @staticmethod
@@ -754,6 +1044,76 @@ class PostgresFactLedger:
             raise ValueError("materialization_outbox is required")
         return self.apply_assertion(materialization_outbox=outbox, **kwargs)
 
+    def retract_forgotten(
+        self, *, tenant_id: str, touched: Callable[[EvidenceCard], bool],
+        gone: Callable[[EvidenceCard], bool], writer: str = RETRACTION_WRITER,
+        now: datetime | None = None, decision_code: str = DecisionCode.SOURCE_FORGOTTEN,
+    ) -> tuple[FactEvent, ...]:
+        """Append a `retracted` event for each assertion `plan_retractions` selects; return them.
+
+        `decision_code` is one of `RETRACTION_CODES`: why the evidence is gone for good.
+
+        The plan is made twice: once to learn which facts to lock, and again under the same
+        per-fact advisory locks `apply_assertion` takes, so an application that lands between the
+        two reads is seen before anything is retracted.
+        """
+        if tenant_id != self.tenant_id:
+            raise ValueError("ledger tenant mismatch")
+        if decision_code not in RETRACTION_CODES:
+            raise ValueError(f"{decision_code!r} is not a retraction code")
+        moment = _as_utc(now or datetime.now(UTC))
+        with self._connect() as conn, conn.transaction():
+            first = plan_retractions(self._events(conn), touched=touched, gone=gone)
+            for key in sorted({fact_conflict_key(event.fact) for event in first if event.fact}):
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"fact\x1f{self.tenant_id}\x1f{key}",),
+                )
+            written: list[FactEvent] = []
+            for assertion in plan_retractions(self._events(conn), touched=touched, gone=gone):
+                event_id, request_id = retraction_ids(self.tenant_id, assertion)
+                written.append(self._insert(
+                    conn, event_id=event_id, event_type="retracted",
+                    generation_id=assertion.generation_id, fact=None,
+                    cards=assertion.evidence_cards, supersedes_fact_ids=(str(assertion.fact_id),),
+                    request_id=request_id, writer=writer,
+                    decision_code=decision_code, now=moment,
+                ))
+            self._materialized(conn, written)
+            return tuple(written)
+
+    def withdraw_forgotten(
+        self, *, tenant_id: str, touched: Callable[[EvidenceCard], bool],
+        gone: Callable[[EvidenceCard], bool], writer: str = WITHDRAWAL_WRITER,
+        now: datetime | None = None,
+    ) -> tuple[FactEvent, ...]:
+        """Append a `withdrawn` event for each assertion `plan_withdrawals` selects; return them.
+
+        Planned twice under the per-fact locks, as `retract_forgotten` is. A withdrawn event
+        carries no fact and no card: its request id names the assertion (`withdrawal_ids`).
+        """
+        if tenant_id != self.tenant_id:
+            raise ValueError("ledger tenant mismatch")
+        moment = _as_utc(now or datetime.now(UTC))
+        with self._connect() as conn, conn.transaction():
+            first = plan_withdrawals(self._events(conn), touched=touched, gone=gone)
+            for key in sorted({fact_conflict_key(event.fact) for event in first if event.fact}):
+                conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                    (f"fact\x1f{self.tenant_id}\x1f{key}",),
+                )
+            written: list[FactEvent] = []
+            for assertion in plan_withdrawals(self._events(conn), touched=touched, gone=gone):
+                event_id, request_id = withdrawal_ids(self.tenant_id, assertion)
+                written.append(self._insert(
+                    conn, event_id=event_id, event_type="withdrawn",
+                    generation_id=assertion.generation_id, fact=None, cards=(),
+                    supersedes_fact_ids=(str(assertion.fact_id),), request_id=request_id,
+                    writer=writer, decision_code=DecisionCode.WITHDRAWN, now=moment,
+                ))
+            self._materialized(conn, written)
+            return tuple(written)
+
     def record_decision(
         self, *, tenant_id: str, generation_id: str, request_id: str, writer: str,
         decision_code: str, fact: AtomicFact | None, cards: tuple[EvidenceCard, ...] = (),
@@ -762,19 +1122,19 @@ class PostgresFactLedger:
         if tenant_id != self.tenant_id:
             raise ValueError("ledger tenant mismatch")
         moment = _as_utc(now or datetime.now(UTC))
-        event_type = "abstained" if decision_code == DecisionCode.FRESH_SEARCH_INSUFFICIENT else "rejected"
-        event_id = "evt_" + hashlib.sha256(
-            f"{self.tenant_id}\0{request_id}\0{event_type}".encode("utf-8")
-        ).hexdigest()[:32]
+        event_type = decision_event_type(decision_code)
+        event_id = decision_event_id(self.tenant_id, request_id, event_type)
         with self._connect() as conn, conn.transaction():
             prior = self._events(conn, request_id=request_id)
             if prior:
                 return prior[0]
-            return self._insert(
+            event = self._insert(
                 conn, event_id=event_id, event_type=event_type, generation_id=generation_id,
                 fact=fact, cards=cards, request_id=request_id, writer=writer,
                 decision_code=decision_code, supersedes_fact_ids=(), now=moment,
             )
+            self._materialized(conn, (event,))
+            return event
 
 
 class PostgresMaterializationOutbox:

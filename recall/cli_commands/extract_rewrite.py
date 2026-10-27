@@ -192,9 +192,19 @@ def _rejected_claims(ledger_path: Path) -> frozenset[str]:
         ) from exc
 
 
-def _already_declared(root: Path, proposal: object) -> bool:
-    """True when the memo already states this proposal's key, so it needs no second review."""
+def _declared_state(root: Path, proposal: object) -> tuple[str, str, str] | None:
+    """`("declared" | "blocked", file, existing value)`, or None when the memo is free.
+
+    "declared" means the memo already states THIS edge, so it needs no second review. "blocked"
+    means it states the same single-valued key with a DIFFERENT value, so `apply` refuses until
+    a human changes the existing line. `supersedes` holds several values, so for it a different
+    reference is neither: the memo is free to declare it too, and only membership counts.
+    The marks used to be one, because only the key's presence was checked. On a live run of
+    the supersession arbiter over a 717-memo store that showed 18 of 49 proposals as "DECLARED"
+    while each named a memo nobody had declared, so the reviewer was told the work was done.
+    """
     from recall.document import parse_document
+    from recall.frontmatter import supersedes_key, supersedes_targets, writable_reference
     from recall.rewrite import RewriteRefused, _resolve, destination, route_relation
 
     try:
@@ -206,7 +216,7 @@ def _already_declared(root: Path, proposal: object) -> bool:
         if destination(routed.key) != "frontmatter":
             # A derived-block key is multi valued for `contradicts` and `same_entity`, so
             # "already there" is not a property of the key alone. Left to the write path.
-            return False
+            return None
         corpus_root = root if root.is_dir() else root.parent
         path = corpus_root / routed.edit_file
         if not path.is_file():
@@ -219,8 +229,21 @@ def _already_declared(root: Path, proposal: object) -> bool:
             path = corpus_root / _resolve(corpus_root, routed.edit_file)
         meta = parse_document(path.read_text(encoding="utf-8-sig")).meta
     except (RewriteRefused, UnicodeDecodeError, OSError):
-        return False
-    return routed.key in meta
+        return None
+    if routed.key not in meta:
+        return None
+    wanted = writable_reference(routed.value)
+    if routed.key == "supersedes":
+        # Compared as `lint` and the store resolve it: `name`, `name.md` and `[[name]]` agree.
+        declared = supersedes_targets(meta[routed.key])
+        if supersedes_key(wanted) in {supersedes_key(item) for item in declared}:
+            return ("declared", routed.edit_file, ", ".join(declared))
+        if declared:
+            return None  # another reference: an addition, not a conflict
+        return ("blocked", routed.edit_file, "")  # `supersedes:` declaring nothing
+    existing = str(meta[routed.key])
+    same = existing.strip() == wanted.strip()
+    return ("declared" if same else "blocked", routed.edit_file, existing)
 
 
 def _cmd_rewrite(args: argparse.Namespace) -> None:
@@ -250,7 +273,8 @@ def _run_rewrite(args: argparse.Namespace) -> None:
     from datetime import datetime, timezone
 
     from recall.document import parse_document
-    from recall.frontmatter import supersedes_key
+    from recall.frontmatter import supersedes_key, supersedes_targets
+    from recall.reasoning_proposals._arbiter import ARBITER_RULE_ID
     from recall.promotion import (
         accept_reviewed_proposal,
         promote_accepted_proposal,
@@ -308,22 +332,22 @@ def _run_rewrite(args: argparse.Namespace) -> None:
             except (UnicodeDecodeError, OSError) as exc:
                 print(f"  UNREADABLE {_rel(path)}: {exc}")
                 continue
-            target = meta.get("supersedes")
-            if not isinstance(target, str) or not target:
-                continue
-            matches = by_key.get(supersedes_key(target), [])
-            if not matches:
-                print(
-                    f"  UNRESOLVED {_rel(path)}: supersedes {target!r}, "
-                    f"which is not in the corpus"
-                )
-                unresolved += 1
-            elif len(matches) > 1:
-                print(
-                    f"  AMBIGUOUS {_rel(path)}: supersedes {target!r}, which matches "
-                    f"{len(matches)} files: {', '.join(matches)}"
-                )
-                unresolved += 1
+            # Every declared reference: the key may hold several, and a memo whose list
+            # held one unresolved name used to be skipped and counted as clean.
+            for target in supersedes_targets(meta.get("supersedes")):
+                matches = by_key.get(supersedes_key(target), [])
+                if not matches:
+                    print(
+                        f"  UNRESOLVED {_rel(path)}: supersedes {target!r}, "
+                        f"which is not in the corpus"
+                    )
+                    unresolved += 1
+                elif len(matches) > 1:
+                    print(
+                        f"  AMBIGUOUS {_rel(path)}: supersedes {target!r}, which matches "
+                        f"{len(matches)} files: {', '.join(matches)}"
+                    )
+                    unresolved += 1
         print(f"\n{unresolved} unresolved edge(s)")
         if unresolved:
             raise SystemExit(1)
@@ -332,7 +356,12 @@ def _run_rewrite(args: argparse.Namespace) -> None:
     # `RewriteRefused` is caught by the `_cmd_rewrite` wrapper above, which turns it into the
     # same `recall rewrite: <reason>` and exit 2. Catching it again here only risked the two
     # disagreeing, and the local handler referenced a name this function never imported.
-    proposals = corpus_proposals(root, args.glob)
+    # The arbiter's account goes to stderr, so the listing on stdout keeps its shape. It is
+    # printed on every verb because every verb re-derives, and a re-run that called the model
+    # (an evicted cache, a changed memo) costs money the reviewer should see being spent.
+    proposals = corpus_proposals(
+        root, args.glob, on_arbiter_run=lambda run: print(run.summary(), file=sys.stderr)
+    )
     ledger_path = default_ledger_path(root if root.is_dir() else root.parent)
 
     if args.rewrite_cmd == "plan":
@@ -345,17 +374,37 @@ def _run_rewrite(args: argparse.Namespace) -> None:
             claim = claim_key(
                 proposal.proposed_relation, proposal.subject_id, proposal.object_id
             )
+            state = _declared_state(root, proposal)
             if claim in rejected:
                 mark = "REJECTED"
-            elif _already_declared(root, proposal):
+            elif state is not None and state[0] == "declared":
                 # Otherwise an accepted proposal reappears every run, indistinguishable from
                 # unreviewed work. It needs no storage: the corpus file already states it.
                 mark = "DECLARED"
+            elif state is not None:
+                mark = "BLOCKED "
             else:
                 mark = "review  "
             print(f"  {mark} {proposal.id}  {proposal.proposed_relation}")
+            if mark == "BLOCKED " and state is not None:
+                _, edit_file, existing = state
+                if existing:
+                    print(
+                        f"      blocked: {edit_file} already declares {existing!r}, and the "
+                        "key holds one value; apply refuses until that line is changed"
+                    )
+                else:
+                    print(
+                        f"      blocked: {edit_file} declares the key with no value, which "
+                        "says it holds none; apply refuses until that line is changed"
+                    )
             print(f"      {proposal.subject_id} -> {proposal.object_id}")
             print(f"      {proposal.explanation}")
+            if proposal.rule_id == ARBITER_RULE_ID:
+                # The quotes ARE the evidence: a reviewer should be able to decide from two lines.
+                for label, key in (("older", "quote_older"), ("newer", "quote_newer")):
+                    quote = " ".join(str(proposal.metadata.get(key, "")).split())
+                    print(f"      {label}: \"{quote[:200]}\"")
             # Printed so a plan from THIS command and a plan from `recall_rewrite_plan` over
             # MCP name the same thing. Their proposal ids never match; their claim keys do.
             print(f"      claim {claim}")
@@ -419,7 +468,8 @@ def _run_rewrite(args: argparse.Namespace) -> None:
         print("written")
         return
     # Non-zero when nothing was written. Exiting 0 on a refusal left a script unable to tell a
-    # completed declaration from a declined one. 2 stays reserved for caller error.
+    # completed declaration from a declined one. 2 stays reserved for a `RewriteRefused`: a caller
+    # error, or an edge that would close a supersession cycle (see `apply_rewrite`).
     print(f"not written: {result.refusal}")
     raise SystemExit(1)
 
@@ -427,7 +477,7 @@ def _run_rewrite(args: argparse.Namespace) -> None:
 def _run_extract(args: argparse.Namespace) -> None:
     """`recall extract run|show`. Reads the corpus, writes nothing, never opens the database.
 
-    Extraction is OFF unless `RECALL_TRUTH_EXTRACTION` is set, mirroring `entailment.py`, and an
+    Extraction is OFF unless `RECALL_TRUTH_EXTRACTION` is set, like every optional model stage, and an
     unknown engine name is refused rather than downgraded to the deterministic one: silently
     running a different engine than the one named would make the audit record wrong about how a
     claim was produced.

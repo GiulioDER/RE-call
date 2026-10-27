@@ -73,12 +73,6 @@ def test_check_corpus_name_guards_sample_id() -> None:
         _check_corpus_name("../../../etc", "sample_id")
 
 
-def test_entailment_sweep_reuses_locomo_rate() -> None:  # CODE-001
-    from recall.eval import locomo, locomo_entailment_sweep
-
-    assert locomo_entailment_sweep._rate is locomo._rate
-
-
 class _FakeStore:
     def __init__(self, texts: list[str]) -> None:
         self._texts = texts

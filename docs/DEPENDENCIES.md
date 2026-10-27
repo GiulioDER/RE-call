@@ -15,6 +15,10 @@ provide a top-level `recall` module and the last installed distribution wins the
 
 ## Runtime Floors
 
+Lite uses SQLite on a local disk and needs no PostgreSQL, pgvector server, or Docker. Install the
+source build with `fastembed,mcp` for local embeddings and MCP; the published `0.14.0` wheel
+predates Lite. See [LITE.md](LITE.md) for the installation and maintenance path.
+
 PostgreSQL 16, 17, and 18 are supported with pgvector. The local Docker default tracks PostgreSQL
 18 through `pgvector/pgvector:pg18`, while CI keeps migration coverage for 16 and 17 as older
 supported majors.
@@ -40,7 +44,7 @@ instead of presenting all three as an opaque embedder traceback.
 
 ## MCP Extra
 
-`mcp` is **pinned exactly at 2.1.0**, not ranged. RE-call uses the MCP 2 server import path,
+`mcp` is **pinned exactly at 2.2.0**, not ranged. RE-call uses the MCP 2 server import path,
 context injection, and snake_case tool annotation fields. The boundaries below are why the floor
 sits where it does; they are kept as a record of what each version added, and as the map for a
 future bump:
@@ -51,7 +55,7 @@ future bump:
 | `>=1.27.2` | Adds `AccessToken.subject` and `.claims`, used to carry tenant identity. |
 | `>=2.0.0` | Provides `MCPServer`, typed request `Context` injection, and snake_case `ToolAnnotations` fields used by `recall_mcp.server`. |
 | `<3` | Next major is reserved as a port until its server, auth, and context APIs are tested here. |
-| `==2.1.0` | The pin itself. See below. |
+| `==2.2.0` | The pin itself. See below. |
 
 ### Why this one is pinned rather than ranged
 
@@ -87,17 +91,17 @@ Keep the `mcp`, `dev` and `desktop` extras in step so CI exercises the same API 
 `OpenAICompatEmbedder`, including OpenRouter-backed embedding models such as
 `gemini-embedding-2`. Both are opt-in because they send corpus text to third-party embedding APIs.
 
-## Sparse, Rerank, Entailment, and Fine-tuning
+## Sparse, Rerank, and Fine-tuning
 
 Learned sparse retrieval uses `transformers` directly rather than `sentence-transformers`. That
-keeps the SPLADE experiment from raising the reranker, entailment, and fine-tuning floor as a side
+keeps the SPLADE experiment from raising the reranker and fine-tuning floor as a side
 effect. Model weights are downloaded or provisioned by the user, never vendored into the package.
 
 `transformers` is capped below 6 because this project has already been broken by a major release
 walking in through an unbounded floor. The current range is a compatibility claim for the APIs used
 here; raising the cap should be treated as a port and tested separately.
 
-Reranking, entailment, and fine-tuning share the same `sentence-transformers` floor. Bump them
+Reranking and fine-tuning share the same `sentence-transformers` floor. Bump them
 together. The `finetune` extra intentionally does not install `accelerate`: CVE-2026-69112 affects
 its checkpoint loading helpers, and upstream has not published a fixed release. The reproducible
 benchmark uses Sentence Transformers' `old_fit` path, so the vulnerable optional package is not

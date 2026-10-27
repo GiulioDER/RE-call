@@ -39,6 +39,8 @@ from recall_aml.search_cache import TenantSearchCache
 #: Below this much Search budget a rerank is not attempted (RK-1 measured 0.3 s typical, 2.1 s p95).
 MIN_RERANK_SECONDS = 3.0
 CANDIDATE_WIDTH = 100
+#: Reciprocal rank fusion (G. V. Cormack, C. L. A. Clarke and S. Büttcher, SIGIR 2009) and its
+#: standard constant.
 RRF_CONSTANT = 60
 MAX_ITEMS = 12
 CODE_PROFILE = "aml-code-exact-v1"

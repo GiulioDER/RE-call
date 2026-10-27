@@ -38,6 +38,8 @@ ORIGINAL_TOOLS = {"recall_search", "recall_index", "recall_forget", "recall_stat
 ALL_TOOLS = ORIGINAL_TOOLS | {
     "recall_evidence",
     "recall_related",
+    # Exact-key lookup of audit records; reads only, no embedding.
+    "recall_records",
     "recall_current_state",
     "recall_reasoning_audit",
     "recall_reasoning_projection",
@@ -47,14 +49,18 @@ ALL_TOOLS = ORIGINAL_TOOLS | {
     # Read only, and deliberately unaccompanied: there is no `recall_rewrite_apply`, because
     # the MCP client is the model and a reviewer id it can type is a field, not a person.
     "recall_rewrite_plan",
+    # Queues a report for a person; it never edits a memo either.
+    "recall_report_stale",
+    # Appends an agent's account of one task to the audit ledger; changes no memo either.
+    "recall_report_use",
     "recall_tenants",
     "recall_ingest",
     "recall_job_status",
     "recall_calibration_status",
     "recall_calibration_run",
     "recall_calibration_publish",
-    "recall_related",
-    "recall_current_state",
+    # Erases as recall_forget does, then gives back what the memo superseded.
+    "recall_withdraw",
     "recall_current_facts",
     "recall_apply_fact",
     "recall_inventory",

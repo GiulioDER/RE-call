@@ -95,7 +95,6 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
-        "n",
         "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
@@ -121,7 +120,7 @@ def test_setup_wizard_writes_env_and_accepts_api_keys(tmp_path, monkeypatch):
     assert "RECALL_EMBEDDER=voyage:voyage-3" in text
     assert "RECALL_RERANK=0" in text
     assert "RECALL_SPARSE=fts" in text
-    assert "RECALL_ENTAILMENT=0" in text
+    assert "RECALL_ENTAILMENT" not in text
     assert "Calibration skipped" in output.getvalue()
 
 
@@ -149,7 +148,6 @@ def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
-        "n",
         "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
@@ -172,7 +170,6 @@ def test_setup_wizard_skips_blank_calibration_inputs(tmp_path, monkeypatch):
     assert "RECALL_DSN=postgresql://example/recall" in text
     assert "RECALL_EMBEDDER=voyage:voyage-3" in text
     assert "RECALL_SPARSE=fts" in text
-    assert "RECALL_ENTAILMENT=0" in text
     assert "Calibration skipped" in output.getvalue()
 
 
@@ -212,7 +209,6 @@ def test_setup_wizard_treats_calibration_directory_as_output_folder(tmp_path, mo
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
-        "n",
         "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "y",
@@ -247,55 +243,6 @@ def test_setup_wizard_rejects_windows_host_path_for_calibration_output(tmp_path,
             label="Calibration output path",
             default=tmp_path / "calibration.json",
         )
-
-
-def test_setup_wizard_can_enable_entailment_judge(tmp_path, monkeypatch):
-    probe = HardwareProbe(
-        cpu_count=8,
-        gpu="nvidia",
-        cuda_available=False,
-        free_bytes=10_000_000_000,
-        internet=True,
-        fastembed_available=True,
-        sentence_transformers_available=True,
-    )
-    monkeypatch.setattr("recall.setup.probe_hardware", lambda: probe)
-    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
-    monkeypatch.setattr(
-        "recall.setup.calibrate_from_files",
-        lambda **kw: (_ for _ in ()).throw(AssertionError("calibration should be skipped")),
-    )
-    answers = iter([
-        "n",
-        "voyage-key",
-        "openai-key",
-        "openrouter-key",
-        "6",  # embedder: voyage cloud, now 6th since bge base and large were added
-        "1",  # reranker menu
-        "1",  # sparse backend menu
-        "y",
-        "1",
-        "n",  # reasoning arm declined
-        "n",  # scaffold CLAUDE.md / memory/? declined
-        "n",
-    ])
-    output = io.StringIO()
-
-    def fake_input(_prompt: str = "") -> str:
-        return next(answers)
-
-    run_setup_wizard(
-        dsn="postgresql://example/recall",
-        env_path=tmp_path / ".env",
-        input_fn=fake_input,
-        print_fn=lambda *a, **k: print(*a, **k, file=output),
-    )
-
-    text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "RECALL_ENTAILMENT=1" in text
-    assert "RECALL_ENTAILMENT_MODEL=cross-encoder/qnli-distilroberta-base" in text
-    assert "RECALL_ENTAILMENT_REVISION=7dd04ee0a6040c06fb381ad7edcb8585f4d937fd" in text
-    assert "Calibration skipped" in output.getvalue()
 
 
 def test_splade_choice_requires_cuda_gpu():
@@ -724,7 +671,7 @@ def test_index_memory_directory_survives_embedder_resolution_failure(monkeypatch
     def boom(*a, **k):
         raise ValueError("unknown embedder")
 
-    monkeypatch.setattr("recall.setup.resolve_embedder", boom)
+    monkeypatch.setattr("recall.memory_index.resolve_embedder", boom)
     output = io.StringIO()
 
     index_memory_directory(
@@ -767,7 +714,6 @@ def test_setup_wizard_scaffolds_claude_md_and_memory_and_indexes(tmp_path, monke
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
-        "n",
         "n",  # reasoning arm declined
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "n",
@@ -823,7 +769,6 @@ def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, m
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
-        "n",
         "n",  # reasoning arm declined
         "y",  # scaffold CLAUDE.md / memory/? accepted, but scaffold_claude_md raises
         "n",
@@ -849,7 +794,6 @@ def test_setup_wizard_survives_scaffold_failure_and_still_writes_env(tmp_path, m
     assert "RECALL_DSN=postgresql://example/recall" in text
     assert "RECALL_EMBEDDER=voyage:voyage-3" in text
     assert "RECALL_SPARSE=fts" in text
-    assert "RECALL_ENTAILMENT=0" in text
     assert "Could not scaffold" in output.getvalue()
 
 
@@ -881,7 +825,6 @@ def test_setup_wizard_skips_scaffold_when_declined(tmp_path, monkeypatch):
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
-        "n",
         "n",  # reasoning arm declined
         "n",  # scaffold CLAUDE.md / memory/? declined
         "n",
@@ -936,7 +879,6 @@ def test_setup_wizard_scaffold_prompt_defaults_to_yes_on_blank_answer(tmp_path, 
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
-        "n",
         "n",  # reasoning arm declined
         "",  # scaffold CLAUDE.md / memory/? blank answer takes the default (yes)
         "n",
@@ -994,7 +936,6 @@ def test_setup_wizard_still_scaffolds_when_calibration_output_path_is_invalid(
         "6",  # embedder: voyage cloud, now 6th since bge base and large were added
         "1",  # reranker menu
         "1",  # sparse backend menu
-        "n",
         "n",  # reasoning arm declined
         "y",  # scaffold CLAUDE.md / memory/? accepted
         "y",  # calibrate now? accepted
@@ -1054,7 +995,6 @@ def test_a_real_choice_is_still_offered_as_a_menu(tmp_path, monkeypatch):
         "1",  # embedder
         "1",  # reranker menu, genuinely offered
         "2",  # sparse menu, genuinely offered: splade
-        "n",  # entailment
         "n",  # reasoning arm declined
         "n",  # scaffold
         "n",  # calibrate
@@ -2210,11 +2150,18 @@ def test_every_shipped_skill_is_where_the_wizard_looks_for_it():
 
     Asserts the SET, not a count. A count passes while a newly added skill is never installed,
     which is exactly the failure that made this plural: the resolver named one skill by hand.
+
+    Session-skill red proof: narrow plugin_skill_sources' discovery glob to
+    ``[!s]*/SKILL.md``, omitting both session skills. This exact node must fail at
+    its expected-set assertion, then pass after restoring ``*/SKILL.md``.
     """
     from recall.claude_code import plugin_skill_sources
 
     sources = plugin_skill_sources()
-    assert set(sources) == {"check-memory-before-acting", "keep-memory-current", "re-call"}
+    assert set(sources) == {
+        "check-memory-before-acting", "keep-memory-current", "re-call",
+        "session-open", "session-close",
+    }
     for name, source in sources.items():
         assert source.name == "SKILL.md"
         assert source.parent.name == name, "a skill is loaded by its DIRECTORY name"

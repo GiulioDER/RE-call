@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import stat as stat_module
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from fnmatch import fnmatch
-from pathlib import Path
-from typing import Literal
+from pathlib import Path, PurePosixPath
+from typing import Any, Literal
 from uuid import uuid4
 
+from recall.anchors import code_sha, normalize, resolve_symbols
 from recall.cache import EmbeddingCache, embed_with_cache
 from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.embedding_registry import context_version_for
@@ -29,9 +32,10 @@ from recall.extraction import (
     extract_document,
     strip_nul_from_blocks,
 )
-from recall.frontmatter import legacy_pairing_differs, validity_bounds
+from recall.frontmatter import RECORD_KEY, legacy_pairing_differs, validity_bounds
 from recall.index_lock import single_writer
 from recall.observability import get_logger
+from recall.records import admit_record
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
 from recall.security_policy import AccessContext, SourceSecurityPolicy
@@ -325,6 +329,138 @@ def chunk_code(text: str, max_chars: int = DEFAULT_MAX_CHARS) -> list[str]:
     return _pack(blocks, max_chars)
 
 
+#: The version recorded in the code chunker's `ChunkerIdentity`. Version 3 preserves the original
+#: Python source through generation readers so anchors retain outer whitespace and a BOM.
+#: Version 2 introduced the anchored chunker:
+#: a Python file splits on the symbols `ast` reports and every chunk carries a `code_anchor`. The
+#: identity is part of the pipeline fingerprint and generation reuse is keyed on that, so raising
+#: this makes the next build of every code tenant re-chunk every source. Text tenants are untouched.
+CODE_CHUNKER_VERSION = 3
+#: The chunk metadata key holding a Python chunk's anchor, `{"repo", "file", "symbol", "code_sha"}`:
+#: the triple a `recall_record` anchor carries, plus the repository, so a record joins to the
+#: current code by equality (`docs/AUDIT_MEMORY_DESIGN.md`, "Code join").
+CODE_ANCHOR_KEY = "code_anchor"
+
+
+def _code_anchor(repo: str | None, file: str, symbol: str | None, sha: str) -> dict[str, Any]:
+    return {"repo": repo, "file": file, "symbol": symbol, "code_sha": sha}
+
+
+def _pack_lines(owned: list[tuple[int, str]], max_chars: int) -> list[tuple[int, str]]:
+    """One symbol's lines, as pieces of at most max_chars that cut only between lines.
+
+    `owned` is `(line index, line)` in source order. A single line longer than the cap is
+    force-split on whitespace, as `chunk_text` does, because exceeding the cap means the embedder
+    truncates the tail silently. Blank lines never open a piece and never repeat, so the gaps left
+    where another symbol's lines were taken out read as one blank line. Returns
+    `(first line index, piece)`.
+    """
+    pieces: list[tuple[int, str]] = []
+    buf: list[tuple[int, str]] = []
+    size = 0
+
+    def flush() -> None:
+        nonlocal size
+        text = "\n".join(line for _, line in buf).strip("\n")
+        if text:
+            pieces.append((buf[0][0], text))
+        buf.clear()
+        size = 0
+
+    for index, line in owned:
+        if not line and (not buf or not buf[-1][1]):
+            continue
+        if len(line) > max_chars:
+            flush()
+            pieces.extend((index, part) for part in _split_oversized(line, max_chars, 0))
+            continue
+        if buf and size + 1 + len(line) > max_chars:
+            flush()
+        size += len(line) + (1 if buf else 0)
+        buf.append((index, line))
+    flush()
+    return pieces
+
+
+def code_pieces(
+    text: str, *, file: str, repo: str | None, max_chars: int = DEFAULT_MAX_CHARS
+) -> list[tuple[str, dict[str, Any]]]:
+    """The chunks of one source file, each with the metadata it adds to its chunk.
+
+    A file whose name does not end in ``.py`` gets exactly `chunk_code`'s chunks and no metadata.
+
+    A Python file gets one chunk per symbol `recall.anchors.resolve_symbols` reports, plus the
+    module-level lines, and every chunk carries `CODE_ANCHOR_KEY`. Each line belongs to the
+    innermost symbol containing it, so a class's chunk holds its header, docstring and attributes
+    while each method has a chunk of its own, and no line is in two chunks. The anchor's
+    `code_sha` is nonetheless `recall.anchors.symbol_sha` of the WHOLE symbol, methods included:
+    that is the key CCA computes for a finding in the class body, and the key is what has to
+    match, not the chunk text. Module-level lines carry `symbol: None` and the whole-file hash,
+    which is what a `None` symbol means there. A symbol larger than `max_chars` splits into
+    several chunks that all carry the same anchor.
+
+    A ``.py`` file that does not parse keeps `chunk_code`'s chunks, each anchored to the whole
+    file, so a record anchored at file level still finds it unchanged.
+
+    `file` is the repository-relative path with forward slashes, and `repo` the repository's
+    identity, both written into the anchor as given. Neither is derived here.
+    """
+    if PurePosixPath(file).suffix != ".py":
+        return [(piece, {}) for piece in chunk_code(text, max_chars)]
+    try:
+        spans = resolve_symbols(text)
+    except (SyntaxError, ValueError, RecursionError):
+        whole_file = _code_anchor(repo, file, None, code_sha(text))
+        return [
+            (piece, {CODE_ANCHOR_KEY: dict(whole_file)}) for piece in chunk_code(text, max_chars)
+        ]
+    # The same normalised lines `recall.anchors` slices and hashes, so a span's line numbers index
+    # them directly. The chunk text drops a leading byte order mark; the hash does not.
+    lines = normalize(text).split("\n")
+    shown = [lines[0].removeprefix("﻿"), *lines[1:]]
+    owners: list[int | None] = [None] * len(lines)
+    for index, span in enumerate(spans):  # parents precede children, so the innermost one wins
+        owners[span.start_line - 1 : span.end_line] = [index] * (span.end_line - span.start_line + 1)
+    owned: dict[int | None, list[tuple[int, str]]] = {}
+    for index, owner in enumerate(owners):
+        owned.setdefault(owner, []).append((index, shown[index]))
+    placed: list[tuple[int, str, dict[str, Any]]] = []
+    for owner, owner_lines in owned.items():
+        if owner is None:
+            anchor = _code_anchor(repo, file, None, code_sha(text))
+        else:
+            span = spans[owner]
+            body = "\n".join(lines[span.start_line - 1 : span.end_line])
+            anchor = _code_anchor(repo, file, span.symbol, code_sha(body))
+        placed.extend(
+            (first, piece, anchor) for first, piece in _pack_lines(owner_lines, max_chars)
+        )
+    placed.sort(key=lambda item: item[0])
+    return [(piece, {CODE_ANCHOR_KEY: dict(anchor)}) for _, piece, anchor in placed]
+
+
+@dataclass(frozen=True)
+class CodeChunker:
+    """The `code` chunker a generation build binds.
+
+    A class rather than a `functools.partial` of `chunk_code`, because a `Chunker` sees only the
+    text and an anchor needs the file and the repository too. Calling it with the text gives
+    `chunk_code`'s chunks, which is what every caller without a file has always had. `pieces` is
+    the form the generation build uses, and anything that must chunk exactly as the build does
+    (the wizard's query set) has to use it as well, since for a ``.py`` file the two differ.
+    """
+
+    max_chars: int = DEFAULT_MAX_CHARS
+
+    def __call__(self, text: str) -> list[str]:
+        return chunk_code(text, self.max_chars)
+
+    def pieces(
+        self, text: str, *, file: str, repo: str | None
+    ) -> list[tuple[str, dict[str, Any]]]:
+        return code_pieces(text, file=file, repo=repo, max_chars=self.max_chars)
+
+
 def _strip_nul(text: str, source: Path) -> str:
     """Remove NUL bytes, which PostgreSQL text columns cannot store at all.
 
@@ -380,14 +516,40 @@ def _confined_to(root: Path, paths: Iterable[Path]) -> list[Path]:
     layout choice, not an attack in progress, and a single stray link should not make the whole
     corpus unindexable.
     """
-    kept: list[Path] = []
+    return [p for p, _stat in _confined_with_stats(root, paths)]
+
+
+#: The stat failures `Path.is_file` reads as "not a file" (pathlib's own list, Python 3.11 to 3.13);
+#: any other error (permission, I/O) raised from it and must still raise here.
+_NOT_A_FILE_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+_NOT_A_FILE_WINERRORS = frozenset({21, 123, 1921})  # not ready, invalid name, link loop
+
+
+def _confined_with_stats(root: Path, paths: Iterable[Path]) -> list[tuple[Path, os.stat_result]]:
+    """`_confined_to`, keeping the stat each regular-file check already took.
+
+    `is_file()` stats the file and discards the answer; a caller that needs size and mtime would
+    then stat it again. Same filter, same order, same errors: a missing or looping file is "not a
+    file", and a permission or I/O error raises, exactly as `is_file` behaves.
+    """
+    kept: list[tuple[Path, os.stat_result]] = []
     for p in paths:
         try:
             resolved = p.resolve()
         except OSError:  # pragma: no cover - broken symlink / permission
             continue
-        if resolved.is_relative_to(root) and resolved.is_file():
-            kept.append(p)
+        if not resolved.is_relative_to(root):
+            continue
+        try:
+            found = resolved.stat()
+        except ValueError:  # an embedded NUL; `is_file` reads it as "not a file"
+            continue
+        except OSError as exc:
+            if exc.errno in _NOT_A_FILE_ERRNOS or getattr(exc, "winerror", None) in _NOT_A_FILE_WINERRORS:
+                continue
+            raise
+        if stat_module.S_ISREG(found.st_mode):
+            kept.append((p, found))
     return kept
 
 
@@ -428,6 +590,31 @@ def _safe_default_file(root: Path, path: Path, glob: str) -> bool:
     )
 
 
+def _directory_candidates(root: Path, glob: str) -> list[tuple[Path, os.stat_result]]:
+    """The directory branch of `candidate_files`, each path with the stat its check took."""
+    paths = _default_walk(root) if glob == DEFAULT_INDEX_GLOB else root.glob(glob)
+    return sorted(
+        (
+            (p, found) for p, found in _confined_with_stats(root, paths)
+            if (glob != DEFAULT_INDEX_GLOB or p.suffix.lower() in DOCUMENT_EXTENSIONS)
+            and _safe_default_file(root, p, glob)
+        ),
+        key=lambda pair: pair[0],
+    )
+
+
+def candidate_files_with_stats(root: str | Path, glob: str = DEFAULT_INDEX_GLOB) -> list[tuple[Path, os.stat_result]]:
+    """`candidate_files` for a directory, each file with its stat: the same list, walked once.
+
+    For a caller that measures the tree (the lite refresh's snapshot) and would otherwise stat
+    every file a second time. A directory only: a single-file root goes through `candidate_files`.
+    """
+    resolved = Path(root).resolve()
+    if not resolved.is_dir():
+        raise NotADirectoryError(f"{str(resolved)!r} is not a directory")
+    return _directory_candidates(resolved, glob)
+
+
 def candidate_files(path: str | Path, glob: str = DEFAULT_INDEX_GLOB) -> list[Path]:
     """Return the confined, sorted supported file list that `index_path(path, glob)` indexes.
 
@@ -451,12 +638,7 @@ def candidate_files(path: str | Path, glob: str = DEFAULT_INDEX_GLOB) -> list[Pa
     """
     root = Path(path).resolve()
     if root.is_dir():
-        paths = _default_walk(root) if glob == DEFAULT_INDEX_GLOB else root.glob(glob)
-        return sorted(
-            p for p in _confined_to(root, paths)
-            if (glob != DEFAULT_INDEX_GLOB or p.suffix.lower() in DOCUMENT_EXTENSIONS)
-            and _safe_default_file(root, p, glob)
-        )
+        return [p for p, _stat in _directory_candidates(root, glob)]
     if not _matches_glob(root, glob):
         raise ValueError(
             f"{str(root)!r} does not match the glob {glob!r}, so it is not part of this corpus. "
@@ -497,10 +679,25 @@ def _body_derivation_hash(raw: str, content_hash: str) -> str:
 
     `content_hash` itself stays truthful and is what lands in chunk metadata. Perturbing the
     stored value would make `source_raw_hashes()` report a hash that is not the file's.
+
+    The same narrow trigger carries the `recall_record` parser (2026-10-21): a memo declaring one
+    re-derives once, so a memo written with a record before this parser was installed gains it
+    on the next run instead of being skipped as unchanged. The generation path's equivalent is
+    `recall.generations._metadata_rules_accepted`.
     """
-    if not legacy_pairing_differs(raw):
-        return content_hash
-    return hashlib.sha256(f"{content_hash}\x00frontmatter-pairing-2026-08-11".encode()).hexdigest()
+    if legacy_pairing_differs(raw):
+        content_hash = hashlib.sha256(
+            f"{content_hash}\x00frontmatter-pairing-2026-08-11".encode()
+        ).hexdigest()
+    if _declares_record(raw):
+        content_hash = hashlib.sha256(f"{content_hash}\x00recall-record-2026-10-21".encode()).hexdigest()
+    return content_hash
+
+
+def _declares_record(raw: str) -> bool:
+    """Whether the front matter declares `recall_record`. A substring test first: this runs on
+    every file of every run, and a full parse of files that cannot match would be waste."""
+    return RECORD_KEY in raw and RECORD_KEY in parse_document(raw).meta
 
 
 def _index_fingerprint(
@@ -729,9 +926,18 @@ class Indexer:
         return {**meta, **self.provenance}
 
     def index_path(
-        self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
+        self,
+        path: str | Path,
+        glob: str | None = None,
+        files: list[Path] | None = None,
+        key_root: str | Path | None = None,
     ) -> IndexStats:
         """Index `path` while holding this corpus's single-writer lock. See `_index_path`.
+
+        `key_root` names the folder the stored file names are relative to, when it is not `path`
+        itself: a lite server keys every file to RECALL_INDEX_ROOT, so `recall_index` on a subfolder
+        and the automatic refresh of the whole folder store one name for one file, whichever ran
+        first (owner decision, 2026-10-13). It must contain `path`.
 
         The lock is taken HERE rather than at each entry point, because the callers that most
         need it are the ones nobody is watching: the `SessionEnd` hook
@@ -744,10 +950,14 @@ class Indexer:
         host-level lock instead.
         """
         with single_writer(self._store, env=self._env):
-            return self._index_path(path, glob=glob, files=files)
+            return self._index_path(path, glob=glob, files=files, key_root=key_root)
 
     def _index_path(
-        self, path: str | Path, glob: str | None = None, files: list[Path] | None = None
+        self,
+        path: str | Path,
+        glob: str | None = None,
+        files: list[Path] | None = None,
+        key_root: str | Path | None = None,
     ) -> IndexStats:
         """Index one supported source, or a directory of supported sources, into the vector store.
 
@@ -811,7 +1021,14 @@ class Indexer:
         # loop-invariant answer, and a root vanishing mid-comprehension could split one corpus
         # across both keying schemes — the exact collision this comment exists to prevent.
         root_is_dir = root.is_dir()
-        rel = {f: (f.relative_to(root).as_posix() if root_is_dir else f.name) for f in files}
+        if key_root is not None:
+            keys = Path(key_root).resolve()
+            if not root.is_relative_to(keys):
+                raise ValueError(f"key_root {str(keys)!r} does not contain {str(root)!r}")
+            # `root` is resolved and every file was walked from it, so each is under `keys` too.
+            rel = {f: f.relative_to(keys).as_posix() for f in files}
+        else:
+            rel = {f: (f.relative_to(root).as_posix() if root_is_dir else f.name) for f in files}
 
         if self._security_policy is not None:
             assert self._security_context is not None
@@ -1036,7 +1253,7 @@ class Indexer:
             if is_markdown:
                 # `body` is the human authored body. Derived blocks are never evidence.
                 document = parse_document(raw)
-                meta, body = document.meta, document.human_body
+                meta, body = admit_record(document.meta, str(f)), document.human_body
                 try:
                     validity_bounds(meta)
                 except ValueError as exc:
@@ -1343,6 +1560,10 @@ class Indexer:
         indexed in several roots; pruning everything absent from THIS glob would delete the
         others' rows on every run.
 
+        A pruned memo counts as forgotten for supersession (owner decision, 2026-10-23): the
+        delete leaves its `SupersessionRecord`, so what it superseded stays retired while its file
+        is gone, and a restored file decides again with its own claims.
+
         "Gone from disk" is checked against the disk, not inferred from absence from `files`.
         Those are different questions: `files` is what THIS run's glob matched, and the glob
         varies between runs on one root (`--glob '**/*.py'` for code, the default for markdown,
@@ -1401,6 +1622,12 @@ class Indexer:
                 )
 
         _log.info("pruning %d file(s) no longer on disk under %s", len(vanished), root)
+        # An assistant memo deleted by hand is forgotten here: its request journal hashes go
+        # before its rows, so a journal that cannot be rewritten fails this index with the rows
+        # still in place and the next one tries again.
+        from recall.lite.assistant_memos import forget_memo_requests
+
+        forget_memo_requests(vanished)
         if self._shadow is not None:
             self._store.delete_sources_across(
                 [self._store.table, self._shadow.store.table], vanished

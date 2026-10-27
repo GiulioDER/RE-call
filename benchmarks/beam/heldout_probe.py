@@ -2,7 +2,7 @@
 
 ::
 
-    # $0 of LLM spend. Indexing + retrieval + a local cross-encoder.
+    # $0 of LLM spend. Indexing + retrieval only.
     python -m benchmarks.beam.heldout_probe --memory /opt/docs_rag_corpora/memory \
         --embedder router:openai/text-embedding-3-small --out heldout_probe.json
 
@@ -42,6 +42,12 @@ built to be fair to both — then the entailment guard's value is not establishe
 whole abstention lane is empty.
 
 P3 is the one worth being wrong about.
+
+Note, added when the QNLI entailment judge was removed from RE-call: the predictions above are left
+exactly as they were written. The entailment arm P3 needs went with the judge, so this probe now
+measures cosine only (P1 and P2), and P3 can no longer be run from this tree.
+
+Prior work: the five earlier BEAM separation signals described above, and the cosine and entailment abstention probes of the same lane (declaration added 2026-10-02, when the entailment judge was removed; the module predates the convention).
 """
 from __future__ import annotations
 
@@ -100,12 +106,6 @@ def main() -> None:
     parser.add_argument("--table", default="heldout_chunks")
     parser.add_argument("--holdout", type=int, default=120)
     parser.add_argument("--k", type=int, default=10)
-    # BooleanOptionalAction, not `store_true` with `default=True` — the latter could only
-    # ever be True, so the cosine-only arm of this probe's own preregistered P3
-    # comparison was unrunnable and the `judge is None` branches below were dead code.
-    parser.add_argument("--entailment", action=argparse.BooleanOptionalAction, default=True,
-                        help="score entailment alongside cosine (--no-entailment to skip "
-                             "loading the cross-encoder)")
     parser.add_argument("--out", type=Path, default=Path("heldout_probe.json"))
     args = parser.parse_args()
 
@@ -146,12 +146,6 @@ def main() -> None:
         shutil.rmtree(workspace, ignore_errors=True)
     print(f"indexed {n_chunks} chunks from {len(indexed)} memos", flush=True)
 
-    judge = None
-    if args.entailment:
-        from recall.entailment import QnliEntailmentJudge
-
-        judge = QnliEntailmentJudge()
-
     def _measure(pairs: list[tuple[Path, str]], answerable: bool) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for path, description in pairs:
@@ -161,18 +155,11 @@ def main() -> None:
             ) as store:
                 hits = store.query_dense(vector, k=args.k)
             top1 = max((h.score for h in hits), default=0.0)
-            entailed = None
-            if judge is not None and hits:
-                # Fraction of the top-k that the judge says answers the query. A COUNT, not a
-                # max: §9h showed the shipped any()-style rule is the permissive extreme.
-                decisions = judge.judge(description, [h.chunk.text for h in hits])
-                entailed = sum(decisions) / len(decisions)
             rows.append(
                 {
                     "memo": path.name,
                     "answerable": answerable,
                     "top1": round(top1, 4),
-                    "entailed_fraction": round(entailed, 4) if entailed is not None else None,
                 }
             )
         return rows
@@ -199,13 +186,9 @@ def main() -> None:
             "answerable": _summary(ans, "top1"),
             "unanswerable": _summary(una, "top1"),
         },
-        "entailment": {
-            "answerable": _summary(ans, "entailed_fraction"),
-            "unanswerable": _summary(una, "entailed_fraction"),
-        },
         "per_question": rows,
     }
-    for name in ("cosine", "entailment"):
+    for name in ("cosine",):
         a = report[name]["answerable"]["mean"]
         u = report[name]["unanswerable"]["mean"]
         # POSITIVE means answerable scores higher, i.e. the signal points the right way. On BEAM

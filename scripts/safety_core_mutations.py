@@ -57,42 +57,42 @@ PROVENANCE_TESTS = (
 
 MUTATIONS = (
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "transaction time visibility guard is removed",
         b"    if known_as_of is not None and first_known is not None and first_known > known_as_of:",
         b"    if False:",
         TRUST_TESTS,
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "ambiguous supersession is served as ordinary memory",
         b"    if file is not None and file in unresolved:",
         b"    if False:",
         TRUST_TESTS + ("tests/test_trusted_search.py",),
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "superseded hit is treated as current",
         b"    if successor is not None:\n        return \"superseded\", validity",
         b"    if False:\n        return \"superseded\", validity",
         TRUST_TESTS,
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "low confidence threshold guard is disabled",
         b"    if getattr(hit, \"score_kind\", \"dense_cosine\") == \"dense_cosine\" and hit.score < threshold:",
         b"    if False:",
         TRUST_TESTS,
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_gate.py",
         "calibration is ignored in favour of the uncalibrated fallback",
         b"    cal = calibration or _UNCALIBRATED\n    trusted: list[TrustedHit] = []",
         b"    cal = _UNCALIBRATED\n    trusted: list[TrustedHit] = []",
         TRUST_TESTS,
     ),
     Mutation(
-        ROOT / "recall/trust.py",
+        ROOT / "recall/trust_verdicts.py",
         "corpus controlled quotes are not stripped before rendering",
         b'''    cleaned = " ".join(cleaned.replace('"', "'").split())''',
         b"    cleaned = \" \".join(cleaned.split())",
@@ -123,15 +123,15 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall_mcp/server.py",
         "per tenant rate limit check is removed",
-        b"            limiter.check(tenant, _SCOPE_BUDGETS[scope])",
-        b"            pass",
+        b"                result = check(tenant, _SCOPE_BUDGETS[scope])\n",
+        b"                result = None\n",
         SERVER_TESTS,
     ),
     Mutation(
         ROOT / "recall_mcp/server.py",
         "authorised tenant is replaced by the process default",
-        b"        return registry.get(tenant)\n\n    deps = _ToolDeps",
-        b"        return registry.get(TENANT)\n\n    deps = _ToolDeps",
+        b"        store = registry.get(tenant)\n        if scope != SCOPE_READ and idempotency_key:",
+        b"        store = state[\"store\"]\n        if scope != SCOPE_READ and idempotency_key:",
         SERVER_TESTS,
     ),
     Mutation(
@@ -173,8 +173,8 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall/provenance_controller.py",
         "untrusted evidence cards are accepted",
-        b"            if card.trust_state != \"trusted\" or card.verdict != \"ok\" or not card.calibrated:",
-        b"            if False:",
+        b"            if not card.trusted_for_application:\n                return DecisionCode.TRUST_UNAVAILABLE",
+        b"            if False:\n                return DecisionCode.TRUST_UNAVAILABLE",
         PROVENANCE_TESTS,
     ),
     Mutation(
@@ -187,7 +187,9 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall/provenance_controller.py",
         "contradictions are accepted without authored supersession",
-        b"        if conflicts and len(supersedes) != len(conflicts):",
+        # The controller's refusal moved onto `unresolved_conflicts` with the window rule
+        # (2026-10-21); this was `if conflicts and len(supersedes) != len(conflicts):`.
+        b"        if unsettled:",
         b"        if False:",
         PROVENANCE_TESTS,
     ),

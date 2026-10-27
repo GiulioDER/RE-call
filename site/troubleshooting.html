@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://giulioder.github.io/RE-call/troubleshooting.html">
 <title>Troubleshooting · RE-call setup</title>
 <meta name="description" content="The errors a RE-call install produces most often, what each one actually means, and the command that fixes it: Python, Docker, the database, the package, the schema, the wizard, indexing, and the Claude Code server.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,6 +21,7 @@
     <nav>
       <a href="download.html">Download</a>
       <a href="readme.html">README</a>
+      <a href="how-it-works.html">How it works</a>
       <a href="start.html">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
@@ -70,6 +72,7 @@
   <p class="muted" style="font-size: 0.9375rem;">The check most worth knowing about is the corpus one. A server pointed at the wrong table starts cleanly, answers your question, and finds nothing — which looks exactly like an empty corpus. <code>recall doctor</code> is the only thing that will tell you the difference, because it looks at the other tables too and names the one that does hold your memory.</p>
 </section>
 
+<section class="shell-narrow" style="padding-bottom: 2rem;"><div class="notice notice--signal"><p class="notice-title">Lite: check the installation and store first</p><p>If <code>--lite</code> is unrecognized, the published PyPI wheel predates Lite: use the <a href="start.html#lite">source installation</a> and activate its environment. If doctor tries PostgreSQL, apply the environment printed by Lite setup. The CLI does not read MCP client configuration.</p><p>For missing memos, inspect <code>refresh_warning</code> and run an explicit refresh with <code>--store</code> and <code>--memory</code>. An uncertified store can index successfully and still refuse trusted answers. Use <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md#common-problems">Lite troubleshooting</a>; the Docker and PostgreSQL errors below apply to the server edition.</p></div></section>
 <div class="shell guide-layout" style="padding-bottom: clamp(4rem, 9vw, 7rem);">
 
   <!-- Progress rail -->
@@ -938,7 +941,7 @@ refuses rather than assuming it.</span>
       <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
       <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
     </nav>
-    <small>PolyForm Noncommercial</small>
+    <small>AGPL-3.0 or commercial license</small>
   </div>
 </footer>
 

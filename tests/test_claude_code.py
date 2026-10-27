@@ -191,6 +191,89 @@ def test_the_hook_config_states_both_choices_even_when_they_are_the_default(
     assert stored["write_time"] == {"enabled": True, "connection_mode": "relay"}
 
 
+@pytest.mark.parametrize(
+    "block",
+    [{"enabled": False, "min_score": 1.5}, {"enabled": True}, "off"],
+    ids=["explicit-off", "explicit-on", "malformed"],
+)
+def test_reinstalling_keeps_the_general_knowledge_block(
+    tmp_path: Path, monkeypatch: Any, block: Any
+) -> None:
+    """The installer rewrites the hook config from scratch, and an absent `general_knowledge` block
+    means enabled, so dropping the block on reinstall would turn an explicit `enabled: false` back
+    on. The block is the operator's and is carried forward exactly as found, a malformed one too
+    (it means off). A first install carries nothing.
+
+    Red proof. Node: `tests/test_claude_code.py::test_reinstalling_keeps_the_general_knowledge_block`.
+    Mutation: `if isinstance(previous, dict) and "general_knowledge" in previous:` becomes `if False:`
+    in `recall.claude_code._write_hook_config`. Symbol: `_write_hook_config`. Seen, all three params:
+    `assert None == <the block>` on `stored.get("general_knowledge")`, for example
+    `assert None == {'enabled': False, 'min_score': 1.5}`.
+    """
+    settings = tmp_path / "settings.json"
+    config = tmp_path / "recall-hook.json"
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: config)
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+
+    def install() -> dict[str, Any]:
+        claude_code.install_hooks(dsn="postgresql://u:p@h/db", path=settings, print_fn=lambda *a: None)
+        return json.loads(config.read_text(encoding="utf-8"))
+
+    assert "general_knowledge" not in install()
+    config.write_text(json.dumps({"dsn": "old", "general_knowledge": block}), encoding="utf-8")
+    stored = install()
+    assert stored.get("general_knowledge") == block
+    assert stored["dsn"] == "postgresql://u:p@h/db"
+
+
+@pytest.mark.parametrize("content", ["{ not json", "[1, 2]", '"a string"'])
+def test_reinstalling_over_a_broken_hook_config_keeps_general_knowledge_off(
+    tmp_path: Path, monkeypatch: Any, content: str
+) -> None:
+    """A `recall-hook.json` that exists but cannot be parsed, or is not an object, is read by the
+    hook as general knowledge OFF (only a missing file means enabled). A reinstall rewrites the file
+    clean, and without a block that would switch injection on, so the off state is written down.
+
+    Red proof. Node: `tests/test_claude_code.py::test_reinstalling_over_a_broken_hook_config_keeps_general_knowledge_off`.
+    Mutation: the `elif unreadable or (previous is not None and not isinstance(previous, dict)):`
+    branch in `recall.claude_code._write_hook_config` becomes `elif False:`. Symbol:
+    `_write_hook_config`. Seen, all three params: `assert None == {'enabled': False}`.
+    """
+    settings = tmp_path / "settings.json"
+    config = tmp_path / "recall-hook.json"
+    monkeypatch.setattr(claude_code, "hook_config_path", lambda: config)
+    monkeypatch.setattr(claude_code, "refresh_stats", lambda config: 0)
+    config.write_text(content, encoding="utf-8")
+
+    claude_code.install_hooks(dsn="postgresql://u:p@h/db", path=settings, print_fn=lambda *a: None)
+
+    stored = json.loads(config.read_text(encoding="utf-8"))
+    assert stored.get("general_knowledge") == {"enabled": False}
+
+
+def test_the_installer_registers_general_knowledge_for_both_shells() -> None:
+    """`PreToolUse` must also match `PowerShell` (the shell tool on Windows without Git Bash, where
+    a `Bash`-only hook never fires), and `PostToolUseFailure` must run the failure subcommand for
+    both shells, synchronously, with a timeout.
+
+    Red proof. Node: `tests/test_claude_code.py::test_the_installer_registers_general_knowledge_for_both_shells`.
+    Mutation A: `|PowerShell` removed from the PreToolUse matcher in `recall.claude_code.hook_entries`.
+    Seen: `assert 'PowerShell' in ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'BashOutput']`.
+    Mutation B: the entry's key renamed to `PostToolUseFailureX`, so nothing is registered for the
+    event. Seen: `assert 'PostToolUseFailure' in dict_keys(['SessionStart', 'PreCompact',
+    'PreToolUse', 'PostToolUseFailureX', 'UserPromptSubmit', 'SessionEnd'])`. Symbol: `hook_entries`.
+    """
+    entries = hook_entries(PYTHON)
+    assert "PowerShell" in entries["PreToolUse"][0]["matcher"].split("|")
+    assert "PostToolUseFailure" in entries.keys()
+    (group,) = entries["PostToolUseFailure"]
+    assert set(group["matcher"].split("|")) == {"Bash", "PowerShell"}
+    (handler,) = group["hooks"]
+    assert handler["args"] == ["-m", "recall_hooks", "post-tool-use-failure"]
+    assert handler.get("async") is not True
+    assert isinstance(handler.get("timeout"), int)
+
+
 def test_uninstall_removes_the_prompt_time_entry_too(tmp_path: Path, monkeypatch: Any) -> None:
     """`uninstall` walks whatever events are present rather than a hardcoded list, and this is
     what keeps that true as events are added."""
@@ -233,7 +316,10 @@ def test_matchers_use_only_documented_values() -> None:
         "SessionStart": {"startup", "resume", "clear", "compact", "fork"},
         "SessionEnd": {"clear", "resume", "logout", "prompt_input_exit", "other"},
         "PreCompact": {"manual", "auto"},
-        "PreToolUse": {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "BashOutput"},
+        "PreToolUse": {
+            "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "BashOutput", "PowerShell",
+        },
+        "PostToolUseFailure": {"Bash", "PowerShell"},
         "UserPromptSubmit": set(),
     }
     assert set(hook_entries(PYTHON)) <= set(documented), (

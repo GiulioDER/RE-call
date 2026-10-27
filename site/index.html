@@ -3,14 +3,49 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RE-call · Setup guide</title>
-<meta name="description" content="Install, configure and run RE-call, the memory layer that abstains instead of guessing. See it work in two commands, then do the full install, on Windows, macOS and Linux.">
+<meta name="google-site-verification" content="Cc9NylTrTciULGjGCxRGfy8WJuawsQaCh5MRcqUhQYU" />
+<link rel="canonical" href="https://giulioder.github.io/RE-call/">
+<title>RE-call: Persistent memory for AI agents</title>
+<meta name="description" content="Persistent memory for AI agents, with provenance, supersession and calibrated abstention. Use local SQLite with RE-call Lite or your own PostgreSQL with pgvector.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
 <link rel="stylesheet" href="styles.css">
 <script src="app.js" defer></script>
 <script src="translate.js" defer></script>
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RE-call">
+<meta property="og:title" content="RE-call: Persistent memory for AI agents">
+<meta property="og:description" content="Persistent memory for AI agents, with provenance, supersession and calibrated abstention. Use local SQLite with RE-call Lite or your own PostgreSQL with pgvector.">
+<meta property="og:url" content="https://giulioder.github.io/RE-call/">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "WebSite",
+      "@id": "https://giulioder.github.io/RE-call/#website",
+      "name": "RE-call",
+      "url": "https://giulioder.github.io/RE-call/",
+      "description": "Persistent memory for AI agents, with provenance, supersession and calibrated abstention. Use local SQLite with RE-call Lite or your own PostgreSQL with pgvector."
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "@id": "https://giulioder.github.io/RE-call/#software",
+      "name": "RE-call",
+      "url": "https://giulioder.github.io/RE-call/",
+      "description": "Persistent memory for AI agents, with provenance, supersession and calibrated abstention. Use local SQLite with RE-call Lite or your own PostgreSQL with pgvector.",
+      "codeRepository": "https://github.com/GiulioDER/RE-call",
+      "programmingLanguage": "Python",
+      "license": "https://github.com/GiulioDER/RE-call/blob/master/LICENSE",
+      "sameAs": [
+        "https://github.com/GiulioDER/RE-call",
+        "https://pypi.org/project/recall-rag/"
+      ]
+    }
+  ]
+}
+</script>
 </head>
 <body>
 
@@ -19,7 +54,8 @@
     <a class="wordmark" href="index.html"><img class="wordmark-mark" src="assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>Setup</span></a>
     <nav>
       <a href="download.html">Download</a>
-      <a href="readme.html">README</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <a href="how-it-works.html">How it works</a>
       <a href="start.html">Install</a>
       <a href="corpus.html">Your memory</a>
       <a href="claude-code.html">Claude Code</a>
@@ -57,22 +93,22 @@
   <img class="hero-logo" src="assets/re_call_logo.png" alt="">
   <div class="shell hero-inner">
     <p class="eyebrow">Setup guide</p>
-    <h1>See it work in two commands.</h1>
+    <h1>Start with memory in one local file.</h1>
     <hr class="rule">
-    <p class="hero-lede">A local memory layer for agents, with every command, expected result, and recovery path.</p>
+    <p class="hero-lede">RE-call Lite keeps one project's memory in SQLite and refreshes changed memos automatically. Choose PostgreSQL when you need shared serving, authentication, or immutable generations.</p>
     <div class="hero-actions">
-      <a class="button" href="start.html">Do the full install</a>
+      <a class="button" href="start.html#lite">Install Lite</a>
       <a class="button-ghost" href="download.html">See the current release</a>
     </div>
   </div>
   <div class="shell hero-meta">
     <span>Python <b>3.11+</b></span>
-    <span>PostgreSQL <b>18</b> via Docker</span>
+    <span><b>SQLite</b> or PostgreSQL</span>
     <span>Windows <b>·</b> macOS <b>·</b> Linux</span>
     <span>Runs <b>offline</b></span>
   </div>
   <div class="shell hero-meta">
-    <span>ATM-Bench Recall@10 <b>92.89</b> vs 79.09 best published (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md">limits</a>)</span>
+    <span>ATM-Bench Recall@10 <b>90.10</b>, scored by the benchmark's own evaluator (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/ATM_BENCH.md">limits</a>)</span>
     <span>MTRAG correct refusals <b>second of ten</b> (<a href="https://github.com/GiulioDER/RE-call/blob/master/docs/MTRAG_BENCHMARK.md">limits</a>)</span>
     <span><b>Zero</b> memory-layer LLM calls to build memory (<a href="https://github.com/GiulioDER/RE-call/blob/master/benchmarks/REVIEW.md">limits</a>)</span>
   </div>
@@ -100,6 +136,23 @@
   </div>
 </section>
 
+<!-- ============================================================ How it works -->
+<section class="band band--tint" id="how">
+  <div class="shell" data-reveal>
+    <div class="section-head">
+      <p class="eyebrow">How it works</p>
+      <h2>Memory checked before it answers.</h2>
+      <p class="muted">Lite binds calibration to its local corpus; PostgreSQL serves an immutable calibrated generation. Both evaluate trust before returning evidence. The diagrams below show the PostgreSQL generation path and link to its source.</p>
+    </div>
+    <a href="how-it-works.html" style="display: block; border: 1px solid var(--line-strong); border-radius: var(--radius); overflow: hidden;">
+      <img src="assets/recall-overview.png" alt="Diagram of RE-call: entry points, the generation build, trusted retrieval against a pinned generation, and the trust gate" width="1584" height="627" loading="lazy" style="display: block; width: 100%; height: auto;">
+    </a>
+    <div class="hero-actions" style="margin-top: 1.5rem;">
+      <a class="button-ghost" href="how-it-works.html">See how it works</a>
+    </div>
+  </div>
+</section>
+
 <!-- ============================================================ Facts strip -->
 <section class="band--tight" data-reveal>
   <dl class="facts">
@@ -108,8 +161,8 @@
       <dd>Python 3.11+<small>3.12 to 3.14 also supported</small></dd>
     </div>
     <div class="fact">
-      <dt>And</dt>
-      <dd>Docker Desktop<small>Runs the database for you</small></dd>
+      <dt>Choose</dt>
+      <dd>Lite or PostgreSQL<small>Lite needs no database server or Docker</small></dd>
     </div>
     <div class="fact">
       <dt>Your data</dt>
@@ -117,7 +170,7 @@
     </div>
     <div class="fact">
       <dt>Licence</dt>
-      <dd>PolyForm Noncommercial<small>Personal and research use</small></dd>
+      <dd>AGPL-3.0<small>Commercial license available</small></dd>
     </div>
   </dl>
 </section>
@@ -127,8 +180,8 @@
   <div class="shell" data-reveal>
     <div class="section-head">
       <p class="eyebrow">The moving parts</p>
-      <h2>Three things, and only one of them is RE-call.</h2>
-      <p class="muted">Most of the confusion in a first install comes from not knowing which piece a command is talking to. There are only three.</p>
+      <h2>Choose the store, keep the trust layer.</h2>
+      <p class="muted">Lite is the local path for one project. PostgreSQL adds server operations when you need them.</p>
     </div>
 
     <div class="table-wrap">
@@ -138,9 +191,9 @@
         </thead>
         <tbody>
           <tr>
-            <td>A PostgreSQL database</td>
-            <td>Stores your notes and their vector embeddings.</td>
-            <td>Once, during setup.</td>
+            <td>SQLite file or PostgreSQL database</td>
+            <td>Stores your notes, embeddings, calibration, and fact ledger.</td>
+            <td>Lite refreshes locally; PostgreSQL needs database operations.</td>
           </tr>
           <tr>
             <td>The RE-call package</td>
@@ -149,7 +202,7 @@
           </tr>
           <tr>
             <td>The MCP server</td>
-            <td>Lets Claude Code query your local memory.</td>
+            <td>Lets Claude Code, Codex, or another MCP client query the configured store.</td>
             <td>Optional.</td>
           </tr>
         </tbody>
@@ -163,16 +216,16 @@
   <div class="shell split" data-reveal>
     <div>
       <p class="eyebrow eyebrow--signal">Windows, macOS and Linux</p>
-      <h2>The current release installs from PyPI on every supported platform.</h2>
-      <p>Install the 0.14.0 package with Python and follow the setup guide. Docker supplies the PostgreSQL database, and the same guided flow configures your corpus and agent integration.</p>
+      <h2>Install Lite from source, or PostgreSQL from PyPI.</h2>
+      <p>Lite is in the repository source; the published 0.14.0 wheel predates it. The install guide provides the source environment, project setup, refresh checks, software updates, and backup steps.</p>
       <p>The current GitHub release does not include a standalone Windows installer. The release page explains the available package files and the supported install path.</p>
       <div class="hero-actions">
-        <a class="button" href="start.html">Install from PyPI</a>
+        <a class="button" href="start.html#lite">Set up Lite</a>
       </div>
     </div>
     <div>
       <p class="eyebrow">What you need</p>
-      <p class="muted">Python 3.11 or newer and Docker Desktop are the supported prerequisites. The package is source available under the PolyForm Noncommercial License.</p>
+      <p class="muted">Lite needs Python, Git for the source install, and a local memo folder. PostgreSQL needs a compatible database; Docker can provide one. Both editions use the same trust layer.</p>
       <p class="muted">The <a href="download.html">current release page</a> links to PyPI and GitHub, and the <a href="start.html">full install guide</a> walks through the setup.</p>
     </div>
   </div>
@@ -183,7 +236,7 @@
   <div class="shell" data-reveal>
     <div class="section-head">
       <p class="eyebrow">The rest of this site</p>
-      <h2>Four pages you will want after the install, and not before.</h2>
+      <h2>Keep your memory useful after setup.</h2>
     </div>
     <ul class="routes">
       <li>
@@ -229,8 +282,8 @@
 <section class="closer">
   <div class="shell-narrow" data-reveal>
     <h2>Start at step one.</h2>
-    <p>Install two things, then verify each step as you go.</p>
-    <a class="button" href="start.html">Start the install</a>
+    <p>Choose Lite for local memory, or PostgreSQL for shared serving.</p>
+    <a class="button" href="start.html#lite">Start with Lite</a>
   </div>
 </section>
 
@@ -241,10 +294,12 @@
     <nav>
       <a href="https://github.com/GiulioDER/RE-call">Repository</a>
       <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="benchmarks.html">Benchmarks</a>
+      <a href="sitemap.xml">Sitemap</a>
       <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
       <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
     </nav>
-    <small>PolyForm Noncommercial</small>
+    <small>AGPL-3.0 or commercial license</small>
   </div>
 </footer>
 

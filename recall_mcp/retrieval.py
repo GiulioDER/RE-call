@@ -8,10 +8,11 @@ for callers during the migration.
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from datetime import datetime
 from dataclasses import dataclass, replace
 from collections.abc import Mapping
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 from recall.calibration import Calibration
@@ -24,6 +25,7 @@ from recall.related import RelatedEvidenceResult, trusted_related
 from recall.rerank import COREB_CODE_RERANKER_MODEL
 from recall.store import PgVectorStore
 from recall.timing import TimedEmbedder
+from recall.support import ELIGIBILITY_NOTE
 from recall.trust import decision_state_for, trusted_search
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall.types import EvidenceCard, RetrievalResult, TrustedHit, TrustedResult
@@ -34,13 +36,20 @@ from recall.evidence import (
     build_evidence_bundle,
     render_evidence_prompt,
 )
-from recall_mcp.models import EvidenceCardModel, EvidenceItemModel, EvidenceResult, SearchHit, SearchResult
-from recall_mcp.provenance import register_evidence_cards
+from recall_mcp.models import (
+    EvidenceCardModel,
+    EvidenceItemModel,
+    EvidenceResult,
+    HistoricalSearchEvidence,
+    SearchEvidence,
+    SearchHit,
+    SearchResult,
+)
+from recall_mcp.evidence_cards import register_evidence_cards
 from recall.decision_ledger import DecisionLedger
 from recall.observability import METRICS, get_logger
 from recall.paged_evidence import PagedDepthDecision, decide_depth, paged_evidence_enabled
 from recall.retriever import RetrievalCandidateTrace
-from recall.entailment import EntailmentJudge
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall_mcp.factories import (
     _admission,
@@ -126,6 +135,24 @@ class _ServedDepthLedger(DecisionLedger):
         )
 
 
+@contextmanager
+def _searched_generation(store: object) -> Iterator[str]:
+    """Pin the generation one search reads, and name it.
+
+    `GenerationStore.generation_id` asks the database for the active pointer unless a snapshot pins
+    it. Read before the snapshot `trusted_search` takes, it cost one extra query per search, and a
+    promotion landing in between made a response name one generation as `index_generation` while
+    its hits came from another. Entering the store's own snapshot first makes the one inside
+    `trusted_search` reuse this pin. A store without snapshots answers its constant identity.
+    """
+    snapshot = getattr(store, "snapshot", None)
+    if callable(snapshot):
+        with snapshot() as generation_id:
+            yield str(generation_id)
+        return
+    yield str(getattr(store, "generation_id", "legacy"))
+
+
 def _retrieve_trusted(
     store: PgVectorStore,
     embedder: Embedder,
@@ -134,7 +161,6 @@ def _retrieve_trusted(
     k: int,
     calibration: Calibration | None,
     policy: TrustPolicy | None,
-    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
@@ -143,9 +169,9 @@ def _retrieve_trusted(
     query_vector_callback: Callable[[list[float]], None] | None = None,
     capture_candidate_trace: bool = False,
     *,
-    reranker_builder: Callable[..., object] = _build_reranker,
-    admission_factory: Callable[[RetrievalProfile], RetrievalAdmission] = _admission,
-    trusted_search_fn: Callable[..., TrustedResult] = trusted_search,
+    reranker_builder: Callable[..., object] | None = None,
+    admission_factory: Callable[[RetrievalProfile], RetrievalAdmission] | None = None,
+    trusted_search_fn: Callable[..., TrustedResult] | None = None,
     paged_depth: bool = False,
 ) -> _Retrieval:
     """The guarded, instrumented retrieval shared by search and evidence assembly.
@@ -154,6 +180,13 @@ def _retrieve_trusted(
     retrieval execution boundary. The guards and observations stay in one implementation so
     search, evidence, graph-first, and reasoning paths cannot silently diverge.
     """
+    # Resolved here, not as parameter defaults: a default is bound when the function is defined,
+    # so patching this module's `trusted_search`, `_build_reranker` or `_admission` reached nothing.
+    if reranker_builder is None:
+        reranker_builder = _build_reranker
+    if admission_factory is None:
+        admission_factory = _admission
+    search_fn: Callable[..., TrustedResult] = trusted_search if trusted_search_fn is None else trusted_search_fn
     if len(query) > MAX_QUERY_CHARS:
         raise ValueError(
             f"query is {len(query)} characters, over the {MAX_QUERY_CHARS}-character limit. "
@@ -203,7 +236,6 @@ def _retrieve_trusted(
         widened = True
         pre_trust_transform = select_depth
     timed = TimedEmbedder(embedder)
-    generation = str(getattr(store, "generation_id", "legacy"))
     request_started = time.perf_counter()
     admission_wait_ms = 0.0
     candidate_traces: list[tuple[RetrievalCandidateTrace, TrustedResult, Calibration]] = []
@@ -237,26 +269,26 @@ def _retrieve_trusted(
                     return pre_trust_transform(value)
 
                 effective_pre_trust_transform = capture_query_vector
-            result = trusted_search_fn(
-                store,
-                timed,
-                query,
-                k=k,
-                source=source,
-                calibration=calibration,
-                reranker=reranker_builder(profile, env=values),
-                candidate_k=profile.candidate_k,
-                retrieval_profile=profile.name,
-                index_generation=generation,
-                policy=policy,
-                entailment=entailment,
-                security_policy=security_policy,
-                access_context=access_context,
-                ledger=ledger,
-                env=values,
-                pre_trust_transform=effective_pre_trust_transform,
-                candidate_trace_callback=capture_trace if capture_candidate_trace else None,
-            )
+            with _searched_generation(store) as generation:
+                result = search_fn(
+                    store,
+                    timed,
+                    query,
+                    k=k,
+                    source=source,
+                    calibration=calibration,
+                    reranker=reranker_builder(profile, env=values),
+                    candidate_k=profile.candidate_k,
+                    retrieval_profile=profile.name,
+                    index_generation=generation,
+                    policy=policy,
+                    security_policy=security_policy,
+                    access_context=access_context,
+                    ledger=ledger,
+                    env=values,
+                    pre_trust_transform=effective_pre_trust_transform,
+                    candidate_trace_callback=capture_trace if capture_candidate_trace else None,
+                )
     except RetrievalOverloaded as exc:
         METRICS.increment(
             "recall_retrieval_rejected_total", profile=profile.name, reason=exc.reason
@@ -319,6 +351,7 @@ def _cost_surface(
 def _search_hit_model(hit: TrustedHit, *, include_scores: bool) -> SearchHit:
     """Project a trusted hit into the search response shape."""
     return SearchHit(
+        revision=hit.chunk.metadata.get("content_hash") if isinstance(hit.chunk.metadata.get("content_hash"), str) else None,
         chunk_id=hit.chunk.id,
         source=hit.provenance.file or hit.chunk.source,
         score=round(hit.cosine, 4) if include_scores else None,
@@ -398,11 +431,10 @@ def _evidence_card_model(card: EvidenceCard) -> EvidenceCardModel:
 if TYPE_CHECKING:
     from recall.calibration import Calibration
     from recall.embeddings import Embedder
-    from recall.entailment import EntailmentJudge
     from recall.store import PgVectorStore
     from recall.trust_policy import TrustPolicy
     from recall.security_policy import AccessContext, SourceSecurityPolicy
-    from recall_mcp.service import EvidenceResult, SearchResult
+    from recall_mcp.models import EvidenceResult, SearchResult
 
 
 #: Two sentences that qualify ANY advice, on either tool and on every exit path. Module constants
@@ -422,6 +454,68 @@ REASONING_SUPERSEDED_NOTE = (
     " NEXT: `recall_reasoning_query` resolves which of these versions still stands, and cites "
     "the chunk ids it used."
 )
+#: Appended when the search's own evidence says something may be cited. Library authored; it names
+#: fields, never corpus text. Models follow instructions in the result far more than fields alone
+#: (measured 2026-10-10: without the advice and abstention text, obedience to `unknown_term` fell
+#: to 0.00 to 0.18 across three models), so the citation rule is stated here, not only in a field.
+#: It deliberately names no other tool: a wording that pointed at `recall_evidence` made a 3B model
+#: call that tool in every conversation, after abstentions too (measured 2026-10-10, 60 of 60; with
+#: the tool name removed from the advice, the frontier and 9B models still cite `evidence.citable`).
+SEARCH_EVIDENCE_NOTE = (
+    " To answer from memory, rely only on the hits listed in `evidence.citable` and cite their "
+    "chunk_id values."
+)
+#: Appended last when certified historical candidates are explicitly projected. This qualifies
+#: the present-state rules without treating every demoted hit, or every earlier instant, as valid.
+#: It names fields only, never corpus text or identifiers in the instruction channel.
+HISTORICAL_RECORD_NOTE = (
+    " EXCEPTION, only for a question about an earlier time: only chunk_ids listed in "
+    "`historical.candidates` are eligible archived assertions. Before citing one as a fact "
+    "at the requested time, establish that time from the hit's `valid_from`, `valid_until`, "
+    "and text. If they establish it, answer for that time and state that the record is now "
+    "superseded or expired. Otherwise, describe only the archived assertion and do not claim "
+    "it held then. These candidates never override "
+    "`evidence.citable` for a question about the present."
+)
+_HISTORICAL_VERDICTS = frozenset({"superseded", "expired"})
+
+
+def _historical_evidence(
+    result: TrustedResult, effective_k: int,
+) -> HistoricalSearchEvidence | None:
+    """Project individually relevant archived assertions for a conditional historical answer.
+
+    Temporal verdicts precede relevance in the gate, so each candidate needs its own confidence
+    check. The 0.5 boundary is usable only with certified trust. No requested historical instant
+    is supplied to this API: candidates therefore require a validity check, not a blanket claim
+    that the record held throughout the past.
+    """
+    if not result.calibrated:
+        return None
+    candidates = [
+        hit.chunk.id for hit in result.hits
+        if hit.verdict in _HISTORICAL_VERDICTS and hit.confidence >= 0.5
+    ][:max(1, min(effective_k, MAX_SEARCH_K))]
+    return HistoricalSearchEvidence(candidates=candidates) if candidates else None
+
+
+def search_evidence_enabled(env: Mapping[str, str]) -> bool:
+    """`RECALL_SEARCH_EVIDENCE`: on unless set to off, 0, false or no."""
+    return env.get("RECALL_SEARCH_EVIDENCE", "on").strip().lower() not in {"off", "0", "false", "no"}
+
+
+def _search_evidence(result: TrustedResult, effective_k: int) -> SearchEvidence:
+    """The citable part of `recall_evidence`'s bundle, from the trusted result search already has.
+
+    Same projection and same cap as the evidence tool (`build_evidence_bundle`, `max_items` bounded
+    by the effective `k`), so the two tools cannot disagree about the same hits. The evidence tool
+    can still cite more: it folds related items into its bundle and, with RECALL_PAGED_EVIDENCE=on
+    and no explicit `k`, retrieves deeper into paged documents. No cards are registered here:
+    that is a write, and search is read only.
+    """
+    bundle = build_evidence_bundle(result, EvidencePolicy(max_items=max(1, min(effective_k, MAX_SEARCH_K))))
+    return SearchEvidence(decision=bundle.decision, reason_code=bundle.reason_code,
+                          citable=[item.chunk_id for item in bundle.items])
 
 
 def _search_advice(
@@ -435,7 +529,7 @@ def _search_advice(
         cause = (
             "Memory probably has no answer to this (corpus gap)."
             if result.gap_warning
-            else "A candidate was found but is not trustworthy (superseded, expired, not entailed, "
+            else "A candidate was found but is not trustworthy (superseded, expired, "
             "or below the confidence threshold)."
         )
         advice = (
@@ -447,8 +541,8 @@ def _search_advice(
         advice = (
             f"{sum(1 for hit in hits if hit.verdict == 'ok')} valid memory hit(s). NOTE: "
             f"{len(superseded)} match(es) are superseded — read each hit's `superseded_by` field "
-            "and rely only on the current version. Consult before re-proposing: if a closed "
-            "decision appears here, do not re-litigate it."
+            "and rely only on the current version for the present state. Consult before "
+            "re-proposing: if a closed decision appears here, do not re-litigate it."
         )
     else:
         advice = (
@@ -507,7 +601,7 @@ def _evidence_advice(bundle: EvidenceBundle) -> str:
             # retrieval returned none, and naming a cause the code cannot distinguish is how a
             # client is sent to fix the wrong thing.
             "no_supporting_evidence": "No memory survived the trust gate: either nothing relevant "
-            "was retrieved, or every candidate was demoted (superseded, expired, not entailed, "
+            "was retrieved, or every candidate was demoted (superseded, expired, "
             "below the confidence threshold), or the gate could not run.",
             "evidence_budget_exhausted": "Trusted evidence exists but none of it fits the "
             "configured token budget.",
@@ -549,7 +643,6 @@ def search_memory(
     related_relation: str = "source",
     related_max_items: int = 3,
     reasoning_available: bool = False,
-    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
@@ -584,7 +677,6 @@ def search_memory(
         k,
         calibration,
         policy,
-        entailment,
         security_policy,
         access_context,
         env,
@@ -620,7 +712,14 @@ def search_memory(
             related_diagnostics.append(f"rejected_related:{related_result.rejected_count}")
         except ValueError as exc:
             related_diagnostics.append(f"related_refused:{type(exc).__name__}")
-    advice = _search_advice_fn(result, hits, reasoning_available)
+    advice = _search_advice_fn(result, hits, reasoning_available) + ELIGIBILITY_NOTE
+    evidence_enabled = search_evidence_enabled(values)
+    evidence = _search_evidence(result, retrieval.effective_k) if evidence_enabled else None
+    historical = _historical_evidence(result, retrieval.effective_k) if evidence_enabled else None
+    if evidence is not None and evidence.decision == "answer":
+        advice += SEARCH_EVIDENCE_NOTE
+    if historical is not None:
+        advice += HISTORICAL_RECORD_NOTE
 
     stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
     explanation = None
@@ -648,6 +747,8 @@ def search_memory(
         abstained=result.abstained,
         reason=result.reason,
         calibrated=result.calibrated,
+        query_support=result.query_support,
+        calibration_coverage=result.calibration_coverage,
         calibration_id=result.calibration_id,
         calibration_status=result.calibration_status,
         trust_state=result.trust_state,
@@ -657,6 +758,8 @@ def search_memory(
         pipeline_fingerprint=result.pipeline_fingerprint,
         corpus_fingerprint=result.corpus_fingerprint,
         query_set_digest=result.query_set_digest,
+        unknown_term_check=result.diagnostics.unknown_term_check,
+        unknown_terms=list(result.diagnostics.unknown_terms),
         gap_warning=result.gap_warning,
         stale=result.staleness.stale,
         advice=advice,
@@ -672,6 +775,8 @@ def search_memory(
         latency_budget_ms=retrieval.profile.enforced_budget_ms,
         budget_exceeded=budget_exceeded,
         hits=hits,
+        evidence=evidence,
+        historical=historical,
         explanation=explanation,
         related_items=related_items,
         related_diagnostics=related_diagnostics,
@@ -693,7 +798,6 @@ def evidence_memory(
     include_related: bool = False,
     related_relation: str = "source",
     related_max_items: int = 3,
-    entailment: EntailmentJudge | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
@@ -738,7 +842,6 @@ def evidence_memory(
         DEFAULT_EVIDENCE_K if k is None else k,
         calibration,
         policy,
-        entailment,
         security_policy,
         access_context,
         env,
@@ -788,7 +891,7 @@ def evidence_memory(
     register_evidence_cards_fn(bundle.cards, store=store)
     system, user = render_evidence_prompt(bundle)
     items = [_evidence_item_model_fn(item, related_ids) for item in bundle.items]
-    advice = _evidence_advice_fn(bundle)
+    advice = _evidence_advice_fn(bundle) + ELIGIBILITY_NOTE
     stage_ms, total_ms, budget_exceeded = _cost_surface_fn(retrieval, assembly_started)
     explanation = None
     if explain:
@@ -830,6 +933,8 @@ def evidence_memory(
         decision=bundle.decision,
         reason_code=bundle.reason_code,
         calibrated=bundle.calibrated,
+        query_support=bundle.query_support,
+        calibration_coverage=bundle.calibration_coverage,
         stale=bundle.stale,
         # From the BUNDLE, not from `result`: one object is the answer to "what may be cited and
         # under what warrant", and reading half of it from a second object is how the two come to
@@ -839,6 +944,8 @@ def evidence_memory(
         embedding_profile=bundle.embedding_profile,
         retrieval_profile=bundle.retrieval_profile,
         index_generation=bundle.index_generation,
+        unknown_term_check=result.diagnostics.unknown_term_check,
+        unknown_terms=list(result.diagnostics.unknown_terms),
         system_prompt=system,
         user_message=user,
         items=items,

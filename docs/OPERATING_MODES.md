@@ -4,9 +4,13 @@ RE-call is deliberately configurable because memory deployments differ by legal 
 latency target, quality bar, and cost model. The default path keeps retrieval local. Hosted
 embedding, reranking, and stricter serving profiles are opt-in choices after measurement.
 
+For Lite source installation, automatic refresh, software updates, and backups, use
+[LITE.md](LITE.md). The PostgreSQL generation and production configuration below is a separate path.
+
 | Mode | Use when | Trust policy | Egress | Typical configuration |
 |---|---|---|---|---|
 | Local demo | You want to try the product surface on the bundled corpus. | Development, with degraded confidence marked clearly. | None with FastEmbed. | `RECALL_TRUST_MODE=development`, `RECALL_EMBEDDER=fastembed`. |
+| Local SQLite | You need one project's memory on one machine without a database server. | Strict; calibration is bound to the store's corpus and embedding identity. | None with FastEmbed after model download. | `recall setup --lite --memory ./notes`; use the configured commands setup prints. |
 | Local production | You need private memory over a controlled corpus. | Strict, with a generation-bound calibration. | None with FastEmbed and local artifacts. | Build and calibrate with `RECALL_ENV` unset, **then** serve with `RECALL_ENV=production` — see [the two switches](#recall_env-and-recall_trust_mode-are-different-switches). Plus `RECALL_RETRIEVAL_PROFILE=fast` and split serving/migration DSNs. |
 | Quality production | Answer quality is worth higher latency or local model cost. | Strict, with a calibration fitted for that embedder and corpus. | None with local artifacts. Possible egress if a hosted embedder is selected. | `RECALL_RETRIEVAL_PROFILE=quality`, pinned reranker path and digest. |
 | Hosted embedder | Legal and privacy review permits external embedding calls. | Strict or development, depending on whether calibration has been promoted. | Query and corpus text may leave the environment. | Select the hosted embedder and document the approved egress path. |
@@ -17,6 +21,10 @@ hosted embedding or reranking only when the measured gain pays for egress, laten
 cost.
 
 ## `RECALL_ENV` and `RECALL_TRUST_MODE` are different switches
+
+The generation routes and split database roles below describe PostgreSQL. Lite has no generations
+or production environment: it certifies its single-file corpus and refuses generation commands,
+multi-tenant serving, and authentication. See [installation](INSTALLATION.md#local-memory-in-one-file).
 
 They are easy to conflate, they both accept the word `development`, and conflating them is the
 single most common way to get stuck. Read this before setting either.

@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Callable, Literal, Sequence
 
 from recall.calibration import Calibration, from_samples, save
-from recall._env import env_is_production
 from recall.claude_code import (
     PLUGIN_INSTALL_LINES,
     claude_code_detected,
@@ -28,7 +27,12 @@ from recall.codex import codex_code_detected, install_codex_integration
 from recall.embeddings import resolve_embedder
 from recall.eval.calibrate import CalibrationReport
 from recall.seed import plan_seed, seed_corpus
-from recall.store import DEFAULT_TABLE, scrub_dsn_secrets
+from recall.store import DEFAULT_TABLE
+from recall.memory_index import (  # noqa: F401  # re-exported: public names of this module
+    DEFAULT_MEMORY_DIR,
+    _safe_error,
+    index_memory_directory,
+)
 
 SETUP_BEGIN = "# recall setup begin"
 SETUP_END = "# recall setup end"
@@ -62,7 +66,6 @@ MODEL_DOWNLOAD_FLOOR_BYTES = 1_500_000_000
 CLAUDE_MD_BEGIN = "<!-- recall setup begin -->"
 CLAUDE_MD_END = "<!-- recall setup end -->"
 DEFAULT_CLAUDE_MD_PATH = Path("CLAUDE.md")
-DEFAULT_MEMORY_DIR = Path("memory")
 
 
 @dataclass(frozen=True)
@@ -402,10 +405,6 @@ def _table_row_counts(dsn: str, tables: Sequence[str]) -> dict[str, int] | None:
     return counts
 
 
-def _safe_error(exc: Exception, dsn: str) -> str:
-    return scrub_dsn_secrets(f"{type(exc).__name__}: {exc}", dsn)
-
-
 def _drop_default_schema_family(migration_dsn: str) -> None:
     """Drop the default serving table plus the global generation tables and migration ledger."""
     from psycopg import sql
@@ -641,26 +640,6 @@ def sparse_choices(probe: HardwareProbe) -> list[Choice]:
             ),
         )
     )
-    return choices
-
-
-def entailment_choices(probe: HardwareProbe) -> list[Choice]:
-    choices = []
-    if probe.sentence_transformers_available and _can_download_models(probe):
-        choices.append(
-            Choice(
-                label="qnli judge",
-                value="RECALL_ENTAILMENT=1;RECALL_ENTAILMENT_MODEL=cross-encoder/qnli-distilroberta-base;RECALL_ENTAILMENT_REVISION=7dd04ee0a6040c06fb381ad7edcb8585f4d937fd",
-                description="Default optional entailment judge, pinned and local",
-            )
-        )
-        choices.append(
-            Choice(
-                label="nli judge",
-                value="RECALL_ENTAILMENT=1;RECALL_ENTAILMENT_MODEL=cross-encoder/nli-deberta-v3-large",
-                description="Stronger local judge, larger and unpinned by default",
-            )
-        )
     return choices
 
 
@@ -1032,8 +1011,7 @@ def _choose(
     if len(choices) == 1 and sole_note is not None:
         # A menu of one is not a choice. The hardware probe already decided this, so asking the
         # reader to type `1` costs a keystroke and tells them nothing. Say what was selected and
-        # why nothing else was offered, which is how the entailment judge already reports its
-        # own absence a few lines below. Only call sites that pass a note opt into this, so
+        # why nothing else was offered. Only call sites that pass a note opt into this, so
         # nothing else in the wizard changes shape without saying so.
         print_fn(sole_note)
         return choices[0]
@@ -1187,56 +1165,6 @@ def scaffold_memory_index(
         return False
     index_path.write_text(_memory_md_starter(today), encoding="utf-8")
     return True
-
-
-def index_memory_directory(
-    *,
-    dsn: str,
-    embedder_name: str,
-    memory_dir: Path = DEFAULT_MEMORY_DIR,
-    tenant: str | None = None,
-    table: str | None = None,
-    env: dict[str, str] | None = None,
-    print_fn: Callable[..., None] = print,
-) -> None:
-    if env_is_production(env):
-        print_fn(
-            f"Skipping auto-index: RECALL_ENV is production. Index {memory_dir} via your "
-            "production build pipeline instead."
-        )
-        return
-    try:
-        from recall.context import context_policy_for_profile
-        from recall.cache import default_cache
-        from recall.embeddings import embedding_profile_id
-        from recall.index import Indexer, chunk_text
-        from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
-
-        embedder = resolve_embedder(embedder_name, env=env)
-        with PgVectorStore(
-            dsn,
-            dim=embedder.dim,
-            table=table or DEFAULT_TABLE,
-            tenant=tenant or DEFAULT_TENANT,
-        ) as store:
-            store.check_schema()
-            with default_cache() as cache:
-                indexer = Indexer(
-                    store,
-                    embedder,
-                    chunker=chunk_text,
-                    cache=cache,
-                    context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-                )
-                stats = indexer.index_path(memory_dir, glob="**/*.md")
-    except Exception as exc:  # best effort: scaffolded files must survive even if this fails  # BROAD-CATCH: fail-open
-        print_fn(
-            f"Could not auto-index {memory_dir}: {_safe_error(exc, dsn)} — run "
-            f"'python -m recall.cli index {memory_dir}' once the schema is applied for this "
-            "embedder's dimension."
-        )
-        return
-    print_fn(f"Indexed {stats.chunks} chunks from {stats.files} files in {memory_dir}")
 
 
 def _quote_env(value: str) -> str:
@@ -1404,28 +1332,6 @@ def run_setup_wizard(
         "Choose the sparse retrieval backend:",
         sparse_choices(probe),
     )
-    entailment = None
-    entailment_options = entailment_choices(probe)
-    if entailment_options:
-        if _ask_yes_no(
-            input_fn,
-            print_fn,
-            "Enable the optional entailment judge before the final answer?",
-            default=False,
-        ):
-            entailment = _choose(
-                input_fn,
-                print_fn,
-                "Choose the entailment judge model:",
-                entailment_options,
-            )
-    else:
-        print_fn(
-            "Entailment judge is unavailable on this machine. It needs sentence-transformers "
-            "and enough internet and disk to download a model. The extra is "
-            'pip install "recall-rag[entail]". Rerun setup and choose it again once it can run.'
-        )
-
     reasoning_values = _reasoning_interview(
         input_fn,
         print_fn,
@@ -1613,7 +1519,6 @@ def run_setup_wizard(
         "RECALL_SECURITY_REQUIRED": "1" if security_required else "0",
         "RECALL_EMBEDDER": embedder.value,
         "RECALL_SPARSE": "fts",
-        "RECALL_ENTAILMENT": "0",
     }
     if reranker.value == "RECALL_RERANK=1":
         values["RECALL_RERANK"] = "1"
@@ -1630,13 +1535,6 @@ def run_setup_wizard(
         key, _, value = sparse_backend.value.partition("=")
         if key and value:
             values[key] = value
-
-    if entailment is not None and entailment.value:
-        parts = entailment.value.split(";")
-        for chunk in parts:
-            key, _, value = chunk.partition("=")
-            if key and value:
-                values[key] = value
 
     values.update(reasoning_values)
     values.update(cloud_keys)

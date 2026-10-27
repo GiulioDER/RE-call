@@ -12,9 +12,10 @@ artifact gives no signal that this is so. Same class as the `mem0ai` pin: a vers
 published number has to travel inside the artifact. `mem0ai` does, via `importlib.metadata`. These
 did not.
 
-Note what is already pinned and is therefore NOT the gap: the default judge's Hub revision
-(`recall.entailment.DEFAULT_QNLI_REVISION`) fixes the weights, so the model itself is immutable,
-and `git log -S` puts that pin before the artifact. The gap is the stack that runs it.
+Note what was already pinned and is therefore NOT the gap: the default judge's Hub revision
+(`DEFAULT_QNLI_REVISION`, in the since removed `recall.entailment`) fixed the weights, so the
+model itself was immutable, and `git log -S` puts that pin before the artifact. The gap is the
+stack that ran it.
 
 Three candidate causes were then eliminated by measurement rather than argument. Corpus doubling:
 the calibrated thresholds are fit on the distribution doubling moves and reproduce exactly.

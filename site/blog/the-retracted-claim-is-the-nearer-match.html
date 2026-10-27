@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://giulioder.github.io/RE-call/blog/the-retracted-claim-is-the-nearer-match.html">
 <title>The retracted claim is the nearer match · RE-call blog</title>
 <meta name="description" content="One pair of memos from RE-call's shipped demo corpus shows why agent memory on PostgreSQL and pgvector cannot be ranked by similarity alone, and what declared supersession does about it.">
 <link rel="alternate" type="application/atom+xml" title="RE-call blog" href="feed.xml">
@@ -32,6 +33,7 @@
     <nav>
       <a href="../download.html">Download</a>
       <a href="../readme.html">README</a>
+      <a href="../how-it-works.html">How it works</a>
       <a href="../start.html">Install</a>
       <a href="../corpus.html">Your memory</a>
       <a href="../claude-code.html">Claude Code</a>
@@ -112,7 +114,7 @@ proactively by a background worker. This replaces the original lazy expiry choic
 
   <p>Declared supersession beats similarity ranking on the cases where the edge is authored, and that is the honest scope of this post. RE-call does not infer missing supersession edges from prose, and its abstention works on far gaps while near misses need a stronger answerability layer, which is measured and stated rather than glossed over. The full interpretation, including the negative results, is in <a href="https://github.com/GiulioDER/RE-call/blob/master/results/FINDINGS.md">results/FINDINGS.md</a>, and every published number is tied to a committed artifact checked in CI.</p>
 
-  <p>RE-call is source available under the PolyForm Noncommercial License, on <a href="https://github.com/GiulioDER/RE-call">GitHub</a> and <a href="https://pypi.org/project/recall-rag/">PyPI</a>. Commercial use requires a separate written license. The setup guide is <a href="../index.html">here</a>.</p>
+  <p>RE-call is open source under the GNU Affero General Public License v3.0, on <a href="https://github.com/GiulioDER/RE-call">GitHub</a> and <a href="https://pypi.org/project/recall-rag/">PyPI</a>. A commercial license is available for use the AGPL does not cover. The setup guide is <a href="../index.html">here</a>.</p>
 
 </article>
 
@@ -126,7 +128,7 @@ proactively by a background worker. This replaces the original lazy expiry choic
       <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
       <a href="feed.xml">Atom feed</a>
     </nav>
-    <small>PolyForm Noncommercial</small>
+    <small>AGPL-3.0 or commercial license</small>
   </div>
 </footer>
 

@@ -13,13 +13,24 @@ class _Result:
     def fetchall(self):
         return self.rows
 
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
 
 class _Connection:
+    """Count chunk scans separately from bounded revision lookups and record reads."""
+
     def __init__(self, rows):
         self.rows = rows
         self.calls = 0
+        self.record_reads = 0
 
-    def execute(self, _query, _params):
+    def execute(self, query, _params):
+        if "recall_supersession_revisions" in query:
+            return _Result([(0,)])
+        if "recall_audit_events" in query:
+            self.record_reads += 1
+            return _Result([(0,)] if "count(*)" in query else [])
         self.calls += 1
         return _Result(self.rows)
 
@@ -53,6 +64,16 @@ def test_generation_store_caches_supersession_scan_per_generation() -> None:
     ``recall.generation_store.GenerationStore.supersession_all``. Mutating the implementation to
     execute the SQL on every call makes ``connection.calls`` equal 2 and fails because the old
     path repeated the full generation scan and its payload for every graph request.
+
+    Stub changed 2026-10-23: the store also reads the audit ledger (the records of removed memos,
+    and their count, read on every call as part of the cache key), which `_Connection` answers
+    apart from the scans it counts. Re-proved red the same day by disabling the cache hit in
+    `GenerationStore.supersession_graph` (recall/generation_store.py): fails on
+    ``connection.calls == 1`` with 2.
+
+    FIX-004 (2026-10-26) replaces that history count with a bounded revision lookup. The stub
+    now recognizes this deliberately changed query contract; the scan assertions remain intact.
+    A cache-hit comparison mutation supplies the new fixture's required RED/GREEN receipt.
     """
     connection = _Connection([("old.md", "new.md", None)])
     store = _Store(connection)

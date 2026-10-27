@@ -1,5 +1,10 @@
 # Embedding and Reranker Model Landscape for Retrieval Quality
 
+This is a September 2026 research snapshot. Its model shortlist, proposed experiments, provider
+limits, and comparisons describe that period, not the current product defaults. For supported
+configuration, use [operating modes](../OPERATING_MODES.md) and the
+[environment reference](../ENVIRONMENT.md).
+
 ## Executive conclusion
 
 The strongest next experiment is not another flat embedding swap. The project already has evidence that the dominant failure is often candidate recall: the gold memory is absent from the candidate pool, so a reranker cannot recover it. The first priority should therefore be a contextual retrieval arm, with conversation or document context available while each retrievable unit is encoded.
@@ -22,7 +27,7 @@ The project has also observed a conversational failure mode in which 71 percent 
 
 The current operating constraints matter. Embedding runs belong on VPS2, only one embedding process may run at a time, and the indexing path is bounded because VPS2 also runs live services. The current Voyage reranker project limit observed by the benchmark was 2,000,000 rerank tokens per minute, which caused a candidate pool of 200 to be rejected in one run. Any cloud comparison must therefore report token volume and the exact candidate pool, not only quality.
 
-Internal references: [VOYAGE_REFERENCE.md](../benchmarks/VOYAGE_REFERENCE.md), [EVIDENCE.md](../docs/EVIDENCE.md), and the prior [rerank pool results](../results/peps_rerank_pool/README.md).
+Internal references: [VOYAGE_REFERENCE.md](../../benchmarks/VOYAGE_REFERENCE.md), [EVIDENCE.md](../EVIDENCE.md), and the prior [rerank pool results](../../results/peps_rerank_pool/README.md).
 
 ## Model shortlist
 

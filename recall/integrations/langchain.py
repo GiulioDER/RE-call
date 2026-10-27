@@ -110,7 +110,6 @@ class RecallRetriever(BaseRetriever):
         source: str | None = None,
         calibration: Calibration | None = None,
         reranker: Reranker | None = None,
-        entailment: Any | None = None,
         return_abstention_reason: bool = False,
         include_untrusted: bool = False,
         policy: TrustPolicy | None = None,
@@ -120,11 +119,9 @@ class RecallRetriever(BaseRetriever):
         """Build a retriever that calls :func:`recall.trust.trusted_search` on each query.
 
         ``store`` and ``embedder`` are captured by reference; their lifecycle is the caller's — a
-        server holds one open ``PgVectorStore`` (with a pool) for the process. ``entailment`` is the
-        optional near-miss judge (see :mod:`recall.entailment`), left untyped here so importing the
-        adapter does not pull in the ``entail`` extra. ``include_untrusted`` opts a live-store
-        retriever into serving trust-refused hits (with an in-band warning) — the same escape hatch
-        the constructor exposes, reachable through the documented factory.
+        server holds one open ``PgVectorStore`` (with a pool) for the process. ``include_untrusted``
+        opts a live-store retriever into serving trust-refused hits (with an in-band warning) — the
+        same escape hatch the constructor exposes, reachable through the documented factory.
         ``document_expansion`` opts relational queries into source-scoped retrieval before the
         trust layer evaluates the complete candidate set.
         ``structural_expansion`` adds bounded ordinal neighbors and the terminal section.
@@ -139,7 +136,6 @@ class RecallRetriever(BaseRetriever):
                 source=source,
                 calibration=calibration,
                 reranker=reranker,
-                entailment=entailment,
                 policy=policy,
                 document_expansion=document_expansion,
                 structural_expansion=structural_expansion,

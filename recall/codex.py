@@ -218,10 +218,12 @@ def _hook_entries(python_executable: str | None = None) -> dict[str, list[dict[s
         "PreToolUse": [
             command_group(
                 "pre-tool-use",
-                matcher="Bash|Write|Edit|MultiEdit|NotebookEdit|BashOutput",
+                matcher="^(Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|BashOutput|apply_patch)$",
                 timeout=5,
             )
         ],
+        "PostToolUse": [command_group("post-tool-use", matcher="^(Bash|PowerShell)$", timeout=5)],
+        "SubagentStart": [command_group("subagent-start", timeout=5)],
         # Codex always runs SessionEnd synchronously, even when async=true is present. Keep the
         # timeout explicit so the generated config does not promise non-blocking teardown.
         "SessionEnd": [command_group("session-end", timeout=SESSION_END_TIMEOUT_SECONDS)],

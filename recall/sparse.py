@@ -1,4 +1,10 @@
-"""Learned sparse (SPLADE) retrieval: encoder, identity, and pruning."""
+"""Learned sparse (SPLADE) retrieval: encoder, identity, and pruning.
+
+SPLADE is T. Formal, B. Piwowarski and S. Clinchant, "SPLADE: Sparse Lexical and Expansion Model
+for First Stage Ranking", SIGIR 2021, with the revised pooling of T. Formal, C. Lassance,
+B. Piwowarski and S. Clinchant, "SPLADE v2: Sparse Lexical and Expansion Model for Information
+Retrieval", arXiv:2109.10086, 2021.
+"""
 
 from __future__ import annotations
 
@@ -130,8 +136,8 @@ def splade_weights(logits: "torch.Tensor", attention_mask: "torch.Tensor") -> li
 
 #: Learned sparse encoders that ship as named, supported choices.
 #:
-#: ⚠️ `naver/splade-v3` is CC-BY-NC-SA-4.0 — NON-COMMERCIAL. RE-call is source available under
-#: PolyForm Noncommercial, so it is never the
+#: ⚠️ `naver/splade-v3` is CC-BY-NC-SA-4.0 — NON-COMMERCIAL. RE-call's own license permits
+#: commercial use, so a noncommercial checkpoint is never the
 #: default; it is here because it is the model MTRAGEval rank 3 used and the comparable number is
 #: worth being able to produce. `Splade_PP_en_v1` is apache-2.0 and is what you get if you do not
 #: choose. Weights are downloaded by the user at runtime and are not vendored by this package.
@@ -264,8 +270,8 @@ class SpladeEncoder:
     ) -> "SpladeEncoder":
         """Load a published SPLADE checkpoint.
 
-        The licence is checked BEFORE the download. RE-call is source available under PolyForm
-        Noncommercial, and a non-commercial
+        The licence is checked BEFORE the download. RE-call's own license permits commercial
+        use, and a non-commercial
         checkpoint arriving by default is a licence violation nobody chose — so
         `naver/splade-v3` has to be opted into by name, in code, with this flag.
         """

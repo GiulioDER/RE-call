@@ -1,0 +1,76 @@
+{
+  "_provenance": {
+    "generation": "post-#81/#84",
+    "status": "current",
+    "note": "ATM-Bench full split, 1,013 questions: the frozen 2026-08-21 run (run_id voyage4-deepseek-full-preregistered-final-20260821) rescored on 2026-10-04 with the benchmark's own retrieval evaluator. The figure published and submitted as 'Recall@10 92.8924' is Hit@10, the share of questions with at least one gold item in the top 10: benchmarks/atm_bench.py::metrics_for stores that indicator under the key 'Recall@10'. The board's Recall@10 is the evaluator's recall@10, the mean over questions of |gold & top10| / |gold|, which is 90.0995 here. No retrieval was re-run: the inputs are the run's own retrieval.jsonl, whose hash matches package_sha256 in atm_bench_full_20260821.json, and the released ground truth, whose hash matches data_sha256 there. cross_check recomputes Hit@10 and Recall@10GT from the same inputs and reproduces that artifact's values exactly. The mislabel was found by the board's maintainer reviewing atmbench/atmbench.github.io#3; the board row is corrected by #4.",
+    "backs": [
+      "docs/ATM_BENCH.md",
+      "docs/EVIDENCE.md ATM-Bench row",
+      "site/index.html ATM-Bench line"
+    ],
+    "superseded_by": null
+  },
+  "benchmark": "ATM-Bench",
+  "split": "full",
+  "run_id": "voyage4-deepseek-full-preregistered-final-20260821",
+  "rescore_date": "2026-10-04",
+  "question_count": 1013,
+  "official_evaluator": {
+    "path": "memqa/utils/evaluator/evaluate_retrieval/comprehensive_eval.py",
+    "function": "compute_metrics",
+    "sha256": "f35fd989c57a63f5ce248f4c185391d756edbf47d80669508cb3ec6fe023a0c5",
+    "k_values": [
+      1,
+      5,
+      10
+    ],
+    "count": 1013,
+    "metrics": {
+      "recall@1": 0.6468328397499179,
+      "recall@5": 0.8597611996427396,
+      "recall@10": 0.9009953932214543,
+      "recall@gt": 0.7266358764631223,
+      "hit@1": 0.7413622902270484
+    },
+    "gt_stats": {
+      "count_with_gt": 1013,
+      "count_empty_gt": 0,
+      "gt_count_avg": 1.4383020730503455,
+      "gt_count_min": 1,
+      "gt_count_max": 10
+    },
+    "recall_at_10_percent": 90.09953932214543
+  },
+  "cross_check": {
+    "hit_at_10": 0.928923988153998,
+    "hit_at_10_percent": 92.8923988153998,
+    "recall_at_10gt": 0.8696939782823297,
+    "recall_at_10gt_percent": 86.96939782823297
+  },
+  "by_qtype": {
+    "list_recall": {
+      "count": 139,
+      "recall_at_10_percent": 87.3021582733813,
+      "hit_at_10_percent": 89.92805755395683,
+      "recall_at_10gt_percent": 83.45323741007195
+    },
+    "number": {
+      "count": 360,
+      "recall_at_10_percent": 89.50727513227511,
+      "hit_at_10_percent": 93.05555555555556,
+      "recall_at_10gt_percent": 86.66666666666667
+    },
+    "open_end": {
+      "count": 514,
+      "recall_at_10_percent": 91.27084491384105,
+      "hit_at_10_percent": 93.57976653696498,
+      "recall_at_10gt_percent": 88.13229571984436
+    }
+  },
+  "inputs_sha256": {
+    "retrieval.jsonl": "2bbb7490cbbafb1db6d45382baf0c536a6366fe7036b031a6a84ac32d71a7270",
+    "atm-bench.json": "ab6eaa9df62fb4162e0f5eecd98768a7e3ae721e32d2db2cf227ff41e3295762"
+  },
+  "single_gold_questions": 764,
+  "reproduce": "Build a JSON list of {id, gt_evidence_ids, retrieval_ids} from the run's retrieval.jsonl (retrieval_ids as stored) and atm-bench.json (evidence_ids, de-duplicated in order), then from the benchmark repository root run python -m memqa.utils.evaluator.evaluate_retrieval.comprehensive_eval --details <file> --k-values 1,5,10."
+}

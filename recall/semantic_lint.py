@@ -29,11 +29,12 @@ from pathlib import Path
 
 from recall.embeddings import Embedder
 from recall.document import parse_document
-from recall.frontmatter import supersedes_key
+from recall.frontmatter import supersedes_targets
 from recall.index import Indexer, chunk_text
 from recall.lint import CLOSURE_MARKERS, DEFAULT_GLOB
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
+from recall.supersession import reference_stem_key
 
 #: A memo reads as a settled decision (something a new related memo should reference) when its
 #: body carries a decision-status marker. An OPEN investigation is deliberately excluded — a
@@ -78,13 +79,14 @@ def find_unlinked_chains(
     """
     # Compare in the normalised space: a memo that writes `supersedes: [[prior]]` or omits the
     # `.md` IS linked, and flagging it as an unlinked chain would be a false positive. Every
-    # declared edge in a real 792-memo corpus was written in one of those forms.
-    linked = {supersedes_key(s) for s in supersedes}
+    # declared edge in a real 792-memo corpus was written in one of those forms. Folded the way
+    # every supersession reader matches (`recall.supersession`), case and NFC included.
+    linked = {reference_stem_key(s) for s in supersedes}
     out = [
         UnlinkedChain(new_memo, c.name, c.cosine)
         for c in candidates
         if c.name != new_memo
-        and supersedes_key(c.name) not in linked
+        and reference_stem_key(c.name) not in linked
         and c.is_closed_decision
         and c.cosine >= threshold
     ]
@@ -129,8 +131,7 @@ def semantic_lint(
         # every file it touches read as a closed decision.
         document = parse_document(f.read_text(encoding="utf-8-sig"))
         meta, body = document.meta, document.human_body
-        target = meta.get("supersedes")
-        supersedes[f.name] = {target} if isinstance(target, str) and target else set()
+        supersedes[f.name] = set(supersedes_targets(meta.get("supersedes")))
         closed[f.name] = is_closed_decision(body)
         body_text[f.name] = body
         self_chunks[f.name] = max(1, len(chunk_text(body)))
@@ -158,8 +159,12 @@ def semantic_lint(
                 cname = relfile.rsplit("/", 1)[-1] if relfile else None
                 if not cname or cname == name or cname in ambiguous:
                     continue
-                # skip pairs already linked either way — the chain is complete
-                if name in supersedes.get(cname, set()):
+                # skip pairs already linked either way: the chain is complete. Compared through
+                # the shared folding, since a reference is written `prior`, `[[prior]]` or
+                # `prior.md` and a raw comparison with the file name missed all but the last.
+                if reference_stem_key(name) in {
+                    reference_stem_key(t) for t in supersedes.get(cname, set())
+                }:
                     continue
                 if h.score > best.get(cname, _NO_SCORE):
                     best[cname] = h.score

@@ -46,9 +46,9 @@ PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
         "langchain_core",
         "numpy",
         "tiktoken",
+        "mypy",
     ),
     "documents": (
-        "pypdf",
         "pdfplumber",
         "docx",
         "openpyxl",
@@ -57,7 +57,6 @@ PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
         "bs4",
         "oxmsg",
     ),
-    "entail": ("sentence_transformers",),
     "eval": ("matplotlib", "numpy"),
     "extract": ("openai",),
     "finetune": ("sentence_transformers", "numpy"),

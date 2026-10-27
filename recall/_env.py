@@ -7,6 +7,7 @@ never committed. Entry points call ``load_dotenv()`` so those keys are picked up
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -114,11 +115,47 @@ def truthy(raw: str | None) -> bool:
     re-implemented at least eleven times across the product packages; sites with the plain
     semantics delegate here so the vocabulary cannot fork. Sites that deliberately differ —
     `recall.store._env_opt_out` (a security opt-out that must not read a typo as consent),
-    the strict-raising readers in `recall.entailment` and `recall.truth_extraction`, and
+    the strict-raising reader in `recall.truth_extraction`, and
     `recall_mcp.factories`' two-sided TRUE/FALSE pair — keep their own definitions on
     purpose and say so in place.
     """
     return raw is not None and raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+#: The values `strict_bool` reads as false. `recall setup` used to write `RECALL_ENTAILMENT="0"`
+#: into every generated `.env`, so this set is what a configuration left over from that wizard
+#: holds, and it must keep being accepted without a word.
+_FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
+
+#: The refusal `refuse_removed_entailment` raises. A module constant so the CLI, the MCP server
+#: and the tests quote one sentence.
+REMOVED_ENTAILMENT_MESSAGE = (
+    "RECALL_ENTAILMENT: the entailment judge was removed after recall-rag 0.14.0; unset "
+    "RECALL_ENTAILMENT (results are no longer filtered by it)"
+)
+
+
+def refuse_removed_entailment(env: "Mapping[str, str] | None" = None) -> None:
+    """Refuse a configuration that still asks for the removed entailment judge.
+
+    The QNLI judge that `RECALL_ENTAILMENT` switched on has been removed. A deployment that set it
+    to a true value was relying on a STRICTER filter: hits the judge rejected were demoted and the
+    search could abstain. Ignoring the variable silently would therefore WIDEN what that
+    deployment is served, with nothing to say so, which is the one failure a trust layer must not
+    have. So a true value refuses, loudly, at the CLI search path and at MCP server startup, and
+    those two call sites share this one helper so they cannot drift.
+
+    A false value (`"0"`, `"false"`, `"no"`, `"off"`, empty) or an unset variable is accepted
+    silently: it asked for nothing that has gone. Any other value refuses as well, as it did
+    before the removal (the old resolver raised on a non boolean), because a typo cannot be read
+    as either intent. `RECALL_ENTAILMENT_MODEL` and `RECALL_ENTAILMENT_REVISION` only ever chose
+    the judge's weights, so on their own they change nothing and are ignored.
+    """
+    source = os.environ if env is None else env
+    raw = source.get("RECALL_ENTAILMENT")
+    if raw is None or raw.strip().lower() in _FALSE_VALUES:
+        return
+    raise ValueError(REMOVED_ENTAILMENT_MESSAGE)
 
 
 def strict_bool(raw: str | None, *, name: str) -> bool:
@@ -126,7 +163,7 @@ def strict_bool(raw: str | None, *, name: str) -> bool:
     value = "" if raw is None else raw.strip().lower()
     if value in {"1", "true", "yes", "on"}:
         return True
-    if value in {"0", "false", "no", "off", ""}:
+    if value in _FALSE_VALUES:
         return False
     raise ValueError(f"{name}={raw!r} is not a boolean; expected true or false")
 

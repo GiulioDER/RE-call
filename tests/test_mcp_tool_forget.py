@@ -50,8 +50,9 @@ def test_recall_forget_tool_returns_json_matching_forget_result(make_store):
     # rather than loosenings: the erasure receipt has to name every store that was swept,
     # because "it was clean" and "it was never consulted" were previously indistinguishable
     # to the caller on an irreversible path. Still an EXACT comparison, so a further field
-    # cannot appear unnoticed. Both zeros are themselves assertions: this store has no
-    # control plane (no outbox to scrub) and `f.md` was never a staged upload.
+    # cannot appear unnoticed. The zeros are themselves assertions: this store has no
+    # control plane (no outbox to scrub), `f.md` was never a staged upload, and no fact was
+    # applied from it (`facts_retracted`, the fact ledger was consulted and owed nothing).
     assert payload == {
         "chunks_removed": 1,
         "sources_removed": ["f.md"],
@@ -59,6 +60,8 @@ def test_recall_forget_tool_returns_json_matching_forget_result(make_store):
         "message": "Forgot 1 chunk(s) from 1 source(s).",
         "outbox_events_scrubbed": 0,
         "staged_files_removed": 0,
+        "facts_retracted": 0,
+        "facts_redacted": 0,
     }
     assert store.count() == 0
 

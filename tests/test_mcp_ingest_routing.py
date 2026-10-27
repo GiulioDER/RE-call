@@ -43,15 +43,18 @@ class _Recorder:
         #: never what it was called with — so `index_memory` losing `category` (and therefore
         #: falling back to `chunk_text` for code) passed every test and survived a mutation run.
         self.chunkers: list[object] = []
+        #: The purpose the lite store's write lane is taken under (`recall.lite.writer_lock`).
+        self.lane_purposes: list[str] = []
 
     def generation(self, store, embedder, staged_root, category, *, env=None):  # noqa: ANN001, ANN201
         self.calls.append("generation")
         self.chunkers.append(category)
         return "generation-result"
 
-    def legacy(self, store, embedder, staged_root, chunker=None, *, env=None):  # noqa: ANN001, ANN201
+    def legacy(self, store, embedder, staged_root, chunker=None, *, env=None, lane_purpose="index"):  # noqa: ANN001, ANN201
         self.calls.append("legacy")
         self.chunkers.append(chunker)
+        self.lane_purposes.append(lane_purpose)
         return "legacy-result"
 
 
@@ -93,6 +96,11 @@ def test_a_legacy_server_indexes_into_the_legacy_table(recorder: _Recorder) -> N
         "succeeded and then could not be found"
     )
     assert result == "legacy-result"
+    assert recorder.lane_purposes == ["ingest"], (
+        "an ingest took the lite write lane as a plain index, so a queued refresh cannot tell them apart"
+    )
+    # Red proof 2026-10-12: `lane_purpose="ingest"` dropped from the legacy call in
+    # `recall_mcp.server.ingest_into_serving_store` fails this assertion (M20 of the writer lock).
 
 
 def test_both_branches_chunk_code_as_code(recorder: _Recorder) -> None:

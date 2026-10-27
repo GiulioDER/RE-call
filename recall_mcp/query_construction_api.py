@@ -57,10 +57,10 @@ def _expand_semantic_graph(
     defer_trust_evaluation: bool = False,
     excluded_chunk_ids: frozenset[str] = frozenset(),
 ) -> SemanticGraphExpansionResult:
-    """Resolve the service compatibility seam lazily during graph extraction."""
-    from recall_mcp import service
+    """Resolve graph expansion lazily, keeping module loading acyclic."""
+    from recall_mcp import semantic_graph_cache
 
-    return service._expand_semantic_graph(
+    return semantic_graph_cache._expand_semantic_graph(
         store,
         request,
         retrieval,

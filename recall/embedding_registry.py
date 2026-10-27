@@ -709,6 +709,52 @@ _HOSTED_PROFILES: tuple[RegisteredProfile, ...] = (
         backend="voyage",
         api_key_env="VOYAGE_API_KEY",
     ),
+    # Retrieval variants: the same models with Voyage's `input_type` sent, "query" for queries
+    # and "document" for passages. The profiles above send none, and that is how Voyage's docs
+    # say NOT to use a model for retrieval. Measured 2026-10-03 on LoCoMo turn retrieval (1,535
+    # questions) and on docstring-to-function retrieval over this package (1,412 queries), MRR@10
+    # against the no-input_type baseline: voyage-4 +0.130, voyage-4-large +0.162,
+    # voyage-code-3 +0.049, every 95% CI excluding zero. Without `input_type`, voyage-4-large
+    # also scored BELOW voyage-4, so a model comparison through the symmetric spelling is not a
+    # comparison of the models as Voyage trains them. The pre-registered record and its per-query
+    # ranks are in the maintainer's research archive, outside any git ref of this repository.
+    #
+    # They are NEW ids rather than a change to the three above, because a profile is a promise
+    # about the vectors already stored under it: switching `voyage-code-3-v1` to typed input would
+    # leave every existing corpus with passages embedded one way and queries another, under a
+    # profile that claims otherwise. Named `-retrieval` rather than `-asymmetric` (the BGE
+    # vocabulary for the same query/passage split), because Voyage uses "asymmetric" for a
+    # different thing: querying documents embedded by one Voyage 4 model with another.
+    RegisteredProfile(
+        profile_id="voyage-4-retrieval-v1",
+        model_name="voyage-4",
+        dimension=1024,
+        query_mode="query",
+        passage_mode="document",
+        context_mode="none",
+        backend="voyage",
+        api_key_env="VOYAGE_API_KEY",
+    ),
+    RegisteredProfile(
+        profile_id="voyage-4-large-retrieval-v1",
+        model_name="voyage-4-large",
+        dimension=1024,
+        query_mode="query",
+        passage_mode="document",
+        context_mode="none",
+        backend="voyage",
+        api_key_env="VOYAGE_API_KEY",
+    ),
+    RegisteredProfile(
+        profile_id="voyage-code-3-retrieval-v1",
+        model_name="voyage-code-3",
+        dimension=1024,
+        query_mode="query",
+        passage_mode="document",
+        context_mode="none",
+        backend="voyage",
+        api_key_env="VOYAGE_API_KEY",
+    ),
     RegisteredProfile(
         profile_id="voyage-context-4-v1",
         model_name="voyage-context-4",

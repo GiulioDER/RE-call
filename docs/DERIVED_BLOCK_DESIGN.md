@@ -6,7 +6,7 @@ Status: approved, not yet implemented
 ## Problem
 
 RE-call's model of truth is authored frontmatter, and three keys carry VALIDITY
-(`recall/frontmatter.py:23`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
+(`VALIDITY_KEYS` in `recall/frontmatter.py`): `supersedes`, `valid_from`, `valid_until`. The trust layer acts on
 those and nothing else. The parser also recognises `recall_graph` and the `type` facet, and
 neither is a truth claim: see `docs/TRUTH_EXTRACTION_DESIGN.md` for why that distinction is the
 thing keeping this paragraph true as the parser grows.
@@ -95,7 +95,7 @@ copy in the body is a second source of truth that can disagree with the first.
 
 **`status` vocabulary is closed:** `open | adopted | closed | superseded | rejected | abandoned`.
 It deliberately excludes `deprecated` and `obsolete`, which are in `CLOSURE_MARKERS`
-(`recall/lint.py:51`) and would make the machine block trip the linter built to find prose closure.
+(`recall/lint.py:53`) and would make the machine block trip the linter built to find prose closure.
 Both normalise to `superseded` on the render path.
 
 **Entries are sorted by `(head, value)`**, so a re-render is byte identical and a re-run never
@@ -118,13 +118,13 @@ Every rule in `parse_derived_block` is a refusal. The one apparent exception is 
 path *accepts* `deprecated` / `obsolete` and normalises them to `superseded`, because that is a
 proposal's vocabulary arriving at the boundary; the parse path *refuses* a file that literally
 contains them, because that is a file claiming something the grammar does not permit. Accepting on
-the way in and refusing on the way out is the same posture as `recall/fix.py:266` refusing to
+the way in and refusing on the way out is the same posture as `propose_fixes` in `recall/fix.py` refusing to
 overwrite what a human wrote.
 
 ### `content_hash` is left alone
 
 A block write should re-index that file. Chunk text is byte identical because `_pack` strips every
-block (in `recall/index.py`), so embeddings serve from cache (`recall/cache.py:462`); the cost is
+block (in `recall/index.py`), so embeddings serve from cache (`embed_with_cache`, `recall/cache.py:486`); the cost is
 one `replace_sources`. Chunk ids and graph node ids are unaffected, which keeps evidence ids, and
 therefore proposal ids, stable across a write.
 
@@ -200,10 +200,10 @@ isolation.
 | Site | Note |
 |---|---|
 | `Indexer.index_path` (`recall/index.py`) | `contextual_passages(raw, body, ...)` keeps taking the unstripped `raw` for `document_title`, which reads frontmatter and the first H1 — both above the block. The `body` argument becomes `human_body`. |
-| `GenerationManager.build` (`recall/generations.py`) | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused on the production route via `_runtime_route` (`recall/cli_commands/index_search.py:318`), so hooking only the index path leaves the one build path that runs in production uncovered. |
-| `recall/lint.py:198` | The only reader of `derived_text`. |
+| `GenerationManager.build` (`recall/generations.py`) | Already inside the `media_type in {"text/markdown", ...}` branch, so non-markdown sources are untouched by construction. **Not optional:** `recall index` is refused on the production route via `_runtime_route` (`recall/cli_commands/index_search.py:366`), so hooking only the index path leaves the one build path that runs in production uncovered. |
+| `recall/lint.py:363` | The only reader of `derived_text`. |
 | `recall/check.py:53` | `_ANY_REF` over the body would otherwise hand the author the machine's own values back as `supersedes:` candidates. |
-| `recall/semantic_lint.py:126` | Fixes the `is_closed_decision` collision: `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of the block's own `status:` entry. This module reaches the corpus twice — here, and via `Indexer.index_path` at `:138`, which the `index.py` site covers. |
+| `recall/semantic_lint.py:129` | Fixes the `is_closed_decision` collision: `_DECISION_STATUS` matches `status:\s*superseded`, which is exactly the shape of the block's own `status:` entry. This module reaches the corpus twice — here, and via `Indexer.index_path` at `:138`, which the `index.py` site covers. |
 
 **The import ban.** A test asserts that within `recall/`, `recall_mcp/` and `recall_interop/`, the
 only module importing `parse_frontmatter` is `recall/document.py`.
@@ -282,7 +282,7 @@ property.
 
 9. a file with a block chunks identically to the same file without one (`chunk_text`, element-wise)
 10. `text_start` / `text_end` identical across that same pair, through `contextual_passages`
-11. `status: superseded` inside a block does not make `is_closed_decision` (`recall/semantic_lint.py:51`)
+11. `status: superseded` inside a block does not make `is_closed_decision` (`recall/semantic_lint.py:53`)
     return True. Paired assertion: the *same* string in ordinary prose still does, otherwise the
     test passes against a function that always returns False.
 12. `recall check` on a file whose block names it does not offer the machine's own filename back as

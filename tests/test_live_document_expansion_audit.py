@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from recall_mcp import factories as _s5b_factories
+from recall_mcp import reasoning_diagnostics as _s5b_reasoning_diagnostics
+
 from datetime import UTC, datetime, timedelta
 
 from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
@@ -93,8 +96,8 @@ def test_document_expansion_audit_uses_pinned_vector_and_existing_policies(monke
     class Store:
         generation_id = "generation-one"
 
-    monkeypatch.setattr(service, "trusted_search", fake_search)
-    monkeypatch.setattr(service, "_build_reranker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(_s5b_reasoning_diagnostics, "trusted_search", fake_search)
+    monkeypatch.setattr(_s5b_factories, "_build_reranker", lambda *_args, **_kwargs: None)
     payload = service._document_expansion_benchmark_audit_payload(
         Store(), Inner(), "question", [0.2, 0.8], None, 3, None, None, service.FAST_PROFILE
     )

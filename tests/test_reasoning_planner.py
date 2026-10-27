@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
-from recall.reasoning_graph import build_reasoning_graph
+from recall.lite import LiteStore
+from recall.reasoning_graph import build_reasoning_graph, project_store_graph
 from recall.reasoning_planner import ReasoningBudget, plan_multi_hop_evidence
 import pytest
 
@@ -153,6 +157,11 @@ def test_planner_keeps_contradiction_check_for_relevant_contradiction_proposal()
 
     Red proof: the pre-fix planner recorded all six operations, so the exact relevant schedule
     fails before the fix. The assertion targets the production planner, not a test double.
+
+    The schedule has no `search_missing_intermediate_evidence` since finding 25b of the
+    2026-10-21 supersession audit (commit 1e89417fa): both memos start the same day, so no
+    `supersedes` proposal orders them, and that step runs only for one. Before it, the
+    repeated-subject rule proposed one anyway, its direction chosen by file-name order.
     """
     left = _chunk("left", "feature_left.md", "decision: feature. Status: enabled.")
     right = _chunk("right", "feature_right.md", "decision: feature. Status: disabled.")
@@ -169,7 +178,6 @@ def test_planner_keeps_contradiction_check_for_relevant_contradiction_proposal()
 
     assert [step.operation for step in plan.trace.expansion_steps] == [
         "compare_candidate_memories",
-        "search_missing_intermediate_evidence",
         "check_temporal_consistency",
         "check_contradiction",
     ]
@@ -217,12 +225,18 @@ def test_planner_fails_closed_when_retrieval_and_graph_generation_do_not_match()
 
 
 def test_planner_fails_closed_when_initial_evidence_has_blocking_graph_diagnostic() -> None:
+    """Node tests/test_reasoning_planner.py::test_planner_fails_closed_when_initial_evidence_has_blocking_graph_diagnostic.
+
+    Different paths sharing a stem must still block ambiguous evidence.
+    Red-proved by disabling duplicate_entity_candidate emission in _graph_diagnostics;
+    the failed_closed assertion failed.
+    """
     first = _chunk("first", "shared.md", "first copy")
     second = Chunk(
         "second",
         "/other/shared.md",
         "second copy",
-        {"file": "shared.md", "ord": 0, "valid_from": "2026-01-01"},
+        {"file": "other/shared.md", "ord": 0, "valid_from": "2026-01-01"},
     )
     graph = build_reasoning_graph([first, second], tenant_id="acme", generation_id="gen_1")
 
@@ -447,3 +461,68 @@ def test_a_temporally_inconsistent_node_is_rejected_without_staying_accepted() -
     assert not (accepted & rejected), "no chunk may be both accepted and rejected"
     assert plan.budget_used.graph_nodes == 0
     assert plan.budget_used.evidence_tokens == 0
+
+
+@pytest.mark.parametrize(
+    "backend,collision,phase",
+    [
+        pytest.param(backend, collision, phase, id=f"{backend}-{collision}-{phase}")
+        for backend in ("fallback", "lite")
+        for collision in ("predecessor", "successor", "both")
+        for phase in ("before", "inside")
+    ],
+)
+def test_planner_follows_only_the_current_rooted_successor(
+    tmp_path: Path, backend: str, collision: str, phase: str,
+) -> None:
+    """Node tests/test_reasoning_planner.py::test_planner_follows_only_the_current_rooted_successor.
+
+    Both adapters must preserve rooted identity and the successor's validity window.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    raw-file graph/planner lookups failed outcome, accepted-chunk or operation assertions.
+    """
+    old = Chunk("old", "/one/base.md", "old", {"file": "base.md", "ord": 0})
+    new = Chunk("new", "/one/new.md", "new", {
+        "file": "new.md", "ord": 0, "supersedes": "base", "valid_from": "2027-01-01",
+    })
+    chunks = [old, new]
+    if collision in {"predecessor", "both"}:
+        chunks.append(Chunk("other-old", "/two/base.md", "other old", {"file": "base.md", "ord": 0}))
+    if collision in {"successor", "both"}:
+        chunks.append(Chunk("other-new", "/two/new.md", "other new", {"file": "new.md", "ord": 0}))
+    if backend == "lite":
+        with closing(LiteStore(tmp_path / "planner.db", dim=4, tenant="acme")) as store:
+            store.upsert(chunks, [[1.0, 0.0, 0.0, 0.0] for _chunk in chunks])
+            graph = project_store_graph(store)
+    else:
+        graph = build_reasoning_graph(chunks, tenant_id="acme", generation_id="gen_1")
+    retrieval = replace(_result(_trusted_hit(old)), generation_id=graph.generation_id)
+    at = NOW if phase == "before" else datetime(2027, 2, 1, tzinfo=timezone.utc)
+    plan = plan_multi_hop_evidence(retrieval, graph, as_of=at)
+    assert plan.outcome == "completed", "source qualification incorrectly blocked the planner"
+    accepted = {decision.chunk_id for decision in plan.trace.evidence_accepted}
+    assert accepted == ({"old"} if phase == "before" else {"old", "new"}), (
+        f"planner lost the rooted window or selected another copy: {accepted}"
+    )
+    operations = {step.operation for step in plan.trace.expansion_steps}
+    assert ("follow_authored_relationships" in operations) == (phase == "inside"), (
+        "planner followed a successor outside its window or missed a current successor"
+    )
+
+
+def test_planner_metadata_diagnostic_blocks_only_its_own_rooted_document() -> None:
+    """Node tests/test_reasoning_planner.py::test_planner_metadata_diagnostic_blocks_only_its_own_rooted_document.
+
+    Malformed sibling chunks must block their own root, not another root's copy.
+    Red-proved against 50cb206e1a4e593d495fca931570d6c303016154:
+    the raw-file diagnostic lookup failed the separate-root outcome assertion.
+    """
+    first = Chunk("first", "/one/base.md", "first", {"file": "base.md", "ord": 0})
+    bad = Chunk("bad", first.source, "bad sibling", {"file": "base.md", "ord": 1, "valid_from": "bad"})
+    other = Chunk("other", "/two/base.md", "other", {"file": "base.md", "ord": 0})
+    graph = build_reasoning_graph([first, bad, other], tenant_id="acme", generation_id="gen_1")
+    own = plan_multi_hop_evidence(_result(_trusted_hit(first)), graph, as_of=NOW)
+    assert own.outcome == "failed_closed", "malformed sibling no longer blocks its own document"
+    assert own.stop_reason == "ambiguous_evidence"
+    separate = plan_multi_hop_evidence(_result(_trusted_hit(other)), graph, as_of=NOW)
+    assert separate.outcome == "completed", "one root's metadata diagnostic blocked another root"

@@ -13,6 +13,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # A release must be a week old before a version update proposes it, so a compromised or
+    # yanked-within-days upload never reaches a PR (zizmor: dependabot-cooldown). Security
+    # updates are not subject to the cooldown.
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
     # Three dependencies in `pyproject.toml` are capped ON PURPOSE, each with its reasoning
@@ -40,6 +45,10 @@ updates:
     # so a major changes corpus content silently rather than raising. That is a cap earned on its
     # merits, which is the sanctioned route; what stays refused is capping something merely to
     # quieten it. `boto3` remains uncapped and un-ignored, and its PRs still arrive.
+    #
+    # 🔁 And superseded again 2026-10-01: that reasoning was false, pypdf was never on the
+    # extraction path (pdfplumber is), and its ignore rule kept eight DoS advisories against
+    # 6.16.1 out of any Dependabot PR. pypdf is no longer a dependency, so its rule is gone.
     #
     # ⚠️ Assume a rule here also suppresses SECURITY PRs for that dependency. Recorded as
     # UNCONFIRMED: GitHub's options reference says ignored dependencies are filtered out after
@@ -75,7 +84,7 @@ updates:
           - "version-update:semver-minor"
           - "version-update:semver-major"
 
-      # mcp: pinned EXACTLY (`mcp==2.1.0`) in three separate extras, so every bump is a pin edit
+      # mcp: pinned EXACTLY (`mcp==2.2.0`) in three separate extras, so every bump is a pin edit
       # in three places, and a protocol library is one where a wire-format change is not a
       # routine upgrade. Patch and minor are held; a MAJOR still opens a PR, which is the moment
       # this is worth a person's attention.
@@ -94,16 +103,6 @@ updates:
           - "version-update:semver-patch"
           - "version-update:semver-minor"
 
-      # pypdf: capped `<7` (2026-09-02). Extracted TEXT is the output, so it feeds chunking and
-      # decides what the corpus contains; a major that changes layout or whitespace handling does
-      # not raise, it re-chunks every PDF-derived document and moves embeddings nothing
-      # re-verifies. A major is therefore a re-index-and-compare, not a resolver decision.
-      # ⚠️ Same interaction as transformers: `<7` already blocks the major, so while that cap
-      # stands this rule is effectively TOTAL. Delete it in the same change that lifts the cap.
-      - dependency-name: "pypdf"
-        update-types:
-          - "version-update:semver-patch"
-          - "version-update:semver-minor"
 
   # This half is proven: the first batch (#41-#43) bumped checkout, setup-python and setup-uv,
   # and merged green.
@@ -111,6 +110,11 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # A release must be a week old before a version update proposes it, so a compromised or
+    # yanked-within-days upload never reaches a PR (zizmor: dependabot-cooldown). Security
+    # updates are not subject to the cooldown.
+    cooldown:
+      default-days: 7
     labels:
       - "dependencies"
       - "ci"

@@ -1,25 +1,25 @@
-"""Does calibration or the entailment judge let RE-call abstain on LOCOMO's adversarials?
+"""Does calibration let RE-call abstain on LOCOMO's adversarials?
 
 The main runner (`recall.eval.locomo`) measured the *default* configuration: 0.00 abstention on
-446 adversarial questions. This asks whether the two mechanisms the library ships to raise that —
-threshold calibration and the entailment judge — actually do, and at what cost to answerable
-questions. A mode that abstains on everything scores 1.00 on adversarials and is useless, so both
+446 adversarial questions. This asks whether threshold calibration raises that, and at what cost
+to answerable questions. A mode that abstains on everything scores 1.00 on adversarials and is useless, so both
 sides are measured together:
 
 - **adversarial abstention rate** (category 5, unanswerable) — want HIGH
 - **answerable false-abstain rate** (categories 1-4) — want LOW
 
-Four modes:
-  default      no calibration, no judge — reproduces the main runner's 0.00
+Two modes:
+  default      no calibration — reproduces the main runner's 0.00
   calibrated   per-conversation threshold, fit IN-SAMPLE on that conversation's own answerable and
                adversarial top-cosines. This is deliberately the most generous possible calibration:
                it sees the exact distributions it is later scored on. If it cannot separate them
                even so, no honestly-fit calibration can — the point being tested is that the two
                distributions overlap because adversarials are on-topic, not that a threshold was
                chosen badly.
-  entail       default threshold + QNLI cross-encoder ("does this passage answer the question?").
-               The lever built for wrong-attribution near-misses.
-  both         calibrated + entail.
+
+The `entail` and `both` modes this harness once ran went through the QNLI entailment judge, which
+has been removed from RE-call. Their published rows stay in the committed artifacts, measured by
+the code of that time; this harness can no longer reproduce them.
 
 Reuses the tables `recall.eval.locomo` already indexed (table `locomo_chunks`, one tenant per
 conversation) — no re-index. Run the main runner first if the tables are absent.
@@ -59,7 +59,7 @@ from recall.eval._research_trust import research_search
 
 DEFAULT_DSN = os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall")
 
-MODES = ("default", "calibrated", "entail", "both")
+MODES = ("default", "calibrated")
 
 
 def _top_cosine(retriever: HybridRetriever, query: str, k: int) -> float | None:
@@ -78,7 +78,7 @@ def _partition_questions(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Split one conversation's questions into (answerable-with-evidence, adversarial).
 
-    Answerable questions are sampled to bound the cost of the entailment pass; adversarials are
+    Answerable questions are sampled to bound the cost of the scoring pass; adversarials are
     taken whole, because they are the smaller class and the one the whole experiment is about.
     """
     answerable = [
@@ -133,12 +133,6 @@ def run(
 
     embedder: Embedder = _make_embedder(embedder_name)
 
-    # The judge loads a cross-encoder once and is reused across every question and conversation.
-    from recall.entailment import QnliEntailmentJudge
-
-    print("loading entailment judge (first run downloads the cross-encoder)...", flush=True)
-    judge = QnliEntailmentJudge()
-
     # abstained flags, pooled across conversations: [mode] -> list[bool]
     adv_abstain: dict[str, list[bool]] = {m: [] for m in MODES}
     ans_abstain: dict[str, list[bool]] = {m: [] for m in MODES}
@@ -163,24 +157,14 @@ def run(
                 _store: PgVectorStore = store,
                 _embedder: Embedder = embedder,
                 _cal: Calibration = cal,
-                _judge: QnliEntailmentJudge = judge,
                 _k: int = k,
             ) -> None:
                 question = q["question"]
-                # default / calibrated share the no-judge path; entail / both add the judge.
                 bucket["default"].append(
                     research_search(_store, _embedder, question, k=_k).abstained
                 )
                 bucket["calibrated"].append(
                     research_search(_store, _embedder, question, k=_k, calibration=_cal).abstained
-                )
-                bucket["entail"].append(
-                    research_search(_store, _embedder, question, k=_k, entailment=_judge).abstained
-                )
-                bucket["both"].append(
-                    research_search(
-                        _store, _embedder, question, k=_k, calibration=_cal, entailment=_judge
-                    ).abstained
                 )
 
             for q in adversarial:
