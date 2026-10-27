@@ -26,6 +26,7 @@ import os
 import re
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -163,14 +164,28 @@ def _conflict(code: str, reason: str) -> dict[str, Any]:
     return {"refused": reason, "conflict": code}
 
 
-def _target_conflict(folder: Path, target: str | None, expected: str | None) -> dict[str, Any] | None:
+def _target_conflict(
+    folder: Path, target: str | None, expected: str | None,
+    has_successor: Callable[[str, str | None], bool] | None = None, own: str | None = None,
+) -> dict[str, Any] | None:
+    """The refusal a correction of `target` meets, or None. `has_successor(target, own)` asks the
+    store whether an indexed document other than memo `own` (the retried request's own memo)
+    already supersedes the target, as the store resolves references; the folder scan below also
+    sees successors written but not indexed yet."""
     if target is None:
         return _conflict("revision_without_target", "expected_revision requires supersedes") if expected else None
     path = folder / f"{target}.md"
     if not MEMO_ID.fullmatch(target) or path.is_symlink() or not path.is_file():
         return _conflict("target_missing", "the replacement target is not an existing memo")
-    if expected is not None and revision(path) != expected:
-        return _conflict("revision_mismatch", "the replacement target changed since it was read")
+    if expected is not None:
+        try:
+            current = revision(path)
+        except (OSError, UnicodeDecodeError):
+            # Not UTF-8 any more (re-saved in another encoding) or not readable: the indexer
+            # cannot have served a revision of these bytes, so the target changed since it was read.
+            current = None
+        if current != expected:
+            return _conflict("revision_mismatch", "the replacement target changed since it was read")
     for other in folder.glob("*.md"):
         if other.is_symlink():
             continue
@@ -183,7 +198,20 @@ def _target_conflict(folder: Path, target: str | None, expected: str | None) -> 
         meta = parse_document(raw.decode("utf-8", errors="replace")).meta
         if any(supersedes_key(ref) == target for ref in supersedes_targets(meta.get("supersedes"))):
             return _conflict("stale_target", "the replacement target already has a successor")
+    if has_successor is not None and has_successor(target, own):
+        return _conflict("stale_target", "the replacement target already has a successor")
     return None
+
+
+def sweep_staged(folder: Path) -> None:
+    """Remove staging files a crash inside `_create` left behind (they hold a whole memo, or a
+    second link to a published one). Call under the write lane, where no `_create` is running."""
+    for pattern in (".recall-memo-*.tmp", "..recall-memo-*.tmp.*.tmp"):
+        for staged in folder.glob(pattern):
+            try:
+                staged.unlink()
+            except OSError:
+                pass  # held open elsewhere (Windows): the next sweep takes it
 
 
 def _link_unsupported(exc: OSError) -> bool:
@@ -297,9 +325,16 @@ def _publish(
 def write_memo(
     folder: Path, ledger_path: Path, body: str, *, kind: str, author: str,
     supersedes: str | None, request_id: str | None, expected_revision: str | None,
-    include_receipt: bool,
+    include_receipt: bool, has_successor: Callable[[str, str | None], bool] | None = None,
 ) -> dict[str, Any]:
-    """Preserve legacy replies; guarded callers receive a revision and recoverable write receipt."""
+    """Write `body` as a memo. Call while holding the store's write lane.
+
+    Replies `{memo_id}` (legacy calls), `{memo_id, receipt}` when a receipt is asked for or a
+    `request_id` or `expected_revision` is given, `{refused}` for a malformed `request_id` or
+    `expected_revision`, and `{refused, conflict}` for a precondition: `request_mismatch`,
+    `revision_without_target`, `target_missing`, `revision_mismatch`, `stale_target`,
+    `memo_missing` or `memo_changed` (docs/MEMO_CORRECTIONS.md).
+    """
     if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()
                                    or len(request_id) > 128):
         return {"refused": "request_id must be a nonempty string of at most 128 characters"}
@@ -316,6 +351,7 @@ def write_memo(
         [digest, kind, author, supersedes], separators=(",", ":"),
     ).encode()).hexdigest()
     ledger = load_ledger(ledger_path)
+    sweep_staged(folder)
     authors = ledger["authors"]
     requests = ledger.setdefault("requests", {})
     entry = requests.get(request_id) if request_id is not None else None
@@ -352,7 +388,12 @@ def write_memo(
         elif not ours:
             # Never confirmed: the file under the reserved name, if any, is not provably ours, so
             # it is left alone and the reservation moves to the next free id.
-            conflict = _target_conflict(folder, supersedes, expected_revision)
+            conflict = _target_conflict(
+                folder, supersedes, expected_revision, has_successor,
+                # Rows under the reserved name are the request's own memo only while no file
+                # holds that name; a file there is somebody else's, and so is any claim it makes.
+                own=memo_id if current is None and not path.is_symlink() else None,
+            )
             if conflict:
                 return conflict
             folder.mkdir(parents=True, exist_ok=True)
@@ -368,7 +409,7 @@ def write_memo(
             number = _memo_number(memo_id) if free else _next_number(folder, ledger)
             memo_id = _publish(folder, ledger_path, ledger, data, kind=kind, number=number, entry=entry)
     else:
-        conflict = _target_conflict(folder, supersedes, expected_revision)
+        conflict = _target_conflict(folder, supersedes, expected_revision, has_successor)
         if conflict:
             return conflict
         folder.mkdir(parents=True, exist_ok=True)

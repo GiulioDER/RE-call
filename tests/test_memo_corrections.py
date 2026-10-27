@@ -878,3 +878,130 @@ def test_forget_refuses_a_memo_indexed_from_another_path(serving):
         refused = str(exc)
     assert path.exists() and "incomplete" in refused, (
         f"forget deleted the file of a memo still served from another path (refusal: {refused!r})")
+
+
+# -- CCA DEEP run 20261027T132712Z (PR 947): each docstring names its red proof (0dd4d135 or a mutation)
+
+
+def test_a_correction_of_a_target_that_is_no_longer_utf8_is_refused_not_raised(serving):
+    """CCA ENV-001. Red: 0dd4d135 hashes the target with a strict UTF-8 decode, so a target a
+    person re-saved in cp1252 raises UnicodeDecodeError and `the correction raised` fails.
+    Target: the revision check in `_target_conflict`.
+    """
+    store, memos = serving
+    memo_id, rev = initial(store, memos)
+    memos.path_of(memo_id).write_bytes("The user drinks café au lait.\n".encode("cp1252"))
+    try:
+        result = remember(store, memos, "The user drinks coffee.", supersedes=memo_id, expected_revision=rev)
+    except UnicodeDecodeError as exc:
+        result = {"raised": repr(exc)}
+    assert result.get("conflict") == "revision_mismatch", f"the correction raised: {result}"
+
+
+def test_a_ledger_that_cannot_be_read_stops_forget_before_any_row_is_erased(serving):
+    """CCA STAKES-004. Red: 0dd4d135 erases the memo's rows first and only then fails on the
+    ledger, so the file stays while its rows are gone and `the forget erased rows` fails.
+    Target: the order in `AssistantMemos.forget` (recall_mcp/assistant.py).
+    """
+    store, memos = serving
+    written = remember(store, memos, request_id="kept")
+    path = memos.path_of(written["memo_id"])
+    ledger = json.loads(memos.ledger_path.read_text(encoding="utf-8"))
+    ledger["requests"] = ["not a journal"]
+    memos.ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    with pytest.raises(ValueError):
+        memos.forget(store, ContentWordEmbedder(), written["memo_id"])
+    assert path.exists()
+    assert store.source_raw_hash(str(path)) is not None, "the forget erased rows before failing"
+
+
+def test_a_staging_file_left_by_a_crash_does_not_survive_a_forget(serving):
+    """CCA STAKES-002. A crash inside `_create` leaves the whole memo in a staging file. Red:
+    0dd4d135 never removes `.recall-memo-*.tmp`, so `a staging copy survived` fails. Target:
+    `sweep_staged`, called by `write_memo` and `MemoFolder.unlink_cancelled`.
+    """
+    store, memos = serving
+    written = remember(store, memos)
+    left = memos.folder / ".recall-memo-crashed.tmp"
+    left.write_text("The user drinks tea.\n", encoding="utf-8")
+    memos.forget(store, ContentWordEmbedder(), written["memo_id"])
+    assert not list(memos.folder.glob(".recall-memo-*")), "a staging copy survived the forget"
+
+
+def test_a_successor_the_store_resolves_makes_the_target_stale(serving):
+    """CCA STAKES-001. A person's memo naming the target in another case is a successor to the
+    store, which folds case. Red: 0dd4d135 compares exact keys in the folder only, so a second
+    correction is installed and `a second successor was installed` fails. Target: the
+    `has_successor` check (`AssistantMemos._indexed_successor`) in `_target_conflict`.
+    """
+    store, memos = serving
+    memo_id, _ = initial(store, memos)
+    (memos.folder / "my-correction.md").write_text(
+        f"---\nsupersedes: {memo_id.upper()}\n---\nThe user drinks coffee now.\n", encoding="utf-8")
+    memos.refresh(store, ContentWordEmbedder())
+    result = remember(store, memos, "The user drinks green tea.", supersedes=memo_id)
+    assert result.get("conflict") == "stale_target", f"a second successor was installed: {result}"
+
+
+def test_a_revision_precondition_needs_the_read_scope(serving):
+    """CCA SEC-002. Red: 0dd4d135 compares the revision for a caller without the read scope, so
+    a right guess installs the correction and `a writer confirmed a guess` fails. Target: the
+    `read_facts` check at the top of `AssistantMemos.remember`.
+    """
+    store, memos = serving
+    memo_id, rev = initial(store, memos)
+    result = memos.remember(store, ContentWordEmbedder(), "The user drinks coffee.", supersedes=memo_id,
+                            expected_revision=rev, read_facts=False)
+    assert result.get("conflict") == "revision_requires_read", f"a writer confirmed a guess: {result}"
+    assert len(list(memos.folder.glob("*.md"))) == 1
+
+
+def test_a_retry_is_not_made_stale_by_its_own_indexed_memo(serving, monkeypatch):
+    """CCA STAKES-001 refinement. A correction published and indexed whose journal update failed
+    stays prepared; with its file then removed by hand, its retry must republish rather than be
+    refused by its own rows. Red: the mutation of `_indexed_successor` that ignores `own` refuses
+    it as stale_target, so `the retry was refused by its own memo` fails. Target: the `own`
+    exclusion in `AssistantMemos._indexed_successor`.
+    """
+    from recall.lite import memo_requests
+    store, memos = serving
+    target, _ = initial(store, memos)
+    save = memo_requests._save
+    def final_save_fails(path, ledger):
+        if ledger.get("requests", {}).get("fix-1", {}).get("state") == "written":
+            raise OSError("injected final journal save failure")
+        return save(path, ledger)
+    monkeypatch.setattr(memo_requests, "_save", final_save_fails)
+    with pytest.raises(OSError, match="final journal save"):
+        remember(store, memos, "The user drinks coffee.", supersedes=target, request_id="fix-1")
+    monkeypatch.setattr(memo_requests, "_save", save)
+    memos.refresh(store, ContentWordEmbedder())
+    entry = json.loads(memos.ledger_path.read_text(encoding="utf-8"))["requests"]["fix-1"]
+    memos.path_of(entry["memo_id"]).unlink()
+    result = remember(store, memos, "The user drinks coffee.", supersedes=target, request_id="fix-1")
+    assert result.get("memo_id") == entry["memo_id"], f"the retry was refused by its own memo: {result}"
+
+
+def test_a_persons_file_under_the_reserved_name_still_makes_the_target_stale(serving, monkeypatch):
+    """CCA STAKES-001 refinement, the other side. A person's file under an interrupted correction's
+    reserved name that supersedes the target (in another case, which the folder scan misses) is a
+    successor, not the request's own memo. Red: the mutation passing `own=memo_id` whatever holds
+    the reserved name excludes it, so the retry installs a second successor and `the person's
+    successor was ignored` fails. Target: the `own=` argument on write_memo's prepared-retry path.
+    """
+    store, memos = serving
+    target, _ = initial(store, memos)
+    from recall.lite import memo_requests
+    create = memo_requests._create
+    def interrupted(path, body):
+        raise OSError("injected interruption during memo publication")
+    monkeypatch.setattr(memo_requests, "_create", interrupted)
+    with pytest.raises(OSError, match="during memo publication"):
+        remember(store, memos, "The user drinks coffee.", supersedes=target, request_id="fix-2")
+    monkeypatch.setattr(memo_requests, "_create", create)
+    reserved = json.loads(memos.ledger_path.read_text(encoding="utf-8"))["requests"]["fix-2"]["memo_id"]
+    memos.path_of(reserved).write_text(
+        f"---\nsupersedes: {target.upper()}\n---\nThe user drinks water.\n", encoding="utf-8")
+    memos.refresh(store, ContentWordEmbedder())
+    result = remember(store, memos, "The user drinks coffee.", supersedes=target, request_id="fix-2")
+    assert result.get("conflict") == "stale_target", f"the person's successor was ignored: {result}"

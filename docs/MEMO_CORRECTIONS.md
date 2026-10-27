@@ -22,6 +22,21 @@ completed request, or of an interrupted one whose memo is already in place.
 * `include_receipt`: request a detailed reply without an idempotency key. A request id or revision
   precondition also enables receipts automatically.
 
+A refusal writes nothing. A malformed `request_id` or `expected_revision`, and a target that is not
+an assistant memo, reply `{"refused": "<reason>"}`; a refused precondition replies
+`{"refused": "<reason>", "conflict": "<code>"}` with one of these codes:
+
+| `conflict` | When |
+|---|---|
+| `request_mismatch` | the `request_id` was used for other text, fact, kind, dates, target or precondition |
+| `revision_without_target` | `expected_revision` without `supersedes` |
+| `revision_requires_read` | `expected_revision` from a caller without the read scope |
+| `target_missing` | the target's file is gone |
+| `revision_mismatch` | the target changed since its revision was read, or can no longer be read as UTF-8 |
+| `stale_target` | a document already supersedes the target |
+| `memo_missing` | the request's memo was forgotten, or removed after it was written |
+| `memo_changed` | the request's memo was edited after it was written, or left incomplete by a crash |
+
 ```json
 {
   "memo_id": "pref-0043",
@@ -47,17 +62,24 @@ A failed refresh on a receipt-enabled call returns the persisted memo id with
 message. Retry with the same request id to finish indexing. A failure to inspect calibration
 preserves successful indexing and reports unavailable readiness. Persistence failures still raise.
 
-Only an existing assistant-authored memo can be a correction target. A memo with an authored
-successor is refused as `stale_target`, including on legacy calls. The write lane checks this
+Only an existing assistant-authored memo can be a correction target. A memo that already has a
+successor is refused as `stale_target`, including on legacy calls: any memo of the folder that names
+it in `supersedes`, whoever wrote it, and any indexed document under the index root that the store
+resolves as its successor (case and markdown extension aside, a forgotten successor included).
+`expected_revision` needs the read scope: from a caller without it, comparing it with the target
+would confirm guesses of a memo the caller may not read, so it is refused as
+`revision_requires_read`. The write lane checks this
 before installing a correction, so two clients of the same SQLite file cannot install competing
 corrections. Idempotent replays retain the original id even if that memo subsequently acquired a
 successor; a replay never removes supersession metadata or makes the old memo current again.
 
 A completed request's edited or removed memo is refused rather than overwritten or recreated.
 Replay checks raw bytes independently of the indexed revision, so even a representation-only edit
-is protected. Explicit forgetting durably cancels request reservations before unlinking, including
-an interrupted request whose file was published but whose final journal update failed. If cancellation
-cannot be saved, forgetting raises and leaves the file present. A memo that was published but never
+is protected. Explicit forgetting durably cancels request reservations before it erases anything,
+including an interrupted request whose file was published but whose final journal update failed. If
+cancellation cannot be saved, forgetting raises before erasing anything and leaves the file present;
+if the erasure itself fails, the cancellation is undone. A crash while publishing can leave a staging file (`.recall-memo-*.tmp`) beside the memos;
+the next write or forget under the write lane removes it. A memo that was published but never
 indexed (a crash after publication with no refresh since) is forgotten the same way, rather than refused.
 A prepared request without a published
 memo can finish after rechecking correction preconditions; use explicit forgetting for deletion, since

@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, cast
 from recall.backends import write_session
 from recall.errors import RecallError
 from recall.lite.assistant_memos import MEMO_ID, MemoFolder
+from recall.lite.memo_requests import cancel_requests, restore_requests
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -66,7 +67,9 @@ REMEMBER_DESCRIPTION = (
     "same fact as {subject, predicate, object}: recall_evidence then returns cards that "
     "recall_apply_fact can cite."
     " Corrections should pass supersedes and the revision returned by search or a write receipt "
-    "as expected_revision. Reuse request_id only to retry the same write. include_receipt returns "
+    "as expected_revision (a lowercase SHA-256, exactly as returned). Reuse request_id (at most 128 "
+    "characters) only to retry the same write. A refusal carries `refused`, and a refused "
+    "precondition also a `conflict` code. include_receipt returns "
     "write, indexing and calibration readiness separately; old calls still return only memo_id. "
     "A correction target that already has a successor is refused."
     " Before stating a fact, look its subject up with recall_current_facts(subject=...) and repeat an "
@@ -180,12 +183,17 @@ class AssistantMemos(MemoFolder):
         A receipt for a memo that states a `fact` also says, under `fact_key`, which key the fact
         went under, what is in force for that key now, and any edge rule R(a') proposes
         (`recall.declared_keys.key_receipt`), read with the caller's `access_context`. With
-        `read_facts` false (a caller without the read scope) it names the key only.
+        `read_facts` false (a caller without the read scope) it names the key only, and an
+        `expected_revision` is refused (`revision_requires_read`): comparing it with the target
+        would let a writer confirm guesses of a memo it may not read.
         """
+        if expected_revision is not None and not read_facts:
+            return {"refused": "expected_revision needs the read scope", "conflict": "revision_requires_read"}
         with write_session(store, "remember"):
             result = self.write(
                 text, kind, valid_from, valid_until, supersedes, fact, author=author,
                 request_id=request_id, expected_revision=expected_revision, include_receipt=include_receipt,
+                has_successor=lambda target, own: self._indexed_successor(store, target, own),
             )
             if "memo_id" in result:
                 receipt = result.get("receipt")
@@ -289,17 +297,24 @@ class AssistantMemos(MemoFolder):
             # Under the lane, so a concurrent forget of the same memo cannot pass the check too.
             if not path.exists():
                 return {"deleted": 0}
-            result = forget_memory(
-                store,  # type: ignore[arg-type]  # the shared lifecycle types the Postgres store
-                [str(path)],
-                security_policy=security_policy,
-                security_context=security_context,
-                erase_memo_requests=False,  # `delete` erases them, and restores them if it fails
-            )
-            if (result.facts_retracted == -1 or result.facts_redacted == -1
-                    or (result.sources_not_found and self._indexed_under_another_name(store, path))):
-                raise RuntimeError(f"forget of {memo_id} incomplete: {result.message}")
-            self.delete(memo_id)
+            # The journal first: a ledger that cannot be read or saved stops the forget before
+            # any row is erased, instead of after, with the file left for the next refresh.
+            previous = cancel_requests(self.ledger_path, memo_id)
+            try:
+                result = forget_memory(
+                    store,  # type: ignore[arg-type]  # the shared lifecycle types the Postgres store
+                    [str(path)],
+                    security_policy=security_policy,
+                    security_context=security_context,
+                    erase_memo_requests=False,  # cancelled above, and restored if this fails
+                )
+                if (result.facts_retracted == -1 or result.facts_redacted == -1
+                        or (result.sources_not_found and self._indexed_under_another_name(store, path))):
+                    raise RuntimeError(f"forget of {memo_id} incomplete: {result.message}")
+            except BaseException:
+                restore_requests(self.ledger_path, previous)
+                raise
+            self.unlink_cancelled(path, previous)
             self.refresh(
                 store,
                 embedder,
@@ -308,6 +323,27 @@ class AssistantMemos(MemoFolder):
                 **refresh_kwargs,
             )
         return {"deleted": 1, "memo_id": memo_id, "facts_retracted": result.facts_retracted}
+
+    def _indexed_successor(self, store: LiteStore, target: str, own: str | None = None) -> bool:
+        """Whether an indexed document other than memo `own` claims to supersede memo `target`, as
+        the store resolves `supersedes` (folded case, any markdown extension, anywhere under the
+        index root, and forgotten claimants kept as ghosts)."""
+        from recall.supersession import store_supersession_graph
+
+        graph = store_supersession_graph(store)
+
+        def key(memo_id: str) -> str | None:
+            path = self.path_of(memo_id)
+            if path is None:
+                return None
+            rel = path.relative_to(self.index_root) if path.is_relative_to(self.index_root) else None
+            return graph.key(rel.as_posix() if rel is not None else path.name, str(path))
+
+        target_key = key(target)
+        if target_key is None:
+            return False
+        own_key = key(own) if own is not None else None
+        return any(claimant != own_key for claimant in graph.live_claimants(target_key))
 
     def _indexed_under_another_name(self, store: LiteStore, path: Path) -> bool:
         """Whether rows hold this memo under a name other than its path.
