@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import os
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from recall.embeddings import Embedder, embed_query
@@ -191,8 +191,11 @@ def near_miss_coverage(
         for query in queries:
             check = check_unknown_terms(store, query)
             gate = check.status
-            score = float(store.top_cosine(embed_query(embedder, query)))
-            rejected += bool(check.unknown) or score < threshold
+            # A probe the vocabulary check refuses is rejected whatever its score, so it needs
+            # neither an embedding nor an exact scan.
+            rejected += bool(check.unknown) or (
+                float(store.top_cosine(embed_query(embedder, query))) < threshold
+            )
         n = len(queries)
         report[name] = {
             "n": n, "rejected": rejected, "rate": round(rejected / n, 3) if n else None,
@@ -206,6 +209,24 @@ def near_miss_coverage(
         in_vocab["n"] > 0 and in_vocab["rejected"] / in_vocab["n"] < PROVISIONAL_BAR
     )
     return report
+
+
+def fit_coverage(
+    store: Any,
+    embedder: Embedder,
+    threshold: float,
+    texts: Sequence[str],
+    labels: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """The coverage report a fit measures: probes from its chunks and answerable questions.
+
+    The one rule both stores' fits use (`recall.lite.calibration.auto_calibrate` and
+    `CalibrationRepository._record_near_miss_coverage`), so the parity the two promise is code,
+    not two copies kept in step.
+    """
+    asked = [str(item["query"]) for item in labels if item.get("answerable") is True]
+    probes = near_miss_probes(list(texts), asked, per_class=len(asked))
+    return near_miss_coverage(store, embedder, threshold, probes)
 
 
 def describe(report: dict[str, Any]) -> str:

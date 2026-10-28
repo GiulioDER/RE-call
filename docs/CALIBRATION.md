@@ -44,8 +44,8 @@ has been measured it separates far worse (LongMemEval per-question haystacks: AU
 
 ## PostgreSQL near-miss coverage
 
-Every PostgreSQL fit (`recall calibration calibrate`, and the refit inside `recall calibration
-auto`) measures the same synthetic near-miss coverage as a Lite fit, right after the artifact is
+Every PostgreSQL fit (`recall calibration calibrate`, the refit inside `recall calibration auto`,
+`recall setup` and desktop ingest) measures the same synthetic near-miss coverage as a Lite fit, right after the artifact is
 saved: unknown-entity and in-vocabulary probes built from the generation's own chunks and the
 fit's answerable questions, scored at the threshold just fitted with the unknown-term check. The
 report has the Lite shape and rules (`MIN_PROBES`, `PROVISIONAL_BAR`), is stored as one
@@ -115,7 +115,10 @@ environment (so the retrieval profile, reranker and rescue settings are the ones
 there would use) and compares the best served cosine with the exact one. It reports how many agree
 within the tolerance (per labelled class in `--json`), the median and largest gap below the exact
 maximum, the queries the gap moves across the threshold (a served score equal to the threshold
-clears it), and how often the served abstention disagrees with the exact score. On an unconstrained
+clears it), and how often the served abstention disagrees with the exact score. A served abstention
+is the whole serving verdict, so an unknown-term refusal of a query whose exact score clears the
+threshold counts as an abstain disagreement too; the verdict flips are the score-only measure. On an
+unconstrained
 search a fused-out chunk only lowers the served score, so this slack can add false abstentions near
 the threshold and never false confirms; a served score above the exact one (two embeddings of the
 query that differ) is counted apart as a disagreement. When the two sides embed the query separately

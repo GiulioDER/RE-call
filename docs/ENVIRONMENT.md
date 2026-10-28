@@ -43,7 +43,9 @@ cannot establish that a passage states an answer, resolve aliases, or reject eve
 
 A PostgreSQL generation store checks the same tokens against the active generation's full-text
 index (`tsv`) with that generation's text configuration. A token the configuration drops entirely
-(a stop word in capitals) is never reported absent. The legacy PostgreSQL route lacks the
+(a stop word in capitals) is never reported absent. A token the index misses is confirmed by a
+case-insensitive whole-word match on chunk text before it is reported absent, for at most 8 tokens
+per query; a miss beyond that is reported absent unconfirmed. The legacy PostgreSQL route lacks the
 capability and reports `unknown_term_check="unavailable"`.
 Constrained source, folder, facet or authorization searches also report `unavailable` because
 consulting a global vocabulary could disclose excluded sources. Their verdicts stay unchanged.

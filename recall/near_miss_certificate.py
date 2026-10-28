@@ -52,6 +52,8 @@ METHOD = "held_out_near_miss_questions"
 #: The audit event one measurement appends (`recall_audit_events`). Append only: a new measurement
 #: is a new row, and the newest row for a calibration id is the one reported.
 EVENT_TYPE = "calibration_near_miss_measured"
+#: A stored interval agrees with the recomputed one within float noise of a JSON round trip.
+_INTERVAL_TOLERANCE = 1e-9
 
 #: The sentence status prints beside every PostgreSQL certificate.
 CERTIFICATE_POPULATION = (
@@ -127,7 +129,8 @@ def validated_certificate(report: Mapping[str, Any], calibration_id: str) -> dic
     if (report.get("certified") is not expected_certified
             or (interval is None) != (expected_interval is None)
             or (interval is not None and expected_interval is not None
-                and any(abs(a - b) > 1e-9 for a, b in zip(interval, expected_interval, strict=True)))):
+                and any(abs(a - b) > _INTERVAL_TOLERANCE
+                        for a, b in zip(interval, expected_interval, strict=True)))):
         raise ValueError("near-miss certificate verdict disagrees with its statistics")
     for key in ("separability", "separability_ci", "false_confirm_rate", "certified",
                 "certification_reason", "generation_id", "query_set_digest"):

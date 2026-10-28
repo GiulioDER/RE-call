@@ -180,13 +180,17 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         default=None,
         help="calibration to measure (default: the one serving the active generation)",
     )
-    p_cal_gap.add_argument("-k", type=int, default=5, help="hits served per search (default 5)")
+    from recall.served_gap import DEFAULT_TOLERANCE
+
+    p_cal_gap.add_argument(
+        "-k", type=int, default=SERVED_GAP_DEFAULT_K, help="hits served per search (default %(default)s)"
+    )
     p_cal_gap.add_argument(
         "--tolerance",
-        type=float,
+        type=_tolerance,
         default=None,
-        help="maxima closer than this agree (default 0.001); widen it for an embedder whose "
-        "repeated calls differ",
+        help=f"maxima closer than this agree (default {DEFAULT_TOLERANCE}); widen it for an "
+        "embedder whose repeated calls differ",
     )
     p_cal_gap.add_argument("--json", action="store_true")
 
@@ -450,6 +454,23 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
         raise SystemExit(str(exc)) from exc
 
 
+#: Hits a served-gap search serves, the MCP service's own default for `recall_search`.
+SERVED_GAP_DEFAULT_K = 5
+
+
+def _tolerance(value: str) -> float:
+    """`--tolerance`: a finite number >= 0. A negative or NaN one inverts the agreement test."""
+    import math
+
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not a number: {value!r}") from exc
+    if not (math.isfinite(number) and number >= 0):
+        raise argparse.ArgumentTypeError(f"must be a finite number >= 0, got {value!r}")
+    return number
+
+
 def _active_generation(args: argparse.Namespace) -> str:
     from recall.generations import GenerationManager, NoActiveGeneration
 
@@ -459,13 +480,18 @@ def _active_generation(args: argparse.Namespace) -> str:
         raise SystemExit(f"no active generation for tenant {args.tenant!r}; pass --calibration") from exc
 
 
-def _serving_calibration_id(args: argparse.Namespace, repository: CalibrationRepository) -> str:
-    """The calibration serving the active generation, unless `--calibration` names one."""
+def _serving_calibration_id(
+    args: argparse.Namespace, repository: CalibrationRepository, active: str | None = None
+) -> str:
+    """The calibration serving the active generation, unless `--calibration` names one.
+
+    `active` is the active generation when the caller has already read it.
+    """
     from recall.calibration_v2 import CalibrationStatus
 
     if args.calibration_id is not None:
         return str(args.calibration_id)
-    resolution = repository.resolve(_active_generation(args))
+    resolution = repository.resolve(_active_generation(args) if active is None else active)
     if resolution.status is not CalibrationStatus.CERTIFIED or resolution.artifact is None:
         raise SystemExit(
             f"the active generation's calibration is {resolution.status.value}, not serving a "
@@ -478,14 +504,16 @@ def _cmd_served_gap(args: argparse.Namespace, repository: CalibrationRepository)
     """`recall calibration served-gap`: served against exact best cosine. Never a gate."""
     import os
 
+    from recall.decision_ledger import LEDGER_ENV
     from recall.generation_store import GenerationStore
     from recall.served_gap import describe
     from recall.trust_policy import TrustPolicy
     from recall_mcp.service import _retrieve_trusted
 
-    calibration_id = _serving_calibration_id(args, repository)
+    active = _active_generation(args)
+    calibration_id = _serving_calibration_id(args, repository, active)
     generation_id = repository.get(calibration_id).generation_id
-    if generation_id != _active_generation(args):
+    if generation_id != active:
         raise SystemExit(
             f"calibration {calibration_id} is bound to {generation_id}, which is not the active "
             "generation; serving searches only the active one, so the two would not be comparable"
@@ -497,8 +525,6 @@ def _cmd_served_gap(args: argparse.Namespace, repository: CalibrationRepository)
             "have; the diagnostic measures unconstrained searches only. Unset it to run."
         )
     embedder = _make_embedder(args.embedder)
-    from recall.decision_ledger import LEDGER_ENV
-
     # Read only: the decision ledger would record every labelled question as a served search.
     env = {**os.environ, LEDGER_ENV: "0"}
     policy = TrustPolicy.from_env(env)
@@ -520,6 +546,13 @@ def _cmd_served_gap(args: argparse.Namespace, repository: CalibrationRepository)
         report = repository.served_gap(calibration_id, embedder, search, tolerance=args.tolerance)
     finally:
         store.close()
+    # The exact side is pinned to the calibration's generation and the served side searches the
+    # active one, so a promotion during the run would pair two generations under one label.
+    if _active_generation(args) != generation_id:
+        raise SystemExit(
+            f"the active generation moved off {generation_id} while served-gap ran; the served "
+            "and exact sides read different generations, so no report is printed. Run it again."
+        )
     if args.json:
         print(json.dumps(report, indent=2, default=str))
         return

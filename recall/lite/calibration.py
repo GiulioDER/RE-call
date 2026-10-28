@@ -77,7 +77,7 @@ from recall.eval.calibrate import measure_top_cosines
 from recall.lineage import canonical_json, canonical_sha256
 from recall.lite.store import LiteStoreError
 from recall.near_miss import describe as describe_near_miss
-from recall.near_miss import UNAVAILABLE_MESSAGE, coverage_summary, near_miss_coverage, near_miss_probes
+from recall.near_miss import UNAVAILABLE_MESSAGE, coverage_summary, fit_coverage
 from recall.observability import get_logger
 
 if TYPE_CHECKING:
@@ -87,7 +87,6 @@ if TYPE_CHECKING:
 CREATED_BY = "recall-lite"
 _PLACEHOLDER_CHECKSUM = "0" * 64
 _log = get_logger("lite.calibration")
-_COVERAGE_UNAVAILABLE = UNAVAILABLE_MESSAGE
 
 #: Past this corpus delta from the fit, a carried threshold is no longer served at all, however
 #: well it re-verifies. Between `DEFAULT_MAX_CORPUS_DELTA` (where a refit becomes due) and this, the
@@ -477,16 +476,14 @@ def auto_calibrate(
         # Report only: measured with the threshold just fitted, never fed back into the fit or the
         # certified decision. See `recall.near_miss` for why the two are kept apart.
         try:
-            asked = [str(e["query"]) for e in labels if e.get("answerable") is True]
-            probes = near_miss_probes(texts, asked, per_class=len(asked))
-            report = near_miss_coverage(cast("Any", snapshot), embedder, float(runtime.threshold), probes)
+            report = fit_coverage(cast("Any", snapshot), embedder, float(runtime.threshold), texts, labels)
             store.save_near_miss_coverage(artifact.calibration_id, report)
             coverage = "; " + describe_near_miss(report)
         except Exception as exc:  # BROAD-CATCH: fail-open
             # The fit is already saved. Optional diagnostics cannot withdraw it, and
             # provider errors may carry private input or credentials, so log only type.
             _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
-            coverage = "; " + _COVERAGE_UNAVAILABLE
+            coverage = "; " + UNAVAILABLE_MESSAGE
     if certified:
         return CalibrationOutcome(
             CalibrationStatus.CERTIFIED,
