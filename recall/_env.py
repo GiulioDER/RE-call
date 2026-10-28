@@ -33,6 +33,10 @@ def _unquote(raw: str) -> str:
     not to start rejecting files that worked yesterday.
     """
     val = raw.strip()
+    if val.startswith("#") and raw[:1].isspace():
+        # `KEY= # comment` is an empty value, as python-dotenv reads it from 1.2.4 on (the
+        # benchmark loaders use it); `KEY=#x`, with no space, stays the value `#x`.
+        return ""
     if len(val) < 2 or val[0] != val[-1] or val[0] not in "\"'":
         return val.strip('"').strip("'")
     inner = val[1:-1]

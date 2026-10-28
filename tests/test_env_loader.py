@@ -124,3 +124,23 @@ def test_a_hand_written_unbalanced_quote_reads_as_it_always_did(tmp_path, monkey
     assert os.environ["OPEN_ONLY"] == "postgresql://example/db"
     assert os.environ["CLOSE_ONLY"] == "postgresql://example/db"
     assert os.environ["BARE"] == "postgresql://example/db"
+
+
+def test_load_dotenv_reads_a_value_that_is_only_a_comment_as_empty(tmp_path, monkeypatch):
+    """CCA deferred pass over PR 942 (run 20261028T193207Z), CODE-001.
+
+    Invariant: `KEY= # comment` sets KEY to the empty string, as python-dotenv reads it from
+    1.2.4 on, and `KEY=#x` (no space) keeps `#x`. Failure caught: recall's loader set
+    RECALL_DSN to the text `# unset`, which skips the CLI's local default, while the benchmark
+    loaders read the same line as empty. Red against the pre-fix `recall._env._unquote`, on
+    "a value that is only a comment was read as the comment".
+    """
+    env = tmp_path / ".env"
+    env.write_text("RECALL_DSN= # unset\nRECALL_TAG=#x\n", encoding="utf-8")
+    monkeypatch.delenv("RECALL_DSN", raising=False)
+    monkeypatch.delenv("RECALL_TAG", raising=False)
+
+    load_dotenv(env)
+
+    assert os.environ["RECALL_DSN"] == "", "a value that is only a comment was read as the comment"
+    assert os.environ["RECALL_TAG"] == "#x"
