@@ -27,6 +27,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import statistics
 import sys
 import time
 from typing import Any, Sequence
@@ -233,12 +234,15 @@ def classify(cited: str, sent: list[str], prior: Sequence[str] = ()) -> str:
 
 
 def run(args: argparse.Namespace) -> None:
+    """Run from fresh output; saved rows cannot restore compiler history and spend."""
     out: Path = args.out
     out.mkdir(parents=True, exist_ok=True)
     rows_path = out / "calls.jsonl"
-    done = {
-        json.loads(line)["call"] for line in rows_path.read_text().splitlines()
-    } if rows_path.exists() else set()
+    if rows_path.exists() and rows_path.read_text(encoding="utf-8").strip():
+        raise ValueError(
+            "cannot resume from calls.jsonl without full compiler history and spending; "
+            "use a fresh --out directory"
+        )
     handler = CompileLines()
     logging.getLogger("recall_aml").addHandler(handler)
     logging.getLogger("recall_aml").setLevel(logging.INFO)
@@ -246,14 +250,12 @@ def run(args: argparse.Namespace) -> None:
     compiler = OpenAICompiler(client, prior_record_mode=args.prior_mode)
     calls = planned_calls(args.locomo, args.beam, args.set)
     print(f"set {args.set} prior_mode {args.prior_mode}", flush=True)
-    print(f"planned calls {len(calls)}, already done {len(done)}", flush=True)
+    print(f"planned calls {len(calls)}", flush=True)
     spent = 0.0
     prior: dict[str, list[StoredCodingRecord]] = {}
     with rows_path.open("a", encoding="utf-8") as sink:
         for number, call in enumerate(calls):
             session_id = f"{call['conversation']}:b{call['batch']}"
-            if number in done:
-                continue
             if spent >= SPEND_CAP_USD:
                 print(f"spend cap reached at call {number}", flush=True)
                 break
@@ -333,7 +335,7 @@ def plan(args: argparse.Namespace) -> None:
     for source in ("locomo", "beam"):
         part = [c for c in calls if c["source"] == source]
         words = sorted(sum(len(str(m.get("content", "")).split()) for m in c["messages"]) for c in part)
-        print(source, "calls", len(part), "median words", words[len(words) // 2] if words else None)
+        print(source, "calls", len(part), "median words", _median(words))
 
 
 def summarize(args: argparse.Namespace) -> None:
@@ -422,7 +424,7 @@ def compare(args: argparse.Namespace) -> None:
 
 def _median(values: list[int]) -> float | None:
     values = sorted(values)
-    return float(values[len(values) // 2]) if values else None
+    return float(statistics.median(values)) if values else None
 
 
 def main() -> None:
