@@ -387,8 +387,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   neither true nor false refuses too, as it did before. To upgrade, delete the `RECALL_ENTAILMENT`
   line from your `.env` or environment, or set it to `0`; `RECALL_ENTAILMENT_MODEL` and
   `RECALL_ENTAILMENT_REVISION` are ignored and can be deleted. A false value (`0`, the value
-  `recall setup` used to write) or an unset variable is accepted. Committed result artifacts that
-  measured the judge are kept unchanged.
+  `recall setup` used to write) or an unset variable is accepted. `pip install "recall-rag[entail]"`
+  now only warns that the extra does not exist and installs nothing extra; install `[rerank]` if
+  you need `sentence-transformers`. Committed result artifacts that measured the judge are kept
+  unchanged.
 
 * **pypdf is no longer installed by the `documents` extra.** It was never imported: PDF text has
   always come from pdfplumber, which does not depend on it. It stayed only because a capability

@@ -772,6 +772,8 @@ if QApplication is not None:
             self.reranker_model_edit.setPlaceholderText("Local reranker model id or artifact path")
             self.arm_combo = QComboBox()
             self.arm_combo.addItems(["Threshold"])
+            # The only arm since the entailment arms were removed (#849): shown, not choosable.
+            self.arm_combo.setEnabled(False)
             form.addRow("Embedder", self.embedder_combo)
             form.addRow("Re-ranker", self.reranker_combo)
             form.addRow("SPLADE", splade_row)

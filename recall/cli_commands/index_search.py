@@ -837,16 +837,15 @@ def _cmd_search(args: argparse.Namespace) -> None:
 
 
 def _cmd_demo(args: argparse.Namespace) -> None:
+    # Checked first, as `search` does: a configuration that still asks for the removed
+    # entailment judge is refused before the embedder loads a model or probes a provider.
+    _refuse_removed_entailment()
     route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     # Never auto-loaded; see the note beside `calibration = None` in `_cmd_search` above.
     calibration = None
     if route.uses_generation:
         raise SystemExit(f"{route.describe()}: the filesystem demo is unavailable")
-    # Checked BEFORE the store opens and the corpus is indexed: a configuration that still asks
-    # for the removed entailment judge is refused, and failing after the expensive work is the
-    # shape `search` already avoids.
-    _refuse_removed_entailment()
     with PgVectorStore(
         args.dsn, dim=embedder.dim, table=args.table, tenant=args.tenant
     ) as store:
@@ -875,6 +874,8 @@ def _cmd_demo(args: argparse.Namespace) -> None:
 
 
 def _cmd_code(args: argparse.Namespace) -> None:
+    # Checked first, as in `_cmd_demo`.
+    _refuse_removed_entailment()
     route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     # Never auto-loaded; see the note beside `calibration = None` in `_cmd_search` above.
@@ -883,10 +884,6 @@ def _cmd_code(args: argparse.Namespace) -> None:
         raise SystemExit(f"{route.describe()}: local source indexing is unavailable")
     # index recall's own package source (content-agnostic engine, code-aware chunking)
     src = Path(__file__).resolve().parents[1]
-    # Checked BEFORE the store opens and the corpus is indexed: a configuration that still asks
-    # for the removed entailment judge is refused, and failing after the expensive work is the
-    # shape `search` already avoids.
-    _refuse_removed_entailment()
     with PgVectorStore(
         args.dsn, dim=embedder.dim, table="recall_code", tenant=args.tenant
     ) as store:

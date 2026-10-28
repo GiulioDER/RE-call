@@ -106,15 +106,17 @@ def test_quickstart_refuses_before_docker_or_the_database(monkeypatch: pytest.Mo
 
 
 @pytest.mark.parametrize("command", ["demo", "code"])
-def test_demo_and_code_refuse_before_the_store_opens(
+def test_demo_and_code_refuse_before_any_model_work(
     command: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Red proof, 2026-10-28 (CCA of #849): with the `_refuse_removed_entailment()` call removed
-    from `index_search._cmd_demo` (or `_cmd_code`), the matching case fails because the store
-    sentinel is reached (`_Reached`) instead of the refusal. Restored, green.
+    from `index_search._cmd_demo` (or `_cmd_code`), the matching case fails because a sentinel is
+    reached (`_Reached`) instead of the refusal. The deferred pass (PERF-001) moved the call ahead
+    of `_make_embedder`, which loads a model or probes a provider; with it back after that call,
+    both cases fail the same way. Restored, green.
     """
     monkeypatch.setenv("RECALL_ENTAILMENT", "1")
-    monkeypatch.setattr("recall.cli_commands.index_search._make_embedder", lambda _name: object())
+    monkeypatch.setattr("recall.cli_commands.index_search._make_embedder", _sentinel)
     monkeypatch.setattr("recall.cli_commands.index_search.PgVectorStore", _sentinel)
     with pytest.raises(SystemExit) as raised:
         main([command])
