@@ -23,8 +23,9 @@ below the threshold, or the unknown-term gate names one of its terms. The rates 
 calibration and printed with its status. A certificate whose in-vocabulary rejection is below
 `PROVISIONAL_BAR`, or for which fewer than `MIN_PROBES` such probes could be built (reported as
 unmeasured), is reported as provisional for in-vocabulary near-misses. The certified/
-uncertified decision is untouched: stores that cannot run the unknown-term gate (PostgreSQL today)
-must not lose a certification they hold because of a measurement they cannot act on.
+uncertified decision is untouched: coverage is a report, not a gate, and a store that cannot run
+the unknown-term gate (one with no vocabulary lookup) must not lose a certification it holds
+because of a measurement it cannot act on.
 """
 
 from __future__ import annotations
@@ -66,12 +67,16 @@ def coverage_summary(
     An optional report never fails the surface that prints it; a reader error logs its type only,
     because a provider or driver message may carry private input.
     """
+    # `describe` is inside the catch: Lite's reader returns the stored row unvalidated, so a damaged
+    # row must read as unavailable here rather than fail the status call that prints it.
     try:
         report = read(calibration_id)
+        if not report:
+            return None, UNAVAILABLE_MESSAGE
+        return report, describe(report)
     except Exception as exc:  # BROAD-CATCH: fail-open, an optional report never fails its caller
         _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
         return None, UNAVAILABLE_MESSAGE
-    return report, (describe(report) if report else UNAVAILABLE_MESSAGE)
 
 
 def _invented_codes(corpus_words: set[str], rng: random.Random, count: int) -> list[str]:

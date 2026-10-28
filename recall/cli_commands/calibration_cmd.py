@@ -481,7 +481,7 @@ def _cmd_served_gap(args: argparse.Namespace, repository: CalibrationRepository)
     from recall.generation_store import GenerationStore
     from recall.served_gap import describe
     from recall.trust_policy import TrustPolicy
-    from recall_mcp.service import search_memory
+    from recall_mcp.service import _retrieve_trusted
 
     calibration_id = _serving_calibration_id(args, repository)
     generation_id = repository.get(calibration_id).generation_id
@@ -505,10 +505,15 @@ def _cmd_served_gap(args: argparse.Namespace, repository: CalibrationRepository)
     store = GenerationStore(args.dsn, embedder.dim, tenant=args.tenant)
 
     def search(query: str) -> tuple[float | None, bool]:
-        # The MCP service's own search, under this process's environment, so the retrieval
-        # profile, reranker and rescue settings are the ones a server started here would use.
-        result = search_memory(store, embedder, query, k=args.k, policy=policy, env=env)
-        scores = [hit.score for hit in result.hits if hit.score is not None]
+        # The MCP service's own trusted retrieval (what `search_memory` formats), under this
+        # process's environment, so the retrieval profile, reranker and rescue settings are the
+        # ones a server started here would use. The hits' cosines are read unrounded: the response
+        # model rounds scores to 4 places, while the gate compares the unrounded cosine with the
+        # threshold, so a rounded score near the threshold would report flips serving never made.
+        result = _retrieve_trusted(
+            store, embedder, query, None, args.k, None, policy, env=env
+        ).result
+        scores = [hit.cosine for hit in result.hits]
         return (max(scores) if scores else None), bool(result.abstained)
 
     try:
