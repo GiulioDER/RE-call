@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 345
-Cross package edges: 363
+Cross package edges: 364
 
 ## Highest fan in modules
 
@@ -69,8 +69,8 @@ Cross package edges: 363
 | 22 | `recall_mcp.reasoning_engine` |
 | 20 | `recall` |
 | 20 | `recall.rewrite` |
+| 19 | `recall_mcp.provenance` |
 | 18 | `recall.index` |
-| 18 | `recall_mcp.provenance` |
 | 17 | `recall.cli_commands.calibration_cmd` |
 | 17 | `recall_mcp.indexing` |
 | 16 | `recall.cli_commands.setup_wizard` |
@@ -269,6 +269,7 @@ They are observations, not automatic failures.
 | `recall_mcp.provenance` | `recall.fact_ledger` |
 | `recall_mcp.provenance` | `recall.fact_retraction` |
 | `recall_mcp.provenance` | `recall.frontmatter` |
+| `recall_mcp.provenance` | `recall.generation_store` |
 | `recall_mcp.provenance` | `recall.generations` |
 | `recall_mcp.provenance` | `recall.lite` |
 | `recall_mcp.provenance` | `recall.lite.facts` |
@@ -802,7 +803,7 @@ They are observations, not automatic failures.
 | `recall_mcp.lite_refresh` | 5 | 98 |
 | `recall_mcp.models` | 2 | 4 |
 | `recall_mcp.oidc` | 4 | 33 |
-| `recall_mcp.provenance` | 18 | 122 |
+| `recall_mcp.provenance` | 19 | 122 |
 | `recall_mcp.query_construction_api` | 15 | 135 |
 | `recall_mcp.reasoning_admin` | 6 | 133 |
 | `recall_mcp.reasoning_api` | 13 | 153 |
