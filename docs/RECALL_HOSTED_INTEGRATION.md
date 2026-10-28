@@ -382,8 +382,10 @@ anchor of the Add on the first; if that attempt fails and the encoded anchors ex
 characters, the remaining attempts send the session's first and last anchors that fit the budget
 instead, because an over-long prompt is refused by the model's context window every time. From
 `1f8666df` the anchors and the earlier records are fitted to the bounds given under Add before the
-first attempt, so that refit never runs; a refusal (HTTP 400 or 413) of a payload that still carries
-earlier records is resent once without them, which can make a fourth attempt.
+first attempt, so that refit never runs. Oversized Adds are fitted from their first and last
+anchors; if fitting retains no anchor, compilation is skipped and the normal compiler fallback
+handles the Add. A refusal (HTTP 400 or 413) of a payload that still carries earlier records is
+resent once without them, which can make a fourth attempt.
 Within one Add, independent Voyage embedding requests are sent four at a time
 (`RECALL_VOYAGE_PARALLEL_REQUESTS`, 1 to 16; 1 restores the sequential behaviour). The vectors are
 the ones a sequential run returns; only the wall time of a large Add changes.

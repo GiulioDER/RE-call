@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 345
-Cross package edges: 365
+Cross package edges: 366
 
 ## Highest fan in modules
 
