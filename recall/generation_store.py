@@ -63,6 +63,17 @@ GENERATION_DENSE_SEARCH_ENV = "RECALL_GENERATION_DENSE_SEARCH"
 _GENERATION_DENSE_SEARCH_VALUES = frozenset({"exact", "hnsw"})
 
 
+def _first_write_sql(alias: str = "") -> str:
+    """SQL for a generation row's first write: `first_indexed_at`, or `indexed_at` where it is NULL.
+
+    Every read of that date in this module goes through here. A generation row's `indexed_at` is
+    the build that wrote or copied it, so a read that served it in place of `first_indexed_at`
+    dated the whole corpus to the last rebuild (#835); one definition keeps a new read path in
+    this module from doing that again.
+    """
+    return f"COALESCE({alias}first_indexed_at, {alias}indexed_at)"
+
+
 def _generation_dense_search() -> str:
     """The configured path, read fresh on every call, as the HNSW knobs are."""
     value = os.environ.get(GENERATION_DENSE_SEARCH_ENV, "exact")
@@ -559,7 +570,7 @@ class GenerationStore(PgVectorStore):
         )
         sql = f"""
             SELECT chunk_id, source_uri, text, metadata, indexed_at,
-                   COALESCE(first_indexed_at, indexed_at),
+                   {_first_write_sql()},
                    1 - (embedding <=> %(vec)s) AS score
             FROM recall_chunks_v1 c
             WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s {source_filter}
@@ -603,7 +614,7 @@ class GenerationStore(PgVectorStore):
         )
         sql = f"""
             SELECT chunk_id, source_uri, text, metadata, indexed_at,
-                   COALESCE(first_indexed_at, indexed_at),
+                   {_first_write_sql()},
                    1 - (embedding <=> %(vec)s) AS score
             FROM recall_chunks_v1 c
             WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s {source_filter}
@@ -774,7 +785,7 @@ class GenerationStore(PgVectorStore):
                 )::tsquery AS tsq
             ), top_k AS (
                 SELECT c.chunk_id, c.source_uri, c.text, c.metadata, c.indexed_at,
-                       COALESCE(c.first_indexed_at, c.indexed_at) AS first_indexed_at,
+                       {_first_write_sql("c.")} AS first_indexed_at,
                        c.embedding, ts_rank(c.tsv, q.tsq) AS rank
                 FROM recall_chunks_v1 c, q
                 WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
@@ -1328,7 +1339,7 @@ class GenerationStore(PgVectorStore):
             cur.itersize = batch_size
             cur.execute(
                 f"SELECT chunk_id, source_uri, {text_column}, metadata, "
-                "COALESCE(first_indexed_at, indexed_at) "
+                f"{_first_write_sql()} "
                 "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
                 "ORDER BY chunk_id",
                 (self._tenant, generation_id),
@@ -1377,7 +1388,7 @@ class GenerationStore(PgVectorStore):
         row = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT chunk_id, source_uri, text, metadata, indexed_at, "
-                "COALESCE(first_indexed_at, indexed_at) "
+                f"{_first_write_sql()} "
                 "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
                 "AND chunk_id = %s",
                 (self._tenant, generation_id, chunk_id),
@@ -1402,7 +1413,7 @@ class GenerationStore(PgVectorStore):
         row = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT chunk_id, source_uri, text, metadata, indexed_at, "
-                "COALESCE(first_indexed_at, indexed_at), 1 - (embedding <=> %s) AS score "
+                f"{_first_write_sql()}, 1 - (embedding <=> %s) AS score "
                 "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
                 "AND chunk_id = %s",
                 (Vector(vector), self._tenant, generation_id, chunk_id),

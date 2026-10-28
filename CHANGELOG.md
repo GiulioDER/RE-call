@@ -311,6 +311,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **A generation rebuild no longer re-dates the passages it rewrites (#835).** A generation-backed
+  store served `indexed_at`, the build that wrote or copied a row, as every hit's
+  `first_indexed_at`, and dated supersession edges the same way, so `known_as_of` replay and the
+  dated answer profile treated the last rebuild as every passage's first write. Every hit path and
+  supersession edge now reads the stored `first_indexed_at`. A build that rewrites a source,
+  because its bytes changed or the pipeline fingerprint moved, now gives each chunk the earliest
+  `first_indexed_at` any active, ready or retired generation holds for the same source and chunk
+  ordinal; an ordinal none of them holds is dated at the build. Rows an earlier rebuild already
+  stamped with its build time are not repaired: a later build corrects one only while a
+  generation written before that rebuild is still retained (by default `gc` keeps the two most
+  recent retired generations and any younger than seven days), and after that it carries the
+  build time forward. No backfill ships with this change.
 * **Withdrawing a fact's first memo no longer gives back what a forgotten second memo retired.**
   A fact stated by two memos is one application recorded APPLIED and one recorded DUPLICATE, and
   projections listed only the APPLIED one. Forgetting the second memo and then withdrawing the
