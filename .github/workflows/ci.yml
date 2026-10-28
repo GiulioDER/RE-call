@@ -697,6 +697,8 @@ jobs:
         run: |
           if [ -n "$DENYLIST" ]; then
             printf '%s\n' "$DENYLIST" > "$RUNNER_TEMP/public-tree-denylist.txt"
+            python -c 'import sys; from scripts.check_public_tree import load_denylist; sys.exit(0 if load_denylist(sys.argv[1]) else "::error::PUBLIC_TREE_DENYLIST has no effective terms")' \
+              "$RUNNER_TEMP/public-tree-denylist.txt"
             echo "RECALL_PUBLIC_TREE_DENYLIST=$RUNNER_TEMP/public-tree-denylist.txt" >> "$GITHUB_ENV"
           elif [ "$FORK" = "true" ]; then
             echo "::notice::fork pull request: private-term is not checked here"

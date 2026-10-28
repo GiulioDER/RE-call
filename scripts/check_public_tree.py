@@ -212,11 +212,9 @@ def scan(
     skipped: list[str] = []
     terms = list(terms)
     for path in paths:
-        if Path(path).as_posix() == BASELINE_PATH:
-            # The ratchet's own record: tracked file paths and counts, written by this script. Some
-            # public file names contain a deny-list term, so scanning it would report the paths of
-            # files that are already public, and could never pass.
-            continue
+        # The baseline records paths already public, which can contain ratcheted terms.
+        # Its content must still pass every absolute leak rule.
+        is_baseline = Path(path).as_posix() == BASELINE_PATH
         if Path(path).name == LOCAL_RULES_FILE:
             out.append((path, 0, "local-rules-file", path))
         if any(part.lower() == STATE_DIR for part in Path(path).parts[:-1]):
@@ -244,7 +242,9 @@ def scan(
             continue
         read += 1
         out.extend(
-            (path, number, rule, value) for number, rule, value in findings(path, text, allowed, terms)
+            (path, number, rule, value)
+            for number, rule, value in findings(path, text, allowed, terms)
+            if not is_baseline or rule not in RATCHETED
         )
     return out, read, missing, skipped
 

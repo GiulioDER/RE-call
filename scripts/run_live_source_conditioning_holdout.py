@@ -27,6 +27,7 @@ from scripts.run_live_source_conditioned_admission import (  # noqa: E402
     _score_selection,
 )
 from scripts.run_live_source_conditioning_shadow import (  # noqa: E402
+    EXPECTED_QUERY_SHA256 as PRIOR_QUERY_SHA256,
     _call_query,
     _performance,
     _shadow_internal_ms,
@@ -70,6 +71,7 @@ def _challenge_config(name: str) -> dict[str, Any]:
             "prior_query_sets": [
                 "docs/preregistrations/2026-09-13-memory-queries-source-gold.json"
             ],
+            "prior_query_sha256": [PRIOR_QUERY_SHA256],
         },
         "buried": {
             "protocol": "2026-09-13-source-conditioning-buried-fact-challenge",
@@ -83,6 +85,7 @@ def _challenge_config(name: str) -> dict[str, Any]:
             ),
             "query_sha256": BURIED_QUERY_SHA256,
             "fact_sha256": BURIED_FACT_SHA256,
+            "prior_query_sha256": [PRIOR_QUERY_SHA256, EXPECTED_QUERY_SHA256],
             "prior_query_sets": [
                 "docs/preregistrations/2026-09-13-memory-queries-source-gold.json",
                 (
@@ -228,6 +231,10 @@ def main() -> None:
     parser.add_argument("--query-set")
     parser.add_argument("--fact-labels")
     parser.add_argument(
+        "--prior-query-set", action="append",
+        help="original frozen prior input (before public redaction); repeat: development, then holdout",
+    )
+    parser.add_argument(
         "--artifact", default="docs/results/2026-09-13-source-conditioning-model.json"
     )
     parser.add_argument("--output", required=True)
@@ -257,11 +264,16 @@ def main() -> None:
 
     queries = json.loads(query_bytes.decode("utf-8"))
     labels = json.loads(label_bytes.decode("utf-8"))
-    prior_queries = [
-        query
-        for path in config["prior_query_sets"]
-        for query in json.loads(Path(path).read_text(encoding="utf-8"))
-    ]
+    prior_paths = args.prior_query_set or config["prior_query_sets"]
+    prior_digests = config["prior_query_sha256"]
+    if len(prior_paths) != len(prior_digests):
+        raise ValueError("supply every registered prior query set in order")
+    prior_queries = []
+    for path, expected_digest in zip(prior_paths, prior_digests, strict=True):
+        prior_bytes = Path(path).read_bytes()
+        if hashlib.sha256(prior_bytes).hexdigest() != expected_digest:
+            raise RuntimeError("prior query set differs from the registered digest")
+        prior_queries.extend(json.loads(prior_bytes.decode("utf-8")))
     contract = _validate_holdout_contract(queries, labels, prior_queries)
     labels_by_id = {str(value["query_id"]): value for value in labels}
     model = load_source_conditioning_artifact(artifact_path)

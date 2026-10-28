@@ -35,7 +35,10 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import os
+import shutil
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -245,12 +248,12 @@ def test_the_ratchet_grandfathers_up_to_the_recorded_count_and_no_further() -> N
     assert [rule for _, _, rule, _ in absolute] == ["ipv4"]
 
 
-def test_the_ratchet_record_itself_is_not_scanned(tmp_path: Path) -> None:
+def test_the_ratchet_record_exempts_only_ratcheted_path_terms(tmp_path: Path) -> None:
     """The baseline lists public file paths, some of which contain a deny-list term.
 
-    Red proof: with the ``BASELINE_PATH`` skip in ``scan`` removed, this fails on
-    ``== []`` with one ``private-term`` finding, which is also how the first push of this change
-    failed the full-tree run.
+    Original red proof: removing the whole-file skip yielded one private-term finding.
+    After SEC-002 narrowed the exemption, removing the RATCHETED filter likewise
+    fails the ``== []`` assertion. Absolute findings have a separate regression test.
     """
     record = tmp_path / "scripts" / "public_tree_baseline.json"
     record.parent.mkdir()
@@ -333,3 +336,70 @@ def test_no_tracked_research_record_names_a_real_account_in_a_home_path() -> Non
         [f for f in found if f[2] in check.RATCHETED], check.load_baseline()
     )
     assert report == []
+
+
+@pytest.mark.parametrize("terms", ["   \n\t", "# configuration pending\n\n"])
+def test_trusted_ci_rejects_a_deny_list_with_no_effective_terms(
+    tmp_path: Path, terms: str
+) -> None:
+    """SEC-001: trusted CI must refuse ineffective nonempty lists.
+
+    Red proof: on 02d532680 the actual deny-list workflow step returns zero for
+    both parameters; the returncode assertion fails. Fixed workflow passes both.
+    Valid lists and the explicit secretless fork path remain accepted controls.
+    """
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("needs bash to execute the GitHub Actions step")
+    root = Path(__file__).resolve().parents[1]
+    lines = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8").splitlines()
+    start = lines.index("      - name: Write the private deny list")
+    run = next(i for i in range(start, len(lines)) if lines[i] == "        run: |")
+    body = []
+    for line in lines[run + 1:]:
+        if line and not line.startswith("          "):
+            break
+        body.append(line)
+    script = textwrap.dedent("\n".join(body))
+    env = {
+        "PATH": os.environ.get("PATH", ""), "RUNNER_TEMP": str(tmp_path),
+        "GITHUB_ENV": str(tmp_path / "github-env"), "FORK": "false", "DENYLIST": terms,
+    }
+    refused = subprocess.run(
+        [bash, "-e", "-o", "pipefail", "-c", script], cwd=root, env=env,
+        text=True, capture_output=True, check=False,
+    )
+    assert refused.returncode != 0, "trusted CI accepted a deny list with no effective terms"
+    for content, fork in [("alpha-host\n", "false"), ("", "true")]:
+        accepted = subprocess.run(
+            [bash, "-e", "-o", "pipefail", "-c", script], cwd=root,
+            env={**env, "DENYLIST": content, "FORK": fork},
+            text=True, capture_output=True, check=False,
+        )
+        assert accepted.returncode == 0, accepted.stderr
+
+
+def test_the_ratchet_record_still_checks_absolute_rules(tmp_path: Path) -> None:
+    """SEC-002: baseline path terms are exempt; absolute leak rules still apply.
+
+    Red proof: on 02d532680 scan skips the baseline, so the rule-set assertion
+    fails with an empty set. The unchanged test passes with the narrowed filter.
+    """
+    import json
+
+    values = {
+        "ipv4": PUBLIC,
+        "personal-mail": "synthetic@" + "gmail.com",
+        "ssh-fingerprint": "SHA256:" + "A" * 43,
+        "private-key": "-----BEGIN " + "PRIVATE KEY-----",
+        "server-id": "vmi" + "123456",
+        "memo-body": "**" + "Why:" + "**",
+    }
+    record = tmp_path / check.BASELINE_PATH
+    record.parent.mkdir()
+    record.write_text(
+        json.dumps({value: {"private-term": 1} for value in values.values()}), encoding="utf-8"
+    )
+    found, read, missing, skipped = check.scan([check.BASELINE_PATH], set(), tmp_path)
+    assert {rule for _, _, rule, _ in found} == set(values)
+    assert (read, missing, skipped) == (1, [], [])
