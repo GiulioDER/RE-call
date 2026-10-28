@@ -357,23 +357,30 @@ def create_app(
                 return pending({"queued": True})
             owned = True
             try:
-                async with parse_slots:
-                    model = await _parse(request, AddRequest)
-                    if not _authorized_user(request, settings.authorized_user_id, model.user_id):
-                        return JSONResponse({"error": "forbidden"}, status_code=403)
-                    identity = await asyncio.to_thread(add_identity, model)
-                    flight = flights.running(identity)
-                    if flight is None:
-                        stored = await service.stored_add(model, identity.fingerprint)
-                        if stored is not None:
-                            log.info(
-                                "hosted_add_answered_from_receipt",
-                                extra={
-                                    "tenant_digest": identity.tenant.removeprefix("aml_")[:16],
-                                    "request_digest": identity.request_digest[:16],
-                                },
-                            )
-                            return JSONResponse(stored.model_dump(mode="json"), status_code=200)
+                preflight = asyncio.timeout(max(remaining(), 0.0))
+                try:
+                    async with preflight:
+                        async with parse_slots:
+                            model = await _parse(request, AddRequest)
+                            if not _authorized_user(request, settings.authorized_user_id, model.user_id):
+                                return JSONResponse({"error": "forbidden"}, status_code=403)
+                            identity = await asyncio.to_thread(add_identity, model)
+                            flight = flights.running(identity)
+                            if flight is None:
+                                stored = await service.stored_add(model, identity.fingerprint)
+                                if stored is not None:
+                                    log.info(
+                                        "hosted_add_answered_from_receipt",
+                                        extra={
+                                            "tenant_digest": identity.tenant.removeprefix("aml_")[:16],
+                                            "request_digest": identity.request_digest[:16],
+                                        },
+                                    )
+                                    return JSONResponse(stored.model_dump(mode="json"), status_code=200)
+                except TimeoutError:
+                    if not preflight.expired():
+                        raise
+                    return pending({"queued": True})
                 if flight is None:
 
                     async def admitted() -> AddResponse:

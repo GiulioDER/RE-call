@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- AML Add response budgets now include parsing admission, body reads, request fingerprinting and
+  receipt lookup. Expiry releases request admission while an already started Add keeps running.
+- AML forget ledger identities include the Add request id, preserving earlier suppression context
+  when distinct Adds repeat a target at the same message position in one session. Retries remain
+  idempotent.
+
 - Upgrade note for the embedding profile lineage check (#909): serving and calibration now
   compare a generation's recorded embedding profile and its fingerprint with the runtime
   embedder, not only the model name and dimension. The fingerprint includes the version of the

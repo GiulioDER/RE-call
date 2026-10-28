@@ -45,11 +45,12 @@ ANCHOR_OVERLAP_CHARS = 160
 # for code, but 1.6 for escaped CJK and 1.4 to 1.8 for random base64, hex and hashes. So a
 # payload inside every character limit can still overflow, and the v3 attempt loop answers such
 # a 400 by resending once without prior records.
-# A variant's ``anchor_compile_max_payload_chars`` refuses a call when the Add's own anchors
-# encode past it. It does not count prior records, so without a prior-record budget a payload that
-# passed it can still exceed this budget with them, and then the fitting below runs. C9 also bounds
-# its prior records (``anchor_prior_records_max_chars``, 145,000), so its payload stays under
-# about 295,000 characters and the fitting never runs for it. Its anchors alone (150,000
+# A variant's ``anchor_compile_max_payload_chars`` fits an oversized Add's own anchors to
+# their first and last ends before the first call. If fitting retains no anchor, compilation is
+# skipped and the normal compiler fallback handles the Add.
+# This limit excludes prior records, so without a prior-record budget the combined payload can
+# still exceed the retry budget below. C9 bounds its prior records to 145,000 characters, so its
+# payload stays under about 295,000 and needs no 300,000-character retry fitting. Its anchors alone (150,000
 # characters at most) stay inside the window even at the worst rate measured, 1.36 characters per
 # token for random printable text: about 110,300 tokens, plus a 218-token system prompt and the
 # 2,400-token reply.
@@ -920,7 +921,8 @@ class OpenAICompiler:
             # 2026-09-27 skipped 4 of 7 Adds (261,867 and 637,473 characters, whole sessions of
             # up to about 460 messages), and the build before #775 compiled such Adds from their
             # fitted ends after a first call refused as too long. The ends usually state the
-            # task and its outcome. Only an Add whose single first anchor does not fit is skipped.
+            # task and its outcome. If fitting retains no anchor, compilation is skipped; the
+            # normal compiler fallback still handles the Add.
             limit = self._max_anchor_payload_chars
             if limit is not None:
                 anchors_only = {"session_id": session_id, "anchors": payload["anchors"]}

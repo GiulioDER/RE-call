@@ -19,7 +19,7 @@ Option B (recall-lab ``research/designs/2026-09-28-r2-1-forgetting.md``):
   and removed 7 evidence windows of 137 other questions, the design's rule RL figures. ``ForgetConfirmer`` is the hook for an optional gpt-4o-mini confirmation; nothing
   here calls a model, and a confirmer that fails leaves the pattern verdict standing.
 * **A ledger** (``ledger_chunks``): one row per request, ``record_type == "forget_request"``, with
-  a deterministic id from (tenant, session, message ordinal, target), so a retried Add rewrites the
+  a deterministic id from (tenant, Add request id, session, message ordinal, target), so a retried Add rewrites the
   same row. The rows live in their own derived tenant (``identity.forget_ledger_tenant``), beside
   the corpus and never inside it, so no retrieval leg can return one as evidence.
 * **Suppression at Search**, in one of three non-off modes (``FORGET_MODES``):
@@ -399,25 +399,33 @@ def find_forget_requests(
     return requests
 
 
-def ledger_id(tenant: str, request: ForgetRequest) -> str:
-    """Deterministic in (tenant, session, message ordinal, target), so a retry is idempotent."""
-    return "forget_" + canonical_digest(
-        {
-            "tenant": tenant,
-            "session_id": request.session_id,
-            "message_ordinal": request.message_ordinal,
-            "target": request.target,
-        }
-    )
+def ledger_id(
+    tenant: str, request: ForgetRequest, *, request_id: str | None = None
+) -> str:
+    """Keep each Add's associations while making its retries idempotent.
+
+    Hosted callers supply the Add request id: message ordinals restart in every Add.
+    Omitting it preserves the identity used by legacy direct ledger callers.
+    """
+    identity = {
+        "tenant": tenant,
+        "session_id": request.session_id,
+        "message_ordinal": request.message_ordinal,
+        "target": request.target,
+    }
+    if request_id is not None:
+        identity["request_id_digest"] = canonical_digest(request_id)
+    return "forget_" + canonical_digest(identity)
 
 
 def ledger_chunks(
-    tenant: str, requests: Iterable[ForgetRequest], *, created_at: str
+    tenant: str, requests: Iterable[ForgetRequest], *, created_at: str,
+    request_id: str | None = None,
 ) -> list[Chunk]:
     """The ledger rows for ``requests``, one per distinct id."""
     rows: dict[str, Chunk] = {}
     for request in requests:
-        row_id = ledger_id(tenant, request)
+        row_id = ledger_id(tenant, request, request_id=request_id)
         rows[row_id] = Chunk(
             id=row_id,
             source="aml://session/" + session_digest(request.session_id),

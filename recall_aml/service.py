@@ -911,7 +911,8 @@ class HostedService:
         if not requests:
             return
         rows = ledger_chunks(
-            tenant, requests, created_at=datetime.now(timezone.utc).isoformat()
+            tenant, requests, created_at=datetime.now(timezone.utc).isoformat(),
+            request_id=request.request_id,
         )
         await asyncio.to_thread(self._repository.persist_forget_requests, tenant, rows)  # type: ignore[attr-defined]
         log.info(
