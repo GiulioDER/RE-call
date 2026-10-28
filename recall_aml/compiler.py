@@ -136,7 +136,8 @@ UNKNOWN_ANCHOR_ID_SAMPLES = 3
 #: else, such as a quoted phrase, is logged as its length only, so no conversation text reaches
 #: the journal.
 _ID_SHAPED = re.compile(
-    r"(?:a\d{1,6}|anchor)(?:_[0-9A-Za-z]{0,64})?|mem_[0-9a-fA-F]{1,64}|[0-9a-fA-F]{4,64}"
+    r"a\d{1,6}(?:_[0-9a-fA-F]{1,64})?|anchor_[0-9a-fA-F]{1,64}|"
+    r"mem_[0-9a-fA-F]{1,64}|[0-9a-fA-F]{4,64}"
 )
 
 

@@ -172,6 +172,7 @@ def _json_call(spend: Spend, system: str, user: str, max_tokens: int,
     key = os.environ["OPENROUTER_API_KEY"].strip()
     status, body = 599, {}  # type: tuple[int, dict[str, Any]]
     for attempt in range(6):
+        spend.check()
         started = time.perf_counter()
         status, body, _ = http_json("https://openrouter.ai/api/v1/chat/completions", payload,
                                     {"Authorization": f"Bearer {key}"}, 180)
@@ -184,7 +185,11 @@ def _json_call(spend: Spend, system: str, user: str, max_tokens: int,
                               + usage.get("completion_tokens", 0) * BUILDER_PRICE_OUT)
             try:
                 parsed = json.loads(body["choices"][0]["message"].get("content") or "")
-                result = {name: str(parsed[name]).strip() for name in fields}
+                if not isinstance(parsed, dict) or any(
+                    not isinstance(parsed.get(name), str) for name in fields
+                ):
+                    raise TypeError("builder fields must be strings")
+                result = {name: parsed[name].strip() for name in fields}
             except (json.JSONDecodeError, KeyError, TypeError):
                 time.sleep(2)
                 continue
@@ -199,13 +204,14 @@ def _json_call(spend: Spend, system: str, user: str, max_tokens: int,
 
 def needs_compression(storyline: str) -> bool:
     """gpt-4o-mini ignores the word limit in the prompt (measured 2026-09-25: storylines reached
-    1,068 words, p90 933, and truncated their own JSON), so the bound is enforced here."""
+    1,068 words, p90 933, and truncated their own JSON). Crossing this threshold
+    triggers one best-effort compression attempt; it does not enforce a hard bound."""
     return len(storyline.split()) > COMPRESS_ABOVE_WORDS
 
 
 def builder_call(spend: Spend, storyline: str, chunk: dict) -> tuple[dict[str, str], dict[str, Any]]:
     """One gpt-4o-mini call per Add, plus a compression call only when the storyline outgrows
-    its bound: the chunk's digest and the user's updated storyline."""
+    its threshold: the chunk's digest and the user's updated storyline."""
     user = (f"CURRENT STORYLINE:\n{storyline or '(empty)'}\n\n"
             f"NEW EXCERPT (date: {chunk['date'] or 'unknown'}):\n{render_excerpt(chunk)}")
     result, meta = _json_call(spend, BUILDER_SYSTEM, user, BUILDER_MAX_TOKENS, ("digest", "storyline"))
