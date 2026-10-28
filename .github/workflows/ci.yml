@@ -36,6 +36,9 @@ jobs:
         run: pip install -e ".[analysis]"
       - name: Verify generated architecture map
         run: python tools/architecture_map.py --check
+      # grimp is in `analysis` only, so the complete suite skips this file; it runs here instead.
+      - name: Test the architecture map generator
+        run: pytest -q tests/test_architecture_map.py
       - name: Verify import contracts
         run: lint-imports
       - name: Verify dead code
