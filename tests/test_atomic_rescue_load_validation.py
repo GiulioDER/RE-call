@@ -1,8 +1,9 @@
 """The atomic rescue loader validates its matrix in row blocks, and still rejects every bad row.
 
 The loader runs in every serving process on its first search. Validating the whole memory-mapped
-matrix at once built two full-size temporaries (`np.isfinite` and the row norm), which measured a
-328 MB temporary on the 2026-10-01 memory corpus and an 817 MB first-search peak per process.
+matrix at once built a full-size float32 temporary for the row norm (and a bool one a quarter of
+its size for `np.isfinite`): a 328 MB temporary on the 2026-10-01 memory corpus, which with the
+328 MB mapping was most of an 817 MB first-search peak per process.
 These tests pin both halves of the blocked replacement: the bound, and that no row escapes it.
 """
 

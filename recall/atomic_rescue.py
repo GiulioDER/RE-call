@@ -386,12 +386,12 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
     dimension = _integer(decoded, "dimension")
     if matrix.shape != (len(views), dimension):
         raise AtomicRescueArtifactError("atomic rescue matrix shape mismatch")
-    # Checked in row blocks, never over the whole matrix at once. `np.isfinite(matrix)` and
-    # `np.linalg.norm(matrix, axis=1)` each build a temporary as large as the matrix (bool, and a
-    # float32 square), and this loader runs in every serving process on its first search: on the
-    # 2026-10-01 memory corpus that was a 328 MB temporary on top of the 328 MB mapping, the whole
-    # of a 102 MB to 817 MB first-search peak. The two passes stay separate so a matrix with both
-    # faults still reports the non-finite one, as the unblocked checks did.
+    # Checked in row blocks, never over the whole matrix at once. `np.linalg.norm(matrix, axis=1)`
+    # builds a float32 square as large as the matrix and `np.isfinite(matrix)` a bool array a
+    # quarter of its size, and this loader runs in every serving process on its first search: on
+    # the 2026-10-01 memory corpus the norm's 328 MB temporary on top of the 328 MB mapping was 86%
+    # of memray's peak heap, in a 102 MB to 817 MB first-search peak. The two passes stay separate
+    # so a matrix with both faults still reports the non-finite one, as the unblocked checks did.
     rows_per_block = max(1, _VALIDATION_BLOCK_BYTES // max(1, matrix.shape[1] * matrix.itemsize))
     for start in range(0, matrix.shape[0], rows_per_block):
         if not np.all(np.isfinite(matrix[start : start + rows_per_block])):
