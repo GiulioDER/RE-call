@@ -4,9 +4,10 @@
 
 `RE-call Hosted 1.0` is the fixed hosted distribution of the open source RE-call project: the
 public RE-call storage and retrieval layers plus the `recall_aml` package in the same repository.
-A deployment's build identity is the Git commit that `/version` reports as `git_commit`. The
+A deployment reports its build as the Git commit in `/version`'s `git_commit`, which the operator
+declares through `RECALL_AML_GIT_COMMIT` and the service does not check against its code. The
 `version` field stays `1.0.0` on every build, so it does not identify one. The fixed commit of each
-AML run is listed under [Runs of record](#runs-of-record). To cite RE-call, use
+AML run is the signed tag listed under [Runs of record](#runs-of-record). To cite RE-call, use
 [CITATION.cff](../CITATION.cff).
 
 The service is intended to remain reachable and configuration frozen for at least 30 days after
@@ -149,8 +150,8 @@ C9 accepts the AML ordered content shape in both Add messages and the Search que
 Only inline Base64 JPEG, PNG, and WebP images are accepted. Each decoded image is limited to 10
 MiB. One Add request and one Search response are each limited to 30 MiB of decoded images. C9
 stores each original image once per tenant under its SHA256, reconstructs the exact ordered parts
-at Search, and embeds image-bearing messages with `voyage-multimodal-3.5` in a separate vector
-tenant. The main text chunks contain only source text and opaque media references, never Base64.
+at Search, and embeds every message of an Add that carries an image with `voyage-multimodal-3.5` in
+a separate vector tenant. The main text chunks contain only source text and opaque media references, never Base64.
 
 AML's rule for the Open-source Methods division is that every generative model used during Add or
 Search is `gpt-4o-mini`. The Voyage models RE-call uses are embedding models, and each one is named
@@ -245,8 +246,9 @@ its full commit hash.
 
 ### Models
 
-The only generative model is OpenAI `gpt-4o-mini` through OpenRouter, with the fixed model
-identifier `openai/gpt-4o-mini`, temperature zero, and a JSON object response. It is called by the
+The only generative model is OpenAI `gpt-4o-mini` through OpenRouter, model identifier
+`openai/gpt-4o-mini` (from `1f8666df` the default of `RECALL_AML_GENERATION_MODEL`, which no run of
+record sets), temperature zero, and a JSON object response. It is called by the
 Add compiler and, when the compiler is on, by one readiness check at service start that compiles a
 fixed test sentence (`recall_aml/readiness.py`) and never sees evaluation data. In both Full 2 runs
 the compiler is off, so no generative model runs during Add, Search or service start. Search never
@@ -258,7 +260,7 @@ The embedding models are Voyage AI models, one per route:
 |---|---|---|---|
 | code (the default) | `voyage-code-4` | `voyage-code-4-v1` | the tenant's raw windows |
 | context | `voyage-context-4` | `voyage-context-4-v1` | a separate tenant holding the same windows and the compiled records |
-| image leg | `voyage-multimodal-3.5` | `voyage-multimodal-3.5-v2` | vectors of the image-bearing messages |
+| image leg | `voyage-multimodal-3.5` | `voyage-multimodal-3.5-v2` | vectors of every message of an Add that carries an image |
 
 The graph sidecar described below embeds its compiled records with `voyage-code-4`.
 
@@ -311,7 +313,8 @@ own chunk identifiers. With the compiler off the sidecar stays empty.
 A deterministic router (`route_query` in `recall_aml/specialists.py`) picks one route per query.
 A query that carries an image takes the multimodal route, which searches the code route's store
 and adds the image leg. Text with a visual word (image, photo, screenshot, chart and similar) also
-takes the multimodal route under the default route gates, and the code route under `data`.
+takes the multimodal route; from `225e7509` it takes the code route instead when the route gates are
+`data`.
 Otherwise text with a code signal takes the code route, text with a conversational memory signal
 and no code signal takes the context route, and anything else takes the code route.
 
@@ -325,16 +328,18 @@ candidate pool, except for a query that is only an image, which keeps its fused 
 failure or timeout serves the fused order. Graph promotion then lets the compiled records nearest the
 query move at most two raw windows they reference, which must already be in the ranking, never
 into the first eight positions; if it fails, the raw ranking is served. The image leg fuses
-`voyage-multimodal-3.5` hits into the ranking: under the default route gates (Textual and Coding
-Full 1) on the multimodal route only, and under `data` (both Full 2 runs) on every Search of a
+`voyage-multimodal-3.5` hits into the ranking: under the `route` gates, which are the only behaviour
+at `3eb447c4` and `1f8666df` because those commits predate the setting (Textual and Coding Full 1),
+on the multimodal route only, and under `data` (both Full 2 runs) on every Search of a
 tenant that holds image vectors. A tenant without images gets the text ranking unchanged.
 
 Compiled records that a later record supersedes are left out unless the query asks about the
 past. An image-bearing message is returned as its ordered parts with its original images; from
 `625b7138`, an image that only the image leg found is returned as its image, not as placeholder
 text. Every
-item carries the time of its source messages in `created_at`, and each text item's content begins
-with that date.
+item whose source messages carry a readable timestamp carries that time in `created_at`, and each
+such text item's content begins with that date; an item from untimed messages has `created_at` null
+and no date prefix.
 
 From `1f8666df`, a relative time phrase in a returned text item keeps its wording, and the date it
 refers to, computed from the item's own date, follows it in brackets. Under the default gate this
@@ -344,8 +349,8 @@ an anchor date. Nothing stored, embedded, or ranked changes.
 
 ### Variants that served no AML run
 
-With `RECALL_AML_VARIANT` unset the service runs `A4_pack_7000`, the profile this section used to
-describe: `voyage-context-4` embeddings, query facets, `voyage:rerank-2.5` over the fused pool, a
+With `RECALL_AML_VARIANT` unset the service runs `A4_pack_7000` (`DEFAULT_VARIANT` in
+`recall_aml/variants.py`): `voyage-context-4` embeddings, query facets, `voyage:rerank-2.5` over the fused pool, a
 pack capped at 12 items and 7,000 characters, and deterministic fallback records when a compile
 fails. No AML Cycle 2 run used it. It and the other experimental variants are defined in
 `recall_aml/variants.py`.
@@ -385,7 +390,9 @@ instead, because an over-long prompt is refused by the model's context window ev
 first attempt, so that refit never runs. Oversized Adds are fitted from their first and last
 anchors; if fitting retains no anchor, compilation is skipped and the normal compiler fallback
 handles the Add. A refusal (HTTP 400 or 413) of a payload that still carries earlier records is
-resent once without them, which can make a fourth attempt.
+resent once without them, which can make a fourth attempt. From `1f8666df`
+(`compile_resend_truncated=False`) an answer cut off at the token limit is not resent: the compile
+fails at the first such answer; at `3eb447c4` it is retried like any other failed attempt.
 Within one Add, independent Voyage embedding requests are sent four at a time
 (`RECALL_VOYAGE_PARALLEL_REQUESTS`, 1 to 16; 1 restores the sequential behaviour). The vectors are
 the ones a sequential run returns; only the wall time of a large Add changes.
