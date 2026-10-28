@@ -224,6 +224,7 @@ import sys
 import time
 from pathlib import Path
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -1131,14 +1132,16 @@ def test_an_unread_file_never_matches_a_null_hash_exactly(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """D10 (CCA BUG-005): a lesson anchored at a file with a null hash is not labelled `exact` for a
-    file whose content could not be read."""
+    file whose content could not be read. Since the brief ranks a symbol-less anchor as `file_only`
+    (`FILE_LEVEL_RANKS_AS_FILE_ONLY`), the label it carries is `file_only`; the invariant, never
+    `exact`, is unchanged."""
     lesson = {**_lesson(1), "anchors": [{"file": FILE, "symbol": None, "code_sha": None}]}
     memos = tmp_path / "null-hash"
     _write_memo(memos, "the-lesson", lesson)
     monkeypatch.setenv("RECALL_AUDITOR_MEMOS", str(memos))
     (repo / FILE).unlink()  # changed in HEAD, missing from the work tree: its content is not read
     block = _block(_run(_payload(repo), monkeypatch, capsys))
-    assert f"LESSON {lesson['id']} [symbol_changed] {FILE} (module):" in block, block
+    assert f"LESSON {lesson['id']} [file_only] {FILE} (module):" in block, block
     assert "[exact]" not in block, "an unread file matched a null hash as exact"
 
 
@@ -1426,3 +1429,94 @@ def test_default_budget_fits_a_parallel_dispatch(
     output = _run(_payload(repo), monkeypatch, capsys)
     assert output is not None, f"a parallel dispatch got no brief: {_log_text(env)!r}"
     assert HEADING in _prompt(output)
+
+
+# --- the brief ranks a file-level match as file_only, ties newest first -----------------------
+
+_NOW = datetime(2026, 10, 28, tzinfo=UTC)
+
+
+def _entry(number: int, match: str, symbol: str | None, date: str | None = "2026-10-01") -> dict[str, Any]:
+    """A C5 entry as `match_memo_records` returns it, with one anchor matched at `match`."""
+    record = {**_bug(number), "date": date}
+    if date is None:
+        del record["date"]
+    anchor = _anchor(symbol)
+    return {
+        "id": record["id"], "kind": "bug", "recall_record": record, "anchor_match": match,
+        "anchor_matches": [{"anchor": anchor, "match": match}],
+        "superseded_by": None, "valid_from": None, "valid_until": None,
+    }
+
+
+def _render(entries: list[dict[str, Any]]) -> str:
+    return auditor_brief.render(entries, now=_NOW, retraction_files=set())
+
+
+def _ids(block: str) -> list[str]:
+    return [line.split()[1] for line in block.splitlines() if line.startswith("BUG ")]
+
+
+def test_symbolless_match_ranks_after_symbol_matches() -> None:
+    """Red proof: baseline = unchanged `render`/`_line` (origin/master). Node id
+    tests/test_auditor_brief_hook.py::test_symbolless_match_ranks_after_symbol_matches. Targets
+    `render` ordering and `_line`'s bracket. Failed on the assertion that C leads (A, a
+    `symbol_changed` record on a symbol-less anchor, led instead and was printed `[symbol_changed]`)."""
+    a = _entry(1, "symbol_changed", None, "2026-10-20")
+    b = _entry(2, "file_only", "Pool._lease", "2026-10-10")
+    c = _entry(3, "symbol_changed", "Pool._lease", "2026-10-01")
+    block = _render([a, b, c])
+    assert _ids(block) == [c["id"], a["id"], b["id"]]
+    assert f"BUG {a['id']} [file_only] {FILE} (module):" in block
+
+
+def test_exact_file_level_match_is_shown_file_only(tmp_path: Path) -> None:
+    """Review Focus 2. Red proof: baseline = unchanged `_line` (origin/master); node id
+    tests/test_auditor_brief_hook.py::test_exact_file_level_match_is_shown_file_only. Targets
+    `_line`'s `[...]`; failed on `[file_only]` being in the block (it printed `[exact]`). The first
+    assertion pins `recall.records._match`, which must keep reporting `exact`."""
+    sha = "a" * 64
+    record = {**_bug(1), "anchors": [{"file": FILE, "symbol": None, "code_sha": sha}]}
+    memos = _write_memos(tmp_path / "memos", [record])
+    records = records_files.load_memo_records(memos)
+    entries = records_files.match_memo_records(
+        records, repo=record["repo"], anchors=[{"file": FILE, "symbol": None, "code_sha": sha}],
+        kinds=["bug"], now=_NOW,
+    )
+    assert [e["anchor_match"] for e in entries] == ["exact"]
+    block = _render(entries)
+    assert f"BUG {record['id']} [file_only] {FILE} (module):" in block
+
+
+def test_mixed_anchor_record_uses_its_best_anchor() -> None:
+    """Review Focus 1. Red proof: mutation of `_brief_match` to `return "file_only"` unconditionally
+    (so the symbol anchor's match is ignored); node id
+    tests/test_auditor_brief_hook.py::test_mixed_anchor_record_uses_its_best_anchor. Failed on the
+    `[symbol_changed]` assertion (printed `[file_only]`)."""
+    entry = _entry(1, "symbol_changed", "Pool._lease")
+    entry["anchor_matches"] = [
+        {"anchor": _anchor(None), "match": "file_only"},
+        {"anchor": _anchor("Pool._lease"), "match": "symbol_changed"},
+    ]
+    block = _render([entry])
+    assert f"BUG {entry['id']} [symbol_changed] {FILE} Pool._lease:" in block
+
+
+def test_ties_break_newest_first() -> None:
+    """Red proof: baseline = unchanged `render` (input order kept); node id
+    tests/test_auditor_brief_hook.py::test_ties_break_newest_first. Targets the sort in `render`;
+    failed on the order assertion (older record first) and the cap assertion (kept the five first
+    listed, not the five newest)."""
+    old, new = _entry(1, "file_only", "Pool._lease", "2026-10-01"), _entry(2, "file_only", "Pool._lease", "2026-10-20")
+    assert _ids(_render([old, new])) == [new["id"], old["id"]]
+    six = [_entry(n, "file_only", "Pool._lease", f"2026-10-{n:02d}") for n in range(1, 7)]
+    assert _ids(_render(six)) == [six[n]["id"] for n in (5, 4, 3, 2, 1)]
+    undated = _entry(9, "file_only", "Pool._lease", None)
+    assert _ids(_render([undated, old]))[-1] == undated["id"]
+
+
+def test_the_probe_constant_is_set() -> None:
+    """Red proof: baseline = origin/master, where the constant does not exist (AttributeError at the
+    assertion line, inside the test body); node id
+    tests/test_auditor_brief_hook.py::test_the_probe_constant_is_set."""
+    assert auditor_brief.FILE_LEVEL_RANKS_AS_FILE_ONLY is True

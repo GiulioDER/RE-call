@@ -826,6 +826,31 @@ def _best_anchor(entry: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+#: A record anchored at a whole file (`symbol: null`) cannot be told apart from the query's file
+#: level anchor by symbol, so `recall.records._match` calls it `symbol_changed` or `exact` on a
+#: hash alone, which outranks a record anchored at a real symbol that only reaches `file_only`.
+#: The brief ranks and prints it as `file_only`; `_match` itself is unchanged, because the
+#: false-positive matcher depends on its `exact`. False restores the matcher's labels.
+FILE_LEVEL_RANKS_AS_FILE_ONLY: bool = True
+
+
+def _brief_match(entry: dict[str, Any]) -> str:
+    """The match level the brief ranks and prints `entry` at: `file_only` for a best anchor with no symbol."""
+    if FILE_LEVEL_RANKS_AS_FILE_ONLY and _best_anchor(entry).get("symbol") is None:
+        return "file_only"
+    return str(entry["anchor_match"])
+
+
+def _newest_first(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`entries` by brief match level, then newest first by record date (none is oldest), then id."""
+    from recall.records import MATCH_ORDER
+
+    ordered = sorted(entries, key=lambda e: str(e.get("id")))
+    ordered.sort(key=lambda e: str((e.get("recall_record") or {}).get("date") or ""), reverse=True)
+    ordered.sort(key=lambda e: MATCH_ORDER.index(_brief_match(e)))
+    return ordered
+
+
 def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unnamed_files: Set[str]) -> str | None:
     """One record as one line, or None when a retraction in force hides it.
 
@@ -848,7 +873,7 @@ def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unna
     if not window_contains(parse_window(entry.get("valid_from"), entry.get("valid_until")), now):
         notes.append("outside its validity window")
     suffix = f" ({'; '.join(notes)})" if notes else ""
-    return _clean(f"{label} {entry['id']} [{entry['anchor_match']}] {where}: {text or ''}{suffix}")
+    return _clean(f"{label} {entry['id']} [{_brief_match(entry)}] {where}: {text or ''}{suffix}")
 
 
 def render(
@@ -860,7 +885,7 @@ def render(
 ) -> str:
     """The block for `entries` (best match first), or "" when none is shown. At most `MAX_BLOCK_CHARS`."""
     buckets: dict[str, list[str]] = {kind: [] for kind in _KIND_VIEW}
-    for entry in entries:
+    for entry in _newest_first(entries):
         kind = entry.get("kind")
         if kind not in _KIND_VIEW:
             continue
