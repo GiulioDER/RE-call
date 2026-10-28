@@ -17,6 +17,10 @@ Invariants and the failure each one catches:
 - C6 a stored coverage row that is damaged (a class missing its `rejected` count) reads as
   unavailable in the status line instead of raising: Lite's reader returns the row unvalidated
   (CCA DAT-001, PR 969).
+- C7 a coverage report measured with the unknown-term gate `checked` says so on the status line
+  when this process would not run that gate (`RECALL_UNKNOWN_TERM_GATE` off, or a source policy
+  scoping every request), and says nothing when it would (CCA STAKES-001, PR 969, owner yes
+  2026-10-28).
 
 None needs a database: the repository, store and search are doubles at the CLI's own boundary.
 
@@ -26,7 +30,14 @@ C2 `test_c2_near_miss_reports_an_unreadable_certificate_as_unavailable`,
 C3 `test_c3_served_gap_refuses_under_a_source_policy`,
 C4 `test_c4_served_gap_never_turns_the_decision_ledger_on`,
 C5 `test_c5_served_gap_compares_the_unrounded_served_cosine`,
-C6 `test_c6_a_damaged_stored_coverage_row_reads_as_unavailable`.
+C6 `test_c6_a_damaged_stored_coverage_row_reads_as_unavailable`,
+C7 `test_c7_status_says_when_this_process_does_not_run_the_measured_gate`.
+
+Red proof, 2026-10-28, on this workstation (no database needed): C5 and C6 run by
+`cca_checks tautology verify` against the pre-fix files (both RED, 1 failed each); C7 written first
+and run against `recall.near_miss.coverage_summary` before `_serving_gate_note` existed, failing in
+its named assertion for both parameters ("status showed the fit's checked gate as if this process
+ran it"), then green with the fix.
 
 Red proof for the CCA audit fixes, 2026-10-21, on a Linux host against a throwaway pg18 container,
 each mutation alone, the named test failing in the named assertion (exit 1, "1 failed", no
@@ -198,3 +209,31 @@ def test_c6_a_damaged_stored_coverage_row_reads_as_unavailable() -> None:
     except KeyError:
         pytest.fail("a damaged stored coverage row failed the status line that prints it")
     assert (report, line) == (None, UNAVAILABLE_MESSAGE)
+
+
+_CHECKED_REPORT = {
+    "unknown_entity": {"rejected": 3, "n": 3},
+    "in_vocabulary": {"rejected": 1, "n": 3},
+    "unknown_term_gate": "checked",
+}
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "state"),
+    [("RECALL_UNKNOWN_TERM_GATE", "0", "disabled"),
+     ("RECALL_SOURCE_POLICY_FILE", "/policies/sources.toml", "unavailable")],
+)
+def test_c7_status_says_when_this_process_does_not_run_the_measured_gate(
+    monkeypatch, variable, value, state
+) -> None:
+    from recall.near_miss import coverage_summary
+
+    monkeypatch.delenv("RECALL_UNKNOWN_TERM_GATE", raising=False)
+    monkeypatch.delenv("RECALL_SOURCE_POLICY_FILE", raising=False)
+    _report, measured_here = coverage_summary(lambda _calibration_id: _CHECKED_REPORT, CAL)
+    assert "in this process" not in measured_here, "a matching process was told it differs"
+    monkeypatch.setenv(variable, value)
+    _report, line = coverage_summary(lambda _calibration_id: _CHECKED_REPORT, CAL)
+    assert f"unknown-term gate {state} in this process" in line, (
+        "status showed the fit's checked gate as if this process ran it"
+    )

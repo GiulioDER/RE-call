@@ -30,6 +30,7 @@ because of a measurement it cannot act on.
 
 from __future__ import annotations
 
+import os
 import random
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -37,7 +38,7 @@ from typing import Any
 from recall.embeddings import Embedder, embed_query
 from recall.eval.vocab import word_tokens
 from recall.observability import get_logger
-from recall.unknown_terms import check_unknown_terms
+from recall.unknown_terms import check_unknown_terms, gate_enabled
 from recall.support import (
     CLASSES as CLASSES,
     MIN_PROBES as MIN_PROBES,
@@ -55,6 +56,8 @@ from recall.wizard.queryset import (
 UNAVAILABLE_MESSAGE = "near-miss coverage unavailable; provisional for in-vocabulary near-misses"
 
 _log = get_logger("near_miss")
+#: Read by `recall.security_policy.load_source_policy`; set, it scopes every served request.
+_SOURCE_POLICY_ENV = "RECALL_SOURCE_POLICY_FILE"
 
 
 def coverage_summary(
@@ -73,10 +76,29 @@ def coverage_summary(
         report = read(calibration_id)
         if not report:
             return None, UNAVAILABLE_MESSAGE
-        return report, describe(report)
+        return report, describe(report) + _serving_gate_note(report)
     except Exception as exc:  # BROAD-CATCH: fail-open, an optional report never fails its caller
         _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
         return None, UNAVAILABLE_MESSAGE
+
+
+def _serving_gate_note(report: dict[str, Any]) -> str:
+    """Say so when this process would not run the unknown-term gate the fit measured with.
+
+    A PostgreSQL fit usually runs in a CLI, wizard or desktop process, not in the server that
+    prints its status, so the stored `checked` can describe a gate this process has switched off
+    (`RECALL_UNKNOWN_TERM_GATE`) or cannot consult (a source policy scopes every request, and a
+    scoped request reports the check unavailable).
+    """
+    if report.get("unknown_term_gate") != "checked":
+        return ""
+    if not gate_enabled():
+        state = "disabled"
+    elif os.environ.get(_SOURCE_POLICY_ENV, "").strip():
+        state = "unavailable"
+    else:
+        return ""
+    return f"; unknown-term gate {state} in this process (coverage was measured with it checked)"
 
 
 def _invented_codes(corpus_words: set[str], rng: random.Random, count: int) -> list[str]:

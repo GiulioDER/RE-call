@@ -57,7 +57,10 @@ decision, and a failure to measure leaves the saved fit untouched. A carried-for
 is not measured, as on Lite. Either way no report exists until the next fit: the status message
 says `near-miss coverage unavailable; provisional for in-vocabulary near-misses`,
 `near_miss_coverage` is null, and `calibration_coverage` on a search reads `unmeasured`
-(`unavailable` there means the stored report could not be read).
+(`unavailable` there means the stored report could not be read). A report measured with the
+unknown-term check says so in the status line when the process printing it has the check
+switched off or runs under a source policy, since a PostgreSQL fit usually runs in another
+process than the server.
 
 ## PostgreSQL near-miss certificate
 
