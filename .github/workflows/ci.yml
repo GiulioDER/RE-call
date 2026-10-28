@@ -210,7 +210,7 @@ jobs:
           cache: pip
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
 
       # Engine + dev tooling only. The optional heavy extras are exercised locally:
       #   rerank -> sentence-transformers (its real-model tests self-skip here)
@@ -335,7 +335,7 @@ jobs:
           cache: pip
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
 
       - name: Install
         run: |
@@ -375,7 +375,7 @@ jobs:
           cache: pip
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
 
       # The locked set, as in `test` (it carries the pinned mypy), plus mutmut.
       - name: Install
@@ -724,7 +724,7 @@ jobs:
           cache: pip
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
 
       # The locked `dev` set, which carries the pinned mypy, so the checker's version moves only
       # through a lockfile bump. `pip install mypy` here resolved the newest on every run.
@@ -789,7 +789,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
 
       # `--resolution lowest-direct`: oldest version of each DIRECT dependency, transitives
       # resolved normally. `lowest` would also pin every transitive to its floor, which tests
@@ -878,7 +878,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
 
       # TWO INDEPENDENT CHECKS THAT MUST NOT BE ABLE TO DISABLE EACH OTHER.
       #
@@ -1168,7 +1168,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa  # v10.3.1
 
       - name: Audit workflows and Dependabot config
         env:
