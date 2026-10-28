@@ -120,10 +120,49 @@ GZIP_SUFFIX = ".gz"
 GZIP_MAX_BYTES = 64 * 1024 * 1024
 
 
-def load_allowlist(path: Path = ALLOWLIST) -> set[str]:
+def _index_bytes(path: str) -> bytes | None:
+    """The selected index blob, independent of an unstaged rewrite or deletion."""
+    result = subprocess.run(
+        ["git", "show", f":0:{path}"], cwd=ROOT, capture_output=True, check=False,
+    )
+    return result.stdout if result.returncode == 0 else None
+
+
+def _index_gzip_bytes(path: str) -> bytes | None:
+    """Stream a compressed index blob, stopping at the decompressed byte bound."""
+    with subprocess.Popen(
+        ["git", "show", f":0:{path}"], cwd=ROOT,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    ) as process:
+        try:
+            assert process.stdout is not None
+            with gzip.GzipFile(fileobj=process.stdout, mode="rb") as handle:
+                raw = handle.read(GZIP_MAX_BYTES + 1)
+            if len(raw) > GZIP_MAX_BYTES:
+                return raw  # the producer may still be writing; stop and reap it below
+            return raw if process.wait() == 0 else None
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+
+
+def _policy_text(path: Path, staged: bool) -> str | None:
+    if staged:
+        raw = _index_bytes(path.relative_to(ROOT).as_posix())
+        return None if raw is None else raw.decode("utf-8")
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+def load_allowlist(path: Path = ALLOWLIST, *, staged: bool = False) -> set[str]:
     values = set()
-    if path.exists():
-        for line in path.read_text(encoding="utf-8").splitlines():
+    content = _policy_text(path, staged)
+    if content is not None:
+        for line in content.splitlines():
             if line.strip() and not line.lstrip().startswith("#"):
                 values.add(line.split("\t", 1)[0].strip())
     return values
@@ -141,10 +180,11 @@ def load_denylist(path: str | None) -> list[str]:
     return terms
 
 
-def load_baseline(path: Path = BASELINE) -> dict[str, dict[str, int]]:
-    if not path.exists():
+def load_baseline(path: Path = BASELINE, *, staged: bool = False) -> dict[str, dict[str, int]]:
+    content = _policy_text(path, staged)
+    if content is None:
         return {}
-    data: dict[str, dict[str, int]] = json.loads(path.read_text(encoding="utf-8"))
+    data: dict[str, dict[str, int]] = json.loads(content)
     return data
 
 
@@ -190,21 +230,24 @@ def findings(
 
 def tracked(staged: bool) -> list[str]:
     command = (
-        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"] if staged else ["git", "ls-files"]
+        ["git", "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"]
+        if staged else ["git", "ls-files", "-z"]
     )
-    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=True)
-    return [line for line in result.stdout.splitlines() if line]
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, check=True)
+    return [os.fsdecode(name) for name in result.stdout.split(b"\0") if name]
 
 
 def scan(
-    paths: Iterable[str], allowed: set[str], base: Path = ROOT, terms: Iterable[str] = ()
+    paths: Iterable[str], allowed: set[str], base: Path = ROOT, terms: Iterable[str] = (),
+    *, staged: bool = False,
 ) -> tuple[list[tuple[str, int, str, str]], int, list[str], list[str]]:
     """Findings, the number of files read, the named files that do not exist, and those not read.
 
     A ``.gz`` file is decompressed and read. A file that is not text (a known binary suffix, or
     bytes that do not decode as UTF-8, compressed or not) is not read and is returned as skipped,
     so the caller can say what was not checked; a file that does not exist is reported, because a
-    check that quietly reads nothing reports clean for anything.
+    check that quietly reads nothing reports clean for anything. With ``staged``,
+    content comes from the Git index even when the working copy differs or is absent.
     """
     out: list[tuple[str, int, str, str]] = []
     read = 0
@@ -223,19 +266,24 @@ def scan(
             skipped.append(path)
             continue
         target = base / path
-        if not target.is_file():
+        if not staged and not target.is_file():
             missing.append(path)
             continue
         try:
-            if path.endswith(GZIP_SUFFIX):
+            if staged:
+                raw = _index_gzip_bytes(path) if path.endswith(GZIP_SUFFIX) else _index_bytes(path)
+                if raw is None:
+                    missing.append(path)
+                    continue
+            elif path.endswith(GZIP_SUFFIX):
                 # Streamed and bounded, so a crafted archive cannot exhaust the runner's memory.
                 with gzip.open(target, "rb") as handle:
                     raw = handle.read(GZIP_MAX_BYTES + 1)
-                if len(raw) > GZIP_MAX_BYTES:
-                    out.append((path, 0, "gzip-over-limit", path))  # fail closed: unread is unchecked
-                    continue
             else:
                 raw = target.read_bytes()
+            if path.endswith(GZIP_SUFFIX) and len(raw) > GZIP_MAX_BYTES:
+                out.append((path, 0, "gzip-over-limit", path))  # fail closed: unread is unchecked
+                continue
             text = raw.decode("utf-8")
         except (UnicodeDecodeError, OSError, EOFError, zlib.error):
             skipped.append(path)
@@ -304,7 +352,17 @@ def main() -> int:
     )
     # Named files are read where the caller stands; tracked and staged files from the repository root.
     paths, base = (args.files, Path.cwd()) if args.files else (tracked(args.staged), ROOT)
-    found, read, missing, skipped = scan(paths, load_allowlist(), base, terms)
+    staged = args.staged and not args.files
+    # Policy must describe the same artifact as the content: an unstaged exception
+    # cannot authorize an indexed leak, and an indexed exception must still apply.
+    found, read, missing, skipped = scan(
+        paths, load_allowlist(ALLOWLIST, staged=staged), base, terms, staged=staged,
+    )
+    if missing:
+        for path in missing:
+            print(f"{path}: could not be read from the selected artifact", file=sys.stderr)
+        print(f"{len(missing)} selected file(s) not checked; refusing a clean verdict.", file=sys.stderr)
+        return 2
     if args.write_baseline:
         if args.files or args.staged:
             print("--write-baseline records the whole tree; drop --staged and file names.", file=sys.stderr)
@@ -316,13 +374,11 @@ def main() -> int:
         BASELINE.write_text(json.dumps(dict(sorted(table.items())), indent=1) + "\n", encoding="utf-8")
         print(f"wrote {BASELINE.name}: {sum(sum(r.values()) for r in table.values())} finding(s) in {len(table)} file(s)")
         return 0
-    baseline = load_baseline()
+    baseline = load_baseline(BASELINE, staged=staged)
     if not terms:
         # Unchecked is not absent: without the list, recorded private-term counts say nothing.
         baseline = {p: {r: n for r, n in rs.items() if r != "private-term"} for p, rs in baseline.items()}
     found, grandfathered, slack = apply_baseline(found, baseline)
-    for path in missing:
-        print(f"{path}: does not exist", file=sys.stderr)
     for path in skipped:
         print(f"{path}: not text, not checked", file=sys.stderr)
     if not terms:
@@ -332,9 +388,6 @@ def main() -> int:
         print(f"{grandfathered} ratcheted finding(s) within {BASELINE.name}{note}", file=sys.stderr)
     for path, number, rule, value in found:
         print(f"{path}:{number}: {rule}: {mask(value)}")
-    if missing and args.files:
-        print(f"{len(missing)} named file(s) do not exist; nothing about them was checked.", file=sys.stderr)
-        return 2
     if found:
         print(
             f"\n{len(found)} finding(s). This repository is public. Remove the value, take it from the "

@@ -145,7 +145,13 @@ def _digest_raw(path: Path, raw: bytes) -> tuple[str, int, str | None] | None:
     return hashlib.sha256(data).hexdigest(), len(data), text
 
 
-def _read_once(path: Path) -> tuple[str, int, int, str | None] | None:
+class _FileTooLarge(Exception):
+    """The bounded scan observed more wire bytes than the upload limit permits."""
+
+
+def _read_once(
+    path: Path, max_bytes: int | None = None,
+) -> tuple[str, int, int, str | None] | None:
     """`(sha256, size, wire_size, text)` from a SINGLE read, or `None` if unreadable.
 
     🔑 One read is a correctness requirement, not an optimisation. The screen and the uploader
@@ -156,11 +162,20 @@ def _read_once(path: Path) -> tuple[str, int, int, str | None] | None:
 
     `wire_size` is the length of the buffer read, not a separate `stat()`, for the same reason:
     a second system call is a second observation of a file that can change between the two.
+
+    With ``max_bytes``, read at most that limit plus one and raise ``_FileTooLarge``
+    before decoding or retaining an oversized buffer. Standalone digest calls remain unbounded.
     """
     try:
-        raw = path.read_bytes()
+        if max_bytes is None:
+            raw = path.read_bytes()
+        else:
+            with path.open("rb") as handle:
+                raw = handle.read(max(0, max_bytes) + 1)
     except OSError:
         return None
+    if max_bytes is not None and len(raw) > max_bytes:
+        raise _FileTooLarge
     got = _digest_raw(path, raw)
     if got is None:
         return None
@@ -228,6 +243,8 @@ def scan(
     glob: str = "**/*.md",
     *,
     skipped: dict[str, str] | None = None,
+    max_file_bytes: int | None = None,
+    oversize: list[str] | None = None,
 ) -> dict[str, Change]:
     """Every file under each root, keyed by its root-prefixed relative name.
 
@@ -246,8 +263,12 @@ def scan(
     ⚠️ Symlinks are not followed. A link inside a memory root would otherwise contribute content
     from outside the directory the user pointed at, which in hosted mode is an irreversible
     transfer of something never consented to.
+
+    Hosted sync supplies its file limit and an ``oversize`` list so refused files
+    are named before their contents can accumulate in memory or reach the screen.
     """
     found: dict[str, Change] = {}
+    oversized: set[str] = set()
     note = skipped if skipped is not None else {}
     for root_id, root in roots:
         if not root.is_dir():
@@ -256,13 +277,21 @@ def scan(
             if path.is_symlink() or not path.is_file():
                 continue
             name = f"{root_id}/{path.relative_to(root).as_posix()}"
-            if name in found or name in note:
+            if name in found or name in note or name in oversized:
                 continue
             reason = unsafe_name_reason(name)
             if reason:
                 note[name] = f"the server refuses this name: {reason}"
                 continue
-            got = _read_once(path)
+            try:
+                got = _read_once(path, max_file_bytes)
+            except _FileTooLarge:
+                oversized.add(name)
+                if oversize is not None:
+                    oversize.append(name)
+                else:
+                    note[name] = "exceeds the upload byte limit"
+                continue
             if got is None:
                 note[name] = "could not be read or decoded as UTF-8"
                 continue
@@ -847,8 +876,13 @@ def sync_memory_roots(
     # `withheld` unreported, and the one finding that needs a person would be the one silently
     # dropped.
     skipped: dict[str, str] = {}
-    local, withheld, screen_error = _screened(scan(roots, skipped=skipped))
+    limits = limits or Limits()
+    oversize: list[str] = []
+    local, withheld, screen_error = _screened(scan(
+        roots, skipped=skipped, max_file_bytes=limits.max_file_bytes, oversize=oversize,
+    ))
     manifest["skipped"] = skipped
+    manifest["oversize"] = oversize
     manifest["withheld"] = {name: [str(f) for f in found] for name, found in withheld.items()}
     if screen_error:
         manifest["screen_error"] = screen_error
@@ -862,7 +896,8 @@ def sync_memory_roots(
         manifest["last_error"] = {"kind": "auth", "message": message}
         write_manifest(config, manifest)
         return SyncOutcome(
-            kind="auth", withheld=len(withheld), skipped=len(skipped), message=message
+            kind="auth", withheld=len(withheld), skipped=len(skipped),
+            oversize=len(oversize), message=message,
         )
 
     try:
@@ -875,7 +910,7 @@ def sync_memory_roots(
         write_manifest(config, manifest)
         return SyncOutcome(
             kind=exc.kind, withheld=len(withheld), skipped=len(skipped),
-            message=exc.message,
+            oversize=len(oversize), message=exc.message,
         )
     # The endpoint was accepted and the transport answered, so nothing is blocking any more.
     manifest.pop("blocked", None)
@@ -884,7 +919,8 @@ def sync_memory_roots(
     # "Named rather than silently dropped ... a sync that quietly omits one leaves the user
     # believing content is stored that is not" — and the caller then read the field nowhere at
     # all, so a memo over the per-file cap vanished from the corpus and from every count.
-    manifest["oversize"] = list(decided.oversize)
+    oversize = sorted(set(oversize).union(decided.oversize))
+    manifest["oversize"] = oversize
 
     if not decided.upload:
         manifest.pop("last_error", None)
@@ -894,7 +930,7 @@ def sync_memory_roots(
             kind="noop",
             unchanged=decided.unchanged,
             withheld=len(withheld),
-            oversize=len(decided.oversize),
+            oversize=len(oversize),
             skipped=len(skipped),
         )
 
@@ -936,7 +972,7 @@ def sync_memory_roots(
             return SyncOutcome(
                 kind=exc.kind, uploaded=uploaded, unchanged=decided.unchanged,
                 pending=len(pending), withheld=len(withheld),
-                oversize=len(decided.oversize), skipped=len(skipped),
+                oversize=len(oversize), skipped=len(skipped),
                 message=exc.message,
             )
         # Confirmed. ⛔ Over `sent`, never over `batch`: a file that could not be re-read was
@@ -959,6 +995,6 @@ def sync_memory_roots(
         unchanged=decided.unchanged,
         pending=len(pending),
         withheld=len(withheld),
-        oversize=len(decided.oversize),
+        oversize=len(oversize),
         skipped=len(skipped),
     )

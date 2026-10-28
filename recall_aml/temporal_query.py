@@ -107,7 +107,8 @@ def _last_span(m: re.Match[str], anchor: date) -> Range:
 
 
 def _ago(m: re.Match[str], anchor: date) -> Range:
-    raw = m["count"].lower()
+    # IGNORECASE also equates dotted and dotless I with ASCII i; casefold alone does not.
+    raw = m["count"].replace("\u0130", "i").replace("\u0131", "i").casefold()
     count = int(raw) if raw.isdigit() else _NUMBERS[raw]
     unit = m["unit"].lower()
     if unit == "day":
