@@ -491,6 +491,66 @@ def test_the_app_shutdown_stops_queued_mutations(monkeypatch) -> None:
     asyncio.run(scenario())
 
 
+def test_an_add_waiting_for_a_global_slot_cannot_start_after_shutdown(monkeypatch) -> None:
+    """BUG-001: shutdown must refuse a queue head still waiting for a global Add slot.
+
+    Red proof: on the pre-fix app at 53dcaf87b, this exact node fails the 503 assertion
+    with 200: ``admitted`` calls ``service.add`` after shutdown frees a global slot.
+    The existing unset-budget test controls the unchanged queue-disabled path.
+    """
+    from contextlib import asynccontextmanager
+
+    service, app, started, gates = _queue_app(monkeypatch, add_concurrency=2)
+    original_gate = service.tenant_gate
+
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        late_tenant = tenant_for("late-user")
+
+        @asynccontextmanager
+        async def observed_gate(tenant, **kwargs):
+            async with original_gate(tenant, **kwargs):
+                if tenant == late_tenant:
+                    entered.set()
+                yield
+
+        monkeypatch.setattr(service, "tenant_gate", observed_gate)
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://aml") as client:
+
+            def post(request_id: str, user_id: str):
+                return asyncio.create_task(
+                    client.post(
+                        "/v1/add", headers={"X-Api-Key": "secret"},
+                        json=_add_body(request_id, user_id),
+                    )
+                )
+
+            holders = [post("first", "first-user"), post("second", "second-user")]
+            await _until(lambda: len(started) == 2)
+            gates["late"] = asyncio.Event()
+            gates["late"].set()
+            late = post("late", "late-user")
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=2)
+                # No slot is free, so the late queue head cannot yet call service.add.
+                assert "late" not in started
+                service.begin_shutdown()
+                gates["first"].set()
+                response = await asyncio.wait_for(late, timeout=2)
+                assert response.status_code == 503, "a global-slot waiter must not start after shutdown"
+                assert response.json() == {"error": "tenant_busy"}
+                assert response.headers["Retry-After"] == "60"
+                assert "late" not in started
+            finally:
+                gates["first"].set()
+                gates["second"].set()
+                await asyncio.gather(*holders, late, return_exceptions=True)
+            assert service._tenant_gates == {}, "shutdown refusal must release the tenant gate"
+
+    asyncio.run(scenario())
+
+
 def test_a_sparse_backfill_waits_behind_a_queued_add(monkeypatch) -> None:
     """Invariant: a sparse backfill joins the user's queue like a delete."""
     from dataclasses import replace

@@ -1862,8 +1862,7 @@ class HostedService:
             # A caller's bound applies only when the queue is on: it never switches it on.
             wait = budget
         digest = tenant.removeprefix("aml_")[:16]
-        if self._stopping:
-            raise TenantLockBusy("the service is shutting down")
+        self.ensure_tenant_queue_running()
         gate = self._tenant_gates.get(tenant)
         if gate is None:
             gate = self._tenant_gates[tenant] = _TenantGate(asyncio.Lock())
@@ -1885,9 +1884,7 @@ class HostedService:
                 )
                 raise TenantLockBusy(f"this user's queue stayed busy for {wait} s") from None
             try:
-                if self._stopping:
-                    # A queued mutation must not start a compile the shutdown would abandon.
-                    raise TenantLockBusy("the service is shutting down")
+                self.ensure_tenant_queue_running()
                 waited_ms = round((time.monotonic() - started) * 1_000, 3)
                 if waited_ms >= 1.0:
                     log.info(
@@ -1901,6 +1898,15 @@ class HostedService:
             gate.users -= 1
             if gate.users == 0 and self._tenant_gates.get(tenant) is gate:
                 del self._tenant_gates[tenant]
+
+    def ensure_tenant_queue_running(self) -> None:
+        """Refuse a queued mutation after shutdown, including after a global Add slot wait.
+
+        This check and the mutation's start must have no intervening await. An unset tenant
+        queue retains its existing behavior.
+        """
+        if self._stopping and self.tenant_lock_wait_seconds > 0:
+            raise TenantLockBusy("the service is shutting down")
 
     def begin_shutdown(self) -> None:
         """Stop starting queued mutations: each answers ``TenantLockBusy`` on reaching its turn."""

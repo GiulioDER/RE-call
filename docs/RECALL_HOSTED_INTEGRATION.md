@@ -181,6 +181,24 @@ learned sparse sidecars if present, and Add replay receipts. Other user tenants 
 
 ## Model and retrieval configuration
 
+### Forget suppression controls
+
+`RECALL_AML_FORGET_GATE` overrides the variant's gate for forget suppression. Its accepted values
+are `route` and `ledger`; all current variants default to `route`. An unknown value stops startup.
+With `route`, the code route is exempt from suppression. With `ledger`, suppression can act on
+every route, using only that user's forget ledger; an empty ledger changes no results. On the
+code route, `drop` and `stub` preserve code-shaped items whole and annotate them instead of
+dropping or cutting them. Other items still follow the selected suppression mode.
+
+The gate has no effect while `RECALL_AML_FORGET=off`, the current default. To populate the ledger,
+select `drop`, `stub`, or `annotate` before the first Add; Adds made while forget is off do not
+record forget requests. Combining active forget suppression with `RECALL_AML_ROUTE_GATES=data`
+requires `RECALL_AML_FORGET_GATE=ledger`, otherwise startup refuses the configuration.
+
+`GET /version` reports `forget_suppression.mode` and `forget_suppression.code_route`: the latter is
+`exempt` with the route gate, `ledger-gated` with an active ledger gate, and `off` with a ledger
+gate while forget is off.
+
 ### Runs of record
 
 Every AML Cycle 2 Full that RE-call ran, except the first Multimodal Full, was served by the
