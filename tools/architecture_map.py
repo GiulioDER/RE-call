@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 from pathlib import Path
 import sys
 
@@ -21,17 +20,13 @@ def package_root(module: str) -> str:
     return module.split(".", 1)[0]
 
 
-def source_fingerprint() -> str:
-    """Return a reproducible fingerprint for the Python source scanned by the map."""
-    digest = hashlib.sha256()
-    for package in ROOT_PACKAGES:
-        for path in sorted(Path(package).rglob("*.py")):
-            digest.update(path.as_posix().encode("utf-8"))
-            digest.update(path.read_bytes())
-    return digest.hexdigest()
+def build_map(packages: tuple[str, ...] = ROOT_PACKAGES) -> str:
+    """Render the import map of ``packages``.
 
-
-def build_map() -> str:
+    The output depends only on the import graph, never on source bytes. A hash of the source used
+    to be rendered here, which made every code change stale the committed map and made any two
+    open code PRs conflict on that one line. Only a change to the graph should need a regenerate.
+    """
     repository_root = Path(__file__).resolve().parents[1]
     if str(repository_root) not in sys.path:
         sys.path.insert(0, str(repository_root))
@@ -40,9 +35,8 @@ def build_map() -> str:
 
     # A persistent Grimp cache can retain modules removed from a checkout.
     # The map is a CI contract, so build it from the current source tree.
-    graph = grimp.build_graph(*ROOT_PACKAGES, cache_dir=None)
+    graph = grimp.build_graph(*packages, cache_dir=None)
     modules = sorted(graph.modules)
-    fingerprint = source_fingerprint()
 
     fan_in = sorted(
         (
@@ -78,10 +72,9 @@ def build_map() -> str:
         "",
         "## Scope",
         "",
-        f"Packages: {', '.join(f'`{name}`' for name in ROOT_PACKAGES)}",
+        f"Packages: {', '.join(f'`{name}`' for name in packages)}",
         f"Modules: {len(modules)}",
         f"Cross package edges: {len(cross_edges)}",
-        f"Source tree fingerprint: `{fingerprint}`",
         "",
         "## Highest fan in modules",
         "",
