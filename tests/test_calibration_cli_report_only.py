@@ -31,7 +31,15 @@ C3 `test_c3_served_gap_refuses_under_a_source_policy`,
 C4 `test_c4_served_gap_never_turns_the_decision_ledger_on`,
 C5 `test_c5_served_gap_compares_the_unrounded_served_cosine`,
 C6 `test_c6_a_damaged_stored_coverage_row_reads_as_unavailable`,
-C7 `test_c7_status_says_when_this_process_does_not_run_the_measured_gate`.
+C7 `test_c7_status_says_when_this_process_does_not_run_the_measured_gate`,
+C8 `test_c8_served_gap_refuses_a_report_when_a_promotion_lands_mid_run` (CCA DAT-002, PR 969: the
+  served side searches the active generation per query, the exact side is pinned, and the report
+  was printed under the calibration's generation after a promotion).
+
+Red proof, 2026-10-28, on this workstation (no database needed), by `cca_checks tautology verify`
+against the pre-fix files of CCA deferred run 20261028T130504Z, then green on the fixed tree:
+- C8 against `_cmd_served_gap` without the post-run re-read: RED, 1 failed (DID NOT RAISE
+  SystemExit).
 
 Red proof, 2026-10-28, on this workstation (no database needed): C5 and C6 run by
 `cca_checks tautology verify` against the pre-fix files (both RED, 1 failed each); C7 written first
@@ -141,7 +149,7 @@ def doubles(monkeypatch):
     monkeypatch.setattr(calibration_v2, "CalibrationRepository", lambda *a, **k: repository)
     monkeypatch.setattr(calibration_v2, "load_query_set", lambda _path: ([], "digest"))
     monkeypatch.setattr(calibration_cmd, "_make_embedder", lambda _name: _Embedder())
-    monkeypatch.setattr(calibration_cmd, "_serving_calibration_id", lambda _a, _r: CAL)
+    monkeypatch.setattr(calibration_cmd, "_serving_calibration_id", lambda _a, _r, _active=None: CAL)
     monkeypatch.setattr(calibration_cmd, "_active_generation", lambda _a: "gen_double")
     return repository
 
@@ -237,3 +245,11 @@ def test_c7_status_says_when_this_process_does_not_run_the_measured_gate(
     assert f"unknown-term gate {state} in this process" in line, (
         "status showed the fit's checked gate as if this process ran it"
     )
+
+
+def test_c8_served_gap_refuses_a_report_when_a_promotion_lands_mid_run(doubles, monkeypatch) -> None:
+    monkeypatch.delenv("RECALL_SOURCE_POLICY_FILE", raising=False)
+    reads = iter(["gen_double", "gen_promoted", "gen_promoted"])
+    monkeypatch.setattr(calibration_cmd, "_active_generation", lambda _a: next(reads))
+    with pytest.raises(SystemExit, match="moved off gen_double"):
+        calibration_cmd._cmd_calibration(_args("served-gap", k=5, tolerance=None))

@@ -22,7 +22,14 @@ G3 `test_g3_abstain_disagreement_has_the_right_polarity`,
 G4 `test_g4_each_query_is_paired_with_its_own_exact_score`,
 G5 `test_g5_served_gap_reads_only`,
 G6 `test_g6_cli_reports_over_the_mcp_service_path`, `test_g6_lite_refuses_served_gap_by_name`,
-G7 `test_g7_a_served_score_above_the_exact_one_disagrees`.
+G7 `test_g7_a_served_score_above_the_exact_one_disagrees`,
+G8 `test_g8_a_negative_or_nan_tolerance_is_refused` (CCA NUM-002, PR 969: a negative or NaN
+  tolerance inverted the agreement test, so identical maxima read as served above the exact one).
+
+Red proof, 2026-10-28, on this workstation (no database needed), by `cca_checks tautology verify`
+against the pre-fix files of CCA deferred run 20261028T130504Z, then green on the fixed tree:
+- G8 against `served_gap_report` without the tolerance guard: RED, 2 failed (DID NOT RAISE
+  ValueError for -0.001 and NaN).
 
 Red proof, 2026-10-21, on a Linux host (not a workstation) against a throwaway pg18 container, each
 mutation alone, the named test failing in the named assertion (exit 1, "1 failed", no error), then
@@ -113,6 +120,13 @@ def test_g7_a_served_score_above_the_exact_one_disagrees() -> None:
     assert report["gaps_above_tolerance"] == 0 and report["gap_max"] is None
     assert "1 served above the exact maximum" in describe(report)
 
+
+
+@pytest.mark.parametrize("tolerance", [-0.001, float("nan")])
+def test_g8_a_negative_or_nan_tolerance_is_refused(tolerance: float) -> None:
+    rows = [ServedGapRow(True, 0.6, 0.6, False)]
+    with pytest.raises(ValueError, match="tolerance"):
+        served_gap_report(rows, 0.41, tolerance)
 
 # --------------------------------------------------------------------------------------------
 # Against a real tenant.

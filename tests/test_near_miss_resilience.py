@@ -24,7 +24,8 @@ def test_optional_coverage_failure_does_not_block_saved_fit(tmp_path: Path, monk
         raise RuntimeError("offline diagnostic transport failed")
 
     if stage == "collector":
-        monkeypatch.setattr(calibration, "near_miss_coverage", failed_report)
+        # The fit's collector seam since the CCA CODE-001 fix (one rule for both stores).
+        monkeypatch.setattr(calibration, "fit_coverage", failed_report)
     else:
         monkeypatch.setattr(store, "save_near_miss_coverage", failed_report)
     try:

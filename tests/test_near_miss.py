@@ -25,7 +25,15 @@ N2 `test_unknown_entity_probes_are_rejected_by_the_gate_not_the_score`,
 N3 `test_calibration_reports_coverage_and_keeps_its_certificate`,
 N4 `test_coverage_belongs_to_its_calibration`,
 N5 `test_a_corpus_without_headings_still_gets_in_vocabulary_probes`,
-N6 `test_too_few_probes_is_unmeasured_and_provisional`.
+N6 `test_too_few_probes_is_unmeasured_and_provisional`,
+N7 `test_a_probe_the_vocabulary_check_refuses_is_not_embedded` (CCA PERF-004, PR 969: each
+  refused probe still paid an embedding and an exact scan, although it is rejected whatever its
+  score).
+
+Red proof, 2026-10-28, on this workstation (no database needed), by `cca_checks tautology verify`
+against the pre-fix files of CCA deferred run 20261028T130504Z, then green on the fixed tree:
+- N7 against `near_miss_coverage` embedding every probe: RED, 1 failed ("a probe the vocabulary
+  check refused was still embedded and scanned").
 
 Red proof, 2026-10-09, run on a Linux host (not this workstation), each mutation alone, failing in
 the named assertion, then restored byte for byte and all four green:
@@ -170,3 +178,29 @@ def test_coverage_belongs_to_its_calibration(tmp_path: Path) -> None:
     assert outcome.artifact is not None
     assert store.near_miss_coverage(outcome.artifact.calibration_id) is not None
     assert store.near_miss_coverage("cal_someone_else") is None
+
+
+def test_a_probe_the_vocabulary_check_refuses_is_not_embedded(monkeypatch) -> None:
+    from recall.near_miss import near_miss_coverage
+
+    monkeypatch.delenv("RECALL_UNKNOWN_TERM_GATE", raising=False)
+    embedded: list[str] = []
+
+    class _Embedder:
+        name, dim = "counting", 2
+
+        def embed_query(self, text: str) -> list[float]:
+            embedded.append(text)
+            return [1.0, 0.0]
+
+    class _Store:
+        def unknown_terms(self, tokens):
+            return list(tokens)
+
+        def top_cosine(self, _vector) -> float:
+            return 0.9
+
+    probes = {"unknown_entity": ["What does QK4817 control?"], "in_vocabulary": []}
+    report = near_miss_coverage(_Store(), _Embedder(), 0.41, probes)
+    assert report["unknown_entity"]["rejected"] == 1
+    assert embedded == [], "a probe the vocabulary check refused was still embedded and scanned"
