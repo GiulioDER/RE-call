@@ -112,9 +112,12 @@ def fit_voyage_image(data_url: str, *, strict: bool = False) -> tuple[str, bool]
     that stores or returns the original ever sees the fitted copy. Without Pillow, or for bytes
     that do not decode, the input is returned unchanged and the provider decides.
 
-    With ``strict``, an image Pillow cannot read raises (as does a missing Pillow) instead of
-    passing through. The AML adapter uses it: it has always refused such an image rather than
-    sending it, and its admission checks only the MIME type, size and magic bytes.
+    With ``strict``, an image whose header Pillow cannot open raises (as does a missing Pillow)
+    instead of passing through: usually ``UnidentifiedImageError``, though a truncated file can
+    raise a plain ``OSError``, and so can a resize of an image over the pixel limit. Only the
+    header is read, so an image within both limits whose pixel data is corrupt behind a readable
+    header is still returned unchanged and sent. The AML adapter uses it, because its admission
+    checks only the MIME type, size and magic bytes.
     """
     decoded = _split_data_url(data_url)
     if decoded is None:

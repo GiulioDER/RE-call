@@ -66,10 +66,15 @@ bare `Error executing tool recall_search` instead of its retry guidance. Three t
 `tests/test_rate_limit_http.py` caught it, but only after it had broken master three times
 (#497, #498, #499), because nothing in the range said "2.1.0 is new here".
 
-Two things made the drift invisible, and both still hold:
+Two things made the drift invisible:
 
-- **CI installs with `pip install -e`, which ignores `uv.lock`.** The lock said 2.0.0 the whole
-  time. It constrains `uv sync` and nothing else, so it is not a control on what CI resolves.
+- **CI installed with `pip install -e`, which ignores `uv.lock`.** The lock said 2.0.0 the whole
+  time, and it constrained `uv sync` and nothing else. Corrected 2026-10-28: this stopped holding
+  for the main suite on 2026-10-01 (#837). The `test` and `test-py314` jobs now install the
+  hashed, frozen export of `uv.lock`, so a new release reaches them only through a lock change.
+  Jobs that still install with `pip install -e` (`architecture`, `optional-import-profiles`,
+  `clean-install`, `schema-migrations`, `desktop`, `resilience-redis`) still resolve the newest
+  release in range.
 - **A range admits a version no one has run the suite against.** The pin converts that into a
   deliberate bump: a version change is now a diff, reviewed, with a full CI run behind it.
 

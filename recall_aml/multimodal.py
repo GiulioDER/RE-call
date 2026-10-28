@@ -79,7 +79,8 @@ def _voyage_image_data_url(data_url: str) -> tuple[str, bool]:
 
     The data URL is validated exactly as admission validates it, and a malformed one raises. The
     fitting is `recall.multimodal.fit_voyage_image`, shared with the core tenant, in strict mode
-    so an image Pillow cannot read still raises rather than being sent. It was measured byte
+    so an image whose header Pillow cannot open raises rather than being sent (a corrupt body
+    behind a readable header is not detected). It was measured byte
     identical to this module's former copy on 2026-09-30 (six cases across PNG, JPEG, WebP, RGBA
     and greyscale, fitted and untouched), so no stored vector changes.
     """
@@ -134,8 +135,9 @@ def prepare_messages(
             try:
                 voyage_image, transformed = _voyage_image_data_url(part.image_url.url)
             except (UnidentifiedImageError, DecompressionBombError) as exc:
-                # Admission checks only type, size and magic bytes. An image Pillow cannot read
-                # is never sent (PR 832) and now never stored either, but the rest of the Add is:
+                # Admission checks only type, size and magic bytes. An image whose header Pillow
+                # cannot identify is never sent (PR 832) and now never stored either, but the rest
+                # of the Add is:
                 # one unreadable image used to lose every message of it (CCA U-47).
                 log.warning(
                     "multimodal_image_unreadable",
