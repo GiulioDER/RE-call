@@ -285,6 +285,35 @@ def test_without_the_deny_list_the_verdict_says_private_terms_were_not_checked(
     assert capsys.readouterr().out.startswith("public tree clean: 1 file(s) read")
 
 
+def test_a_deny_list_with_no_terms_is_reported_as_set_but_empty_not_as_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A set variable naming a list with no terms is not an unset variable, and must not pass.
+
+    ``load_denylist`` drops blank and ``#`` lines, so a list holding only comments loads no
+    terms. The verdict said the variable "is not set", which sent the reader to the wrong fix,
+    and a check of the variable instead of the loaded terms would print a full pass here. The
+    stderr marker ``private-term: not checked`` is what the private pre-push hook matches, so it
+    must survive. Red proof (CCA BUG-001 / BUG-002 of PR 836): against the pre-fix ``main`` this
+    fails on ``"names a list with no terms" in out``; with the verdict's condition mutated to
+    ``os.environ.get(DENYLIST_ENV)`` it fails on ``"NOT checked" in out``.
+    """
+    (tmp_path / "note.md").write_text("nothing to see here\n", encoding="utf-8")
+    denylist = tmp_path / "denylist.txt"
+    denylist.write_text("# only a comment\n\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["check_public_tree.py", "note.md"])
+    monkeypatch.setenv(check.DENYLIST_ENV, str(denylist))
+    assert check.main() == 0
+    captured = capsys.readouterr()
+    out, err = captured.out, captured.err
+    assert "NOT checked" in out
+    assert "names a list with no terms" in out
+    assert "is not set" not in out
+    assert "private-term: not checked" in err
+    assert "is not set" not in err
+
+
 def test_no_tracked_research_record_names_a_real_account_in_a_home_path() -> None:
     """Every tracked pre-registration passes the home-path rule, within the recorded baseline.
 

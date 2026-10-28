@@ -295,6 +295,13 @@ def main() -> int:
     parser.add_argument("files", nargs="*")
     args = parser.parse_args()
     terms = load_denylist(os.environ.get(DENYLIST_ENV))
+    # Why private-term goes unchecked, when it does. A set variable naming a list of only blank or
+    # `#` lines loads no terms too, and calling that "not set" sends the reader to the wrong fix.
+    unchecked_reason = (
+        "" if terms
+        else f"{DENYLIST_ENV} names a list with no terms" if os.environ.get(DENYLIST_ENV)
+        else f"{DENYLIST_ENV} is not set"
+    )
     # Named files are read where the caller stands; tracked and staged files from the repository root.
     paths, base = (args.files, Path.cwd()) if args.files else (tracked(args.staged), ROOT)
     found, read, missing, skipped = scan(paths, load_allowlist(), base, terms)
@@ -319,7 +326,7 @@ def main() -> int:
     for path in skipped:
         print(f"{path}: not text, not checked", file=sys.stderr)
     if not terms:
-        print(f"private-term: not checked, {DENYLIST_ENV} is not set", file=sys.stderr)
+        print(f"private-term: not checked, {unchecked_reason}", file=sys.stderr)
     if grandfathered:
         note = f"; the baseline could fall by {slack}" if slack else ""
         print(f"{grandfathered} ratcheted finding(s) within {BASELINE.name}{note}", file=sys.stderr)
@@ -339,7 +346,7 @@ def main() -> int:
     # Without the list the last line must not read as a full pass: a stderr note above it was
     # scrolled past three times, and each time a private term went on to fail CI.
     verdict = "public tree clean" if terms else (
-        f"public tree clean EXCEPT private-term, which was NOT checked ({DENYLIST_ENV} is not set)"
+        f"public tree clean EXCEPT private-term, which was NOT checked ({unchecked_reason})"
     )
     print(f"{verdict}: {read} file(s) read, {len(skipped)} not text and not read")
     return 0
