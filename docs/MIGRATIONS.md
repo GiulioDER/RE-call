@@ -80,8 +80,10 @@ CI lints every migration after 0025 with squawk (`scripts/lint_migrations.sh`, i
 `architecture` job) and refuses a constraint added without `NOT VALID` or a non-concurrent index
 on an existing table inside a transaction. Validate a constraint in a later migration, as 0032 and
 0033 do. The lint also refuses a file in that directory whose name the runner would not accept.
-squawk does not see DDL inside a `DO` block or an `EXECUTE` string, so review such a migration by
-hand. To run it locally:
+squawk does not see DDL inside a `DO` block or an `EXECUTE` string, nor a whole-table `UPDATE` or
+an explicit `LOCK TABLE`, so review such a migration by hand. To accept one finding on purpose, put
+`-- squawk-ignore <rule>` on the line before that statement, with the reason; never add a rule to
+`.squawk.toml` for a single migration. To run it locally:
 
 ```bash
 pip install squawk-cli==2.66.0 && bash scripts/lint_migrations.sh

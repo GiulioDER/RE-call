@@ -234,3 +234,23 @@ def test_a_cap_that_is_not_a_positive_integer_is_refused(value: str, tmp_path: P
 
     assert completed.returncode == 2
     assert "MAX_TESTS_PER_FILE must be a positive integer" in completed.stderr
+
+
+def test_a_module_imported_only_in_a_parenthesised_block_is_found(tmp_path: Path) -> None:
+    """CCA of #843, BUG-002: `from recall import (` with the module on a later line was missed, so
+    the module was reported as imported by no test and never mutated.
+
+    Red proof, 2026-10-28, on the test host, against `scripts/mutation_changed.sh` before the fix:
+    the selection held only tests/test_thing.py, failing at the first assertion. Restored, green.
+    """
+    repo, env = _repository(tmp_path, {
+        "test_thing.py": "from recall.thing import thing_value\n\n\ndef test_t():\n    assert thing_value() == 0\n",
+        "test_paren.py": (
+            "from recall import (\n    other,\n)\n\n\ndef test_p():\n    assert other.other_value() == 1\n"
+        ),
+    })
+
+    summary = _summary(repo, env)
+
+    assert "tests/test_paren.py" in _selection(env)
+    assert "Changed modules that no test imports" not in summary

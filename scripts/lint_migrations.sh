@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 # Lint NEW schema migrations with squawk, the way recall's own runner will execute them.
 #
-# Why only new ones: every migration through FROZEN_THROUGH is already applied somewhere and pinned
-# by recall/migrations/checksums.json, so a finding there can be learned from but never fixed. On
+# Why only new ones: every migration through FROZEN_THROUGH shipped in v0.14.0, before this gate
+# existed, and is applied to deployed corpora, so a finding there can be learned from but never
+# fixed in place (the runner refuses a changed checksum). (Corrected 2026-10-28: this said the
+# boundary was being pinned by recall/migrations/checksums.json, which was true when it held only
+# 0001 to 0025; it now pins every migration, so pinning no longer marks the boundary. Raise
+# FROZEN_THROUGH when a release ships later migrations, before changing the squawk pin or
+# .squawk.toml, since every file after it is linted on each run.) On
 # 2026-10-01 those 25 files carried four findings in the two hazard classes this gate exists for:
 # a constraint added without NOT VALID (0014, 0025), which scans the table under a write lock, and
 # a non-concurrent CREATE INDEX on an existing table inside a transaction (0014, 0023), which blocks
 # writes for the whole build. A new migration with either, written as a top-level statement, is
 # refused. squawk does not parse PL/pgSQL, so DDL inside a `DO $$ ... $$` block or an `EXECUTE`
 # string is not seen at all (0001 and 0016 write DDL that way); such a migration needs review by
-# hand.
+# hand. Nor does squawk refuse a whole-table UPDATE or an explicit LOCK TABLE, either of which
+# holds a served table's write lock for the whole transaction.
+#
+# To accept one finding on purpose, put `-- squawk-ignore <rule>` on the line before that
+# statement, with the reason; never add a rule to .squawk.toml for a single migration, because
+# excluded_rules applies to every file.
 #
 # The runner's semantics, which squawk cannot see on its own:
 #   * a file marked `-- recall:transactional` runs inside one transaction, so it is linted with
@@ -17,7 +27,8 @@
 #   * the runner sets lock_timeout itself and sets statement_timeout = 0 on purpose (an HNSW build
 #     can take hours), so squawk's two timeout rules are excluded in .squawk.toml.
 #
-# Needs `squawk` on PATH (pip install squawk-cli). Exits 0 when there is nothing new to lint.
+# Needs `squawk` on PATH: `pip install squawk-cli==2.66.0`, the version CI pins (the exclusions in
+# .squawk.toml were measured with it). Exits 0 when there is nothing new to lint.
 set -euo pipefail
 
 FROZEN_THROUGH=25

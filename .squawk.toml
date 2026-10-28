@@ -5,6 +5,9 @@
 #   (recall/schema.py); statement_timeout = 0 is deliberate, since an HNSW build can take hours.
 # ban-char-field: the char(n) columns hold fixed-length digests, where the fixed width is the point.
 # prefer-bigint-over-int: the int columns are dimensions, counts and ordinals, nowhere near 2^31.
+# These exclusions are global: a new char(n) column that is not a digest, or an int column that can
+# grow past 2^31, passes silently, so review those by hand. To accept one finding in one migration,
+# use `-- squawk-ignore <rule>` on that statement rather than widening this list.
 excluded_rules = [
     "require-lock-timeout",
     "require-statement-timeout",
