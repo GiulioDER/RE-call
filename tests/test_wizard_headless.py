@@ -140,6 +140,29 @@ def test_a_project_root_that_is_a_file_is_refused_by_name(tmp_path: Path) -> Non
     assert caught.value.keys == ("project_root",)
 
 
+def test_a_project_env_that_still_enables_the_removed_judge_is_refused_up_front(
+    tmp_path: Path,
+) -> None:
+    """`write_project_files` refuses to rewrite such a `.env`, but it runs after every corpus is
+    built; the config check must refuse it before any of that work (CCA of #849, DAT-001).
+
+    Red proof, 2026-10-28: with the `_removed_entailment_problem` check removed from
+    `recall.wizard.headless.load_config`, this fails at `pytest.raises(ConfigRefusal)` (DID NOT
+    RAISE). Restored, green.
+    """
+    from recall.setup import SETUP_BEGIN, SETUP_END
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".env").write_text(
+        f'{SETUP_BEGIN}\nRECALL_ENTAILMENT="1"\n{SETUP_END}\n', encoding="utf-8"
+    )
+    with pytest.raises(ConfigRefusal) as caught:
+        load_config(_write(tmp_path, _config(tmp_path, project_root=str(root))))
+    assert caught.value.keys == ("project_root",)
+    assert "entailment judge was removed" in str(caught.value)
+
+
 def test_a_project_root_that_does_not_exist_yet_is_accepted(tmp_path: Path) -> None:
     """The ordinary first install, and the case CI actually drives.
 

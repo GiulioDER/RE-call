@@ -18,7 +18,7 @@ from recall.store import (
 )
 from recall.trust_policy import TrustPolicy
 
-from recall.cli_commands._shared import _make_embedder, _run_queries
+from recall.cli_commands._shared import _make_embedder, _refuse_removed_entailment, _run_queries
 
 
 def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -308,6 +308,10 @@ def _quickstart(args: argparse.Namespace) -> None:
             else "nothing to remove: no quickstart stack has been created on this machine"
         )
         return
+
+    # Before Docker, the database and the embedder: this command applied the removed judge
+    # whenever RECALL_ENTAILMENT was on, exactly as `recall search` did, so it refuses the same way.
+    _refuse_removed_entailment()
 
     provisioned = args.existing_dsn is None
     if provisioned:

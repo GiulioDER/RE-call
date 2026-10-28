@@ -10,7 +10,7 @@ design violation.
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 345
 Cross package edges: 363
-Source tree fingerprint: `d272c56520d036164fc97ed25b2a36a4208558eec0cb0a8037caf0c476b56cdd`
+Source tree fingerprint: `03495ce9aef1154d4218b4e526cfaec37246e5d69e49cbbd2e41fe22bd398d78`
 
 ## Highest fan in modules
 
@@ -75,9 +75,9 @@ Source tree fingerprint: `d272c56520d036164fc97ed25b2a36a4208558eec0cb0a8037caf0
 | 17 | `recall.cli_commands.calibration_cmd` |
 | 17 | `recall_mcp.indexing` |
 | 16 | `recall.cli_commands.setup_wizard` |
+| 16 | `recall.wizard.headless` |
 | 16 | `recall_mcp.semantic_graph_cache` |
 | 15 | `recall.generation_store` |
-| 15 | `recall.wizard.headless` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.cli_commands.provenance_cmd` |
@@ -708,7 +708,7 @@ They are observations, not automatic failures.
 | `recall.semantic_graph._store` | 1 | 15 |
 | `recall.semantic_lint` | 8 | 102 |
 | `recall.served_gap` | 0 | 0 |
-| `recall.setup` | 10 | 120 |
+| `recall.setup` | 11 | 120 |
 | `recall.source_conditioning` | 1 | 1 |
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |
@@ -743,7 +743,7 @@ They are observations, not automatic failures.
 | `recall.wizard` | 0 | 0 |
 | `recall.wizard.corpora` | 4 | 100 |
 | `recall.wizard.database` | 1 | 32 |
-| `recall.wizard.headless` | 15 | 148 |
+| `recall.wizard.headless` | 16 | 148 |
 | `recall.wizard.identity` | 1 | 1 |
 | `recall.wizard.interactive` | 5 | 103 |
 | `recall.wizard.inventory` | 2 | 98 |
