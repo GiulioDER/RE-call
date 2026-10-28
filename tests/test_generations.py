@@ -2622,10 +2622,67 @@ def test_a_source_s_chunks_reach_the_database_as_one_batch() -> None:
     assert written == 3
     # One lookup per SOURCE, not per chunk: the `first_indexed_at` carry
     # (`_first_indexed_by_ordinal`). A per-chunk loop would make this 3.
-    assert executes == [("tenant-a", "s3://b/memo.md", "tenant-a")]
+    assert executes == [("a" * 64, "tenant-a", "s3://b/memo.md", "tenant-a")]
     assert len(batches) == 1
     assert [row[2] for row in batches[0]] == ["c0", "c1", "c2"]
     assert [row[6] for row in batches[0]] == [0, 1, 2]
+
+
+
+@pytest.mark.parametrize("same_bytes", [True, False])
+def test_a_new_ordinal_of_unchanged_bytes_keeps_the_sources_date(same_bytes: bool) -> None:
+    """Owner decision 2026-10-28, CCA BUG-001 of #835. No database: the connection is scripted.
+
+    Invariant: when a source's bytes are unchanged and it now has more chunks (a changed chunker),
+    an ordinal it never had takes the earliest date held for those bytes; when the bytes changed,
+    the new ordinal still takes no carried date (the build dates it). Failure caught: the extra
+    ordinals of an unchanged memo were dated to the rebuild, so `known_as_of` replay and the dated
+    answer profile treated text that had always been there as new. Red against the pre-change
+    `_first_indexed_by_ordinal` on "a new ordinal of unchanged bytes lost the source's date".
+    """
+    from contextlib import contextmanager
+
+    from recall.types import Chunk
+
+    first = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    batches: list[list[tuple]] = []
+
+    class _Cursor:
+        def executemany(self, query, rows):
+            batches.append([tuple(row) for row in rows])
+
+    class _Result:
+        def __init__(self, query: str) -> None:
+            self._query = query
+
+        def fetchall(self):
+            # Ordinal 0 was written once; whether at these bytes is the parameter. The columns
+            # are the ones the query asks for, as a database would answer it.
+            if "FILTER" in self._query:
+                return [(0, first, first if same_bytes else None)]
+            return [(0, first)]
+
+    class _Connection:
+        def execute(self, query, params):
+            return _Result(query)
+
+        @contextmanager
+        def cursor(self):
+            yield _Cursor()
+
+    manager = object.__new__(GenerationManager)
+    manager.tenant_id = "tenant-a"
+    chunks = [Chunk(f"c{index}", "memo.md", f"text {index}", {"ord": index, "file": "memo.md"}) for index in range(2)]
+    manager._write_source(
+        _Connection(), "gen-2", "s3://b/memo.md", "v1", "a" * 64, chunks, [[0.0], [1.0]], "simple",
+    )
+    dates = [row[10] for row in batches[0]]
+    assert dates[0] == first
+    if same_bytes:
+        kept = dates[1] == first
+        assert kept, "a new ordinal of unchanged bytes lost the source's date"
+    else:
+        assert dates[1] is None, "an edited source's new ordinal was back-dated"
 
 
 # --- first_indexed_at across generations ------------------------------------------------------

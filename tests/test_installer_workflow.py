@@ -96,3 +96,23 @@ def test_the_tag_is_never_interpolated_into_a_script_body() -> None:
                 f"{job_name}/{step.get('name', '?')}: pass the tag through `env:` and read it as "
                 "$TAG, rather than substituting it into the script before the shell sees it"
             )
+
+
+def test_a_tag_without_signpath_warns_and_still_attaches_nothing() -> None:
+    """Owner decision 2026-10-28: until SignPath is configured, a tag push warns instead of failing.
+
+    Invariant: on `push` with `vars.SIGNPATH_ORGANIZATION_ID` empty, the warning step runs and the
+    refusal step does not, while a manual run without `allow_unsigned` is still refused and the
+    `attach` job still requires a signed bundle. Failure caught: every tag from v0.10.0 to v0.14.0
+    failed this job only because the credentials did not exist yet. Red against the workflow
+    before the change: "a tag without SignPath has no warning step".
+    """
+    steps = {step.get("name"): step for step in _workflow()["jobs"]["build"]["steps"]}
+    warn = steps.get("Note that this release carries no Windows installer")
+    assert warn is not None, "a tag without SignPath has no warning step"
+    assert "vars.SIGNPATH_ORGANIZATION_ID == ''" in warn["if"] and "github.event_name == 'push'" in warn["if"]
+    assert "exit 1" not in warn["run"]
+    refuse = steps["Refuse an unsigned release"]["if"]
+    assert "!(github.event_name == 'push' && vars.SIGNPATH_ORGANIZATION_ID == '')" in refuse
+    assert "inputs.allow_unsigned != true" in refuse, "a manual unsigned run is no longer refused"
+    assert "needs.build.outputs.signed == 'true'" in _workflow()["jobs"]["attach"]["if"]

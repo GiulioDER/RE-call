@@ -838,9 +838,10 @@ class GenerationManager:
         )
 
     def _first_indexed_by_ordinal(
-        self, conn: psycopg.Connection, source_uri: str
-    ) -> dict[int, datetime]:
-        """The earliest `first_indexed_at` any live generation holds for each chunk of a source.
+        self, conn: psycopg.Connection, source_uri: str, source_sha256: str
+    ) -> tuple[dict[int, datetime], datetime | None]:
+        """The earliest `first_indexed_at` any live generation holds for each chunk of a source,
+        and the earliest any of them holds for the source at these exact bytes.
 
         `first_indexed_at` is the FIRST write, preserved across re-indexing (`recall.trust`,
         `PgVectorStore.replace_sources`), and `_reuse_source` keeps it. A source written here
@@ -853,20 +854,30 @@ class GenerationManager:
         pipeline change. That is the identity the legacy indexer's `md5(path:ordinal)` ids carry,
         so an edited source keeps its dates and an ordinal it never had before is new. An erased
         source has no rows left in any generation, so nothing is carried back into it.
+
+        An ordinal is new only when the TEXT is: a source whose bytes never changed but which a
+        changed chunker now splits into more chunks had all of that text at its first write, so its
+        new ordinals take the earliest date held for those same bytes, the second value returned
+        (owner decision 2026-10-28, CCA BUG-001 of #835). Any edit leaves it None, so appended
+        text is still dated by the build that first saw it. One query either way.
         """
-        return {
-            int(ordinal): first
-            for ordinal, first in conn.execute(
-                "SELECT chunk_ordinal, min(COALESCE(first_indexed_at, indexed_at)) "
-                "FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND source_uri = %s AND generation_id = ANY(ARRAY("
-                "SELECT generation_id FROM recall_generations WHERE tenant_id = %s "
-                "AND state IN ('active', 'ready', 'retired'))) "
-                "GROUP BY chunk_ordinal",
-                (self.tenant_id, source_uri, self.tenant_id),
-            ).fetchall()
-            if first is not None
-        }
+        by_ordinal: dict[int, datetime] = {}
+        unchanged: datetime | None = None
+        for ordinal, first, same_bytes in conn.execute(
+            "SELECT chunk_ordinal, min(COALESCE(first_indexed_at, indexed_at)), "
+            "min(COALESCE(first_indexed_at, indexed_at)) FILTER (WHERE source_sha256 = %s) "
+            "FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND source_uri = %s AND generation_id = ANY(ARRAY("
+            "SELECT generation_id FROM recall_generations WHERE tenant_id = %s "
+            "AND state IN ('active', 'ready', 'retired'))) "
+            "GROUP BY chunk_ordinal",
+            (source_sha256, self.tenant_id, source_uri, self.tenant_id),
+        ).fetchall():
+            if first is not None:
+                by_ordinal[int(ordinal)] = first
+            if same_bytes is not None and (unchanged is None or same_bytes < unchanged):
+                unchanged = same_bytes
+        return by_ordinal, unchanged
 
     def _write_source(
         self,
@@ -881,7 +892,7 @@ class GenerationManager:
     ) -> int:
         if len(chunks) != len(embeddings):
             raise GenerationError("chunk and embedding counts do not match")
-        first_seen = self._first_indexed_by_ordinal(conn, source_uri)
+        first_seen, unchanged_first = self._first_indexed_by_ordinal(conn, source_uri, source_sha256)
         # One `executemany` rather than one round trip per chunk: psycopg pipelines it, and the
         # statement and rows are exactly those the per-chunk loop sent.
         with conn.cursor() as cur:
@@ -903,7 +914,7 @@ class GenerationManager:
                         chunk.text,
                         Jsonb(chunk.metadata),
                         embedding,
-                        first_seen.get(int(chunk.metadata["ord"])),
+                        first_seen.get(int(chunk.metadata["ord"]), unchanged_first),
                         fts_language,
                         chunk.text,
                     )
