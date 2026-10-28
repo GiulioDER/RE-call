@@ -67,7 +67,7 @@ Cross package edges: 367
 | 22 | `recall.generations` |
 | 22 | `recall.trust` |
 | 22 | `recall_mcp.reasoning_engine` |
-| 20 | `recall` |
+| 21 | `recall` |
 | 20 | `recall.rewrite` |
 | 19 | `recall_mcp.provenance` |
 | 18 | `recall.index` |
@@ -480,7 +480,7 @@ They are observations, not automatic failures.
 
 | Module | Direct imports | Upstream modules |
 |---|---:|---:|
-| `recall` | 20 | 120 |
+| `recall` | 21 | 120 |
 | `recall._chat_content` | 0 | 0 |
 | `recall._env` | 0 | 0 |
 | `recall._frozen` | 0 | 0 |

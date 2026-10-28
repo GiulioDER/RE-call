@@ -160,3 +160,17 @@ def test_threads_resolving_exports_at_once_all_succeed() -> None:
         result = _run(probe)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "ok,ok,ok,ok", result.stdout + result.stderr
+
+
+def test_the_types_an_evidence_bundle_carries_are_exported_beside_it() -> None:
+    """Owner decision 2026-10-28, CCA ENV-004 of #945: `EvidenceBundle` is exported and carries
+    `QuerySupport` and `CalibrationCoverage`, so both are exported from the package too. Red
+    against the pre-change `recall/__init__.py`: "a type the bundle carries is not exported".
+    """
+    import recall
+    from recall.support import CalibrationCoverage, QuerySupport
+
+    exported = {"QuerySupport", "CalibrationCoverage"} <= set(recall.__all__)
+    assert exported, "a type the bundle carries is not exported"
+    assert recall.QuerySupport is QuerySupport
+    assert recall.CalibrationCoverage is CalibrationCoverage

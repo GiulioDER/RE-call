@@ -103,6 +103,9 @@ indexed (a crash after publication with no refresh since) is forgotten the same 
 A prepared request without a published
 memo can finish after rechecking correction preconditions; use explicit forgetting for deletion, since
 a direct filesystem deletion in that interrupted state cannot be distinguished from non-publication.
+Forgetting a memo under the id a still-unpublished request reserved cancels that request too: a
+retry then returns `memo_missing` instead of publishing. Erasure wins on purpose, because letting the
+retry go ahead by comparing bytes would let an edited copy of a forgotten memo be published again.
 The authorship ledger retains reservations and request identities when legacy calls write new memos.
 
 Forgetting also drops every hash the journal derived from the memo's bytes, since an unsalted hash of a
