@@ -22,6 +22,11 @@ class UpdateError(RuntimeError, RecallError):
 # installer somewhere this module did not choose.
 _SAFE_ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
+# The Windows asset `.github/workflows/windows-installer.yml` attaches to a release, and the only
+# one: `recall-install-<tag>-windows-x64.zip`. It is uploaded only for a signed build, so a
+# release without it has no Windows installer.
+_INSTALLER_ASSET = re.compile(r"recall-install-v?[0-9][A-Za-z0-9.-]*-windows-x64\.zip")
+
 
 def latest_release(api_url: str = "https://api.github.com/repos/GiulioDER/RE-call/releases/latest") -> ReleaseInfo:
     request = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github+json", "User-Agent": "recall-desktop"})
@@ -31,7 +36,7 @@ def latest_release(api_url: str = "https://api.github.com/repos/GiulioDER/RE-cal
     except Exception as exc:  # BROAD-CATCH: error-translation
         raise UpdateError(f"release check failed: {type(exc).__name__}") from exc
     assets = payload.get("assets", [])
-    asset = next((item for item in assets if str(item.get("name", "")).lower().endswith(".exe")), None)
+    asset = next((item for item in assets if _INSTALLER_ASSET.fullmatch(str(item.get("name", "")))), None)
     if asset is None:
         raise UpdateError("the latest release has no Windows installer")
     digest = str(asset.get("digest") or "")

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,38 @@ def test_an_asset_name_that_is_not_a_plain_file_name_is_refused(
 
     assert fetched == []
     assert list(tmp_path.iterdir()) == []
+
+
+def _release_api(monkeypatch: pytest.MonkeyPatch, assets: list[dict[str, str]]) -> None:
+    payload = {"tag_name": "v0.15.0", "assets": assets}
+
+    def fake_urlopen(request: object, timeout: float) -> io.BytesIO:
+        del request, timeout
+        return io.BytesIO(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(updates.urllib.request, "urlopen", fake_urlopen)
+
+
+def test_the_update_check_finds_the_installer_the_release_pipeline_publishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Invariant: `latest_release` selects the asset `windows-installer.yml` uploads.
+
+    That workflow attaches `recall-install-<tag>-windows-x64.zip` and nothing else for Windows;
+    the check looked for a `.exe`, so it could not succeed against any release. A stray `.exe`
+    asset of another name is not the installer. Red proof (selection by `.exe` suffix): fails
+    with UpdateError "the latest release has no Windows installer" on the published zip.
+    """
+    zip_name = "recall-install-v0.15.0-windows-x64.zip"
+    _release_api(monkeypatch, [
+        {"name": "recall_rag-0.15.0-py3-none-any.whl", "browser_download_url": "https://x/a.whl"},
+        {"name": zip_name, "browser_download_url": "https://x/" + zip_name, "digest": "sha256:" + "a" * 64},
+    ])
+
+    release = updates.latest_release()
+
+    assert (release.version, release.asset_name, release.sha256) == ("0.15.0", zip_name, "a" * 64)
+
+    _release_api(monkeypatch, [{"name": "something-else.exe", "browser_download_url": "https://x/s.exe"}])
+    with pytest.raises(UpdateError, match="no Windows installer"):
+        updates.latest_release()

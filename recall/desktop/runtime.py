@@ -208,7 +208,11 @@ class RuntimeManager(ABC):
         return self.calibration_status(tenant)
 
     def check_update(self) -> ReleaseInfo:
-        """Read signed release metadata through the desktop update channel."""
+        """Read the latest release's Windows installer metadata from the GitHub release API.
+
+        The metadata is not signed: the API response carries the asset's URL and digest
+        together, so the digest checks download integrity, not who published the release.
+        """
         return latest_release()
 
     def apply_update(self, release: ReleaseInfo) -> dict[str, Any]:

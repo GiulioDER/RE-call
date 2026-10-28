@@ -379,6 +379,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   blocks, in the same order and with the same errors. Measured on the memory corpus with
   identical search results: first-search peak 820 MB to 509 MB, steady resident set unchanged
   within 13 MB.
+* **The AML adapter no longer decodes an image over Pillow's pixel limit.** Pillow refuses an
+  image declaring more than twice `PIL.Image.MAX_IMAGE_PIXELS` but only warns below that, so a
+  small compressed file declaring about 150M pixels was decoded in full before being scaled to
+  Voyage's limit. `fit_voyage_image(strict=True)`, which the AML adapter uses, now raises
+  `DecompressionBombError` for anything over `MAX_IMAGE_PIXELS` (89,478,485 by default) before
+  decoding; AML skips such an image on Add and answers 422 for it as a query, where it used to
+  embed it. The default mode, used by the core tenant, still fits it.
+* **The desktop update check looks for the installer the release pipeline publishes,
+  `recall-install-<tag>-windows-x64.zip`.** It looked for a `.exe`, which no release carries, so
+  it could not succeed. No release since v0.9.8 carries an installer, because the Windows build
+  is refused unless it is signed, and until one does the check says the latest release has no
+  Windows installer.
 
 ### Removed
 

@@ -243,3 +243,32 @@ def test_an_unreadable_image_passes_through_unless_strict() -> None:
     assert fit_voyage_image(url) == (url, False)
     with pytest.raises(UnidentifiedImageError):
         fit_voyage_image(url, strict=True)
+
+
+def test_an_image_in_pillows_warning_band_is_refused_before_it_is_decoded(monkeypatch) -> None:
+    """Invariant: in strict mode an image declaring more pixels than Pillow's `MAX_IMAGE_PIXELS`
+    is refused before it is decoded.
+
+    Pillow only warns between that limit and twice it, so a small compressed file declaring about
+    149M pixels used to be opened and decoded in full by the fitter's resize. Strict mode (the
+    AML adapter) now raises `DecompressionBombError`, which AML turns into a per-image skip on
+    Add and a 422 on a query. The default mode still fits it (control): passing it through would
+    make Voyage refuse the whole batch. Scaled down here by lowering both limits; the 900x900
+    image sits between the patched `MAX_IMAGE_PIXELS` and twice it, the band Pillow only warns in.
+    Red proof (`fit_voyage_image` before the ceiling): the strict assert fails with DID NOT RAISE.
+    """
+    import pytest
+    from PIL.Image import DecompressionBombError, DecompressionBombWarning
+
+    from recall.multimodal import fit_voyage_image
+
+    monkeypatch.setattr(multimodal_module, "VOYAGE_MAX_IMAGE_PIXELS", 100_000)
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 500_000)
+    payload = _encoded(Image.new("L", (900, 900), 0), "PNG")
+    url = "data:image/png;base64," + base64.b64encode(payload).decode("ascii")
+
+    with pytest.warns(DecompressionBombWarning):
+        fitted, changed = fit_voyage_image(url)
+    assert changed and fitted != url
+    with pytest.warns(DecompressionBombWarning), pytest.raises(DecompressionBombError):
+        fit_voyage_image(url, strict=True)
