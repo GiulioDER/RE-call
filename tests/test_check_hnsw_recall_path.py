@@ -34,6 +34,12 @@ class _PathRecordingStore:
         self.seen.append(generation_store._generation_dense_search())  # noqa: SLF001
         return []
 
+    def _hnsw_filtered_tuning(self, k: int | None = None) -> tuple[int, str]:
+        return 200, "relaxed_order"
+
+    def _dense_exact_fallback(self, sql: str, params: dict) -> list[tuple]:
+        return []
+
 
 def _run(monkeypatch: pytest.MonkeyPatch, before: str | None) -> tuple[list[str], dict[str, object]]:
     if before is None:
