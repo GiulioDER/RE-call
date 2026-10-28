@@ -19,6 +19,7 @@ caller passes, so a run measures the search path it was given and no other.
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -54,11 +55,16 @@ def served_gap_report(
     A served score equal to the threshold clears it, as in `recall.trust_gate`, where a hit is
     `low_confidence` only strictly below the threshold.
     """
+    if not (math.isfinite(tolerance) and tolerance >= 0):
+        # A negative or NaN tolerance inverts the agreement test: identical maxima would read as
+        # served above the exact one.
+        raise ValueError(f"tolerance must be a finite number >= 0, got {tolerance!r}")
     items = list(rows)
     per_class: dict[str, dict[str, int]] = {
         name: {"n": 0, "agree": 0, "score_flips": 0, "abstain_disagreements": 0} for name in _CLASSES
     }
     gaps: list[float] = []
+    nothing_served = 0
     above = 0
     flips: list[dict[str, Any]] = []
     for row in items:
@@ -77,15 +83,17 @@ def served_gap_report(
         bucket["abstain_disagreements"] += abstain_disagrees
         if gap is not None and gap < -tolerance:
             above += 1
+        elif gap is None:
+            nothing_served += 1
         elif not agrees:
-            gaps.append(round(gap, 4) if gap is not None else float("inf"))
+            gaps.append(round(gap, 4))
         if flipped:
             flips.append({
                 "answerable": row.answerable,
                 "exact": round(row.exact, 4),
                 "served": None if served is None else round(served, 4),
             })
-    finite = sorted(gap for gap in gaps if gap != float("inf"))
+    finite = sorted(gaps)
     n = len(items)
     agree = sum(bucket["agree"] for bucket in per_class.values())
     return {
@@ -94,8 +102,8 @@ def served_gap_report(
         "tolerance": float(tolerance),
         "agree": agree,
         "agreement_rate": round(agree / n, 4) if n else None,
-        "gaps_above_tolerance": len(gaps),
-        "nothing_served": len(gaps) - len(finite),
+        "gaps_above_tolerance": len(gaps) + nothing_served,
+        "nothing_served": nothing_served,
         "served_above_exact": above,
         "gap_median": round(statistics.median(finite), 4) if finite else None,
         "gap_max": finite[-1] if finite else None,

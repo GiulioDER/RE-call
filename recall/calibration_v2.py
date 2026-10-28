@@ -1094,7 +1094,7 @@ class CalibrationRepository:
         as unmeasured and provisional until the next fit.
         """
         from recall.generation_store import GenerationStore
-        from recall.near_miss import near_miss_coverage, near_miss_probes
+        from recall.near_miss import fit_coverage
         from recall.support import COVERAGE_EVENT
 
         try:
@@ -1107,12 +1107,12 @@ class CalibrationRepository:
                         (self.tenant_id, artifact.generation_id),
                     ).fetchall()
                 ]
-            asked = [str(item["query"]) for item in labels if item.get("answerable") is True]
-            probes = near_miss_probes(texts, asked, per_class=len(asked))
             store = GenerationStore(self.dsn, embedder.dim, tenant=self.tenant_id)
             try:
                 with store.pin_generation(artifact.generation_id):
-                    report = near_miss_coverage(store, embedder, float(artifact.threshold), probes)
+                    report = fit_coverage(
+                        store, embedder, float(artifact.threshold), texts, labels
+                    )
             finally:
                 store.close()
             with self._connect() as conn:

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Mapping
-from typing import Any, Literal, get_args
+from typing import Any, Literal, Protocol, get_args
 
 from recall.observability import get_logger
 
@@ -39,8 +39,14 @@ LATEST_CALIBRATION_EVENT_SQL = (
 )
 
 
+class _Executes(Protocol):
+    """The one connection method the reader uses: a psycopg connection, typed without importing it."""
+
+    def execute(self, query: Any, params: Any = ..., /) -> Any: ...
+
+
 def latest_calibration_event(
-    conn: Any, tenant: str, event_type: str, calibration_id: str
+    conn: _Executes, tenant: str, event_type: str, calibration_id: str
 ) -> dict[str, Any] | None:
     """The newest `event_type` payload recorded for `calibration_id`, or None. Unvalidated."""
     row = conn.execute(LATEST_CALIBRATION_EVENT_SQL, (tenant, event_type, calibration_id)).fetchone()
