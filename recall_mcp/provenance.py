@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -60,6 +61,31 @@ def _fact_backends(store: PgVectorStore | LiteStore) -> tuple[FactLedger, Eviden
         PostgresFactLedger(_fact_write_dsn(store), tenant_id=store.tenant),
         PostgresEvidenceCardStore(store.dsn, tenant_id=store.tenant),
     )
+
+
+@contextmanager
+def _applied_generation(store: PgVectorStore) -> Iterator[str]:
+    """Pin the generation one fact application reads, and name it.
+
+    `GenerationStore.generation_id` asks the database for the active pointer unless a snapshot pins
+    it, and the steps of one application read it apart: the controller's binding, the fresh search
+    (`_retrieve_trusted` takes its own snapshot), `served_sources` and the card revalidation reads.
+    A promotion landing in between refused a valid fresh card as `GENERATION_MISMATCH`, or recorded
+    a fact under one generation after checking its content in another (CCA audit of PR 852).
+    Entering the store's own snapshot first makes every later read reuse this pin, as
+    `recall_mcp.retrieval._searched_generation` does for one search.
+
+    Only a generation store is entered. A lite store's `snapshot()` is a read transaction rolled
+    back on exit, which would hold its lock around the fact ledger's writes on the same connection,
+    and the legacy store has no snapshot; both answer their constant identity as before.
+    """
+    from recall.generation_store import GenerationStore
+
+    if isinstance(store, GenerationStore):
+        with store.snapshot() as generation_id:
+            yield str(generation_id)
+        return
+    yield store.generation_id
 
 
 def apply_fact_memory(
@@ -164,18 +190,19 @@ def apply_fact_memory(
         register_evidence_cards(cards, store=store)
         return tuple(card.card_id for card in cards)
 
-    controller = ProvenanceController(
-        tenant_id=store.tenant,
-        generation_id=store.generation_id,
-        cards=card_store,
-        ledger=ledger,
-        source_digest_for=current_digest,
-        card_revalidator=revalidate_card,
-        fresh_search=fresh_search,
-        writer=writer,
-        served_sources=served_sources(store),
-    )
-    decision = controller.apply_fact(request)
+    with _applied_generation(store) as generation_id:
+        controller = ProvenanceController(
+            tenant_id=store.tenant,
+            generation_id=generation_id,
+            cards=card_store,
+            ledger=ledger,
+            source_digest_for=current_digest,
+            card_revalidator=revalidate_card,
+            fresh_search=fresh_search,
+            writer=writer,
+            served_sources=served_sources(store),
+        )
+        decision = controller.apply_fact(request)
     return {
         "allowed": decision.allowed,
         "decision_code": str(decision.code),
