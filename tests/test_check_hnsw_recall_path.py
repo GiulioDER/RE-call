@@ -25,7 +25,7 @@ from scripts import check_hnsw_recall
 
 
 class _PathRecordingStore:
-    _tenant = "acme"
+    tenant = "acme"
 
     def __init__(self) -> None:
         self.seen: list[str] = []
