@@ -7,7 +7,8 @@ lite file), typed `FORGOTTEN_RECORD` or `WITHDRAWN_RECORD`, keyed by the memo's 
 and scoped by its payload to the chunk table it was removed from. Every delete primitive writes it
 in the transaction that deletes the chunks, so a memo is never gone without its record or the
 reverse, and every caller of those primitives (`recall_forget`, `recall forget`, the indexer's
-prune, a migration replay, `recall generation forget`, the lite memo tools) writes it alike.
+prune, a migration replay, `GenerationManager.forget` on a generation tenant, the lite memo
+tools) writes it alike.
 
 Names and dates only: the payload is the memo's scan rows (`supersession_rows_sql`), never its
 text.

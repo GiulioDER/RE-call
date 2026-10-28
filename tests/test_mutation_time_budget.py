@@ -5,7 +5,10 @@ MUTATION_BUDGET_SECONDS:
 - the run is stopped at the budget, the script exits 0 (the job is report-only), and the summary
   says the counts are partial;
 - a mutmut run that fails for any other reason still exits 1;
-- a run that finishes inside the budget carries no budget note.
+- a run that finishes inside the budget carries no budget note;
+- a run the budget stops before mutation testing began says no mutant was tested, not that its
+  counts are partial (CI run 40530796478 was stopped in the type-check filter and reported
+  "No survivors." with no mutant run).
 
 Failure mode caught: CI killing the job at its 20-minute timeout, which shows "cancelled" and
 reports nothing (7 of 17 runs on 2026-10-02 ended that way), or a budget that swallows a real
@@ -24,6 +27,9 @@ Red proof, 2026-10-02, on a Linux test host, each failing at its assertion, then
   budget (``elif`` branch folded into ``budget_reached=1``): ``assert 0 == 1``.
 - ``test_a_run_inside_the_budget_has_no_budget_note``, mutation: ``budget_reached=1`` set
   unconditionally: the note appeared in the summary.
+- ``test_a_run_stopped_before_testing_reports_that_no_mutant_ran``, 2026-10-27, against the
+  script at origin/master ``970dbeb7b``: the summary said the counts were partial and "No
+  survivors.", failing ``assert "no mutant was tested" in summary``.
 """
 
 from __future__ import annotations
@@ -48,7 +54,10 @@ pytestmark = pytest.mark.skipif(
 FAKE_MUTMUT = """#!/usr/bin/env bash
 case "$1" in
   run)
-    # mutmut stops its workers on SIGINT and exits cleanly; `sleep & wait` lets the trap fire now.
+    # mutmut stops its workers on SIGINT and exits cleanly, but only once it has printed "Running
+    # mutation testing"; FAKE_PREPARING keeps it in the earlier phases, where SIGINT saves nothing.
+    # `sleep & wait` lets the trap fire now.
+    if [ -z "${FAKE_PREPARING:-}" ]; then echo "Running mutation testing"; fi
     trap 'echo "Stopping..."; exit 0' INT
     sleep "${FAKE_RUN_SECONDS:-0}" &
     wait $!
@@ -140,3 +149,17 @@ def test_a_run_inside_the_budget_has_no_budget_note(tmp_path: Path) -> None:
     assert returncode == 0
     assert "Time budget reached" not in summary
     assert "killed 1" in summary
+
+
+def test_a_run_stopped_before_testing_reports_that_no_mutant_ran(tmp_path: Path) -> None:
+    repo, env = _repository(tmp_path)
+    env["MUTATION_BUDGET_SECONDS"] = "1"
+    env["FAKE_RUN_SECONDS"] = "8"
+    env["FAKE_PREPARING"] = "1"
+
+    returncode, _elapsed, summary = _run(repo, env)
+
+    assert returncode == 0
+    assert "no mutant was tested" in summary
+    assert "counts are partial" not in summary
+    assert "No survivors." not in summary

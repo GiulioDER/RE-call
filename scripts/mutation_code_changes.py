@@ -62,11 +62,12 @@ def _added_code(base: str, path: str) -> tuple[set[int], str | None]:
     diff = subprocess.run(["git", "diff", "-U0", f"{base}...HEAD", "--", path],
                           capture_output=True, text=True, check=True).stdout
     try:
-        source = Path(path).read_text(encoding="utf-8")
+        # utf-8-sig: a byte order mark is valid Python, and ast.parse refuses it left in the text.
+        source = Path(path).read_text(encoding="utf-8-sig")
         return added_lines(diff) & code_lines(source), source
     except (OSError, SyntaxError, UnicodeDecodeError):
         # Unreadable or unparsable: count every added line, so the file is mutated rather than
-        # silently skipped.
+        # silently skipped (in --patterns mode, every function in it; see `module_pattern`).
         return added_lines(diff), None
 
 
@@ -98,13 +99,23 @@ def touched_functions(source: str, lines: set[int]) -> list[tuple[str | None, st
     return out
 
 
-def mutmut_pattern(path: str, class_name: str | None, name: str) -> str:
-    """mutmut 3's name for every mutant of one function (`mangle_function_name`, with fnmatch `*`)."""
+def _module(path: str) -> str:
     module = path[:-3].replace("/", ".")
     if module.endswith(".__init__"):
         module = module[: -len(".__init__")]
+    return module
+
+
+def mutmut_pattern(path: str, class_name: str | None, name: str) -> str:
+    """mutmut 3's name for every mutant of one function (`mangle_function_name`, with fnmatch `*`)."""
     mangled = f"xǁ{class_name}ǁ{name}" if class_name else f"x_{name}"
-    return f"{module}.{mangled}__mutmut_*"
+    return f"{_module(path)}.{mangled}__mutmut_*"
+
+
+def module_pattern(path: str) -> str:
+    """Every mutant of every function and method in one module, and none of a submodule's unless its
+    name starts with `x_`."""
+    return f"{_module(path)}.x[_ǁ]*__mutmut_*"
 
 
 def main(argv: list[str]) -> int:
@@ -116,6 +127,8 @@ def main(argv: list[str]) -> int:
         for path in paths:
             lines, source = _added_code(base, path)
             if source is None:
+                print(f"{path}: unreadable or unparsable at HEAD, mutating all of it", file=sys.stderr)
+                print(module_pattern(path))
                 continue
             for class_name, name in touched_functions(source, lines):
                 print(mutmut_pattern(path, class_name, name))

@@ -1,12 +1,12 @@
 """Public MCP reasoning response operations.
 
-This module owns the response boundary for reasoning queries and audits.  The bounded execution
-engine remains in :mod:`recall_mcp.service` for now, while this smaller boundary owns request
-validation, budget construction, and the compatibility contract used by the server.
+This module owns the response boundary for reasoning queries and audits: request validation,
+budget construction, and the compatibility contract used by the server. The bounded execution
+engine is :mod:`recall_mcp.reasoning_engine`.
 
-The service import is lazy on purpose.  ``recall_mcp.service`` exposes these functions at their
-historical import path, so importing this module must not create a cycle while that compatibility
-alias is installed.
+The imports of :mod:`recall_mcp.reasoning_engine`, :mod:`recall_mcp.graph_projection` and
+:mod:`recall_mcp.reasoning_admin` are lazy on purpose: ``recall_mcp.service`` re-exports these
+functions at their historical import path, so importing this module must not create a cycle.
 """
 
 from __future__ import annotations

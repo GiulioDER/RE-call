@@ -21,10 +21,19 @@ file unchanged, each failing at the named test, then restored and green:
   ``test_a_line_maps_to_its_top_level_function_or_method``.
 - M7 ``mutmut_pattern`` with ``.`` for mutmut's class separator, and M8 keeping ``.__init__`` in the
   module name: ``test_patterns_use_mutmuts_own_names``.
+
+Red proof, 2026-10-27, for the CCA fixes to PR 858, against ``scripts/mutation_code_changes.py``:
+- M9 ``_added_code`` reading plain ``utf-8`` and ``main --patterns`` printing no ``module_pattern``
+  for an unparsable file, as before the fix:
+  ``test_patterns_mutate_a_file_with_a_byte_order_mark`` (no pattern printed) and
+  ``test_patterns_mutate_all_of_an_unparsable_file`` (no pattern printed).
+- M10 ``module_pattern`` as ``f"{_module(path)}.*"``:
+  ``test_the_module_pattern_matches_its_functions_and_not_a_submodules`` (matches the submodule).
 """
 
 from __future__ import annotations
 
+from fnmatch import fnmatch
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -114,3 +123,43 @@ def test_files_that_add_code_come_first_most_code_first(tmp_path: Path, monkeypa
     assert mcc.main(["base", "a.py", "b.py", "c.py"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines == ["code\t2\tc.py", "code\t1\tb.py", "nocode\t0\ta.py"]
+
+
+def _repo(tmp_path: Path, monkeypatch, before: bytes, after: bytes) -> None:
+    def git(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    git("config", "commit.gpgsign", "false")
+    (tmp_path / "m.py").write_bytes(before)
+    git("add", ".")
+    git("commit", "-q", "-m", "base")
+    git("tag", "base")
+    (tmp_path / "m.py").write_bytes(after)
+    git("commit", "-qam", "change")
+    monkeypatch.chdir(tmp_path)
+
+
+def test_patterns_mutate_a_file_with_a_byte_order_mark(tmp_path: Path, monkeypatch, capsys) -> None:
+    bom = b"\xef\xbb\xbf"
+    _repo(tmp_path, monkeypatch, bom + b"def f(x):\n    return x\n",
+          bom + b"def f(x):\n    return x + 1\n")
+    assert mcc.main(["--patterns", "base", "m.py"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["m.x_f__mutmut_*"]
+
+
+def test_patterns_mutate_all_of_an_unparsable_file(tmp_path: Path, monkeypatch, capsys) -> None:
+    _repo(tmp_path, monkeypatch, b"def f(x):\n    return x\n", b"def f(x):\n    return (x\n")
+    assert mcc.main(["--patterns", "base", "m.py"]) == 0
+    out = capsys.readouterr()
+    assert out.out.splitlines() == [mcc.module_pattern("m.py")]
+    assert "m.py" in out.err
+
+
+def test_the_module_pattern_matches_its_functions_and_not_a_submodules() -> None:
+    pattern = mcc.module_pattern("recall/foo/__init__.py")
+    assert fnmatch("recall.foo.x_f__mutmut_1", pattern)
+    assert fnmatch("recall.foo.xǁBoxǁm__mutmut_12", pattern)
+    assert not fnmatch("recall.foo.bar.x_f__mutmut_1", pattern)
