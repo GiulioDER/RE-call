@@ -299,7 +299,7 @@ jobs:
   # runs 3.12 or 3.11. Locked dependencies, as in `test`, so a red here is about the interpreter and
   # not about whatever resolved that morning; no coverage, which `test` already gates.
   #
-  # GATING since 2026-10-01, promoted after its first day: green on 14 of 15 runs, 9 of 9 on master,
+  # GATING since 2026-10-02 (#848), promoted after its first day: green on 14 of 15 runs, 9 of 9 on master,
   # and its one red (`d3fed597`, #847) was a real regression the 3.12 job also caught.
   test-py314:
     name: Test suite (Python 3.14)
