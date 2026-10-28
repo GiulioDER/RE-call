@@ -311,6 +311,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ### Fixed
 
+* **A generation rebuild no longer re-dates the passages it rewrites (#835).** A generation-backed
+  store served `indexed_at`, the build that wrote or copied a row, as every hit's
+  `first_indexed_at`, and dated supersession edges the same way, so `known_as_of` replay and the
+  dated answer profile treated the last rebuild as every passage's first write. Every hit path and
+  supersession edge now reads the stored `first_indexed_at`. A build that rewrites a source,
+  because its bytes changed or the pipeline fingerprint moved, now gives each chunk the earliest
+  `first_indexed_at` any active, ready or retired generation holds for the same source and chunk
+  ordinal; an ordinal none of them holds is dated at the build. Rows an earlier rebuild already
+  stamped with its build time are not repaired: a later build corrects one only while a
+  generation written before that rebuild is still retained (by default `gc` keeps the two most
+  recent retired generations and any younger than seven days), and after that it carries the
+  build time forward. No backfill ships with this change.
 * **Withdrawing a fact's first memo no longer gives back what a forgotten second memo retired.**
   A fact stated by two memos is one application recorded APPLIED and one recorded DUPLICATE, and
   projections listed only the APPLIED one. Forgetting the second memo and then withdrawing the
@@ -367,6 +379,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   blocks, in the same order and with the same errors. Measured on the memory corpus with
   identical search results: first-search peak 820 MB to 509 MB, steady resident set unchanged
   within 13 MB.
+* **The AML adapter no longer decodes an image over Pillow's pixel limit.** Pillow refuses an
+  image declaring more than twice `PIL.Image.MAX_IMAGE_PIXELS` but only warns below that, so a
+  small compressed file declaring about 150M pixels was decoded in full before being scaled to
+  Voyage's limit. `fit_voyage_image(strict=True)`, which the AML adapter uses, now raises
+  `DecompressionBombError` for anything over `MAX_IMAGE_PIXELS` (89,478,485 by default) before
+  decoding; AML skips such an image on Add and answers 422 for it as a query, where it used to
+  embed it. The default mode, used by the core tenant, still fits it.
+* **The desktop update check looks for the installer the release pipeline publishes,
+  `recall-install-<tag>-windows-x64.zip`.** It looked for a `.exe`, which no release carries, so
+  it could not succeed. No release since v0.9.8 carries an installer, because the Windows build
+  is refused unless it is signed, and until one does the check says the latest release has no
+  Windows installer.
 
 ### Removed
 

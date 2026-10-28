@@ -112,9 +112,12 @@ def fit_voyage_image(data_url: str, *, strict: bool = False) -> tuple[str, bool]
     that stores or returns the original ever sees the fitted copy. Without Pillow, or for bytes
     that do not decode, the input is returned unchanged and the provider decides.
 
-    With ``strict``, an image Pillow cannot read raises (as does a missing Pillow) instead of
-    passing through. The AML adapter uses it: it has always refused such an image rather than
-    sending it, and its admission checks only the MIME type, size and magic bytes.
+    With ``strict``, an image whose header Pillow cannot open raises (as does a missing Pillow)
+    instead of passing through: usually ``UnidentifiedImageError``, though a truncated file can
+    raise a plain ``OSError``, and so can a resize of an image over the pixel limit. Only the
+    header is read, so an image within both limits whose pixel data is corrupt behind a readable
+    header is still returned unchanged and sent. The AML adapter uses it, because its admission
+    checks only the MIME type, size and magic bytes.
     """
     decoded = _split_data_url(data_url)
     if decoded is None:
@@ -133,6 +136,17 @@ def fit_voyage_image(data_url: str, *, strict: bool = False) -> tuple[str, bool]
     if pixels <= VOYAGE_MAX_IMAGE_PIXELS and len(payload) <= VOYAGE_MAX_IMAGE_BYTES:
         return data_url, False
     from PIL import Image
+
+    # Fitting decodes the whole image. Pillow refuses one over twice its `MAX_IMAGE_PIXELS` but
+    # only warns below that, so a small compressed file declaring ~150M pixels is decoded in full
+    # here. Strict mode refuses it at Pillow's own limit. The default mode keeps fitting it: a
+    # legitimate large scan within the caller's byte cap still embeds, where passing it through
+    # unfitted would make Voyage refuse the whole request it was batched into.
+    ceiling = Image.MAX_IMAGE_PIXELS
+    if strict and ceiling is not None and pixels > ceiling:
+        raise Image.DecompressionBombError(
+            f"image declares {pixels} pixels, over the decode limit of {ceiling}"
+        )
 
     with Image.open(BytesIO(payload)) as image:
         scale = min(1.0, math.sqrt(VOYAGE_MAX_IMAGE_PIXELS / (image.width * image.height)))

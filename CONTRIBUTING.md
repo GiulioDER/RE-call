@@ -51,9 +51,10 @@ and cleans it up on teardown, so nothing you own is at risk from a normal `pytes
 container you started.
 
 Tests that need an optional extra (the real-model `rerank` cases, the one Voyage test)
-self-skip when the extra or its API key isn't present — that's why CI's `pip install -e ".[dev]"`
-still passes without installing every extra. If you're touching one of those paths, install the
-relevant extra locally so your change is actually exercised, not skipped.
+self-skip when the extra or its API key isn't present. That's why CI's test job, which installs
+only the locked `dev` and `documents` extras from `uv.lock`, still passes without every extra.
+If you're touching one of those paths, install the relevant extra locally so your change is
+actually exercised, not skipped.
 
 ## Broad exception policy
 

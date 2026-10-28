@@ -137,6 +137,14 @@ the same check. Pin the library on serving hosts, or build and calibrate a new g
 the new version before switching traffic. Generations that recorded no profile are unaffected;
 legacy fastembed generations record a fallback profile and are covered.
 
+**→ Unreleased: generation hits now carry their first write date (#835).** A generation-backed
+store used to report the last rebuild as every passage's `first_indexed_at`, and now reports the
+stored first write, so `known_as_of` replay, the dated answer profile and supersession edge dates
+can change on an existing corpus. Dates a rebuild already overwrote are not repaired: a later
+build recovers one only while a generation written before that rebuild is still retained by
+`gc`, and otherwise keeps the rebuild's time. Rebaseline any measurement that depends on these
+dates before comparing it with an earlier one.
+
 **→ 0.14.0 — reasoning and indexing behavior can change on an existing corpus.** Public reasoning
 graph expansion now defaults to bounded `auto` for nonempty queries. Select `graph_expansion=off`
 to retain the previous no-expansion behavior, or rebaseline answer ordering, latency, and

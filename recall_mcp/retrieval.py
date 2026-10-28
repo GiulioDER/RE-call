@@ -143,10 +143,14 @@ def _searched_generation(store: object) -> Iterator[str]:
     promotion landing in between made a response name one generation as `index_generation` while
     its hits came from another. Entering the store's own snapshot first makes the one inside
     `trusted_search` reuse this pin. A store without snapshots answers its constant identity.
+    `LiteStore.snapshot` pins a SQLite read view and yields None, so its identity is read inside
+    that view; `str(None)` would name the generation "None".
     """
     snapshot = getattr(store, "snapshot", None)
     if callable(snapshot):
         with snapshot() as generation_id:
+            if generation_id is None:
+                generation_id = getattr(store, "generation_id", "legacy")
             yield str(generation_id)
         return
     yield str(getattr(store, "generation_id", "legacy"))

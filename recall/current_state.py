@@ -218,6 +218,9 @@ def project_current_state(
     snapshot = getattr(store, "snapshot", None)
     if callable(snapshot):
         with snapshot() as generation_id:
+            # `LiteStore.snapshot` pins a read view and yields None: read its identity inside it.
+            if generation_id is None:
+                generation_id = getattr(store, "generation_id", "legacy")
             return _project(
                 store, instant, known_as_of, source, str(generation_id), max_records
             )
