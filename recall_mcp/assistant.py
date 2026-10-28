@@ -200,29 +200,41 @@ class AssistantMemos(MemoFolder):
                 if receipt is None:
                     self.refresh(store, embedder, **refresh_kwargs)
                 else:
-                    try:
-                        self.refresh(store, embedder, **refresh_kwargs)
-                        path = self.path_of(result["memo_id"])
-                        indexed = path is not None and store.source_raw_hash(str(path)) == receipt["revision"]
-                        receipt["index_state"] = "indexed" if indexed else "failed"
-                    except Exception as exc:  # BROAD-CATCH: fail-closed receipt; retry can finish indexing
-                        receipt.update(index_state="failed", calibration_status="unavailable",
-                                       retrieval_ready=False, error_type=type(exc).__name__)
-                        return result
-                    try:
-                        resolution = store.resolve_calibration()
-                        receipt["calibration_status"] = resolution.status.value
-                        receipt["retrieval_ready"] = indexed and resolution.status.value == "certified"
-                    except Exception as exc:  # BROAD-CATCH: fail-closed readiness, keep verified indexing state
-                        receipt.update(calibration_status="unavailable", retrieval_ready=False,
-                                       error_type=type(exc).__name__)
-                    if fact is not None and indexed and not read_facts:
-                        receipt["fact_key"] = _key_only(fact)
-                    elif fact is not None and indexed:
-                        receipt["fact_key"] = self._fact_key(
-                            store, result["memo_id"], fact, access_context, refresh_kwargs.get("security_policy"),
-                        )
+                    self._complete_receipt(
+                        store, embedder, result["memo_id"], receipt, fact, access_context, read_facts,
+                        refresh_kwargs,
+                    )
             return result
+
+    def _complete_receipt(
+        self, store: LiteStore, embedder: Embedder, memo_id: str, receipt: dict[str, Any],
+        fact: object, access_context: Any, read_facts: bool, refresh_kwargs: dict[str, Any],
+    ) -> None:
+        """Index the memo `remember` just wrote and fill its receipt, failing closed at each step."""
+        from recall.calibration_v2 import CalibrationStatus
+
+        try:
+            self.refresh(store, embedder, **refresh_kwargs)
+            path = self.path_of(memo_id)
+            indexed = path is not None and store.source_raw_hash(str(path)) == receipt["revision"]
+            receipt["index_state"] = "indexed" if indexed else "failed"
+        except Exception as exc:  # BROAD-CATCH: fail-closed receipt; retry can finish indexing
+            receipt.update(index_state="failed", calibration_status="unavailable",
+                           retrieval_ready=False, error_type=type(exc).__name__)
+            return
+        try:
+            resolution = store.resolve_calibration()
+            receipt["calibration_status"] = resolution.status.value
+            receipt["retrieval_ready"] = indexed and resolution.status is CalibrationStatus.CERTIFIED
+        except Exception as exc:  # BROAD-CATCH: fail-closed readiness, keep verified indexing state
+            receipt.update(calibration_status="unavailable", retrieval_ready=False,
+                           error_type=type(exc).__name__)
+        if fact is not None and indexed and not read_facts:
+            receipt["fact_key"] = _key_only(fact)
+        elif fact is not None and indexed:
+            receipt["fact_key"] = self._fact_key(
+                store, memo_id, fact, access_context, refresh_kwargs.get("security_policy"),
+            )
 
     def _fact_key(
         self, store: LiteStore, memo_id: str, fact: object, access_context: Any, security_policy: Any,

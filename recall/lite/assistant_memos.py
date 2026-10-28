@@ -29,7 +29,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall.frontmatter import validity_bounds
-from recall.lite.memo_requests import MEMO_ID, cancel_requests, restore_requests, sweep_staged, write_memo
+from recall.lite.memo_requests import (
+    MEMO_ID, cancel_requests, load_ledger, restore_requests, sweep_staged, write_memo,
+)
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -89,10 +91,8 @@ class MemoFolder:
     # -- authorship -------------------------------------------------------------------------------
     def authors(self) -> dict[str, str]:
         """Memo id -> who wrote it, for every memo this surface ever wrote (forgotten ones too)."""
-        if not self.ledger_path.exists():
-            return {}
-        data = json.loads(self.ledger_path.read_text(encoding="utf-8"))
-        return {str(k): str(v) for k, v in data.get("authors", {}).items()}
+        # The journal's own reader, so a malformed ledger fails here exactly as it fails a write.
+        return {str(k): str(v) for k, v in load_ledger(self.ledger_path)["authors"].items()}
 
     # -- writes -----------------------------------------------------------------------------------
     def write(
@@ -122,6 +122,9 @@ class MemoFolder:
         cannot take one id.
         """
         text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not text.strip():
+            # An empty memo indexes to no chunks, so its receipt would read `failed` on every retry.
+            return {"refused": "text must not be empty"}
         if _opens_a_fence(text):
             # A memo written without frontmatter of its own would otherwise begin with the
             # caller's block, read as frontmatter: a `supersedes` the author check never saw, or a
