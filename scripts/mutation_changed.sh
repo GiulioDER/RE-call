@@ -91,6 +91,12 @@ for file in "${changed[@]}"; do
   fi
   pattern+=")"
   mapfile -t found < <(grep -lE "$pattern" tests/*.py 2>/dev/null || true)
+  if [ ${#found[@]} -eq 0 ] && [[ "$module" == *.* ]]; then
+    # `from recall import (\n    store,\n)`: grep matches line by line, so the parenthesised form
+    # needs each file read as one record (-z). Only when nothing else imports the module, so a file
+    # is never listed twice.
+    mapfile -t found < <(grep -lzE "from ${parent//./\\.}[[:space:]]+import[[:space:]]*\\([^)]*\\b${leaf}\\b" tests/*.py 2>/dev/null || true)
+  fi
   # Only test files: conftest.py and helper modules hold no tests (pytest loads conftest.py
   # anyway), and under the cap below each one would push a real test file out.
   importers=()

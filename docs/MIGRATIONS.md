@@ -65,6 +65,30 @@ recall --migration-dsn "$RECALL_MIGRATION_DSN" --table chunks schema --dim 384 a
 rejects changed checksums, runs ordinary DDL transactionally, and records concurrent index phases
 so an interrupted `CREATE INDEX CONCURRENTLY` can be validated and resumed.
 
+### Adding a migration
+
+A new file in `recall/migrations/sql/` is named `NNNN_name.sql` (four digits, then lower case,
+digits and underscores) and its first line declares exactly one execution mode:
+
+- `-- recall:transactional` runs the whole file inside one transaction;
+- `-- recall:concurrent-index <name>` runs it outside one, for a `CREATE INDEX CONCURRENTLY`.
+
+The runner refuses a file with neither marker or with both, and never applies a file whose name
+does not match. Add the file's SHA-256 to `recall/migrations/checksums.json`.
+
+CI lints every migration after 0025 with squawk (`scripts/lint_migrations.sh`, in the
+`architecture` job) and refuses a constraint added without `NOT VALID` or a non-concurrent index
+on an existing table inside a transaction. Validate a constraint in a later migration, as 0032 and
+0033 do. The lint also refuses a file in that directory whose name the runner would not accept.
+squawk does not see DDL inside a `DO` block or an `EXECUTE` string, nor a whole-table `UPDATE` or
+an explicit `LOCK TABLE`, so review such a migration by hand. To accept one finding on purpose, put
+`-- squawk-ignore <rule>` on the line before that statement, with the reason; never add a rule to
+`.squawk.toml` for a single migration. To run it locally:
+
+```bash
+pip install squawk-cli==2.66.0 && bash scripts/lint_migrations.sh
+```
+
 `PgVectorStore.ensure_schema()` remains as a deprecated, explicit v0.8 compatibility wrapper for
 disposable test/evaluation stores; it delegates to this same migrator. Production code should call
 `check_schema()` and keep the migration credential out of the serving process.

@@ -1,0 +1,14 @@
+# squawk-cli for the migration lint in ci.yml's architecture job, installed with
+# pip install --require-hashes. It has no dependencies. Regenerate when the pin moves:
+#   printf 'squawk-cli==<version>\n' > squawk.in
+#   uv pip compile squawk.in --generate-hashes --python-version 3.12 \
+#     --python-platform x86_64-manylinux_2_28 --no-header -o .github/requirements/squawk.txt
+# and move the version in scripts/lint_migrations.sh and docs/MIGRATIONS.md with it.
+squawk-cli==2.66.0 \
+    --hash=sha256:58603c4f90a3ccd5198dc2bdc8f124a185906674eae97e1453635875d8c9198d \
+    --hash=sha256:5c982c587c393380368196f3e62a5e394e704aa31a595b153bf8a522870623c0 \
+    --hash=sha256:9bce3ed62ed207290f2246e04d5df4b99ae00130a849378d674626b1d618f5c4 \
+    --hash=sha256:9d821fa72081f39983b1014de2b48cfb305b287cae0ab529b6fa3e033f613619 \
+    --hash=sha256:cd3c3509e1eb8d3491af68272c8f8200f652fecf4389dc550206317f0fc57b54 \
+    --hash=sha256:e3d359ccabf48ec5d6d279629a67257741edd558ff498fc3c3f0d6c67f5ca4c9 \
+    --hash=sha256:ec63cdedcca9ec0d46cfee267efe27bc3724b23fd2e73fcceccc30c0ce6bfc44
