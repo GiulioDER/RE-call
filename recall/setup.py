@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Callable, Literal, Sequence
 
+from recall._env import _unquote, refuse_removed_entailment
 from recall.calibration import Calibration, from_samples, save
 from recall.claude_code import (
     PLUGIN_INSTALL_LINES,
@@ -1044,7 +1045,41 @@ def _choose(
         print_fn(f"Choose one of 1..{len(choices)}.")
 
 
+def _removed_entailment_problem(path: Path) -> str | None:
+    """Why a `.env` must not be rewritten, if it still turns the removed entailment judge on.
+
+    A wizard before the removal wrote `RECALL_ENTAILMENT="1"` inside its managed block when the
+    judge was chosen, and `_update_env_block` rebuilds that block from the current answers alone.
+    A re-run would therefore drop the key without a word, and the refusal every other entry point
+    gives (`recall._env.refuse_removed_entailment`) would never fire for that deployment again, so
+    it would be served wider results with nothing to say so. The first occurrence of the key wins,
+    as in `recall._env.load_dotenv`. Returns the refusal text, or None when the file is fine.
+    """
+    if not path.exists():
+        return None
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        key, sep, value = raw.strip().partition("=")
+        if sep and key.strip() == "RECALL_ENTAILMENT":
+            try:
+                refuse_removed_entailment({"RECALL_ENTAILMENT": _unquote(value)})
+            except ValueError as exc:
+                return f"{path}: {exc}"
+            return None
+    return None
+
+
+def _refuse_removed_entailment_in(path: Path) -> None:
+    """Exit with `_removed_entailment_problem`'s text when `path` must not be rewritten."""
+    problem = _removed_entailment_problem(path)
+    if problem is not None:
+        raise SystemExit(problem)
+
+
 def _update_env_block(path: Path, values: dict[str, str]) -> None:
+    # Every writer of the managed block refuses here (`recall setup` and `recall wizard` both
+    # rebuild it), so neither can drop a leftover RECALL_ENTAILMENT; `run_setup_wizard` also
+    # checks before its first question, so a refusal there costs no answers.
+    _refuse_removed_entailment_in(path)
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     start = next((i for i, line in enumerate(lines) if line.strip() == SETUP_BEGIN), None)
     end = next((i for i, line in enumerate(lines) if line.strip() == SETUP_END), None)
@@ -1276,6 +1311,7 @@ def run_setup_wizard(
     input_fn: Callable[[str], str] = input,
     print_fn: Callable[..., None] = print,
 ) -> dict[str, str]:
+    _refuse_removed_entailment_in(env_path)
     probe = probe_hardware()
     print_fn(
         "Hardware check: "

@@ -79,8 +79,8 @@ this work rather than an obstacle to it.
 
 `ardinghelli` defined `ExtractionEngine` as a Protocol whose entire contract is
 `run(prompt) -> str`, resolved from a `_ENGINES` registry through
-`RECALL_TRUTH_EXTRACTION_ENGINE`, shipping OFF by default and mirroring
-`resolve_entailment_judge`.
+`RECALL_TRUTH_EXTRACTION_ENGINE`, shipping OFF by default (it mirrored `resolve_entailment_judge`,
+removed with the judge in #849).
 
 The model backed extractor is therefore a **new entry in that registry**, not a new architecture:
 
@@ -210,8 +210,8 @@ hard argparse requirements. That puts the named human gate at the argument parse
 runs. Note that `required=True` accepts an empty string, so both are additionally checked for
 non-empty content.
 
-`recall extract run` refuses with an actionable message when the extra is absent, mirroring
-`entailment.py:62`. Help text states the dry run default.
+`recall extract run` refuses with an actionable message when the extra is absent, as the
+entailment judge did before it was removed in #849. Help text states the dry run default.
 
 ### The status vocabulary is configurable for measurement and closed for writing
 

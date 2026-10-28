@@ -318,28 +318,23 @@ def run_nearmiss_eval(
             ans_cals = _loo_calibrations(
                 profile_id, ans_cos, unans_cos, hold_out_unanswerable=False
             )
-            # second element: whether this arm's threshold was FITTED to the eval samples, and so
-            # must be swapped for the leave-one-out refit when scoring them.
-            arm_setup = {
-                ARM_THRESHOLD: (cal, True),
-            }
+            # The one arm's threshold is FITTED to the eval samples, so it is swapped for the
+            # leave-one-out refit when scoring them.
             for arm in ARMS:
-                arm_cal, arm_is_fitted = arm_setup[arm]
                 q_times: list[float] = []
 
                 def _search(
                     text: str,
                     loo_cal: Calibration | None = None,
                     *,
-                    _arm_is_fitted: bool = arm_is_fitted,
-                    _arm_cal: Calibration = arm_cal,
+                    _cal: Calibration = cal,
                     _emb: Embedder = emb,
                     _q_times: list[float] = q_times,
                 ) -> TrustedResult:
-                    # loo_cal is the refit that never saw this query; fall back to the arm's own
-                    # calibration when the arm is unfitted, or when the class was too small to
-                    # hold a sample out (see _loo_calibrations).
-                    use = loo_cal if (_arm_is_fitted and loo_cal is not None) else _arm_cal
+                    # loo_cal is the refit that never saw this query; fall back to the fitted
+                    # calibration when the class was too small to hold a sample out (see
+                    # _loo_calibrations).
+                    use = loo_cal if loo_cal is not None else _cal
                     t0 = time.perf_counter()
                     res = research_search(store, _emb, text, k=k, calibration=use)
                     _q_times.append((time.perf_counter() - t0) * 1000.0)

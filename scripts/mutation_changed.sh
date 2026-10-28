@@ -13,7 +13,7 @@
 #   * only files changed against BASE under the shipped packages (mutmut `only_mutate`), capped at
 #     MAX_FILES, the rest listed as not run;
 #   * only test files that import a changed module (`pytest_add_cli_args_test_selection`), at most
-#     MAX_TESTS_PER_FILE (6) per changed module, the most coupled ones, the rest listed. A changed
+#     MAX_TESTS_PER_FILE (6) per changed module, the most coupled ones, the rest counted. A changed
 #     module that no test imports is reported as such, which is itself the finding;
 #   * mutants that fail mypy are discarded before any test runs (`type_check_command`);
 #   * the mutmut run gets a time budget of its own, MUTATION_BUDGET_SECONDS (default 720), inside
@@ -33,6 +33,12 @@ BASE="${1:-origin/master}"
 MAX_FILES="${MAX_FILES:-20}"
 MAX_TESTS_PER_FILE="${MAX_TESTS_PER_FILE:-6}"
 BUDGET="${MUTATION_BUDGET_SECONDS:-720}"
+# A bad cap would not fail on its own: the slices below would select no test file and the run
+# would still exit 0.
+if ! [[ "$MAX_TESTS_PER_FILE" =~ ^[1-9][0-9]*$ ]]; then
+  echo "REFUSED: MAX_TESTS_PER_FILE must be a positive integer, not '$MAX_TESTS_PER_FILE'" >&2
+  exit 2
+fi
 PYTHON="${PYTHON:-python3}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 PACKAGES=(recall recall_mcp recall_agent recall_hooks recall_aml)
@@ -66,11 +72,13 @@ fi
 
 files=()
 untested=()
+skipped=()
 declare -A tests=()
 declare -A dropped_tests=()
 for file in "${changed[@]}"; do
   [ -f "$file" ] || continue
   module="${file%.py}"; module="${module//\//.}"; module="${module%.__init__}"
+  leaf="${module##*.}"
   escaped="${module//./\\.}"
   # `import recall.store` and `from recall.store import x`; NOT `import recall.store.sub`, which
   # imports a submodule rather than this file.
@@ -78,32 +86,44 @@ for file in "${changed[@]}"; do
   if [[ "$module" == *.* ]]; then
     # `from recall import store`, only for a dotted module: for a top-level package it would match
     # every `from recall import anything`.
-    parent="${module%.*}"; leaf="${module##*.}"
+    parent="${module%.*}"
     pattern+="|from ${parent//./\\.}[[:space:]]+import[[:space:]].*\\b${leaf}\\b"
   fi
   pattern+=")"
-  mapfile -t importers < <(grep -lE "$pattern" tests/*.py 2>/dev/null || true)
+  mapfile -t found < <(grep -lE "$pattern" tests/*.py 2>/dev/null || true)
+  # Only test files: conftest.py and helper modules hold no tests (pytest loads conftest.py
+  # anyway), and under the cap below each one would push a real test file out.
+  importers=()
+  for t in "${found[@]}"; do
+    case "${t##*/}" in test_*.py) importers+=("$t") ;; esac
+  done
   if [ ${#importers[@]} -eq 0 ]; then
     untested+=("$file")
+    continue
+  fi
+  if [ ${#files[@]} -ge "$MAX_FILES" ]; then
+    skipped+=("$file")
     continue
   fi
   files+=("$file")
   # Keep the importers most coupled to this module, at most MAX_TESTS_PER_FILE. A module imported
   # almost everywhere (settings, a store) otherwise drags dozens of incidental test files into
   # every mutant: #847's run selected 32 files for two changed modules and took 25 minutes.
-  # Ranked by: the test file is named after the module, then how often it names the module.
-  leaf_name="${module##*.}"
+  # Ranked by: the test file is named after the module (`test_<leaf>.py` or `test_<leaf>_*`),
+  # then the number of its lines naming the leaf as a whole word.
   mapfile -t ranked < <(
     for t in "${importers[@]}"; do
-      named=0; case "$(basename "$t")" in *"$leaf_name"*) named=1 ;; esac
-      mentions=$(grep -c "$leaf_name" "$t" 2>/dev/null || true)
+      named=0; case "${t##*/}" in "test_${leaf}.py" | "test_${leaf}_"*) named=1 ;; esac
+      mentions=$(grep -cwF -- "$leaf" "$t" 2>/dev/null || true)
       printf '%d %06d %s\n' "$named" "$mentions" "$t"
     done | sort -k1,1nr -k2,2nr -k3,3 | awk '{print $3}'
   )
   for t in "${ranked[@]:0:$MAX_TESTS_PER_FILE}"; do tests["$t"]=1; done
   for t in "${ranked[@]:$MAX_TESTS_PER_FILE}"; do dropped_tests["$t"]=1; done
 done
-for t in "${!tests[@]}"; do unset "dropped_tests[$t]"; done
+# Single-quoted so `unset` parses the subscript once: a test file name is PR-controlled, and the
+# double-quoted form expanded it a second time, running a `$(...)` in it and missing a name with `]`.
+for t in "${!tests[@]}"; do unset -v 'dropped_tests[$t]'; done
 
 {
   echo "## Mutation testing (report only)"
@@ -133,11 +153,6 @@ if [ ${#files[@]} -eq 0 ]; then
   exit 0
 fi
 
-skipped=()
-if [ ${#files[@]} -gt "$MAX_FILES" ]; then
-  skipped=("${files[@]:$MAX_FILES}")
-  files=("${files[@]:0:$MAX_FILES}")
-fi
 
 MUTMUT_TYPE_FILTER_REPORT="$(mktemp)"
 export MUTMUT_TYPE_FILTER_REPORT
@@ -275,11 +290,11 @@ counts="$(mutmut results --all true 2>/dev/null | targeted | awk -F': ' '{n[$2]+
   fi
   if [ ${#dropped_tests[@]} -gt 0 ]; then
     echo
-    echo "${#dropped_tests[@]} importing test file(s) not run (over MAX_TESTS_PER_FILE=$MAX_TESTS_PER_FILE per module); a survivor here may be killed by one of them."
+    echo "${#dropped_tests[@]} importing test file(s) not run (over MAX_TESTS_PER_FILE=$MAX_TESTS_PER_FILE per module); a survivor, or a mutant reached by no selected test, may be covered by one of them."
   fi
   if [ ${#notests[@]} -gt 0 ]; then
     echo
-    echo "${#notests[@]} mutant(s) reached by no selected test (often: covered only by database tests, which skip here)."
+    echo "${#notests[@]} mutant(s) reached by no selected test (often: covered only by database tests, which skip here, or only by an importing test file over the per-module cap)."
   fi
   echo
   if [ ${#survivors[@]} -eq 0 ]; then

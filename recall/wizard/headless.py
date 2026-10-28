@@ -878,6 +878,13 @@ def load_config(path: str | Path) -> HeadlessConfig:
                 "meant to put a project. Create the parent, or correct the path.",
                 ("project_root",),
             )
+        # For the same reason: a `.env` there that still turns the removed entailment judge on is
+        # refused by `write_project_files` too, but only after the whole build.
+        from recall.setup import _removed_entailment_problem
+
+        problem = _removed_entailment_problem(candidate / ".env")
+        if problem is not None:
+            raise ConfigRefusal(problem, ("project_root",))
 
     # `dsn` and `data_root` are ALTERNATIVES, and the refusal names both keys.
     #

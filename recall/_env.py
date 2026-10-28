@@ -142,8 +142,11 @@ def refuse_removed_entailment(env: "Mapping[str, str] | None" = None) -> None:
     to a true value was relying on a STRICTER filter: hits the judge rejected were demoted and the
     search could abstain. Ignoring the variable silently would therefore WIDEN what that
     deployment is served, with nothing to say so, which is the one failure a trust layer must not
-    have. So a true value refuses, loudly, at the CLI search path and at MCP server startup, and
-    those two call sites share this one helper so they cannot drift.
+    have. So a true value refuses, loudly, at every CLI command that applied the judge (search,
+    demo, code, quickstart, through `recall.cli_commands._shared._refuse_removed_entailment`), at
+    MCP server startup, and where `recall setup` and `recall wizard` would rewrite a `.env` holding
+    it (`recall.setup._removed_entailment_problem`); all of them share this one helper so they
+    cannot drift.
 
     A false value (`"0"`, `"false"`, `"no"`, `"off"`, empty) or an unset variable is accepted
     silently: it asked for nothing that has gone. Any other value refuses as well, as it did

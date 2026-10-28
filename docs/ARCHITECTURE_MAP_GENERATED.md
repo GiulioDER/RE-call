@@ -74,9 +74,9 @@ Cross package edges: 364
 | 17 | `recall.cli_commands.calibration_cmd` |
 | 17 | `recall_mcp.indexing` |
 | 16 | `recall.cli_commands.setup_wizard` |
+| 16 | `recall.wizard.headless` |
 | 16 | `recall_mcp.semantic_graph_cache` |
 | 15 | `recall.generation_store` |
-| 15 | `recall.wizard.headless` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.cli_commands.provenance_cmd` |
@@ -708,7 +708,7 @@ They are observations, not automatic failures.
 | `recall.semantic_graph._store` | 1 | 15 |
 | `recall.semantic_lint` | 8 | 102 |
 | `recall.served_gap` | 0 | 0 |
-| `recall.setup` | 10 | 120 |
+| `recall.setup` | 11 | 120 |
 | `recall.source_conditioning` | 1 | 1 |
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |
@@ -743,7 +743,7 @@ They are observations, not automatic failures.
 | `recall.wizard` | 0 | 0 |
 | `recall.wizard.corpora` | 4 | 100 |
 | `recall.wizard.database` | 1 | 32 |
-| `recall.wizard.headless` | 15 | 148 |
+| `recall.wizard.headless` | 16 | 148 |
 | `recall.wizard.identity` | 1 | 1 |
 | `recall.wizard.interactive` | 5 | 103 |
 | `recall.wizard.inventory` | 2 | 98 |

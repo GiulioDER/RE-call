@@ -14,8 +14,8 @@ pip install -e ".[dev]"
 ```
 
 `.[dev]` installs the engine plus `pytest`, `pytest-timeout`, `ruff`, and `mcp` — enough to run the
-suite and the linter. Optional extras (`fastembed`, `voyage`, `rerank`, `entail`, `eval`, `finetune`,
-`pool`) layer in as needed; see `pyproject.toml` for what each unlocks.
+suite and the linter. Optional extras (`fastembed`, `voyage`, `rerank`, `eval`, `finetune`, `pool`)
+layer in as needed; see `pyproject.toml` for what each unlocks.
 
 ## Run the test suite — needs a real pgvector database
 
@@ -50,7 +50,7 @@ Within a run, each test gets its own uuid-named table via the `make_store` / `cl
 and cleans it up on teardown, so nothing you own is at risk from a normal `pytest` against a
 container you started.
 
-Tests that need an optional extra (the real-model `rerank`/`entail` cases, the one Voyage test)
+Tests that need an optional extra (the real-model `rerank` cases, the one Voyage test)
 self-skip when the extra or its API key isn't present. That's why CI's test job, which installs
 only the locked `dev` and `documents` extras from `uv.lock`, still passes without every extra.
 If you're touching one of those paths, install the relevant extra locally so your change is

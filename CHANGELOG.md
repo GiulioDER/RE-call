@@ -404,10 +404,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   and `RECALL_ENTAILMENT_REVISION` variables, the `not_entailed` verdict, the `entailment` key in
   per-stage timings, the `entailment=` parameter of `trusted_search` and of the LangChain and
   LlamaIndex retrievers, and the `recall.eval` LoCoMo entailment sweep. **A configuration that still
-  sets `RECALL_ENTAILMENT` to a true value now refuses** at `recall search` and at MCP server
-  startup, naming the variable, because silently dropping a stricter filter would widen what that
-  deployment is served. A false value (`0`, the value `recall setup` used to write) or an unset
-  variable is accepted. Committed result artifacts that measured the judge are kept unchanged.
+  sets `RECALL_ENTAILMENT` to anything but a false value now refuses**, naming the variable, at
+  `recall search`, `recall demo`, `recall code`, `recall quickstart` and MCP server startup, and
+  `recall setup` and `recall wizard` refuse to rewrite a `.env` that still holds it, because
+  silently dropping a stricter filter would widen what that deployment is served. A value that is
+  neither true nor false refuses too, as it did before. To upgrade, delete the `RECALL_ENTAILMENT`
+  line from your `.env` or environment, or set it to `0`; `RECALL_ENTAILMENT_MODEL` and
+  `RECALL_ENTAILMENT_REVISION` are ignored and can be deleted. A false value (`0`, the value
+  `recall setup` used to write) or an unset variable is accepted. `pip install "recall-rag[entail]"`
+  now only warns that the extra does not exist and installs nothing extra; install `[rerank]` if
+  you need `sentence-transformers`. Committed result artifacts that measured the judge are kept
+  unchanged.
 
 * **pypdf is no longer installed by the `documents` extra.** It was never imported: PDF text has
   always come from pdfplumber, which does not depend on it. It stayed only because a capability

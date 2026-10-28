@@ -131,8 +131,9 @@ class RecallRetriever(BaseRetriever):
         """Build a retriever that calls :func:`recall.trust.trusted_search` on each query.
 
         ``store`` and ``embedder`` are captured by reference; their lifecycle is the caller's.
-        ``include_untrusted`` opts a live-store retriever into serving trust-refused hits (with an in-band warning) — the
-        same escape hatch the constructor exposes, reachable through the documented factory.
+        ``include_untrusted`` opts a live-store retriever into serving trust-refused hits (with an
+        in-band warning) — the same escape hatch the constructor exposes, reachable through the
+        documented factory.
         ``document_expansion`` opts relational queries into source-scoped retrieval before the
         trust layer evaluates the complete candidate set.
         ``structural_expansion`` adds bounded ordinal neighbors and the terminal section.
