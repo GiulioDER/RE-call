@@ -355,7 +355,9 @@ class VoyageMultimodalEmbedder:
                 input_type="document",
                 truncation=True,
             )
-            vectors.extend(list(vector) for vector in response.embeddings)
+            batch_vectors = [list(vector) for vector in response.embeddings]
+            self._validate(batch_vectors, stop - start)
+            vectors.extend(batch_vectors)
         self._validate(vectors, len(materialized))
         return vectors
 

@@ -245,6 +245,52 @@ def test_an_unreadable_image_passes_through_unless_strict() -> None:
         fit_voyage_image(url, strict=True)
 
 
+def test_fitted_jpeg_keeps_display_orientation(monkeypatch):
+    """BUG-001: preserve display orientation; red at fa9d503f on 2026-10-27.
+
+    embed_query sent a 14x7 landscape image instead of portrait before the fix.
+    """
+    from PIL import ImageOps
+
+    image = Image.new("RGB", (20, 10), (200, 10, 10))
+    exif = Image.Exif()
+    exif[274] = 6
+    payload = _encoded(image, "JPEG", exif=exif)
+    monkeypatch.setattr(multimodal_module, "VOYAGE_MAX_IMAGE_PIXELS", 100)
+    embedder, client = _embedder()
+    embedder.embed_query(MultimodalQuery(image_bytes=payload, media_type="image/jpeg"))
+    with Image.open(BytesIO(_sent_image(client))) as sent:
+        displayed = ImageOps.exif_transpose(sent)
+        assert displayed.height > displayed.width, "fitting must preserve the displayed orientation"
+
+
+def test_header_readable_corrupt_image_passes_through(monkeypatch):
+    """BUG-002: decoder errors pass through by default; strict mode still raises.
+
+    Red at fa9d503f on 2026-10-27: the intended error-is-None assertion
+    failed with OSError after a successful image-header dimension check.
+    """
+    import pytest
+
+    payload = _encoded(Image.new("RGB", (20, 10), (200, 10, 10)), "PNG")
+    # Signature, IHDR, IDAT header remain; compressed pixel body is truncated.
+    start = payload.index(b"IDAT") + 4
+    corrupt = payload[:start + 2]
+    assert multimodal_module._image_pixels(corrupt) == 200
+    monkeypatch.setattr(multimodal_module, "VOYAGE_MAX_IMAGE_PIXELS", 100)
+    embedder, client = _embedder()
+    error = None
+    try:
+        embedder.embed_query(MultimodalQuery(image_bytes=corrupt, media_type="image/png"))
+    except OSError as exc:
+        error = exc
+    assert error is None, f"default fitting must pass an undecodable image through: {error}"
+    assert _sent_image(client) == corrupt
+    url = "data:image/png;base64," + base64.b64encode(corrupt).decode("ascii")
+    with pytest.raises(OSError):
+        multimodal_module.fit_voyage_image(url, strict=True)
+
+
 def test_an_image_in_pillows_warning_band_is_refused_before_it_is_decoded(monkeypatch) -> None:
     """Invariant: in strict mode an image declaring more pixels than Pillow's `MAX_IMAGE_PIXELS`
     is refused before it is decoded.

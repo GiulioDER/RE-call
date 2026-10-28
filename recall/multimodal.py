@@ -119,9 +119,17 @@ def fit_voyage_image(data_url: str, *, strict: bool = False) -> tuple[str, bool]
     header is still returned unchanged and sent. The AML adapter uses it, because its admission
     checks only the MIME type, size and magic bytes.
     """
+    fitted, changed, _ = _fit_voyage_image(data_url, strict=strict)
+    return fitted, changed
+
+
+def _fit_voyage_image(
+    data_url: str, *, strict: bool = False
+) -> tuple[str, bool, int | None]:
+    """Fit an image and retain the resulting pixel count for this request's estimator."""
     decoded = _split_data_url(data_url)
     if decoded is None:
-        return data_url, False
+        return data_url, False, None
     media_type, payload = decoded
     image_format = _IMAGE_FORMATS.get(media_type)
     if strict:
@@ -132,10 +140,10 @@ def fit_voyage_image(data_url: str, *, strict: bool = False) -> tuple[str, bool]
     else:
         pixels = _image_pixels(payload)
     if image_format is None or pixels is None:
-        return data_url, False
+        return data_url, False, pixels
     if pixels <= VOYAGE_MAX_IMAGE_PIXELS and len(payload) <= VOYAGE_MAX_IMAGE_BYTES:
-        return data_url, False
-    from PIL import Image
+        return data_url, False, pixels
+    from PIL import Image, ImageOps
 
     # Fitting decodes the whole image. Pillow refuses one over twice its `MAX_IMAGE_PIXELS` but
     # only warns below that, so a small compressed file declaring ~150M pixels is decoded in full
@@ -148,31 +156,44 @@ def fit_voyage_image(data_url: str, *, strict: bool = False) -> tuple[str, bool]
             f"image declares {pixels} pixels, over the decode limit of {ceiling}"
         )
 
-    with Image.open(BytesIO(payload)) as image:
-        scale = min(1.0, math.sqrt(VOYAGE_MAX_IMAGE_PIXELS / (image.width * image.height)))
-        while True:
-            width = max(1, int(image.width * scale))
-            height = max(1, int(image.height * scale))
-            while width * height > VOYAGE_MAX_IMAGE_PIXELS:
-                if width >= height:
-                    width -= 1
-                else:
-                    height -= 1
-            resized = image.resize((width, height), Image.Resampling.LANCZOS)
-            if image_format == "JPEG" and resized.mode not in {"L", "RGB"}:
-                resized = resized.convert("RGB")
-            output = BytesIO()
-            resized.save(output, format=image_format)
-            fitted = output.getvalue()
-            if len(fitted) <= VOYAGE_MAX_IMAGE_BYTES or width * height <= 1:
-                break
-            scale *= 0.8
+    try:
+        with Image.open(BytesIO(payload)) as original:
+            image = ImageOps.exif_transpose(original)
+            scale = min(1.0, math.sqrt(VOYAGE_MAX_IMAGE_PIXELS / (image.width * image.height)))
+            while True:
+                width = max(1, int(image.width * scale))
+                height = max(1, int(image.height * scale))
+                while width * height > VOYAGE_MAX_IMAGE_PIXELS:
+                    if width >= height:
+                        width -= 1
+                    else:
+                        height -= 1
+                resized = image.resize((width, height), Image.Resampling.LANCZOS)
+                if image_format == "JPEG" and resized.mode not in {"L", "RGB"}:
+                    resized = resized.convert("RGB")
+                output = BytesIO()
+                resized.save(output, format=image_format)
+                fitted = output.getvalue()
+                if len(fitted) <= VOYAGE_MAX_IMAGE_BYTES or width * height <= 1:
+                    break
+                scale *= 0.8
+    except (OSError, ValueError, SyntaxError):
+        if strict:
+            raise
+        return data_url, False, pixels
     encoded = base64.b64encode(fitted).decode("ascii")
-    return f"data:{media_type};base64,{encoded}", True
+    return f"data:{media_type};base64,{encoded}", True, width * height
 
 
 def fit_voyage_input(item: Mapping[str, object]) -> tuple[dict[str, object], int]:
     """A copy of one provider input with every image fitted, and how many images changed."""
+    return _fit_voyage_input(item, {})
+
+
+def _fit_voyage_input(
+    item: Mapping[str, object], image_pixels: dict[str, int | None]
+) -> tuple[dict[str, object], int]:
+    """Prepare one input, carrying scalar image measurements to the next stage."""
     fitted = dict(item)
     content = item.get("content")
     if not isinstance(content, list):
@@ -185,7 +206,8 @@ def fit_voyage_input(item: Mapping[str, object]) -> tuple[dict[str, object], int
             and part.get("type") == "image_base64"
             and isinstance(part.get("image_base64"), str)
         ):
-            url, transformed = fit_voyage_image(str(part["image_base64"]))
+            url, transformed, pixels = _fit_voyage_image(str(part["image_base64"]))
+            image_pixels[url] = pixels
             if transformed:
                 changed += 1
                 part = {**part, "image_base64": url}
@@ -204,6 +226,15 @@ def estimate_voyage_tokens(
     builds) counts as a whole context window, which at worst sends that input in a request of
     its own.
     """
+    return _estimate_voyage_tokens(item, count_text, {})
+
+
+def _estimate_voyage_tokens(
+    item: Mapping[str, object],
+    count_text: Callable[[list[str]], list[int]],
+    image_pixels: dict[str, int | None],
+) -> tuple[int, int]:
+    """Estimate one input, reusing pixel counts keyed by the exact provider data URL."""
     content = item.get("content")
     parts = content if isinstance(content, list) else []
     texts = [
@@ -222,8 +253,11 @@ def estimate_voyage_tokens(
             tokens += VOYAGE_MAX_INPUT_TOKENS
             continue
         images += 1
-        decoded = _split_data_url(str(part.get("image_base64")))
-        pixels = _image_pixels(decoded[1]) if decoded is not None else None
+        url = str(part.get("image_base64"))
+        if url not in image_pixels:
+            decoded = _split_data_url(url)
+            image_pixels[url] = _image_pixels(decoded[1]) if decoded is not None else None
+        pixels = image_pixels[url]
         tokens += (
             VOYAGE_MAX_INPUT_TOKENS
             if pixels is None
@@ -292,14 +326,26 @@ def estimate_voyage_inputs(
     That keeps an ordinary query from paying the first load, about 4 s, or waiting on Hugging
     Face.
     """
-    bound = [estimate_voyage_tokens(item, _embeddings._utf8_token_bound) for item in items]
+    return _estimate_voyage_inputs(items, count_text, {})
+
+
+def _estimate_voyage_inputs(
+    items: Sequence[Mapping[str, object]],
+    count_text: TokenCounter,
+    image_pixels: dict[str, int | None],
+) -> list[tuple[int, int]]:
+    """Reuse request-local scalar measurements, never decoded image buffers, across text passes."""
+    bound = [
+        _estimate_voyage_tokens(item, _embeddings._utf8_token_bound, image_pixels)
+        for item in items
+    ]
     budget = int(VOYAGE_MAX_REQUEST_TOKENS * VOYAGE_REQUEST_TOKEN_HEADROOM)
     if (
         all(tokens <= VOYAGE_MAX_INPUT_TOKENS for tokens, _ in bound)
         and sum(tokens for tokens, _ in bound) <= budget
     ):
         return bound
-    return [estimate_voyage_tokens(item, count_text) for item in items]
+    return [_estimate_voyage_tokens(item, count_text, image_pixels) for item in items]
 
 
 
@@ -747,8 +793,10 @@ class VoyageMultimodalEmbedder:
             raise RuntimeError("Voyage multimodal response did not preserve input alignment")
         return [[float(value) for value in vector] for vector in vectors]
 
-    def _estimate(self, items: list[dict[str, object]]) -> list[tuple[int, int]]:
-        return estimate_voyage_inputs(items, self._text_counter)
+    def _estimate(
+        self, items: list[dict[str, object]], image_pixels: dict[str, int | None]
+    ) -> list[tuple[int, int]]:
+        return _estimate_voyage_inputs(items, self._text_counter, image_pixels)
 
     def _log_input(
         self, index: int, input_type: str, tokens: int, images: int, fitted: int
@@ -781,9 +829,10 @@ class VoyageMultimodalEmbedder:
         limits first. The provider embeds each input on its own, so packing changes no vector,
         and a call already under every cap is sent exactly as before.
         """
-        prepared = [fit_voyage_input(item) for item in inputs]
+        image_pixels: dict[str, int | None] = {}
+        prepared = [_fit_voyage_input(item, image_pixels) for item in inputs]
         normalized = [item for item, _ in prepared]
-        estimates = self._estimate(normalized)
+        estimates = self._estimate(normalized, image_pixels)
         for index, ((tokens, images), (_, fitted)) in enumerate(zip(estimates, prepared)):
             self._log_input(index, "document", tokens, images, fitted)
         vectors: list[list[float]] = []
@@ -802,12 +851,14 @@ class VoyageMultimodalEmbedder:
         )
 
     def embed_query(self, query: str | MultimodalQuery) -> list[float]:
-        provider_input, fitted = fit_voyage_input(
+        image_pixels: dict[str, int | None] = {}
+        provider_input, fitted = _fit_voyage_input(
             {"content": [{"type": "text", "text": query}]}
             if isinstance(query, str)
-            else query.provider_input()
+            else query.provider_input(),
+            image_pixels,
         )
-        [(tokens, images)] = self._estimate([provider_input])
+        [(tokens, images)] = self._estimate([provider_input], image_pixels)
         self._log_input(0, "query", tokens, images, fitted)
         result = retry_with_backoff(
             lambda: self._client.multimodal_embed(

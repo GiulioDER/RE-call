@@ -37,6 +37,14 @@ of the window by Voyage's own tokenizer, counted locally (no API call), or by UT
 tokenizer cannot be loaded. A group whose parts already fit that budget splits exactly as it did
 under the character bound alone, so stored vectors stay reproducible under the same profile.
 
+Registered embedders resolve the counter during construction. Their runtime profile fingerprint
+includes the loaded tokenizer's serialized artifact hash and `tokenizers` version, or the versioned
+UTF-8 fallback policy. Changing availability, artifact, or runtime therefore changes generation and
+contextual-cache identity even when the registered profile ID stays the same. Profiles recorded
+before this binding require a fresh build and matching calibration before serving. A custom counter
+supplied with a profile must also supply a stable `token_counter_identity` that changes with its
+counting behavior.
+
 Oversized groups are split only between original chunks, never truncated, then flattened back with
 exact one-to-one alignment. A single chunk over the token budget is sent on its own, with a
 warning, and the provider decides: one over the window is refused, which fails the build rather

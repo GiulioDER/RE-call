@@ -360,7 +360,8 @@ class RecallAgentMemory:
 
         def run() -> Any:
             return evidence_memory(
-                self._store_or_create(), self._embedder_or_create(), query, **kwargs
+                self._store_or_create(), self._embedder_or_create(), query,
+                env=self._env, **kwargs,
             )
 
         return await self._retrieve(run)
