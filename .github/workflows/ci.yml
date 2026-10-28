@@ -275,8 +275,12 @@ jobs:
       # Coverage of the lines THIS change touched, against master, written to the job summary.
       # Report only, no threshold: a changed-line floor is a policy decision that wants a few weeks
       # of these numbers first. Runs whenever the suite produced coverage.xml, pass or fail.
+      # continue-on-error keeps it report only: this job gates merge, and the step resolves
+      # diff-cover's dependencies from PyPI on every run, so a fetch failure or a broken upstream
+      # release must not turn the gate red.
       - name: Changed-line coverage (diff-cover, report only)
         if: always()
+        continue-on-error: true
         run: |
           test -f coverage.xml || { echo "no coverage.xml, nothing to report"; exit 0; }
           uvx diff-cover==10.6.0 coverage.xml --compare-branch=origin/master \
