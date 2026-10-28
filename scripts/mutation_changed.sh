@@ -103,7 +103,9 @@ for file in "${changed[@]}"; do
   for t in "${ranked[@]:0:$MAX_TESTS_PER_FILE}"; do tests["$t"]=1; done
   for t in "${ranked[@]:$MAX_TESTS_PER_FILE}"; do dropped_tests["$t"]=1; done
 done
-for t in "${!tests[@]}"; do unset "dropped_tests[$t]"; done
+# Single-quoted so `unset` parses the subscript once: a test file name is PR-controlled, and the
+# double-quoted form expanded it a second time, running a `$(...)` in it and missing a name with `]`.
+for t in "${!tests[@]}"; do unset -v 'dropped_tests[$t]'; done
 
 {
   echo "## Mutation testing (report only)"
@@ -275,11 +277,11 @@ counts="$(mutmut results --all true 2>/dev/null | targeted | awk -F': ' '{n[$2]+
   fi
   if [ ${#dropped_tests[@]} -gt 0 ]; then
     echo
-    echo "${#dropped_tests[@]} importing test file(s) not run (over MAX_TESTS_PER_FILE=$MAX_TESTS_PER_FILE per module); a survivor here may be killed by one of them."
+    echo "${#dropped_tests[@]} importing test file(s) not run (over MAX_TESTS_PER_FILE=$MAX_TESTS_PER_FILE per module); a survivor, or a mutant reached by no selected test, may be covered by one of them."
   fi
   if [ ${#notests[@]} -gt 0 ]; then
     echo
-    echo "${#notests[@]} mutant(s) reached by no selected test (often: covered only by database tests, which skip here)."
+    echo "${#notests[@]} mutant(s) reached by no selected test (often: covered only by database tests, which skip here, or only by an importing test file over the per-module cap)."
   fi
   echo
   if [ ${#survivors[@]} -eq 0 ]; then
