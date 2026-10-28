@@ -25,13 +25,19 @@ from scripts import check_hnsw_recall
 
 
 class _PathRecordingStore:
-    _tenant = "acme"
+    tenant = "acme"
 
     def __init__(self) -> None:
         self.seen: list[str] = []
 
     def query_dense(self, vector: list[float], k: int) -> list[object]:
         self.seen.append(generation_store._generation_dense_search())  # noqa: SLF001
+        return []
+
+    def _hnsw_filtered_tuning(self, k: int | None = None) -> tuple[int, str]:
+        return 200, "relaxed_order"
+
+    def _dense_exact_fallback(self, sql: str, params: dict) -> list[tuple]:
         return []
 
 
