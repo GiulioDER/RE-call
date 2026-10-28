@@ -17,7 +17,7 @@ from typing import Any
 from recall.backends import lite_route_refusal, open_legacy_store
 from recall.cli_commands._lite import lite_read_meta
 from recall.lite import is_lite_dsn, lite_dsn_path
-from recall.records import RECORD_KINDS, RecordsQueryError, lookup_records
+from recall.records import MAX_QUERY_ANCHORS, RECORD_KINDS, RecordsQueryError, lookup_records
 from recall.runtime_route import RouteConfigurationError, RuntimeRoute, resolve_runtime_route
 from recall.security_policy import (
     AccessContext,
@@ -45,7 +45,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     form.add_argument(
         "--anchors",
         metavar="FILE",
-        help="a JSON list of {file, symbol, code_sha} objects (at most 200); `-` reads stdin",
+        help=f"a JSON list of {{file, symbol, code_sha}} objects (at most {MAX_QUERY_ANCHORS}); `-` reads stdin",
     )
     form.add_argument(
         "--id", dest="ids", action="append", metavar="ID", help="a record id; repeat for several"
@@ -53,7 +53,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     form.add_argument(
         "--all", dest="all_records", action="store_true", help="every record in the tenant"
     )
-    p_records.add_argument("--repo", help="the repository anchors are paths in (owner/name)")
+    p_records.add_argument(
+        "--repo",
+        help=(
+            "the repository anchors are paths in (owner/name): required with --anchors; with --id "
+            "or --all, only records of this repository"
+        ),
+    )
     p_records.add_argument(
         "--kind",
         dest="kinds",
@@ -68,9 +74,11 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 
 def _read_anchors(spec: str) -> Any:
     try:
-        text = sys.stdin.read() if spec == "-" else Path(spec).read_text(encoding="utf-8")
+        # utf-8-sig: an editor's byte order mark is not JSON, and a file that is not UTF-8 at all
+        # (a UnicodeDecodeError, which is a ValueError) is refused here like any unreadable file.
+        text = sys.stdin.read() if spec == "-" else Path(spec).read_text(encoding="utf-8-sig")
         return json.loads(text)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         raise SystemExit(f"recall records: cannot read anchors from {spec!r}: {exc}") from exc
 
 
@@ -94,7 +102,9 @@ def _lookup(
     # One lookup, one snapshot, every record. Paging by separate calls read a separate snapshot per
     # page, and a legacy store has no generation id to tell them apart, so an index run landing
     # between pages duplicated or skipped records with `truncated` still false. A round-trip check
-    # reads every record such a dump lacks as missing.
+    # reads every record such a dump lacks as missing. A legacy `PgVectorStore` has no snapshot at
+    # all: it reads the records and the supersession graph in two statements, so an index run
+    # landing between them can still pair one state's records with another's graph.
     return lookup_records(
         store,
         repo=args.repo,

@@ -4,7 +4,7 @@ A document may begin with a ``---`` line, followed by ``key: value`` lines, clos
 Only VALIDITY_KEYS and the namespaced ``recall_graph`` JSON object are meaningful to recall;
 the graph object may additionally carry an authored ``authority`` tier and exact source
 ``depends_on`` references. An audit record, ``recall_record``, is one more one-line JSON object,
-returned as written (see `recall.records`). Unknown keys are ignored and the returned body always excludes the block. Dates are ISO
+returned as written (see `recall.records`), and RECORD_LABEL_KEYS (``name``, ``description``) are kept only beside one. Unknown keys are ignored and the returned body always excludes the block. Dates are ISO
 ``YYYY-MM-DD``, interpreted in UTC: ``valid_from`` starts at 00:00:00 (inclusive),
 ``valid_until`` ends at 23:59:59.999999 (inclusive end of day). ``recall_graph`` must be a
 single line of JSON so this deliberately small parser does not pretend to be a YAML parser.
@@ -29,7 +29,7 @@ SUPERSEDES = "supersedes"
 GRAPH_KEY = "recall_graph"
 #: An audit record: one line of JSON, kept exactly as authored. `recall.records.admit_record`
 #: validates it where metadata is written; this parser only reads it. Metadata, not a truth claim:
-#: it never touches validity, which stays in `valid_from` and `supersedes`.
+#: it never touches validity, which stays in `valid_from`, `valid_until` and `supersedes`.
 RECORD_KEY = "recall_record"
 #: The memo labels a record is returned with. Kept ONLY beside a `recall_record`, so the metadata
 #: of every other document is unchanged by this parser learning them.
@@ -352,6 +352,11 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
                 else:
                     meta[key] = parsed
             elif key == RECORD_KEY:
+                if key in meta:
+                    # Keeping either line would admit a record the author may not have meant, and
+                    # which one survived would depend on line order alone; refused with a reason.
+                    meta[key] = {"__parse_error__": "recall_record declared more than once"}
+                    continue
                 try:
                     meta[key] = json.loads(value.strip())
                 except (ValueError, RecursionError):

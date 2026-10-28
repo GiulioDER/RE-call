@@ -32,6 +32,7 @@ agree on every golden record and on a set of mutations of them.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
@@ -39,7 +40,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from importlib import resources
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from recall.errors import RecallError
 from recall.frontmatter import RECORD_KEY, RECORD_LABEL_KEYS, supersedes_targets, validity_bounds
@@ -93,6 +94,9 @@ def _type_ok(value: Any, name: str) -> bool:
     if name == "string":
         return isinstance(value, str)
     if name == "integer":
+        # Draft 2020-12 reads any number with a zero fractional part as an integer, so `1.0` is one.
+        if isinstance(value, float):
+            return value.is_integer()
         return isinstance(value, int) and not isinstance(value, bool)
     if name == "number":
         return isinstance(value, (int, float)) and not isinstance(value, bool)
@@ -140,6 +144,10 @@ def _errors(value: Any, schema: Mapping[str, Any], path: str) -> list[str]:
             return []
         if len(passing) > 1:
             return [f"{where}: matches more than one record shape"]
+        if path:
+            # Only the record itself chooses its shape by `kind`; a nested union (an anchor's
+            # `code_sha`, a string or null) has no kind, and naming one would blame the wrong field.
+            return [f"{where}: matches no allowed shape"]
         # Report the branch the record says it is, so the reason names a field, not "oneOf".
         kind = value.get("kind") if isinstance(value, dict) else None
         for branch, branch_errors in zip(schema["oneOf"], branches):
@@ -230,7 +238,11 @@ def record_problem(value: Any) -> str | None:
         # without it.
         return f"recall_record holds {_UNSTORABLE_TEXT}, which PostgreSQL cannot store"
     errors = _errors(value, record_schema(), "")
-    return "; ".join(errors[:3]) if errors else None
+    return "; ".join(errors[:_MAX_REPORTED_ERRORS]) if errors else None
+
+
+#: How many of a refused record's schema errors its warning names: enough to fix it, not a dump.
+_MAX_REPORTED_ERRORS = 3
 
 
 #: What `_holds_unstorable` looks for, as a refusal names it.
@@ -291,18 +303,36 @@ def record_parts(record: Mapping[str, Any]) -> tuple[str, str, list[dict[str, An
     )
 
 
-def _record_of(chunk: Chunk) -> tuple[str, dict[str, Any], str, list[dict[str, Any]]] | None:
-    """``(id, recall_record, kind, anchors)`` for a record or code chunk, else None."""
+def record_causes(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """The record ids a `recall_record`'s `caused_by` names, in order: the one reading of that
+    edge `match_candidates` and `recall.related` share."""
+    causes = record.get("caused_by")
+    if not isinstance(causes, list):
+        return ()
+    return tuple(cause for cause in causes if isinstance(cause, str))
+
+
+class _ParsedRecord(NamedTuple):
+    """A record or code chunk as the lookup reads it."""
+
+    id: str
+    record: dict[str, Any]
+    kind: str
+    anchors: list[dict[str, Any]]
+
+
+def _record_of(chunk: Chunk) -> _ParsedRecord | None:
+    """The `_ParsedRecord` of a record or code chunk, else None."""
     meta = chunk.metadata
     record = meta.get(RECORD_KEY)
     if isinstance(record, dict) and isinstance(record.get("id"), str):
         record_id, kind, anchors = record_parts(record)
-        return record_id, record, kind, anchors
+        return _ParsedRecord(record_id, record, kind, anchors)
     anchor = meta.get(CODE_ANCHOR_KEY)
     if isinstance(anchor, dict) and isinstance(anchor.get("file"), str):
-        return chunk.id, anchor, "code", [
+        return _ParsedRecord(chunk.id, anchor, "code", [
             {"file": anchor.get("file"), "symbol": anchor.get("symbol"), "code_sha": anchor.get("code_sha")}
-        ]
+        ])
     return None
 
 
@@ -461,11 +491,8 @@ def match_candidates(
     """
     caused: dict[str, list[str]] = {}
     for candidate in candidates:
-        causes = candidate.record.get("caused_by")
-        if isinstance(causes, list):
-            for cause in causes:
-                if isinstance(cause, str):
-                    caused.setdefault(cause, []).append(candidate.id)
+        for cause in record_causes(candidate.record):
+            caused.setdefault(cause, []).append(candidate.id)
 
     # A query anchor for another file can only ever meet a record anchor as "none", which is
     # `_best`'s default, so each record anchor is compared with its own file's queries alone:
@@ -487,7 +514,6 @@ def match_candidates(
             continue
         if wanted_ids is not None and record_id not in wanted_ids:
             continue
-        successor = superseded_by(candidate)
         if query_anchors is not None:
             anchor_matches: list[dict[str, Any]] = [
                 {"anchor": anchor, "match": _best(_match(q, anchor) for q in queries_for(anchor))}
@@ -498,6 +524,7 @@ def match_candidates(
         best = _best(m["match"] for m in anchor_matches)
         if query_anchors is not None and best == "none":
             continue
+        successor = superseded_by(candidate)
         targets = supersedes_targets(meta.get("supersedes"))
         matched.append(
             (
@@ -552,7 +579,9 @@ def lookup_records(
     `limit=None`, with `all_records` only, returns every record from the one snapshot: the full
     dump a round-trip check needs, which separate paged calls cannot give on a store with no
     generation id to pin them to.
-    Reads one snapshot of the store's active generation when it has one.
+    Reads one snapshot of the store's active generation when it has one. A legacy `PgVectorStore`
+    has no `snapshot()`, so it reads the records and the supersession graph in two statements, and
+    an index run landing between them can pair one state's records with another's graph.
 
     `expired` is true when the document's `valid_until` has passed at `now` (a date-only value
     lasts through that day, UTC). `superseded_by` is what hides the record at `now` (default: the
@@ -597,12 +626,7 @@ def lookup_records(
         code_files = sorted({query["file"] for query in query_anchors})
 
     snapshot = getattr(store, "snapshot", None)
-    if callable(snapshot):
-        with snapshot():
-            generation_id = _generation_id(store)
-            chunks = _record_chunks(store, code_files=code_files)
-            graph = store_supersession_graph(store)
-    else:
+    with snapshot() if callable(snapshot) else contextlib.nullcontext():
         generation_id = _generation_id(store)
         chunks = _record_chunks(store, code_files=code_files)
         graph = store_supersession_graph(store)
@@ -612,13 +636,13 @@ def lookup_records(
     # chunks share one anchor (a split symbol, every module-level chunk of a file), so a code
     # record is one per distinct (repo, file, symbol, code_sha). Either way the record is reported
     # from its lowest-ordinal chunk, and `chunk_ids` lists every chunk carrying it.
-    groups: dict[object, list[tuple[Chunk, tuple[str, dict[str, Any], str, list[dict[str, Any]]]]]] = {}
-    for chunk in sorted(chunks, key=lambda c: (_ordinal(c), c.source, c.id)):
+    groups: dict[object, list[tuple[Chunk, _ParsedRecord]]] = {}
+    for chunk in sorted(chunks, key=lambda c: (_sort_ordinal(c), c.source, c.id)):
         parsed = _record_of(chunk)
         if parsed is None:
             continue
-        if parsed[2] == "code":
-            anchor = parsed[1]
+        if parsed.kind == "code":
+            anchor = parsed.record
             key: object = ("code", *(json.dumps(anchor.get(f)) for f in ("repo", "file", "symbol", "code_sha")))
         else:
             key = ("memo", chunk.source)
@@ -634,25 +658,48 @@ def lookup_records(
 
     candidates = [
         RecordCandidate(
-            id=record_id,
-            record=record,
-            kind=kind,
-            anchors=record_anchors,
+            id=parsed.id,
+            record=parsed.record,
+            kind=parsed.kind,
+            anchors=parsed.anchors,
             meta=chunk.metadata,
             source=chunk.source,
             file=_file_of(chunk),
             chunk_id=chunk.id,
             chunk_ids=chunk_ids[group],
         )
-        for group, (chunk, (record_id, record, kind, record_anchors)) in by_source.items()
+        for group, (chunk, parsed) in by_source.items()
     ]
+
+    # A path two roots hold is keyed in the graph by its absolute source, which no source policy
+    # is written against. Read before the policy filter, so a denied successor still maps.
+    file_of_source = {chunk.source: _file_of(chunk) for chunk in chunks}
+
+    def successor_file(key: str) -> str | None:
+        """The root-relative file a successor's graph key names, or None when it cannot be told."""
+        file = file_of_source.get(key)
+        if file is not None and file in graph.collided:
+            return file
+        posix = key.replace("\\", "/")
+        if any(posix.endswith("/" + name.replace("\\", "/")) for name in graph.collided):
+            # Either the source of a collided file this lookup holds no chunk of, or a file
+            # nested under a collided name: which of the two cannot be told here.
+            return None
+        return key
 
     def superseded_by(candidate: RecordCandidate) -> str | None:
         successor = graph.successor(graph.key(candidate.file, candidate.source), now=instant)
+        if successor is None:
+            return None
+        file = successor_file(successor)
+        if file is None:
+            # No policy can be asked about a key it cannot place, so it is withheld, as a denial is.
+            return successor if policy is None else WITHHELD
         # A successor the caller may not read is withheld, never reported as None: None would
         # present a retracted record as current, and a current false positive is one CCA may
-        # suppress a finding on.
-        return None if successor is None else successor if allowed(successor) else WITHHELD
+        # suppress a finding on. The policy decides on the root-relative file; the report keeps
+        # the graph key, so a collided successor is not reported as the name both roots hold.
+        return successor if allowed(file) else WITHHELD
 
     records = match_candidates(
         candidates,
@@ -748,7 +795,7 @@ def _file_of(chunk: Chunk) -> str:
     return value if isinstance(value, str) and value else chunk.source
 
 
-def _ordinal(chunk: Chunk) -> int:
+def _sort_ordinal(chunk: Chunk) -> int:
     value = chunk.metadata.get("ord")
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
@@ -767,6 +814,7 @@ __all__ = [
     "as_utc",
     "lookup_records",
     "match_candidates",
+    "record_causes",
     "record_parts",
     "record_problem",
     "record_rows_condition",

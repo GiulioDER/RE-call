@@ -4,11 +4,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Literal, Protocol, get_args
 
 from recall.calibration import Calibration
 from recall.frontmatter import RECORD_KEY
 from recall.lineage import canonical_sha256
+from recall.records import RecordsQueryError, _file_of, _record_chunks, record_causes
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.supersession import EdgeCandidates, SupersessionGraph, store_supersession_graph
 from recall.trust_gate import evaluate
@@ -23,7 +24,7 @@ from recall.types import (
 )
 
 RelatedRelation = Literal["source", "ordinal", "supersession", "caused_by"]
-RELATED_RELATIONS: frozenset[str] = frozenset({"source", "ordinal", "supersession", "caused_by"})
+RELATED_RELATIONS: frozenset[str] = frozenset(get_args(RelatedRelation))
 MAX_RELATED_ITEMS = 50
 
 
@@ -50,11 +51,6 @@ class RelatedEvidenceResult:
     explanation: dict[str, object] | None = None
 
 
-def _file(chunk: Chunk) -> str:
-    value = chunk.metadata.get("file")
-    return value if isinstance(value, str) and value else chunk.source
-
-
 def _ordinal(chunk: Chunk) -> int | None:
     value = chunk.metadata.get("ord")
     return value if isinstance(value, int) and not isinstance(value, bool) else None
@@ -65,10 +61,7 @@ def _record_edges(chunk: Chunk) -> tuple[str | None, frozenset[str]]:
     record = chunk.metadata.get(RECORD_KEY)
     if not isinstance(record, dict) or not isinstance(record.get("id"), str):
         return None, frozenset()
-    causes = record.get("caused_by")
-    if not isinstance(causes, list):
-        return record["id"], frozenset()
-    return record["id"], frozenset(c for c in causes if isinstance(c, str))
+    return record["id"], frozenset(record_causes(record))
 
 
 def _caused_by_candidates(
@@ -80,8 +73,6 @@ def _caused_by_candidates(
     by id: the full scan read every chunk's text to keep a handful. None when the store can list
     its record chunks or fetch by id in neither way, so the caller falls back to the scan.
     """
-    from recall.records import RecordsQueryError, _record_chunks
-
     try:
         # Memo records only: a code anchor carries no `caused_by` and is never named by one.
         light = _record_chunks(store, code_files=())
@@ -227,7 +218,7 @@ def trusted_related(
         candidates_iter = None  # the full scan, opened below only if it can match anything
     else:
         seed, candidates_iter = bounded
-    seed_file = _file(seed)
+    seed_file = _file_of(seed)
     if security_policy is not None:
         if access_context is None:
             raise ValueError("access_context is required when security_policy is configured")
@@ -264,7 +255,7 @@ def trusted_related(
     for chunk in candidates_iter:
         if chunk.id == seed_chunk_id:
             continue
-        file = _file(chunk)
+        file = _file_of(chunk)
         ordinal = _ordinal(chunk)
         same_source = file == seed_file
         adjacent = (
@@ -292,6 +283,18 @@ def trusted_related(
                     indexed_at=chunk.metadata.get("indexed_at"),
                 )
             )
+    if relation == "caused_by":
+        # One chunk per related memo, its first: every chunk of a memo carries the memo's record,
+        # so one long memo filled every slot and another linked record never came back. Grouped
+        # by source, as `lookup_records` groups memos, so two memos that share a record id (an
+        # authoring error) do not let a superseded twin stand in for the current one.
+        first: dict[str, ScoredChunk] = {}
+        for item in related:
+            group = item.chunk.source
+            kept = first.get(group)
+            if kept is None or (_ordinal(item.chunk) or 0, item.chunk.id) < (_ordinal(kept.chunk) or 0, kept.chunk.id):
+                first[group] = item
+        related = list(first.values())
     related.sort(key=lambda item: (abs((_ordinal(item.chunk) or 0) - (seed_ord or 0)), item.chunk.id))
     if relation != "supersession":
         related = related[:max_items]
