@@ -95,11 +95,14 @@ agent-ab = ["scipy>=1.11"]
 # Native extraction for PDF, Office, spreadsheets, presentations, HTML, and tables.
 documents = [
     # pypdf was removed from this extra on 2026-10-01. It was declared, capped `<7` on the belief
-    # that its text fed chunking, and never imported: PDF text comes from pdfplumber in
-    # `recall/extraction.py`, which depends on pdfminer.six and pypdfium2, not pypdf. Its only use
-    # was a capability probe that confirmed it was installed. It left when 6.16.1 collected eight
-    # DoS advisories (CVE-2026-102993 to 102999 and CVE-2026-103000) that the deliberate Dependabot
-    # ignore rule had kept silent, so the safest version of an unused dependency is none.
+    # that its text fed chunking, and never imported: PDF text comes from pdfplumber (used in
+    # `recall/extraction.py`), and pdfplumber depends on pdfminer.six and pypdfium2, not pypdf. Its
+    # only use was a capability probe that confirmed it was installed. It left when 6.16.1
+    # collected eight DoS advisories (CVE-2026-102993 to 102999 and CVE-2026-103000) whose fixes
+    # the deliberate Dependabot ignore rule kept out of version-update PRs, so the safest version
+    # of an unused dependency is none. (Corrected 2026-10-28: this said the rule "had kept silent"
+    # the advisories; pip-audit's `audit` job found them, and whether the rule also suppressed a
+    # security PR is unconfirmed, see .github/dependabot.yml.)
     "pdfplumber>=0.11",
     "python-docx>=1.1",
     "openpyxl>=3.1",
@@ -511,9 +514,9 @@ extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
 known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks", "recall_aml"]
 optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "bench", "eval", "finetune"]
 # These are deliberate boundaries rather than missing declarations. The GUI and LlamaIndex
-# adapters are optional runtime surfaces,
-# evaluation plotting is intentionally development only, and promotion imports application supplied
-# modules at runtime. The lean CI job intentionally does not install those optional surfaces.
+# adapters are optional runtime surfaces, evaluation plotting is intentionally development only,
+# and promotion imports application supplied modules at runtime. The lean CI job intentionally
+# does not install those optional surfaces.
 per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
 package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "pillow" = "PIL", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
 

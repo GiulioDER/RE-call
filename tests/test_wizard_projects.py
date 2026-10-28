@@ -186,6 +186,9 @@ def test_the_generated_dockerfile_fails_the_build_on_a_missing_extra() -> None:
         --- pip exit: 0 ---
         ModuleNotFoundError: No module named 'pypdf'
 
+    (Measured when the post-install import began with pypdf; since 2026-10-01 it begins with
+    pdfplumber, which a release without the extra lacks just the same.)
+
     So a pin whose version predates an extra produces an image that builds clean and then silently
     extracts nothing from every .docx, .pdf, .xlsx and .pptx the user feeds it. These imports move
     that failure to build time. The test pins their presence, not their contents, because losing
