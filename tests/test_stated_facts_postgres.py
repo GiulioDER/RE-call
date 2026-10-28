@@ -541,8 +541,9 @@ def test_p16b_a_promote_after_the_first_lookup_keeps_the_supersession_of_the_rea
     inside `supersession()` and no outer pin masks it.
     Red by mutation of `served_sources` (recall/fact_retraction.py): `supersession()` without its
     `with pinned():` reads v2's graph and fails on "a promote mid-read brought a retired value
-    back: [('4512', ('memory/old.md',))]". Run in CI (no PostgreSQL on the workstation during the
-    AML window); the mutation run is recorded in the PR.
+    back: [('4512', ('old.md',))]". Observed in CI on 2026-10-28, GitHub Actions run 40758592375
+    (throwaway branch claude/cca-949-p16b-mutation, since deleted): this was the only failure of
+    11,950 tests; restored, it passes.
     """
     from datetime import UTC, datetime
 
