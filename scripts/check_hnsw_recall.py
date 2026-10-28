@@ -90,22 +90,52 @@ def active_generations(conn: psycopg.Connection) -> list[tuple[str, str, int]]:
     ]
 
 
+#: Rows normalised at a time, so the norm's temporaries are a block wide rather than the matrix's
+#: size (16 MiB at 1,024 dimensions; the same waste #845 removed from the atomic rescue loader).
+NORMALISE_BLOCK_ROWS = 4096
+
+
 def generation_vectors(
     conn: psycopg.Connection, tenant: str, generation: str
 ) -> tuple[list[str], np.ndarray]:
-    rows = conn.execute(
-        "SELECT chunk_id, embedding FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
-        (tenant, generation),
-    ).fetchall()
-    ids = [str(r[0]) for r in rows]
-    # pgvector >= 0.4 hands back `Vector` objects rather than arrays; older versions give arrays.
-    matrix = np.asarray(
-        [np.asarray(r[1].to_numpy() if hasattr(r[1], "to_numpy") else r[1], dtype=np.float32) for r in rows],
-        dtype=np.float32,
+    """The generation's ids and unit-normalised vectors, holding about one matrix in memory.
+
+    Rows are streamed (libpq hands them over one at a time) into a matrix sized by a count, then
+    normalised in place by blocks. A `fetchall` held every row as Python objects beside the matrix,
+    and the whole-matrix norm and division added two more matrix-sized arrays.
+    """
+    expected = int(
+        conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+            (tenant, generation),
+        ).fetchone()[0]
     )
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    return ids, matrix / norms
+    ids: list[str] = []
+    matrix: np.ndarray | None = None
+    with conn.cursor() as cur:
+        for chunk_id, embedding in cur.stream(
+            "SELECT chunk_id, embedding FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+            (tenant, generation),
+        ):
+            # pgvector >= 0.4 hands back `Vector` objects rather than arrays; older versions give arrays.
+            vector = np.asarray(
+                embedding.to_numpy() if hasattr(embedding, "to_numpy") else embedding, dtype=np.float32
+            )
+            if matrix is None:
+                matrix = np.empty((expected, vector.shape[0]), dtype=np.float32)
+            if len(ids) == expected:
+                raise GenerationMoved(tenant)  # rows were added after the count
+            matrix[len(ids)] = vector
+            ids.append(str(chunk_id))
+    if matrix is None:
+        return ids, np.empty((0, 0), dtype=np.float32)
+    matrix = matrix[: len(ids)]  # fewer rows than counted: an erasure, which the fingerprint check catches
+    for start in range(0, len(ids), NORMALISE_BLOCK_ROWS):
+        block = matrix[start : start + NORMALISE_BLOCK_ROWS]
+        norms = np.sqrt(np.einsum("ij,ij->i", block, block))[:, None]
+        norms[norms == 0] = 1.0
+        block /= norms
+    return ids, matrix
 
 
 def sample_indices(ids: list[str], count: int, seed: int) -> list[int]:

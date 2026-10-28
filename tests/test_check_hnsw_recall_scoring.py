@@ -415,3 +415,57 @@ def test_every_result_says_whether_it_was_measured_again(monkeypatch: pytest.Mon
 
     assert [r.get("remeasured_after_change") for r in summary["tenants"]] == [False, False]
     assert summary.get("queries_requested_per_tenant") == 100
+
+
+class _StreamingConn:
+    """A connection whose rows exist only while they are read, as libpq's single-row mode gives
+    them; `fetchall` has to build every one of them at once."""
+
+    def __init__(self, rows: int, dim: int, *, counted: int | None = None) -> None:
+        self.rows, self.dim = rows, dim
+        self.counted = rows if counted is None else counted
+
+    def _row(self, i: int) -> tuple[str, np.ndarray]:
+        vector = np.random.default_rng(i).standard_normal(self.dim).astype(np.float32)
+        return f"c{i:05d}", vector
+
+    def execute(self, sql: str, params: object = None) -> _Cursor:
+        if "count(*)" in sql:
+            return _Cursor([(self.counted,)])
+        return _Cursor([self._row(i) for i in range(self.rows)])
+
+    @contextmanager
+    def cursor(self):  # type: ignore[no-untyped-def]
+        yield SimpleNamespace(stream=lambda sql, params=None: (self._row(i) for i in range(self.rows)))
+
+
+def test_a_generation_loads_in_about_one_matrix_of_memory() -> None:
+    """Invariant: loading a generation holds about one matrix of float32 at its peak. Failure mode
+    (PERF-001 of the CCA of #846, left to the owner and then taken): the rows came back in one
+    `fetchall` beside the stacked matrix, its whole-matrix norm temporary and its normalised copy,
+    several times the matrix. Red proof: against the loader before this fix it failed at the peak
+    assertion, `peak 3.06 matrices` (2026-10-28); the fixed loader peaks at 1.1. Restored, green."""
+    import tracemalloc
+
+    rows, dim = 2000, 1024
+    matrix_bytes = rows * dim * 4
+    tracemalloc.start()
+    try:
+        ids, matrix = script.generation_vectors(_StreamingConn(rows, dim), "acme", "gen-1")  # type: ignore[arg-type]
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 1.5 * matrix_bytes, f"peak {peak / matrix_bytes:.2f} matrices"
+    assert ids == [f"c{i:05d}" for i in range(rows)]
+    expected = np.stack([_StreamingConn(rows, dim)._row(i)[1] for i in range(rows)])
+    expected /= np.linalg.norm(expected, axis=1, keepdims=True)
+    assert np.allclose(matrix, expected, atol=1e-6)
+
+
+def test_rows_added_after_the_count_make_it_measure_again() -> None:
+    """Red proof by mutation (the check is new with the streamed loader): with the extra row
+    dropped (`break` in place of the raise) it failed at `pytest.raises` (DID NOT RAISE
+    GenerationMoved). Restored, green."""
+    with pytest.raises(script.GenerationMoved):
+        script.generation_vectors(_StreamingConn(10, 8, counted=9), "acme", "gen-1")  # type: ignore[arg-type]
