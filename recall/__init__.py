@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import importlib
+import threading as _threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -365,24 +366,39 @@ _LAZY_EXPORTS: dict[str, str] = {
 }
 
 
-def __getattr__(name: str) -> Any:
-    module_name = _LAZY_EXPORTS.get(name)
-    if module_name is not None:
-        value = getattr(importlib.import_module(module_name), name)
-        globals()[name] = value
-        return value
-    # `import recall; recall.evidence` used to work as a side effect of the eager imports above.
-    # Keep it working for every real submodule, and nothing else.
-    try:
-        return importlib.import_module(f"{__name__}.{name}")
-    except ModuleNotFoundError as exc:
-        if exc.name != f"{__name__}.{name}":
-            raise
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+# Serialises the first resolution of every lazy export. Several threads importing psycopg's
+# submodules for the first time at once fail with `_DeadlockError` (its submodules import each
+# other), and the eager imports used to do that once, on the importing thread. Re-entrant, because
+# resolving one export may import a module that resolves another; no module of this package reads a
+# lazy export from the package root while it is being imported, which is what keeps this lock from
+# waiting on an import lock held by another thread.
+_FIRST_ACCESS = _threading.RLock()
 
+# Hidden from type checkers. This package ships py.typed, and a module `__getattr__` a checker can
+# see makes every name it does not know type as `Any`, so `from recall import Typo` would pass; the
+# checkers resolve the real names through the TYPE_CHECKING imports above instead.
+if not TYPE_CHECKING:
 
-def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(_LAZY_EXPORTS))
+    def __getattr__(name: str) -> Any:
+        module_name = _LAZY_EXPORTS.get(name)
+        if module_name is not None:
+            with _FIRST_ACCESS:
+                if name in globals():  # another thread resolved it while this one waited
+                    return globals()[name]
+                value = getattr(importlib.import_module(module_name), name)
+                globals()[name] = value
+                return value
+        # `import recall; recall.evidence` used to work as a side effect of the eager imports above.
+        # Keep it working for every real submodule, and nothing else.
+        try:
+            return importlib.import_module(f"{__name__}.{name}")
+        except ModuleNotFoundError as exc:
+            if exc.name != f"{__name__}.{name}":
+                raise
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    def __dir__() -> list[str]:
+        return sorted(set(globals()) | set(_LAZY_EXPORTS))
 
 
 __version__ = "0.14.0"
