@@ -22,7 +22,15 @@ Two kinds of error are dropped, and every other line passes through unchanged:
 * **generated**: the error names a mutmut-generated identifier. A mutant's body is a copy of the
   original with one change, so it cannot name one; only the rewriting can. For a Protocol error
   the hint lists the missing members, and the error is dropped only when EVERY listed member is
-  generated: a mutant that passes an object missing a real member keeps its error.
+  generated: a mutant that passes an object missing a real member keeps its error. mypy lists
+  them only while at most two are missing, and each mutated Protocol method adds its `_orig`
+  copy plus one method per mutant, so from two mutants on the error comes with no hint at all.
+  Such an error is dropped when the type it expects is a Protocol that holds generated methods
+  in one of the checked files (`broken_protocols`, matched by bare class name) and the type it got
+  does not contain `None`: mutmut's mutant that passes `None` keeps its error. Without the member
+  list a mutant's own error cannot always be told apart: one that removes an argument (`f(store,
+  n)` to `f(n)`) or names another module's class of the same name loses its error too. That costs
+  test time and loses no mutant, since mutmut then tests the mutant instead of discarding it.
 * **unowned**: the error lies outside every generated mutant function of a file that has some.
   mutmut would raise on it. In a file with no mutant functions mutmut already ignores errors, so
   those pass through.
@@ -30,10 +38,12 @@ Two kinds of error are dropped, and every other line passes through unchanged:
 Each dropped error is appended as one JSON line to `$MUTMUT_TYPE_FILTER_REPORT` when that is set,
 so the job summary can say what the filter could not use.
 
-When mypy itself fails (exit 2 and up: a crash, a bad flag, a missing file), nothing is passed on and
-the report records the filter as `unavailable`. mutmut then filters nothing and tests every mutant,
-which costs time and loses no mutant; the report is what keeps that from passing as "no mutant
-failed the type check", which is how mutmut reads an empty stdout.
+When mypy itself fails (exit 2 and up: a crash, a bad flag, a missing file; or killed by a
+signal, a negative exit), or this filter cannot run (mypy not found, a source it cannot read or
+parse), nothing is passed on and the report records the filter as `unavailable`. mutmut then
+filters nothing and tests every mutant, which costs time and loses no mutant; the report is what
+keeps that from passing as "no mutant failed the type check", which is how mutmut reads an empty
+stdout.
 """
 
 from __future__ import annotations
@@ -41,6 +51,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -48,6 +59,12 @@ from pathlib import Path
 GENERATED_SEPARATOR = "ǁ"  # mutmut's CLASS_NAME_SEPARATOR, in every generated method name
 GENERATED_MARKER = "__mutmut"
 MISSING_MEMBERS = "protocol members:"
+# The incompatibility messages mypy writes for an argument, an assignment and a return value.
+_INCOMPATIBLE = re.compile(
+    r'incompatible type "(?P<got>[^"]+)"; expected "(?P<want>[^"]+)"'
+    r'|expression has type "(?P<got2>[^"]+)", variable has type "(?P<want2>[^"]+)"'
+    r'|got "(?P<got3>[^"]+)", expected "(?P<want3>[^"]+)"'
+)
 
 
 def is_generated_name(name: str) -> bool:
@@ -61,7 +78,42 @@ def _names_generated(text: str) -> bool:
     )
 
 
-def is_generated_error(diagnostic: dict) -> bool:
+def _is_protocol_base(base: ast.expr) -> bool:
+    if isinstance(base, ast.Subscript):
+        base = base.value
+    return (isinstance(base, ast.Name) and base.id == "Protocol") or (
+        isinstance(base, ast.Attribute) and base.attr == "Protocol"
+    )
+
+
+def broken_protocols(sources: list[str]) -> frozenset[str]:
+    """Names of the Protocol classes that hold mutmut-generated methods in these sources."""
+    names = set()
+    for source in sources:
+        for node in ast.walk(ast.parse(source)):
+            if (
+                isinstance(node, ast.ClassDef)
+                and any(_is_protocol_base(base) for base in node.bases)
+                and any(
+                    isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and is_generated_name(item.name)
+                    for item in node.body
+                )
+            ):
+                names.add(node.name)
+    return frozenset(names)
+
+
+def _expects_broken_protocol(message: str, protocols: frozenset[str]) -> bool:
+    match = _INCOMPATIBLE.search(message)
+    if not match:
+        return False
+    got = match["got"] or match["got2"] or match["got3"]
+    want = match["want"] or match["want2"] or match["want3"]
+    return want.rsplit(".", 1)[-1] in protocols and "None" not in got
+
+
+def is_generated_error(diagnostic: dict, protocols: frozenset[str] = frozenset()) -> bool:
     """True when the error exists only because of mutmut's renaming, not because of a mutant."""
     message = diagnostic.get("message") or ""
     hint = diagnostic.get("hint") or ""
@@ -73,6 +125,8 @@ def is_generated_error(diagnostic: dict) -> bool:
             if member.strip()
         ]
         return bool(members) and all(is_generated_name(member) for member in members)
+    if not hint and _expects_broken_protocol(message, protocols):
+        return True  # more than two members missing: mypy lists none
     return _names_generated(message)
 
 
@@ -85,7 +139,9 @@ def mutant_spans(source: str) -> list[tuple[int, int]]:
     ]
 
 
-def filter_diagnostics(lines: list[str], read_source) -> tuple[list[str], list[dict]]:
+def filter_diagnostics(
+    lines: list[str], read_source, protocols: frozenset[str] = frozenset()
+) -> tuple[list[str], list[dict]]:
     """Split mypy's JSON lines into those to pass on and the errors to drop, with a reason each."""
     kept: list[str] = []
     dropped: list[dict] = []
@@ -100,7 +156,7 @@ def filter_diagnostics(lines: list[str], read_source) -> tuple[list[str], list[d
             kept.append(line)
             continue
         reason = None
-        if is_generated_error(diagnostic):
+        if is_generated_error(diagnostic, protocols):
             reason = "generated"
         else:
             path = diagnostic["file"]
@@ -129,8 +185,10 @@ def summarise(report_lines: list[str]) -> str:
     unavailable = [entry for entry in entries if entry["reason"] == "unavailable"]
     if unavailable:
         first = unavailable[0]
+        code = first["returncode"]
+        ran = "mypy did not run" if code is None else f"mypy exited {code}"
         return (
-            f"**Type filter unavailable**: mypy exited {first['returncode']} "
+            f"**Type filter unavailable**: {ran} "
             f"(`{first['message']}`). No mutant was discarded for a type error; all were tested."
         )
     counts: dict[tuple[str, str], int] = {}
@@ -154,25 +212,32 @@ def main(argv: list[str]) -> int:
         print("usage: mutmut_type_filter.py mypy --output json <files>", file=sys.stderr)
         print("       mutmut_type_filter.py --summary <report>", file=sys.stderr)
         return 2
-    completed = subprocess.run(argv, capture_output=True, encoding="utf-8", check=False)  # noqa: S603
-    sys.stderr.write(completed.stderr)
-    if completed.returncode >= 2:
-        tail = (completed.stderr or completed.stdout).strip().splitlines()[-3:]
+    returncode: int | None = None
+    try:
+        completed = subprocess.run(argv, capture_output=True, encoding="utf-8", check=False)  # noqa: S603
+        returncode = completed.returncode
+        sys.stderr.write(completed.stderr)
+        if returncode >= 2 or returncode < 0:
+            tail = (completed.stderr or completed.stdout).strip().splitlines()[-3:]
+            dropped = [{"reason": "unavailable", "returncode": returncode, "message": " / ".join(tail)}]
+        else:
+            read = lambda path: Path(path).read_text(encoding="utf-8")  # noqa: E731
+            protocols = broken_protocols([read(arg) for arg in argv[1:] if arg.endswith(".py")])
+            kept, dropped = filter_diagnostics(completed.stdout.splitlines(), read, protocols)
+            for line in kept:
+                print(line)
+    except Exception as error:  # noqa: BLE001 - a filter that cannot run must not read as a clean check
         dropped = [
-            {"reason": "unavailable", "returncode": completed.returncode, "message": " / ".join(tail)}
+            {"reason": "unavailable", "returncode": returncode,
+             "message": f"filter error: {type(error).__name__}: {error}"}
         ]
-    else:
-        kept, dropped = filter_diagnostics(
-            completed.stdout.splitlines(), lambda path: Path(path).read_text(encoding="utf-8")
-        )
-        for line in kept:
-            print(line)
+        returncode = 2
     report = os.environ.get("MUTMUT_TYPE_FILTER_REPORT")
     if report and dropped:
         with open(report, "a", encoding="utf-8") as handle:
             for diagnostic in dropped:
                 handle.write(json.dumps(diagnostic, ensure_ascii=False) + "\n")
-    return completed.returncode
+    return returncode
 
 
 if __name__ == "__main__":

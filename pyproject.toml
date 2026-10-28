@@ -477,6 +477,35 @@ ignore_imports = [
     "recall.eval.promotion.__main__ -> recall_mcp.factories",
 ]
 
+# recall_mcp/service.py is a compatibility facade over the modules that own its names (S5, #857;
+# S5b, #860): no other module of the server reaches through it, at import or at call time, so each
+# collaborator has its owner as its one patch point. The server imports two wrappers from it on
+# purpose, because they inject the facade's retrieval seams. The modules are listed one by one: with
+# `recall_mcp` itself as the source, import-linter reads an import of a module inside it as internal
+# and checks nothing. `tests/test_mcp_architecture_seams.py` fails when a module is missing here.
+[[tool.importlinter.contracts]]
+id = "mcp-modules-do-not-reach-the-service-facade"
+name = "No recall_mcp module but the server imports the service facade"
+type = "forbidden"
+source_modules = [
+    "recall_mcp.assistant", "recall_mcp.auth", "recall_mcp.codex_server", "recall_mcp.compat",
+    "recall_mcp.config_report", "recall_mcp.desktop_ingest", "recall_mcp.evidence_cards",
+    "recall_mcp.factories", "recall_mcp.federation_adapter", "recall_mcp.generation_admin",
+    "recall_mcp.graph_expansion", "recall_mcp.graph_first_api", "recall_mcp.graph_projection",
+    "recall_mcp.indexing", "recall_mcp.lifecycle", "recall_mcp.limits", "recall_mcp.lite_refresh",
+    "recall_mcp.models", "recall_mcp.oidc", "recall_mcp.provenance",
+    "recall_mcp.query_construction_api", "recall_mcp.reasoning_admin", "recall_mcp.reasoning_api",
+    "recall_mcp.reasoning_common", "recall_mcp.reasoning_diagnostics",
+    "recall_mcp.reasoning_engine", "recall_mcp.related_api", "recall_mcp.retrieval",
+    "recall_mcp.semantic_graph_cache", "recall_mcp.settings", "recall_mcp.stale_reports_api",
+    "recall_mcp.status", "recall_mcp.stores", "recall_mcp.tool_surface", "recall_mcp.translation",
+    "recall_mcp.use_reports_api",
+]
+forbidden_modules = ["recall_mcp.service"]
+# Direct imports only: the server imports the facade, and modules that load the server reach it
+# through the server, which is not a reach-in.
+allow_indirect_imports = true
+
 [tool.deptry]
 extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
 known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks", "recall_aml"]

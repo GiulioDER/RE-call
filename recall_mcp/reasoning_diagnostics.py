@@ -1,34 +1,35 @@
 """Benchmark and shadow diagnostics attached to reasoning queries. Every one of them is
 environment gated and off by default.
 
-Moved out of `recall_mcp.service`, which re-exports every name defined here. Collaborators are
-imported from the modules that own them, so a test patches a collaborator on THIS module.
+Moved out of `recall_mcp.service`, which re-exports every name defined here. A name imported
+here by name is patched on THIS module; a collaborator called as an attribute of the module
+that owns it (`_factories._build_reranker`) is patched on that module, its one patch point.
 """
 
 from __future__ import annotations
 
-from recall.atomic_rescue import load_atomic_rescue_artifact  # S5b: was a call-time service lookup
-from recall.embeddings import embedding_profile_id  # S5b: was a call-time service lookup
-from recall.trust import trusted_search  # S5b: was a call-time service lookup
-from recall_mcp import factories as _factories
-
+import hashlib
+import os
+import time
 from collections.abc import (
     Mapping,
     Sequence,
 )
+from typing import TypedDict
 
 from recall.atomic_rescue import (
+    AtomicRescueArtifactError,
     atomic_rescue_expectation_parity,
     atomic_rescue_reference_parity,
-    AtomicRescueArtifactError,
+    load_atomic_rescue_artifact,
     select_atomic_rescue,
 )
 from recall.calibration import Calibration
-from recall.embeddings import Embedder
+from recall.embeddings import Embedder, embedding_profile_id
 from recall.evidence import (
-    build_evidence_bundle,
     EvidenceBundle,
     EvidencePolicy,
+    build_evidence_bundle,
 )
 from recall.observability import get_logger as _get_logger
 from recall.profiles import RetrievalProfile
@@ -38,26 +39,23 @@ from recall.retriever import (
     StructuralExpansionPolicy,
 )
 from recall.source_conditioning import (
+    SOURCE_CONDITIONING_SHADOW_POLICIES,
+    SourceConditioningArtifactError,
     chunk_identifier_hash,
     fill_source_conditioned_spare_slots,
     load_source_conditioning_artifact,
     select_source_conditioned,
-    SOURCE_CONDITIONING_SHADOW_POLICIES,
-    SourceConditioningArtifactError,
 )
 from recall.store import PgVectorStore
+from recall.trust import trusted_search
 from recall.trust_policy import TrustPolicy
 from recall.types import (
     RetrievalResult,
     ScoredChunk,
     TrustedResult,
 )
-
+from recall_mcp import factories as _factories
 from recall_mcp.settings import runtime_environment
-import hashlib
-import os
-import time
-
 
 _log = _get_logger("mcp.service")
 
@@ -522,6 +520,21 @@ def _benchmark_trusted_pool_payload(result: TrustedResult) -> list[dict[str, obj
     ]
 
 
+class _BenchmarkSearchArguments(TypedDict):
+    store: PgVectorStore
+    embedder: Embedder
+    query: str
+    k: int
+    source: str | None
+    calibration: Calibration | None
+    candidate_k: int
+    retrieval_profile: str
+    index_generation: str
+    policy: TrustPolicy | None
+    env: Mapping[str, str]
+    _generation_snapshot: bool
+
+
 def _document_expansion_benchmark_audit_payload(
     store: PgVectorStore,
     embedder: Embedder,
@@ -536,7 +549,7 @@ def _document_expansion_benchmark_audit_payload(
     """Run paired source-scoped expansion arms without changing the served baseline."""
     pinned = _PinnedBenchmarkQueryEmbedder(embedder, query, query_vector)
     values = dict(runtime_environment())
-    common: dict[str, object] = {
+    common: _BenchmarkSearchArguments = {
         "store": store,
         "embedder": pinned,
         "query": query,
@@ -553,7 +566,7 @@ def _document_expansion_benchmark_audit_payload(
 
     document_started = time.perf_counter()
     document_result = trusted_search(
-        **common,  # type: ignore[arg-type]
+        **common,
         reranker=_factories._build_reranker(profile, env=values),
         document_expansion=DocumentExpansionPolicy(
             enabled=True,
@@ -566,7 +579,7 @@ def _document_expansion_benchmark_audit_payload(
 
     structural_started = time.perf_counter()
     structural_result = trusted_search(
-        **common,  # type: ignore[arg-type]
+        **common,
         reranker=_factories._build_reranker(profile, env=values),
         structural_expansion=StructuralExpansionPolicy(
             enabled=True,

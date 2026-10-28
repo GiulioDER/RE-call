@@ -32,6 +32,17 @@ through this script it returned 1,192 mutants to discard and reported 141 droppe
 `store.py` and 1 in `trust.py`, all `generated`. The two `StateStore` errors left were mutants
 that pass `None` as the store, which is what the filter is for.
 
+Red proof, 2026-10-27, for the CCA fixes to #856, on a Linux host, each test run against the
+pre-fix scripts/mutmut_type_filter.py (the file as #856 left it) or the named mutation of the fixed
+one, failing in its own assertion; restored, green:
+
+| baseline or mutation | test that went red |
+|---|---|
+| pre-fix file | test_a_protocol_error_mypy_lists_no_members_for_is_dropped (`out` held the error) |
+| pre-fix file | test_a_mypy_killed_by_a_signal_passes_nothing_and_reports_unavailable (`out` held the partial line) |
+| `"None" not in got` removed | test_a_none_passed_for_a_broken_protocol_keeps_its_error |
+| the `except` branch writes no report | test_a_filter_that_cannot_run_reports_unavailable |
+
 Then the whole of scripts/mutation_changed.sh on a Linux host, mutmut 3.8.0, with
 MUTATE_FILES="recall/store.py recall/current_state.py" over #854's tree: all 2,759 mutants ran
 (139 killed, 265 survived, 2,021 no tests, 334 caught by type check), and the summary reported 140
@@ -232,3 +243,92 @@ def test_the_summary_counts_per_file_and_reason() -> None:
     assert "`recall/store.py` 2 generated" in summary
     assert "`recall/x.py` 1 unowned" in summary
     assert type_filter.summarise([]) == ""
+
+
+# mutmut's layout for a Protocol stub with two mutants: three generated members, more than the two
+# mypy lists, so its error comes with no hint.
+THREE_MEMBERS = """\
+class StateStore(Protocol):
+    @_mutmut_mutated(mutants_xǁStateStoreǁiter_chunks__mutmut)
+    def iter_chunks(self, batch_size: int = 1000) -> list[str]: ...
+
+    def xǁStateStoreǁiter_chunks__mutmut_orig(self, batch_size: int = 1000) -> list[str]: ...
+
+    def xǁStateStoreǁiter_chunks__mutmut_1(self, batch_size: int = 1001) -> list[str]: ...
+
+    def xǁStateStoreǁiter_chunks__mutmut_2(self, batch_size: int = 999) -> list[str]: ...
+
+
+def x_caller__mutmut_orig(store: PgVectorStore) -> object:
+    return project_current_state(store)  # IN A MUTANT
+"""
+
+
+def _in_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report: Path) -> str:
+    """Write THREE_MEMBERS where mutmut would, and run from there, as mutmut runs the filter."""
+    (tmp_path / "recall").mkdir()
+    (tmp_path / "recall" / "store.py").write_text(THREE_MEMBERS, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MUTMUT_TYPE_FILTER_REPORT", str(report))
+    return _error("recall/store.py", _line(THREE_MEMBERS, "IN A MUTANT"), PROTOCOL_MESSAGE)
+
+
+def test_a_protocol_error_mypy_lists_no_members_for_is_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Kept, the error would make mutmut skip that mutant as caught by the type checker."""
+    report = tmp_path / "report.jsonl"
+    error = _in_tree(tmp_path, monkeypatch, report)
+    assert type_filter.main([*_fake_mypy([error], 1), "recall/store.py"]) == 1
+    assert capsys.readouterr().out == ""
+    assert [entry["reason"] for entry in _entries(report)] == ["generated"]
+
+
+def test_a_none_passed_for_a_broken_protocol_keeps_its_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """mutmut's mutant of a call site passes None: that error is the mutant's, and stays."""
+    report = tmp_path / "report.jsonl"
+    _in_tree(tmp_path, monkeypatch, report)
+    error = _error(
+        "recall/store.py",
+        _line(THREE_MEMBERS, "IN A MUTANT"),
+        'Argument 1 to "project_current_state" has incompatible type "None"; expected "StateStore"',
+    )
+    assert type_filter.main([*_fake_mypy([error], 1), "recall/store.py"]) == 1
+    assert capsys.readouterr().out.splitlines() == [error]
+    assert _entries(report) == []
+
+
+def test_a_filter_that_cannot_run_reports_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A source it cannot read: an empty stdout would read to mutmut as no type error at all."""
+    report = tmp_path / "report.jsonl"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MUTMUT_TYPE_FILTER_REPORT", str(report))
+    error = _error("recall/absent.py", 3, "Incompatible return value type")
+    assert type_filter.main([*_fake_mypy([error], 1), "recall/absent.py"]) == 2
+    assert capsys.readouterr().out == ""
+    entries = _entries(report)
+    assert [entry["reason"] for entry in entries] == ["unavailable"]
+    assert entries[0]["message"].startswith("filter error: FileNotFoundError")
+    summary = type_filter.summarise(report.read_text(encoding="utf-8").splitlines())
+    assert summary.startswith("**Type filter unavailable**: mypy exited 1")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a negative exit status is POSIX")
+def test_a_mypy_killed_by_a_signal_passes_nothing_and_reports_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Killed part way (the OOM killer), mypy's stdout is a fragment and must not be read as all."""
+    report = tmp_path / "report.jsonl"
+    monkeypatch.setenv("MUTMUT_TYPE_FILTER_REPORT", str(report))
+    script = (
+        "import os, signal, sys\n"
+        "sys.stdout.write('half a report' + chr(10)); sys.stdout.flush()\n"
+        "os.kill(os.getpid(), signal.SIGKILL)\n"
+    )
+    assert type_filter.main([sys.executable, "-c", script]) == -9
+    assert capsys.readouterr().out == ""
+    assert [entry["reason"] for entry in _entries(report)] == ["unavailable"]

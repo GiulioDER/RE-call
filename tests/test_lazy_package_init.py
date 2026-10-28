@@ -9,7 +9,9 @@ Invariants:
 * `import recall; recall.<submodule>` keeps working, as it did when the eager imports set those
   attributes as a side effect;
 * the runtime table `_LAZY_EXPORTS` and the `TYPE_CHECKING` imports name the same module for every
-  name, so type checkers and the runtime agree.
+  name, so type checkers and the runtime agree;
+* type checkers cannot see the module `__getattr__`, so an unknown name is still a type error;
+* threads resolving exports for the first time at once all succeed.
 
 Failure modes caught: the eager package init made `import recall.errors` cost about 1.2 s and
 load psycopg (measured 2026-10-01); a lazy table that loses an entry, points at the wrong module,
@@ -30,6 +32,17 @@ Red proof, 2026-10-01, on a Linux test host, each case run alone against a copy 
   `AttributeError: module 'recall' has no attribute 'evidence'`.
 * `test_star_import_binds_every_exported_name`, mutation `"reason"` deleted: failed at the
   return-code assertion, the child's `from recall import *` raised `AttributeError`.
+
+Red proof, 2026-10-28, for the CCA fixes to #853, on the Linux test host, against the
+`recall/__init__.py` #853 merged (451cec42) and then with the fix:
+
+* `test_type_checkers_cannot_see_the_lazy_getattr`: failed at its assertion, `__getattr__` and
+  `__dir__` defined at module level. The behaviour it stands for, checked with mypy 2.4.0 on a probe
+  outside the repository: `from recall import NoSuchName` and `recall.Typo` reported nothing
+  against 451cec42 and both `[attr-defined]` with the fix, as before #853.
+* `test_threads_resolving_exports_at_once_all_succeed`: failed at its assertion, three of the
+  child's four threads raised `_DeadlockError`, `KeyError` and `AttributeError` from psycopg's
+  partly imported submodules.
 
 `test_an_unknown_attribute_is_still_an_attribute_error` is a nonbehavioural control: it pins that
 the fallback does not turn a missing name into some other error, and it passes on both versions.
@@ -108,3 +121,42 @@ def test_an_unknown_attribute_is_still_an_attribute_error() -> None:
         "try:\n    recall.no_such_name\nexcept AttributeError:\n    print('AttributeError')\n"
     )
     assert result.stdout.strip() == "AttributeError", result.stderr
+
+
+def test_type_checkers_cannot_see_the_lazy_getattr() -> None:
+    """A module `__getattr__` a checker can see types every unknown name of py.typed `recall` as Any."""
+    tree = ast.parse(_INIT.read_text(encoding="utf-8"))
+    exposed = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
+    hidden = [
+        statement.name
+        for node in tree.body
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "not TYPE_CHECKING"
+        for statement in node.body
+        if isinstance(statement, ast.FunctionDef)
+    ]
+    assert "__getattr__" not in exposed and "__dir__" not in exposed, exposed
+    assert {"__getattr__", "__dir__"} <= set(hidden), hidden
+
+
+def test_threads_resolving_exports_at_once_all_succeed() -> None:
+    """Four threads touch Postgres-backed exports first; without the lock psycopg's import races."""
+    probe = (
+        "import threading, recall\n"
+        "names = ['PostgresFactLedger', 'CalibrationStatus', 'SQLiteEvidenceCardStore', 'FederationConfig']\n"
+        "barrier, out = threading.Barrier(len(names)), []\n"
+        "def touch(name):\n"
+        "    barrier.wait()\n"
+        "    try:\n"
+        "        getattr(recall, name)\n"
+        "        out.append('ok')\n"
+        "    except BaseException as exc:\n"
+        "        out.append(type(exc).__name__)\n"
+        "threads = [threading.Thread(target=touch, args=(n,)) for n in names]\n"
+        "[t.start() for t in threads]\n"
+        "[t.join() for t in threads]\n"
+        "print(','.join(sorted(out)))\n"
+    )
+    for _ in range(3):  # a fresh interpreter each time: the race is in the first import only
+        result = _run(probe)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "ok,ok,ok,ok", result.stdout + result.stderr
