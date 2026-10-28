@@ -502,6 +502,24 @@ def test_legacy_table_methods_are_refused_by_name_on_the_generation_store(
             getattr(store, method)(*args, **kwargs)
 
 
+def test_the_tenant_delete_refusal_names_routes_that_exist() -> None:
+    """The refusal of `delete_tenant_data` sends the reader to commands the CLI registers.
+
+    Invariant: the message names `recall forget` (and the `recall_forget` tool) for erasure and
+    `recall generation gc` for retired generations. Failure mode caught: it named
+    `recall generation forget`, which no parser registers, so the reader was sent nowhere. No
+    database: the refusal raises before any connection is used.
+
+    Red proof, 2026-10-28, on the Linux test host, against the message #852 added (6ad74ece):
+    failed at `pytest.raises(match=...)`, the message read "generation rows are removed by
+    `recall generation forget` and `generation gc`".
+    """
+    with pytest.raises(ImmutableGenerationError, match=r"`recall forget`") as raised:
+        GenerationStore.delete_tenant_data(object.__new__(GenerationStore))
+    assert "`recall generation gc`" in str(raised.value)
+    assert "generation forget" not in str(raised.value)
+
+
 @requires_db
 def test_scored_chunk_for_query_scores_a_parent_exactly_as_dense_search_does(manager) -> None:
     """The one-query parent load for atomic rescue must carry the dense cosine, not an approximation.

@@ -1519,7 +1519,8 @@ class GenerationStore(PgVectorStore):
 
     def delete_tenant_data(self) -> int:
         raise ImmutableGenerationError(
-            "generation rows are removed by `recall generation forget` and `generation gc`"
+            "a generation store has no tenant-wide delete: erase sources with `recall forget` "
+            "(the `recall_forget` tool), and collect retired generations with `recall generation gc`"
         )
 
     def delete_sources_across(
