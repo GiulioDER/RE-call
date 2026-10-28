@@ -160,7 +160,8 @@ mutation failing in the named assertion, then restored byte for byte and green:
 - D9 `...::test_a_pure_rename_is_in_scope`: `--no-renames` removed: "a renamed file left the
   scope".
 - D10 `...::test_an_unread_file_never_matches_a_null_hash_exactly`: both `UNKNOWN_SHA` anchors
-  mutated back to None: the lesson is `[exact]`, so the `[symbol_changed]` line is missing.
+  mutated back to None: the lesson is `[exact]`, so the `[symbol_changed]` line is missing (the
+  test sets `FILE_LEVEL_RANKS_AS_FILE_ONLY` False, so the brief shows the matcher's label).
 - D11 `...::test_innermost_symbol_matches_enclosing_symbol`: spans painted smallest first:
   "innermost symbol differs from enclosing_symbol".
 - D12 `...::test_named_files_try_a_bounded_number_of_tokens`: the token cap removed: "<N> paths
@@ -1132,16 +1133,17 @@ def test_an_unread_file_never_matches_a_null_hash_exactly(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """D10 (CCA BUG-005): a lesson anchored at a file with a null hash is not labelled `exact` for a
-    file whose content could not be read. Since the brief ranks a symbol-less anchor as `file_only`
-    (`FILE_LEVEL_RANKS_AS_FILE_ONLY`), the label it carries is `file_only`; the invariant, never
-    `exact`, is unchanged."""
+    file whose content could not be read. The brief would print `file_only` for any symbol-less
+    anchor, which would hide the matcher's label, so the test switches
+    `FILE_LEVEL_RANKS_AS_FILE_ONLY` off and observes the matcher's own label."""
+    monkeypatch.setattr(auditor_brief, "FILE_LEVEL_RANKS_AS_FILE_ONLY", False)
     lesson = {**_lesson(1), "anchors": [{"file": FILE, "symbol": None, "code_sha": None}]}
     memos = tmp_path / "null-hash"
     _write_memo(memos, "the-lesson", lesson)
     monkeypatch.setenv("RECALL_AUDITOR_MEMOS", str(memos))
     (repo / FILE).unlink()  # changed in HEAD, missing from the work tree: its content is not read
     block = _block(_run(_payload(repo), monkeypatch, capsys))
-    assert f"LESSON {lesson['id']} [file_only] {FILE} (module):" in block, block
+    assert f"LESSON {lesson['id']} [symbol_changed] {FILE} (module):" in block, block
     assert "[exact]" not in block, "an unread file matched a null hash as exact"
 
 
@@ -1502,6 +1504,34 @@ def test_mixed_anchor_record_uses_its_best_anchor() -> None:
     assert f"BUG {entry['id']} [symbol_changed] {FILE} Pool._lease:" in block
 
 
+def test_symbolless_exact_does_not_demote_a_symbol_anchor() -> None:
+    """Fix round 1, finding 1. Red proof: baseline = the first commit's `_brief_match` (3408b771c),
+    which printed `[file_only]` because the best matcher level belonged to the symbol-less anchor;
+    node id tests/test_auditor_brief_hook.py::test_symbolless_exact_does_not_demote_a_symbol_anchor;
+    failed on the `[symbol_changed]` line assertion."""
+    entry = _entry(1, "exact", None)
+    entry["anchor_matches"] = [
+        {"anchor": _anchor(None), "match": "exact"},
+        {"anchor": _anchor("Pool._lease"), "match": "symbol_changed"},
+    ]
+    block = _render([entry])
+    assert f"BUG {entry['id']} [symbol_changed] {FILE} Pool._lease:" in block
+
+
+def test_equal_level_tie_prefers_the_symbol_anchor() -> None:
+    """Fix round 1, finding 1. Red proof: baseline = the first commit's `_brief_match`/`_best_anchor`
+    (3408b771c), which printed the first anchor, `(module)`; node id
+    tests/test_auditor_brief_hook.py::test_equal_level_tie_prefers_the_symbol_anchor; failed on the
+    line assertion naming `Pool._lease`."""
+    entry = _entry(1, "file_only", None)
+    entry["anchor_matches"] = [
+        {"anchor": _anchor(None), "match": "file_only"},
+        {"anchor": _anchor("Pool._lease"), "match": "file_only"},
+    ]
+    block = _render([entry])
+    assert f"BUG {entry['id']} [file_only] {FILE} Pool._lease:" in block
+
+
 def test_ties_break_newest_first() -> None:
     """Red proof: baseline = unchanged `render` (input order kept); node id
     tests/test_auditor_brief_hook.py::test_ties_break_newest_first. Targets the sort in `render`;
@@ -1516,7 +1546,7 @@ def test_ties_break_newest_first() -> None:
 
 
 def test_the_probe_constant_is_set() -> None:
-    """Red proof: baseline = origin/master, where the constant does not exist (AttributeError at the
-    assertion line, inside the test body); node id
-    tests/test_auditor_brief_hook.py::test_the_probe_constant_is_set."""
+    """Red proof: mutation of `FILE_LEVEL_RANKS_AS_FILE_ONLY` to False in recall_hooks/auditor_brief.py;
+    node id tests/test_auditor_brief_hook.py::test_the_probe_constant_is_set; failed on
+    `assert False is True` at the assertion below."""
     assert auditor_brief.FILE_LEVEL_RANKS_AS_FILE_ONLY is True
