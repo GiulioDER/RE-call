@@ -114,7 +114,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   term absent from the generation's vocabulary** (`unknown_term`). This changes verdicts: it is on
   by default and `RECALL_UNKNOWN_TERM_GATE=0` disables it. Each `calibrate()` fit also measures
   synthetic near-miss coverage, stored as an audit event and reported on search results as
-  `calibration_coverage`; it never gates.
+  `calibration_coverage`, and in `recall_calibration_status` as a new `near_miss_coverage` key and
+  a coverage line appended to `message`; it never gates. Measuring it embeds up to about twice as
+  many probe questions as the fit has answerable ones, which a hosted embedder bills.
 - `recall calibration near-miss` scores a held-out near-miss question set against a calibration and
   reports a certificate (`near_miss_certificate` in status); `recall calibration served-gap`
   compares the served top-k maximum with the exact maximum calibration sampled. Both report only.

@@ -53,9 +53,14 @@ report has the Lite shape and rules (`MIN_PROBES`, `PROVISIONAL_BAR`), is stored
 reported as `near_miss_coverage` in `recall_calibration_status`, in the status message, and as
 `calibration_coverage` beside every search. Measuring it embeds about twice as many probe
 questions as the fit has answerable ones. It never changes the threshold or the certification
-decision, and a failure to measure leaves the saved fit untouched and reads as unavailable. A
-carried-forward calibration is not measured, as on Lite, so it reads as unavailable and
-provisional until the next fit.
+decision, and a failure to measure leaves the saved fit untouched. A carried-forward calibration
+is not measured, as on Lite. Either way no report exists until the next fit: the status message
+says `near-miss coverage unavailable; provisional for in-vocabulary near-misses`,
+`near_miss_coverage` is null, and `calibration_coverage` on a search reads `unmeasured`
+(`unavailable` there means the stored report could not be read). A report measured with the
+unknown-term check says so in the status line when the process printing it has the check
+switched off or runs under a source policy, since a PostgreSQL fit usually runs in another
+process than the server.
 
 ## PostgreSQL near-miss certificate
 

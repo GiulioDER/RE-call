@@ -11,6 +11,16 @@ Invariants and the failure each one catches:
   any search runs: a policy-filtered search is not the population calibration sampled.
 - C4 served-gap drives the MCP service search with the decision ledger off even when the
   environment turns it on, so a diagnostic never writes a served-search decision row.
+- C5 served-gap compares the served side's unrounded cosine, the value the trust gate compares
+  with the threshold, never the response's 4-place score, which near the threshold reports a
+  verdict flip serving never made (CCA NUM-001, PR 969).
+- C6 a stored coverage row that is damaged (a class missing its `rejected` count) reads as
+  unavailable in the status line instead of raising: Lite's reader returns the row unvalidated
+  (CCA DAT-001, PR 969).
+- C7 a coverage report measured with the unknown-term gate `checked` says so on the status line
+  when this process would not run that gate (`RECALL_UNKNOWN_TERM_GATE` off, or a source policy
+  scoping every request), and says nothing when it would (CCA STAKES-001, PR 969, owner yes
+  2026-10-28).
 
 None needs a database: the repository, store and search are doubles at the CLI's own boundary.
 
@@ -18,7 +28,16 @@ Node IDs, all in `tests/test_calibration_cli_report_only.py`:
 C1 `test_c1_calibrate_survives_an_unreadable_coverage_report`,
 C2 `test_c2_near_miss_reports_an_unreadable_certificate_as_unavailable`,
 C3 `test_c3_served_gap_refuses_under_a_source_policy`,
-C4 `test_c4_served_gap_never_turns_the_decision_ledger_on`.
+C4 `test_c4_served_gap_never_turns_the_decision_ledger_on`,
+C5 `test_c5_served_gap_compares_the_unrounded_served_cosine`,
+C6 `test_c6_a_damaged_stored_coverage_row_reads_as_unavailable`,
+C7 `test_c7_status_says_when_this_process_does_not_run_the_measured_gate`.
+
+Red proof, 2026-10-28, on this workstation (no database needed): C5 and C6 run by
+`cca_checks tautology verify` against the pre-fix files (both RED, 1 failed each); C7 written first
+and run against `recall.near_miss.coverage_summary` before `_serving_gate_note` existed, failing in
+its named assertion for both parameters ("status showed the fit's checked gate as if this process
+ran it"), then green with the fix.
 
 Red proof for the CCA audit fixes, 2026-10-21, on a Linux host against a throwaway pg18 container,
 each mutation alone, the named test failing in the named assertion (exit 1, "1 failed", no
@@ -48,6 +67,7 @@ from recall.near_miss import UNAVAILABLE_MESSAGE
 from recall.served_gap import served_gap_report
 
 CAL = "cal_cli_double"
+SERVED_COSINE = 0.50946
 DSN = "postgresql://cli-double@127.0.0.1:1/none"
 
 
@@ -79,7 +99,7 @@ class _Repository:
         return SimpleNamespace(generation_id="gen_double")
 
     def served_gap(self, _calibration_id, _embedder, search, *, tolerance=None):
-        search("answer-1")
+        self.served = search("answer-1")
         return served_gap_report([], 0.41)
 
 
@@ -104,12 +124,20 @@ def doubles(monkeypatch):
 
     repository = _Repository()
 
+    # One served hit whose cosine sits within rounding of a threshold: the response model rounds
+    # it to 4 places, the trusted retrieval underneath keeps it whole.
     def search_memory(_store, _embedder, _query, *, k, policy, env):
         repository.envs.append(dict(env))
-        return SimpleNamespace(hits=[], abstained=True)
+        return SimpleNamespace(hits=[SimpleNamespace(score=round(SERVED_COSINE, 4))], abstained=True)
+
+    def retrieve_trusted(_store, _embedder, _query, _source, _k, _calibration, _policy, *, env):
+        repository.envs.append(dict(env))
+        hits = [SimpleNamespace(cosine=SERVED_COSINE)]
+        return SimpleNamespace(result=SimpleNamespace(hits=hits, abstained=True))
 
     monkeypatch.setattr(generation_store, "GenerationStore", _Store)
     monkeypatch.setattr(service, "search_memory", search_memory)
+    monkeypatch.setattr(service, "_retrieve_trusted", retrieve_trusted)
     monkeypatch.setattr(calibration_v2, "CalibrationRepository", lambda *a, **k: repository)
     monkeypatch.setattr(calibration_v2, "load_query_set", lambda _path: ([], "digest"))
     monkeypatch.setattr(calibration_cmd, "_make_embedder", lambda _name: _Embedder())
@@ -161,4 +189,51 @@ def test_c4_served_gap_never_turns_the_decision_ledger_on(doubles, monkeypatch) 
     assert len(doubles.envs) == 1
     assert DecisionLedger.from_env(_Store(), env=doubles.envs[0]) is None, (
         "served-gap searched with the decision ledger on"
+    )
+
+
+def test_c5_served_gap_compares_the_unrounded_served_cosine(doubles, monkeypatch) -> None:
+    monkeypatch.delenv("RECALL_SOURCE_POLICY_FILE", raising=False)
+    calibration_cmd._cmd_calibration(_args("served-gap", k=5, tolerance=None))
+    assert doubles.served == (SERVED_COSINE, True), (
+        "served-gap compared the 4-place response score, not the cosine the gate compares"
+    )
+
+
+def test_c6_a_damaged_stored_coverage_row_reads_as_unavailable() -> None:
+    from recall.near_miss import coverage_summary
+
+    stored = {"unknown_entity": {"n": 3}, "in_vocabulary": {"rejected": 1, "n": 3}}
+    try:
+        report, line = coverage_summary(lambda _calibration_id: stored, CAL)
+    except KeyError:
+        pytest.fail("a damaged stored coverage row failed the status line that prints it")
+    assert (report, line) == (None, UNAVAILABLE_MESSAGE)
+
+
+_CHECKED_REPORT = {
+    "unknown_entity": {"rejected": 3, "n": 3},
+    "in_vocabulary": {"rejected": 1, "n": 3},
+    "unknown_term_gate": "checked",
+}
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "state"),
+    [("RECALL_UNKNOWN_TERM_GATE", "0", "disabled"),
+     ("RECALL_SOURCE_POLICY_FILE", "/policies/sources.toml", "unavailable")],
+)
+def test_c7_status_says_when_this_process_does_not_run_the_measured_gate(
+    monkeypatch, variable, value, state
+) -> None:
+    from recall.near_miss import coverage_summary
+
+    monkeypatch.delenv("RECALL_UNKNOWN_TERM_GATE", raising=False)
+    monkeypatch.delenv("RECALL_SOURCE_POLICY_FILE", raising=False)
+    _report, measured_here = coverage_summary(lambda _calibration_id: _CHECKED_REPORT, CAL)
+    assert "in this process" not in measured_here, "a matching process was told it differs"
+    monkeypatch.setenv(variable, value)
+    _report, line = coverage_summary(lambda _calibration_id: _CHECKED_REPORT, CAL)
+    assert f"unknown-term gate {state} in this process" in line, (
+        "status showed the fit's checked gate as if this process ran it"
     )

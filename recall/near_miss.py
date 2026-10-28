@@ -23,12 +23,14 @@ below the threshold, or the unknown-term gate names one of its terms. The rates 
 calibration and printed with its status. A certificate whose in-vocabulary rejection is below
 `PROVISIONAL_BAR`, or for which fewer than `MIN_PROBES` such probes could be built (reported as
 unmeasured), is reported as provisional for in-vocabulary near-misses. The certified/
-uncertified decision is untouched: stores that cannot run the unknown-term gate (PostgreSQL today)
-must not lose a certification they hold because of a measurement they cannot act on.
+uncertified decision is untouched: coverage is a report, not a gate, and a store that cannot run
+the unknown-term gate (one with no vocabulary lookup) must not lose a certification it holds
+because of a measurement it cannot act on.
 """
 
 from __future__ import annotations
 
+import os
 import random
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -36,7 +38,7 @@ from typing import Any
 from recall.embeddings import Embedder, embed_query
 from recall.eval.vocab import word_tokens
 from recall.observability import get_logger
-from recall.unknown_terms import check_unknown_terms
+from recall.unknown_terms import check_unknown_terms, gate_enabled
 from recall.support import (
     CLASSES as CLASSES,
     MIN_PROBES as MIN_PROBES,
@@ -54,6 +56,8 @@ from recall.wizard.queryset import (
 UNAVAILABLE_MESSAGE = "near-miss coverage unavailable; provisional for in-vocabulary near-misses"
 
 _log = get_logger("near_miss")
+#: Read by `recall.security_policy.load_source_policy`; set, it scopes every served request.
+_SOURCE_POLICY_ENV = "RECALL_SOURCE_POLICY_FILE"
 
 
 def coverage_summary(
@@ -66,12 +70,35 @@ def coverage_summary(
     An optional report never fails the surface that prints it; a reader error logs its type only,
     because a provider or driver message may carry private input.
     """
+    # `describe` is inside the catch: Lite's reader returns the stored row unvalidated, so a damaged
+    # row must read as unavailable here rather than fail the status call that prints it.
     try:
         report = read(calibration_id)
+        if not report:
+            return None, UNAVAILABLE_MESSAGE
+        return report, describe(report) + _serving_gate_note(report)
     except Exception as exc:  # BROAD-CATCH: fail-open, an optional report never fails its caller
         _log.warning("Optional near-miss coverage unavailable (%s)", type(exc).__name__)
         return None, UNAVAILABLE_MESSAGE
-    return report, (describe(report) if report else UNAVAILABLE_MESSAGE)
+
+
+def _serving_gate_note(report: dict[str, Any]) -> str:
+    """Say so when this process would not run the unknown-term gate the fit measured with.
+
+    A PostgreSQL fit usually runs in a CLI, wizard or desktop process, not in the server that
+    prints its status, so the stored `checked` can describe a gate this process has switched off
+    (`RECALL_UNKNOWN_TERM_GATE`) or cannot consult (a source policy scopes every request, and a
+    scoped request reports the check unavailable).
+    """
+    if report.get("unknown_term_gate") != "checked":
+        return ""
+    if not gate_enabled():
+        state = "disabled"
+    elif os.environ.get(_SOURCE_POLICY_ENV, "").strip():
+        state = "unavailable"
+    else:
+        return ""
+    return f"; unknown-term gate {state} in this process (coverage was measured with it checked)"
 
 
 def _invented_codes(corpus_words: set[str], rng: random.Random, count: int) -> list[str]:
