@@ -798,3 +798,71 @@ def test_mm1_keeps_tenants_isolated_and_caps_returned_decoded_media(monkeypatch)
         service.search(SearchRequest(query="private panel", user_id="owner", top_k=10))
     )
     assert capped.data == []
+
+
+def _truncated(image: Image.Image, image_format: str, keep: float) -> bytes:
+    output = BytesIO()
+    image.save(output, format=image_format)
+    data = output.getvalue()
+    return data[: int(len(data) * keep)]
+
+
+def _noise(width: int, height: int) -> Image.Image:
+    seed = hashlib.sha256(f"{width}x{height}".encode()).digest()
+    return Image.frombytes("RGB", (width, height), (seed * (width * height * 3 // 32 + 1))[: width * height * 3])
+
+
+def _data_url(media_type: str, payload: bytes) -> str:
+    return f"data:{media_type};base64," + base64.b64encode(payload).decode("ascii")
+
+
+def test_a_truncated_image_is_refused_as_unreadable_not_as_a_bare_os_error(monkeypatch) -> None:
+    """Invariant: every way Pillow fails on an admitted image reaches the callers as
+    `UnidentifiedImageError`, the type the Add and Search paths turn into a per-image skip or a
+    permanent 422.
+
+    A WebP cut short fails inside `Image.open`, and a PNG over the pixel limit whose body is cut
+    short fails inside the fitting resize; both raised a plain `OSError`, which `prepare_messages`
+    did not catch, so one such image lost the whole Add (as a retryable 503), and a query got a
+    retryable 503 instead of the 422. The pixel limit is lowered so a small image takes the resize.
+    Red proof (`_voyage_image_data_url` before the translation): both `isinstance` asserts fail,
+    the exceptions being `OSError`.
+    """
+    from PIL import UnidentifiedImageError
+
+    webp = _data_url("image/webp", _truncated(_noise(64, 64), "WEBP", 0.5))
+    with pytest.raises(OSError) as opened:
+        multimodal_module._voyage_image_data_url(webp)
+    assert isinstance(opened.value, UnidentifiedImageError), type(opened.value)
+
+    monkeypatch.setattr(shared_multimodal, "VOYAGE_MAX_IMAGE_PIXELS", 1_000)
+    png = _data_url("image/png", _truncated(_noise(200, 200), "PNG", 0.6))
+    with pytest.raises(OSError) as resized:
+        multimodal_module._voyage_image_data_url(png)
+    assert isinstance(resized.value, UnidentifiedImageError), type(resized.value)
+
+
+def test_a_truncated_image_no_longer_loses_the_rest_of_the_add() -> None:
+    """Invariant (U-47, for an image cut short): the readable messages of an Add are kept.
+
+    Red proof (`_voyage_image_data_url` before the translation): `prepare_messages` raised the
+    plain `OSError` and stored nothing; this asserts the text message survives.
+    """
+    webp = _data_url("image/webp", _truncated(_noise(64, 64), "WEBP", 0.5))
+    messages = [
+        Message.model_validate({"role": "user", "content": "My locker code is 4417."}),
+        Message.model_validate(
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": webp}}]}
+        ),
+    ]
+
+    try:
+        prepared = prepare_messages(
+            messages, request_id="truncated", session_id="S1:R1", source="aml://session/truncated"
+        )
+    except OSError as exc:
+        pytest.fail(f"one truncated image lost the whole Add: {type(exc).__name__}")
+
+    assert len(prepared.primary_chunks) == 1
+    assert "My locker code is 4417." in prepared.primary_chunks[0].text
+    assert prepared.media_chunks == []
