@@ -355,8 +355,9 @@ def _cost_surface(
 
 def _search_hit_model(hit: TrustedHit, *, include_scores: bool) -> SearchHit:
     """Project a trusted hit into the search response shape."""
+    content_hash = hit.chunk.metadata.get("content_hash")
     return SearchHit(
-        revision=hit.chunk.metadata.get("content_hash") if isinstance(hit.chunk.metadata.get("content_hash"), str) else None,
+        revision=content_hash if isinstance(content_hash, str) else None,
         chunk_id=hit.chunk.id,
         source=hit.provenance.file or hit.chunk.source,
         score=round(hit.cosine, 4) if include_scores else None,

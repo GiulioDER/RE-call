@@ -42,6 +42,9 @@ if TYPE_CHECKING:
         render_evidence_prompt,
         validate_answer,
     )
+    # Carried by `EvidenceBundle` and every search result, so a caller annotating with them needs
+    # them from the package as it gets the bundle (owner decision, 2026-10-28; CCA ENV-004 of #945).
+    from recall.support import CalibrationCoverage, QuerySupport
     from recall.lineage import (
         ChunkerIdentity,
         EmbedderIdentity,
@@ -206,6 +209,8 @@ if TYPE_CHECKING:
 
 _LAZY_EXPORTS: dict[str, str] = {
     "CalibrationArtifactV2": "recall.calibration_v2",
+    "CalibrationCoverage": "recall.support",
+    "QuerySupport": "recall.support",
     "CalibrationStatus": "recall.calibration_v2",
     "AnswerEnvelope": "recall.evidence",
     "AnswerSlot": "recall.evidence",
@@ -411,6 +416,8 @@ __all__ = sorted([
     "CONTROLLER_SCHEMA_VERSION",
     "ControllerDecision",
     "CalibrationArtifactV2",
+    "CalibrationCoverage",
+    "QuerySupport",
     "CalibrationStatus",
     "ChunkerIdentity",
     "Citation",

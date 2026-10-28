@@ -18,6 +18,9 @@ before the green run:
   ``source=source`` inside ``execute_reasoning`` makes it fail on the recorded source scope.
 * ``test_the_receipt_carries_no_provider_text``: adding ``"assessment": proof.final`` to
   ``_proof_payload`` makes it fail on the exact receipt key set.
+* ``test_the_receipt_names_the_merged_coverage`` (CCA DAT-001, deferred pass over PR 945, run
+  20261028T185351Z): red against the pre-fix ``_proof_payload``, which had no coverage key, on
+  "the receipt does not name the merged evidence's coverage".
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from types import SimpleNamespace
 
 import recall_mcp.server as server_module
 from recall.evidence import EvidenceBundle, EvidenceItem
+from recall.support import CalibrationCoverage
 from recall_mcp.server import build_server
 from recall_mcp.settings import Settings
 
@@ -40,6 +44,9 @@ _RECEIPT_KEYS = {
     "evidence_chunk_ids",
     "initial_missing_slot_ids",
     "final_missing_slot_ids",
+    # The merged evidence's coverage, a retrieval diagnostic and not provider text (CCA DAT-001,
+    # deferred pass over PR 945: before it, a repair from another fit left the receipt silent).
+    "calibration_coverage",
 }
 
 
@@ -57,8 +64,9 @@ def _item(chunk_id: str, text: str) -> EvidenceItem:
     )
 
 
-def _bundle(query: str, *items: EvidenceItem) -> EvidenceBundle:
+def _bundle(query: str, *items: EvidenceItem, coverage: CalibrationCoverage | None = None) -> EvidenceBundle:
     return EvidenceBundle(
+        calibration_coverage=coverage or CalibrationCoverage(),
         query=query,
         decision="answer",
         reason_code=None,
@@ -225,3 +233,21 @@ def test_the_receipt_carries_no_provider_text(monkeypatch) -> None:
     # Slot requirements are provider-authored text. Evidence text is retrieval output and may
     # legitimately appear in the real response, so it is not asserted absent here.
     assert "requirement" not in json.dumps(result)
+
+
+def test_the_receipt_names_the_merged_coverage(monkeypatch) -> None:
+    measured = CalibrationCoverage(calibration_id="cal-a", status="unavailable")
+
+    class _TwoFits(_Retriever):
+        def __call__(self, store, embedder, query, **kwargs):
+            answer = super().__call__(store, embedder, query, **kwargs)
+            if len(self.calls) == 1:
+                answer.trusted_evidence = _bundle(query, *answer.trusted_evidence.items, coverage=measured)
+            return answer
+
+    result = _invoke(monkeypatch, _TwoFits(), _Provider())
+    receipt = result["proof_obligations"]
+    named = receipt.get("calibration_coverage") == {
+        "calibration_id": None, "status": "unmeasured", "method": None, "report": None,
+    }
+    assert named, "the receipt does not name the merged evidence's coverage"

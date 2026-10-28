@@ -116,18 +116,23 @@ def _source_prefixes(parts: Sequence[str], values: Mapping[str, str]) -> tuple[s
     """PostgreSQL prefixes as locations. A relative one is resolved under RECALL_INDEX_ROOT and
     dropped when that is unset: a relative place with no root names nothing, so it admits nothing."""
     index_root = values.get("RECALL_INDEX_ROOT", "").strip()
+
+    def local(path: Path) -> str:
+        # A file URI and an absolute path name one folder alike: resolved, symlinks followed.
+        return path.resolve().as_posix().rstrip("/")
+
     resolved: list[str] = []
     for part in parts:
         if "://" in part:
             location = _location(part)
-            if "://" not in location:
-                # A file URI names a local path: resolved like an absolute path, so the URI and
-                # the path spelling of one folder admit the same memos.
-                location = Path(location).resolve().as_posix()
-            resolved.append(location.rstrip("/"))
+            # A file URI names a local path; any other scheme is an object store key, kept as is.
+            resolved.append(location.rstrip("/") if "://" in location else local(Path(location)))
         elif Path(part).is_absolute():
-            resolved.append(Path(part).resolve().as_posix().rstrip("/"))
+            resolved.append(local(Path(part)))
         elif index_root:
+            # Only the root is resolved; the part below it is folded lexically, as `_location`
+            # folds a stored source, so a symlink inside the part neither admits its target nor
+            # stops admitting the memos stored under the link's own path.
             resolved.append(_fold((Path(index_root).resolve() / part.replace("\\", "/").strip("/")).as_posix()))
     return tuple(dict.fromkeys(prefix for prefix in resolved if prefix))
 

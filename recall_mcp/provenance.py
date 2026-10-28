@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -86,6 +86,33 @@ def _applied_generation(store: PgVectorStore) -> Iterator[str]:
             yield str(generation_id)
         return
     yield store.generation_id
+
+
+@contextmanager
+def _read_generation(store: PgVectorStore) -> Iterator[str | None]:
+    """Pin the generation one current-facts read checks against, and name it, or None.
+
+    The stated-fact checks of `served_sources` pin their lookups to the generation they began on,
+    and the reply names a generation: read apart, a promotion between them named one generation
+    and listed another's facts (CCA deferred pass over PR 946, DAT-001). On a generation store
+    with nothing promoted the ledger still answers, tenant scoped, so the read runs unpinned and
+    names no generation. Other stores answer their constant identity, as `_applied_generation`.
+    """
+    from recall.generation_store import GenerationStore
+
+    if isinstance(store, GenerationStore):
+        with ExitStack() as stack:
+            try:
+                generation_id: str | None = str(stack.enter_context(store.snapshot()))
+            except NoActiveGeneration:
+                generation_id = None
+            yield generation_id
+        return
+    try:
+        identity: str | None = store.generation_id
+    except NoActiveGeneration:
+        identity = None
+    yield identity
 
 
 def apply_fact_memory(
@@ -241,11 +268,12 @@ def current_facts_memory(
             raise PermissionError("a matching source access context is required for current facts")
     instant = as_of or eval_clock.now() or datetime.now(UTC)
     failures: list[str] = []
-    served = served_sources(store, failures=failures)
-    ledger = _fact_backends(store)[0]
-    # The listing rule and its payload are shared with `recall provenance current`
-    # (`recall.provenance_controller.current_fact_listing`), so the two cannot disagree.
-    events, evidence = current_fact_listing(ledger, store.tenant, instant, served)
+    with _read_generation(store) as generation_id:
+        served = served_sources(store, failures=failures)
+        ledger = _fact_backends(store)[0]
+        # The listing rule and its payload are shared with `recall provenance current`
+        # (`recall.provenance_controller.current_fact_listing`), so the two cannot disagree.
+        events, evidence = current_fact_listing(ledger, store.tenant, instant, served)
     permitted = None
     if security_policy is not None:
         assert access_context is not None
@@ -256,12 +284,6 @@ def current_facts_memory(
             # Structured values cannot safely be projected through a text redaction rule.
             return decision.allowed and not decision.redactions
 
-    try:
-        generation_id: str | None = store.generation_id
-    except NoActiveGeneration:
-        # The ledger is tenant scoped and answers before any generation is promoted; say there
-        # is no serving generation rather than raise or name a generation that does not exist.
-        generation_id = None
     return {
         "tenant_id": store.tenant,
         "generation_id": generation_id,

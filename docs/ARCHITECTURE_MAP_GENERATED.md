@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 345
-Cross package edges: 366
+Cross package edges: 367
 
 ## Highest fan in modules
 
@@ -67,7 +67,7 @@ Cross package edges: 366
 | 22 | `recall.generations` |
 | 22 | `recall.trust` |
 | 22 | `recall_mcp.reasoning_engine` |
-| 20 | `recall` |
+| 21 | `recall` |
 | 20 | `recall.rewrite` |
 | 19 | `recall_mcp.provenance` |
 | 18 | `recall.index` |
@@ -97,9 +97,9 @@ Cross package edges: 366
 | 12 | `recall.eval.harness` |
 | 12 | `recall.stated_facts` |
 | 12 | `recall_agent.memory` |
+| 12 | `recall_mcp.assistant` |
 | 11 | `recall.cli_commands.generation_cmd` |
 | 11 | `recall.cli_commands.reasoning_cmd` |
-| 11 | `recall.desktop.ui` |
 
 ## Cross package edges
 
@@ -153,6 +153,7 @@ They are observations, not automatic failures.
 | `recall_interop.memory_benchmarks` | `recall.retriever` |
 | `recall_interop.memory_benchmarks` | `recall.store` |
 | `recall_mcp.assistant` | `recall.backends` |
+| `recall_mcp.assistant` | `recall.calibration_v2` |
 | `recall_mcp.assistant` | `recall.declared_keys` |
 | `recall_mcp.assistant` | `recall.embeddings` |
 | `recall_mcp.assistant` | `recall.errors` |
@@ -479,7 +480,7 @@ They are observations, not automatic failures.
 
 | Module | Direct imports | Upstream modules |
 |---|---:|---:|
-| `recall` | 20 | 120 |
+| `recall` | 21 | 120 |
 | `recall._chat_content` | 0 | 0 |
 | `recall._env` | 0 | 0 |
 | `recall._frozen` | 0 | 0 |
@@ -610,7 +611,7 @@ They are observations, not automatic failures.
 | `recall.fact_current` | 4 | 26 |
 | `recall.fact_ledger` | 4 | 26 |
 | `recall.fact_redaction` | 10 | 97 |
-| `recall.fact_retraction` | 9 | 97 |
+| `recall.fact_retraction` | 10 | 97 |
 | `recall.federation` | 4 | 107 |
 | `recall.fix` | 7 | 27 |
 | `recall.frontmatter` | 1 | 1 |
@@ -786,7 +787,7 @@ They are observations, not automatic failures.
 | `recall_interop` | 1 | 109 |
 | `recall_interop.memory_benchmarks` | 7 | 108 |
 | `recall_mcp` | 0 | 0 |
-| `recall_mcp.assistant` | 11 | 126 |
+| `recall_mcp.assistant` | 12 | 126 |
 | `recall_mcp.auth` | 3 | 32 |
 | `recall_mcp.codex_server` | 1 | 188 |
 | `recall_mcp.compat` | 0 | 0 |

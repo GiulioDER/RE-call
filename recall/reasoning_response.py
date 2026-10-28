@@ -157,6 +157,10 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
     trust_state = _trust_state(payload["trust_state"])
     if bundle.trust_state != trust_state:
         raise EvidenceValidationError("trust_state mismatch between response and trusted_evidence")
+    coverage_fit = bundle.calibration_coverage.calibration_id
+    if coverage_fit is not None and coverage_fit != _optional_str(payload.get("calibration_id")):
+        # The producers name the response's own fit or none (`merge_calibration_coverage`).
+        raise EvidenceValidationError("calibration_coverage names another calibration than the response")
     refusal_reason = _optional_str(payload.get("refusal_reason"))
     if trust_state == "refused" and (bundle.items or not (refusal_reason or bundle.failure_code)):
         raise EvidenceValidationError("refused responses must carry no evidence and a refusal code")

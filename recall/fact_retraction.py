@@ -206,18 +206,19 @@ def _settled(fn: Callable[_P, _V]) -> Callable[_P, _V]:
     `functools.cache` keeps no exception, so a lookup that timed out would be run, and time out,
     again for every check that reads it; here the second caller gets the same error at once.
     """
-    outcomes: dict[tuple[object, ...], tuple[_V | None, Exception | None]] = {}
+    answers: dict[tuple[object, ...], _V] = {}
+    errors: dict[tuple[object, ...], Exception] = {}
 
     def call(*args: _P.args, **kwargs: _P.kwargs) -> _V:
-        if args not in outcomes:
+        key = (args, tuple(sorted(kwargs.items())))
+        if key not in answers and key not in errors:
             try:
-                outcomes[args] = (fn(*args, **kwargs), None)
+                answers[key] = fn(*args, **kwargs)
             except Exception as exc:  # BROAD-CATCH: error-translation  # kept and raised to every caller
-                outcomes[args] = (None, exc)
-        value, error = outcomes[args]
-        if error is not None:
-            raise error
-        return value  # type: ignore[return-value]
+                errors[key] = exc
+        if key in errors:
+            raise errors[key]
+        return answers[key]
 
     return call
 
@@ -257,6 +258,15 @@ def served_sources(
         if failures is not None and what not in failures:
             failures.append(what)
 
+    def present(names: frozenset[str], look: Callable[[frozenset[str]], Collection[str]]) -> Collection[str]:
+        try:
+            return look(names)
+        except Exception:  # BROAD-CATCH: fail-open  # the ledger's own answer, without hiding
+            _log.exception("serving lookup for %d memo name(s) failed; hiding no fact", len(names))
+            failed("presence")
+            return names
+
+    from recall.generation_store import GenerationStore
     from recall.lite import LiteStore
     from recall.store import PgVectorStore
 
@@ -264,29 +274,24 @@ def served_sources(
 
         @cache
         def plain(names: frozenset[str]) -> Collection[str]:
-            try:
-                return {str(name) for name in lookup(sorted(names))}
-            except Exception:  # BROAD-CATCH: fail-open  # the ledger's own answer, without hiding
-                _log.exception("serving lookup for %d memo name(s) failed; hiding no fact", len(names))
-                failed("presence")
-                return names
+            return present(names, lambda wanted: {str(name) for name in lookup(sorted(wanted))})
 
         return plain
     from recall.provenance_controller import ServedState
-    from recall.stated_facts import stating_rule
+    from recall.stated_facts import StatingRule, stating_rule
 
     # The served generation only on a generation store; a lite file or the legacy table has one
     # set of rows, so its erasure resolver already answers for what it serves, and its
     # `served_identifiers` is that resolver's keys.
-    resolve = getattr(store, "served_sources_for_identifiers", None) or store.sources_for_identifiers
-    pin = getattr(store, "pin_generation", None)
+    resolve = store.served_sources_for_identifiers
+    pin = store.pin_generation if isinstance(store, GenerationStore) else None
 
     @_settled
     def generation() -> str:
         return str(store.generation_id)
 
     def pinned() -> AbstractContextManager[object]:
-        return pin(generation()) if callable(pin) else nullcontext()
+        return pin(generation()) if pin is not None else nullcontext()
 
     @_settled
     def resolved_names(names: frozenset[str]) -> dict[str, list[str]]:
@@ -306,20 +311,20 @@ def served_sources(
     # Once per read: the rule resolves every prefix on disk.
     rule = _settled(lambda: stating_rule(store))
 
-    @cache
-    def served(names: frozenset[str]) -> Collection[str]:
-        try:
-            return set(resolved_names(names))
-        except Exception:  # BROAD-CATCH: fail-open  # the ledger's own answer, without hiding
-            _log.exception("serving lookup for %d memo name(s) failed; hiding no fact", len(names))
-            failed("presence")
-            return names
+    def admitting_rule() -> StatingRule | None:
+        """The operator's stating rule, or None while stating is off (the rule is then a reason)."""
+        admits = rule()
+        return None if isinstance(admits, str) else admits
 
     @cache
-    def content_hashes(names: frozenset[str]) -> dict[str, frozenset[str]] | None:
+    def served(names: frozenset[str]) -> Collection[str]:
+        return present(names, lambda wanted: set(resolved_names(wanted)))
+
+    @cache
+    def content_hashes(names: frozenset[str]) -> dict[str, frozenset[str]]:
         try:
-            admits = rule()
-            if isinstance(admits, str):
+            admits = admitting_rule()
+            if admits is None:
                 return {}
             resolved = resolved_names(names)
             raw = raw_hashes()
@@ -344,8 +349,8 @@ def served_sources(
         """The names whose memos the operator's rule lets state facts now. Fails CLOSED: a rule
         that cannot be computed admits nothing, so no memo states facts on an error."""
         try:
-            admits = rule()
-            if isinstance(admits, str) or not names:
+            admits = admitting_rule()
+            if admits is None or not names:
                 return frozenset()
             resolved = resolved_names(names)
         except Exception:  # BROAD-CATCH: fail-closed  # no stated fact is current on an error
@@ -379,8 +384,8 @@ def served_sources(
             # Only admitted memos can retire facts, so with stating off nothing can be retired, and
             # the store's supersession graph is not asked at all: that lookup would otherwise run on
             # every read of every PostgreSQL deployment that never turned stating on.
-            admits = rule()
-            if isinstance(admits, str):
+            admits = admitting_rule()
+            if admits is None:
                 return frozenset()
             graph = supersession()
             collided = frozenset(name for name in names if name in graph.collided)

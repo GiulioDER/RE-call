@@ -176,7 +176,7 @@ the same drift test diffs this table against the `@mcp.tool` registrations:
 | `recall_withdraw` | For a memo that was a mistake: erase it as `recall_forget` does (fact values included), then give back what it superseded. Its `supersedes:` claims become void and whatever superseded it supersedes what it superseded instead (withdrawing B in A -> B -> C leaves A retired by C); each fact it alone supported gets a `withdrawn` event, which also undoes that fact's supersession. A memo forgotten or pruned earlier is withdrawn by the name it had. Scope `recall:forget`. |
 | `recall_inventory` | List every source in the caller's memory with the digest of its bytes, so a sync client can diff instead of re-uploading. Not in the `read` or `search` presets: a file listing answers no question an agent asks. |
 | `recall_stats` | Report counters and operational state. |
-| `recall_remember` | Assistant surface, lite only (`RECALL_ASSISTANT_MEMOS` names a memo folder inside `RECALL_INDEX_ROOT`): write ONE fact as one memo, with `valid_from`, `valid_until`, `supersedes` (only a memo the assistant wrote) and an optional structured `fact`, and index it before returning `{memo_id}`. Optional `request_id`, `expected_revision` and `include_receipt` provide recoverable corrections as described below. With `include_receipt` and a `fact`, the receipt's `fact_key` names the fact's key, its `state` (`current`, `contested`, `not_in_force`, `not_single_valued` or `unchecked`), the values `in_force` with their memos, and the `proposals` rule `deterministic.stated_key_successor` makes (each `requires_review`): of the memos stating one single-valued key, each supersedes the one of the latest earlier `valid_from`, whatever the value. With the surface on, `recall_search`, `recall_evidence`, `recall_current_facts` and `recall_apply_fact` answer in a compact view naming each hit by its memo id; the `assistant` preset serves exactly these six tools. Unset, none of this is registered. |
+| `recall_remember` | Assistant surface, lite only (`RECALL_ASSISTANT_MEMOS` names a memo folder inside `RECALL_INDEX_ROOT`): write ONE fact as one memo, with `valid_from`, `valid_until`, `supersedes` (only a memo the assistant wrote) and an optional structured `fact`, and index it before returning `{memo_id}` (a legacy call raises if indexing fails; with a receipt the failure is reported as `index_state`, see [Memo corrections](MEMO_CORRECTIONS.md)). Optional `request_id`, `expected_revision` and `include_receipt` provide recoverable corrections as described below. With `include_receipt` and a `fact`, the receipt's `fact_key` names the fact's key, its `state` (`current`, `contested`, `not_in_force`, `not_single_valued` or `unchecked`), the values `in_force` with their memos, and the `proposals` rule `deterministic.stated_key_successor` makes (each `requires_review`): of the memos stating one single-valued key, each supersedes the one of the latest earlier `valid_from`, whatever the value. With the surface on, `recall_search`, `recall_evidence`, `recall_current_facts` and `recall_apply_fact` answer in a compact view naming each hit by its memo id; the `assistant` preset serves exactly these six tools. Unset, none of this is registered. |
 | `recall_forget_memo` | Assistant surface, lite only: forget one memo of the memo folder by its id, retracting the facts whose only evidence it was and erasing their values from the fact ledger, then delete its file. `{deleted: 0}` for an id that names no memo there. |
 
 For an evaluation that replays simulated days, `RECALL_EVAL_CLOCK=<file>` (lite only) makes the
@@ -283,8 +283,11 @@ Reasoning response decoding preserves these diagnostics and accepts older payloa
 same unchecked and unmeasured defaults. Retrieval expansion and proof repair retain identical
 coverage reports. When merged results disagree about coverage, the aggregate is unmeasured
 without a report; its calibration ID is retained only when all merged diagnostics name the same
-fit. Stored reports with inconsistent counts, rates, measurement states, or provisional warnings
-are unavailable diagnostics and do not change evidence admission.
+fit. Read from the store, a report with inconsistent counts, rates, measurement states or
+provisional warnings is an `unavailable` diagnostic and does not change evidence admission;
+decoding a reasoning response whose diagnostics are inconsistent (a report that disagrees with its
+status, or coverage naming another calibration than the response) raises
+`EvidenceValidationError`.
 
 Search and evidence responses add `query_support` and `calibration_coverage`. Existing
 `decision_state`, `decision`, `abstained`, verdicts, confidence and citation eligibility retain
@@ -298,13 +301,15 @@ No answerability verifier runs. It remains not checked on certified, degraded an
 
 `calibration_coverage` contains the selected `calibration_id`, a `status`, a `method` and a
 `report`. When available, `method` is `synthetic_corpus_probes` and `report` preserves the stored
-`unknown_entity` and `in_vocabulary` counts, rejection rates, per-class measurement states and
-`provisional_in_vocabulary` warning. These are synthetic diagnostics, not audited labels or
+`calibration_id`, the `unknown_entity` and `in_vocabulary` counts, rejection rates, per-class
+measurement states, the `provisional_in_vocabulary` warning and `unknown_term_gate` (`checked`,
+`unavailable`, `disabled` or `not_run`). These are synthetic diagnostics, not audited labels or
 per-query semantic support. `measured` means both probe classes were measured, not that the gate
 passed them: a measured report can still be provisional.
 
 Missing measurements, a backend without this optional reader, or a report for another calibration
-produce `unmeasured` and a null report. Reader failures produce `unavailable`. A carried calibration
+produce `unmeasured` and a null report. A stored report in which a class has fewer than 10 probes
+is `unmeasured` too, and still carries its report. Reader failures produce `unavailable`. A carried calibration
 does not inherit near-miss measurements from the parent fit. Coverage is read in the search's
 snapshot for the calibration actually selected, without refitting or changing admission.
 

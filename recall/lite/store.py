@@ -883,6 +883,10 @@ class LiteStore:
                 records = sqlite_records(self._conn, self._table, sources)
         return erasure_subjects(rows, records)
 
+    def served_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """`sources_for_identifiers`: every row of this file is served, as `PgVectorStore`'s."""
+        return self.sources_for_identifiers(list(identifiers))
+
     def served_identifiers(self, identifiers: list[str]) -> set[str]:
         """The identifiers this file serves now: every row is served, as `PgVectorStore`'s."""
         return set(self.sources_for_identifiers(list(identifiers)))

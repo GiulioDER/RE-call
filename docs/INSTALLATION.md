@@ -24,7 +24,8 @@ install the unrelated PyPI package named `recall`.
 
 - Python 3.11 or newer
 - For the PostgreSQL path, PostgreSQL with the pgvector extension
-- Docker, if you want RE-call to start PostgreSQL for you or run the bundled quickstart
+- Docker, if you want RE-call to start PostgreSQL for you, including for the bundled quickstart
+  (`recall quickstart --existing-dsn <dsn>` uses an existing PostgreSQL with pgvector instead)
 
 The Lite path uses SQLite on a local disk and needs neither PostgreSQL nor Docker. It currently
 requires a source installation with Git: the published `0.14.0` wheel predates Lite.
@@ -43,12 +44,16 @@ recall setup --lite --memory ./notes
 ```
 
 Use an existing folder of Markdown memos. Setup creates `.recall/memory.db`, indexes the folder,
-fits calibration when the corpus has enough text, and registers a project-scoped Claude Code MCP
-server. Restart Claude Code after setup. Add `.recall/` to `.gitignore`.
+fits calibration when the corpus has enough text, and registers a Claude Code MCP server at local
+scope (this project only, stored in your user-level Claude Code config, not in `.mcp.json`). With a
+hosted embedding profile, the provider API key is copied into that registration. Restart Claude
+Code after setup. Add `.recall/` to `.gitignore`.
 
 Setup prints doctor and dashboard commands configured for this file. Use those commands: the CLI
-does not read the MCP client's registered environment. Re-running setup updates changed memos and
-refits calibration. Once the server is running, it refreshes changed memos automatically;
+does not read the MCP client's registered environment. Re-running setup indexes changed memos and
+keeps calibration current: an unchanged corpus keeps its fit, a small change carries the certified
+fit forward, and a refit runs only when the carry fails or the change is large. A corpus that did
+not certify is refitted only after its memos change. Once the server is running, it refreshes changed memos automatically;
 the following commands check and refresh the same folder explicitly:
 
 ```bash

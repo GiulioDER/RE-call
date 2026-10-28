@@ -89,6 +89,10 @@ class _NoActiveGenerationStore(_PinnedGenerationStore):
 
         raise NoActiveGeneration("tenant 'acme' has no active generation")
 
+    # What `snapshot()` reads; it refuses the same way, as `GenerationStore`'s does with no row.
+    def _active_generation_state(self) -> tuple[str, str]:
+        return (self.active_generation_id(), "")
+
 
 def test_current_facts_still_answers_before_any_generation_is_promoted(monkeypatch) -> None:
     """The fact ledger is tenant scoped, so it answers even when no generation is active.

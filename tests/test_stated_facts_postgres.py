@@ -527,6 +527,56 @@ def test_p16_a_promote_between_two_lookups_does_not_mix_generations(
     assert got == [("4512", ("memory/door.md",))], f"a promote between two lookups mixed generations: {got}"
 
 
+def test_p16b_a_promote_after_the_first_lookup_keeps_the_supersession_of_the_read(
+    manager: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts_postgres.py::test_p16b_a_promote_after_the_first_lookup_keeps_the_supersession_of_the_read.
+
+    CCA deferred pass over PR 946, DAT-003: p16 pins names and content but its memos have no
+    `supersedes` edge, so nothing pinned the supersession lookup. corpus-v1 has `new.md` retire
+    `old.md`; corpus-v2, promoted right after the first name lookup of a read that began on v1,
+    drops that edge. The read must answer v1's supersession: `old.md`'s value stays retired.
+    `served_sources` is called directly, as a caller without `current_facts_memory`'s own outer
+    snapshot (`recall_mcp.provenance._read_generation`) would, so the pin under test is the one
+    inside `supersession()` and no outer pin masks it.
+    Red by mutation of `served_sources` (recall/fact_retraction.py): `supersession()` without its
+    `with pinned():` reads v2's graph and fails on "a promote mid-read brought a retired value
+    back: [('4512', ('old.md',))]". Observed in CI on 2026-10-28, GitHub Actions run 40758592375
+    (throwaway branch claude/cca-949-p16b-mutation, since deleted): this was the only failure of
+    11,950 tests; restored, it passes.
+    """
+    from datetime import UTC, datetime
+
+    from recall.fact_retraction import served_sources
+    from recall.generation_store import GenerationStore
+    from recall.provenance_controller import current_fact_listing, listing_payload
+    from recall_mcp.provenance import _fact_backends
+
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", uri(manager, "memory"))
+    v1 = {"memory/old.md": body([DOOR]), "memory/new.md": body(text="The door code changed.", supersedes="old.md")}
+    promote(manager, v1, "corpus-v1")
+    moved: list[str] = []
+    real = GenerationStore.served_sources_for_identifiers
+
+    def first_lookup_then_promote(self: Any, identifiers: list[str]) -> Any:
+        answer = real(self, identifiers)
+        if not moved:
+            v2 = {**v1, "memory/new.md": body(text="The door code changed.")}
+            moved.append(promote(manager, v2, "corpus-v2"))
+        return answer
+
+    monkeypatch.setattr(GenerationStore, "served_sources_for_identifiers", first_lookup_then_promote)
+    with served(manager) as store:
+        lookups = served_sources(store)
+        events, evidence = current_fact_listing(
+            _fact_backends(store)[0], store.tenant, datetime.now(UTC), lookups
+        )
+        out = listing_payload(events, evidence, None)
+        got = sorted((str(item["fact"]["object"]), tuple(item["sources"])) for item in out["facts"])  # type: ignore[index, union-attr]
+    assert moved, "no lookup ran, so no promote came between two"
+    assert got == [], f"a promote mid-read brought a retired value back: {got}"
+
+
 def test_p17_a_failed_lookup_is_reported_as_degraded(manager: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """Node tests/test_stated_facts_postgres.py::test_p17_a_failed_lookup_is_reported_as_degraded.
 

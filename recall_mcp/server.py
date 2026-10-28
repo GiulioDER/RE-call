@@ -5,7 +5,7 @@ import json
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from typing import Annotated, Any, Literal, Protocol, TypeVar, cast
 from urllib.parse import urlsplit
@@ -1416,6 +1416,9 @@ def _proof_payload(proof: ProofRun) -> dict[str, object]:
         "repair_attempted": proof.repair_attempted,
         "model_calls": proof.model_calls,
         "evidence_chunk_ids": [item.chunk_id for item in proof.evidence.items],
+        # The merged evidence's own coverage: a repair from another fit leaves it unmeasured, and
+        # the initial response beside this receipt still shows the first search's report.
+        "calibration_coverage": asdict(proof.evidence.calibration_coverage),
         "initial_missing_slot_ids": (
             list(proof.initial.missing_slot_ids) if proof.initial is not None else []
         ),

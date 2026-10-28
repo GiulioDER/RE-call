@@ -5,7 +5,7 @@ trusted_search's snapshot, using only the calibration id that search actually se
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import Mapping
 from typing import Any, Literal, Protocol, get_args
 
@@ -80,7 +80,9 @@ class CalibrationCoverage:
     calibration_id: str | None = None
     status: CoverageStatus = "unmeasured"
     method: CoverageMethod | None = None
-    report: dict[str, Any] | None = None
+    # Compared, never hashed: a dict is unhashable, and a frozen result carrying a measured report
+    # must hash like one carrying none (the identity fields above still decide the hash).
+    report: dict[str, Any] | None = field(default=None, hash=False)
 
 
 def merge_calibration_coverage(

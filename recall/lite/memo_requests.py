@@ -81,18 +81,31 @@ def _indexed_revision(data: bytes) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+#: The newest ledger layout this module reads: 2 carries the request journal (`requests`). A
+#: release older than the journal ignores the version and rewrites the ledger without it, so the
+#: version cannot protect against those; it stops a newer layout being read as this one.
+LEDGER_VERSION = 2
+#: The longest `request_id`, in code points.
+REQUEST_ID_MAX_LEN = 128
+
+
 def load_ledger(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"version": 1, "authors": {}}
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or not isinstance(value.get("authors"), dict):
         raise ValueError("invalid memo authorship ledger")
+    version = value.get("version", 1)
+    if not isinstance(version, int) or isinstance(version, bool) or version > LEDGER_VERSION:
+        raise ValueError(f"memo ledger version {version!r} is newer than this release reads")
     if not isinstance(value.get("requests", {}), dict):
         raise ValueError("invalid memo request journal")
     return value
 
 
 def _save(path: Path, ledger: dict[str, Any]) -> None:
+    if "requests" in ledger:
+        ledger["version"] = LEDGER_VERSION
     atomic_write_bytes(path, (json.dumps(ledger, sort_keys=True, indent=1) + "\n").encode())
 
 
@@ -266,10 +279,25 @@ def _create(path: Path, body: bytes) -> None:
         _flush_directory(path.parent)
         return
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".recall-memo-", suffix=".tmp")
-    os.close(fd)
     staged = Path(name)
     try:
-        atomic_write_bytes(staged, body)
+        # Written and fsynced through the descriptor mkstemp returned: one staging file, and the
+        # one directory flush below, before the link publishes it.
+        try:
+            handle = os.fdopen(fd, "wb")
+        except BaseException:
+            # fdopen owns the descriptor only once it returns, and an open handle makes the
+            # unlink below fail on Windows (as in `_create_exclusive`). io.open may already have
+            # closed it, so a failing close must not hide the error being raised.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        with handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
         try:
             os.link(staged, path)
         except OSError as exc:
@@ -336,8 +364,8 @@ def write_memo(
     `memo_missing` or `memo_changed` (docs/MEMO_CORRECTIONS.md).
     """
     if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()
-                                   or len(request_id) > 128):
-        return {"refused": "request_id must be a nonempty string of at most 128 characters"}
+                                   or len(request_id) > REQUEST_ID_MAX_LEN):
+        return {"refused": f"request_id must be a nonempty string of at most {REQUEST_ID_MAX_LEN} characters"}
     if expected_revision is not None and not _REVISION.fullmatch(expected_revision):
         return {"refused": "expected_revision must be a lowercase SHA-256 digest"}
     data = body.encode("utf-8")

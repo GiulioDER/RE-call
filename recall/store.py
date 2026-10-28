@@ -3086,6 +3086,12 @@ class PgVectorStore:
             )
         )
 
+    def served_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+        """`sources_for_identifiers`: every row of this table is served, so the erasure resolver
+        is also the read-time one (`recall.fact_retraction.served_sources`); `GenerationStore`
+        narrows it to its pinned generation."""
+        return self.sources_for_identifiers(list(identifiers))
+
     def served_identifiers(self, identifiers: list[str]) -> set[str]:
         """The identifiers (a row's `file` or its `source`) this store serves now.
 

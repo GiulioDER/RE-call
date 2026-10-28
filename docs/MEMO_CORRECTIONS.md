@@ -7,7 +7,8 @@ is gone returns `target_missing`, and one that already has a successor returns `
 legacy calls as on guarded ones. A replay keeps its original reply without the check: of a
 completed request, or of an interrupted one whose memo is already in place.
 
-* `request_id`: an opaque nonempty string, at most 128 characters. Reuse it only for the same
+* `request_id`: an opaque string with at least one non-whitespace character and at most 128 code
+  points; over MCP an empty string means no `request_id`. Reuse it only for the same
   text, fact, kind, dates, supersession target and revision precondition. The memo folder journals
   its reserved memo id and request hash before publication. A retry finishes the original write
   and refreshes that memo instead of allocating another one. Reusing an id for different intent
@@ -52,6 +53,18 @@ an assistant memo, reply `{"refused": "<reason>"}`; a refused precondition repli
 }
 ```
 
+| Receipt field | Values |
+|---|---|
+| `revision` | the SHA-256 of the memo as the index normalizes it |
+| `supersedes` | the target memo id, or null |
+| `write_state` | `written` |
+| `replayed` | true when `request_id` matched a journalled request (completed, or interrupted and finished by this call) |
+| `index_state` | `indexed`, or `failed` when the refresh raised or the indexed hash differs from `revision` (the second case sets no `error_type` from indexing) |
+| `calibration_status` | the store's calibration status (lite reports `certified`, `uncertified`, `stale` or `missing`), or `unavailable` |
+| `retrieval_ready` | `index_state` is `indexed` and the calibration is `certified` |
+| `error_type` | the exception type a fail-closed step caught, never its message |
+| `fact_key` | for a memo stating a `fact`, as `docs/API.md` describes under `recall_remember` |
+
 `retrieval_ready` describes indexing plus the store's calibration readiness. It does not establish
 that this memo answers a query, is currently valid, or passes that query's other trust checks.
 Every read still passes through trusted search. A small store can report a written, indexed memo
@@ -61,6 +74,12 @@ A failed refresh on a receipt-enabled call returns the persisted memo id with
 `index_state="failed"`, unavailable calibration readiness, and an exception type without its
 message. Retry with the same request id to finish indexing. A failure to inspect calibration
 preserves successful indexing and reports unavailable readiness. Persistence failures still raise.
+
+The request journal lives in the folder's `.recall-authors.json` (ledger version 2). A release of
+RE-call older than the journal that writes a memo into the same folder rewrites that file without
+it, so a later retry of a request it dropped can publish a second memo, or recreate one that was
+forgotten. Keep one release writing a memo folder. A ledger newer than this release reads is
+refused rather than rewritten.
 
 Only an existing assistant-authored memo can be a correction target. A memo that already has a
 successor is refused as `stale_target`, including on legacy calls: any memo of the folder that names
@@ -84,6 +103,9 @@ indexed (a crash after publication with no refresh since) is forgotten the same 
 A prepared request without a published
 memo can finish after rechecking correction preconditions; use explicit forgetting for deletion, since
 a direct filesystem deletion in that interrupted state cannot be distinguished from non-publication.
+Forgetting a memo under the id a still-unpublished request reserved cancels that request too: a
+retry then returns `memo_missing` instead of publishing. Erasure wins on purpose, because letting the
+retry go ahead by comparing bytes would let an edited copy of a forgotten memo be published again.
 The authorship ledger retains reservations and request identities when legacy calls write new memos.
 
 Forgetting also drops every hash the journal derived from the memo's bytes, since an unsalted hash of a
