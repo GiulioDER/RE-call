@@ -134,6 +134,17 @@ def fit_voyage_image(data_url: str, *, strict: bool = False) -> tuple[str, bool]
         return data_url, False
     from PIL import Image
 
+    # Fitting decodes the whole image. Pillow refuses one over twice its `MAX_IMAGE_PIXELS` but
+    # only warns below that, so a small compressed file declaring ~150M pixels is decoded in full
+    # here. Strict mode refuses it at Pillow's own limit. The default mode keeps fitting it: a
+    # legitimate large scan within the caller's byte cap still embeds, where passing it through
+    # unfitted would make Voyage refuse the whole request it was batched into.
+    ceiling = Image.MAX_IMAGE_PIXELS
+    if strict and ceiling is not None and pixels > ceiling:
+        raise Image.DecompressionBombError(
+            f"image declares {pixels} pixels, over the decode limit of {ceiling}"
+        )
+
     with Image.open(BytesIO(payload)) as image:
         scale = min(1.0, math.sqrt(VOYAGE_MAX_IMAGE_PIXELS / (image.width * image.height)))
         while True:
