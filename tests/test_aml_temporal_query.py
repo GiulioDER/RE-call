@@ -88,3 +88,18 @@ def test_the_verb_may_is_not_the_month() -> None:
 def test_the_earliest_expression_wins() -> None:
     question = "Before the trip in May 2023, and also last week, what did I pack?"
     assert query_time_range(question, ANCHOR) == (d("2023-05-01"), d("2023-05-31"))
+
+
+@pytest.mark.parametrize("word", ["\u017fix", "s\u0130x", "s\u0131x"], ids=["long-s", "dotted-i", "dotless-i"])
+def test_matched_unicode_number_word_has_the_ascii_range(word):
+    """BUG-001: acdd27b05 _ago raises KeyError for a matched long-s number word.
+
+    Red proof, 2026-10-28: this node converts that exception to None and fails
+    the intended range assertion (expected 2023-05-01 through 2023-05-03).
+    """
+    expected = query_time_range('six days ago', date(2023, 5, 8))
+    try:
+        actual = query_time_range(f'{word} days ago', date(2023, 5, 8))
+    except KeyError:
+        actual = None
+    assert actual == expected, 'a matched number word must resolve instead of raising KeyError'

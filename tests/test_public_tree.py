@@ -35,6 +35,7 @@ from __future__ import annotations
 import gzip
 import importlib.util
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -403,3 +404,65 @@ def test_the_ratchet_record_still_checks_absolute_rules(tmp_path: Path) -> None:
     found, read, missing, skipped = check.scan([check.BASELINE_PATH], set(), tmp_path)
     assert {rule for _, _, rule, _ in found} == set(values)
     assert (read, missing, skipped) == (1, [], [])
+
+
+def test_staged_gzip_is_streamed_and_its_producer_is_reaped(tmp_path, monkeypatch):
+    """FIX-002: indexed gzip retains the existing bounded decompression guard.
+
+    Red proof replaces scan's streamed gzip reader with _index_bytes: the
+    capture-output assertion fails before the whole compressed blob is read.
+    The pipe spy also refuses an unbounded read and checks early consumption.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    compressed = gzip.compress(random.Random(0).randbytes(1024 * 1024), mtime=0)
+    (tmp_path / "bounded.gz").write_bytes(compressed)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "bounded.gz"], check=True)
+    monkeypatch.setattr(check, "ROOT", tmp_path)
+    monkeypatch.setattr(check, "GZIP_MAX_BYTES", 8)
+    real_popen = subprocess.Popen
+    processes, consumed = [], []
+
+    class Reader:
+        def __init__(self, pipe):
+            self.pipe = pipe
+
+        def read(self, size=-1):
+            assert size >= 0, "a staged gzip stream was read without a bound"
+            raw = self.pipe.read(size)
+            consumed.append(len(raw))
+            return raw
+
+        def __getattr__(self, name):
+            return getattr(self.pipe, name)
+
+    def observe(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        assert process.stdout is not None
+        process.stdout = Reader(process.stdout)
+        processes.append(process)
+        return process
+
+    def reject_capture(*args, **kwargs):
+        raise AssertionError("a staged gzip blob must not be fully captured before its read limit")
+
+    monkeypatch.setattr(check.subprocess, "Popen", observe)
+    monkeypatch.setattr(check.subprocess, "run", reject_capture)
+    found, read, missing, skipped = check.scan(["bounded.gz"], set(), tmp_path, staged=True)
+    assert [rule for _, _, rule, _ in found] == ["gzip-over-limit"]
+    assert (read, missing, skipped) == (0, [], [])
+    assert consumed and sum(consumed) < len(compressed), "the complete compressed blob was buffered"
+    assert processes and all(p.poll() is not None and p.stdout.closed for p in processes)
+
+
+def test_staged_gzip_distinguishes_git_failure_from_valid_empty_content(tmp_path, monkeypatch):
+    """FIX-002: an empty valid blob is read; a failed producer cannot report clean.
+
+    Red proof drops the producer's zero-return-code check: missing.gz becomes
+    another empty read and the tuple assertion fails instead of naming it missing.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "empty.gz").write_bytes(gzip.compress(b""))
+    subprocess.run(["git", "-C", str(tmp_path), "add", "empty.gz"], check=True)
+    monkeypatch.setattr(check, "ROOT", tmp_path)
+    result = check.scan(["empty.gz", "missing.gz"], set(), tmp_path, staged=True)
+    assert result == ([], 1, ["missing.gz"], [])

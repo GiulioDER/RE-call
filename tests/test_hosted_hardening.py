@@ -112,6 +112,16 @@ def test_bytes_that_change_between_two_reads_are_never_sent(monkeypatch, tmp_pat
     leaky = f"# A\n\nkey = {FAKE_KEY}\n".encode()
     reads = {"n": 0}
     real = Path.read_bytes
+    real_read_once = hosted._read_once
+
+    def scan_once(path, *args, **kwargs):
+        before = reads["n"]
+        got = real_read_once(path, *args, **kwargs)
+        # The bounded scanner uses open(). Preserve the same read sequence in
+        # this upload-race fixture when scan no longer calls read_bytes().
+        if path.name == "a.md" and reads["n"] == before:
+            reads["n"] += 1
+        return got
 
     def flaky(self: Path) -> bytes:
         if self.name != "a.md":
@@ -122,6 +132,7 @@ def test_bytes_that_change_between_two_reads_are_never_sent(monkeypatch, tmp_pat
 
     _write(tmp_path / "memory", "a.md", clean)
     monkeypatch.setattr(Path, "read_bytes", flaky)
+    monkeypatch.setattr(hosted, "_read_once", scan_once)
     outcome, wire, _root = _sync(monkeypatch, tmp_path, {})
     assert "worktree/a.md" not in wire.sent, "bytes no screen ever saw were uploaded"
     assert outcome.pending == 1, "a file dropped at upload time stays pending for the next run"
@@ -649,3 +660,114 @@ def test_the_screen_inspects_the_buffer_that_was_hashed_not_a_fresh_read(tmp_pat
     change = hosted.Change("worktree/a.md", clean, "h", 1, text=f"key = {FAKE_KEY}\n")
     _allowed, withheld = screening.screen([change])
     assert withheld
+
+
+def test_oversize_text_is_excluded_before_screening(monkeypatch, tmp_path):
+    """PERF-001: rejected text must not accumulate in the screen's input.
+
+    Red proof: acdd27b05 sync_memory_roots -> scan -> Change.text. The
+    baseline reaches the retained-text assertion with both oversized buffers.
+    """
+    real_screened = hosted._screened
+
+    def check_retained(local):
+        retained = [name for name, change in local.items() if len(change.text or "") > 16]
+        assert retained == [], "oversized text was retained before screening"
+        return real_screened(local)
+
+    monkeypatch.setattr(hosted, "_screened", check_retained)
+    outcome, wire, _ = _sync(
+        monkeypatch, tmp_path, {"big-a.md": "a" * 64, "big-b.md": "b" * 64, "keep.md": "safe"},
+        limits=hosted.Limits(max_file_bytes=16),
+    )
+    assert wire.sent == {"worktree/keep.md": b"safe"}
+    assert outcome.oversize == 2
+    assert hosted.read_manifest(HOSTED)["oversize"] == ["worktree/big-a.md", "worktree/big-b.md"]
+
+
+def test_oversize_scan_reads_at_most_the_limit_plus_one(monkeypatch, tmp_path):
+    """PERF-001: enforce the byte limit during reading, before digesting text.
+
+    Red proof: acdd27b05 _read_once invokes the unbounded read_bytes spy.
+    A plausible mutation to read() without a size fails the reader assertion.
+    """
+    real_open = Path.open
+    real_read_bytes = Path.read_bytes
+    requested = []
+
+    class BoundedReader:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def read(self, size=-1):
+            assert 0 <= size <= 17, "scan attempted an unbounded oversized-file read"
+            requested.append(size)
+            return self.handle.read(size)
+
+    def guarded_open(path, mode="r", *args, **kwargs):
+        handle = real_open(path, mode, *args, **kwargs)
+        return BoundedReader(handle) if path.name == "big.md" and mode == "rb" else handle
+
+    def guarded_read_bytes(path):
+        assert path.name != "big.md", "scan attempted an unbounded oversized-file read"
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+    outcome, wire, _ = _sync(
+        monkeypatch, tmp_path, {"big.md": "x" * 64, "keep.md": "safe"},
+        limits=hosted.Limits(max_file_bytes=16),
+    )
+    assert requested == [17]
+    assert outcome.oversize == 1
+    assert wire.sent == {"worktree/keep.md": b"safe"}
+
+
+def test_oversize_names_are_recorded_before_authentication(monkeypatch, tmp_path):
+    """PERF-001: an unavailable credential must not hide a permanent oversize refusal.
+
+    Red proof: acdd27b05 returns before recording plan's oversize list; the
+    manifest assertion fails. Dropping the early recording recreates the defect.
+    """
+    root = tmp_path / "memory"
+    _write(root, "big.md", "x" * 64)
+
+    def unavailable(_config):
+        raise RuntimeError("synthetic missing authentication")
+
+    monkeypatch.setattr(cred, "headers", unavailable)
+    outcome = hosted.sync_memory_roots(
+        [("worktree", root)], HOSTED, limits=hosted.Limits(max_file_bytes=16),
+    )
+    assert outcome.kind == "auth"
+    assert hosted.read_manifest(HOSTED).get("oversize") == ["worktree/big.md"]
+    assert outcome.oversize == 1
+
+
+def test_an_oversize_nearest_root_does_not_fall_back_to_a_farther_copy(monkeypatch, tmp_path):
+    """PERF-001: excluding text must preserve scan's nearest-root precedence.
+
+    Red proof removes scan's oversized.add(name): the farther copy uploads and
+    the uploaded-count assertion fails. The near copy remains the named refusal.
+    """
+    near, far = tmp_path / "near", tmp_path / "far"
+    _write(near, "note.md", "x" * 64)
+    _write(far, "note.md", "safe")
+    sent = []
+    monkeypatch.setattr(cred, "headers", lambda _config: {})
+    monkeypatch.setattr(hosted, "remote_inventory", lambda *_args: {})
+    monkeypatch.setattr(hosted, "call_tool", lambda *args, **kwargs: sent.append(args))
+    outcome = hosted.sync_memory_roots(
+        [("worktree", near), ("worktree", far)], HOSTED,
+        limits=hosted.Limits(max_file_bytes=16),
+    )
+    assert outcome.uploaded == 0, "excluding a near file must not upload a farther copy"
+    assert sent == []
+    assert outcome.oversize == 1
+    assert hosted.read_manifest(HOSTED)["oversize"] == ["worktree/note.md"]
