@@ -432,9 +432,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * **pypdf is no longer installed by the `documents` extra.** It was never imported: PDF text has
   always come from pdfplumber, which does not depend on it. It stayed only because a capability
   check confirmed it was present, and 6.16.1 carried eight denial-of-service advisories
-  (CVE-2026-102993 to CVE-2026-102999 and CVE-2026-103000). The capability check and the generated
-  Dockerfile's post-install import now assert `pdfplumber` instead, so a missing `documents` extra
-  still fails the image build. Nothing extracted changes.
+  (CVE-2026-102993 to CVE-2026-102999 and CVE-2026-103000). The capability check and the optional
+  import contract drop their pypdf row (both already checked pdfplumber), and the generated
+  Dockerfile's post-install import now asserts `pdfplumber` instead of `pypdf`, so a missing
+  `documents` extra still fails the image build. Nothing extracted changes.
 
 ### Changed
 

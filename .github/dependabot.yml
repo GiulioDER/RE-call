@@ -47,8 +47,10 @@ updates:
     # quieten it. `boto3` remains uncapped and un-ignored, and its PRs still arrive.
     #
     # 🔁 And superseded again 2026-10-01: that reasoning was false, pypdf was never on the
-    # extraction path (pdfplumber is), and its ignore rule kept eight DoS advisories against
-    # 6.16.1 out of any Dependabot PR. pypdf is no longer a dependency, so its rule is gone.
+    # extraction path (pdfplumber is), and its ignore rule kept the fixes for eight DoS advisories
+    # against 6.16.1 (6.17.0 to 6.19.0) out of any Dependabot version-update PR. pypdf is no longer
+    # a dependency, so its rule is gone. (Corrected 2026-10-28: this said "out of any Dependabot
+    # PR"; whether the rule also suppressed a security PR is unconfirmed, as the next note says.)
     #
     # ⚠️ Assume a rule here also suppresses SECURITY PRs for that dependency. Recorded as
     # UNCONFIRMED: GitHub's options reference says ignored dependencies are filtered out after
@@ -102,7 +104,6 @@ updates:
         update-types:
           - "version-update:semver-patch"
           - "version-update:semver-minor"
-
 
   # This half is proven: the first batch (#41-#43) bumped checkout, setup-python and setup-uv,
   # and merged green.
