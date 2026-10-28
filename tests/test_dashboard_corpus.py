@@ -36,6 +36,16 @@ role there is the database owner, so row-level security is not exercised by D1; 
 - P2 View 2 escapes everything the database holds (chunk text, names, headings) and reads the
   current tenant; an unknown file is a 404, a database that is down the standard 503 page.
 - P3 the corpus switch offers the main corpora only, plus the one being shown.
+- G4 a module named like the standard library never resolves by its tail to a corpus file, and
+  `from pkg import (` ending its line still links to `pkg` (CCA on #904, DAT-001 and DAT-002).
+- G5 a path several roots hold is one node per copy, and a mention joins the copy that holds it
+  (CODE-001); a file superseded by a forgotten memo is noted, and a file not yet valid says so.
+- P4 on a lite store the corpus pages answer that they need PostgreSQL, never "did not answer".
+- P5 concurrent misses on one corpus build its graph once; the cache is per tenant and expires.
+- P6 View 2 names a forgotten successor without linking it, and says an ambiguous claim matches
+  several files.
+- R1 every corpus query runs after the connection's `recall.tenant_id` is set.
+Red proofs for G4 to R1 are in each test's docstring.
 - D1 against a real generation built by the generation pipeline: the graph holds the declared
   supersession, the authored wiki link and the Python import, and View 2's data names what
   replaces a file, what it imports and what imports it.
@@ -44,7 +54,11 @@ role there is the database owner, so row-level security is not exercised by D1; 
 from __future__ import annotations
 
 import hashlib
+import re
+import threading
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -56,7 +70,9 @@ import pytest
 from recall.dashboard import corpus
 from recall.dashboard import db as dbq
 from recall.dashboard.db import DashboardDB
+from recall.dashboard import server as dashboard_server
 from recall.dashboard.server import DashboardApp
+from recall.supersession import SupersessionGraph
 from tests.conftest import TEST_DSN, _db_available, db_unreachable_reason, requires_db
 
 HOST = {"Host": "127.0.0.1:8765"}
@@ -408,3 +424,155 @@ def test_ambiguous_path_detail_refuses_to_choose_copy(built_copies: Any) -> None
     assert corpus.source_detail(DashboardDB(TEST_DSN), tenant, "README.md") is None, (
         "an ambiguous bare path chose or merged two source copies"
     )
+
+
+# ------------------------------------------------------------------ CCA on #904
+
+
+def test_stdlib_names_and_parenthesised_imports_resolve_as_python_does() -> None:
+    """G4. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: deleting the
+    `_STDLIB` check in `resolve_imports` failed at "a stdlib import resolved to a corpus file";
+    restoring `+` for the names group of `_IMPORT_PATTERN` failed at "a parenthesised import
+    linked nothing". Restored, passes."""
+    files = {"recall/lite/inspect.py", "recall/ops/secrets.py", "recall/main.py", "pkg/__init__.py"}
+    rows = [
+        ("recall/main.py", None, None, "inspect"),
+        ("recall/main.py", "secrets", "token_hex", None),
+        ("recall/main.py", "recall.lite", "inspect", None),
+    ]
+    pairs = set(corpus.resolve_imports(rows, files))
+    assert ("recall/main.py", "recall/ops/secrets.py") not in pairs, "a stdlib import resolved to a corpus file"
+    assert pairs == {("recall/main.py", "recall/lite/inspect.py")}, "a stdlib import resolved to a corpus file"
+    text = "from pkg import (\n    a,\n    b,\n)\n"
+    matches = [(m.group(1), m.group(2), m.group(3)) for m in re.finditer(corpus._IMPORT_PATTERN, text, re.M)]
+    found = corpus.resolve_imports([("recall/main.py", *m) for m in matches], files)
+    assert ("recall/main.py", "pkg/__init__.py") in found, "a parenthesised import linked nothing"
+
+
+def test_copies_of_one_path_keep_their_own_shared_names() -> None:
+    """G5. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: keying mentions by
+    the bare path again (`by_entity[entity].add(file)`) failed at "a mention did not join the copy
+    that holds it". Restored, passes."""
+    graph = SupersessionGraph(collided=frozenset({"README.md"}))
+    files = [
+        ("README.md", 1, None, None, None, None, ["A"], "s3://a/README.md"),
+        ("README.md", 1, None, None, None, None, ["B"], "s3://b/README.md"),
+        ("x.md", 1, None, None, None, None, ["X"], "s3://a/x.md"),
+    ]
+    mentions = [("e1", "README.md", "s3://a/README.md"), ("e1", "x.md", "s3://a/x.md")]
+    built = corpus.assemble_graph(files, graph, [], mentions, [], today=TODAY, tenant="t", generation="g")
+    assert {n["id"] for n in built["nodes"]} == {"s3://a/README.md", "s3://b/README.md", "x.md"}
+    assert _edges(built, "shares") == {("s3://a/README.md", "x.md")}, "a mention did not join the copy that holds it"
+
+
+def test_a_forgotten_successor_is_noted_and_a_future_file_is_not_yet_valid() -> None:
+    """G5. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: dropping the
+    forgotten-memo note failed at "a file hidden by a forgotten memo went unexplained"; dropping the
+    `not_yet_valid` branch of `_state` failed at the state assertion. Restored, passes."""
+    future = ("soon.md", 1, None, None, "2027-01-01", None, ["SOON"])
+    built = _graph([_file("a.md"), future], winner={"a.md": "ghost.md"})
+    states = {n["id"]: n["state"] for n in built["nodes"]}
+    assert states == {"a.md": "superseded", "soon.md": "not_yet_valid"}
+    assert any("forgotten memo" in note for note in built["notes"]), "a file hidden by a forgotten memo went unexplained"
+
+
+def test_a_lite_store_says_the_corpus_pages_need_postgres(root: Path) -> None:
+    """P4. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: deleting the lite
+    checks in `_graph_json` and `_corpus_source_page` failed at "a lite store was told its database
+    did not answer". Restored, passes."""
+    app = DashboardApp(root, port=8765, token="tok", db=DashboardDB(f"sqlite:///{root / 'lite.db'}"))
+    graph = app.handle("GET", "/api/graph.json?corpus=memory", SIGNED)
+    page = app.handle("GET", "/corpus/source?file=a.md", SIGNED)
+    assert graph.status == page.status == 501, "a lite store was told its database did not answer"
+    assert b"lite" in graph.body and b"did not answer" not in page.body
+
+
+def test_concurrent_misses_build_one_graph_and_the_cache_is_per_tenant(
+    root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P5. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: building outside
+    the per-corpus build lock failed at "two concurrent misses each built the corpus graph"; a cache
+    read that falls back to another corpus's entry failed at "one tenant's graph was served for
+    another". Restored, passes."""
+    started, release = threading.Event(), threading.Event()
+    calls: list[str] = []
+
+    def slow(db: DashboardDB, tenant: str) -> dict[str, Any]:
+        calls.append(tenant)
+        started.set()
+        release.wait(5)
+        return {"nodes": [], "edges": [], "counts": {"memos": 0}, "notes": [], "origin": "database", "tenant": tenant}
+
+    monkeypatch.setattr(corpus, "corpus_graph", slow)
+    app = DashboardApp(root, port=8765, token="tok", db=DashboardDB("postgresql://fake"))
+    results: list[int] = []
+    first = threading.Thread(target=lambda: results.append(app.handle("GET", "/api/graph.json?corpus=alpha", SIGNED).status))
+    first.start()
+    assert started.wait(5)
+    second = threading.Thread(target=lambda: results.append(app.handle("GET", "/api/graph.json?corpus=alpha", SIGNED).status))
+    second.start()
+    # Give the second request time to either wait on the build lock or (unguarded) start its own
+    # build; a second build shows up in `calls` at once, so stop waiting as soon as it does.
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and len(calls) < 2:
+        time.sleep(0.02)
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert results == [200, 200]
+    assert calls == ["alpha"], "two concurrent misses each built the corpus graph"
+    beta = app.handle("GET", "/api/graph.json?corpus=beta", SIGNED)
+    assert beta.status == 200 and b'"beta"' in beta.body, "one tenant's graph was served for another"
+    monkeypatch.setattr(dashboard_server, "CORPUS_GRAPH_CACHE_SECONDS", 0)
+    app.handle("GET", "/api/graph.json?corpus=alpha", SIGNED)
+    assert calls == ["alpha", "beta", "alpha"], "an expired corpus graph was served from the cache"
+
+
+def test_view_two_names_a_forgotten_successor_and_an_ambiguous_claim(
+    root: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P6. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: linking the
+    successor whatever `superseded_by_forgotten` says failed at "a forgotten memo was linked as a
+    page"; the old "match no file" wording failed at the ambiguous-claim assertion. Restored, passes."""
+    detail = _detail(superseded_by="gone.md", superseded_by_forgotten=True, unresolved_claims=["dup"])
+    monkeypatch.setattr(corpus, "source_detail", lambda db, tenant, file: detail)
+    app = DashboardApp(root, port=8765, token="tok", db=DashboardDB("postgresql://fake"))
+    body = app.handle("GET", "/corpus/source?file=docs/x.md", SIGNED).body.decode()
+    assert "a forgotten memo" in body and "file=gone.md" not in body, "a forgotten memo was linked as a page"
+    assert "match several files" in body and "match no file" not in body
+
+
+class _RecordingDB(DashboardDB):
+    statements: list[tuple[str, Any]]
+
+    @contextmanager
+    def connect(self):  # type: ignore[no-untyped-def,override]
+        recorded = self.statements
+
+        class _Cursor:
+            def fetchone(self) -> None:
+                return None
+
+            def fetchall(self) -> list[Any]:
+                return []
+
+        class _Connection:
+            def execute(self, sql: str, params: Any = None) -> _Cursor:
+                recorded.append((sql, params))
+                return _Cursor()
+
+        yield _Connection()
+
+
+def test_every_corpus_query_runs_under_the_tenant_setting() -> None:
+    """R1: a role under row-level security sees only its tenant's rows because the first statement
+    on every connection sets `recall.tenant_id`. Red proof, recorded 2026-10-27 on branch
+    claude/cca-pr910-descending: deleting the `set_config` call in `corpus._tenant` failed at "a
+    corpus query ran before the tenant was set". Restored, passes."""
+    for read in (lambda db: corpus.corpus_graph(db, "acme"), lambda db: corpus.source_detail(db, "acme", "a.md")):
+        db = _RecordingDB("postgresql://fake")
+        object.__setattr__(db, "statements", [])
+        read(db)
+        assert db.statements and db.statements[0] == ("select set_config(%s, %s, false)", (corpus.TENANT_GUC, "acme")), (
+            "a corpus query ran before the tenant was set"
+        )

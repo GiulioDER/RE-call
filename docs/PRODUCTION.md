@@ -124,6 +124,19 @@ Recent release detail is in [CHANGELOG.md](../CHANGELOG.md), and the full histor
 operator sequence are in [COMPATIBILITY.md](COMPATIBILITY.md). Only the changes that can make
 something currently working start failing are listed here.
 
+**→ Unreleased: an embedding library upgrade can refuse existing generations.** Serving and
+calibration compare a generation's recorded embedding profile and its fingerprint with the
+runtime embedder. The fingerprint includes the version of the client library the profile names
+(`voyageai`, `openai`, `fastembed` or `sentence-transformers`, plus `transformers` for
+`st-prompted:` models), for fastembed also the installed `onnxruntime` and `tokenizers` versions
+and its ONNX providers, and for a hosted profile its backend, base URL and output dimensions.
+Changing any of these on a serving host turns every generation that
+recorded a profile into `LINEAGE_MISMATCH`: refused in strict mode, served degraded and
+uncalibrated in development mode. Recalibrating does not clear it, because calibration applies
+the same check. Pin the library on serving hosts, or build and calibrate a new generation under
+the new version before switching traffic. Generations that recorded no profile are unaffected;
+legacy fastembed generations record a fallback profile and are covered.
+
 **→ 0.14.0 — reasoning and indexing behavior can change on an existing corpus.** Public reasoning
 graph expansion now defaults to bounded `auto` for nonempty queries. Select `graph_expansion=off`
 to retain the previous no-expansion behavior, or rebaseline answer ordering, latency, and

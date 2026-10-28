@@ -1,4 +1,4 @@
-"""What RE-call's server would run with, reported without a single secret value.
+"""What RE-call's server would run with, with credential values withheld by name and by shape.
 
 `python -m recall_mcp.config_report --json` prints every key of `ENVIRONMENT_SCHEMA` with its
 state (set, unset), its default, and its value where showing it is safe, plus the first problem
@@ -14,11 +14,15 @@ A value is withheld when:
 1. the schema flags its key as secret;
 2. the key's NAME ends like a credential (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ...), so a key
    someone forgot to flag is still withheld;
-3. and in every value that IS shown, a password inside a URL or a libpq keyword string is
-   replaced, because a "URL" setting can carry one.
+3. and in every value that IS shown, the credential shapes below are replaced: URL userinfo
+   (`user:password@`, or a bare token before `@`), query parameters named like a credential
+   (`?key=`, `?access_token=`, `X-Amz-Signature=`, ...), libpq keyword passwords (quoted or not)
+   and `Bearer` or `Basic` authorization values.
 
-Only the schema's keys are reported, plus the NAMES of other `RECALL_*` variables that are set
-(never their values), so a typo such as `RECALL_TRUST_MOD` is visible.
+A credential in any other shape, inside a setting whose name and flag do not mark it, IS shown:
+the rules are a list, not a proof. Only the schema's keys are reported, plus the NAMES of other
+`RECALL_*` variables that are set (never their values), so a typo such as `RECALL_TRUST_MOD` is
+visible.
 """
 
 from __future__ import annotations
@@ -38,13 +42,59 @@ __all__ = ["REPORT_VERSION", "build_report", "main", "redact_argv", "redact_valu
 REPORT_VERSION = 1
 WITHHELD = "(set, withheld)"
 
-#: Names that end like a credential. Anchored at the end so `RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS`
-#: or `RECALL_RATE_LIMIT_KEY_PREFIX` stay visible, while `RECALL_REASONING_API_KEY` does not.
-_CREDENTIAL_NAME = re.compile(r"(?:_|^)(?:API_KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?|ACCESS_KEY_ID)$", re.I)
-#: `scheme://user:password@host` and `scheme://:password@host`.
-_URL_PASSWORD = re.compile(r"(?P<head>[a-z][a-z0-9+.-]*://[^/@\s:]*:)(?P<pw>[^/@\s]+)(?P<at>@)", re.I)
-#: libpq keyword form, `host=x password=y`, and query parameters such as `?password=y`.
-_KEYWORD_PASSWORD = re.compile(r"(?P<head>(?:^|[\s?&;])(?:password|passwd|sslpassword|api_key|apikey|token|secret)=)(?P<pw>[^\s&;]+)", re.I)
+#: Names that end like a credential, with or without a separator before the word, so `PGPASSWORD`,
+#: `MYSQL_PWD` and `X_APIKEY` are caught as well as `RECALL_REASONING_API_KEY`. Anchored at the end
+#: so `RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS`, `RECALL_RATE_LIMIT_KEY_PREFIX` and the token-count
+#: settings (`..._MAX_TOKENS`) stay visible. A `_DSN` carries a host and often a password.
+_CREDENTIAL_NAME = re.compile(
+    r"(?:API_?KEY|KEYS?|TOKEN|SECRETS?|PASSWORD|PASSWD|PASS|PWD|PAT|CREDENTIALS?|ACCESS_KEY_ID|_DSN)$", re.I
+)
+#: Named like a credential and not one: a boolean switch.
+_NOT_A_CREDENTIAL = frozenset({"RECALL_ALLOW_INSECURE_DSN"})
+#: A flag that names a credential: `--key`, `--api-key`, `--auth-token`, `--access-token`,
+#: `--bearer`, `--db-password`. The credential word is whole, so `--no-auth`, `--sort-key`,
+#: `--bypass` and `--pass-through` stay ordinary flags and keep the argument after them visible.
+_FLAG_WORD = (
+    r"(?:key|(?:[\w-]*[-_])?(?:api[-_]?key|access[-_]?key|secret[-_]?key|private[-_]?key|token|secret"
+    r"|password|passwd|pass|pwd|bearer))"
+)
+#: Everything between `scheme://` and the `@` before the host: `token@`, or `user:password@` where
+#: the PASSWORD may hold an unencoded `@`, `?` or `#` (the last `@` before the path ends it). A `?`
+#: or `#` counts as userinfo only after the `:`, so in `https://host?x=a@b` or
+#: `postgresql://dbhost?user=bob@corp.com` the `@` belongs to the query and the host stays shown.
+#: With a port (`dbhost:5432?user=bob@corp.com`, `host:443#me@x`) the `:` cannot be told from a
+#: password's, so the
+#: host, port and query are withheld up to that `@`: over-redaction, chosen over showing a password
+#: that starts with digits and holds a `?`.
+_URL_USERINFO = re.compile(
+    r"(?P<head>[a-z][a-z0-9+.-]*://)(?P<userinfo>[^\s/?#:]*:[^\s/]*|[^\s/?#]*)@", re.I
+)
+#: A query parameter whose NAME ends in a whole credential word: `?key=`, `?apiKey=`,
+#: `?access_token=`, `&sig=`, `X-Amz-Signature=`, `X-Amz-Credential=`, `?password=`, libpq's
+#: `?sslpassword=`. The value runs to the next `&`, `;` or whitespace, through any `#` or `@` in it.
+#: `?author=`,
+#: `&design=` and `&keyword=` stay readable.
+_QUERY_CREDENTIAL = re.compile(
+    r"(?P<head>[?&;](?:[\w.-]*[_.-])?(?:api_?key|key|token|secret|(?:ssl)?passw(?:or)?d|pwd|sig|signature|auth"
+    r"|credentials?)=)(?P<value>[^&\s;]+)",
+    re.I,
+)
+#: libpq keyword form, `host=x password=y` or `password = 'a b'`, as `recall.store` parses it.
+_KEYWORD_PASSWORD = re.compile(
+    r"(?P<head>(?:^|\s)(?:password|passwd|sslpassword|api_key|apikey|token|secret)\s*=\s*)"
+    r"(?P<pw>'(?:[^'\\]|\\.)*'|[^\s&;]+)",
+    re.I,
+)
+#: An HTTP authorization value: `Authorization: Bearer x`, `Basic x`.
+#: The value is never the scheme word itself, so in `Bearer Bearer x` it is `x`. Matched inside a
+#: lookahead so overlapping matches are all found: in `Basic sig=Bearer x` one value runs over the
+#: next `Bearer`, and its own value `x` must still be withheld.
+_AUTHORIZATION = re.compile(
+    r"(?=(?P<head>\b(?:Bearer|Basic)\s+)(?P<value>(?!(?:Bearer|Basic)\b)[A-Za-z0-9._~+/=-]+))", re.I
+)
+
+#: Enough for any nesting a configuration value holds; each pass only withholds more.
+_REDACTION_PASSES = 4
 
 _SCHEMA = {spec.name: spec for spec in ENVIRONMENT_SCHEMA}
 
@@ -52,30 +102,69 @@ _SCHEMA = {spec.name: spec for spec in ENVIRONMENT_SCHEMA}
 def withheld(name: str) -> bool:
     """Whether `name`'s value is never shown: flagged secret, or named like a credential."""
     spec = _SCHEMA.get(name)
-    return bool(spec and spec.secret) or bool(_CREDENTIAL_NAME.search(name))
+    if spec and spec.secret:
+        return True
+    return name not in _NOT_A_CREDENTIAL and bool(_CREDENTIAL_NAME.search(name))
+
+
+def _withhold_spans(value: str) -> str:
+    """One pass: every rule matched on `value` as given, overlapping spans withheld together."""
+    spans = sorted(
+        [m.span("userinfo") for m in _URL_USERINFO.finditer(value)]
+        + [m.span("value") for m in _QUERY_CREDENTIAL.finditer(value)]
+        + [m.span("pw") for m in _KEYWORD_PASSWORD.finditer(value)]
+        + [m.span("value") for m in _AUTHORIZATION.finditer(value)]
+    )
+    merged: list[list[int]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    pieces: list[str] = []
+    at = 0
+    for start, end in merged:
+        pieces += [value[at:start], "***"]
+        at = end
+    return "".join(pieces) + value[at:]
 
 
 def redact_value(value: str) -> str:
-    """`value` with any password inside a URL or a keyword string replaced by `***`."""
-    value = _URL_PASSWORD.sub(lambda m: f"{m.group('head')}***{m.group('at')}", value)
-    return _KEYWORD_PASSWORD.sub(lambda m: f"{m.group('head')}***", value)
+    """`value` with URL userinfo, credential query parameters, libpq keyword passwords and
+    authorization values replaced by `***`.
+
+    Every rule is matched on the value as given, and the spans are withheld together where they
+    overlap. Applied one after another, each rule's `***` hides a match another rule needed: a query
+    value can hold an `@` (`?token=a@b`), a password can hold a query (`u:p&token=x@db`), and an
+    authorization value can run into a following `token=` or URL. Where spans overlap, what lies
+    between them is withheld too (`postgresql://***` for `u:p&token=x@db/recall`). The pass repeats
+    until nothing changes, because a value nested in another (a URL inside a query value) only
+    becomes a match once the outer one is withheld; each pass only withholds more.
+    """
+    for _ in range(_REDACTION_PASSES):
+        redacted = _withhold_spans(value)
+        if redacted == value:
+            break
+        value = redacted
+    return value
 
 
 #: `NAME=value` inside an argument, as an ssh command string or `env NAME=value` carries it.
 _ASSIGNMENT = re.compile(r"(?P<name>\b[A-Za-z_][A-Za-z0-9_]*)=(?P<value>'[^']*'|\"[^\"]*\"|[^\s;&|]+)")
-#: A flag whose NEXT argument is a credential.
-_CREDENTIAL_FLAG = re.compile(r"^--?(?:api[-_]?key|token|secret|password|passwd|key)$", re.I)
+#: A flag whose NEXT argument is a credential: `--api-key`, `--auth-token`, `--access-token`, ...
+_CREDENTIAL_FLAG = re.compile(rf"^--?{_FLAG_WORD}$", re.I)
 #: The same flag with its value inside one argument: `--api-key=x`, or `--api-key x` in an ssh
 #: command string.
-_INLINE_FLAG = re.compile(r"(?P<flag>(?:^|\s)--?(?:api[-_]?key|token|secret|password|passwd)(?:=|\s+))(?P<value>[^\s;&|]+)", re.I)
+_INLINE_FLAG = re.compile(rf"(?P<flag>(?:^|\s)--?{_FLAG_WORD}(?:=|\s+))(?P<value>'[^']*'|\"[^\"]*\"|[^\s;&|]+)", re.I)
 
 
 def redact_argv(argv: list[str]) -> list[str]:
-    """A server's launch command with every credential in it replaced by `***`.
+    """A server's launch command with the credentials it recognises replaced by `***`.
 
-    Covers the three shapes a command carries one in: `NAME=value` with a withheld NAME (also
-    inside a single ssh command string), the argument after a flag such as `--api-key`, and a
-    password inside a URL or keyword string.
+    The shapes: `NAME=value` with a withheld NAME (also inside a single ssh command string), the
+    argument after a credential flag such as `--api-key` or `--auth-token`, and every shape
+    `redact_value` replaces (URL userinfo, credential query parameters, keyword passwords,
+    `Bearer` values).
     """
     out: list[str] = []
     hide_next = False
@@ -149,15 +238,18 @@ def _text(report: Mapping[str, Any]) -> str:
             lines.append(f"\n[{section}]")
         lines.append(f"  {entry['name']} = {entry['value']}")
     if report["unknown_recall_variables"]:
-        lines.append("\nset but not in the schema (a typo?): " + ", ".join(report["unknown_recall_variables"]))
-    lines.append("\n" + (f"the server would refuse to start: {report['problem']}" if report["problem"] else "valid: the server's startup checks pass"))
+        lines.append(
+            "\nset but not in the MCP server's settings schema (a typo, or a variable another part of "
+            "RE-call reads): " + ", ".join(report["unknown_recall_variables"])
+        )
+    lines.append("\n" + (f"the server would refuse to start: {report['problem']}" if report["problem"] else "valid: the server's settings validation passes"))
     return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m recall_mcp.config_report",
-        description="Report RE-call's configuration with every secret value withheld.",
+        description="Report RE-call's configuration, with credential values withheld by name and by shape.",
     )
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     parser.add_argument(

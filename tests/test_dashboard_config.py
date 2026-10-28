@@ -13,6 +13,19 @@ Invariants and the failure each one catches:
 - F4 a remote report that cannot be produced is a card on the page, not an error page; a host
   that looks like an ssh option is refused before ssh runs.
 - F5 report text is escaped on the page.
+- F6 (CCA on #903) a shown value loses every credential shape the report recognises: token or
+  user:password userinfo (an `@` inside the password included), credential query parameters,
+  quoted and spaced libpq keyword passwords, `Bearer` values; ordinary URLs stay readable.
+- F7 a launch command loses `PGPASSWORD=`, `MYSQL_PWD=`, `X_APIKEY=`, the value after
+  `--auth-token` or `--access-token`, `--key=`, and an `Authorization: Bearer` header, while
+  `--top-k 5` and non-secret settings stay readable.
+- F8 the name rule is anchored: token-count, lifetime and key-prefix settings stay visible; every
+  schema key shaped like a DSN, API key, token, secret, password or Redis URL is flagged secret.
+- F9 a failed report shows a fixed cause from its exit code, never the child's stderr; an empty
+  or spaced host is refused before ssh runs.
+- F10 a server launched through ssh or a shell is marked not checked, not valid; unknown
+  `RECALL_*` names are not called unread; `?all=1` shows defaults.
+Red proofs for F6 to F10 are in each test's docstring.
 
 The placeholder `CHANGEME-SENTINEL` stands in for every secret: a test fails if it appears.
 
@@ -36,6 +49,7 @@ restored byte for byte and green:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -70,7 +84,8 @@ def test_the_report_withholds_secrets_and_scrubs_urls() -> None:
         assert entry["withheld"] and entry["state"] == "set" and PLACEHOLDER not in str(entry["value"]), (
             f"{name}'s value reached the report"
         )
-    assert _entry(report, "RECALL_AUTH_ISSUER_URL")["value"] == "https://user:***@issuer.example", "a URL setting kept its password"
+    # The whole userinfo goes, user name included (CCA on #903, SEC-001).
+    assert _entry(report, "RECALL_AUTH_ISSUER_URL")["value"] == "https://***@issuer.example", "a URL setting kept its password"
     assert _entry(report, "RECALL_ALLOW_INSECURE_DSN")["value"] == "1", "a security flag was hidden"
     assert report["unknown_recall_variables"] == ["RECALL_TRUST_MOD"]
     assert report["problem"] and "RECALL_TABLE" in report["problem"]
@@ -153,3 +168,200 @@ def test_report_text_is_escaped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     body = DashboardApp(tmp_path, port=8765, token="tok", project_root=tmp_path).handle("GET", "/config", SIGNED).body.decode()
     assert "<script>alert(1)</script>" not in body, "report text reached the page unescaped"
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+
+# ------------------------------------------------------------------ CCA on #903
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"https://{PLACEHOLDER}@gateway.example/v1",
+        f"https://h.example/translate?key={PLACEHOLDER}&lang=it",
+        f"https://h.example/x?access_token={PLACEHOLDER}",
+        f"https://b.example/o?X-Amz-Date=1&X-Amz-Signature={PLACEHOLDER}",
+        f"postgresql://u:pa@{PLACEHOLDER}@db/recall",
+        f"host=db password='a {PLACEHOLDER}' port=5432",
+        f"host=db password = {PLACEHOLDER}",
+        f"Authorization: Bearer {PLACEHOLDER}",
+        f"postgresql://h/db?sslmode=require&sslpassword={PLACEHOLDER}",
+        f"host=a;sslpassword={PLACEHOLDER}",
+        f"postgresql://u:pa#{PLACEHOLDER}@db/recall",
+        f"postgresql://u:pa?{PLACEHOLDER}@db/recall",
+        f"https://h.example/x?token=ab#{PLACEHOLDER}",
+        f"https://u:p@h.example?token=ab@{PLACEHOLDER}",
+        f"https://h.example/x?token=a#Bearer {PLACEHOLDER}",
+        f"Authorization: Bearer token=?{PLACEHOLDER}",
+        f"Bearer https://u:{PLACEHOLDER}@h.example/x",
+        f"Basic password= {PLACEHOLDER}",
+        f"Bearer Bearer {PLACEHOLDER}",
+        f"?token=https://=;@{PLACEHOLDER}",
+        f"h&key=Basic sig=Bearer {PLACEHOLDER}",
+    ],
+)
+def test_a_shown_value_loses_every_credential_shape(value: str) -> None:
+    """F6. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: restoring the
+    #903 `redact_value` (a `user:password@` rule and an unquoted keyword rule only) failed the first
+    eight parameters at "a credential survived in a shown value" (#903 itself redacts the
+    `sslpassword` and the `#`/`?` ones). Restored, passes. The readability side
+    (`test_ordinary_urls_stay_readable`) failed on `?author=` with a query rule that matched a
+    credential word anywhere in the parameter name. The `sslpassword` parameters (found in review)
+    failed at "a credential survived in a shown value" without `(?:ssl)?` in the query rule. The
+    `#` and `?` parameters (found by the security review of the committed fix) failed the same way
+    with `?#` excluded from the userinfo and `#` ending a query value; #903 itself redacted them.
+    `https://u:p@...?token=ab@...` (found by the audit of that fix) failed with the userinfo rule
+    run before the query rule; the readable `?x=a@b` URLs failed with a userinfo rule that let `?`
+    in before a `:`. `?token=a#Bearer ...` (found in review) failed with the authorization rule
+    applied only after the span step, and the four `Bearer`/`Basic` parameters after it failed with
+    the rules applied one after another instead of as one set of spans. `?token=https://=;@...`
+    failed with a single pass of the span step, and `Basic sig=Bearer ...` with authorization
+    matches that could not overlap."""
+    from recall_mcp.config_report import redact_value
+
+    assert PLACEHOLDER not in redact_value(value), "a credential survived in a shown value"
+    shown = build_report({"RECALL_REASONING_BASE_URL": value}, source="given")
+    assert PLACEHOLDER not in json.dumps(shown), "a credential survived in a shown value"
+
+
+def test_ordinary_urls_stay_readable() -> None:
+    """F6, the other side: nothing is replaced in a URL that carries no credential."""
+    from recall_mcp.config_report import redact_value
+
+    for plain in ("https://api.openai.com/v1", "https://h.example/x?lang=it&top=5", "https://host/path/@user",
+                  "https://h.example/x?author=me&design=a&keyword=k", "https://host.example?x=a@b",
+                  "postgresql://dbhost?user=bob@corp.example", "https://host.example#me@x"):
+        assert redact_value(plain) == plain
+
+
+def test_a_launch_command_loses_compound_credential_names_and_flags() -> None:
+    """F7. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: restoring the
+    #903 `_CREDENTIAL_NAME` (a separator required before the word) failed at "PGPASSWORD's value
+    survived"; restoring the #903 flag lists failed at "--auth-token kept its value". Restored,
+    passes. Bounding the flag word only after review: the suffix-unbounded rule failed at "an
+    ordinary flag hid the argument after it" (`--no-auth --port 1` lost `--port`), and a rule
+    without `bearer` failed at "a credential survived in the launch command"."""
+    argv = [
+        "env", f"PGPASSWORD={PLACEHOLDER}1", f"MYSQL_PWD={PLACEHOLDER}2", f"X_APIKEY={PLACEHOLDER}3",
+        "RECALL_TRUST_MODE=strict", "srv", "--auth-token", f"{PLACEHOLDER}4", "--top-k", "5",
+        "ssh", "h", f"srv --access-token {PLACEHOLDER}5 --key={PLACEHOLDER}6 --log-level info",
+        "-H", f"Authorization: Bearer {PLACEHOLDER}7", "--bearer", f"{PLACEHOLDER}8",
+        "--no-auth", "--port", "1", "--sort-key", "date",
+    ]
+    joined = " ".join(redact_argv(argv))
+    assert f"{PLACEHOLDER}1" not in joined, "PGPASSWORD's value survived"
+    assert f"{PLACEHOLDER}4" not in joined, "--auth-token kept its value"
+    assert PLACEHOLDER not in joined, "a credential survived in the launch command"
+    assert "RECALL_TRUST_MODE=strict" in joined and "--top-k 5" in joined and "--log-level info" in joined
+    assert "--no-auth --port 1" in joined and "--sort-key date" in joined, "an ordinary flag hid the argument after it"
+
+
+def test_the_name_rule_is_anchored_and_the_schema_flags_credentials() -> None:
+    """F8. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: dropping the `$`
+    anchor of `_CREDENTIAL_NAME` failed at "a non-secret setting was withheld"; setting
+    `secret=False` on RECALL_MIGRATION_DSN failed at "a credential-shaped schema key is not
+    flagged secret". Restored, passes."""
+    import re
+
+    from recall_mcp.config_report import withheld
+    from recall_mcp.settings import ENVIRONMENT_SCHEMA
+
+    for name in ("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS", "RECALL_RATE_LIMIT_KEY_PREFIX",
+                 "RECALL_REASONING_ANSWER_MAX_TOKENS", "RECALL_ALLOW_INSECURE_DSN"):
+        assert not withheld(name), f"a non-secret setting was withheld: {name}"
+    assert withheld("RECALL_RESTORE_VALIDATION_DSN"), "a DSN outside the schema was shown"
+    shaped = re.compile(r"_(?:DSN|API_KEY|TOKEN|SECRET|PASSWORD)$|REDIS_URL$")
+    unflagged = [s.name for s in ENVIRONMENT_SCHEMA
+                 if shaped.search(s.name) and s.name != "RECALL_ALLOW_INSECURE_DSN" and not s.secret]
+    assert not unflagged, f"a credential-shaped schema key is not flagged secret: {unflagged}"
+
+
+def test_a_failed_report_shows_a_cause_never_its_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """F9. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: restoring the
+    #903 message (the last stderr line) failed at "the child's stderr reached the message".
+    Restored, passes."""
+    import subprocess
+
+    def failing(argv, **_kw):  # type: ignore[no-untyped-def]
+        return subprocess.CompletedProcess(argv, 255, "", f"./.env: line 3: {PLACEHOLDER}: command not found\n")
+
+    monkeypatch.setattr(config.subprocess, "run", failing)
+    with pytest.raises(config.ConfigUnavailable) as caught:
+        config.remote_report("corpus-host")
+    assert PLACEHOLDER not in str(caught.value), "the child's stderr reached the message"
+    assert "ssh could not connect" in str(caught.value)
+    for host in ("", "two words"):
+        with pytest.raises(config.ConfigUnavailable, match="is not a host name"):
+            config.remote_report(host)
+
+
+def test_a_server_launched_through_ssh_is_not_called_valid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F10. Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: `launcher_of`
+    returning None failed at "an ssh-launched server was called valid"; the #903 wording failed at
+    "unknown names were called unread". Restored, passes."""
+    entry = {"command": "bash", "args": ["-lc", "ssh host '. ~/.env && exec python -m recall_mcp.server'"]}
+    server = config.RegisteredServer("recall-memory", "project", entry)
+    monkeypatch.setattr(config, "registered_servers", lambda root: [server])
+    monkeypatch.setattr(config, "local_report", lambda: build_report({"RECALL_DASHBOARD_CONFIG_HOST": "h"}, source="given"))
+    monkeypatch.setattr(config, "_run", lambda argv, stdin=None: build_report({}, source="given", argv=[]))
+    body = DashboardApp(tmp_path, port=8765, token="tok", project_root=tmp_path).handle("GET", "/config", SIGNED).body.decode()
+    card = body.split("MCP server recall-memory", 1)[1]
+    assert "Not checked" in card and "Valid" not in card.split("</div>", 1)[0], "an ssh-launched server was called valid"
+    assert "nothing reads them" not in body, "unknown names were called unread"
+    everything = DashboardApp(tmp_path, port=8765, token="tok", project_root=tmp_path).handle("GET", "/config?all=1", SIGNED)
+    assert "default" in everything.body.decode()
+    assert config.launcher_of(["bash", "-lc", "ssh host 'exec python -m recall_mcp.server'"]) == "ssh"
+    assert config.launcher_of(["python", "-m", "recall_mcp.server"]) is None
+
+
+#: #903's own redaction rules, as merged at 8c11a14ae, kept here as the reference: no later change
+#: may show a value these two hid.
+_REFERENCE_URL_PASSWORD = re.compile(r"(?P<head>[a-z][a-z0-9+.-]*://[^/@\s:]*:)(?P<pw>[^/@\s]+)(?P<at>@)", re.I)
+_REFERENCE_KEYWORD_PASSWORD = re.compile(
+    r"(?P<head>(?:^|[\s?&;])(?:password|passwd|sslpassword|api_key|apikey|token|secret)=)(?P<pw>[^\s&;]+)", re.I
+)
+
+
+def _reference_redact(value: str) -> str:
+    value = _REFERENCE_URL_PASSWORD.sub(lambda m: f"{m.group('head')}***{m.group('at')}", value)
+    return _REFERENCE_KEYWORD_PASSWORD.sub(lambda m: f"{m.group('head')}***", value)
+
+
+def _reference_shapes() -> list[str]:
+    """Values built from every shape the reference rules cover, with awkward characters around
+    the secret: the URL password rule's three forms, and each keyword in each position."""
+    chars = ["", "@", "?", "#", ":", "&", ";", "=", "%", "!", "&token=y", ";key=y", "?sig=y"]
+    out = []
+    for before in chars:
+        for after in chars:
+            secret = f"p{before}{PLACEHOLDER}{after}q"
+            out += [f"postgresql://u:{secret}@db/recall", f"postgresql://u:{secret}@db", f"redis://:{secret}@h:6379/0"]
+    for word in ("password", "passwd", "sslpassword", "api_key", "apikey", "token", "secret", "PASSWORD", "Token"):
+        for sep in ("", "?", "&", ";", " "):
+            for c in ("", "#", "?", "@", "=", ":", "'", '"', "%"):
+                out += [
+                    f"x{sep}{word}=v{c}{PLACEHOLDER}", f"{word}=v{c}{PLACEHOLDER}",
+                    f"https://h/x?a=1{sep if sep in '&;' else '&'}{word}=v{c}{PLACEHOLDER}",
+                    f"host=db {word}=v{c}{PLACEHOLDER} port=1",
+                ]
+    return out
+
+
+def test_every_shape_903_redacted_is_still_redacted() -> None:
+    r"""F11: parity with #903's own rules. Every generated value they hid is still hidden.
+
+    Failure mode caught: a later narrowing of a regex (the committed fix after #903 excluded `?#`
+    from the URL password and ended a query value at `#`) shows credentials #903 withheld, with
+    every hand-picked test still green.
+
+    Red proof, recorded 2026-10-27 on branch claude/cca-pr910-descending: restoring a5399dc96's
+    `_URL_USERINFO` (`[^\s/?#]*`), and separately its `_QUERY_CREDENTIAL` value (`[^&\s#;]+`), each
+    failed at "a shape #903 redacted is shown again" (141 and 63 shapes); applying the two rules one
+    after the other, query first, failed on passwords holding `&token=`, `;key=` or `?sig=`.
+    Restored, passes.
+    """
+    from recall_mcp.config_report import redact_value
+
+    shapes = _reference_shapes()
+    assert len(shapes) > 1500
+    leaked = [v for v in shapes if PLACEHOLDER not in _reference_redact(v) and PLACEHOLDER in redact_value(v)]
+    assert not leaked, f"a shape #903 redacted is shown again ({len(leaked)}): {leaked[:5]}"

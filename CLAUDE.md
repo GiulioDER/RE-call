@@ -124,9 +124,11 @@ when `find_spec("voyageai")` is None, even though it never imports the SDK. A sp
 - Lint is `python -m ruff check .`. **Never run `ruff format`**: most files do not conform to it
   and CI only ever runs `ruff check`.
 - Types are a CI gate too, and ruff does not check them: `python -m mypy` (or `make typecheck`).
-- `docs/ARCHITECTURE_MAP_GENERATED.md` carries a fingerprint of the package source bytes, and CI
-  refuses a stale one. Regenerate it with `python tools/architecture_map.py` from a checkout with
-  LF line endings; a CRLF checkout computes a value CI never reproduces.
+- `docs/ARCHITECTURE_MAP_GENERATED.md` records the import graph only (module counts, cross package
+  edges, fan in and fan out), and CI refuses a stale one. Only a change to the graph (an import, a
+  module added, moved or removed) needs `python tools/architecture_map.py`; an edit that changes no
+  import does not. Until 2026-10-28 it also carried a hash of the source bytes, which made every
+  code PR regenerate it and every two open code PRs conflict on it.
 
 ## Git
 

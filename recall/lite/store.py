@@ -51,6 +51,7 @@ from recall import eval_clock
 from recall.errors import RecallError
 from recall.observability import get_logger
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope, group_expression
+from recall.state_dir import make_parent
 from recall.supersession import (
     EdgeCandidates,
     SupersessionGraph,
@@ -365,7 +366,7 @@ class LiteStore:
         self._tenant = tenant
         self._table = table
         self._lock = threading.RLock()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        make_parent(self.path)
         self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30.0)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")

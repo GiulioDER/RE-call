@@ -166,6 +166,26 @@ def _evidence_links(
     return tuple(dict.fromkeys(values))
 
 
+def _structured_facts(raw: object) -> tuple[AtomicFact, ...]:
+    """The well-formed facts a memo states, skipping any that do not parse.
+
+    Authored `recall_graph` metadata is stored as written, so a fact without a subject, a bad
+    date or a `facts` that is not a list reaches this projection. Skipped as
+    `recall.reasoning_graph._structured_facts` skips them: one malformed fact must not fail the
+    search or evidence call that returns its chunk.
+    """
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        return ()
+    facts: list[AtomicFact] = []
+    for item in raw:
+        if isinstance(item, Mapping):
+            try:
+                facts.append(AtomicFact.from_payload(item))
+            except (TypeError, ValueError, KeyError):
+                continue
+    return tuple(facts)
+
+
 def cards_from_trusted_result(result: TrustedResult) -> tuple[EvidenceCard, ...]:
     """Project trusted hits into compact cards without adding a retrieval dependency."""
     cards: list[EvidenceCard] = []
@@ -178,10 +198,7 @@ def cards_from_trusted_result(result: TrustedResult) -> tuple[EvidenceCard, ...]
         graph = metadata.get("recall_graph", {})
         if not isinstance(graph, Mapping):
             graph = {}
-        raw_facts = graph.get("facts", metadata.get("facts", []))
-        facts = tuple(
-            AtomicFact.from_payload(item) for item in raw_facts if isinstance(item, Mapping)
-        )
+        facts = _structured_facts(graph.get("facts", metadata.get("facts", ())))
 
         raw_digest = metadata.get("content_hash") or metadata.get("source_digest")
         digest = (

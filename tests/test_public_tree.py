@@ -195,6 +195,33 @@ def test_a_tracked_local_rules_file_is_refused(tmp_path: Path) -> None:
     assert [rule for _, _, rule, _ in found] == ["local-rules-file"]
 
 
+def test_a_tracked_recall_state_file_is_refused_though_it_is_not_text(tmp_path: Path) -> None:
+    """A force-added ``.recall/`` store is SQLite, so the text rules alone list it as not checked
+    and the gate passes with the memo text and vectors in a public tree.
+
+    Red proof (2026-10-27): ``tests/test_public_tree.py::test_a_tracked_recall_state_file_is_refused_though_it_is_not_text``
+    with the ``STATE_DIR`` test in ``scan`` removed fails on the ``== sorted(state)`` assertion,
+    every state file coming back only as skipped."""
+    state = [
+        ".recall/memory.db",
+        ".recall/memory.db-wal",
+        ".recall/memory.db-shm",
+        ".recall/reports.sqlite3",
+        "notes/.recall/edits.sqlite3",
+    ]
+    public = ["recall/lite/store.py", ".recallignore"]
+    for path in state:
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_bytes(b"SQLite format 3\x00\xff\xfe\x81")
+    for path in public:
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("plain\n", encoding="utf-8")
+    found, _, _, skipped = check.scan(state + public, set(), tmp_path)
+    assert sorted(path for path, _, rule, _ in found if rule == "recall-state") == sorted(state)
+    assert [rule for _, _, rule, _ in found if rule != "recall-state"] == []
+    assert sorted(skipped) == sorted(state)
+
+
 def test_the_ratchet_grandfathers_up_to_the_recorded_count_and_no_further() -> None:
     """Red proof, one mutation each, restored after:
     - ``n > baseline...`` changed to ``n >= baseline...``: the at-count case fails on ``== []``.

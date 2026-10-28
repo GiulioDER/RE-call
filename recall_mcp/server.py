@@ -2584,7 +2584,11 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     cache = state["shadow_embedders"]
                     shadow_embedder = cache.get(profile_id)
                     if shadow_embedder is None:
-                        shadow_embedder = make_profile_embedder(profile_id, shadow=True)
+                        # The settings snapshot, not os.environ: bootstrap_settings resolves
+                        # Secrets Manager keys into it only, as for the main embedder.
+                        shadow_embedder = make_profile_embedder(
+                            profile_id, shadow=True, env=dict(_runtime_env_for(state))
+                        )
                         if shadow_embedder.dim != route.shadow.dimension:
                             raise IndexPreflightError(
                                 "shadow embedder dimension does not match generation"
