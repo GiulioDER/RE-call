@@ -283,8 +283,11 @@ Reasoning response decoding preserves these diagnostics and accepts older payloa
 same unchecked and unmeasured defaults. Retrieval expansion and proof repair retain identical
 coverage reports. When merged results disagree about coverage, the aggregate is unmeasured
 without a report; its calibration ID is retained only when all merged diagnostics name the same
-fit. Stored reports with inconsistent counts, rates, measurement states, or provisional warnings
-are unavailable diagnostics and do not change evidence admission.
+fit. Read from the store, a report with inconsistent counts, rates, measurement states or
+provisional warnings is an `unavailable` diagnostic and does not change evidence admission;
+decoding a reasoning response whose diagnostics are inconsistent (a report that disagrees with its
+status, or coverage naming another calibration than the response) raises
+`EvidenceValidationError`.
 
 Search and evidence responses add `query_support` and `calibration_coverage`. Existing
 `decision_state`, `decision`, `abstained`, verdicts, confidence and citation eligibility retain
@@ -298,13 +301,15 @@ No answerability verifier runs. It remains not checked on certified, degraded an
 
 `calibration_coverage` contains the selected `calibration_id`, a `status`, a `method` and a
 `report`. When available, `method` is `synthetic_corpus_probes` and `report` preserves the stored
-`unknown_entity` and `in_vocabulary` counts, rejection rates, per-class measurement states and
-`provisional_in_vocabulary` warning. These are synthetic diagnostics, not audited labels or
+`calibration_id`, the `unknown_entity` and `in_vocabulary` counts, rejection rates, per-class
+measurement states, the `provisional_in_vocabulary` warning and `unknown_term_gate` (`checked`,
+`unavailable`, `disabled` or `not_run`). These are synthetic diagnostics, not audited labels or
 per-query semantic support. `measured` means both probe classes were measured, not that the gate
 passed them: a measured report can still be provisional.
 
 Missing measurements, a backend without this optional reader, or a report for another calibration
-produce `unmeasured` and a null report. Reader failures produce `unavailable`. A carried calibration
+produce `unmeasured` and a null report. A stored report in which a class has fewer than 10 probes
+is `unmeasured` too, and still carries its report. Reader failures produce `unavailable`. A carried calibration
 does not inherit near-miss measurements from the parent fit. Coverage is read in the search's
 snapshot for the calibration actually selected, without refitting or changing admission.
 

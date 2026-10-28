@@ -100,15 +100,23 @@ class HistoricalSearchEvidence(BaseModel):
 
 
 class SearchResult(BaseModel):
-    query_support: QuerySupport = Field(default_factory=QuerySupport)
-    calibration_coverage: CalibrationCoverage = Field(default_factory=CalibrationCoverage)
+    query_support: QuerySupport = Field(
+        default_factory=QuerySupport,
+        description="Whether the returned evidence was checked to state the answer: always "
+        "not_checked in this release (retrieval eligibility does not establish answerability).",
+    )
+    calibration_coverage: CalibrationCoverage = Field(
+        default_factory=CalibrationCoverage,
+        description="Synthetic near-miss diagnostics of the calibration this search used: never a "
+        "certification of this query's answerability, and never a gate.",
+    )
 
     query: str
     decision_state: DecisionState | None = Field(
         default=None,
-        description="supported | corpus_gap | no_supporting_evidence. Retrieval eligibility only, not semantic answerability; "
-        "for the present state. Legacy payloads may omit it and yield null; do not infer "
-        "support from hit count.",
+        description="supported | corpus_gap | no_supporting_evidence, for the present state. "
+        "Retrieval eligibility only, not semantic answerability. Legacy payloads may omit it and "
+        "yield null; do not infer support from hit count.",
     )
     abstained: bool = Field(
         description="True when no present-state hit is eligible for citation. Historical candidates, "
@@ -290,8 +298,16 @@ class EvidenceResult(BaseModel):
     the search; this response is about what may be cited.
     """
 
-    query_support: QuerySupport = Field(default_factory=QuerySupport)
-    calibration_coverage: CalibrationCoverage = Field(default_factory=CalibrationCoverage)
+    query_support: QuerySupport = Field(
+        default_factory=QuerySupport,
+        description="Whether the returned evidence was checked to state the answer: always "
+        "not_checked in this release (retrieval eligibility does not establish answerability).",
+    )
+    calibration_coverage: CalibrationCoverage = Field(
+        default_factory=CalibrationCoverage,
+        description="Synthetic near-miss diagnostics of the calibration this search used: never a "
+        "certification of this query's answerability, and never a gate.",
+    )
 
     query: str
     decision_state: DecisionState | None = Field(
