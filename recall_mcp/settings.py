@@ -21,6 +21,7 @@ from recall.ops.secret_mapping import (  # noqa: F401  # re-exported
     SECRET_DESTINATIONS,
     secret_mapping_from_env,
 )
+from recall._env import parse_generation_dense_search
 from recall.paged_evidence import paged_evidence_mode
 from recall.federation import FederationConfig
 from recall.trust_policy import TrustPolicy
@@ -193,7 +194,12 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_HNSW_EF_SEARCH_MULTIPLIER", "Retrieval", "HNSW candidate widening"),
     EnvironmentSpec("RECALL_HNSW_EF_SEARCH_FILTERED", "Retrieval", "filtered HNSW search width"),
     EnvironmentSpec("RECALL_HNSW_ITERATIVE_SCAN_FILTERED", "Retrieval", "filtered HNSW iterative scan"),
-    EnvironmentSpec("RECALL_GENERATION_DENSE_SEARCH", "Retrieval", "generation dense search, exact or hnsw", "exact"),
+    EnvironmentSpec(
+        "RECALL_GENERATION_DENSE_SEARCH",
+        "Retrieval",
+        "generation dense search, exact or hnsw",
+        parse_generation_dense_search(None),
+    ),
     EnvironmentSpec("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "Retrieval", "opt in calibrated graph tail replacement"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_MODE", "Retrieval", "off or sampled shadow source conditioning", "off"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_ARTIFACT", "Retrieval", "versioned source conditioning model artifact"),
@@ -304,6 +310,9 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         )
     # The request path's own parser, so startup admits exactly what a request accepts.
     paged_evidence_mode(source.get("RECALL_PAGED_EVIDENCE"))
+    # Likewise for the generation store's dense path: a bad value used to pass startup and then
+    # fail every search, which federation's default `omit` records only as a failed leg.
+    parse_generation_dense_search(source.get("RECALL_GENERATION_DENSE_SEARCH"))
     atomic_mode = source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
     if atomic_mode not in {"off", "shadow", "active"}:
         raise ValueError("RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active")

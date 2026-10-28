@@ -4,9 +4,12 @@
     python scripts/check_hnsw_recall.py --tenants memory --queries 200
 
 For each tenant's ACTIVE generation in `recall_chunks_v1` this samples query vectors from the
-generation itself (deterministically, by seed), asks the production path
-`GenerationStore.query_dense` for the top k, and scores it against exact cosine search computed in
-numpy over the same generation's vectors. The query's own row is excluded from both lists.
+generation itself (deterministically, by seed), asks `GenerationStore.query_dense` for the top k on
+its HNSW path, and scores it against exact cosine search computed in numpy over the same
+generation's vectors. The query's own row is excluded from both lists. Generation-scoped search is
+exact by default since #847, so the measurement forces `RECALL_GENERATION_DENSE_SEARCH=hnsw`, the
+setting an operator would opt into, and records the path it measured: without that it would
+compare exact search with itself and report full recall for an index it never walked.
 
 Why it exists. The HNSW index is built over the whole table, every tenant and every retained
 generation, while a query asks for one tenant's active generation: a small slice, which is the case
@@ -36,9 +39,11 @@ import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
-from recall.generation_store import GenerationStore
+from recall.generation_store import GENERATION_DENSE_SEARCH_ENV, GenerationStore
 
 TIE_EPSILON = 1e-5
+#: The dense path every measurement runs on, forced for its duration (see the module docstring).
+MEASURED_PATH = "hnsw"
 # `recall_chunks_v1.embedding` is one fixed-width column for every tenant, whatever its embedder.
 DIMENSION = 1024
 
@@ -112,6 +117,20 @@ def measure_tenant(
 def _measure(
     store: GenerationStore, generation: str, ids: list[str], matrix: np.ndarray, args: argparse.Namespace
 ) -> dict[str, Any]:
+    previous = os.environ.get(GENERATION_DENSE_SEARCH_ENV)
+    os.environ[GENERATION_DENSE_SEARCH_ENV] = MEASURED_PATH
+    try:
+        return _measure_hnsw(store, generation, ids, matrix, args)
+    finally:
+        if previous is None:
+            os.environ.pop(GENERATION_DENSE_SEARCH_ENV, None)
+        else:
+            os.environ[GENERATION_DENSE_SEARCH_ENV] = previous
+
+
+def _measure_hnsw(
+    store: GenerationStore, generation: str, ids: list[str], matrix: np.ndarray, args: argparse.Namespace
+) -> dict[str, Any]:
     tenant = store._tenant  # noqa: SLF001
     position = {chunk_id: i for i, chunk_id in enumerate(ids)}
     ks = sorted(set(args.k))
@@ -146,6 +165,7 @@ def _measure(
     return {
         "tenant": tenant,
         "generation": generation,
+        "path": MEASURED_PATH,
         "rows": len(ids),
         "queries": len(hnsw_ms),
         "recall_mean": {str(k): round(statistics.fmean(v), 4) for k, v in recall.items()},

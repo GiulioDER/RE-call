@@ -87,7 +87,10 @@ Stated plainly, because the failure mode this library exists to prevent is confi
   0/30 in two measurements). Those two **disagree on recall** — 0.36–0.43 → 0.88–0.94 on the test
   fixture, **0.523 → 0.483** on a normally-built corpus — because `relaxed_order` fills to `k` with
   approximate matches. It trades truncation for approximation. The unfiltered path still runs at
-  the defaults, and the tenant-predicate combination has not been measured on a multi-tenant table.
+  the defaults. The tenant-and-generation filtered walk was measured on a copy of a production
+  multi-tenant table in #847 and lost true neighbours at every tuning tried, so generation-scoped
+  search (what production serves) is an exact scan by default; the walk is opt-in with
+  `RECALL_GENERATION_DENSE_SEARCH=hnsw`, measured first with `scripts/check_hnsw_recall.py`.
   Note the pathology is a **statistics race**, not graph shape: an unanalyzed table takes a
   `Seq Scan` and reports recall 1.0000 under any `ef_search`.
   → [#57](https://github.com/GiulioDER/RE-call/pull/57), [#98](https://github.com/GiulioDER/RE-call/pull/98)

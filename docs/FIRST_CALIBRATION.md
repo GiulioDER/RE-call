@@ -197,8 +197,11 @@ queried a `voyage-code-3` corpus with `bge-large`, both 1024 wide, and returned 
 0.02 to 0.10 that looked like a broken corpus rather than a misconfiguration. Verify with
 `vector_dims(embedding)` and the profile id together.
 
-**`query_dense(k=1)` can return nothing, or a wrong top score.** The HNSW index is built over the
-whole table while `tenant_id` is applied as a post-filter, so for a tenant that is a fraction of the
+**`query_dense(k=1)` can return nothing, or a wrong top score, on an HNSW walk.** This applies to
+the legacy table (`recall index`, and a development-mode server) and to a generation store run
+with `RECALL_GENERATION_DENSE_SEARCH=hnsw`; a generation store's default path, which the
+calibration above uses, is an exact scan and returns its true top k at any k. The HNSW index is
+built over the whole table while `tenant_id` is applied as a post-filter, so for a tenant that is a fraction of the
 table the graph walk can return other tenants' candidates and filter them all away. Measured on one
 tenant with a single query, same vector each time:
 
@@ -208,8 +211,8 @@ k= 20 ->   1 hit,  top=0.5277   <- WRONG, and silently so
 k=100 -> 100 hits, top=0.5743   <- the true nearest neighbour
 ```
 
-It varies per tenant and per query, so check rather than assume. Retrieve at `k>=200` when you need
-a true top-1.
+It varies per tenant and per query, so check rather than assume. On those paths, retrieve at
+`k>=200` when you need a true top-1.
 
 ## Hosted models cannot be verified
 

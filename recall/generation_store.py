@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import psycopg
 from pgvector import Vector
 
+from recall._env import parse_generation_dense_search
 from recall.generation_types import NoActiveGeneration
 from recall.semantic_graph import (
     GraphReadiness,
@@ -52,15 +53,24 @@ if TYPE_CHECKING:
 #:
 #: Exact by default because, measured 2026-10-01 on a copy of the production table (753k rows, many
 #: tenants and retained generations), the filtered HNSW walk returned 0.875 of the true top 20 for
-#: the memory tenant at the production tuning, 0.918 at the maximum `ef_search` of 1,000, and 0.954
-#: for the code tenant at every setting tried, while the exact scan took 50 to 276 ms per query.
+#: the memory tenant at the production tuning and at most 0.918 at the maximum `ef_search` of
+#: 1,000, and 0.954 for the code tenant at the production tuning and at most 0.955 at any setting
+#: tried, while the exact scan's p50 was 50 to 276 ms across tenants.
 #: Before this, production served the exact plan anyway, but only by accident: a pooled
 #: connection's prepared statement falls back to a cached generic plan, which is exact, and a
 #: planner statistic that made the generic plan dearer would have switched the leg to HNSW
 #: silently. Set `hnsw` only for a tenant large enough that the exact scan is too slow, and measure
 #: its recall first (`scripts/check_hnsw_recall.py`).
 GENERATION_DENSE_SEARCH_ENV = "RECALL_GENERATION_DENSE_SEARCH"
-_GENERATION_DENSE_SEARCH_VALUES = frozenset({"exact", "hnsw"})
+
+
+def _generation_dense_search() -> str:
+    """The configured path, read fresh on every call, as the HNSW knobs are.
+
+    Parsed by `recall._env.parse_generation_dense_search`, which MCP startup also runs, so a
+    server refuses a bad value at boot instead of failing every search after it.
+    """
+    return parse_generation_dense_search(os.environ.get(GENERATION_DENSE_SEARCH_ENV))
 
 
 def _first_write_sql(alias: str = "") -> str:
@@ -72,17 +82,6 @@ def _first_write_sql(alias: str = "") -> str:
     this module from doing that again.
     """
     return f"COALESCE({alias}first_indexed_at, {alias}indexed_at)"
-
-
-def _generation_dense_search() -> str:
-    """The configured path, read fresh on every call, as the HNSW knobs are."""
-    value = os.environ.get(GENERATION_DENSE_SEARCH_ENV, "exact")
-    if value not in _GENERATION_DENSE_SEARCH_VALUES:
-        raise ValueError(
-            f"{GENERATION_DENSE_SEARCH_ENV}={value!r} is not one of "
-            f"{sorted(_GENERATION_DENSE_SEARCH_VALUES)}"
-        )
-    return value
 
 
 class ImmutableGenerationError(RuntimeError, RecallError):
@@ -607,7 +606,12 @@ class GenerationStore(PgVectorStore):
         source: str | None = None,
         scope: Scope | None = None,
     ) -> list[ScoredChunk]:
-        """Generation scoped exact search for the inherited timed public wrapper."""
+        """Generation scoped exact search: the default dense path (see `GENERATION_DENSE_SEARCH_ENV`).
+
+        Reached from `query_dense` unless `RECALL_GENERATION_DENSE_SEARCH=hnsw`, and from the
+        inherited timed `query_dense_exact` wrapper. Runs under `_EXACT_SCAN_GUARDS` with a
+        deterministic tie order, so changing it changes what production serves.
+        """
         generation_id = self._generation_id()
         source_filter, scope_params = coerce_scope(scope, source).predicate(
             "c", source_column="source_uri"
