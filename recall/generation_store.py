@@ -296,9 +296,9 @@ class GenerationStore(PgVectorStore):
     def set_fixed_generation(self, generation_id: str) -> None:
         """Pin this read-only store to one immutable generation for its whole process.
 
-        This is intentionally separate from ``pin_generation``: that context manager is for a
-        short administrative operation, while a benchmark server needs every request task to
-        see the same retired snapshot. Callers must opt into this explicitly and the generation
+        This is intentionally separate from ``pin_generation``: that context manager pins one
+        read (a calibration, or one read-time fact check), while a benchmark server needs every
+        request task to see the same retired snapshot. Callers must opt into this explicitly and the generation
         is validated before it becomes process state.
         """
 
@@ -320,7 +320,17 @@ class GenerationStore(PgVectorStore):
 
     @contextmanager
     def pin_generation(self, generation_id: str) -> Iterator[str]:
-        """Administrative read view for calibrating one explicit immutable generation."""
+        """Pin the reads in this context to one explicit, readable generation.
+
+        Calibration pins the generation it measures, and every lookup of one read-time fact check
+        (`recall.fact_retraction.served_sources`) is pinned to the generation that check began on.
+        A context already pinned to `generation_id` (a `snapshot()`, or an outer pin) validated it
+        on entry, so it is reused without asking the database again.
+        """
+        held = self._pinned_corpus.get()
+        if held is not None and held[0] == generation_id and self._pinned_generation.get() == generation_id:
+            yield generation_id
+            return
         row = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT corpus_fingerprint FROM recall_generations WHERE tenant_id = %s "
@@ -330,7 +340,7 @@ class GenerationStore(PgVectorStore):
         )
         if row is None:
             raise NoActiveGeneration(
-                f"tenant {self._tenant!r} has no calibratable generation {generation_id!r}"
+                f"tenant {self._tenant!r} has no readable generation {generation_id!r}"
             )
         token = self._pinned_generation.set(generation_id)
         corpus_token = self._pinned_corpus.set((generation_id, str(row[0])))
