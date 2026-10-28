@@ -79,6 +79,8 @@ Until then, use:
 RECALL_ROUTING_MODE=shadow
 ```
 
-The performance baseline is recorded in
-`benchmarks/results/performance_baseline_20260906T111559Z.md` and its JSON artifact. It documents
-the current cost surface but is not a promotion decision.
+The historical performance baseline, measured on 2026-09-06, remains in public Git history as a
+[report](https://github.com/GiulioDER/RE-call/blob/37ff15cfe5b69bef470a47b7736d9dc7a4cad749/benchmarks/results/performance_baseline_20260906T111559Z.md)
+and [JSON artifact](https://github.com/GiulioDER/RE-call/blob/37ff15cfe5b69bef470a47b7736d9dc7a4cad749/benchmarks/results/performance_baseline_20260906T111559Z.json).
+The artifacts were removed from the current tree during the research archive cleanup. They
+document that workload's cost at the time, not the current cost surface or a promotion decision.

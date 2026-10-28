@@ -19,7 +19,8 @@ under load.
 | Maximum process RSS alert | 1.25 GiB |
 | Error rate alert | > 1% over 5 minutes |
 
-The committed benchmark contains 50 warm requests at offered concurrency 1, 2, 4, and 8.
+The historical benchmark measured on 2026-09-06 contains 50 warm requests at offered concurrency
+1, 2, 4, and 8.
 The table below is derived from its raw request rows using the preregistered nearest rank
 percentile rule. It does not claim a measurement at offered concurrency 12.
 
@@ -30,9 +31,12 @@ percentile rule. It does not claim a measurement at offered concurrency 12.
 | 4 | 1,854.9 ms | 1,928.0 ms | 881.2 MiB | within SLO |
 | 8 | 2,100.0 ms | 2,194.5 ms | 934.2 MiB | p95 breach |
 
-The benchmark artifact is
-`benchmarks/results/performance_baseline_20260906T111559Z.json`. It is supplementary evidence
-from a local production-shaped workload, not a promotion certification for an idle reference host.
+The benchmark artifact was removed from the current tree during the research archive cleanup.
+Its [raw JSON](https://github.com/GiulioDER/RE-call/blob/37ff15cfe5b69bef470a47b7736d9dc7a4cad749/benchmarks/results/performance_baseline_20260906T111559Z.json)
+and [report](https://github.com/GiulioDER/RE-call/blob/37ff15cfe5b69bef470a47b7736d9dc7a4cad749/benchmarks/results/performance_baseline_20260906T111559Z.md)
+remain available at that immutable revision. They are supplementary historical evidence from a
+local production-shaped workload, not a current cost measurement or a promotion certification
+for an idle reference host.
 
 ## Alerts
 
