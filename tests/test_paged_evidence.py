@@ -682,3 +682,54 @@ def test_the_real_retriever_ranks_independently_of_k() -> None:
     assert len(twenty.hits) == 20, "precondition: the wide search returns the wide pool"
     assert [h.chunk.id for h in twenty.hits[:5]] == [h.chunk.id for h in five.hits]
     assert [h.score for h in twenty.hits[:5]] == [h.score for h in five.hits]
+
+
+@pytest.mark.parametrize(
+    ("object_mode", "ambient_mode", "expected"),
+    [("on", "off", 20), ("off", "on", 5)],
+)
+def test_sdk_paged_depth_uses_its_captured_environment(
+    monkeypatch, object_mode: str, ambient_mode: str, expected: int
+) -> None:
+    """ENV-001: object configuration controls paged evidence, even against ambient settings.
+
+    Red proof: unchanged nodes on HEAD8545bc95 fail the item-count assertion on the testbench:
+    object on/ambient off returns 5 instead of 20; object off/ambient on returns 20 instead
+    of 5. The missing production argument is `env=self._env` in `_recall_evidence`.
+    Explicit k and max_items remain narrowing controls after that assertion.
+    """
+    import asyncio
+    import functools
+    import json
+
+    from recall_agent import memory as agent
+    from recall_mcp import retrieval
+
+    ambient = {"RECALL_PAGED_EVIDENCE": ambient_mode}
+    monkeypatch.setattr(retrieval, "runtime_environment", lambda: ambient)
+    retrieve = functools.partial(
+        retrieval._retrieve_trusted,
+        reranker_builder=lambda *_a, **_k: None,
+        admission_factory=lambda _profile: contextlib.nullcontext(),
+        trusted_search_fn=_FakeSearch(_pool(["p"] * 25)),
+    )
+    monkeypatch.setattr(
+        agent,
+        "evidence_memory",
+        functools.partial(retrieval.evidence_memory, _retrieve_trusted_fn=retrieve),
+    )
+    supplied = {"RECALL_PAGED_EVIDENCE": object_mode}
+    memory = agent.RecallAgentMemory(
+        env=supplied, store=_Store(), embedder=agent.make_embedder("hashing")  # type: ignore[arg-type]
+    )
+    supplied["RECALL_PAGED_EVIDENCE"] = ambient_mode  # the constructor captured a snapshot
+
+    def invoke(**arguments):
+        wire = asyncio.run(memory._recall_evidence({"query": "q", **arguments}))
+        return json.loads(wire["content"][0]["text"])
+
+    assert len(invoke()["items"]) == expected
+    assert len(invoke(k=3)["items"]) == 3
+    assert len(invoke(max_items=2)["items"]) == 2
+    ambient["RECALL_PAGED_EVIDENCE"] = object_mode
+    assert len(invoke()["items"]) == expected

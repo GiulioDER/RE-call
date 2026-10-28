@@ -3,14 +3,17 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
 
 from recall.embedding_core import (
     EmbeddingProfile,
     _check_declared_width,
     _log,
+    _package_version,
     batched_embed,
     retry_with_backoff,
 )
@@ -58,7 +61,20 @@ VOYAGE_CONTEXT_TOKEN_HEADROOM = 0.9
 _FALLBACK_SPECIAL_TOKENS_PER_CHUNK = 2
 
 
+#: Bound simultaneous encoding retention while counting a whole contextual document.
+_TOKEN_COUNT_BATCH_SIZE = 128
+
+
 TokenCounter = Callable[[list[str]], list[int]]
+
+
+@dataclass(frozen=True)
+class _IdentifiedTokenCounter:
+    count: TokenCounter
+    identity: str
+
+    def __call__(self, texts: list[str]) -> list[int]:
+        return self.count(texts)
 
 
 def _voyage_token_counter(model: str) -> TokenCounter | None:
@@ -66,7 +82,8 @@ def _voyage_token_counter(model: str) -> TokenCounter | None:
 
     This is exactly what `voyageai.Client.count_tokens` does (`voyageai/_base.py` at 0.5.0:
     `tokenizers.Tokenizer.from_pretrained(f"voyageai/{model}")` with truncation off, one
-    `encode_batch`, the length of each encoding), done without importing the SDK, whose import
+    `encode_batch`, the length of each encoding), using bounded counting batches without
+    importing the SDK, whose import
     costs about 10 s and 780 MB (see `recall._voyage_http`). It needs no API key. The first load
     downloads the tokenizer from Hugging Face; later loads read the local cache.
     """
@@ -85,9 +102,23 @@ def _voyage_token_counter(model: str) -> TokenCounter | None:
     tokenizer.no_truncation()
 
     def count(texts: list[str]) -> list[int]:
-        return [len(encoding.ids) for encoding in tokenizer.encode_batch(texts)]
+        counts: list[int] = []
+        for start in range(0, len(texts), _TOKEN_COUNT_BATCH_SIZE):
+            counts.extend(
+                len(encoding.ids)
+                for encoding in tokenizer.encode_batch(texts[start:start + _TOKEN_COUNT_BATCH_SIZE])
+            )
+        # Longest-batch padding used to span the complete document. Preserve those
+        # counts using integers only, without retaining its encodings together.
+        padding = getattr(tokenizer, "padding", None)
+        if counts and padding is not None and padding.get("length") is None:
+            return [max(counts)] * len(counts)
+        return counts
 
-    return count
+    artifact = hashlib.sha256(tokenizer.to_str().encode("utf-8")).hexdigest()
+    return _IdentifiedTokenCounter(
+        count, f"tokenizers:{_package_version('tokenizers')}:sha256:{artifact}"
+    )
 
 
 def _utf8_token_bound(texts: list[str]) -> list[int]:
@@ -114,6 +145,7 @@ class VoyageContextualizedEmbedder:
         max_request_chars: int = 60_000,
         max_request_tokens: int = VOYAGE_CONTEXT_WINDOW_TOKENS,
         token_counter: TokenCounter | None = None,
+        token_counter_identity: str | None = None,
         max_retries: int = 3,
         timeout: float = 60.0,
         identity: EmbeddingProfile | None = None,
@@ -123,8 +155,10 @@ class VoyageContextualizedEmbedder:
 
         ``max_request_tokens`` is the provider's window; parts and requests are planned to
         `VOYAGE_CONTEXT_TOKEN_HEADROOM` of it. ``token_counter`` returns one count per text and
-        defaults to Voyage's own tokenizer, loaded on first use, falling back to a UTF-8 byte
-        bound when that cannot be loaded.
+        defaults to Voyage's own tokenizer, falling back to a UTF-8 byte bound when that cannot
+        be loaded. Registered profiles resolve it during construction so the runtime identity
+        records the counting policy before any generation or cache can consult it. A custom
+        counter used with an identity requires its own stable ``token_counter_identity``.
         """
         key = api_key or os.environ.get("VOYAGE_API_KEY")
         if not key:
@@ -139,6 +173,8 @@ class VoyageContextualizedEmbedder:
             raise ValueError("Voyage Context token limit must be positive")
         if max_parallel_requests < 1:
             raise ValueError("Voyage Context parallel requests must be positive")
+        if identity is not None and token_counter is not None and not token_counter_identity:
+            raise ValueError("a custom counter with a profile requires token_counter_identity")
         self._max_parallel_requests = max_parallel_requests
         client_class = _voyage_client_class("VoyageContextualizedEmbedder")
         self._client = client_class(api_key=key, max_retries=0, timeout=timeout)
@@ -150,11 +186,25 @@ class VoyageContextualizedEmbedder:
         self._max_request_chars = max_request_chars
         self._max_request_tokens = max_request_tokens
         self._token_counter = token_counter
+        self._counter_identity = (
+            f"custom:{token_counter_identity}" if token_counter is not None else None
+        )
         self._max_retries = max_retries
         probe = self._embed_query("probe")
         self._dim = len(probe)
         _check_declared_width(identity, self._dim, "the Voyage contextualized endpoint")
         self._profile = identity
+        if identity is not None:
+            self._resolve_token_counter()
+            if self._counter_identity is None:
+                raise ValueError("the resolved token counter has no token_counter_identity")
+            self._profile = replace(
+                identity,
+                dependencies=(("voyage-context-token-counter", self._counter_identity),) + tuple(
+                    (key, value) for key, value in identity.dependencies
+                    if key != "voyage-context-token-counter"
+                ),
+            )
 
     @property
     def dim(self) -> int:
@@ -194,7 +244,7 @@ class VoyageContextualizedEmbedder:
         """Tokens one part, and one request, may hold by the local count."""
         return max(1, int(self._max_request_tokens * VOYAGE_CONTEXT_TOKEN_HEADROOM))
 
-    def _count_tokens(self, texts: list[str]) -> list[int]:
+    def _resolve_token_counter(self) -> TokenCounter:
         if self._token_counter is None:
             counter = _voyage_token_counter(self._model)
             if counter is None:
@@ -206,8 +256,14 @@ class VoyageContextualizedEmbedder:
                     extra={"model": self._model, "bound": "utf8-bytes"},
                 )
                 counter = _utf8_token_bound
+                self._counter_identity = "utf8-bytes-plus-2-v1"
+            elif isinstance(counter, _IdentifiedTokenCounter):
+                self._counter_identity = counter.identity
             self._token_counter = counter
-        counts = self._token_counter(texts)
+        return self._token_counter
+
+    def _count_tokens(self, texts: list[str]) -> list[int]:
+        counts = self._resolve_token_counter()(texts)
         if len(counts) != len(texts):
             raise RuntimeError(
                 f"token counter returned {len(counts)} counts for {len(texts)} texts"

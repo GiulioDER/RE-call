@@ -194,3 +194,26 @@ def test_an_ordinary_query_never_loads_the_tokenizer(monkeypatch) -> None:
 
     assert loads == []
     assert len(client.requests) == 1
+
+
+def test_each_provider_batch_preserves_alignment(monkeypatch):
+    """Reject each malformed response before aggregating vectors.
+
+    Red on bc7d70bf, 2026-10-28: the rejection assertion failed because
+    responses of one and three vectors canceled for two batches of two inputs.
+    Production target: VoyageMultimodalEmbedder.embed_documents.
+    """
+    monkeypatch.setattr(shared_module, 'VOYAGE_MAX_REQUEST_INPUTS', 2)
+    class CompensatingClient(_Client):
+        def multimodal_embed(self, inputs, **kwargs):
+            self.requests.append(list(inputs))
+            count = 1 if len(self.requests) == 1 else 3
+            return SimpleNamespace(embeddings=[[float(i)] + [0.0] * 1023 for i in range(count)])
+    client = CompensatingClient()
+    error = None
+    try:
+        _embedder(client).embed_documents([_text(3, str(i)) for i in range(4)])
+    except RuntimeError as exc:
+        error = exc
+    assert error is not None, 'a malformed provider batch must be rejected before vector association shifts'
+    assert len(client.requests) == 1, 'stop on the first malformed batch'
