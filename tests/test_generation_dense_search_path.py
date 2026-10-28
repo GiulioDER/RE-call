@@ -122,3 +122,19 @@ def test_mcp_startup_refuses_an_unknown_path() -> None:
     with pytest.raises(ValueError, match="RECALL_GENERATION_DENSE_SEARCH"):
         Settings.from_env({"RECALL_GENERATION_DENSE_SEARCH": "approximate"})
     Settings.from_env({"RECALL_GENERATION_DENSE_SEARCH": " HNSW "})
+
+
+def test_the_documented_default_is_the_parsers_default() -> None:
+    """CCA of #847, CODE-002: the environment reference (generated from `ENVIRONMENT_SCHEMA`)
+    states the default the parser applies, so the two cannot drift apart.
+
+    Red proof, 2026-10-28, by mutation of the production symbol: with the schema entry's default
+    written back as the literal ``"hnsw"`` in `recall_mcp.settings.ENVIRONMENT_SCHEMA`, this
+    failed at its assertion (``'hnsw' == 'exact'``). Restored, green. Against the code before the
+    deferred fix it passes, because both literals happened to agree; the fix makes them one value.
+    """
+    from recall._env import parse_generation_dense_search
+    from recall_mcp.settings import ENVIRONMENT_SCHEMA
+
+    spec = next(s for s in ENVIRONMENT_SCHEMA if s.name == GENERATION_DENSE_SEARCH_ENV)
+    assert spec.default == parse_generation_dense_search(None)
