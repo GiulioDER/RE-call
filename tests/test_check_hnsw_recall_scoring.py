@@ -38,6 +38,15 @@ test_the_console_line_shows_queries_below_full_recall (the below-full count remo
 returning only the read only flag). After it was tightened, the refusal test was also proved by
 mutation: with `rls_bypass_problem` made to return None, it failed at `assert 1 == 2`. Restored,
 all green.
+
+The deferred pass over #846's P3 findings (2026-10-28) added four tests, each RED against the
+script as it stood after the first pass: the k and query cases of
+test_an_argument_that_cannot_be_measured_is_refused_before_connecting at `pytest.raises` (DID NOT
+RAISE), test_the_stores_connections_are_read_only_and_time_bounded at the read only assertion,
+and test_every_result_says_whether_it_was_measured_again at `[None, None] == [False, False]`. The
+timeout case of the first and test_the_listing_connection_takes_the_statement_timeout_asked_for
+test an option that script did not have, so they were proved by mutation, as their docstrings
+record. Restored, all green.
 """
 
 from __future__ import annotations
@@ -51,6 +60,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import psycopg.conninfo
 import pytest
 
 from recall.observability import percentile as nearest_rank
@@ -71,7 +81,8 @@ def _hits(chunk_ids: list[str]) -> list[Any]:
 class _Store:
     """Answers with the exact neighbours of each query, optionally damaged."""
 
-    _tenant = "acme"
+    tenant = "acme"
+    _tenant = "acme"  # GenerationStore has both; the script reads the public one
 
     def __init__(self, ids: list[str], matrix: np.ndarray, **damage: Any) -> None:
         self.ids, self.matrix, self.damage = ids, matrix, damage
@@ -163,7 +174,9 @@ class _GenerationStore:
     instances: list[_GenerationStore] = []
 
     def __init__(self, dsn: str, dimension: int, tenant: str) -> None:
+        self.tenant = tenant
         self._tenant = tenant
+        self.dsn = dsn
         self.ids, self.matrix = _corpus(60)
         self.states = iter([("gen-1", "fp-before"), ("gen-1", "fp-after-erasure")])
         self.pinned: str | None = None
@@ -206,7 +219,7 @@ def test_an_erasure_during_the_measurement_is_caught(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(script, "generation_vectors", lambda conn, tenant, generation: (ids, matrix))
 
     with pytest.raises(script.GenerationMoved):
-        script.measure_tenant(None, "dsn", "acme", 8, _args())  # type: ignore[arg-type]
+        script.measure_tenant(None, "postgresql://example/db", "acme", 8, _args())  # type: ignore[arg-type]
     assert _GenerationStore.instances[0].seen_pins == ["gen-1"] * 10
 
 
@@ -255,10 +268,20 @@ def _row(tenant: str) -> dict[str, Any]:
     }
 
 
-def _main(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, bypass: bool, measure: Any) -> tuple[int, dict[str, Any], dict[str, Any]]:
+def _main(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    bypass: bool,
+    measure: Any,
+    extra: tuple[str, ...] = (),
+    connects: list[str] | None = None,
+) -> tuple[int, dict[str, Any], dict[str, Any]]:
     connected: dict[str, Any] = {}
 
     def connect(dsn: str, **kwargs: Any) -> _Conn:
+        if connects is not None:
+            connects.append(dsn)
         connected.update(kwargs)
         return _Conn(bypass=bypass)
 
@@ -266,7 +289,7 @@ def _main(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, bypass: bool, meas
     monkeypatch.setattr(script, "register_vector", lambda conn: None)
     monkeypatch.setattr(script, "measure_tenant", measure)
     out = tmp_path / "out.json"
-    code = script.main(["--dsn", "postgresql://example/db", "--out", str(out)])
+    code = script.main(["--dsn", "postgresql://example/db", "--out", str(out), *extra])
     summary = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
     return code, summary, connected
 
@@ -325,3 +348,70 @@ def test_the_read_only_option_keeps_the_dsns_own_options() -> None:
 
     assert "-csearch_path=x" in merged
     assert "default_transaction_read_only=on" in merged
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [("--k", "0"), ("--k", "-1", "5"), ("--k", "50"), ("--queries", "0"), ("--statement-timeout-ms", "-1")],
+    ids=["k0", "k-negative", "k-at-min-rows", "queries0", "timeout-negative"],
+)
+def test_an_argument_that_cannot_be_measured_is_refused_before_connecting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extra: tuple[str, ...]
+) -> None:
+    """Red proof: the four k and query cases against the pre-fix script, which connects, measures
+    and fails at `pytest.raises` (DID NOT RAISE). The timeout case cannot be proved there (the
+    option is new, so argparse refuses it): by mutation, with the `< 0` refusal removed, it fails
+    the same way. Restored, green."""
+    connects: list[str] = []
+
+    def measure(conn: object, dsn: str, tenant: str, dimension: int, args: argparse.Namespace) -> dict[str, Any]:
+        # A row for whatever k the run asked for, so an unrefused run finishes rather than failing
+        # on a missing key: the assertions below are then what goes red.
+        row = _row(tenant)
+        for key in ("recall_mean", "recall_min", "queries_below_full_recall"):
+            row[key] = {str(k): row[key]["1"] for k in args.k}
+        return row
+
+    with pytest.raises(SystemExit) as refused:
+        _main(monkeypatch, tmp_path, bypass=True, measure=measure, extra=extra, connects=connects)
+    assert refused.value.code == 2
+    assert connects == []
+
+
+def test_the_stores_connections_are_read_only_and_time_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    _GenerationStore.instances.clear()
+    monkeypatch.setattr(script, "GenerationStore", _GenerationStore)
+    ids, matrix = _corpus(60)
+    monkeypatch.setattr(script, "generation_vectors", lambda conn, tenant, generation: (ids, matrix))
+
+    with pytest.raises(script.GenerationMoved):
+        script.measure_tenant(None, "postgresql://example/db", "acme", 8, _args(statement_timeout_ms=1234))  # type: ignore[arg-type]
+    options = psycopg.conninfo.conninfo_to_dict(_GenerationStore.instances[0].dsn).get("options") or ""
+    assert "default_transaction_read_only=on" in options
+    assert "statement_timeout=1234" in options
+
+
+def test_the_listing_connection_takes_the_statement_timeout_asked_for(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Red proof by mutation (the pre-fix script has no such option, so argparse refuses it before
+    any assertion): with `main` connecting with `read_only_options(args.dsn)` alone, this fails at
+    its first assertion; with a default of 600000 in place of None, at its second; with
+    `read_only_options` sending nothing for 0 (a truthy test), at its third. Restored, green."""
+    measure = lambda c, d, t, n, a: _row(t)  # noqa: E731
+    _code, _summary, connected = _main(
+        monkeypatch, tmp_path, bypass=True, measure=measure, extra=("--statement-timeout-ms", "1234")
+    )
+    assert "statement_timeout=1234" in str(connected.get("options", ""))
+
+    # Unasked, a role's own (perhaps stricter) timeout is left in force rather than overridden.
+    _code, _summary, connected = _main(monkeypatch, tmp_path, bypass=True, measure=measure)
+    assert "statement_timeout" not in str(connected.get("options", ""))
+    assert "statement_timeout=0" in script.read_only_options("postgresql://example/db", 0)
+
+
+def test_every_result_says_whether_it_was_measured_again(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _code, summary, _connected = _main(monkeypatch, tmp_path, bypass=True, measure=lambda c, d, t, n, a: _row(t))
+
+    assert [r.get("remeasured_after_change") for r in summary["tenants"]] == [False, False]
+    assert summary.get("queries_requested_per_tenant") == 100

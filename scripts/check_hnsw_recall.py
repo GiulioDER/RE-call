@@ -31,9 +31,17 @@ tenant failed (recorded under `failed`, the others still measured and written).
 
 Read-only: SELECT statements and the production query path, nothing written; the listing
 connection is read only for its whole session and autocommits, so it holds no lock between
-statements. It prints ids,
-scores and timings, never chunk text. Corpus vectors are not real questions, so this bounds the
-index's behaviour on in-distribution points; it is not a retrieval-quality benchmark.
+statements; `--statement-timeout-ms`, when given, bounds every statement on both connections. It
+prints and writes per-tenant aggregates (recall, counts, timings) and the generation id, never
+chunk ids, scores or text. Corpus vectors are not real questions, so this bounds the index's
+behaviour on in-distribution points; it is not a retrieval-quality benchmark.
+
+Each tenant's result: `recall_mean` and `recall_min` per k, `queries_below_full_recall` per k (the
+queries that lost at least one neighbour), `short_results` (walks that returned fewer than the
+largest k), `exact_fallbacks`, `ids_outside_generation` (returned ids that are not in the measured
+generation), `share_of_table` (the tenant's rows over the whole table, the selectivity of the
+filtered walk), the `ef_search` and `iterative_scan` it ran under, `hnsw_ms_p50` and `hnsw_ms_p95`,
+and `remeasured_after_change`.
 """
 
 from __future__ import annotations
@@ -63,7 +71,8 @@ HNSW_ENV = (
     "RECALL_HNSW_ITERATIVE_SCAN_FILTERED",
     "RECALL_HNSW_EF_SEARCH_MULTIPLIER",
 )
-# `recall_chunks_v1.embedding` is one fixed-width column for every tenant, whatever its embedder.
+# The column width is fixed per installation at migration (`__RECALL_DIM__`); the store reads it
+# only on its schema paths, which this script never calls, and queries go at the vectors' own width.
 DIMENSION = 1024
 
 
@@ -138,7 +147,10 @@ class GenerationMoved(Exception):
 def measure_tenant(
     conn: psycopg.Connection, dsn: str, tenant: str, dimension: int, args: argparse.Namespace
 ) -> dict[str, Any]:
-    store = GenerationStore(dsn, dimension, tenant=tenant)
+    # The store's own connections get the listing's read only, time-bounded session as well.
+    timeout_ms = getattr(args, "statement_timeout_ms", None)
+    store_dsn = psycopg.conninfo.make_conninfo(dsn, options=read_only_options(dsn, timeout_ms))
+    store = GenerationStore(store_dsn, dimension, tenant=tenant)
     try:
         # The generation comes from the STORE, not from an earlier listing: the hourly refresh can
         # promote one between the two, and measuring one generation's vectors against another's
@@ -173,9 +185,9 @@ def _measure(
 def _measure_hnsw(
     store: GenerationStore, generation: str, ids: list[str], matrix: np.ndarray, args: argparse.Namespace
 ) -> dict[str, Any]:
-    tenant = store._tenant  # noqa: SLF001
+    tenant = store.tenant
     position = {chunk_id: i for i, chunk_id in enumerate(ids)}
-    ks = sorted(set(args.k))
+    ks = args.k
     top = max(ks)
     ef_search, iterative_scan = store._hnsw_filtered_tuning(top + 1)  # noqa: SLF001
     recall = {k: [] for k in ks}
@@ -266,7 +278,7 @@ def measure_all(
     args: argparse.Namespace,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Measure every listed tenant; one tenant's failure is recorded and the run goes on."""
-    ks = sorted(set(args.k))
+    ks = args.k
     results: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
@@ -279,6 +291,7 @@ def measure_all(
         try:
             try:
                 row = measure_tenant(conn, args.dsn, tenant, DIMENSION, args)
+                row["remeasured_after_change"] = False
             except GenerationMoved:
                 print(f"{tenant}: its served corpus changed mid-measurement; measuring it once more")
                 row = measure_tenant(conn, args.dsn, tenant, DIMENSION, args)
@@ -295,22 +308,40 @@ def measure_all(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--dsn", default=os.environ.get("RECALL_DSN"))
+    parser.add_argument(
+        "--dsn", default=os.environ.get("RECALL_DSN"),
+        help="connection string (default: RECALL_DSN; prefer it, a password here reaches the process table)",
+    )
     parser.add_argument("--tenants", nargs="*", help="limit to these tenants (default: every active one)")
-    parser.add_argument("--queries", type=int, default=100)
-    parser.add_argument("--k", type=int, nargs="+", default=[1, 5, 20])
-    parser.add_argument("--min-rows", type=int, default=50)
-    parser.add_argument("--seed", type=int, default=20261001)
+    parser.add_argument("--queries", type=int, default=100, help="query vectors sampled per tenant, at least 1")
+    parser.add_argument(
+        "--k", type=int, nargs="+", default=[1, 5, 20],
+        help="the cut-offs recall is scored at; each at least 1 and below --min-rows",
+    )
+    parser.add_argument("--min-rows", type=int, default=50, help="skip a tenant whose generation has fewer rows")
+    parser.add_argument("--seed", type=int, default=20261001, help="seed for the query sample")
+    parser.add_argument(
+        "--statement-timeout-ms", type=int, default=None,
+        help="statement timeout on every connection, in ms (0: no timeout; default: the role's own setting,"
+        " which a value here would override)",
+    )
     parser.add_argument("--out", help="write the full result as JSON here")
     args = parser.parse_args(argv)
     if not args.dsn:
         parser.error("--dsn or RECALL_DSN is required")
+    # A k at or above a generation's row count has no k-th neighbour (the query's own row is
+    # excluded), and a k below 1 scores nonsense; --min-rows bounds every measured generation.
+    if args.queries < 1 or min(args.k) < 1 or max(args.k) >= args.min_rows:
+        parser.error("--queries and every --k must be at least 1, and every --k below --min-rows")
+    if args.statement_timeout_ms is not None and args.statement_timeout_ms < 0:
+        parser.error("--statement-timeout-ms must not be negative")
+    args.k = sorted(set(args.k))
 
     # Read only for the whole session, and autocommit, so every statement is its own short
     # transaction: a `SET default_transaction_read_only` here would land inside an implicit
     # transaction that already began read-write, and that one transaction would then hold its
     # table locks for the whole run, queueing a migration and every served query behind it.
-    with psycopg.connect(args.dsn, autocommit=True, options=read_only_options(args.dsn)) as conn:
+    with psycopg.connect(args.dsn, autocommit=True, options=read_only_options(args.dsn, args.statement_timeout_ms)) as conn:
         register_vector(conn)
         problem = rls_bypass_problem(conn)
         if problem:
@@ -322,8 +353,8 @@ def main(argv: list[str] | None = None) -> int:
     listed = {tenant for tenant, _generation, _n in generations}
     missing = sorted(set(args.tenants or ()) - listed)
     summary = {
-        "table_rows": table_rows, "seed": args.seed, "queries_per_tenant": args.queries,
-        "k": sorted(set(args.k)), "min_rows": args.min_rows, "tie_epsilon": TIE_EPSILON,
+        "table_rows": table_rows, "seed": args.seed, "queries_requested_per_tenant": args.queries,
+        "k": args.k, "min_rows": args.min_rows, "tie_epsilon": TIE_EPSILON,
         "hnsw_env": {name: os.environ.get(name) for name in HNSW_ENV},
         "tenants": results, "skipped_below_min_rows": skipped, "failed": failures,
         "requested_but_not_active": missing,
@@ -335,11 +366,12 @@ def main(argv: list[str] | None = None) -> int:
     return run_status(results, failures, missing)
 
 
-def read_only_options(dsn: str) -> str:
-    """The DSN's own `options` (a search_path, say) plus a read only session; the keyword would
-    otherwise replace them rather than add to them."""
+def read_only_options(dsn: str, statement_timeout_ms: int | None = None) -> str:
+    """The DSN's own `options` (a search_path, say) plus a read only session, and a statement
+    timeout when one is given; the keyword would otherwise replace them rather than add to them."""
     existing = psycopg.conninfo.conninfo_to_dict(dsn).get("options") or ""
-    return f"{existing} -c default_transaction_read_only=on".strip()
+    timeout = "" if statement_timeout_ms is None else f" -c statement_timeout={statement_timeout_ms}"
+    return f"{existing} -c default_transaction_read_only=on{timeout}".strip()
 
 
 def run_status(results: list[dict[str, Any]], failures: list[dict[str, Any]], missing: list[str]) -> int:
