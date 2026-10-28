@@ -224,10 +224,7 @@ jobs:
       # committed; `audit` is what fails a lock that has drifted from pyproject.toml.
       - name: Install
         run: |
-          uv export --frozen --extra dev --extra documents --no-emit-project \
-            --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
-          pip install --require-hashes -r "$RUNNER_TEMP/locked-requirements.txt"
-          pip install --no-deps -e .
+          bash .github/scripts/locked_install.sh dev documents
           pip show mcp | grep -E '^(Name|Version):'
 
       - name: Lint (ruff)
@@ -335,10 +332,7 @@ jobs:
 
       - name: Install
         run: |
-          uv export --frozen --extra dev --extra documents --no-emit-project \
-            --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
-          pip install --require-hashes -r "$RUNNER_TEMP/locked-requirements.txt"
-          pip install --no-deps -e .
+          bash .github/scripts/locked_install.sh dev documents
           python --version
 
       - name: Test (pytest on real pgvector)
@@ -379,10 +373,7 @@ jobs:
       # The locked set, as in `test` (it carries the pinned mypy), plus mutmut.
       - name: Install
         run: |
-          uv export --frozen --extra dev --extra documents --no-emit-project \
-            --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
-          pip install --require-hashes -r "$RUNNER_TEMP/locked-requirements.txt"
-          pip install --no-deps -e .
+          bash .github/scripts/locked_install.sh dev documents
           pip install mutmut==3.8.0
 
       - name: Mutate the changed shipped code
@@ -730,10 +721,7 @@ jobs:
       # through a lockfile bump. `pip install mypy` here resolved the newest on every run.
       - name: Install
         run: |
-          uv export --frozen --extra dev --no-emit-project \
-            --format requirements-txt -o "$RUNNER_TEMP/locked-requirements.txt"
-          pip install --require-hashes -r "$RUNNER_TEMP/locked-requirements.txt"
-          pip install --no-deps -e .
+          bash .github/scripts/locked_install.sh dev
           mypy --version
 
       - name: Type check (mypy)
