@@ -25,6 +25,8 @@ on exit, around fact-ledger writes on the same connection.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -32,6 +34,7 @@ from types import SimpleNamespace
 import recall_mcp.provenance as provenance
 import recall_mcp.retrieval as retrieval
 from recall.generation_store import GenerationStore
+from recall.lite import LiteStore
 from recall.provenance_controller import EvidenceCardStore, InMemoryFactLedger, source_digest
 from recall.types import AtomicFact, Chunk, EvidenceCard
 
@@ -135,3 +138,40 @@ def test_a_promotion_during_one_call_is_not_seen_by_it(monkeypatch) -> None:
     assert ("fresh_search", "gen-A") in store.seen
     assert {generation for _step, generation in store.seen} == {"gen-A"}, store.seen
     assert store.pointer_reads == 1
+
+
+class _LiteStoreDouble(LiteStore):
+    """A `LiteStore` with no file, recording whether its `snapshot()` is entered."""
+
+    def __init__(self) -> None:  # does not call super().__init__
+        self.snapshot_entered = False
+
+    @contextmanager
+    def snapshot(self) -> Iterator[None]:
+        self.snapshot_entered = True
+        yield
+
+    @property
+    def generation_id(self) -> str:
+        return "lite-generation"
+
+
+def test_a_lite_store_is_not_wrapped_in_its_read_transaction() -> None:
+    """A lite store keeps its constant identity and its `snapshot()` is never entered.
+
+    Invariant: `_applied_generation` enters only a `GenerationStore`'s snapshot.
+    Failure mode caught: a lite `snapshot()` is a SQLite read transaction, held under the store's
+    lock and rolled back on exit; entering it would wrap the fact ledger's writes on the same
+    connection, and it yields None, so the controller would bind to the generation `"None"`.
+
+    Red proof, 2026-10-28, mutating `recall_mcp.provenance._applied_generation` from
+    `isinstance(store, GenerationStore)` to `callable(getattr(store, "snapshot", None))`:
+    `tests/test_apply_fact_generation_pin.py::test_a_lite_store_is_not_wrapped_in_its_read_transaction`
+    failed at its first assertion, `'None' == 'lite-generation'`.
+    """
+    store = _LiteStoreDouble()
+
+    with provenance._applied_generation(store) as generation_id:  # type: ignore[arg-type]
+        assert generation_id == "lite-generation"
+
+    assert store.snapshot_entered is False
