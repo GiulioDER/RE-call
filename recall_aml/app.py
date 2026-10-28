@@ -386,6 +386,9 @@ def create_app(
                                 identity.tenant, max_waiters=settings.add_concurrency - 1
                             ):
                                 async with add_slots:
+                                    # Shutdown may have begun while this queue head waited
+                                    # for another user's global Add slot.
+                                    service.ensure_tenant_queue_running()
                                     return await service.add(model, fingerprint=identity.fingerprint)
                         finally:
                             flight_slots.release()
