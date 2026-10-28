@@ -307,7 +307,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   top 20 at the default tuning and 0.918 at the maximum `ef_search`, while the exact scan took 50
   to 276 ms. Production was already served the exact plan, but only through a cached generic
   plan; a planner statistic could have switched it to HNSW silently. Results now equal the exact
-  scan's by construction.
+  scan's by construction. `RECALL_HNSW_EF_SEARCH_FILTERED` and
+  `RECALL_HNSW_ITERATIVE_SCAN_FILTERED` now affect generation-scoped search only with
+  `RECALL_GENERATION_DENSE_SEARCH=hnsw`. That value ignores case and surrounding spaces, and empty
+  means `exact`; anything else refuses MCP server startup, naming the variable.
+  `scripts/check_hnsw_recall.py` measures the `hnsw` path whatever the variable says.
 
 ### Fixed
 

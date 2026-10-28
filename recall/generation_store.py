@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import psycopg
 from pgvector import Vector
 
+from recall._env import parse_generation_dense_search
 from recall.generation_types import NoActiveGeneration
 from recall.semantic_graph import (
     GraphReadiness,
@@ -60,7 +61,6 @@ if TYPE_CHECKING:
 #: silently. Set `hnsw` only for a tenant large enough that the exact scan is too slow, and measure
 #: its recall first (`scripts/check_hnsw_recall.py`).
 GENERATION_DENSE_SEARCH_ENV = "RECALL_GENERATION_DENSE_SEARCH"
-_GENERATION_DENSE_SEARCH_VALUES = frozenset({"exact", "hnsw"})
 
 
 def _first_write_sql(alias: str = "") -> str:
@@ -75,14 +75,12 @@ def _first_write_sql(alias: str = "") -> str:
 
 
 def _generation_dense_search() -> str:
-    """The configured path, read fresh on every call, as the HNSW knobs are."""
-    value = os.environ.get(GENERATION_DENSE_SEARCH_ENV, "exact")
-    if value not in _GENERATION_DENSE_SEARCH_VALUES:
-        raise ValueError(
-            f"{GENERATION_DENSE_SEARCH_ENV}={value!r} is not one of "
-            f"{sorted(_GENERATION_DENSE_SEARCH_VALUES)}"
-        )
-    return value
+    """The configured path, read fresh on every call, as the HNSW knobs are.
+
+    Parsed by `recall._env.parse_generation_dense_search`, which MCP startup also runs, so a
+    server refuses a bad value at boot instead of failing every search after it.
+    """
+    return parse_generation_dense_search(os.environ.get(GENERATION_DENSE_SEARCH_ENV))
 
 
 class ImmutableGenerationError(RuntimeError, RecallError):

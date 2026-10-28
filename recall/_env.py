@@ -161,6 +161,26 @@ def refuse_removed_entailment(env: "Mapping[str, str] | None" = None) -> None:
     raise ValueError(REMOVED_ENTAILMENT_MESSAGE)
 
 
+#: The paths a generation-scoped dense query can take; see `recall.generation_store`.
+GENERATION_DENSE_SEARCH_VALUES = frozenset({"exact", "hnsw"})
+
+
+def parse_generation_dense_search(raw: str | None) -> str:
+    """`RECALL_GENERATION_DENSE_SEARCH`, normalised: unset or empty means `exact`.
+
+    One parser for the store, which reads it on every query, and for MCP startup validation, so a
+    value startup admits is exactly one a query accepts. Case and surrounding whitespace are
+    ignored, as for the other mode keys; anything else refuses, naming the variable.
+    """
+    value = (raw or "").strip().lower() or "exact"
+    if value not in GENERATION_DENSE_SEARCH_VALUES:
+        raise ValueError(
+            f"RECALL_GENERATION_DENSE_SEARCH={raw!r} is not one of "
+            f"{sorted(GENERATION_DENSE_SEARCH_VALUES)}"
+        )
+    return value
+
+
 def strict_bool(raw: str | None, *, name: str) -> bool:
     """Parse a security sensitive boolean and reject typos instead of treating them as false."""
     value = "" if raw is None else raw.strip().lower()

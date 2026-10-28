@@ -21,6 +21,7 @@ from recall.ops.secret_mapping import (  # noqa: F401  # re-exported
     SECRET_DESTINATIONS,
     secret_mapping_from_env,
 )
+from recall._env import parse_generation_dense_search
 from recall.paged_evidence import paged_evidence_mode
 from recall.federation import FederationConfig
 from recall.trust_policy import TrustPolicy
@@ -304,6 +305,9 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         )
     # The request path's own parser, so startup admits exactly what a request accepts.
     paged_evidence_mode(source.get("RECALL_PAGED_EVIDENCE"))
+    # Likewise for the generation store's dense path: a bad value used to pass startup and then
+    # fail every search, which federation's default `omit` records only as a failed leg.
+    parse_generation_dense_search(source.get("RECALL_GENERATION_DENSE_SEARCH"))
     atomic_mode = source.get("RECALL_ATOMIC_RESCUE_MODE", "off").strip().lower()
     if atomic_mode not in {"off", "shadow", "active"}:
         raise ValueError("RECALL_ATOMIC_RESCUE_MODE must be off, shadow, or active")

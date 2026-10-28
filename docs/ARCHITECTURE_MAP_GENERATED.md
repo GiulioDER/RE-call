@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 345
-Cross package edges: 364
+Cross package edges: 365
 
 ## Highest fan in modules
 
@@ -74,9 +74,9 @@ Cross package edges: 364
 | 17 | `recall.cli_commands.calibration_cmd` |
 | 17 | `recall_mcp.indexing` |
 | 16 | `recall.cli_commands.setup_wizard` |
+| 16 | `recall.generation_store` |
 | 16 | `recall.wizard.headless` |
 | 16 | `recall_mcp.semantic_graph_cache` |
-| 15 | `recall.generation_store` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.cli_commands.provenance_cmd` |
@@ -444,6 +444,7 @@ They are observations, not automatic failures.
 | `recall_mcp.service` | `recall.trust` |
 | `recall_mcp.service` | `recall.trust_policy` |
 | `recall_mcp.service` | `recall.types` |
+| `recall_mcp.settings` | `recall._env` |
 | `recall_mcp.settings` | `recall.federation` |
 | `recall_mcp.settings` | `recall.multimodal` |
 | `recall_mcp.settings` | `recall.ops.secret_mapping` |
@@ -613,7 +614,7 @@ They are observations, not automatic failures.
 | `recall.fix` | 7 | 27 |
 | `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 98 |
-| `recall.generation_store` | 15 | 97 |
+| `recall.generation_store` | 16 | 97 |
 | `recall.generation_types` | 2 | 13 |
 | `recall.generations` | 22 | 97 |
 | `recall.graph_first` | 2 | 28 |
@@ -815,7 +816,7 @@ They are observations, not automatic failures.
 | `recall_mcp.semantic_graph_cache` | 16 | 118 |
 | `recall_mcp.server` | 58 | 187 |
 | `recall_mcp.service` | 59 | 171 |
-| `recall_mcp.settings` | 7 | 112 |
+| `recall_mcp.settings` | 8 | 112 |
 | `recall_mcp.stale_reports_api` | 3 | 123 |
 | `recall_mcp.status` | 8 | 98 |
 | `recall_mcp.stores` | 7 | 99 |

@@ -91,3 +91,34 @@ def test_an_unknown_path_is_refused_by_name(monkeypatch) -> None:
     monkeypatch.setenv(GENERATION_DENSE_SEARCH_ENV, "approximate")
     with pytest.raises(ValueError, match="RECALL_GENERATION_DENSE_SEARCH"):
         _RecordingStore().query_dense([0.1, 0.2, 0.3], 5)
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(" HNSW ", "hnsw"), ("Exact", "exact"), ("", "exact")])
+def test_case_spaces_and_an_empty_value_are_normalised(monkeypatch, raw: str, expected: str) -> None:
+    """CCA of #847, ENV-001: the key reads like the other mode keys (case and spaces ignored, empty
+    means the default), so a cosmetic difference is not a failure on every search.
+
+    Red proof, 2026-10-28: with the parser before this fix (an exact, case-sensitive match), each
+    case raised ValueError instead of taking its path.
+    """
+    statements = _search(monkeypatch, raw)
+    if expected == "hnsw":
+        assert _HNSW_FILTERED_TUNING_SQL in statements
+    else:
+        assert all(guard in statements for guard in _EXACT_SCAN_GUARDS)
+
+
+def test_mcp_startup_refuses_an_unknown_path() -> None:
+    """CCA of #847, ENV-001: a bad value refuses at startup, naming the variable. It used to pass
+    startup and the readiness handshake, then fail every search, which federation's default
+    `omit` records only as a failed leg.
+
+    Red proof, 2026-10-28: with the `parse_generation_dense_search` call removed from
+    `recall_mcp.settings._validate_runtime_options`, `Settings.from_env` returned normally
+    (DID NOT RAISE).
+    """
+    from recall_mcp.settings import Settings
+
+    with pytest.raises(ValueError, match="RECALL_GENERATION_DENSE_SEARCH"):
+        Settings.from_env({"RECALL_GENERATION_DENSE_SEARCH": "approximate"})
+    Settings.from_env({"RECALL_GENERATION_DENSE_SEARCH": " HNSW "})
