@@ -23,13 +23,13 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall.frontmatter import validity_bounds
-from recall.lite.memo_requests import MEMO_ID, cancel_requests, restore_requests, write_memo
+from recall.lite.memo_requests import MEMO_ID, cancel_requests, restore_requests, sweep_staged, write_memo
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -108,14 +108,18 @@ class MemoFolder:
         request_id: str | None = None,
         expected_revision: str | None = None,
         include_receipt: bool = False,
+        has_successor: Callable[[str, str | None], bool] | None = None,
     ) -> dict[str, Any]:
-        """Write one memo file without indexing it. Returns {memo_id} or {refused: reason}.
+        """Write one memo file without indexing it. Returns what `write_memo` returns: {memo_id},
+        with a receipt for a guarded call, {refused: reason}, or {refused, conflict}.
 
         The checks run in this order, and each refusal writes nothing: text that opens with a
         frontmatter delimiter (it would be read as the memo's own frontmatter), the dates, the
-        structured fact, then whether `supersedes` names a memo the assistant wrote. Hold the store's write
-        lane around this and the refresh after it (`remember` does), so two writers cannot take
-        one id.
+        structured fact, whether `supersedes` names a memo the assistant wrote, then
+        `write_memo`'s: the request_id and expected_revision formats, the request journal, and the
+        correction target (`has_successor` asks the store for an indexed successor). Hold the
+        store's write lane around this and the refresh after it (`remember` does), so two writers
+        cannot take one id.
         """
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         if _opens_a_fence(text):
@@ -165,6 +169,7 @@ class MemoFolder:
         return write_memo(
             self.folder, self.ledger_path, body, kind=kind, author=author, supersedes=supersedes,
             request_id=request_id, expected_revision=expected_revision, include_receipt=include_receipt,
+            has_successor=has_successor,
         )
 
     def refresh(self, store: LiteStore, embedder: Embedder, **kwargs: Any) -> RefreshReport:
@@ -189,7 +194,11 @@ class MemoFolder:
         path = self.path_of(memo_id)
         if path is None:
             raise ValueError(f"{memo_id!r} is not a memo id")
-        previous = cancel_requests(self.ledger_path, memo_id)
+        self.unlink_cancelled(path, cancel_requests(self.ledger_path, memo_id))
+
+    def unlink_cancelled(self, path: Path, previous: dict[str, Any]) -> None:
+        """Unlink a memo file whose requests `cancel_requests` already cancelled (`previous`), and
+        any staging file a crash left beside it."""
         try:
             path.unlink()
         except OSError:
@@ -198,3 +207,4 @@ class MemoFolder:
             if path.exists():
                 restore_requests(self.ledger_path, previous)
             raise
+        sweep_staged(self.folder)

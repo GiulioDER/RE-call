@@ -39,7 +39,7 @@ from recall.evidence import (
     build_evidence_bundle,
     render_evidence_prompt,
 )
-from recall.integrations import result_trust_metadata, trust_metadata
+from recall.integrations import UNRENDERED_METADATA_KEYS, result_trust_metadata, trust_metadata
 from recall.rerank import Reranker
 from recall.retriever import DocumentExpansionPolicy, StructuralExpansionPolicy
 from recall.store import PgVectorStore
@@ -81,7 +81,13 @@ def _hit_to_node(hit: TrustedHit, result: TrustedResult | None = None) -> NodeWi
             index_generation=result.diagnostics.index_generation,
             **result_trust_metadata(result),
         )
-    node = TextNode(id_=hit.chunk.id, text=marked_text(hit), metadata=metadata)
+    node = TextNode(
+        id_=hit.chunk.id,
+        text=marked_text(hit),
+        metadata=metadata,
+        excluded_llm_metadata_keys=list(UNRENDERED_METADATA_KEYS),
+        excluded_embed_metadata_keys=list(UNRENDERED_METADATA_KEYS),
+    )
     return NodeWithScore(node=node, score=hit.cosine)
 
 

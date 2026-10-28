@@ -45,7 +45,16 @@ from recall.reasoning_proposals import (
     ProviderFailure,
 )
 from recall.types import AtomicFact, DecisionState, EvidenceCard
-from recall.support import CalibrationCoverage, QuerySupport, validated_coverage_report
+from recall.support import (
+    SYNTHETIC_PROBES,
+    CalibrationCoverage,
+    CoverageStatus,
+    QuerySupport,
+    SupportScope,
+    SupportStatus,
+    coverage_status,
+    validated_coverage_report,
+)
 
 #: ``corrected`` only under the opt-in ``dated-premise`` answer profile: the question assumed
 #: something the evidence shows is no longer current; `ReasoningResponse.premise_correction` says
@@ -400,8 +409,10 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
 
 
 def _query_support_from_dict(payload: Mapping[str, object]) -> QuerySupport:
-    status = _checked_literal(payload.get("status", "not_checked"), ("not_checked",), "query_support.status")
-    scope = _checked_literal(payload.get("scope", "returned_evidence"), ("returned_evidence",), "query_support.scope")
+    status = _checked_literal(payload.get("status", "not_checked"), get_args(SupportStatus), "query_support.status")
+    scope = _checked_literal(
+        payload.get("scope", "returned_evidence"), get_args(SupportScope), "query_support.scope",
+    )
     if payload.get("method") is not None:
         raise EvidenceValidationError("query_support.method must be null")
     return QuerySupport(status=status, scope=scope)
@@ -410,8 +421,7 @@ def _query_support_from_dict(payload: Mapping[str, object]) -> QuerySupport:
 def _coverage_from_dict(payload: Mapping[str, object]) -> CalibrationCoverage:
     calibration_id = _optional_str(payload.get("calibration_id"))
     status = _checked_literal(
-        payload.get("status", "unmeasured"), ("measured", "unmeasured", "unavailable"),
-        "calibration_coverage.status",
+        payload.get("status", "unmeasured"), get_args(CoverageStatus), "calibration_coverage.status",
     )
     method = payload.get("method")
     report = payload.get("report")
@@ -419,17 +429,16 @@ def _coverage_from_dict(payload: Mapping[str, object]) -> CalibrationCoverage:
         if status == "measured" or method is not None:
             raise EvidenceValidationError("coverage measurement requires a report")
         return CalibrationCoverage(calibration_id=calibration_id, status=status)
-    if calibration_id is None or method != "synthetic_corpus_probes" or status == "unavailable":
+    if calibration_id is None or method != SYNTHETIC_PROBES or status == "unavailable":
         raise EvidenceValidationError("invalid coverage measurement")
     try:
         clean = validated_coverage_report(dict(_mapping(report)), calibration_id)
     except (TypeError, ValueError) as exc:
         raise EvidenceValidationError("invalid coverage report") from exc
-    measured = all(clean[name]["state"] == "measured" for name in ("unknown_entity", "in_vocabulary"))
-    if status != ("measured" if measured else "unmeasured"):
+    if status != coverage_status(clean):
         raise EvidenceValidationError("coverage status disagrees with report")
     return CalibrationCoverage(
-        calibration_id=calibration_id, status=status, method="synthetic_corpus_probes", report=clean,
+        calibration_id=calibration_id, status=status, method=SYNTHETIC_PROBES, report=clean,
     )
 
 

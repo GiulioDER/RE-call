@@ -222,7 +222,9 @@ def _settled(fn: Callable[_P, _V]) -> Callable[_P, _V]:
     return call
 
 
-def served_sources(store: object, *, failures: list[str] | None = None) -> ServedSources | None:
+def served_sources(
+    store: object, *, failures: list[str] | None = None, strict: bool = False,
+) -> ServedSources | None:
     """The memo names `store` serves now, with their content, supersession and stating rule on a
     lite or PostgreSQL store; None without a lookup. On a generation store every answer is the
     SERVED generation's, and ONE generation's: the first lookup reads which generation the store
@@ -240,6 +242,12 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
     Either way the answer is incomplete, so each failed lookup is named in `failures` (`presence`,
     `supersession`, `admission`, `content`) for the caller to report (`recall_current_facts`'s
     `served_state`).
+
+    `strict` is for authorization (`recall_apply_fact`): a failed admission or content lookup
+    RAISES rather than hiding stated facts, because a hidden fact cannot conflict with anything,
+    so the write would be admitted against a value it contradicts. The controller's conflict read
+    then refuses the write as `LEDGER_UNAVAILABLE`. Presence and supersession still fail open,
+    which on a write only keeps more facts in force.
     """
     lookup = getattr(store, "served_identifiers", None)
     if not callable(lookup):
@@ -321,6 +329,8 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
             # computed from the same cached names, still passed.
             _log.exception("content lookup for %d memo name(s) failed; listing no stated fact", len(names))
             failed("content")
+            if strict:
+                raise
             return {}
         return {
             # Admission and content must come from the same absolute source. A relative
@@ -341,6 +351,8 @@ def served_sources(store: object, *, failures: list[str] | None = None) -> Serve
         except Exception:  # BROAD-CATCH: fail-closed  # no stated fact is current on an error
             _log.exception("stating rule lookup failed; listing no stated fact")
             failed("admission")
+            if strict:
+                raise
             return frozenset()
         return frozenset(
             name for name, sources in resolved.items() if any(admits.admits(name, s) for s in sources)

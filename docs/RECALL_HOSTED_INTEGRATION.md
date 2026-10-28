@@ -21,9 +21,9 @@ answer. Six design choices define the method.
 ```mermaid
 flowchart LR
   subgraph add["Add"]
-    msgs["Messages"] --> win["Word windows<br/>160 words, stride 120"]
+    msgs["Messages"] -- "no image" --> win["Word windows<br/>160 words, stride 120"]
     win --> views["Atomic views<br/>no model"]
-    msgs -. "compiler on" .-> rec["Records citing<br/>server anchors"]
+    msgs -. "compiler on, no image" .-> rec["Records citing<br/>server anchors"]
     rec --> grf["Graph sidecar"]
     msgs --> img["Original images<br/>voyage-multimodal-3.5"]
   end
@@ -51,8 +51,8 @@ flowchart LR
 2. A deterministic router ranks each query in one embedding space, so the ranking never mixes
    scores from different models, and the routing itself uses no model.
 3. Every item carries the date a reader needs, including the date a relative phrase refers to.
-4. Each Add builds its own atomic views, so a Search between two Adds already uses them, and the
-   rescue cannot change the fused top five. In the Full 2 runs the reranker that follows may.
+4. Each Add without an image builds its own atomic views, so a Search between two Adds already
+   uses them, and the rescue cannot change the fused top five. In the Full 2 runs the reranker that follows may.
 5. The model cannot draw a graph edge: edges come only from verified evidence spans, and
    promotion can only reorder windows that retrieval already found. Each of these rules, and the
    raw ranking served on failure, has a mutation test that fails when the rule is broken
@@ -250,6 +250,11 @@ The messages of an Add are joined in order and stored as overlapping windows of 
 stride of 120, in a store isolated per `user_id`. Window text holds message content only, with no
 role or timestamp.
 
+An Add that carries an image in any of its messages is stored differently, the whole Add at once:
+each message as segments of up to 4,500 characters, each prefixed with the message's role and,
+when it has one, its timestamp, beside the media and the multimodal vectors. Such an Add builds no word windows, no atomic
+views, no compiled records and no graph records, whether the compiler is on or not.
+
 The Add also builds atomic views from its own raw windows, with no model: short spans (profile
 `aml-add-micro-v1`), each linked to its parent window and stored in an isolated tenant.
 
@@ -269,9 +274,11 @@ service process only: a restart or a Delete empties it, after which such records
 When the compiler is on, the server cuts the Add's messages into evidence anchors with identifiers
 it creates. The model returns at most eight records, each citing one to eight of those identifiers,
 and the server builds each record's evidence spans from the cited anchors, so every span is an
-exact slice of a source message. A record that cites no supplied anchor is rejected, and a failed
-compile stores no records. At `3eb447c4` the model also writes each record's fields; from
-`1f8666df` (`anchor_compile_output="select"`) it writes only the kind and the anchor identifiers.
+exact slice of a source message. A failed compile stores no records. At `3eb447c4` the model also
+writes each record's fields, and a record whose cited identifiers are all unknown is kept when its
+field values occur in anchors' text, every such anchor (up to eight) becoming its evidence; from `1f8666df`
+(`anchor_compile_output="select"`) the model writes only the kind and the anchor identifiers, and a
+record that cites no supplied anchor is rejected.
 Also from `1f8666df`, the Add's own anchors are bounded to 150,000 encoded characters (a longer Add
 is compiled from its first and last anchors), the earlier records sent with it to 145,000, and a
 compile refused for exhausted provider credit (HTTP 402) stops the Add with a retryable 503,
@@ -351,10 +358,14 @@ budget a rerank or image search that runs out of time is skipped, and a query wi
 its text ranking.
 Authentication failures return HTTP 401.
 
-The C8 and C9 compiler makes at most three provider attempts, twelve seconds each, and sends every
-evidence anchor of the Add on the first. If that attempt fails and the encoded anchors exceed
-300,000 characters, the remaining attempts send the session's first and last anchors that fit the
-budget instead, because an over-long prompt is refused by the model's context window every time.
+Compiler attempts depend on the build, each attempt twelve seconds. C8 at `5d82b516` makes at most
+three, each with the same payload. C9 at `3eb447c4` makes at most three and sends every evidence
+anchor of the Add on the first; if that attempt fails and the encoded anchors exceed 300,000
+characters, the remaining attempts send the session's first and last anchors that fit the budget
+instead, because an over-long prompt is refused by the model's context window every time. From
+`1f8666df` the anchors and the earlier records are fitted to the bounds given under Add before the
+first attempt, so that refit never runs; a refusal (HTTP 400 or 413) of a payload that still carries
+earlier records is resent once without them, which can make a fourth attempt.
 Within one Add, independent Voyage embedding requests are sent four at a time
 (`RECALL_VOYAGE_PARALLEL_REQUESTS`, 1 to 16; 1 restores the sequential behaviour). The vectors are
 the ones a sequential run returns; only the wall time of a large Add changes.

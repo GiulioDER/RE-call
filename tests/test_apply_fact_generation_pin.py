@@ -110,7 +110,7 @@ def test_a_promotion_during_one_call_is_not_seen_by_it(monkeypatch) -> None:
             store.seen.append(("fresh_search", generation))
             return SimpleNamespace(result=generation)
 
-    def served(store_arg):
+    def served(store_arg, **_kwargs):
         def lookup(names):
             store.seen.append(("served_sources", store_arg.generation_id))
             return names

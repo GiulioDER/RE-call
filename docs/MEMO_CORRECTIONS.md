@@ -2,8 +2,10 @@
 
 The existing `recall_remember` tool accepts three optional parameters. Calls that omit them retain
 the exact legacy `{memo_id}` success reply and raising refresh failures. One check is new for them
-too: a `supersedes` target that is not an existing memo file (`target_missing`) or already has a
-successor (`stale_target`) is refused on every call.
+too: a `supersedes` target that is not an assistant memo is refused (`no memo ...`), one whose file
+is gone returns `target_missing`, and one that already has a successor returns `stale_target`, on
+legacy calls as on guarded ones. A replay keeps its original reply without the check: of a
+completed request, or of an interrupted one whose memo is already in place.
 
 * `request_id`: an opaque nonempty string, at most 128 characters. Reuse it only for the same
   text, fact, kind, dates, supersession target and revision precondition. The memo folder journals
@@ -19,6 +21,21 @@ successor (`stale_target`) is refused on every call.
   removed, and CRLF/CR newlines become LF. Representation-only changes do not change this revision.
 * `include_receipt`: request a detailed reply without an idempotency key. A request id or revision
   precondition also enables receipts automatically.
+
+A refusal writes nothing. A malformed `request_id` or `expected_revision`, and a target that is not
+an assistant memo, reply `{"refused": "<reason>"}`; a refused precondition replies
+`{"refused": "<reason>", "conflict": "<code>"}` with one of these codes:
+
+| `conflict` | When |
+|---|---|
+| `request_mismatch` | the `request_id` was used for other text, fact, kind, dates, target or precondition |
+| `revision_without_target` | `expected_revision` without `supersedes` |
+| `revision_requires_read` | `expected_revision` from a caller without the read scope |
+| `target_missing` | the target's file is gone |
+| `revision_mismatch` | the target changed since its revision was read, or can no longer be read as UTF-8 |
+| `stale_target` | a document already supersedes the target |
+| `memo_missing` | the request's memo was forgotten, or removed after it was written |
+| `memo_changed` | the request's memo was edited after it was written, or left incomplete by a crash |
 
 ```json
 {
@@ -45,17 +62,24 @@ A failed refresh on a receipt-enabled call returns the persisted memo id with
 message. Retry with the same request id to finish indexing. A failure to inspect calibration
 preserves successful indexing and reports unavailable readiness. Persistence failures still raise.
 
-Only an existing assistant-authored memo can be a correction target. A memo with an authored
-successor is refused as `stale_target`, including on legacy calls. The write lane checks this
+Only an existing assistant-authored memo can be a correction target. A memo that already has a
+successor is refused as `stale_target`, including on legacy calls: any memo of the folder that names
+it in `supersedes`, whoever wrote it, and any indexed document under the index root that the store
+resolves as its successor (case and markdown extension aside, a forgotten successor included).
+`expected_revision` needs the read scope: from a caller without it, comparing it with the target
+would confirm guesses of a memo the caller may not read, so it is refused as
+`revision_requires_read`. The write lane checks this
 before installing a correction, so two clients of the same SQLite file cannot install competing
 corrections. Idempotent replays retain the original id even if that memo subsequently acquired a
 successor; a replay never removes supersession metadata or makes the old memo current again.
 
 A completed request's edited or removed memo is refused rather than overwritten or recreated.
 Replay checks raw bytes independently of the indexed revision, so even a representation-only edit
-is protected. Explicit forgetting durably cancels request reservations before unlinking, including
-an interrupted request whose file was published but whose final journal update failed. If cancellation
-cannot be saved, forgetting raises and leaves the file present. A memo that was published but never
+is protected. Explicit forgetting durably cancels request reservations before it erases anything,
+including an interrupted request whose file was published but whose final journal update failed. If
+cancellation cannot be saved, forgetting raises before erasing anything and leaves the file present;
+if the erasure itself fails, the cancellation is undone. A crash while publishing can leave a staging file (`.recall-memo-*.tmp`) beside the memos;
+the next write or forget under the write lane removes it. A memo that was published but never
 indexed (a crash after publication with no refresh since) is forgotten the same way, rather than refused.
 A prepared request without a published
 memo can finish after rechecking correction preconditions; use explicit forgetting for deletion, since
@@ -78,14 +102,20 @@ indexed is not pruned, so its hashes stay until it is forgotten by name.
 A reservation is not authorship. The ledger records the assistant as author only once its file
 exists, so a file somebody else puts in the folder under a reserved name is never claimed: the
 write, or the retry of an interrupted one, moves to the next free id and leaves that file alone.
+Two cases are the exception, because they cannot be told apart from the request's own interrupted
+publication: a file whose bytes are exactly the memo is taken as that memo, and a file holding only
+the start of it (an exclusive create cut short) refuses the retry as `memo_changed` rather than
+leave a second, partial copy; delete that partial file and the same retry finishes the memo under
+its reserved id.
 A memo is published with a hard link where the filesystem has them, and with an exclusive create
 otherwise (FAT32 and exFAT, many network shares); neither replaces an existing file. A memo of the
 folder that cannot be read, or is not UTF-8, does not block a correction; one that declares a
-successor in another encoding still counts.
+successor in another ASCII-compatible encoding (Latin-1, say) still counts, while a UTF-16 file is
+not read for one.
 
 The request journal is bounded. A prepared request is kept until it completes or is forgotten. A
-completed or cancelled request is kept for 30 days and at most 1,000 of them, the newest first;
-past that its request id is treated as new. Retry within that window.
+completed or cancelled request is kept for at least 30 days while it is among the newest 1,000;
+once a later write prunes it, its request id is treated as new. Retry within that window.
 
 Old memos are retained for historical inspection. This workflow does not infer supersession from
 prose or rewrite imported notes. For those corrections, use the existing `recall_report_stale`

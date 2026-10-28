@@ -762,3 +762,83 @@ def test_f9_with_stating_off_reading_facts_asks_no_supersession(
     monkeypatch.setattr(store, "supersession_all", counted)
     current_facts_memory(store)
     assert not calls, f"a supersession lookup ran with stating off: {len(calls)}"
+
+
+def test_cca946_a_failed_content_lookup_refuses_a_contradicting_apply(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_cca946_a_failed_content_lookup_refuses_a_contradicting_apply.
+
+    CCA DEEP run 20261027T140338Z, BUG-001 (with STAKES-001). A stated fact whose content cannot
+    be checked must refuse a contradicting write, not drop out of the conflict set and let it into
+    the append-only ledger. Red, mutation of `served_sources` (recall/fact_retraction.py): the
+    `strict` branch of `content_hashes` returns {} instead of raising, so the apply is APPLIED and
+    `a contradicting apply was admitted during the outage` fails.
+    """
+    from recall.fact_retraction import served_sources
+    from recall.lite.facts import LiteEvidenceCardStore
+    from recall.provenance_controller import DecisionCode, FactApplicationRequest, ProvenanceController
+    from recall.types import AtomicFact
+    from tests.fact_fixtures import evidence_card
+
+    memo(folder, "door-a.md", facts=[DOOR])
+    memo(folder, "door-c.md", body="The front door code is now 7777.")
+    refreshed(store, folder)
+    reconcile(store, folder)
+    assert listed(store) == ["4512"]
+
+    def timed_out() -> dict[str, str]:
+        raise TimeoutError("injected: the content lookup timed out")
+
+    monkeypatch.setattr(store, "source_raw_hashes", timed_out)
+    third = AtomicFact(namespace="memory", subject="user", predicate="door_code", object="7777")
+    cards = LiteEvidenceCardStore(store)
+    card = evidence_card(third, tenant=store.tenant, generation="g1", chunk="c-outage", source="door-c.md")
+    cards.put((card,))
+    decision = ProvenanceController(
+        tenant_id=store.tenant, generation_id="g1", cards=cards, ledger=LiteFactLedger(store),
+        source_digest_for=lambda _card: "digest", writer="model",
+        served_sources=served_sources(store, strict=True),
+    ).apply_fact(FactApplicationRequest(third, (card.card_id,), "outage-1"))
+    assert decision.code == DecisionCode.LEDGER_UNAVAILABLE, (
+        f"a contradicting apply was admitted during the outage: {decision.code}")
+
+
+def test_cca946_recall_apply_fact_checks_served_memos_strictly(
+    store: LiteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_cca946_recall_apply_fact_checks_served_memos_strictly.
+
+    CCA DEEP run 20261027T140338Z, BUG-001, the wiring. Red against a068a95cb: `apply_fact_memory`
+    asks `served_sources(store)` without `strict`, so `the write path checked served memos
+    leniently` fails. Target: the `served_sources=` argument in recall_mcp/provenance.py.
+    """
+    from recall_mcp import provenance
+
+    asked: list[dict[str, object]] = []
+
+    def spy(_store: object, **kwargs: object) -> None:
+        asked.append(kwargs)
+
+    class _Stop(Exception):
+        pass
+
+    class _Controller:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def apply_fact(self, _request: object) -> object:
+            raise _Stop
+
+    monkeypatch.setattr(provenance, "served_sources", spy)
+    monkeypatch.setattr(provenance, "ProvenanceController", _Controller)
+    with pytest.raises(_Stop):
+        provenance.apply_fact_memory(
+            store,  # type: ignore[arg-type]
+            embedder=ContentWordEmbedder(),  # type: ignore[arg-type]
+            claim=DOOR | {"namespace": "memory"},
+            evidence_card_ids=["card-1"],
+            request_id="wiring-1",
+            writer="model",
+        )
+    assert asked and asked[0].get("strict") is True, f"the write path checked served memos leniently: {asked}"

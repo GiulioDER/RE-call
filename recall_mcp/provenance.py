@@ -200,7 +200,9 @@ def apply_fact_memory(
             card_revalidator=revalidate_card,
             fresh_search=fresh_search,
             writer=writer,
-            served_sources=served_sources(store),
+            # Strict: a stated fact whose content cannot be checked must refuse the write, not
+            # drop out of the conflict set (`served_sources`).
+            served_sources=served_sources(store, strict=True),
         )
         decision = controller.apply_fact(request)
     return {
