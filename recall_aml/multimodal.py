@@ -85,7 +85,18 @@ def _voyage_image_data_url(data_url: str) -> tuple[str, bool]:
     and greyscale, fitted and untouched), so no stored vector changes.
     """
     decode_image_data_url(data_url)
-    return fit_voyage_image(data_url, strict=True)
+    try:
+        return fit_voyage_image(data_url, strict=True)
+    except UnidentifiedImageError:
+        raise
+    except (OSError, SyntaxError, ValueError) as exc:
+        # The strict fit reads only this payload and calls nothing over the network, so any of
+        # these is Pillow failing on the image: a file cut short raises a plain OSError at open
+        # or at the fitting resize. Every caller handles an unreadable image as
+        # UnidentifiedImageError (a skip on Add, a 422 on an image-led Search); a plain OSError
+        # escaped them and lost the whole Add as a retryable 503. The callers cannot catch
+        # OSError themselves, because their own network errors are OSError too.
+        raise UnidentifiedImageError(f"image could not be decoded: {type(exc).__name__}") from exc
 
 
 @dataclass(frozen=True)
