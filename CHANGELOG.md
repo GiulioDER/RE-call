@@ -387,11 +387,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   not change.
 
 * **An MCP server's first search no longer peaks at about 820 MB.** Loading the atomic rescue
-  matrix validated it with whole-matrix `np.isfinite` and `np.linalg.norm`, each building a
+  matrix validated it with whole-matrix `np.isfinite` and `np.linalg.norm`, the norm building a
   temporary as large as the matrix, in every serving process. The checks now run over 16 MiB row
   blocks, in the same order and with the same errors. Measured on the memory corpus with
-  identical search results: first-search peak 820 MB to 509 MB, steady resident set unchanged
-  within 13 MB.
+  identical search results: first-search peak 820 MB to 509 MB; the resident set after the first
+  search was about 13 MB higher (494 to 507 MB).
 * **The AML adapter no longer decodes an image over Pillow's pixel limit.** Pillow refuses an
   image declaring more than twice `PIL.Image.MAX_IMAGE_PIXELS` but only warns below that, so a
   small compressed file declaring about 150M pixels was decoded in full before being scaled to

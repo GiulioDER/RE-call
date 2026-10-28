@@ -1,8 +1,9 @@
 """The atomic rescue loader validates its matrix in row blocks, and still rejects every bad row.
 
 The loader runs in every serving process on its first search. Validating the whole memory-mapped
-matrix at once built two full-size temporaries (`np.isfinite` and the row norm), which measured a
-328 MB temporary on the 2026-10-01 memory corpus and an 817 MB first-search peak per process.
+matrix at once built a full-size float32 temporary for the row norm (and a bool one a quarter of
+its size for `np.isfinite`): a 328 MB temporary on the 2026-10-01 memory corpus, which with the
+328 MB mapping was most of an 817 MB first-search peak per process.
 These tests pin both halves of the blocked replacement: the bound, and that no row escapes it.
 """
 
@@ -100,6 +101,42 @@ def test_a_non_unit_row_in_the_last_partial_block_is_rejected(tmp_path, two_rows
     """
     manifest = _artifact(tmp_path / "artifact", rows=7, dimension=4)
     _tamper(manifest, lambda m: m.__setitem__(6, m[6] * 2.0))
+
+    with pytest.raises(AtomicRescueArtifactError, match="not normalized"):
+        load_atomic_rescue_artifact(manifest)
+
+
+@pytest.mark.parametrize("row", range(7))
+def test_a_nonfinite_value_in_any_row_is_rejected_as_nonfinite(tmp_path, two_rows_per_block, row):
+    """Every row of every block is checked by the finite pass: the first block, the last row of a
+    full block, and the partial one. The tail tests above cannot see a loop that skips block 0
+    or drops the last row of each block (CCA of #845, CODE-001).
+
+    Red proof (2026-10-28, Windows), nodes
+    `tests/test_atomic_rescue_load_validation.py::test_a_nonfinite_value_in_any_row_is_rejected_as_nonfinite[0-6]`,
+    by mutation of the finite pass in `recall.atomic_rescue._load_atomic_rescue_artifact`: starting it at `rows_per_block` failed
+    rows 0 and 1, and ending each slice at `start + rows_per_block - 1` failed rows 1, 3 and 5,
+    each at the `match` (the norm pass refuses the NaN, but as "not normalized"). Restored, green.
+    """
+    manifest = _artifact(tmp_path / "artifact", rows=7, dimension=4)
+    _tamper(manifest, lambda m: m.__setitem__((row, 1), np.nan))
+
+    with pytest.raises(AtomicRescueArtifactError, match="nonfinite"):
+        load_atomic_rescue_artifact(manifest)
+
+
+@pytest.mark.parametrize("row", range(7))
+def test_a_non_unit_row_anywhere_is_rejected(tmp_path, two_rows_per_block, row):
+    """The same coverage for the norm pass, where a skipped row is not refused at all.
+
+    Red proof (2026-10-28, Windows), nodes
+    `tests/test_atomic_rescue_load_validation.py::test_a_non_unit_row_anywhere_is_rejected[0-6]`,
+    by mutation of the norm pass in `recall.atomic_rescue._load_atomic_rescue_artifact`: starting it at `rows_per_block` failed
+    rows 0 and 1, and ending each slice at `start + rows_per_block - 1` failed rows 1, 3 and 5,
+    each with "DID NOT RAISE". Restored, green.
+    """
+    manifest = _artifact(tmp_path / "artifact", rows=7, dimension=4)
+    _tamper(manifest, lambda m: m.__setitem__(row, m[row] * 2.0))
 
     with pytest.raises(AtomicRescueArtifactError, match="not normalized"):
         load_atomic_rescue_artifact(manifest)
