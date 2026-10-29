@@ -160,7 +160,8 @@ mutation failing in the named assertion, then restored byte for byte and green:
 - D9 `...::test_a_pure_rename_is_in_scope`: `--no-renames` removed: "a renamed file left the
   scope".
 - D10 `...::test_an_unread_file_never_matches_a_null_hash_exactly`: both `UNKNOWN_SHA` anchors
-  mutated back to None: the lesson is `[exact]`, so the `[symbol_changed]` line is missing.
+  mutated back to None: the lesson is `[exact]`, so the `[symbol_changed]` line is missing (the
+  test sets `FILE_LEVEL_RANKS_AS_FILE_ONLY` False, so the brief shows the matcher's label).
 - D11 `...::test_innermost_symbol_matches_enclosing_symbol`: spans painted smallest first:
   "innermost symbol differs from enclosing_symbol".
 - D12 `...::test_named_files_try_a_bounded_number_of_tokens`: the token cap removed: "<N> paths
@@ -224,6 +225,7 @@ import sys
 import time
 from pathlib import Path
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -1131,7 +1133,10 @@ def test_an_unread_file_never_matches_a_null_hash_exactly(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """D10 (CCA BUG-005): a lesson anchored at a file with a null hash is not labelled `exact` for a
-    file whose content could not be read."""
+    file whose content could not be read. The brief would print `file_only` for any symbol-less
+    anchor, which would hide the matcher's label, so the test switches
+    `FILE_LEVEL_RANKS_AS_FILE_ONLY` off and observes the matcher's own label."""
+    monkeypatch.setattr(auditor_brief, "FILE_LEVEL_RANKS_AS_FILE_ONLY", False)
     lesson = {**_lesson(1), "anchors": [{"file": FILE, "symbol": None, "code_sha": None}]}
     memos = tmp_path / "null-hash"
     _write_memo(memos, "the-lesson", lesson)
@@ -1426,3 +1431,122 @@ def test_default_budget_fits_a_parallel_dispatch(
     output = _run(_payload(repo), monkeypatch, capsys)
     assert output is not None, f"a parallel dispatch got no brief: {_log_text(env)!r}"
     assert HEADING in _prompt(output)
+
+
+# --- the brief ranks a file-level match as file_only, ties newest first -----------------------
+
+_NOW = datetime(2026, 10, 28, tzinfo=UTC)
+
+
+def _entry(number: int, match: str, symbol: str | None, date: str | None = "2026-10-01") -> dict[str, Any]:
+    """A C5 entry as `match_memo_records` returns it, with one anchor matched at `match`."""
+    record = {**_bug(number), "date": date}
+    if date is None:
+        del record["date"]
+    anchor = _anchor(symbol)
+    return {
+        "id": record["id"], "kind": "bug", "recall_record": record, "anchor_match": match,
+        "anchor_matches": [{"anchor": anchor, "match": match}],
+        "superseded_by": None, "valid_from": None, "valid_until": None,
+    }
+
+
+def _render(entries: list[dict[str, Any]]) -> str:
+    return auditor_brief.render(entries, now=_NOW, retraction_files=set())
+
+
+def _ids(block: str) -> list[str]:
+    return [line.split()[1] for line in block.splitlines() if line.startswith("BUG ")]
+
+
+def test_symbolless_match_ranks_after_symbol_matches() -> None:
+    """Red proof: baseline = unchanged `render`/`_line` (origin/master). Node id
+    tests/test_auditor_brief_hook.py::test_symbolless_match_ranks_after_symbol_matches. Targets
+    `render` ordering and `_line`'s bracket. Failed on the assertion that C leads (A, a
+    `symbol_changed` record on a symbol-less anchor, led instead and was printed `[symbol_changed]`)."""
+    a = _entry(1, "symbol_changed", None, "2026-10-20")
+    b = _entry(2, "file_only", "Pool._lease", "2026-10-10")
+    c = _entry(3, "symbol_changed", "Pool._lease", "2026-10-01")
+    block = _render([a, b, c])
+    assert _ids(block) == [c["id"], a["id"], b["id"]]
+    assert f"BUG {a['id']} [file_only] {FILE} (module):" in block
+
+
+def test_exact_file_level_match_is_shown_file_only(tmp_path: Path) -> None:
+    """Review Focus 2. Red proof: baseline = unchanged `_line` (origin/master); node id
+    tests/test_auditor_brief_hook.py::test_exact_file_level_match_is_shown_file_only. Targets
+    `_line`'s `[...]`; failed on `[file_only]` being in the block (it printed `[exact]`). The first
+    assertion pins `recall.records._match`, which must keep reporting `exact`."""
+    sha = "a" * 64
+    record = {**_bug(1), "anchors": [{"file": FILE, "symbol": None, "code_sha": sha}]}
+    memos = _write_memos(tmp_path / "memos", [record])
+    records = records_files.load_memo_records(memos)
+    entries = records_files.match_memo_records(
+        records, repo=record["repo"], anchors=[{"file": FILE, "symbol": None, "code_sha": sha}],
+        kinds=["bug"], now=_NOW,
+    )
+    assert [e["anchor_match"] for e in entries] == ["exact"]
+    block = _render(entries)
+    assert f"BUG {record['id']} [file_only] {FILE} (module):" in block
+
+
+def test_mixed_anchor_record_uses_its_best_anchor() -> None:
+    """Review Focus 1. Red proof: mutation of `_brief_match` to `return "file_only"` unconditionally
+    (so the symbol anchor's match is ignored); node id
+    tests/test_auditor_brief_hook.py::test_mixed_anchor_record_uses_its_best_anchor. Failed on the
+    `[symbol_changed]` assertion (printed `[file_only]`)."""
+    entry = _entry(1, "symbol_changed", "Pool._lease")
+    entry["anchor_matches"] = [
+        {"anchor": _anchor(None), "match": "file_only"},
+        {"anchor": _anchor("Pool._lease"), "match": "symbol_changed"},
+    ]
+    block = _render([entry])
+    assert f"BUG {entry['id']} [symbol_changed] {FILE} Pool._lease:" in block
+
+
+def test_symbolless_exact_does_not_demote_a_symbol_anchor() -> None:
+    """Fix round 1, finding 1. Red proof: baseline = the first commit's `_brief_match` (3408b771c),
+    which printed `[file_only]` because the best matcher level belonged to the symbol-less anchor;
+    node id tests/test_auditor_brief_hook.py::test_symbolless_exact_does_not_demote_a_symbol_anchor;
+    failed on the `[symbol_changed]` line assertion."""
+    entry = _entry(1, "exact", None)
+    entry["anchor_matches"] = [
+        {"anchor": _anchor(None), "match": "exact"},
+        {"anchor": _anchor("Pool._lease"), "match": "symbol_changed"},
+    ]
+    block = _render([entry])
+    assert f"BUG {entry['id']} [symbol_changed] {FILE} Pool._lease:" in block
+
+
+def test_equal_level_tie_prefers_the_symbol_anchor() -> None:
+    """Fix round 1, finding 1. Red proof: baseline = the first commit's `_brief_match`/`_best_anchor`
+    (3408b771c), which printed the first anchor, `(module)`; node id
+    tests/test_auditor_brief_hook.py::test_equal_level_tie_prefers_the_symbol_anchor; failed on the
+    line assertion naming `Pool._lease`."""
+    entry = _entry(1, "file_only", None)
+    entry["anchor_matches"] = [
+        {"anchor": _anchor(None), "match": "file_only"},
+        {"anchor": _anchor("Pool._lease"), "match": "file_only"},
+    ]
+    block = _render([entry])
+    assert f"BUG {entry['id']} [file_only] {FILE} Pool._lease:" in block
+
+
+def test_ties_break_newest_first() -> None:
+    """Red proof: baseline = unchanged `render` (input order kept); node id
+    tests/test_auditor_brief_hook.py::test_ties_break_newest_first. Targets the sort in `render`;
+    failed on the order assertion (older record first) and the cap assertion (kept the five first
+    listed, not the five newest)."""
+    old, new = _entry(1, "file_only", "Pool._lease", "2026-10-01"), _entry(2, "file_only", "Pool._lease", "2026-10-20")
+    assert _ids(_render([old, new])) == [new["id"], old["id"]]
+    six = [_entry(n, "file_only", "Pool._lease", f"2026-10-{n:02d}") for n in range(1, 7)]
+    assert _ids(_render(six)) == [six[n]["id"] for n in (5, 4, 3, 2, 1)]
+    undated = _entry(9, "file_only", "Pool._lease", None)
+    assert _ids(_render([undated, old]))[-1] == undated["id"]
+
+
+def test_the_probe_constant_is_set() -> None:
+    """Red proof: mutation of `FILE_LEVEL_RANKS_AS_FILE_ONLY` to False in recall_hooks/auditor_brief.py;
+    node id tests/test_auditor_brief_hook.py::test_the_probe_constant_is_set; failed on
+    `assert False is True` at the assertion below."""
+    assert auditor_brief.FILE_LEVEL_RANKS_AS_FILE_ONLY is True

@@ -818,12 +818,48 @@ def _clean(value: object) -> str:
     return text if len(text) <= MAX_LINE_CHARS else text[: MAX_LINE_CHARS - 3] + "..."
 
 
-def _best_anchor(entry: dict[str, Any]) -> dict[str, Any]:
+#: A record anchored at a whole file (`symbol: null`) cannot be told apart from the query's file
+#: level anchor by symbol, so `recall.records._match` calls it `symbol_changed` or `exact` on a
+#: hash alone, which outranks a record anchored at a real symbol that only reaches `file_only`.
+#: The brief ranks and prints it as `file_only`; `_match` itself is unchanged, because the
+#: false-positive matcher depends on its `exact`. False restores the matcher's labels.
+FILE_LEVEL_RANKS_AS_FILE_ONLY: bool = True
+
+
+def _brief_view(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """`(level, anchor)` the brief ranks and prints `entry` at: its best anchor, with a symbol-less
+    anchor counted as `file_only`. On a tie a symbol anchor wins, so the line names a real symbol."""
+    from recall.records import MATCH_ORDER
+
+    best: tuple[tuple[int, bool], str, dict[str, Any]] | None = None
     for item in entry.get("anchor_matches", []):
-        if item.get("match") == entry.get("anchor_match"):
-            anchor = item.get("anchor")
-            return anchor if isinstance(anchor, dict) else {}
-    return {}
+        anchor = item.get("anchor")
+        anchor = anchor if isinstance(anchor, dict) else {}
+        level = str(item.get("match"))
+        symbolless = FILE_LEVEL_RANKS_AS_FILE_ONLY and anchor.get("symbol") is None
+        if symbolless:
+            level = max(level, "file_only", key=MATCH_ORDER.index)
+        key = (MATCH_ORDER.index(level), symbolless)
+        if best is None or key < best[0]:
+            best = (key, level, anchor)
+    if best is None:
+        return str(entry["anchor_match"]), {}
+    return best[1], best[2]
+
+
+def _brief_match(entry: dict[str, Any]) -> str:
+    """The match level the brief ranks and prints `entry` at."""
+    return _brief_view(entry)[0]
+
+
+def _newest_first(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`entries` by brief match level, then newest first by record date (none is oldest), then id."""
+    from recall.records import MATCH_ORDER
+
+    ordered = sorted(entries, key=lambda e: str(e.get("id")))
+    ordered.sort(key=lambda e: str((e.get("recall_record") or {}).get("date") or ""), reverse=True)
+    ordered.sort(key=lambda e: MATCH_ORDER.index(_brief_match(e)))
+    return ordered
 
 
 def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unnamed_files: Set[str]) -> str | None:
@@ -838,7 +874,7 @@ def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unna
     if successor is not None and successor in retraction_files:
         return None
     record = entry["recall_record"]
-    anchor = _best_anchor(entry)
+    anchor = _brief_view(entry)[1]
     label, text_field, _cap = _KIND_VIEW[entry["kind"]]
     text = record.get(text_field)
     where = f"{anchor.get('file')} {anchor.get('symbol') or '(module)'}"
@@ -848,7 +884,7 @@ def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unna
     if not window_contains(parse_window(entry.get("valid_from"), entry.get("valid_until")), now):
         notes.append("outside its validity window")
     suffix = f" ({'; '.join(notes)})" if notes else ""
-    return _clean(f"{label} {entry['id']} [{entry['anchor_match']}] {where}: {text or ''}{suffix}")
+    return _clean(f"{label} {entry['id']} [{_brief_match(entry)}] {where}: {text or ''}{suffix}")
 
 
 def render(
@@ -860,7 +896,7 @@ def render(
 ) -> str:
     """The block for `entries` (best match first), or "" when none is shown. At most `MAX_BLOCK_CHARS`."""
     buckets: dict[str, list[str]] = {kind: [] for kind in _KIND_VIEW}
-    for entry in entries:
+    for entry in _newest_first(entries):
         kind = entry.get("kind")
         if kind not in _KIND_VIEW:
             continue
