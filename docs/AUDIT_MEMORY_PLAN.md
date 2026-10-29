@@ -135,10 +135,15 @@ file name to its parsed `recall_record`.
 as a date. A consumer reads it rather than comparing `valid_until` itself, and falls back to that
 rule only for an answer that predates the field.
 
+The envelope's `supersedes` and `superseded_by` are front matter source paths (the files the
+memo's `supersedes:` names, and the file that hides it at `now`), while `recall_record.supersedes`
+is a record id, as the record's author wrote it; the two are not the same field.
+
 `anchor_match` is the best of `anchor_matches` (exact, then symbol_changed, then file_only); a
 record with no anchor matching at least `file_only` is not returned for an anchor query. For an
 `ids` or `--all` query every `match` is `none`. In a code tenant each code chunk is returned as a
-record with `kind: "code"` and `recall_record` set to its `code_anchor` object.
+record with `kind: "code"` and `recall_record` set to its `code_anchor` object; its `id` is its
+chunk id, and its `name` and `description` are null.
 
 **Amended 2026-10-22 (orchestrator, from Session 3's report on PR 976):** several code chunks
 share one `code_anchor` (a split symbol, and every module-level chunk of a file), so a code tenant

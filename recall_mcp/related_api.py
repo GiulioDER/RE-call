@@ -14,7 +14,7 @@ from pydantic import (
 
 from recall.calibration import Calibration
 from recall.observability import get_logger as _get_logger
-from recall.records import lookup_records
+from recall.records import RecordsQueryError, lookup_records
 from recall.related import trusted_related
 from recall.security_policy import (
     AccessContext,
@@ -106,6 +106,10 @@ def records_memory(
     Raises:
         recall.records.RecordsQueryError: for a query that cannot be answered as asked.
     """
+    # The tool has no `all_records`, so the library's refusal, which names it, would offer the
+    # caller a parameter this tool does not take.
+    if anchors is None and ids is None:
+        raise RecordsQueryError("give anchors (with repo) or ids")
     return lookup_records(
         store,
         repo=repo,

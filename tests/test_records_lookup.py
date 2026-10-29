@@ -14,7 +14,10 @@ Invariants and the failure each one catches:
   chunks sharing one anchor (a split symbol) are one record, reported from the lowest-ordinal
   chunk with every chunk in `chunk_ids`; a null `repo` never matches a `repo` query.
 - K9 on PostgreSQL the generation store reads the ACTIVE generation only (DB suite).
-- K10 PostgreSQL and lite return the same records for the same memos (DB suite, through the CLI).
+- K10 PostgreSQL and lite return the same records for the same memos (DB suite, through the CLI),
+  and so does a generation built and promoted from that memo folder (`GenerationStore`, the store
+  production serves), up to the fields a store names its own way: `source`, `chunk_id` and
+  `chunk_ids` (CCA DAT-004 of the PR 977 deferred pass).
 - K11 the source policy applies before edges are derived: a denied record is not returned, is not
   named in another record's `caused`, and a denied successor is `<withheld>`, never None (None
   would present a retracted record as current).
@@ -31,7 +34,9 @@ own assertion, then restored and green:
 - K2 `...::test_multi_anchor_reports_each`: `_best` mutated from `min` to `max` over the match
   order: PERF-001~2 is no longer returned for its exact first anchor (the membership assertion).
 - K2b `...::test_best_match_is_listed_first`: the sort mutated to put the worst match first.
-- K6 `...::test_ids_and_all`: `offset` ignored when paging: the second page repeats the first.
+- K6 `...::test_ids_and_all` (rewritten 2026-10-29 when `offset` was removed, CCA CODE-007):
+  the `all_records` cut mutated to `records[:end]` with `truncated = False`: a cut dump
+  reported nothing left ("a cut all_records dump did not say it was cut").
 - K7 `...::test_over_200_anchors_refused`: the limit mutated to `> MAX_QUERY_ANCHORS + 1`:
   201 anchors are accepted (`DID NOT RAISE`).
 - K8 `...::test_code_anchor_chunks_are_code_records`: code records keyed per chunk id instead of
@@ -73,6 +78,7 @@ own assertion, then restored and green:
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -88,6 +94,7 @@ from tests.audit_memory_support import EXPECTED, MEMOS, REPO, copy_memos, indexe
 from tests.conftest import TEST_DSN, requires_db
 from tests.lite_cli_support import run_cli
 from tests.test_generations import (  # noqa: F401  # `manager` is a fixture, used by name
+    _S3,
     _Embedder,
     _manifest,
     _pipeline,
@@ -224,12 +231,12 @@ def test_ids_and_all(store: LiteStore) -> None:
         "lesson_retraction",
     }
     assert lookup_records(store, all_records=True, repo="someone/else")["records"] == []
-    first = lookup_records(store, all_records=True, limit=4)
-    rest = lookup_records(store, all_records=True, limit=4, offset=4)
-    last = lookup_records(store, all_records=True, limit=4, offset=8)
-    assert (first["truncated"], rest["truncated"], last["truncated"]) == (True, True, False)
-    paged = [r["id"] for page in (first, rest, last) for r in page["records"]]
-    assert paged == [r["id"] for r in everything["records"]]
+    order = [r["id"] for r in everything["records"]]
+    cut = lookup_records(store, all_records=True, limit=4)
+    assert [r["id"] for r in cut["records"]] == order[:4]
+    assert cut["truncated"] is True, "a cut all_records dump did not say it was cut"
+    whole = lookup_records(store, all_records=True, limit=len(order))
+    assert [r["id"] for r in whole["records"]] == order and whole["truncated"] is False
 
 
 def test_over_200_anchors_refused(store: LiteStore) -> None:
@@ -343,8 +350,9 @@ def test_reads_active_generation_only(manager) -> None:  # noqa: F811  # the imp
 
 
 @requires_db
-def test_postgres_and_lite_return_the_same_records(tmp_path: Path, cli_table: str) -> None:
-    """K10: the same CLI sequence on both stores prints the same records."""
+def test_postgres_and_lite_return_the_same_records(tmp_path: Path, cli_table: str, manager) -> None:  # noqa: F811  # the imported fixture
+    """K10: the same CLI sequence on both stores prints the same records, and a generation built
+    from the same memos returns them too."""
     folder = copy_memos(tmp_path / "memos")
     backends = {
         "postgres": ["--embedder", "hashing", "--dsn", TEST_DSN, "--table", cli_table],
@@ -358,6 +366,38 @@ def test_postgres_and_lite_return_the_same_records(tmp_path: Path, cli_table: st
         dumps[name] = envelope["records"]
     assert len(dumps["lite"]) == len(EXPECTED)
     assert dumps["postgres"] == dumps["lite"]
+
+    # The generation leg: every memo of the folder as one object of a manifest under one prefix,
+    # so `manifest_relative_paths` gives each its bare name, the `file` lite records too.
+    from recall.generation_store import GenerationStore
+    from recall.lineage import IndexManifestV1, ManifestObjectV1
+    from recall.manifest import S3Allowlist, S3ObjectReader
+
+    tenant = manager.tenant_id
+    objects: dict[tuple[str, str, str], bytes] = {}
+    entries = []
+    for memo in sorted(folder.glob("*.md")):
+        data = memo.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        objects[("approved", f"corpora/{tenant}/{memo.name}", digest)] = data
+        entries.append(
+            ManifestObjectV1(f"s3://approved/corpora/{tenant}/{memo.name}", digest, "text/markdown", len(data), digest)
+        )
+    manifest = IndexManifestV1(tenant, "corpus-v1", tuple(entries))
+    reader = S3ObjectReader(_S3(objects), S3Allowlist.parse("approved/corpora/"))
+    generation = _ready(manager, manifest, _pipeline("model-a"), reader, _Embedder(1))
+    manager.promote(generation, unsafe_development=True)
+    with GenerationStore(TEST_DSN, 64, tenant=tenant) as store:
+        served = json.loads(json.dumps(lookup_records(store, all_records=True, limit=None)["records"]))
+
+    def comparable(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        # A store names its sources and chunks its own way, and this build chunks each memo whole.
+        return [
+            {**{k: v for k, v in r.items() if k not in ("chunk_id", "chunk_ids")}, "source": memo_name(r["source"])}
+            for r in records
+        ]
+
+    assert comparable(served) == comparable(dumps["lite"]), "a generation store returned other records than lite"
 
 
 def test_a_lookup_reads_only_the_code_anchors_it_can_match(tmp_path: Path) -> None:
