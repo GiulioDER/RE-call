@@ -66,11 +66,15 @@ def assemble(
     embedded_views = 0
     seen_digests: set[str] = set()
     for offset in range(0, len(missing), EMBED_BATCH_CHUNKS):
-        batch = [
-            planned[index]
-            for index in missing[offset : offset + EMBED_BATCH_CHUNKS]
-            if planned[index][2] not in seen_digests
-        ]
+        batch = []
+        batch_digests: set[str] = set()
+        for index in missing[offset : offset + EMBED_BATCH_CHUNKS]:
+            item = planned[index]
+            digest = item[2]
+            if digest in seen_digests or digest in batch_digests:
+                continue
+            batch.append(item)
+            batch_digests.add(digest)
         if not batch:
             continue
         vectors = embed_groups([views for _, views, _ in batch])
