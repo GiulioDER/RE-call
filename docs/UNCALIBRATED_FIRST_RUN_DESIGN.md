@@ -425,7 +425,7 @@ failure-code API is untouched and the fail-closed default stays exactly as it is
 
 The question assumed provisional was a *weaker certification*. The Q2 measurement falsified that:
 a generated query set **passes** `Calibration.certified`, and `publish()` accepts the artifact
-(`CalibrationRepository.carry_forward` only refuses `not artifact.certified`). So certification and
+(`CalibrationRepository.publish` checks `not artifact.certified`). So certification and
 provenance are **two independent axes**, and the original framing conflated them.
 
 So: `CalibrationStatus` keeps meaning "is this artifact bound and statistically sound". Provenance

@@ -108,37 +108,51 @@ async def run_scenario(
             }
         )
     started = time.perf_counter()
-    results = await asyncio.gather(
-        *(add_with_retries(client, body, max_attempts, backoff) for body in bodies)
-    )
-    wall = time.perf_counter() - started
-    # Replay every request: an idempotent receipt must come back 200 with a nonzero raw count.
-    replays = []
-    for body in bodies:
-        response = await client.post("/v1/add", json=body)
-        payload = response.json() if response.status_code == 200 else {}
-        replays.append(response.status_code == 200 and int(payload.get("raw_count", 0)) > 0)
-    for user in sorted({body["user_id"] for body in bodies}):
-        await client.post("/v1/delete", json={"user_id": user})
-    first = Counter(str(r["attempts"][0]["status"]) for r in results)
-    return {
-        "scenario": label,
-        "users": users,
-        "adds": len(bodies),
-        "wall_seconds": round(wall, 1),
-        "first_attempt_status": dict(first),
-        "first_attempt_5xx_or_timeout": sum(
-            1 for r in results if r["attempts"][0]["status"] != 200
-        ),
-        "eventual_success": sum(1 for r in results if r["final_status"] == 200),
-        "max_attempts_used": max(len(r["attempts"]) for r in results),
-        "total_retries": sum(len(r["attempts"]) - 1 for r in results),
-        "median_seconds_to_success": statistics.median(
-            r["seconds_to_final"] for r in results if r["final_status"] == 200
-        ) if any(r["final_status"] == 200 for r in results) else None,
-        "replay_receipts_ok": sum(replays),
-        "requests": results,
-    }
+    tasks = [
+        asyncio.create_task(add_with_retries(client, body, max_attempts, backoff))
+        for body in bodies
+    ]
+    try:
+        results = await asyncio.gather(*tasks)
+        wall = time.perf_counter() - started
+        # Replay every request: an idempotent receipt must come back 200 with a nonzero raw count.
+        replays = []
+        for body in bodies:
+            response = await client.post("/v1/add", json=body)
+            payload = response.json() if response.status_code == 200 else {}
+            replays.append(response.status_code == 200 and int(payload.get("raw_count", 0)) > 0)
+        first = Counter(str(r["attempts"][0]["status"]) for r in results)
+        return {
+            "scenario": label,
+            "users": users,
+            "adds": len(bodies),
+            "wall_seconds": round(wall, 1),
+            "first_attempt_status": dict(first),
+            "first_attempt_5xx_or_timeout": sum(
+                1 for r in results if r["attempts"][0]["status"] != 200
+            ),
+            "eventual_success": sum(1 for r in results if r["final_status"] == 200),
+            "max_attempts_used": max(len(r["attempts"]) for r in results),
+            "total_retries": sum(len(r["attempts"]) - 1 for r in results),
+            "median_seconds_to_success": statistics.median(
+                r["seconds_to_final"] for r in results if r["final_status"] == 200
+            ) if any(r["final_status"] == 200 for r in results) else None,
+            "replay_receipts_ok": sum(replays),
+            "requests": results,
+        }
+    finally:
+        # gather propagates one failure while its siblings may still be writing.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        failures = []
+        for user in sorted({body["user_id"] for body in bodies}):
+            try:
+                response = await client.post("/v1/delete", json={"user_id": user})
+                if response.status_code != 200:
+                    failures.append(f"{user}: HTTP {response.status_code}")
+            except Exception as exc:
+                failures.append(f"{user}: {type(exc).__name__}")
+        if failures:
+            raise RuntimeError(f"scenario cleanup failed: {'; '.join(failures)}")
 
 
 async def main_async(args: argparse.Namespace) -> dict[str, Any]:

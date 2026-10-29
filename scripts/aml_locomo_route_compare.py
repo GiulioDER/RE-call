@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -198,6 +199,24 @@ def build_corpus(
     return adds, questions
 
 
+@contextmanager
+def _cleanup_users(client: Any, users: set[str], headers: dict[str, str]) -> Iterator[None]:
+    """Attempt every owned user's deletion before closing the client, including on interruption."""
+    try:
+        yield
+    finally:
+        failures = []
+        for user_id in sorted(users):
+            try:
+                response = client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
+                if response.status_code != 200:
+                    failures.append(f"{user_id}: HTTP {response.status_code}")
+            except Exception as exc:
+                failures.append(f"{user_id}: {type(exc).__name__}")
+        if failures:
+            raise RuntimeError(f"comparison cleanup failed: {'; '.join(failures)}")
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     from starlette.testclient import TestClient
 
@@ -248,12 +267,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {os.environ['RECALL_AML_API_KEY']}"}
     failures: Counter[str] = Counter()
     started = time.perf_counter()
-    with TestClient(build_app()) as client:
+    users_to_delete: set[str] = set()
+    with TestClient(build_app()) as client, _cleanup_users(client, users_to_delete, headers):
         version = client.get("/version", headers=headers).json()
         if version.get("variant") != args.expected_variant:
             raise SystemExit(f"served variant {version.get('variant')!r} is not {args.expected_variant!r}")
         add_fallbacks = 0
         for position, request in enumerate(adds, start=1):
+            users_to_delete.add(request["user_id"])
             response = post(client, "/v1/add", request)
             if response.status_code != 200:
                 failures[f"add_{response.status_code}"] += 1
@@ -289,9 +310,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             rows.append(row)
             if position % 50 == 0:
                 print(f"searched {position}/{len(questions)}", file=sys.stderr, flush=True)
-        for user_id in sorted({request["user_id"] for request in adds}):
-            client.post("/v1/delete", json={"user_id": user_id}, headers=headers)
-
     canary = rows[0]
     rows = rows[1:]
     complete = [row for row in rows if all(row[arm] is not None for arm in ARMS)]
