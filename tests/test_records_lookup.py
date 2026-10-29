@@ -34,7 +34,9 @@ own assertion, then restored and green:
 - K2 `...::test_multi_anchor_reports_each`: `_best` mutated from `min` to `max` over the match
   order: PERF-001~2 is no longer returned for its exact first anchor (the membership assertion).
 - K2b `...::test_best_match_is_listed_first`: the sort mutated to put the worst match first.
-- K6 `...::test_ids_and_all`: `offset` ignored when paging: the second page repeats the first.
+- K6 `...::test_ids_and_all` (rewritten 2026-10-29 when `offset` was removed, CCA CODE-007):
+  the `all_records` cut mutated to `records[:end]` with `truncated = False`: a cut dump
+  reported nothing left ("a cut all_records dump did not say it was cut").
 - K7 `...::test_over_200_anchors_refused`: the limit mutated to `> MAX_QUERY_ANCHORS + 1`:
   201 anchors are accepted (`DID NOT RAISE`).
 - K8 `...::test_code_anchor_chunks_are_code_records`: code records keyed per chunk id instead of
@@ -229,12 +231,12 @@ def test_ids_and_all(store: LiteStore) -> None:
         "lesson_retraction",
     }
     assert lookup_records(store, all_records=True, repo="someone/else")["records"] == []
-    first = lookup_records(store, all_records=True, limit=4)
-    rest = lookup_records(store, all_records=True, limit=4, offset=4)
-    last = lookup_records(store, all_records=True, limit=4, offset=8)
-    assert (first["truncated"], rest["truncated"], last["truncated"]) == (True, True, False)
-    paged = [r["id"] for page in (first, rest, last) for r in page["records"]]
-    assert paged == [r["id"] for r in everything["records"]]
+    order = [r["id"] for r in everything["records"]]
+    cut = lookup_records(store, all_records=True, limit=4)
+    assert [r["id"] for r in cut["records"]] == order[:4]
+    assert cut["truncated"] is True, "a cut all_records dump did not say it was cut"
+    whole = lookup_records(store, all_records=True, limit=len(order))
+    assert [r["id"] for r in whole["records"]] == order and whole["truncated"] is False
 
 
 def test_over_200_anchors_refused(store: LiteStore) -> None:

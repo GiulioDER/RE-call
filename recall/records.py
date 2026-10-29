@@ -563,7 +563,6 @@ def lookup_records(
     kinds: Sequence[str] | None = None,
     all_records: bool = False,
     limit: int | None = MAX_RECORDS,
-    offset: int = 0,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
     now: datetime | None = None,
@@ -574,11 +573,11 @@ def lookup_records(
     with at least one anchor matching at `file_only` or better, best match first; an `ids` or
     `all_records` query marks every match `none`. `repo`, when given, restricts every form.
 
-    More matches than `limit` refuses an anchor or id query (never a silent cut) and pages an
-    `all_records` query, with `truncated` true while records remain past `offset + limit`.
+    More matches than `limit` refuses an anchor or id query (never a silent cut) and cuts an
+    `all_records` query to its first `limit` records, with `truncated` true when more remain.
     `limit=None`, with `all_records` only, returns every record from the one snapshot: the full
-    dump a round-trip check needs, which separate paged calls cannot give on a store with no
-    generation id to pin them to.
+    dump a round-trip check needs. There is no offset: separate paged calls cannot be pinned to
+    one state on a store with no generation id (owner decision 2026-10-29, CCA CODE-007).
     Reads one snapshot of the store's active generation when it has one. A legacy `PgVectorStore`
     has no `snapshot()`, so it reads the records and the supersession graph in two statements, and
     an index run landing between them can pair one state's records with another's graph.
@@ -602,8 +601,6 @@ def lookup_records(
             raise RecordsQueryError("an unbounded limit is only for an all_records dump")
     elif isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_RECORDS:
         raise RecordsQueryError(f"limit must be an integer from 1 to {MAX_RECORDS}")
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise RecordsQueryError("offset must be a non-negative integer")
     if repo is not None and (not isinstance(repo, str) or not repo):
         raise RecordsQueryError("repo must be a non-empty string")
     query_anchors = validated_anchor_query(repo, anchors) if anchors is not None else None
@@ -712,9 +709,9 @@ def lookup_records(
     )
     truncated = False
     if all_records:
-        end = len(records) if limit is None else offset + limit
+        end = len(records) if limit is None else limit
         truncated = len(records) > end
-        records = records[offset:end]
+        records = records[:end]
     elif limit is not None and len(records) > limit:
         raise RecordsQueryError(
             f"{len(records)} records match, more than the limit of {limit}: narrow the query "
