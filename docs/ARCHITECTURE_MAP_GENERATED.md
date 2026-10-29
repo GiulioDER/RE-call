@@ -71,8 +71,8 @@ Cross package edges: 367
 | 20 | `recall.rewrite` |
 | 19 | `recall_mcp.provenance` |
 | 18 | `recall.index` |
+| 18 | `recall_mcp.indexing` |
 | 17 | `recall.cli_commands.calibration_cmd` |
-| 17 | `recall_mcp.indexing` |
 | 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall.generation_store` |
 | 16 | `recall.wizard.headless` |
@@ -800,7 +800,7 @@ They are observations, not automatic failures.
 | `recall_mcp.graph_expansion` | 9 | 114 |
 | `recall_mcp.graph_first_api` | 15 | 135 |
 | `recall_mcp.graph_projection` | 6 | 40 |
-| `recall_mcp.indexing` | 17 | 101 |
+| `recall_mcp.indexing` | 18 | 116 |
 | `recall_mcp.lifecycle` | 14 | 116 |
 | `recall_mcp.limits` | 3 | 3 |
 | `recall_mcp.lite_refresh` | 5 | 98 |

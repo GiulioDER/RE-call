@@ -865,9 +865,20 @@ jobs:
         with:
           persist-credentials: false
 
+      # The same pinned release and checksum as publish-mcp.yml, so this gate runs the validator
+      # that publishing runs. tests/test_mcp_publisher_pin.py fails when the two pins differ.
       - name: Install mcp-publisher
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
+          MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
         run: |
-          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+          set -euo pipefail
+          asset="mcp-publisher_linux_amd64.tar.gz"
+          url="https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/${asset}"
+          curl --fail --silent --show-error --location "$url" --output "$asset"
+          echo "${MCP_PUBLISHER_SHA256}  ${asset}" | sha256sum --check -
+          tar xzf "$asset" mcp-publisher
+          rm "$asset"
 
       - name: Validate server.json against the registry schema
         run: ./mcp-publisher validate server.json

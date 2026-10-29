@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 import recall_mcp.compat as compat
 import recall_mcp.generation_admin as generation_admin
 import recall_mcp.graph_first_api as graph_first_api
@@ -18,6 +20,7 @@ import recall_mcp.retrieval as retrieval
 import recall_mcp.service as service
 import recall_mcp.status as status
 from recall_mcp import desktop_ingest as _desktop_ingest
+from recall_mcp.settings import Settings, activate_runtime_settings, reset_runtime_settings
 
 
 def test_legacy_service_search_forwards_to_retrieval(monkeypatch) -> None:
@@ -44,6 +47,31 @@ def test_legacy_service_search_forwards_the_settings_environment_snapshot(monkey
 
     assert service.search_memory("store", "embedder", "query", env=environment) == "sentinel"
     assert captured["args"][-1] == environment
+
+
+def test_index_memory_without_env_reads_the_active_settings_snapshot(tmp_path, monkeypatch) -> None:
+    """With no `env`, index_memory takes the server's settings, as every sibling owner does.
+
+    PR 660 moved index_memory into indexing.py with `os.environ` as its fallback where service.py
+    had used `runtime_environment()`, so inside a server lifespan an env-less call ignored the
+    bootstrapped settings: here, the settings' narrower RECALL_INDEX_ROOT (CCA run
+    20261029T210323Z, ENV-002).
+
+    Red proof: against indexing.py at 8c296fd31 the root falls back to the process cwd, the path
+    passes the root check, and `pytest.raises(match="outside the directory")` fails on the
+    "path not found" message instead; restored, it passes.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RECALL_INDEX_ROOT", raising=False)
+    monkeypatch.delenv("RECALL_ENTERPRISE_CONTROL_PLANE", raising=False)
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    token = activate_runtime_settings(Settings.from_env({"RECALL_INDEX_ROOT": str(allowed)}))
+    try:
+        with pytest.raises(indexing.IndexPreflightError, match="outside the directory"):
+            indexing.index_memory(object(), object(), str(tmp_path / "elsewhere"))
+    finally:
+        reset_runtime_settings(token)
 
 
 def test_generation_boundary_forwards_without_requiring_service_at_import_time(monkeypatch) -> None:

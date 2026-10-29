@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,6 +21,7 @@ from recall.observability import get_logger
 from recall.runtime_route import RouteConfigurationError, resolve_runtime_route
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall_mcp.models import IndexResult
+from recall_mcp.settings import runtime_environment
 
 if TYPE_CHECKING:
     from recall.control_plane import ControlPlane
@@ -108,7 +108,7 @@ def _index_memory_unlocked(
     candidate_files_fn: CandidateFiles | None = None,
 ) -> IndexResult:
     """`index_memory` without the lite store's write lane; call `index_memory`."""
-    values = dict(os.environ if env is None else env)
+    values = dict(runtime_environment() if env is None else env)
     try:
         route = resolve_runtime_route(
             enterprise=strict_bool(
