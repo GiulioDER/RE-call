@@ -127,17 +127,33 @@ class _CountingConnection:
 
     @contextmanager
     def transaction(self, *args: Any, **kwargs: Any) -> Iterator[Any]:
-        """Count the two statements a transaction block sends, which `execute` never sees.
+        """Count transaction-control statements, which `execute` never sees.
 
         psycopg sends `BEGIN` and `COMMIT` (or `SAVEPOINT` and `RELEASE` when nested) for every
         `conn.transaction()`. Leaving them out made `db_statement_count` report a filtered dense
         query as three statements when it was five round trips.
+        A nested rollback sends both `ROLLBACK TO` and `RELEASE`, including when
+        requested by `force_rollback` or `psycopg.Rollback`.
         """
+        status = getattr(
+            getattr(self._connection, "info", None),
+            "transaction_status",
+            psycopg.pq.TransactionStatus.IDLE,
+        )
+        nested = status != psycopg.pq.TransactionStatus.IDLE
         self._trace.add("db_statement_count")
         try:
             with self._connection.transaction(*args, **kwargs) as tx:
-                yield tx
-        finally:  # COMMIT on success, ROLLBACK on an exception: one statement either way
+                failed = False
+                try:
+                    yield tx
+                except BaseException:
+                    failed = True
+                    raise
+                finally:
+                    if nested and (failed or getattr(tx, "force_rollback", False)):
+                        self._trace.add("db_statement_count")  # RELEASE after ROLLBACK TO
+        finally:  # COMMIT, ROLLBACK, or the nested block's RELEASE/ROLLBACK TO
             self._trace.add("db_statement_count")
 
     def __getattr__(self, name: str) -> Any:
