@@ -853,12 +853,23 @@ def _brief_match(entry: dict[str, Any]) -> str:
 
 
 def _newest_first(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """`entries` by brief match level, then newest first by record date (none is oldest), then id."""
+    """`entries` by brief match level, then symbol anchors before symbol-less ones, then newest first
+    by record date (none is oldest), then id.
+
+    The second key keeps a record anchored at a real symbol that reached `file_only` ahead of a
+    newer symbol-less record at the same level, so the cap cannot push it out. With
+    `FILE_LEVEL_RANKS_AS_FILE_ONLY` False no anchor counts as symbol-less and the key is constant.
+    """
     from recall.records import MATCH_ORDER
+
+    def rank(entry: dict[str, Any]) -> tuple[int, bool]:
+        level, anchor = _brief_view(entry)
+        symbolless = FILE_LEVEL_RANKS_AS_FILE_ONLY and bool(anchor) and anchor.get("symbol") is None
+        return MATCH_ORDER.index(level), symbolless
 
     ordered = sorted(entries, key=lambda e: str(e.get("id")))
     ordered.sort(key=lambda e: str((e.get("recall_record") or {}).get("date") or ""), reverse=True)
-    ordered.sort(key=lambda e: MATCH_ORDER.index(_brief_match(e)))
+    ordered.sort(key=rank)
     return ordered
 
 
