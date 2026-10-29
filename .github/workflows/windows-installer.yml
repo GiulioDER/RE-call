@@ -154,11 +154,29 @@ jobs:
       #
       # So it is escapable, but only by someone deliberately ticking a box on a manual run, and
       # never by a tag push. The artifact is then renamed to say what it is; see the next step.
+      # ⚠️ **Until SignPath is configured, a tag push WARNS instead of failing** (owner decision,
+      # 2026-10-28). Every tag from v0.10.0 to v0.14.0 failed here only because the credentials do
+      # not exist yet, and a red release run that is red for a known, unchanging reason hides the
+      # one that is red for a new one. Nothing unsigned is shipped either way: the `attach` job
+      # below requires `signed == 'true'`, so the release simply carries no installer, and the
+      # warning says so on the run. Once `SIGNPATH_ORGANIZATION_ID` is set, a tag whose signing
+      # was skipped cannot happen, and a manual run without `allow_unsigned` still fails.
+      - name: Note that this release carries no Windows installer
+        if: >-
+          steps.sign.outcome == 'skipped'
+          && github.event_name == 'push'
+          && vars.SIGNPATH_ORGANIZATION_ID == ''
+        run: |
+          echo "::warning::SignPath is not configured (SIGNPATH_ORGANIZATION_ID variable and"
+          echo "::warning::SIGNPATH_API_TOKEN secret), so this release carries no Windows installer."
+          echo "::warning::Nothing unsigned was attached. See the comments in this workflow to set it up."
+
       - name: Refuse an unsigned release
         if: >-
           steps.sign.outcome == 'skipped'
           && (github.event_name == 'push' || inputs.allow_unsigned != true)
           && github.event_name != 'pull_request'
+          && !(github.event_name == 'push' && vars.SIGNPATH_ORGANIZATION_ID == '')
         run: |
           echo "::error::no signing credentials configured, so the artifact would be blocked by"
           echo "::error::Smart App Control on the machines it targets. Set the"
