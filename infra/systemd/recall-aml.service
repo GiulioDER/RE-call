@@ -9,6 +9,13 @@ User=recall-aml
 Group=recall-aml
 WorkingDirectory=/opt/recall-aml/current
 EnvironmentFile=/etc/recall-aml/hosted.env
+# The operator drop-in must bind the existing shared lock here.
+RuntimeDirectory=recall-aml
+RuntimeDirectoryMode=0700
+ExecStartPre=/usr/bin/mountpoint -q /run/recall-aml/embed.lock
+ExecStartPre=/usr/bin/test -f /run/recall-aml/embed.lock
+ExecStartPre=/usr/bin/test -r /run/recall-aml/embed.lock
+ExecStartPre=/usr/bin/test -w /run/recall-aml/embed.lock
 ExecStart=/opt/recall-aml/venv/bin/recall-hosted
 Restart=on-failure
 RestartSec=5

@@ -197,42 +197,38 @@ def build_app(settings: HostedSettings | None = None) -> Any:
             shared_pool=pool,
         )
         store.check_schema()
-    except BaseException:
-        pool.close()
-        raise
-    repository = PgHostedRepository(
-        store,
-        embedder,
-        sparse_encoder,
-        specialist_embedders=specialist_embedders,
-    )
-    compiler = build_compiler(settings, behavior)
-    # RK-1: the model is chosen once here; whether a Search reranks is the service's switch.
-    selected_rerank_model = rerank_model(os.environ)
-    reranker = VoyageReranker(
-        model=selected_rerank_model,
-        api_key=settings.voyage_api_key,
-        timeout=RERANK_TIMEOUT_SECONDS,
-    )
-    rerank_on = reranker_switch(behavior)
-    multimodal_embedder: MultimodalEmbedder | None = (
-        VoyageMultimodalEmbedder(
-            settings.voyage_api_key, query_timeout=VISUAL_QUERY_TIMEOUT_SECONDS
+        repository = PgHostedRepository(
+            store,
+            embedder,
+            sparse_encoder,
+            specialist_embedders=specialist_embedders,
         )
-        if behavior.multimodal_native
-        else None
-    )
-    if multimodal_embedder is not None and settings.embedding_lock_path is not None:
-        multimodal_embedder = cast(
-            MultimodalEmbedder,
-            LockedMultimodalEmbedder(multimodal_embedder, settings.embedding_lock_path),
+        compiler = build_compiler(settings, behavior)
+        # RK-1: the model is chosen once here; whether a Search reranks is the service's switch.
+        selected_rerank_model = rerank_model(os.environ)
+        reranker = VoyageReranker(
+            model=selected_rerank_model,
+            api_key=settings.voyage_api_key,
+            timeout=RERANK_TIMEOUT_SECONDS,
         )
-    if multimodal_embedder is not None and settings.embedding_cache_path is not None:
-        multimodal_embedder = cast(
-            MultimodalEmbedder,
-            CachedMultimodalEmbedder(multimodal_embedder, settings.embedding_cache_path),
+        rerank_on = reranker_switch(behavior)
+        multimodal_embedder: MultimodalEmbedder | None = (
+            VoyageMultimodalEmbedder(
+                settings.voyage_api_key, query_timeout=VISUAL_QUERY_TIMEOUT_SECONDS
+            )
+            if behavior.multimodal_native
+            else None
         )
-    try:
+        if multimodal_embedder is not None and settings.embedding_lock_path is not None:
+            multimodal_embedder = cast(
+                MultimodalEmbedder,
+                LockedMultimodalEmbedder(multimodal_embedder, settings.embedding_lock_path),
+            )
+        if multimodal_embedder is not None and settings.embedding_cache_path is not None:
+            multimodal_embedder = cast(
+                MultimodalEmbedder,
+                CachedMultimodalEmbedder(multimodal_embedder, settings.embedding_cache_path),
+            )
         readiness = verify_model_readiness(
             embedder=embedder,
             compiler=compiler,
@@ -242,42 +238,42 @@ def build_app(settings: HostedSettings | None = None) -> Any:
             specialist_embedders=specialist_embedders,
             behavior=replace(behavior, compiler=compile_on, reranker=rerank_on),
         )
+        # Retrievers embed queries only, and each query embedding waits at most the Search budget.
+        retriever = HostedRetriever(
+            DeadlineEmbedder(embedder), reranker, sparse_encoder=sparse_encoder
+        )
+        specialist_retrievers = {
+            profile: HostedRetriever(DeadlineEmbedder(specialist), reranker)
+            for profile, specialist in specialist_embedders.items()
+        }
+        service = HostedService(
+            repository,
+            compiler,
+            retriever,
+            context_chars=settings.context_chars,
+            behavior=behavior,
+            multimodal_embedder=multimodal_embedder,
+            specialist_retrievers=specialist_retrievers,
+            image_text_extractor=build_image_text_extractor(settings, behavior),
+            rerank_model=selected_rerank_model,
+            model_clients_ready=all(
+                readiness[name]
+                for name in ("embedder_ready",)
+                + (("compiler_ready",) if compile_on or behavior.facets else ())
+                + (("reranker_ready",) if rerank_on else ())
+                + (("sparse_ready",) if behavior.learned_sparse else ())
+                + (("multimodal_ready",) if behavior.multimodal_native else ())
+                + (
+                    (f"specialist:{behavior.context_embedding_profile}",)
+                    if behavior.context_specialist
+                    else ()
+                )
+            ),
+        )
+        return create_app(settings, service, shutdown=pool.close)
     except BaseException:
         pool.close()
         raise
-    # Retrievers embed queries only, and each query embedding waits at most the Search budget.
-    retriever = HostedRetriever(
-        DeadlineEmbedder(embedder), reranker, sparse_encoder=sparse_encoder
-    )
-    specialist_retrievers = {
-        profile: HostedRetriever(DeadlineEmbedder(specialist), reranker)
-        for profile, specialist in specialist_embedders.items()
-    }
-    service = HostedService(
-        repository,
-        compiler,
-        retriever,
-        context_chars=settings.context_chars,
-        behavior=behavior,
-        multimodal_embedder=multimodal_embedder,
-        specialist_retrievers=specialist_retrievers,
-        image_text_extractor=build_image_text_extractor(settings, behavior),
-        rerank_model=selected_rerank_model,
-        model_clients_ready=all(
-            readiness[name]
-            for name in ("embedder_ready",)
-            + (("compiler_ready",) if compile_on or behavior.facets else ())
-            + (("reranker_ready",) if rerank_on else ())
-            + (("sparse_ready",) if behavior.learned_sparse else ())
-            + (("multimodal_ready",) if behavior.multimodal_native else ())
-            + (
-                (f"specialist:{behavior.context_embedding_profile}",)
-                if behavior.context_specialist
-                else ()
-            )
-        ),
-    )
-    return create_app(settings, service, shutdown=pool.close)
 
 
 _RECORD_ATTRIBUTES = frozenset(

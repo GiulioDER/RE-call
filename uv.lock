@@ -4711,7 +4711,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'sparse'", specifier = ">=2.0,<3" },
     { name = "transformers", marker = "extra == 'sparse'", specifier = ">=4.40,<6" },
     { name = "uvicorn", marker = "extra == 'hosted'", specifier = ">=0.30,<1" },
-    { name = "voyageai", marker = "extra == 'hosted'", specifier = ">=0.2.2" },
+    { name = "voyageai", marker = "extra == 'hosted'", specifier = ">=0.3.0" },
     { name = "voyageai", marker = "extra == 'voyage'", specifier = ">=0.2.2" },
     { name = "vulture", marker = "extra == 'analysis'", specifier = ">=2,<3" },
     { name = "xlrd", marker = "extra == 'documents'", specifier = ">=2.0" },

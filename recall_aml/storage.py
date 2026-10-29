@@ -86,6 +86,11 @@ class ForgetLedgerRepository(Protocol):
     def forget_requests(self, tenant: str) -> list[Chunk]: ...
 
 
+# Retain supported specialist identities after clients or variants are disabled.
+# Retired profiles must stay here so their user evidence remains erasable.
+_SPECIALIST_ERASURE_PROFILES = frozenset({"voyage-context-4-v1"})
+
+
 class PgHostedRepository:
     distributed_locks = True
 
@@ -520,7 +525,8 @@ class PgHostedRepository:
         return describe_corpus(self.graph_store(tenant))
 
     def delete_tenant(self, tenant: str) -> int:
-        specialists = [specialist_tenant(tenant, profile) for profile in self._specialist_embedders]
+        profiles = sorted(_SPECIALIST_ERASURE_PROFILES | self._specialist_embedders.keys())
+        specialists = [specialist_tenant(tenant, profile) for profile in profiles]
         physical_tenants = [
             tenant,
             media_tenant(tenant),

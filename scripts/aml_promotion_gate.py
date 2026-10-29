@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 
@@ -38,11 +39,14 @@ def decide(payload: dict) -> tuple[bool, list[str]]:
         failures.append("Add did not sustain 16 concurrent requests without errors")
     if int(payload.get("search_concurrency", 0)) < 16 or int(payload.get("search_errors", 1)) != 0:
         failures.append("Search did not sustain 16 concurrent requests without errors")
-    if float(payload.get("add_p95_seconds", 999)) >= 30:
+    add_p95 = float(payload.get("add_p95_seconds", 999))
+    if not math.isfinite(add_p95) or not 0 <= add_p95 < 30:
         failures.append("Add p95 is not below 30 seconds")
-    if float(payload.get("search_p95_seconds", 999)) >= 5:
+    search_p95 = float(payload.get("search_p95_seconds", 999))
+    if not math.isfinite(search_p95) or not 0 <= search_p95 < 5:
         failures.append("Search p95 is not below 5 seconds")
-    if float(payload.get("provider_spend_usd", 999)) > 450:
+    spend = float(payload.get("provider_spend_usd", 999))
+    if not math.isfinite(spend) or not 0 <= spend <= 450:
         failures.append("provider_spend_usd exceeds the 450 dollar promotion ceiling")
     return not failures, failures
 

@@ -185,10 +185,14 @@ async def _body(request: Request) -> bytes:
     length = request.headers.get("content-length")
     if length is not None and int(length) > MAX_BODY_BYTES:
         raise ValueError("request body is too large")
-    body = await request.body()
-    if len(body) > MAX_BODY_BYTES:
-        raise ValueError("request body is too large")
-    return body
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            raise ValueError("request body is too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _decode_json(body: bytes) -> Any:
