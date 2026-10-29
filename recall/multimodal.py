@@ -22,7 +22,10 @@ from datetime import datetime
 from typing import Literal, Protocol
 
 from recall import embeddings as _embeddings
+from recall._env import truthy
 from recall.embeddings import (
+    MULTIMODAL_EMBEDDING_MODEL as MULTIMODAL_EMBEDDING_MODEL,
+    MULTIMODAL_EMBEDDING_PROFILE as MULTIMODAL_EMBEDDING_PROFILE,
     EmbeddingProfile,
     _check_declared_width,
     retry_with_backoff,
@@ -31,8 +34,6 @@ from recall.errors import RecallError
 
 
 MULTIMODAL_TENANT = "re-call-multimodal"
-MULTIMODAL_EMBEDDING_MODEL = "voyage-multimodal-3.5"
-MULTIMODAL_EMBEDDING_PROFILE = "voyage-multimodal-3.5-v1"
 MULTIMODAL_DIMENSION = 1024
 DEFAULT_MAX_MEDIA_BYTES = 30 * 1024 * 1024
 DEFAULT_MAX_RESPONSE_BYTES = 30 * 1024 * 1024
@@ -648,8 +649,7 @@ class MultimodalTenantConfig:
     def from_env(cls, env: Mapping[str, str] | None = None) -> "MultimodalTenantConfig":
         source = os.environ if env is None else env
         return cls(
-            enabled=source.get("RECALL_MULTIMODAL_ENABLED", "0").strip().lower()
-            in {"1", "true", "yes", "on"},
+            enabled=truthy(source.get("RECALL_MULTIMODAL_ENABLED")),
             tenant_id=source.get("RECALL_MULTIMODAL_TENANT", MULTIMODAL_TENANT).strip(),
             embedding_profile=source.get(
                 "RECALL_MULTIMODAL_EMBED_PROFILE", MULTIMODAL_EMBEDDING_PROFILE

@@ -48,9 +48,12 @@ RECALL_MULTIMODAL_EMBED_PROFILE=voyage-multimodal-3.5-v1
 VOYAGE_API_KEY=...
 ```
 
-The fixed tenant and profile cannot be renamed through environment configuration. Admission,
-response, and item budgets are set with `RECALL_MULTIMODAL_MAX_MEDIA_BYTES`,
-`RECALL_MULTIMODAL_MAX_RESPONSE_BYTES`, and `RECALL_MULTIMODAL_MAX_ITEMS`. The session MCP file
+The fixed tenant and profile cannot be renamed through environment configuration.
+`RECALL_MULTIMODAL_MAX_MEDIA_BYTES`, `RECALL_MULTIMODAL_MAX_RESPONSE_BYTES`, and
+`RECALL_MULTIMODAL_MAX_ITEMS` are validated at startup and may only lower the module bounds, but
+no serving path applies them yet: `build_media_ref` and `project_media_evidence` enforce the
+budget a caller passes, defaulting to the 30 MiB module constants, and nothing enforces the item
+bound. The session MCP file
 does not include this specialist unless `RECALL_MCP_INCLUDE_MULTIMODAL=1` is set.
 
 ## Evidence boundary

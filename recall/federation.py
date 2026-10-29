@@ -129,17 +129,25 @@ class FederationConfig:
                 raise FederationConfigurationError(f"{name} must be >= {minimum}")
             return value
 
-        mode = values.get("RECALL_FEDERATION_MODE", "off").strip().lower()
+        # The field defaults are the single source; the environment schema reads them too.
+        defaults = cls()
+        mode = values.get("RECALL_FEDERATION_MODE", defaults.mode).strip().lower()
         return cls(
             mode=mode,  # type: ignore[arg-type]
-            max_legs=integer("RECALL_FEDERATION_MAX_LEGS", 2, minimum=1),
-            max_concurrency=integer("RECALL_FEDERATION_MAX_CONCURRENCY", 2, minimum=1),
-            candidate_k=integer("RECALL_FEDERATION_CANDIDATE_K", 20, minimum=1),
-            result_k=integer("RECALL_FEDERATION_RESULT_K", 5, minimum=1),
-            primary_prefix=integer("RECALL_FEDERATION_PRIMARY_PREFIX", 3, minimum=1),
-            rescue_slots=integer("RECALL_FEDERATION_RESCUE_SLOTS", 1),
-            rrf_k=integer("RECALL_FEDERATION_RRF_K", 60),
-            invalid_leg_policy=values.get("RECALL_FEDERATION_INVALID_LEG", "omit").strip().lower(),  # type: ignore[arg-type]
+            max_legs=integer("RECALL_FEDERATION_MAX_LEGS", defaults.max_legs, minimum=1),
+            max_concurrency=integer(
+                "RECALL_FEDERATION_MAX_CONCURRENCY", defaults.max_concurrency, minimum=1
+            ),
+            candidate_k=integer("RECALL_FEDERATION_CANDIDATE_K", defaults.candidate_k, minimum=1),
+            result_k=integer("RECALL_FEDERATION_RESULT_K", defaults.result_k, minimum=1),
+            primary_prefix=integer(
+                "RECALL_FEDERATION_PRIMARY_PREFIX", defaults.primary_prefix, minimum=1
+            ),
+            rescue_slots=integer("RECALL_FEDERATION_RESCUE_SLOTS", defaults.rescue_slots),
+            rrf_k=integer("RECALL_FEDERATION_RRF_K", defaults.rrf_k),
+            invalid_leg_policy=values.get(  # type: ignore[arg-type]
+                "RECALL_FEDERATION_INVALID_LEG", defaults.invalid_leg_policy
+            ).strip().lower(),
         )
 
 
@@ -536,10 +544,11 @@ def federate(
     ]
     result_limit = settings.result_k
     rescue_limit = min(settings.rescue_slots, result_limit)
-    primary_limit = result_limit - rescue_limit
     primary_prefix_count = min(settings.primary_prefix, len(primary_hits), result_limit)
-    primary_served = primary_candidates[:primary_limit]
     rescue = secondary_candidates[:rescue_limit]
+    # A rescue slot no secondary candidate fills goes back to the primary leg, so an empty or
+    # failed specialist never serves fewer results than the primary alone could.
+    primary_served = primary_candidates[: result_limit - len(rescue)]
     # Keep the primary segment contiguous, then append the bounded secondary rescue tail. The
     # prefix is therefore protected even when a caller asks for fewer primary slots than hits.
     served_raw = [*primary_served, *rescue][:result_limit]

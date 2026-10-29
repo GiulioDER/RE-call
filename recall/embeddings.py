@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 from recall._env import truthy
 from recall.embedding_core import (  # re-exported: this module is their public home
@@ -89,6 +90,19 @@ from recall.embedding_providers.openai_compat import (  # re-exported: this modu
     _optional_dimensions as _optional_dimensions,
 )
 
+# The registered multimodal identity lives here rather than in `recall.multimodal`, which imports
+# this module, so every gate below and `recall.multimodal` share one spelling.
+MULTIMODAL_EMBEDDING_MODEL = "voyage-multimodal-3.5"
+MULTIMODAL_EMBEDDING_PROFILE = "voyage-multimodal-3.5-v1"
+
+
+def require_multimodal_enabled(env: Mapping[str, str]) -> None:
+    """Refuse a voyage-multimodal embedder unless RECALL_MULTIMODAL_ENABLED opts in."""
+    if not truthy(env.get("RECALL_MULTIMODAL_ENABLED", "0")):
+        raise ValueError(
+            "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
+        )
+
 
 def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """Build an embedder from a short config string.
@@ -107,12 +121,8 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         entry = find_registered_profile(profile)
         if entry is None:
             return resolve_registered_embedder(profile, source)
-        if entry.backend == "voyage-multimodal" and not truthy(
-            source.get("RECALL_MULTIMODAL_ENABLED", "0")
-        ):
-            raise ValueError(
-                "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
-            )
+        if entry.backend == "voyage-multimodal":
+            require_multimodal_enabled(source)
         accepted = {
             "fastembed": frozenset({"fastembed"}),
             "qwen3": frozenset({"fastembed"}),
@@ -168,23 +178,20 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
             {**source, "RECALL_EMBED_PROFILE": "voyage-context-4-v1"},
         )
     if name == "voyage-multimodal" or name.startswith("voyage-multimodal:"):
-        if not truthy(source.get("RECALL_MULTIMODAL_ENABLED", "0")):
-            raise ValueError(
-                "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
-            )
+        require_multimodal_enabled(source)
         model = (
             name[len("voyage-multimodal:") :]
             if name.startswith("voyage-multimodal:")
-            else "voyage-multimodal-3.5"
+            else MULTIMODAL_EMBEDDING_MODEL
         )
-        if model != "voyage-multimodal-3.5":
+        if model != MULTIMODAL_EMBEDDING_MODEL:
             raise ValueError(
                 f"unsupported Voyage multimodal model: {model!r} "
-                "(the registered production profile is voyage-multimodal-3.5-v1)"
+                f"(the registered production profile is {MULTIMODAL_EMBEDDING_PROFILE})"
             )
         return resolve_registered_embedder(
-            "voyage-multimodal-3.5-v1",
-            {**source, "RECALL_EMBED_PROFILE": "voyage-multimodal-3.5-v1"},
+            MULTIMODAL_EMBEDDING_PROFILE,
+            {**source, "RECALL_EMBED_PROFILE": MULTIMODAL_EMBEDDING_PROFILE},
         )
     if name == "openai":
         return OpenAICompatEmbedder(

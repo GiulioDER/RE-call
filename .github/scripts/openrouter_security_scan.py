@@ -244,12 +244,53 @@ def _escape_command(value: str) -> str:
     )
 
 
+def _guard_hunks(diff: str, file_name: str) -> list[tuple[int, int, str]]:
+    """Return ``(first_line, last_line, text)`` for each new-side hunk of one file in the diff.
+
+    The region a guard occupies is read from the diff itself, never from fixed line numbers,
+    which went stale the first time either guard moved. Only context and added lines count, so
+    a change that deletes a guard can never be mistaken for one that carries it.
+    """
+    hunks: list[tuple[int, int, str]] = []
+    in_file = in_hunk = False
+    start = count = 0
+    lines: list[str] = []
+
+    def close() -> None:
+        if in_hunk and lines:
+            hunks.append((start, start + max(count, 1) - 1, "\n".join(lines)))
+
+    for raw in diff.splitlines():
+        if raw.startswith("diff --git "):
+            if in_file:
+                close()
+            lines = []
+            in_file = raw.endswith(f" b/{file_name}")
+            in_hunk = False
+            continue
+        if not in_file:
+            continue
+        header = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", raw)
+        if header:
+            close()
+            lines = []
+            in_hunk = True
+            start = int(header.group(1))
+            count = int(header.group(2) or "1")
+            continue
+        if in_hunk and raw[:1] in {" ", "+"}:
+            lines.append(raw)
+    if in_file:
+        close()
+    return hunks
+
+
 def _apply_deterministic_guard_triage(
     findings: list[dict[str, Any]], diff: str
 ) -> list[dict[str, Any]]:
     """Keep model findings visible while downgrading claims disproved by changed guard code."""
     guard_proofs = {
-        "recall/embeddings.py": (
+        "recall/embedding_providers/openai_compat.py": (
             "parsed_base_url = urlsplit",
             "is_approved_remote",
             "is_approved_local",
@@ -267,15 +308,17 @@ def _apply_deterministic_guard_triage(
         file_name = finding.get("file")
         line = finding.get("line")
         proof = guard_proofs.get(file_name)
-        in_guard_region = (
-            (file_name == "recall/embeddings.py" and isinstance(line, int) and 1750 <= line <= 1830)
-            or (file_name == "recall/multimodal.py" and isinstance(line, int) and 75 <= line <= 115)
+        hunks = _guard_hunks(diff, file_name) if proof is not None else []
+        file_text = "\n".join(text for _, _, text in hunks)
+        in_guard_region = isinstance(line, int) and any(
+            first <= line <= last and any(marker in text for marker in proof or ())
+            for first, last, text in hunks
         )
         if (
             proof is not None
             and in_guard_region
             and finding.get("severity") in {"critical", "high"}
-            and all(marker in diff for marker in proof)
+            and all(marker in file_text for marker in proof)
         ):
             finding = dict(finding)
             finding["severity"] = "low"

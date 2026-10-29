@@ -165,6 +165,20 @@ OPENROUTER_API_KEY=
 #                                                      # Exceeding it degrades to an abstention
 #                                                      # carrying a sanitized provider failure.
 #
+# Experimental evidence proof mode for `recall_reasoning_query` (mode="evidence_proof"), off
+# unless explicitly enabled. OpenRouter only; it returns a proof receipt, never an answer.
+# RECALL_REASONING_PROOF_ENABLED=0
+# RECALL_REASONING_PROOF_PROVIDER=openrouter
+# RECALL_REASONING_PROOF_MODEL=                        # REQUIRED when enabled; no default
+# RECALL_REASONING_PROOF_REVISION=                     # REQUIRED when enabled; `unpinned` is refused
+# RECALL_REASONING_PROOF_API_KEY=                      # empty falls back to OPENROUTER_API_KEY
+# RECALL_REASONING_PROOF_BASE_URL=https://openrouter.ai/api/v1
+# RECALL_REASONING_PROOF_TIMEOUT=60
+# RECALL_REASONING_PROOF_MAX_TOKENS=1024
+# RECALL_REASONING_PROOF_CONTEXT_TOKENS=4096
+# RECALL_REASONING_PROOF_REASONING_EFFORT=none
+# RECALL_REASONING_PROOF_COST_PER_1K_TOKENS=           # optional; per THOUSAND tokens
+#
 # ollama: Ollama's native /api/chat endpoint, default base URL http://127.0.0.1:11434/v1.
 # RECALL_REASONING_ANSWER_THINKING=0                   # explicit boolean; the model's think
 #                                                      # switch. Ollama only: refused with openai.
@@ -408,6 +422,7 @@ RECALL_MULTIMODAL_ENABLED=0
 RECALL_MULTIMODAL_TENANT=re-call-multimodal
 RECALL_MULTIMODAL_EMBED_PROFILE=voyage-multimodal-3.5-v1
 RECALL_MULTIMODAL_OBJECT_ROOT=
+# The three bounds below are validated but reserved: no serving path applies them yet.
 RECALL_MULTIMODAL_MAX_MEDIA_BYTES=31457280
 RECALL_MULTIMODAL_MAX_RESPONSE_BYTES=31457280
 RECALL_MULTIMODAL_MAX_ITEMS=20

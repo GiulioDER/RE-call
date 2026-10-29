@@ -9,6 +9,7 @@ from typing import Any
 
 from recall.embeddings import Embedder, embedding_profile_id
 from recall.federation import (
+    MAX_FEDERATION_CANDIDATE_K,
     FederationConfig,
     FederationLeg,
     FederationResult,
@@ -150,6 +151,21 @@ def prepare_federated_execution(
     ) -> _Retrieval:
         del store, embedder, kwargs
         retrievals: dict[str, _Retrieval] = {}
+        failures: dict[str, Exception] = {}
+
+        def run_control() -> _Retrieval:
+            return retrieve_trusted_fn(
+                primary_store,
+                primary_embedder,
+                query,
+                source,
+                k,
+                calibration,
+                policy,
+                security_policy,
+                access_context,
+                env,
+            )
 
         def make_leg_retriever(tenant: str) -> Callable[[str, int], TrustedResult]:
             def retrieve(query_text: str, candidate_k: int) -> TrustedResult:
@@ -164,18 +180,24 @@ def prepare_federated_execution(
                     if isinstance(access_context, AccessContext)
                     else access_context
                 )
-                retrieval = retrieve_trusted_fn(
-                    stores[tenant],
-                    embedders[tenant],
-                    query_text,
-                    source,
-                    candidate_k,
-                    calibration,
-                    policy,
-                    security_policy,
-                    leg_context,
-                    env,
-                )
+                try:
+                    retrieval = retrieve_trusted_fn(
+                        stores[tenant],
+                        embedders[tenant],
+                        query_text,
+                        source,
+                        candidate_k,
+                        calibration,
+                        policy,
+                        security_policy,
+                        leg_context,
+                        env,
+                    )
+                except Exception as exc:  # BROAD-CATCH: fail-closed
+                    # federate() omits a failed leg; the primary's own error is re-raised below
+                    # so a trust refusal or overload keeps its type at the tool boundary.
+                    failures[tenant] = exc
+                    raise
                 retrievals[tenant] = retrieval
                 return retrieval.result
 
@@ -190,7 +212,12 @@ def prepare_federated_execution(
                 calibration_status=identities[leg.tenant].calibration_status or "",
                 route=plan.route_id,
                 retrieve=make_leg_retriever(leg.tenant),
-                candidate_k=leg.limit,
+                # The primary leg is also the control result, so it must cover the caller's k.
+                candidate_k=(
+                    min(max(leg.limit, k), MAX_FEDERATION_CANDIDATE_K)
+                    if leg.tenant == primary_tenant
+                    else leg.limit
+                ),
             )
             for leg in plan.selected_legs
         ]
@@ -202,6 +229,14 @@ def prepare_federated_execution(
         )
         primary_retrieval = retrievals.get(primary_tenant)
         if primary_retrieval is None:
+            primary_failure = failures.get(primary_tenant)
+            if primary_failure is not None:
+                raise primary_failure
+            if not result.active:
+                # Shadow only observes: a primary leg that overran the plan budget must not fail
+                # a request that the control path would have served.
+                holder["result"] = result
+                return run_control()
             raise RuntimeError("primary federation leg did not produce a trusted retrieval")
         served_hits = (
             [candidate.hit for candidate in result.served]
@@ -262,6 +297,21 @@ def federation_diagnostics(execution: FederationExecution) -> dict[str, object] 
             }
             for leg in value.diagnostics.legs
         ],
+        # A served hit carries no tenant of its own, and an active merge serves it inside the
+        # primary result, so its lineage is reported here, keyed by chunk id.
+        "served": [
+            {
+                "chunk_id": candidate.hit.chunk.id,
+                "tenant": candidate.tenant_id,
+                "generation": candidate.generation_id,
+                "embedding_profile": candidate.embedding_profile,
+                "calibration": candidate.calibration_id,
+                "leg_rank": candidate.leg_rank,
+            }
+            for candidate in value.served
+        ]
+        if value.active
+        else [],
     }
 
 

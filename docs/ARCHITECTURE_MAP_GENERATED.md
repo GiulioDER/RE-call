@@ -645,7 +645,7 @@ They are observations, not automatic failures.
 | `recall.memory_index` | 6 | 98 |
 | `recall.migration` | 1 | 32 |
 | `recall.migrations` | 0 | 0 |
-| `recall.multimodal` | 3 | 11 |
+| `recall.multimodal` | 4 | 11 |
 | `recall.near_miss` | 6 | 97 |
 | `recall.near_miss_certificate` | 2 | 15 |
 | `recall.observability` | 0 | 0 |

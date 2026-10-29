@@ -22,6 +22,7 @@ from recall.embeddings import (
     FastEmbedEmbedder,
     HashingEmbedder,
     REMOTE_MODEL_CODE_OPT_IN,
+    require_multimodal_enabled,
     resolve_embedder,
 )
 from recall.observability import get_logger
@@ -119,12 +120,8 @@ def make_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         raise ValueError(
             f"RECALL_EMBED_PROFILE={profile!r} is a {entry.backend} profile and needs {accepted}"
         )
-    if entry is not None and entry.backend == "voyage-multimodal" and not truthy(
-        values.get("RECALL_MULTIMODAL_ENABLED", "0")
-    ):
-        raise ValueError(
-            "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
-        )
+    if entry is not None and entry.backend == "voyage-multimodal":
+        require_multimodal_enabled(values)
     if name == "hashing":
         return HashingEmbedder(dim=HASHING_DIM)
     if entry is not None and entry.hosted:
