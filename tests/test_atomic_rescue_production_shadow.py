@@ -12,6 +12,7 @@ import json
 import threading
 import time
 from types import SimpleNamespace
+import weakref
 
 import numpy as np
 import pytest
@@ -523,6 +524,35 @@ def test_concurrent_selectors_do_not_overlap_matrix_work(tmp_path) -> None:
 
     assert maximum_active == 1
     assert {item.chunk_id for item in selected} == {"atomic-b"}
+
+
+def test_artifact_cache_releases_least_recent_generation(tmp_path) -> None:
+    """Bound retained generations while preserving cache hits and in-flight artifacts.
+
+    PERF-001 red proof: on baseline 8c296fd31, this exact node fails at
+    ``second_ref() is None`` because load_atomic_rescue_artifact never evicts.
+    The retained first generation is touched before loading the third, so the
+    second must be released. Evicting the third later must leave its caller's
+    matrix usable. The same unchanged node must pass with the bounded cache.
+    """
+
+    paths = [_artifact(tmp_path, generation_id=f"cache-{index}") for index in range(4)]
+    clear_atomic_rescue_artifact_cache()
+    try:
+        first = load_atomic_rescue_artifact(paths[0])
+        second = load_atomic_rescue_artifact(paths[1])
+        second_ref = weakref.ref(second)
+        del second
+        assert load_atomic_rescue_artifact(paths[0]) is first
+        third = load_atomic_rescue_artifact(paths[2])
+        gc.collect()
+        assert second_ref() is None, "the least recently used generation remains retained"
+        assert load_atomic_rescue_artifact(paths[0]) is first
+        load_atomic_rescue_artifact(paths[3])
+        assert load_atomic_rescue_artifact(paths[0]) is first
+        np.testing.assert_allclose(third.matrix[0], _unit([1.0, 0.0]))
+    finally:
+        clear_atomic_rescue_artifact_cache()
 
 
 def test_artifact_digest_lineage_and_single_flight_loading(tmp_path, monkeypatch) -> None:

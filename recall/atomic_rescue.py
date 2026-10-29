@@ -7,6 +7,7 @@ allocation, and request cost surface.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import hashlib
@@ -207,7 +208,8 @@ def resolve_atomic_rescue_manifest(
     return manifest
 
 
-_ARTIFACT_CACHE: dict[Path, AtomicRescueArtifact] = {}
+_ARTIFACT_CACHE_MAX_ENTRIES = 2
+_ARTIFACT_CACHE: OrderedDict[Path, AtomicRescueArtifact] = OrderedDict()
 _ARTIFACT_CACHE_LOCK = threading.Lock()
 # Upper bound on the matrix bytes one load-time validation step reads at once, and so on the
 # temporaries it builds. 16 MiB is 4,096 rows of a 1024-dimension float32 matrix.
@@ -432,7 +434,7 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
 
 
 def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
-    """Load and validate one artifact exactly once per process."""
+    """Load and validate an artifact, caching the two most recently used."""
 
     resolved = Path(path).expanduser().resolve()
     with _ARTIFACT_CACHE_LOCK:
@@ -440,6 +442,10 @@ def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
         if cached is None:
             cached = _load_atomic_rescue_artifact(resolved)
             _ARTIFACT_CACHE[resolved] = cached
+        _ARTIFACT_CACHE.move_to_end(resolved)
+        while len(_ARTIFACT_CACHE) > _ARTIFACT_CACHE_MAX_ENTRIES:
+            # Drop only the cache reference; in-flight callers still own their mappings.
+            _ARTIFACT_CACHE.popitem(last=False)
         return cached
 
 
