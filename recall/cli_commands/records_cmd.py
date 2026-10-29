@@ -139,7 +139,9 @@ def _cmd_records(args: argparse.Namespace) -> None:
     if is_lite_dsn(args.dsn):
         meta = lite_read_meta("recall records", args)
         if meta is None:
-            # A lookup must not create the file.
+            # A lookup must not create the file. `generation_id` is null because no store exists:
+            # "legacy" names a PostgreSQL table without one, and a lite store reports `lite-...`
+            # (CCA CODE-008, left by the owner 2026-10-29).
             _print({"tenant_id": args.tenant, "generation_id": None, "truncated": False, "records": []}, args)
             return
         if meta.get("tenant") != args.tenant:
