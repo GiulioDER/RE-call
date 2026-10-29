@@ -247,7 +247,9 @@ Claude settings is approved.
   in scope.**
 - **Source:** the CCA memo directory on the local machine, read directly through RE-call's record
   parser and the same matching rules as `recall_records` (exact, symbol_changed, file_only, best
-  first, superseded and expired records marked, retractions honoured within their window). No
+  first, superseded and expired records marked, retractions honoured within their window), except
+  that the brief labels and ranks a symbol-less (whole file) anchor as `file_only`, and within a
+  level lists records anchored at a symbol before symbol-less ones, then newest first. No
   network, no ssh, no embedding: an exact lookup needs no vectors, and embedding stays on the
   deployment host.
 - **Output:** one fenced block appended to the prompt under a heading that says it is context, not
