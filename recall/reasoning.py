@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field, replace
 import time
+import threading
 import weakref
 from datetime import datetime, timezone
 from typing import Literal, Protocol
@@ -860,16 +861,25 @@ class _CheckedGraph:
 #: about one stays true; hashing one instead would walk every member, the cost being avoided.
 _CHECKED_GRAPHS: dict[int, _CheckedGraph] = {}
 _CHECKED_GRAPHS_MAX = 16
+_CHECKED_GRAPHS_LOCK = threading.Lock()
 
 
 def _checked(graph: ReasoningGraphProjection) -> _CheckedGraph:
-    entry = _CHECKED_GRAPHS.get(id(graph))
-    if entry is None or entry.graph() is not graph:
-        entry = _CheckedGraph(graph)
+    with _CHECKED_GRAPHS_LOCK:
+        entry = _CHECKED_GRAPHS.get(id(graph))
+        if entry is not None and entry.graph() is graph:
+            return entry
+    # Build the node-id set outside the lock; concurrent misses may prepare the
+    # same immutable graph, but must share one cache entry once it is published.
+    prepared = _CheckedGraph(graph)
+    with _CHECKED_GRAPHS_LOCK:
+        entry = _CHECKED_GRAPHS.get(id(graph))
+        if entry is not None and entry.graph() is graph:
+            return entry
         while len(_CHECKED_GRAPHS) >= _CHECKED_GRAPHS_MAX:
             _CHECKED_GRAPHS.pop(next(iter(_CHECKED_GRAPHS)))
-        _CHECKED_GRAPHS[id(graph)] = entry
-    return entry
+        _CHECKED_GRAPHS[id(graph)] = prepared
+        return prepared
 
 
 def _validate_proposals(
