@@ -284,6 +284,66 @@ def test_mcp_cleanup_prefers_the_session_id_over_a_reused_client_mark(tmp_path, 
     assert killed.read_text(encoding="utf-8").splitlines() == ["802"]
 
 
+@pytest.mark.parametrize("ambiguous", ["markers", "sessions"])
+def test_mcp_cleanup_refuses_ambiguous_config_identity(tmp_path, monkeypatch, ambiguous) -> None:
+    """Conflicting inferred ownership must never select another session's transports.
+
+    Red proof: both parameterized nodes fail the ``status == 'skipped'`` assertion on
+    baseline 29f68af66 at ``_identity_from_config``. Conflicting markers fall through
+    to the parent's identity; conflicting session IDs downgrade to the shared marker.
+    The identical nodes pass after the refusal boundary is restored. Explicit PID
+    and session controls still select only their independently identified transport.
+    """
+    from recall_hooks.mcp_cleanup import close_own_mcp_transports
+
+    child = tmp_path / "child"
+    child.mkdir()
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"parent": {"args": [
+            "RECALL_MCP_CLIENT=parent-client RECALL_MCP_SESSION_ID=parent-session",
+        ]}}}),
+        encoding="utf-8",
+    )
+    if ambiguous == "markers":
+        identities = ["RECALL_MCP_CLIENT=child-one", "RECALL_MCP_CLIENT=child-two"]
+    else:
+        identities = [
+            "RECALL_MCP_CLIENT=shared-child RECALL_MCP_SESSION_ID=child-one",
+            "RECALL_MCP_CLIENT=shared-child RECALL_MCP_SESSION_ID=child-two",
+        ]
+    (child / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {
+            str(index): {"args": [identity]} for index, identity in enumerate(identities)
+        }}),
+        encoding="utf-8",
+    )
+    table = tmp_path / "processes.txt"
+    table.write_text(
+        "801 100 ssh RECALL_MCP_CLIENT=parent-client "
+        "RECALL_MCP_SESSION_ID=parent-session python -m recall_mcp.server\n"
+        "802 200 ssh RECALL_MCP_CLIENT=shared-child "
+        "RECALL_MCP_SESSION_ID=child-one python -m recall_mcp.server\n"
+        "803 200 ssh RECALL_MCP_CLIENT=shared-child "
+        "RECALL_MCP_SESSION_ID=child-two python -m recall_mcp.server\n",
+        encoding="utf-8",
+    )
+    killed = tmp_path / "killed.txt"
+    monkeypatch.setenv("RECALL_MCP_PS_FILE", str(table))
+    monkeypatch.setenv("RECALL_MCP_KILL_FILE", str(killed))
+
+    status, detail = close_own_mcp_transports(cwd=str(child))
+    assert status == "skipped", detail
+    assert not killed.exists()
+
+    status, detail = close_own_mcp_transports(session_id="child-two", cwd=str(child))
+    assert status == "closed", detail
+    assert killed.read_text(encoding="utf-8").splitlines() == ["803"]
+    killed.unlink()
+    status, detail = close_own_mcp_transports(client_pid="100", cwd=str(child))
+    assert status == "closed", detail
+    assert killed.read_text(encoding="utf-8").splitlines() == ["801"]
+
+
 def test_codex_mcp_launcher_refuses_missing_configuration(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("RECALL_CODEX_CONFIG", str(tmp_path / "missing.json"))
     from recall_mcp.codex_server import main

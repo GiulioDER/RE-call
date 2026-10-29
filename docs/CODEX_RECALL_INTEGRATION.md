@@ -49,8 +49,10 @@ shared RE-call lifecycle:
 
 For VPS2-backed MCP, each generated server command also carries `RECALL_MCP_SESSION_ID`. The value
 comes from the worktree's live session claim, so a new session in the same checkout gets a new
-opaque identity while a resume keeps the old one. Cleanup prefers this ID, then the client process
-identity, and finally the legacy `RECALL_MCP_CLIENT` marker. The fleet sweep uses the same ID to
+opaque identity while a resume keeps the old one. Cleanup uses client process ancestry when a client
+PID is available. Otherwise it uses the session ID, then the legacy `RECALL_MCP_CLIENT` marker.
+Conflicting identities in a config stop discovery without adopting an ancestor or shared marker.
+The fleet sweep uses the same ID to
 distinguish a live transport from an orphan; it never closes a server merely because it is old or
 because its command resembles another session's.
 
