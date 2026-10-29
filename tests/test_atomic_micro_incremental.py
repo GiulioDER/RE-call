@@ -22,6 +22,7 @@ import sqlite3
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from recall.atomic_rescue import (
     clear_atomic_rescue_artifact_cache,
@@ -81,6 +82,45 @@ def test_changing_one_chunk_re_embeds_only_that_chunk(tmp_path: Path) -> None:
         _, _, counts = assemble(_parents(texts), store, PROFILE, DIM, embedder)
     assert embedder.groups == 1
     assert counts["embedded_chunks"] == 1 and counts["reused_chunks"] == 5
+
+
+@pytest.mark.parametrize("duplicate_count", [2, 65])
+def test_equal_unseen_texts_embed_once_and_preserve_every_parent(
+    tmp_path: Path, duplicate_count: int
+) -> None:
+    """Equal cold-store texts share embeddings without dropping any parent.
+
+    Baseline proof target: ``assemble`` at 32616a7fe, with this unchanged test.
+    Its group-count assertion detects duplicates within and across 64-parent batches.
+    """
+    text = _text(17)
+    parents = _parents([text] * duplicate_count)
+    view_count = len(chunk_micro_views(text))
+    with AtomicViewStore(tmp_path / "views.sqlite") as store:
+        embedder = _Embedder()
+        matrix, metadata, counts = assemble(parents, store, PROFILE, DIM, embedder)
+        assert embedder.groups == 1
+        assert counts["embedded_chunks"] == 1
+        assert counts["embedded_views"] == view_count
+        assert matrix.shape == (duplicate_count * view_count, DIM)
+        expected_parents = [
+            (chunk_id, source, ordinal)
+            for chunk_id, source, ordinal, _ in parents
+            for _ in range(view_count)
+        ]
+        assert [
+            (row["chunk_id"], row["source"], row["parent_ordinal"]) for row in metadata
+        ] == expected_parents
+        assert np.array_equal(matrix[:view_count], matrix[-view_count:])
+
+        warm_embedder = _Embedder()
+        warm_matrix, warm_metadata, warm_counts = assemble(
+            parents, store, PROFILE, DIM, warm_embedder
+        )
+    assert warm_embedder.groups == 0
+    assert warm_counts["reused_chunks"] == duplicate_count
+    assert np.array_equal(matrix, warm_matrix)
+    assert metadata == warm_metadata
 
 
 def test_a_new_embedder_profile_never_reuses_another_profiles_vectors(tmp_path: Path) -> None:
