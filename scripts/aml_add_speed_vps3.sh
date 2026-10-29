@@ -85,7 +85,7 @@ stop_server() {
 run_arm() {
   local arm=$1 label=$2 k=$3
   start_server "$k" "$label"
-  runuser -u "$U" -- env RECALL_AML_API_KEY="$(cat "$KEY_FILE")" \
+  RECALL_AML_API_KEY="$(cat "$KEY_FILE")" runuser -u "$U" -- \
     "$PY" "$CODE/scripts/aml_add_throughput.py" --base-url "$URL" --data "$B/locomo10.json" \
     --arm "$arm" --arm-label "$label" --server-add-concurrency "$k" --run-id "$RUN" \
     --out "$OUT/throughput-$label.json" | tee -a "$OUT/throughput.log"
@@ -102,7 +102,7 @@ run_arm 3 k8b 8
 (
   set -a; . /home/$U/recall-tb/.env; set +a
   cd "$CODE"
-  runuser -u "$U" -- env OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+  runuser -u "$U" -- \
     "$PY" scripts/aml_compiler_provider_latency.py --data "$B/locomo10.json" \
     --run-id "$RUN" --out "$OUT/providers.json" | tee "$OUT/providers.log"
 )

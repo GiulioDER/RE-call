@@ -148,16 +148,31 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
                 }
             )
         started = time.perf_counter()
-        results = [
-            r
-            for batch in await asyncio.gather(
-                *(user_worker(client, bodies, args.max_attempts, args.backoff) for bodies in per_user)
-            )
-            for r in batch
-        ]
-        wall = time.perf_counter() - started
-        for bodies in per_user:
-            await client.post("/v1/delete", json={"user_id": bodies[0]["user_id"]})
+        tasks = [asyncio.create_task(user_worker(client, bodies, args.max_attempts, args.backoff))
+                 for bodies in per_user]
+        failure: BaseException | None = None
+        try:
+            results = [r for batch in await asyncio.gather(*tasks) for r in batch]
+            wall = time.perf_counter() - started
+        except BaseException as exc:
+            failure = exc
+            raise
+        finally:
+            # No Add may still be writing after its user has been deleted.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            cleanup_errors: list[Exception] = []
+            for bodies in per_user:
+                if not bodies:
+                    continue
+                try:
+                    response = await client.post("/v1/delete", json={"user_id": bodies[0]["user_id"]})
+                    response.raise_for_status()
+                except Exception as exc:
+                    cleanup_errors.append(exc)
+            if cleanup_errors and failure is None:
+                raise RuntimeError(f"failed to clean {len(cleanup_errors)} benchmark users") from cleanup_errors[0]
     ok = [r for r in results if r["final_status"] == 200]
     latencies = sorted(r["seconds_to_final"] for r in ok)
     characters = sum(r["characters"] for r in results)

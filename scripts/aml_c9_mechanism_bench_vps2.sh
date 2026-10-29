@@ -51,10 +51,18 @@ val() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- | sed -e 's/^["'\'']
 ENV_FILE="$1"; PY="$2"; OUT="$3"; ERR="$4"
 RECALL_AML_API_KEY="$(val RECALL_AML_API_KEY)" python3 "$PY" \
   --base-url "http://127.0.0.1:$(val RECALL_AML_PORT)" --out "$OUT" >/dev/null 2>"$ERR"
-echo "exit=$?"; tail -5 "$ERR"
+code=$?
+echo "exit=$code"; tail -5 "$ERR"
+exit "$code"
 REMOTE
+bench_code=$?
 set -e
-scp -q -i "$KEY" -o BatchMode=yes "$HOST:$REMOTE_OUT" "$LOCAL_OUT" || echo "no report produced"
+downloaded=0
+if scp -q -i "$KEY" -o BatchMode=yes "$HOST:$REMOTE_OUT" "$LOCAL_OUT"; then
+  downloaded=1
+else
+  echo "no report produced"
+fi
 ssh_root "rm -f $REMOTE_PY $REMOTE_OUT /root/c9-mech-bench-${STAMP}.err"
 
 echo "== journal since $since UTC"
@@ -68,4 +76,12 @@ curl -s -o /dev/null -w "health %{http_code}\n" --max-time 20 "$PUBLIC/health"
 curl -s --max-time 20 "$PUBLIC/version" | python -c "import json,sys;d=json.load(sys.stdin);print('version', d['git_commit'][:8], d['variant'], 'graph', d['graph_sidecar'], d['atomic_rescue'].get('mode'))"
 
 echo "== report: $LOCAL_OUT"
-[ -f "$LOCAL_OUT" ] && python -c "import json,sys;r=json.load(open(sys.argv[1]));print('passed', r['passed'], 'failed', r['failed_checks']);print(json.dumps(r['summary'], indent=2));print(json.dumps(r.get('concurrency', {}).get('stages', {}), indent=2))" "$LOCAL_OUT"
+report_code=1
+if [ "$downloaded" -eq 1 ]; then
+  set +e
+  python -c "import json,sys;r=json.load(open(sys.argv[1]));print('passed', r['passed'], 'failed', r['failed_checks']);print(json.dumps(r['summary'], indent=2));print(json.dumps(r.get('concurrency', {}).get('stages', {}), indent=2));sys.exit(0 if r['passed'] is True else 1)" "$LOCAL_OUT"
+  report_code=$?
+  set -e
+fi
+[ "$bench_code" -eq 0 ] || exit "$bench_code"
+exit "$report_code"

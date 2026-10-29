@@ -243,24 +243,52 @@ class Service:
 
 
 class Spend:
-    """Model spend so far, from the usage every OpenRouter response reports."""
+    """Estimated spend and reserved attempts, using the dated PRICES table.
+
+    Request allowances conservatively count UTF-8 bytes plus chat overhead as
+    input tokens and reserve the full output limit. Unknown expenditure keeps
+    its allowance. This bounds this harness's estimate, not a provider account.
+    """
 
     def __init__(self, cap_usd: float) -> None:
+        if not math.isfinite(cap_usd) or cap_usd < 0:
+            raise ValueError("model spend cap must be finite and nonnegative")
         self.cap = cap_usd
         self.usd = 0.0
+        self.reserved = 0.0
         self.calls = 0
         self.lock = threading.Lock()
 
-    def add(self, usage: dict[str, Any], model: str = MODEL) -> None:
+    def reserve(self, messages: list[dict[str, str]], max_tokens: int, model: str) -> float:
         price_in, price_out = PRICES[model]
+        input_bound = 128 + sum(len(json.dumps(m, ensure_ascii=False).encode("utf-8")) + 64
+                                for m in messages)
+        allowance = input_bound * price_in + max_tokens * price_out
+        with self.lock:
+            if allowance <= 0 or self.usd + self.reserved + allowance > self.cap:
+                raise SystemExit("model spend allowance exceeds the remaining estimated budget")
+            self.reserved += allowance
+        return allowance
+
+    def add(self, usage: dict[str, Any], model: str = MODEL, *, allowance: float = 0) -> None:
+        price_in, price_out = PRICES[model]
+        counts = (usage.get("prompt_tokens"), usage.get("completion_tokens"))
+        if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in counts):
+            raise RuntimeError("model usage is unavailable; its spend allowance remains reserved")
+        cost = usage["prompt_tokens"] * price_in + usage["completion_tokens"] * price_out
         with self.lock:
             self.calls += 1
-            self.usd += (usage.get("prompt_tokens", 0) * price_in
-                         + usage.get("completion_tokens", 0) * price_out)
+            self.usd += cost
+            self.reserved = max(0.0, self.reserved - allowance)
+            if allowance and cost > allowance:
+                # A provider violated the estimate. Stop all future authorizations.
+                self.reserved = self.cap
+                raise SystemExit("reported model usage exceeded its reserved allowance")
 
     def check(self) -> None:
-        if self.usd > self.cap:
-            raise SystemExit(f"model spend ${self.usd:.2f} passed the ${self.cap:.2f} cap")
+        with self.lock:
+            if self.usd + self.reserved >= self.cap:
+                raise SystemExit(f"model spend reached the ${self.cap:.2f} estimated cap")
 
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -279,10 +307,11 @@ def complete(spend: Spend, messages: list[dict[str, str]], max_tokens: int,
         payload["response_format"] = {"type": "json_object"}
     key = os.environ["OPENROUTER_API_KEY"].strip()
     for attempt in range(6):
+        allowance = spend.reserve(messages, max_tokens, model)
         status, body, _ = http_json("https://openrouter.ai/api/v1/chat/completions", payload,
                                     {"Authorization": f"Bearer {key}"}, 180)
         if status == 200 and body.get("choices"):
-            spend.add(body.get("usage", {}), model)
+            spend.add(body.get("usage", {}), model, allowance=allowance)
             content = body["choices"][0]["message"].get("content") or ""
             return _THINK.sub("", content).strip()
         time.sleep(min(60, 3 * 2**attempt))
@@ -764,7 +793,8 @@ def main() -> None:
     parser.add_argument("--types", help="comma separated question types (default: all)")
     parser.add_argument("--conversations", help="comma separated indices (default: all)")
     parser.add_argument("--top", type=int, help="coverage over the first N items only")
-    parser.add_argument("--cap-usd", type=float, default=3.0, help="model spend cap per process")
+    parser.add_argument("--cap-usd", type=float, default=3.0,
+                        help="estimated model spend cap per process, using the dated price table")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     data = read_jsonl(args.data)
