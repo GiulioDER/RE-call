@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import pathlib
 import re
+import shutil
+import subprocess
+
+import pytest
 
 WORKFLOW = pathlib.Path(__file__).resolve().parent.parent / ".github" / "workflows" / "release.yml"
 
@@ -55,3 +59,36 @@ def test_only_the_attest_job_can_mint_an_oidc_token_for_provenance() -> None:
     assert re.search(r"needs:\s*build\b", attest)
     assert "run:" not in attest
     assert re.search(r"needs:\s*\[[^\]]*\battest\b[^\]]*\]", jobs["publish"])
+
+
+@pytest.mark.skipif(
+    shutil.which("bash") is None or shutil.which("sha256sum") is None,
+    reason="needs bash and sha256sum, as the release runner has",
+)
+def test_release_checksums_verify_beside_the_downloaded_assets(tmp_path: pathlib.Path) -> None:
+    """SHA256SUMS must check out in a directory holding the assets as the Release names them.
+
+    `gh release create` uploads each file by its basename, so a user downloads
+    `recall_rag-X.whl` and SHA256SUMS side by side. The step wrote `dist/packages/...` paths,
+    and `sha256sum -c` found none of them (CCA deferred run 20261029T222748Z, DEPLOY-001).
+    This runs the workflow's own command, then verifies the way a user would. Red proof:
+    against release.yml at 8c296fd31 the returncode assertion fails; restored, it passes.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    step = workflow[workflow.index("name: Generate release checksums") :]
+    command = re.search(r"^\s*run:\s*(.+)$", step, re.MULTILINE).group(1)  # type: ignore[union-attr]
+    build = tmp_path / "build"
+    (build / "dist" / "packages").mkdir(parents=True)
+    for name in ("recall_rag-9.9.9-py3-none-any.whl", "recall_rag-9.9.9.tar.gz"):
+        (build / "dist" / "packages" / name).write_bytes(name.encode())
+    subprocess.run(["bash", "-c", command], cwd=build, check=True)
+
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    for asset in [*(build / "dist" / "packages").iterdir(), build / "dist" / "SHA256SUMS"]:
+        shutil.copy(asset, downloads / asset.name)
+    verified = subprocess.run(
+        ["sha256sum", "-c", "SHA256SUMS"], cwd=downloads, capture_output=True, text=True
+    )
+
+    assert verified.returncode == 0, verified.stdout + verified.stderr

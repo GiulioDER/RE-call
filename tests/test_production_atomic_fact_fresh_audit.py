@@ -107,3 +107,24 @@ def test_field_eligibility_applies_after_label_separation() -> None:
     assert len(f"FACT: {answer}") > len(answer)
     assert views[0]["content"] == answer
     assert views[0]["field"] == "FACT"
+
+
+def test_audit_with_no_resolvable_source_writes_standard_json(tmp_path: Path) -> None:
+    """An undefined growth ratio is written as null, never as the non-JSON token Infinity.
+
+    With every source missing (a wrong --source-root), both ratios divide by zero chunks. They
+    were serialised as `Infinity`, which jq and JSON.parse reject, in the STOP artifact the
+    operator reads (CCA deferred run 20261029T222748Z, DAT-001). Red proof: against
+    run_production_atomic_fact_fresh_audit.py at 8c296fd31 the `"Infinity" not in` assertion
+    fails; restored, it passes.
+    """
+    pool, _ = _write_pool(tmp_path)
+    empty_root = tmp_path / "elsewhere"
+    empty_root.mkdir()
+
+    result = audit_fresh_pool(pool, {"recall": empty_root})
+
+    assert result["decision"] != "GO_BUILD_ATOMIC_FACT_CONTEXT4_SHADOW"
+    assert result["gates"]["row_growth"] is False
+    assert "Infinity" not in json.dumps(result)
+    assert result["metrics"]["size"]["auxiliary_row_growth"] is None

@@ -29,6 +29,12 @@ def pilot_construction_gate(
 ) -> tuple[str, dict[str, bool]]:
     metrics = audit["metrics"]
     family_coverage = metrics["gold"]["family_coverage"]
+    # A pool whose sources all failed integrity has no views, no ratios and no percentile; those
+    # checks fail rather than raise, as in audit_fresh_pool, so the STOP result is still written.
+    views = int(metrics["size"]["auxiliary_views"])
+    row_growth = metrics["size"]["auxiliary_row_growth"]
+    character_growth = metrics["size"]["rendered_character_growth"]
+    crowding = metrics["distribution"]["views_per_parent_chunk"]
     checks = {
         "exhaustive_pool": (
             int(pool.get("selected_sources", 0)) == EXPECTED_COUNT
@@ -49,20 +55,22 @@ def pilot_construction_gate(
         "no_zero_view_sources": int(metrics["size"]["zero_view_sources"]) == 0,
         "view_length": int(metrics["coverage"]["oversized_views"]) == 0,
         "within_source_fact_duplicates": (
-            int(metrics["duplicates"]["within_source_fact_excess"])
-            / int(metrics["size"]["auxiliary_views"])
-            <= 0.01
+            int(metrics["duplicates"]["within_source_fact_excess"]) / views <= 0.01
+            if views
+            else False
         ),
         "cross_source_rendered_collisions": (
-            int(metrics["duplicates"]["cross_source_rendered_excess"])
-            / int(metrics["size"]["auxiliary_views"])
-            <= 0.01
+            int(metrics["duplicates"]["cross_source_rendered_excess"]) / views <= 0.01
+            if views
+            else False
         ),
-        "row_growth": float(metrics["size"]["auxiliary_row_growth"]) <= 2.0,
-        "character_growth": float(metrics["size"]["rendered_character_growth"]) <= 1.5,
+        "row_growth": row_growth is not None and float(row_growth) <= 2.0,
+        "character_growth": character_growth is not None and float(character_growth) <= 1.5,
         "parent_crowding": (
-            int(metrics["distribution"]["views_per_parent_chunk"]["p95"]) <= 4
-            and int(metrics["distribution"]["views_per_parent_chunk"]["max"]) <= 8
+            crowding["p95"] is not None
+            and int(crowding["p95"]) <= 4
+            and crowding["max"] is not None
+            and int(crowding["max"]) <= 8
         ),
     }
     decision = (

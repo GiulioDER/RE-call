@@ -348,8 +348,11 @@ def audit_atomic_fact_view(
                 "ordinary_chunks": chunk_count,
                 "auxiliary_views": view_count,
                 "zero_view_sources": zero_view_sources,
-                "auxiliary_row_growth": round(row_growth, 6),
-                "rendered_character_growth": round(character_growth, 6),
+                # None when no source resolved: JSON has no infinity, and the gate is already false.
+                "auxiliary_row_growth": round(row_growth, 6) if math.isfinite(row_growth) else None,
+                "rendered_character_growth": (
+                    round(character_growth, 6) if math.isfinite(character_growth) else None
+                ),
                 "ordinary_characters": ordinary_characters,
                 "rendered_characters": rendered_characters,
             },

@@ -98,7 +98,9 @@ jobs:
           upload-release-assets: false
 
       - name: Generate release checksums
-        run: sha256sum dist/packages/* > dist/SHA256SUMS
+        # From inside the package directory, so each line names the file as the Release asset is
+        # named (by basename) and `sha256sum -c SHA256SUMS` works beside the downloaded assets.
+        run: (cd dist/packages && sha256sum -- * > ../SHA256SUMS)
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:

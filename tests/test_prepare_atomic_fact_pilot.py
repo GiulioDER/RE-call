@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from scripts.prepare_atomic_fact_pilot import pilot_construction_gate
 from scripts.run_production_atomic_fact_fresh_audit import INPUT_HASHES
 
@@ -51,3 +53,37 @@ def test_pilot_gate_requires_every_gold_view() -> None:
     assert good_decision == "PROCEED_ATOMIC_FACT_22_EMBEDDING"
     assert bad_decision == "STOP_ATOMIC_FACT_22_CONSTRUCTION"
     assert checks["unique_gold_view"] is False
+
+
+def test_pilot_gate_stops_rather_than_raises_when_no_view_was_built() -> None:
+    """A pool whose every source failed integrity must yield a recorded STOP, not a traceback.
+
+    Then the audit reports zero views, no growth ratios and no parent percentile. The gate divided
+    by the view count and called int() on the percentile, so main() died after writing the pool
+    and never wrote the result (CCA deferred run 20261029T222748Z, BUG-002). Red proof: against
+    prepare_atomic_fact_pilot.py at 8c296fd31 this fails at `pytest.fail` with ZeroDivisionError;
+    restored, it passes.
+    """
+    pool, audit = _fixture()
+    empty = deepcopy(audit)
+    empty["metrics"]["integrity"]["missing_sources"] = 22  # type: ignore[index]
+    empty["metrics"]["size"].update(  # type: ignore[index]
+        auxiliary_views=0, auxiliary_row_growth=None, rendered_character_growth=None
+    )
+    empty["metrics"]["distribution"]["views_per_parent_chunk"] = {"p95": None, "max": None}  # type: ignore[index]
+
+    try:
+        decision, checks = pilot_construction_gate(pool, empty)
+    except (ZeroDivisionError, TypeError) as exc:
+        pytest.fail(f"the gate raised {exc!r} instead of returning STOP")
+
+    assert decision == "STOP_ATOMIC_FACT_22_CONSTRUCTION"
+    for name in (
+        "source_integrity",
+        "within_source_fact_duplicates",
+        "cross_source_rendered_collisions",
+        "row_growth",
+        "character_growth",
+        "parent_crowding",
+    ):
+        assert checks[name] is False, name
