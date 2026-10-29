@@ -158,9 +158,12 @@ def _iso_timestamp(text: str) -> datetime | None:
         text = text[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(text)
-    except ValueError:
+        parsed = parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        # A locally valid year can overflow when its timezone is converted to UTC.
+        parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _usable_parts(parts: list[Any]) -> list[Any]:
