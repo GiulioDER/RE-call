@@ -734,6 +734,10 @@ def record_rows_condition(
     chunk's `code_anchor`), shared by the legacy table's read below, `GenerationStore` and
     `LiteStore`, so the three cannot select different rows. `code_files`, when given, keeps only
     the code-anchor rows whose anchor names one of those files; empty, it keeps none.
+
+    No index serves this condition, so a lookup scans the tenant (CCA PERF-004, left by the owner
+    2026-10-29 at about 9,800 chunks). Add one when a tenant passes about 100,000 chunks or a
+    lookup is measured above about 100 ms.
     """
     files = list(code_files or ())
     parts: list[str] = []
