@@ -413,7 +413,9 @@ The internal tenant is `aml_` plus the SHA256 digest of the exact `user_id`. Mul
 vectors use deterministic `_media` and `_mm` tenant suffixes under the same user boundary.
 PostgreSQL row level security applies the tenant inside each pooled transaction. The product stores
 exact `session_id` only as evidence metadata so a result can identify its source session. The Delete
-endpoint erases the primary tenant and both multimodal sidecars without affecting another user.
+endpoint erases the primary tenant, multimodal sidecars, supported specialist corpora and their
+atomic views without affecting another user. Specialist evidence is erased even when its model
+client is disabled in the current configuration.
 
 ## Embedding cache
 
@@ -429,6 +431,55 @@ bind canonical structured input and separate document from query vectors. The ca
 derived vectors and cannot make one tenant's rows searchable from another tenant. The cache sits
 outside the cross process embedding lock: a hit takes no lock, a passage or document miss takes it
 for the provider call, and a query miss does not take it.
+
+## System service embedding lock
+
+The shipped system unit requires a drop-in that binds the existing shared embedding lock to
+`/run/recall-aml/embed.lock`. The source must be the same file used by every other embedding
+process. Creating an independent lock would allow simultaneous provider calls.
+
+During an authorized deployment, set `RECALL_SHARED_EMBED_LOCK_SOURCE` to the existing absolute
+host path. The following commands require the `setfacl` utility. They grant the service account
+access to that inode and write its concrete path into the drop-in:
+
+```bash
+set -euo pipefail
+: "${RECALL_SHARED_EMBED_LOCK_SOURCE:?set the existing shared embedding lock path}"
+lock_source="$(realpath -e -- "$RECALL_SHARED_EMBED_LOCK_SOURCE")"
+case "$lock_source" in
+    /*) ;;
+    *) echo "the shared lock path must be absolute" >&2; exit 2 ;;
+esac
+case "$lock_source" in
+    *[!A-Za-z0-9_./-]*)
+        echo "the shared lock path requires manual systemd escaping" >&2
+        exit 2
+        ;;
+esac
+test -f "$lock_source"
+test "$RECALL_SHARED_EMBED_LOCK_SOURCE" -ef "$lock_source"
+sudo setfacl -m u:recall-aml:rw -- "$lock_source"
+sudo install -d -m 0755 /etc/systemd/system/recall-aml.service.d
+printf '[Unit]\nAssertPathExists=%s\n\n[Service]\nBindPaths=%s:/run/recall-aml/embed.lock\n' \
+    "$lock_source" "$lock_source" |
+    sudo tee /etc/systemd/system/recall-aml.service.d/embedding-lock.conf >/dev/null
+```
+
+Systemd reads the literal path in this drop-in; it does not expand the service environment file
+inside `BindPaths`. A missing source must stop startup, so do not prefix the bind source with
+`-`. The unit checks that its alias is a mounted regular file with read and write permission
+before starting the application. Without the drop-in it refuses to create a separate lock.
+
+`ProtectHome=true` remains enabled. The service sees only the alias, without requiring access
+through the source's home directory. `RuntimeDirectory` makes the alias directory writable under
+`ProtectSystem=strict`. Do not truncate, unlink or replace the shared source while any participant
+is running: replacement would leave the mounted service locking the old inode. Service shutdown
+removes its runtime alias, while the host source remains.
+
+Before enabling the installation, use a disposable lock in a uniquely named transient system unit
+with the same sandbox settings. Verify device and inode equality through the alias, refusal of
+unrelated home files, and nonblocking flock contention against a lock held on the source. Verify
+that an omitted bind prevents startup. This check requires no credentials or provider calls.
 
 ## Availability and change control
 

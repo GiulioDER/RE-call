@@ -475,24 +475,32 @@ class LazyMedia(Mapping[str, Chunk]):
         self._batch = max(1, batch)
         self._loaded: dict[str, Chunk] = {}
         self._requested: set[str] = set()
+        self._missing: set[str] = set()
         self.fetches = 0
 
     def _load_from(self, media_id: str) -> None:
         start = self._position.get(media_id)
-        if start is None:
-            wanted = [media_id]
-        else:
-            wanted = [
+        wanted = [media_id]
+        if start is not None:
+            wanted.extend(
                 candidate
-                for candidate in self._ordered[start:]
+                for candidate in self._ordered[start + 1:]
                 if candidate not in self._requested
-            ][: self._batch]
+            )
+            wanted = wanted[:self._batch]
         self._requested.update(wanted)
         self.fetches += 1
-        self._loaded.update(self._fetch(wanted))
+        fetched = self._fetch(wanted)
+        # Retain one batch, including when the renderer rejects a long image tail.
+        # Evicted rows can be fetched again; known absent rows remain absent.
+        self._loaded = {key: fetched[key] for key in wanted if key in fetched}
+        self._missing.update(key for key in wanted if key not in fetched)
+        self._missing.difference_update(self._loaded)
 
     def __getitem__(self, media_id: str) -> Chunk:
-        if media_id not in self._requested:
+        if media_id not in self._requested or (
+            media_id not in self._loaded and media_id not in self._missing
+        ):
             self._load_from(media_id)
         return self._loaded[media_id]
 
@@ -543,6 +551,9 @@ def render_preserved(
             if entry.get("type") == "text" and isinstance(entry.get("text"), str):
                 parts.append(TextContentPart(type="text", text=str(entry["text"])))
             elif entry.get("type") == "image_ref" and isinstance(entry.get("media_id"), str):
+                if used_media_bytes + candidate_bytes >= MAX_RESPONSE_MEDIA_BYTES:
+                    valid = False
+                    break
                 media_chunk = media_by_id.get(str(entry["media_id"]))
                 if media_chunk is None:
                     valid = False
@@ -555,6 +566,9 @@ def render_preserved(
                     type="image_url", image_url=ImageURLValue(url=data_url)
                 )
                 candidate_bytes += content_media_bytes([part])
+                if used_media_bytes + candidate_bytes > MAX_RESPONSE_MEDIA_BYTES:
+                    valid = False
+                    break
                 parts.append(part)
             else:
                 valid = False

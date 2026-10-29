@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +51,7 @@ def decide(arms: dict[str, dict[str, Any]]) -> dict[str, Any]:
         if (
             isinstance(cost, bool)
             or not isinstance(cost, (int, float))
+            or not math.isfinite(float(cost))
             or float(cost) < 0
         ):
             reasons.append(f"{name} provider cost is missing or invalid")
