@@ -1463,12 +1463,13 @@ def test_symbolless_match_ranks_after_symbol_matches() -> None:
     """Red proof: baseline = unchanged `render`/`_line` (origin/master). Node id
     tests/test_auditor_brief_hook.py::test_symbolless_match_ranks_after_symbol_matches. Targets
     `render` ordering and `_line`'s bracket. Failed on the assertion that C leads (A, a
-    `symbol_changed` record on a symbol-less anchor, led instead and was printed `[symbol_changed]`)."""
+    `symbol_changed` record on a symbol-less anchor, led instead and was printed `[symbol_changed]`). Updated for review R1: at the same level the symbol record B now precedes
+    the newer symbol-less A."""
     a = _entry(1, "symbol_changed", None, "2026-10-20")
     b = _entry(2, "file_only", "Pool._lease", "2026-10-10")
     c = _entry(3, "symbol_changed", "Pool._lease", "2026-10-01")
     block = _render([a, b, c])
-    assert _ids(block) == [c["id"], a["id"], b["id"]]
+    assert _ids(block) == [c["id"], b["id"], a["id"]]  # b, anchored at a symbol, before a
     assert f"BUG {a['id']} [file_only] {FILE} (module):" in block
 
 
@@ -1543,6 +1544,32 @@ def test_ties_break_newest_first() -> None:
     assert _ids(_render(six)) == [six[n]["id"] for n in (5, 4, 3, 2, 1)]
     undated = _entry(9, "file_only", "Pool._lease", None)
     assert _ids(_render([undated, old]))[-1] == undated["id"]
+
+
+def test_symbol_anchor_outranks_a_newer_symbolless_record_at_file_only() -> None:
+    """Review R1 (spec Goal 3). Red proof: mutation of `_newest_first` to sort by
+    `MATCH_ORDER.index(_brief_match(e))` alone (the second key removed); node id
+    tests/test_auditor_brief_hook.py::test_symbol_anchor_outranks_a_newer_symbolless_record_at_file_only;
+    failed on the first order assertion (the newer symbol-less record led) and on the cap assertion
+    (the older symbol record was pushed out of the five). With the constant False the old order
+    (newest first) is restored."""
+    symbol = _entry(1, "file_only", "Pool._lease", "2026-10-01")
+    bare = _entry(2, "exact", None, "2026-10-20")
+    assert _ids(_render([bare, symbol])) == [symbol["id"], bare["id"]]
+    newer = [_entry(n, "symbol_changed", None, f"2026-10-{n + 10:02d}") for n in range(3, 8)]
+    assert symbol["id"] in _ids(_render([*newer, symbol])), "a symbol record was pushed out of the cap"
+    assert _ids(_render([*newer, symbol]))[0] == symbol["id"]
+
+
+def test_symbolless_ordering_is_restored_when_the_constant_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review R1. Red proof: mutation of the new `rank` to ignore the constant (symbolless computed
+    unconditionally); node id
+    tests/test_auditor_brief_hook.py::test_symbolless_ordering_is_restored_when_the_constant_is_off;
+    failed on the order assertion (the symbol record led instead of the newer symbol-less one)."""
+    monkeypatch.setattr(auditor_brief, "FILE_LEVEL_RANKS_AS_FILE_ONLY", False)
+    symbol = _entry(1, "file_only", "Pool._lease", "2026-10-01")
+    bare = _entry(2, "file_only", None, "2026-10-20")
+    assert _ids(_render([symbol, bare])) == [bare["id"], symbol["id"]]
 
 
 def test_the_probe_constant_is_set() -> None:

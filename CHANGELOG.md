@@ -48,6 +48,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `historical` field to null and drops their advice. A memo whose authored facts do not parse no
   longer fails the search or evidence call that returns it: a malformed fact is left off its
   evidence card, and a memo with no well-formed fact gets no card.
+- The auditor brief hook now labels and ranks a record anchored at a whole file (no symbol) as
+  `file_only`, below records anchored at a real symbol, and within a level lists symbol anchors
+  before symbol-less ones, then newest first. `recall_records` matching is unchanged.
 - The auditor brief hook's default budget is now 3 s, up from 1 s. A CCA dispatch launches its
   auditors at once, and under that contention the hook's git calls timed out, so 0 of 9 auditors
   got the brief (measured 2026-10-27); at 3 s all 9 did. `RECALL_AUDITOR_BRIEF_BUDGET` still
