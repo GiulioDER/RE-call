@@ -111,6 +111,7 @@ def _index_memory_unlocked(
     values = dict(runtime_environment() if env is None else env)
     try:
         route = resolve_runtime_route(
+            values,
             enterprise=strict_bool(
                 values.get("RECALL_ENTERPRISE_CONTROL_PLANE"),
                 name="RECALL_ENTERPRISE_CONTROL_PLANE",

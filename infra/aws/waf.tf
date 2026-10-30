@@ -96,6 +96,14 @@ resource "aws_wafv2_web_acl" "alb" {
       managed_rule_group_statement {
         name        = "AWSManagedRulesCommonRuleSet"
         vendor_name = "AWS"
+        # ALB inspects only 8 KiB of a body. A valid 4096-character Unicode query can
+        # exceed that byte count; retain application limits and all other blocking rules.
+        rule_action_override {
+          name = "SizeRestrictions_BODY"
+          action_to_use {
+            count {}
+          }
+        }
       }
     }
     visibility_config {

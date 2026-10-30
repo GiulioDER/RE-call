@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 import socket
@@ -181,8 +182,17 @@ def run_application_smoke(
     generation. The representative chunk itself is checked in the database by the drill; the
     search here uses its id as query text, which cannot be relied on to rank that chunk first.
     """
+    try:
+        timeout = float(os.environ.get("RECALL_RESTORE_SMOKE_TIMEOUT_SECONDS", "180"))
+    except ValueError as exc:
+        raise ApplicationSmokeError("restore smoke timeout must be finite and positive") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ApplicationSmokeError("restore smoke timeout must be finite and positive")
     token = secrets.token_urlsafe(32)
     port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    # Use Starlette's canonical route, avoiding the /mcp/ redirect.
+    mcp_url = f"{base_url}/mcp"
     with tempfile.TemporaryDirectory(prefix="recall-restore-smoke-") as directory:
         token_file = Path(directory) / "tokens.json"
         environment = _smoke_environment(dsn, tenant, token_file, port, token)
@@ -192,15 +202,8 @@ def run_application_smoke(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        base_url = f"http://127.0.0.1:{port}"
-        # Starlette's canonical MCP route is `/mcp`; `/mcp/` returns a 307 redirect. The smoke
-        # client intentionally uses the standard library and does not follow redirects, so use
-        # the canonical path to exercise the actual authenticated protocol rather than its slash
-        # normalisation response.
-        mcp_url = f"{base_url}/mcp"
-        timeout = float(os.environ.get("RECALL_RESTORE_SMOKE_TIMEOUT_SECONDS", "180"))
-        deadline = time.monotonic() + timeout
         try:
+            deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if process.poll() is not None:
                     raise ApplicationSmokeError("MCP application exited before readiness")

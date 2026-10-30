@@ -899,7 +899,7 @@ def _make_lifespan(
         table = runtime_settings.table
         tenant = runtime_settings.tenant
         enterprise = runtime_settings.enterprise_control_plane
-        runtime_route = resolve_runtime_route(enterprise=enterprise)
+        runtime_route = resolve_runtime_route(runtime_env, enterprise=enterprise)
         source_policy = load_source_policy(runtime_env)
         settings_token = None
         lite_refresher: LiteAutoRefresher | None = None

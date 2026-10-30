@@ -49,8 +49,8 @@ class EcsSecretRotator:
         tasks = ecs.describe_tasks(cluster=cluster, tasks=task_arns).get("tasks", [])
         checks: list[TaskSecretCheck] = []
         for task in tasks:
-            # The deployment controller copies version identifiers, never secret values, into ECS
-            # task tags after the startup health check succeeds.
+            # ECS propagates the identifiers from the version-pinned task definition at creation.
+            # Matching tags alone therefore do not prove that the replacement is running healthy.
             tags = ecs.list_tags_for_resource(resourceArn=task["taskArn"]).get("tags", [])
             observed = {
                 str(tag["key"]).removeprefix("recall:secret-version:"): str(tag["value"])
@@ -58,7 +58,12 @@ class EcsSecretRotator:
                 if str(tag.get("key", "")).startswith("recall:secret-version:")
             }
             missing = tuple(name for name, version in expected_versions.items() if observed.get(name) != version)
-            checks.append(TaskSecretCheck(task_arn=task["taskArn"], healthy=not missing, version_ids=observed, missing=missing))
+            healthy = (
+                not missing
+                and task.get("lastStatus") == "RUNNING"
+                and task.get("healthStatus") == "HEALTHY"
+            )
+            checks.append(TaskSecretCheck(task_arn=task["taskArn"], healthy=healthy, version_ids=observed, missing=missing))
         return checks
 
     def require_all_tasks_healthy(self, checks: list[TaskSecretCheck]) -> None:
