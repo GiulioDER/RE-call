@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, asdict
 from datetime import UTC, datetime
 from typing import Any
@@ -37,6 +37,10 @@ class BackupReceipt:
 def configuration_fingerprint(values: dict[str, str]) -> str:
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+#: Tag on every cluster and writer the restore drill creates; the drill janitor deletes only these.
+DRILL_TAG = {"Key": "recall:restore-drill", "Value": "true"}
 
 
 class BackupManager:
@@ -115,16 +119,47 @@ class BackupManager:
         rds.get_waiter("db_cluster_available").wait(DBClusterIdentifier=cluster_identifier)
         return self.status(cluster_identifier)
 
+    def stale_drill_clusters(self, prefix: str, *, older_than: datetime) -> list[dict[str, object]]:
+        """Drill clusters a stopped drill left behind: named `prefix*`, drill-tagged, created before `older_than`.
+
+        All three must hold, so a production cluster (no drill prefix, no drill tag) or a drill
+        still in progress (too young) is never returned.
+        """
+        rds, _ = self._clients()
+        stale: list[dict[str, object]] = []
+        for page in rds.get_paginator("describe_db_clusters").paginate():
+            for cluster in page.get("DBClusters", []):
+                identifier = str(cluster.get("DBClusterIdentifier") or "")
+                created = cluster.get("ClusterCreateTime")
+                tagged = any(
+                    tag.get("Key") == DRILL_TAG["Key"] and tag.get("Value") == DRILL_TAG["Value"]
+                    for tag in cluster.get("TagList") or []
+                )
+                if (
+                    identifier.startswith(prefix)
+                    and tagged
+                    and isinstance(created, datetime)
+                    and created < older_than
+                ):
+                    stale.append(
+                        {
+                            "cluster_identifier": identifier,
+                            "instances": [
+                                str(member["DBInstanceIdentifier"])
+                                for member in cluster.get("DBClusterMembers") or []
+                            ],
+                        }
+                    )
+        return stale
+
     def delete_cluster(self, cluster_identifier: str, *, confirmation: str | None = None) -> None:
         """Delete only an isolated drill cluster after an explicit confirmation token."""
         if confirmation != "DELETE_RESTORE_DRILL_CLUSTER":
             raise ValueError("drill cleanup requires confirmation=DELETE_RESTORE_DRILL_CLUSTER")
         rds, _ = self._clients()
-        rds.delete_db_cluster(
-            DBClusterIdentifier=cluster_identifier,
-            SkipFinalSnapshot=True,
-            DeletionProtection=False,
-        )
+        # The drill restores with DeletionProtection=False; DeleteDBCluster itself takes no such
+        # parameter and botocore refuses the call before it is sent if one is passed.
+        rds.delete_db_cluster(DBClusterIdentifier=cluster_identifier, SkipFinalSnapshot=True)
         rds.get_waiter("db_cluster_deleted").wait(DBClusterIdentifier=cluster_identifier)
 
     def create_restore_instance(
@@ -144,7 +179,7 @@ class BackupManager:
             DBClusterIdentifier=cluster_identifier,
             DBSubnetGroupName=subnet_group_name,
             PubliclyAccessible=False,
-            Tags=[{"Key": "recall:restore-drill", "Value": "true"}],
+            Tags=[dict(DRILL_TAG)],
         )
         instance = response["DBInstance"]
         return {
@@ -184,6 +219,7 @@ class BackupManager:
         subnet_group_name: str,
         kms_key_id: str,
         vpc_security_group_ids: Sequence[str] | None = None,
+        tags: Sequence[Mapping[str, str]] | None = None,
         confirmation: str | None = None,
     ) -> dict[str, object]:
         """Restore a new cluster, to ``restore_time`` or, when it is None, to the latest restorable time."""
@@ -201,6 +237,8 @@ class BackupManager:
         }
         if vpc_security_group_ids:
             params["VpcSecurityGroupIds"] = list(vpc_security_group_ids)
+        if tags:
+            params["Tags"] = [dict(tag) for tag in tags]
         # RDS requires exactly one of RestoreToTime and UseLatestRestorableTime, and refuses
         # RestoreToTime with a copy-on-write clone, so a point-in-time restore is a full copy.
         if restore_time is not None:

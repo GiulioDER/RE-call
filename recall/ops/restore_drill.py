@@ -18,7 +18,9 @@ from typing import Any
 from dataclasses import dataclass
 from time import monotonic
 
-from recall.ops.backup import BackupManager
+from datetime import UTC, datetime, timedelta
+
+from recall.ops.backup import DRILL_TAG, BackupManager
 from recall.ops.restore import validate_restored_database
 from recall.ops.restore_smoke import run_application_smoke
 
@@ -109,6 +111,36 @@ def _exit_on_sigterm() -> Any:
     if threading.current_thread() is not threading.main_thread():
         return None
     return signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(143))
+
+
+#: A drill normally finishes within two hours; a drill-tagged cluster this old was left by a
+#: stopped drill whose cleanup could not finish.
+_STALE_DRILL_AGE = timedelta(hours=6)
+
+
+def _reap_stale_drills(manager: Any, prefix: str) -> list[dict[str, object]]:
+    """Delete drill clusters earlier stopped drills left behind, recording each outcome.
+
+    One cluster that cannot be deleted must not stop every later drill, so a failure is recorded
+    in the receipt and the next cluster is tried.
+    """
+    reaped: list[dict[str, object]] = []
+    try:
+        stale = manager.stale_drill_clusters(prefix, older_than=datetime.now(UTC) - _STALE_DRILL_AGE)
+    except Exception as exc:  # BROAD-CATCH: fail-open, the next drill lists again
+        return [{"result": "list_failed", "error": type(exc).__name__}]
+    for cluster in stale:
+        identifier = str(cluster["cluster_identifier"])
+        try:
+            for instance in cluster.get("instances") or []:
+                manager.delete_instance(str(instance), confirmation="DELETE_RESTORE_DRILL_INSTANCE")
+            manager.delete_cluster(identifier, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
+            reaped.append({"cluster_identifier": identifier, "result": "deleted"})
+        except Exception as exc:  # BROAD-CATCH: fail-open, the next drill retries this cluster
+            reaped.append(
+                {"cluster_identifier": identifier, "result": "failed", "error": type(exc).__name__}
+            )
+    return reaped
 
 
 def _required_env(name: str, purpose: str) -> str:
@@ -229,12 +261,14 @@ def run() -> dict[str, object]:
     created = False
     instance_created = False
     try:
+        reaped = _reap_stale_drills(manager, drill_prefix)
         result = manager.restore_pitr(
             source,
             target,
             subnet_group_name=subnet_group,
             kms_key_id=kms_key_id,
             vpc_security_group_ids=security_group_ids,
+            tags=[DRILL_TAG],
             confirmation="RESTORE_NEW_CLUSTER",
         )
         created = True
@@ -285,6 +319,7 @@ def run() -> dict[str, object]:
             "source": source,
             "target": target,
             "restore": result,
+            "reaped_stale_drills": reaped,
             "validation": validation.to_dict(),
             "checksum_validation": {
                 "mode": checksum_policy.mode,

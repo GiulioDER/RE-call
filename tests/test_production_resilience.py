@@ -810,3 +810,213 @@ def test_idempotency_reservation_outlives_the_bucket_window() -> None:
     assert len(script_args) == 7
     assert script_args[6] == IDEMPOTENCY_RECEIPT_RETENTION_SECONDS * 1000
     assert "redis.call('SET', KEYS[2], ARGV[6], 'PX', tonumber(ARGV[7]))" in _token_bucket_lua()
+
+
+@requires_db
+def test_a_replay_answers_only_the_principal_that_made_the_request(make_store, monkeypatch) -> None:
+    """SEC-004 (owner decision 2026-10-30): receipts are keyed by tenant and key, not principal.
+
+    Without binding, another principal of the same tenant sending the same key and arguments was
+    handed the first principal's stored response. Red proof: by mutation, since the helper is new:
+    making recall_mcp.server._principal_bound_fingerprint return the bare fingerprint failed this
+    test with "DID NOT RAISE" for the second principal.
+    """
+    from types import SimpleNamespace
+
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    import recall_mcp.server as srv
+
+    store = make_store(64)
+    operation = "recall_index"
+    key = "principal-bound-" + uuid.uuid4().hex
+    fingerprint = _mutation_fingerprint(operation, {"path": "memory"})
+
+    def as_principal(name: str) -> None:
+        monkeypatch.setattr(
+            srv,
+            "get_access_token",
+            lambda: SimpleNamespace(claims={"principal": name, "tenant": store.tenant}, client_id=name),
+        )
+
+    as_principal("alice")
+    asyncio.run(
+        _record_mutation_result(
+            {"store": store},
+            store.tenant,
+            key,
+            '{"files": 1}',
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
+    )
+    assert asyncio.run(
+        _durable_replay(store, key, operation, srv._principal_bound_fingerprint(fingerprint))
+    ) == '{"files": 1}'
+
+    as_principal("bob")
+    with pytest.raises(ToolError, match="idempotency_conflict"):
+        asyncio.run(
+            _durable_replay(store, key, operation, srv._principal_bound_fingerprint(fingerprint))
+        )
+
+
+def _rds_stubber():
+    boto3 = pytest.importorskip("boto3")
+    from botocore.stub import Stubber
+
+    client = boto3.client(
+        "rds", region_name="eu-west-1", aws_access_key_id="x", aws_secret_access_key="y"
+    )
+    return client, Stubber(client)
+
+
+def test_drill_cluster_cleanup_sends_a_request_rds_accepts() -> None:
+    """Drill janitor review P1: DeleteDBCluster has no DeletionProtection parameter.
+
+    The Stubber validates parameters against the botocore service model, so this crosses the
+    seam the fake drill manager cannot. Red proof: failed on e60e79883
+    (recall.ops.backup.BackupManager.delete_cluster passed DeletionProtection=False) with
+    botocore StubAssertionError on the DeleteDBCluster parameters.
+    """
+    from recall.ops.backup import BackupManager
+
+    client, stubber = _rds_stubber()
+    stubber.add_response(
+        "delete_db_cluster",
+        {"DBCluster": {"DBClusterIdentifier": "src-drill-old"}},
+        {"DBClusterIdentifier": "src-drill-old", "SkipFinalSnapshot": True},
+    )
+    stubber.add_client_error(
+        "describe_db_clusters",
+        service_error_code="DBClusterNotFoundFault",
+        expected_params={"DBClusterIdentifier": "src-drill-old"},
+    )
+    with stubber:
+        BackupManager(rds_client=client, s3_client=object()).delete_cluster(
+            "src-drill-old", confirmation="DELETE_RESTORE_DRILL_CLUSTER"
+        )
+    stubber.assert_no_pending_responses()
+
+
+def test_stale_drill_listing_reads_the_real_cluster_shape() -> None:
+    """Drill janitor: the listing works on the response shape RDS returns, paginated.
+
+    Red proof: by mutation, since the method is new: reading the tag list from "Tags" instead of
+    "TagList" in recall.ops.backup.BackupManager.stale_drill_clusters failed this test with
+    AssertionError (nothing selected).
+    """
+    from datetime import UTC, datetime
+
+    from recall.ops.backup import BackupManager
+
+    client, stubber = _rds_stubber()
+    stubber.add_response(
+        "describe_db_clusters",
+        {
+            "DBClusters": [
+                {
+                    "DBClusterIdentifier": "src-drill-old",
+                    "ClusterCreateTime": datetime(2026, 10, 1, tzinfo=UTC),
+                    "TagList": [{"Key": "recall:restore-drill", "Value": "true"}],
+                    "DBClusterMembers": [{"DBInstanceIdentifier": "src-drill-old-writer"}],
+                },
+                {"DBClusterIdentifier": "src", "ClusterCreateTime": datetime(2026, 1, 1, tzinfo=UTC)},
+            ]
+        },
+        {},
+    )
+    with stubber:
+        stale = BackupManager(rds_client=client, s3_client=object()).stale_drill_clusters(
+            "src-drill-", older_than=datetime(2026, 10, 30, tzinfo=UTC)
+        )
+    assert stale == [{"cluster_identifier": "src-drill-old", "instances": ["src-drill-old-writer"]}]
+
+
+def test_check_sync_off_an_anyio_worker_uses_a_client_of_its_own() -> None:
+    """PERF-001 review P3: a plain thread is not an AnyIO worker; the isolated path must run.
+
+    Red proof: by mutation: re-raising every RuntimeError in
+    recall_mcp.limits.RedisRateLimiter.check_sync (dropping the AnyIO message filter) failed this
+    test with AnyIO's "Not running inside an AnyIO worker thread".
+    """
+    calls: list[tuple[object, ...]] = []
+
+    class Redis:
+        async def script_load(self, _script: str) -> str:
+            return "sha"
+
+        async def evalsha(self, _sha: str, _numkeys: int, *args: object) -> list[int]:
+            calls.append(args)
+            return [1, 0, 0]
+
+    limiter = RedisRateLimiter("redis://unused", {"index_bytes": Rate(1e9, 1e6)}, redis_client=Redis())
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            limiter.check_sync("tenant-a", "index_bytes", 1.0)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(10)
+    assert errors == []
+    assert len(calls) == 1
+
+
+@requires_db
+def test_the_tool_path_binds_the_principal_on_both_sides(make_store, monkeypatch) -> None:
+    """SEC-004 review P3: `_require` and the receipt write must bind the same principal.
+
+    Drives the real `recall_forget` tool on the authenticated path. Red proof: by mutation:
+    deleting the `_principal_bound_fingerprint` call in recall_mcp.server `_require` failed this
+    test at alice's own replay (ToolError idempotency_conflict instead of the first response).
+    """
+    from types import SimpleNamespace
+
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    import recall_mcp.server as srv
+    from recall.embeddings import HashingEmbedder
+    from recall.types import Chunk
+    from recall_mcp.stores import StoreRegistry
+
+    store = make_store(64)
+    store.upsert([Chunk("a", "f.md", "the caching decision was adopted")], [[1.0] + [0.0] * 63])
+
+    class Registry(StoreRegistry):
+        def __init__(self) -> None:  # noqa: D107 - a one-store test double
+            self._allowed = frozenset({store.tenant})
+            self._control_plane = None
+
+        def get(self, tenant: str):  # type: ignore[override]
+            return store
+
+        def get_shadow(self, tenant: str):  # type: ignore[override]
+            return None
+
+    state = {"stores": Registry(), "embedder": HashingEmbedder(dim=64), "calibration": None}
+    server = srv.build_server()
+    tool = {t.name: t for t in server._tool_manager.list_tools()}["recall_forget"]
+    ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=state))
+    key = "bound-" + uuid.uuid4().hex
+
+    def call_as(principal: str) -> str:
+        monkeypatch.setattr(
+            srv,
+            "get_access_token",
+            lambda: SimpleNamespace(
+                scopes=[srv.SCOPE_READ, srv.SCOPE_WRITE, srv.SCOPE_FORGET],
+                claims={"tenant": store.tenant, "principal": principal},
+                client_id=principal,
+            ),
+        )
+        return asyncio.run(tool.fn(ctx=ctx, sources=["f.md"], idempotency_key=key))
+
+    first = call_as("alice")
+    assert json.loads(first)["chunks_removed"] == 1
+    assert call_as("alice") == first
+    with pytest.raises(ToolError, match="idempotency_conflict"):
+        call_as("bob")

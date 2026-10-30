@@ -209,6 +209,25 @@ def _ingest_mutation_fingerprint(files: list[dict[str, str]], category: str) -> 
     return digest.hexdigest()
 
 
+def _principal_bound_fingerprint(fingerprint: str | None) -> str | None:
+    """Bind an idempotency fingerprint to the authenticated principal.
+
+    Receipts are keyed by tenant and request key, so without this another principal of the same
+    tenant who sends the same key and arguments would be handed the first principal's response,
+    whatever the source policy grants it. Bound, that reuse is an idempotency conflict. A call
+    with no authenticated principal (stdio) keeps the bare fingerprint.
+    """
+    if fingerprint is None:
+        return None
+    token = get_access_token()
+    if token is None:
+        return fingerprint
+    principal = str((getattr(token, "claims", None) or {}).get("principal") or token.client_id or "")
+    if not principal:
+        return fingerprint
+    return canonical_sha256({"principal": principal, "request": fingerprint})
+
+
 async def _record_mutation_result(
     state: dict[str, object],
     tenant: str,
@@ -221,6 +240,7 @@ async def _record_mutation_result(
     """Persist a mutation receipt before attempting the Redis replay-cache write."""
     if not idempotency_key:
         return
+    idempotency_fingerprint = _principal_bound_fingerprint(idempotency_fingerprint)
     store = state.get("store")
     if store is None:
         registry = state.get("stores")
@@ -3589,6 +3609,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
             # alternative — falling through to some default store — would turn any future gap in
             # that middleware into a silent full-corpus read.
             raise PermissionError("this server requires authentication")
+        idempotency_fingerprint = _principal_bound_fingerprint(idempotency_fingerprint)
         try:
             tenant = authorize(token.scopes, token.claims, scope)
         except PermissionError:

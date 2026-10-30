@@ -38,8 +38,11 @@ count, and checksum fields exist but `recall backup create` leaves them empty, s
    a DSN template that must contain `{host}` and may contain `{port}`; the drill replaces them with
    the restored writer's endpoint and port, and leaves every other character, braces included, as is.
    A stopped drill task starts its cleanup and has 120 seconds to finish it. Deleting an Aurora
-   instance can take longer, so a stopped drill can leave its `<source>-drill-*` cluster behind;
-   the missing-drill alarm does not detect that, and the operator must delete it.
+   instance can take longer, so a stopped drill can leave its `<source>-drill-*` cluster behind.
+   Every drill tags what it creates `recall:restore-drill=true`, and before restoring it deletes
+   drill clusters that carry the tag, the `<source>-drill-` prefix, and are older than six hours,
+   recording each in `reaped_stale_drills` in its receipt. A leftover is therefore removed by the
+   next scheduled drill; the drill role may list clusters but delete only drill-named ones.
    `RECALL_RESTORE_SECURITY_GROUP_IDS` lists the security groups attached to the restored cluster;
    the stack sets it to the data security group, which admits the drill task on 5432. The drill
    task role may use only the stack's data key (`kms_key_arn`, or the key the stack creates), so

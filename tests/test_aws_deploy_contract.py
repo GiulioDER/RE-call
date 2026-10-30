@@ -216,9 +216,17 @@ def test_restore_passes_the_requested_security_groups() -> None:
 
 class _Manager:
     calls: list[tuple[str, dict[str, object]]] = []
+    stale: list[dict[str, object]] = []
 
     def __init__(self, **_kwargs: object) -> None:
         pass
+
+    def stale_drill_clusters(self, prefix: str, **kwargs: object) -> list[dict[str, object]]:
+        type(self).calls.append(("stale_drill_clusters", {"prefix": prefix, **kwargs}))
+        return list(type(self).stale)
+
+    def delete_instance(self, instance: str, **kwargs: object) -> None:
+        type(self).calls.append(("delete_instance", {"instance": instance, **kwargs}))
 
     def restore_pitr(self, source: str, target: str, **kwargs: object) -> dict[str, object]:
         type(self).calls.append(("restore_pitr", {"source": source, "target": target, **kwargs}))
@@ -251,6 +259,7 @@ def drill_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     for name in ("RECALL_RESTORE_TARGET_CLUSTER", "RECALL_RESTORE_TARGET_INSTANCE"):
         monkeypatch.delenv(name, raising=False)
     _Manager.calls = []
+    _Manager.stale = []
     monkeypatch.setattr(restore_drill, "BackupManager", _Manager)
     return monkeypatch
 
@@ -287,7 +296,7 @@ def test_drill_restores_into_the_configured_security_groups(drill_env: pytest.Mo
     """
     with pytest.raises(RuntimeError, match="stop after the restore call"):
         restore_drill.run()
-    name, call = _Manager.calls[0]
+    name, call = next(item for item in _Manager.calls if item[0] == "restore_pitr")
     assert name == "restore_pitr"
     assert str(call["target"]).startswith("recall-production-drill-")
     assert call["vpc_security_group_ids"] == ["sg-data"]
@@ -399,3 +408,97 @@ def test_restore_drill_has_time_to_clean_up_after_a_stop() -> None:
     AssertionError.
     """
     assert "stopTimeout = 120" in _tf("restore_drill.tf")
+
+
+def test_drill_deletes_left_behind_drill_clusters_before_restoring(
+    drill_env: pytest.MonkeyPatch,
+) -> None:
+    """Drill janitor (owner-approved 2026-10-30): a stopped drill's cluster is removed by the next.
+
+    Red proof: failed on e60e79883 (recall.ops.restore_drill.run neither looked for nor deleted
+    drill clusters) with AssertionError on the delete calls.
+    """
+    _Manager.stale = [
+        {
+            "cluster_identifier": "recall-production-drill-old",
+            "instances": ["recall-production-drill-old-writer"],
+        }
+    ]
+    with pytest.raises(RuntimeError, match="stop after the restore call"):
+        restore_drill.run()
+    names = [name for name, _call in _Manager.calls]
+    assert names[:3] == ["stale_drill_clusters", "delete_instance", "delete_cluster"]
+    assert _Manager.calls[0][1]["prefix"] == "recall-production-drill-"
+    assert _Manager.calls[1][1]["instance"] == "recall-production-drill-old-writer"
+    assert _Manager.calls[2][1]["target"] == "recall-production-drill-old"
+    restore = next(call for name, call in _Manager.calls if name == "restore_pitr")
+    assert restore["tags"] == [{"Key": "recall:restore-drill", "Value": "true"}]
+
+
+class _Pages:
+    def __init__(self, clusters: list[dict[str, object]]) -> None:
+        self.clusters = clusters
+
+    def get_paginator(self, name: str) -> "_Pages":
+        assert name == "describe_db_clusters"
+        return self
+
+    def paginate(self) -> list[dict[str, object]]:
+        return [{"DBClusters": self.clusters[:2]}, {"DBClusters": self.clusters[2:]}]
+
+
+def test_only_old_drill_tagged_drill_clusters_are_stale() -> None:
+    """Drill janitor: the name prefix, the drill tag and the age must all hold.
+
+    Red proof: by mutation, since the method is new: removing the tag condition from
+    recall.ops.backup.BackupManager.stale_drill_clusters failed this test with AssertionError,
+    because the untagged drill-named cluster was returned.
+    """
+    tag = [{"Key": "recall:restore-drill", "Value": "true"}]
+    old = datetime(2026, 10, 1, tzinfo=UTC)
+    young = datetime(2026, 10, 30, 12, tzinfo=UTC)
+    clusters: list[dict[str, object]] = [
+        {"DBClusterIdentifier": "src-drill-old", "TagList": tag, "ClusterCreateTime": old,
+         "DBClusterMembers": [{"DBInstanceIdentifier": "src-drill-old-writer"}]},
+        {"DBClusterIdentifier": "src-drill-young", "TagList": tag, "ClusterCreateTime": young},
+        {"DBClusterIdentifier": "src-drill-untagged", "TagList": [], "ClusterCreateTime": old},
+        {"DBClusterIdentifier": "src", "TagList": tag, "ClusterCreateTime": old},
+    ]
+    manager = BackupManager(rds_client=_Pages(clusters), s3_client=object())
+    stale = manager.stale_drill_clusters("src-drill-", older_than=datetime(2026, 10, 30, tzinfo=UTC))
+    assert stale == [
+        {"cluster_identifier": "src-drill-old", "instances": ["src-drill-old-writer"]}
+    ]
+
+
+def test_drill_role_may_tag_its_cluster_and_list_clusters() -> None:
+    """Drill janitor: restoring with Tags needs AddTagsToResource on the drill cluster, and the
+    janitor lists clusters; deletion stays limited to drill names.
+
+    Red proof: failed on e60e79883 (no AddTagsToResource on the cluster statement, no list grant)
+    with AssertionError.
+    """
+    policy = _tf("iam.tf").split('resource "aws_iam_role_policy" "restore_drill_task"', 1)[1]
+    cluster = next(line for line in policy.splitlines() if "local.rds_cluster_arn_pattern" in line)
+    assert '"rds:AddTagsToResource"' in cluster
+    assert (
+        '{ Effect = "Allow", Action = ["rds:DescribeDBClusters"], '
+        'Resource = ["arn:aws:rds:${var.aws_region}:${local.aws_account_id}:cluster:*"] }'
+    ) in policy
+
+
+def test_a_failed_drill_listing_does_not_stop_the_drill(drill_env: pytest.MonkeyPatch) -> None:
+    """Drill janitor: cleanup must never cost the drill, even when the listing itself fails.
+
+    Red proof: by mutation: calling stale_drill_clusters outside the try in
+    recall.ops.restore_drill._reap_stale_drills failed this test with pytest's
+    `Regex pattern did not match`, because the listing error ended the drill before the restore.
+    """
+
+    def refuse(self: _Manager, prefix: str, **_kwargs: object) -> list[dict[str, object]]:
+        raise RuntimeError("AccessDenied")
+
+    drill_env.setattr(_Manager, "stale_drill_clusters", refuse)
+    with pytest.raises(RuntimeError, match="stop after the restore call"):
+        restore_drill.run()
+    assert [name for name, _call in _Manager.calls] == ["restore_pitr"]

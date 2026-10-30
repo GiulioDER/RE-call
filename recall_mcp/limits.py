@@ -309,6 +309,16 @@ end
 tokens = math.min(capacity, tokens + math.max(0, now_ms - updated) * refill / 1000)
 local duplicate = 0
 if KEYS[2] ~= '' and redis.call('EXISTS', KEYS[2]) == 1 then
+  -- A replay answers from a stored result but is still a request, so it costs one token:
+  -- otherwise one key could be repeated without limit, each call reading Redis and, once the
+  -- cached result has expired, the durable receipt.
+  local replay_cost = math.min(1, cost)
+  if tokens < replay_cost then
+    return {0, math.ceil((replay_cost - tokens) / refill * 1000), 0}
+  end
+  tokens = tokens - replay_cost
+  redis.call('HSET', KEYS[1], 'tokens', tokens, 'updated', now_ms)
+  redis.call('PEXPIRE', KEYS[1], ttl_ms)
   duplicate = 1
   if tonumber(ARGV[5]) == 1 then
     return {1, 0, duplicate}
@@ -373,6 +383,7 @@ class RedisRateLimiter:
         self._max_connections = max_connections
         self._fallback = RateLimiter({"read": Rate(fallback_read_budget, 1.0)} if fallback_read_budget else {})
         self._redis = redis_client
+        self._client_injected = redis_client is not None
         self._script_sha: str | None = None
         self.requires_idempotency = True
 
@@ -658,18 +669,52 @@ class RedisRateLimiter:
         idempotency_key: str | None = None,
         read_only: bool = False,
     ) -> None:
-        """Bridge the synchronous indexing callback from the worker thread to the async limiter."""
-        import asyncio
+        """Bridge the synchronous indexing callback from the worker thread to the async limiter.
 
-        asyncio.run(
-            self.check(
-                tenant,
-                key,
-                cost,
-                idempotency_key=idempotency_key,
-                read_only=read_only,
-            )
+        The cached redis.asyncio client belongs to the event loop that opened it, so the check runs
+        there when the caller is an AnyIO worker thread (the server's `_to_thread`). A throwaway
+        loop on the worker would bind pooled connections to a loop that then closes, and the next
+        call on either side fails with "attached to a different loop". Any other thread gets a
+        client of its own for the one call.
+        """
+        import asyncio
+        import functools
+
+        import anyio.from_thread
+
+        call = functools.partial(
+            self.check, tenant, key, cost, idempotency_key=idempotency_key, read_only=read_only
         )
+        try:
+            anyio.from_thread.run(call)
+            return
+        except RuntimeError as exc:
+            # The limiter's own errors (RateLimited, RateLimiterUnavailable and the idempotency
+            # outcomes) are RuntimeErrors too; only AnyIO's refusal of a thread it did not start
+            # carries this text, so everything else is re-raised.
+            if "AnyIO worker thread" not in str(exc):
+                raise
+
+        async def isolated() -> None:
+            limiter = RedisRateLimiter(
+                self._redis_url,
+                self._rates,
+                deployment=self._deployment,
+                key_prefix=self._prefix,
+                timeout_seconds=self._timeout,
+                fallback_read_budget=self._fallback_read_budget,
+                max_connections=self._max_connections,
+                redis_client=self._redis if self._client_injected else None,
+            )
+            try:
+                await limiter.check(
+                    tenant, key, cost, idempotency_key=idempotency_key, read_only=read_only
+                )
+            finally:
+                if not self._client_injected:
+                    await limiter.close()
+
+        asyncio.run(isolated())
 
 
 def _rate_from_env(

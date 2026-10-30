@@ -113,8 +113,12 @@ Mutating MCP tools require an idempotency key on HTTP deployments for writes, fo
 operations. Most tools expose it as `idempotency_key`; `recall_apply_fact` exposes the same value
 as `request_id`. PostgreSQL records the completed response before Redis stores its replay cache,
 so a repeated mutation key returns the original response even when Redis lost the response write.
-The receipt is bound to the idempotency key, tool, and canonical request arguments, so reusing one
-key for a different operation or different arguments is rejected as `idempotency_conflict`. The
+The receipt is bound to the idempotency key, tool, canonical request arguments, and the
+authenticated principal, so reusing one key for a different operation, different arguments, or
+from another principal of the same tenant is rejected as `idempotency_conflict`. A replay is
+still a request and spends one unit of the tool's budget. Receipts and reservations written
+before principal binding hold the unbound fingerprint, so a key in flight across that upgrade
+cannot be replayed and needs a new key. The
 `recall_apply_fact` tool calls this public key `request_id`; other mutating tools call it
 `idempotency_key`. If neither receipt is available, the server returns
 `reconciliation_required` and does not execute the mutation again.
