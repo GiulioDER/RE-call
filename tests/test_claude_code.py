@@ -9,6 +9,9 @@ never reaches a log line. Everything else is detail.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -134,13 +137,49 @@ def test_prompt_time_is_registered_synchronous_and_bounded() -> None:
     """It runs between the user pressing enter and anything happening, so it must be fast and
     must NOT be async: `additionalContext` that arrives after the turn started is context the
     model never saw. Measured 754ms against a 329-memo store, so the timeout is a fail-fast
-    bound rather than a budget it is expected to approach."""
+    bound rather than a budget it is expected to approach.
+
+    SEC-001: baseline 9085d3eb0 hook_entries omits safe-path mode. The exact
+    node fails its argv assertion before the fix and passes with -P.
+    """
 
     group = hook_entries(PYTHON)["UserPromptSubmit"][0]
     handler = group["hooks"][0]
-    assert handler["args"] == ["-m", "recall_hooks", "user-prompt-submit"]
+    assert handler["args"] == ["-P", "-m", "recall_hooks", "user-prompt-submit"]
     assert "async" not in handler
     assert 0 < handler["timeout"] <= 30
+
+
+def test_prompt_hook_ignores_a_project_local_package(tmp_path, monkeypatch):
+    """SEC-001: baseline 9085d3eb0 hook_entries lets cwd shadow the installed
+    handler. Red proof runs this exact node and fails the shadow-output assertion;
+    adding -P to the production argv makes the unchanged subprocess test pass.
+    """
+    project = tmp_path / "untrusted-project"
+    package = project / "recall_hooks"
+    package.mkdir(parents=True)
+    package.joinpath("__init__.py").write_text(
+        "print('PROJECT_PACKAGE_EXECUTED')\n", encoding="utf-8"
+    )
+    package.joinpath("__main__.py").write_text("", encoding="utf-8")
+    environment = os.environ.copy()
+    environment.pop("PYTHONSAFEPATH", None)
+    # An explicit trusted install path remains available; only implicit cwd
+    # precedence is forbidden. No ambient PYTHONPATH reaches the subprocess.
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    handler = hook_entries(sys.executable)["UserPromptSubmit"][0]["hooks"][0]
+    result = subprocess.run(
+        [handler["command"], *handler["args"]],
+        cwd=project,
+        env=environment,
+        input="{}",
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PROJECT_PACKAGE_EXECUTED" not in result.stdout
 
 
 def test_both_injection_hooks_are_installed_even_when_one_is_switched_off(

@@ -313,6 +313,11 @@ def rank(
     total = len(memos)
     if not total:
         return []
+    # Count the PROMPT's content words before examining the corpus vocabulary.
+    # A narrow unfamiliar question still deserves whatever two words match.
+    prompt_tokens = list(dict.fromkeys(tokenize(query[:MAX_QUERY_CHARS])))
+    if len(prompt_tokens) < MIN_QUERY_TOKENS:
+        return []
     frequencies: list[dict[str, int]] = []
     document_frequency: dict[str, int] = {}
     for _, _, tokens in memos:
@@ -324,13 +329,6 @@ def rank(
             document_frequency[token] = document_frequency.get(token, 0) + 1
     average_length = max(sum(len(m[2]) for m in memos) / total, 1.0)
 
-    # ⚠️ The length gate is on the PROMPT's content words, not on the ones the corpus happens to
-    # know. Filtering first and counting after conflates "the user said almost nothing" with "this
-    # corpus has never heard of the subject", and the second is the case a memory layer most needs
-    # to keep answering: a narrow, unfamiliar question still deserves whatever two words match.
-    prompt_tokens = list(dict.fromkeys(tokenize(query[:MAX_QUERY_CHARS])))
-    if len(prompt_tokens) < MIN_QUERY_TOKENS:
-        return []
     query_tokens = [t for t in prompt_tokens if t in document_frequency]
     if not query_tokens:
         return []
@@ -535,6 +533,8 @@ def user_prompt_submit(payload: dict[str, Any]) -> int:
         prompt = str(payload.get("prompt") or "").strip()
         options = settings()
         if not options["enabled"] or len(prompt) < options["min_chars"]:
+            return 0
+        if len(set(tokenize(prompt[:MAX_QUERY_CHARS]))) < MIN_QUERY_TOKENS:
             return 0
         store = find_store(str(payload.get("cwd") or ""), options["store"])
         if store is None:

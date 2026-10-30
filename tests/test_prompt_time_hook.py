@@ -200,6 +200,40 @@ def test_disabled_means_disabled(hook_env, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_a_long_filler_prompt_reads_no_memos(hook_env, monkeypatch, capsys):
+    """PERF-001: on baseline 9085d3eb0, user_prompt_submit calls the reader
+    before rejecting a prompt with too few content words. Red proof asserts
+    that the reader was never called; the identical node passes after the fix.
+    """
+    write_config(hook_env, store=str(make_store(hook_env, CORPUS)))
+    reads = []
+
+    def read_memos(store):
+        reads.append(store)
+        return []
+
+    monkeypatch.setattr(prompt_time, "load_memos", read_memos)
+    assert prompt_time.user_prompt_submit({"prompt": "yes please do this when you can"}) == 0
+    assert reads == [], "an ineligible prompt must not scan the memo store"
+    assert capsys.readouterr().out == ""
+
+
+def test_rank_rejects_filler_before_reading_memo_tokens():
+    """PERF-001: baseline 9085d3eb0 rank scans document tokens before the
+    query gate. Red proof fails the scan assertion; the fixed node stays green.
+    """
+    scans = []
+
+    class TrackedTokens(list):
+        def __iter__(self):
+            scans.append(True)
+            return super().__iter__()
+
+    memos = [("memory", "a memo", TrackedTokens(["memory"]))]
+    assert prompt_time.rank(memos, "yes please do this when you can") == []
+    assert scans == [], "an ineligible query must not index document tokens"
+
+
 def test_an_off_topic_prompt_injects_nothing(hook_env):
     """A single coincidental word is not a hit; MIN_MATCHED_TOKENS is what says so."""
 
