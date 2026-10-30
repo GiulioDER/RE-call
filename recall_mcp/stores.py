@@ -102,6 +102,8 @@ class StoreRegistry:
         self._route_poll_seconds = route_poll_seconds
         self._stores: dict[tuple[str, str], PgVectorStore] = {}
         self._routes: dict[str, tuple[float, TenantRoute | None]] = {}
+        #: Certified plan-time calibration per (tenant, generation): (resolved_at, status, id).
+        self._plan_calibrations: dict[tuple[str, str], tuple[float, str, str]] = {}
         self._lock = threading.Lock()
         self._closed = False
         #: ONE pool for the process, shared by every tenant and every generation. The old
@@ -158,6 +160,8 @@ class StoreRegistry:
         """Drop only routing metadata. Acquired stores remain valid for in-flight requests."""
         with self._lock:
             self._routes.pop(tenant, None)
+            for key in [key for key in self._plan_calibrations if key[0] == tenant]:
+                del self._plan_calibrations[key]
 
     def _route(self, tenant: str) -> TenantRoute | None:
         if self._control_plane is None:
@@ -312,6 +316,33 @@ class StoreRegistry:
                 raise RuntimeError("StoreRegistry is closed")
             return self._get_generation(tenant, shadow=True)
 
+    def _plan_calibration(self, tenant: str, generation_id: str) -> tuple[str, str | None]:
+        """Resolve a routed leg's calibration for plan validation, caching certified verdicts.
+
+        `CalibrationRepository.resolve` opens a fresh connection, and plan validation runs on
+        every configured-route request, so a certified verdict is reused for the same TTL that
+        `GenerationStore.resolve_calibration` applies on the search path. The generation in the
+        key retires the entry on promotion; `invalidate_route` drops it with the route.
+        """
+        from recall.calibration_v2 import CalibrationRepository
+        from recall.generation_store import CALIBRATION_RESOLUTION_TTL_S
+
+        key = (tenant, generation_id)
+        now = time.monotonic()
+        with self._lock:
+            cached = self._plan_calibrations.get(key)
+        if cached is not None and now - cached[0] < CALIBRATION_RESOLUTION_TTL_S:
+            return cached[1], cached[2]
+        resolution = CalibrationRepository(
+            self._dsn, tenant, actor="retrieval-plan"
+        ).resolve(generation_id)
+        status_value = resolution.status.value
+        calibration = getattr(resolution.artifact, "calibration_id", None)
+        if status_value == "certified" and calibration:
+            with self._lock:
+                self._plan_calibrations[key] = (now, status_value, str(calibration))
+        return status_value, None if calibration is None else str(calibration)
+
     def validate_retrieval_plan(self, plan: RetrievalPlan) -> RetrievalPlan:
         """Validate planned legs against the process tenant and serving boundaries.
 
@@ -346,13 +377,9 @@ class StoreRegistry:
                         f"retrieval plan selected generation {generation.generation_id!r} in "
                         f"state {generation.state!r} for tenant {leg.tenant!r}"
                     )
-                from recall.calibration_v2 import CalibrationRepository
-
-                resolution = CalibrationRepository(
-                    self._dsn, leg.tenant, actor="retrieval-plan"
-                ).resolve(generation.generation_id)
-                status_value = resolution.status.value
-                calibration = getattr(resolution.artifact, "calibration_id", None)
+                status_value, calibration = self._plan_calibration(
+                    leg.tenant, generation.generation_id
+                )
                 if status_value != "certified" or not calibration:
                     raise RuntimeError(
                         f"retrieval plan tenant {leg.tenant!r} has no certified calibration "

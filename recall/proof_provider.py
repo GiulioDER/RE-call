@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 import os
 
+from recall._env import strict_bool
 from recall.answer_provider import OllamaAnswerProvider, resolve_answer_provider
 from recall.proof_obligations import PROOF_PROMPT_DIGEST
 from recall.provider_metadata import ProviderMetadata
@@ -36,11 +37,10 @@ def resolve_proof_provider(
 ) -> ProofProviderAdapter | None:
     """Resolve only the explicitly configured, revision pinned OpenRouter proof provider."""
     source = env if env is not None else os.environ
-    enabled = source.get("RECALL_REASONING_PROOF_ENABLED", "0").strip().lower()
-    if enabled in {"", "0", "false", "no", "off"}:
+    if not strict_bool(
+        source.get("RECALL_REASONING_PROOF_ENABLED"), name="RECALL_REASONING_PROOF_ENABLED"
+    ):
         return None
-    if enabled not in {"1", "true", "yes", "on"}:
-        raise ValueError("RECALL_REASONING_PROOF_ENABLED must be an explicit boolean")
     provider = source.get("RECALL_REASONING_PROOF_PROVIDER", "openrouter").strip().lower()
     if provider != "openrouter":
         raise ValueError("RECALL_REASONING_PROOF_PROVIDER must be 'openrouter'")
@@ -76,7 +76,13 @@ def resolve_proof_provider(
             "RECALL_REASONING_ANSWER_API_KEY": source.get("RECALL_REASONING_PROOF_API_KEY", ""),
         }
     )
-    delegate = resolve_answer_provider(mapped)
+    try:
+        delegate = resolve_answer_provider(mapped)
+    except ValueError as exc:
+        # The proof values were validated under the answer provider's names; report the names
+        # the operator actually set.
+        message = str(exc).replace("RECALL_REASONING_ANSWER_", "RECALL_REASONING_PROOF_")
+        raise ValueError(message) from exc
     if delegate is None:
         raise AssertionError("enabled proof provider resolved to None")
     return ProofProviderAdapter(delegate)

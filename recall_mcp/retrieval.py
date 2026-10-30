@@ -89,6 +89,9 @@ class _Retrieval:
     candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration] | None = None
     #: The paged evidence depth decision, present only when the caller asked for one.
     paged_depth: PagedDepthDecision | None = None
+    #: False when the first served hit came from another federation leg: related expansion looks
+    #: the seed up in the serving store, which does not hold that leg's chunks.
+    related_seed_in_store: bool = True
 
 
 class _ServedDepthLedger(DecisionLedger):
@@ -704,7 +707,11 @@ def search_memory(
     hits = [_search_hit_model_fn(hit, include_scores=True) for hit in result.hits]
     related_items: list[SearchHit] = []
     related_diagnostics: list[str] = []
-    if (include_related or (active_routing and route.related_expansion)) and result.hits:
+    if (
+        (include_related or (active_routing and route.related_expansion))
+        and result.hits
+        and retrieval.related_seed_in_store
+    ):
         try:
             related_result = trusted_related_fn(
                 store,
@@ -880,7 +887,11 @@ def evidence_memory(
     related_result: RelatedEvidenceResult | None = None
     related_ids: set[str] = set()
     related_diagnostics: list[str] = []
-    if (include_related or (active_routing and route.related_expansion)) and result.hits:
+    if (
+        (include_related or (active_routing and route.related_expansion))
+        and result.hits
+        and retrieval.related_seed_in_store
+    ):
         try:
             related_result = trusted_related_fn(
                 store,

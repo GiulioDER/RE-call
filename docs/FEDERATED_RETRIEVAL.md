@@ -20,7 +20,8 @@ The configured primary prefix is protected when `primary_prefix + rescue_slots <
 invalid configurations are rejected. Secondary candidates may enter only after the primary segment,
 only when they are trusted and calibrated by their own leg, and only when their identifier and
 source content are novel relative to the primary pool. `RECALL_FEDERATION_RESCUE_SLOTS` bounds
-the secondary tail. A secondary leg cannot fill a missing or rejected primary leg.
+the secondary tail; a rescue slot that no secondary candidate fills goes back to the primary leg.
+A secondary leg cannot fill a missing or rejected primary leg.
 
 Modes are deliberately explicit:
 
@@ -38,12 +39,22 @@ scores across profiles.
 The compatibility route remains single tenant. Configured federation requires authenticated store
 registry access and resolved generation, profile, calibration, and trust identities. If those
 identities are unavailable, serving fails closed instead of silently falling back to another leg.
+In the serving adapter, `off` searches the caller's authenticated tenant even when a configured
+route names another primary tenant, so `retrieval_plan` is advisory until the mode is `shadow` or
+`active`. The primary leg is sized to cover the request's `k`. Under the default
+`RECALL_FEDERATION_INVALID_LEG=omit`, a primary leg that raises keeps its own error type
+(`fail_closed` wraps it in `FederationLegRejected`); in `shadow`, a primary leg that overruns the plan's latency budget falls back
+to the control retrieval instead of failing the request.
 
 ## Handoff
 
 The route planner puts the primary leg first, and the serving adapter binds each callback to its
-own `StoreRegistry` store. Search and evidence responses include bounded federation diagnostics
-inside `retrieval_plan`. Keep `RECALL_FEDERATION_MODE=off` for deployments without independently
+own `StoreRegistry` store. `recall_search` responses include bounded federation diagnostics
+inside `retrieval_plan`; in `active` mode its `served` list gives each served chunk's tenant,
+generation, embedding profile and calibration, because a rescued hit is served inside the
+primary result. `recall_evidence` always runs single tenant (federation off), because evidence
+cards persist through the primary store's provenance controller, so it carries no federation
+diagnostics. Keep `RECALL_FEDERATION_MODE=off` for deployments without independently
 certified specialist generations; use `shadow` to observe bounded fanout before an approved
 promotion to `active`. No deployment or external release action is implied by this module.
 

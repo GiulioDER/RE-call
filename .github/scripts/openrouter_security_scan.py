@@ -28,6 +28,7 @@ MAX_COMPLETION_TOKENS = 8_000
 MAX_ATTEMPTS = 2
 RAW_PREFIX_CHARS = 600
 FAIL_ON_HIGH_VARIABLE = "OPENROUTER_FAIL_ON_HIGH"
+BLOCKING_SEVERITIES = frozenset({"critical", "high"})
 # Measured 2026-09-22, PR 694 diff, base-revision payload, 12 requests: Novita served 5, and 4 of
 # those came back with ``content: null`` while billing 9 to 526 completion tokens with no reasoning
 # field; SiliconFlow and Alibaba returned content 7 of 7. ``require_parameters`` stops an endpoint
@@ -61,7 +62,7 @@ Return exactly one JSON object with this shape and no markdown:
   ]
 }
 
-Use an empty findings array when there is no supported vulnerability. Keep at most 30 findings.
+Use an empty findings array when there is no supported vulnerability. Keep at most __MAX_FINDINGS__ findings.
 
 Before reporting a high or critical finding, trace the proposed exploit input through every changed
 validation branch. Treat exact host and scheme allowlists, explicit encoded-input rejection,
@@ -70,6 +71,7 @@ a bypass when the supplied exploit is rejected by those guards. Do not infer a v
 symbol name or from a hypothetical alternate implementation; the changed code must execute the
 described exploit path.
 """
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("__MAX_FINDINGS__", str(MAX_FINDINGS))
 
 
 def _required_env(name: str) -> str:
@@ -244,12 +246,53 @@ def _escape_command(value: str) -> str:
     )
 
 
+def _guard_hunks(diff: str, file_name: str) -> list[tuple[int, int, str]]:
+    """Return ``(first_line, last_line, text)`` for each new-side hunk of one file in the diff.
+
+    The region a guard occupies is read from the diff itself, never from fixed line numbers,
+    which went stale the first time either guard moved. Only context and added lines count, so
+    a change that deletes a guard can never be mistaken for one that carries it.
+    """
+    hunks: list[tuple[int, int, str]] = []
+    in_file = in_hunk = False
+    start = count = 0
+    lines: list[str] = []
+
+    def close() -> None:
+        if in_hunk and lines:
+            hunks.append((start, start + max(count, 1) - 1, "\n".join(lines)))
+
+    for raw in diff.splitlines():
+        if raw.startswith("diff --git "):
+            if in_file:
+                close()
+            lines = []
+            in_file = raw.endswith(f" b/{file_name}")
+            in_hunk = False
+            continue
+        if not in_file:
+            continue
+        header = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", raw)
+        if header:
+            close()
+            lines = []
+            in_hunk = True
+            start = int(header.group(1))
+            count = int(header.group(2) or "1")
+            continue
+        if in_hunk and raw[:1] in {" ", "+"}:
+            lines.append(raw)
+    if in_file:
+        close()
+    return hunks
+
+
 def _apply_deterministic_guard_triage(
     findings: list[dict[str, Any]], diff: str
 ) -> list[dict[str, Any]]:
     """Keep model findings visible while downgrading claims disproved by changed guard code."""
     guard_proofs = {
-        "recall/embeddings.py": (
+        "recall/embedding_providers/openai_compat.py": (
             "parsed_base_url = urlsplit",
             "is_approved_remote",
             "is_approved_local",
@@ -267,15 +310,17 @@ def _apply_deterministic_guard_triage(
         file_name = finding.get("file")
         line = finding.get("line")
         proof = guard_proofs.get(file_name)
-        in_guard_region = (
-            (file_name == "recall/embeddings.py" and isinstance(line, int) and 1750 <= line <= 1830)
-            or (file_name == "recall/multimodal.py" and isinstance(line, int) and 75 <= line <= 115)
+        hunks = _guard_hunks(diff, file_name) if proof is not None else []
+        file_text = "\n".join(text for _, _, text in hunks)
+        in_guard_region = isinstance(line, int) and any(
+            first <= line <= last and any(marker in text for marker in proof or ())
+            for first, last, text in hunks
         )
         if (
             proof is not None
             and in_guard_region
-            and finding.get("severity") in {"critical", "high"}
-            and all(marker in diff for marker in proof)
+            and finding.get("severity") in BLOCKING_SEVERITIES
+            and all(marker in file_text for marker in proof)
         ):
             finding = dict(finding)
             finding["severity"] = "low"
@@ -296,7 +341,13 @@ def _fail_on_high() -> bool:
     blocking HIGH was a red check nobody could act on. Findings are still printed as annotations
     and in the step summary. A review that cannot run or cannot be parsed still fails the job.
     """
-    return os.environ.get(FAIL_ON_HIGH_VARIABLE, "").strip().lower() in {"1", "true", "yes", "on"}
+    raw = os.environ.get(FAIL_ON_HIGH_VARIABLE, "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"", "0", "false", "no", "off"}:
+        return False
+    # A typo must not read as "off": that is indistinguishable from a switch nobody set.
+    raise RuntimeError(f"{FAIL_ON_HIGH_VARIABLE}={raw!r} is not a boolean; expected true or false")
 
 
 def _report(findings: list[dict[str, Any]], summary_path: str | None) -> None:
@@ -304,14 +355,14 @@ def _report(findings: list[dict[str, Any]], summary_path: str | None) -> None:
         print("OpenRouter security review found no supported vulnerabilities.")
         summary = "## OpenRouter security review\n\nNo supported vulnerabilities found.\n"
     else:
-        high_findings = [item for item in findings if item["severity"] in {"critical", "high"}]
+        high_findings = [item for item in findings if item["severity"] in BLOCKING_SEVERITIES]
         print(f"OpenRouter security review returned {len(findings)} finding(s).")
         lines = ["## OpenRouter security review", ""]
         for finding in findings:
             location = finding["file"] or "changed code"
             if finding["line"] is not None:
                 location += f":{finding['line']}"
-            level = "error" if finding["severity"] in {"critical", "high"} else "warning"
+            level = "error" if finding["severity"] in BLOCKING_SEVERITIES else "warning"
             properties = [f"title={_escape_command(finding['title'])}"]
             if finding["file"]:
                 properties.insert(0, f"file={_escape_command(finding['file'])}")
@@ -381,7 +432,7 @@ def main() -> int:
         content = _request_review(api_key, model, repository, pull_request, diff)
         findings = _apply_deterministic_guard_triage(_parse_response(content), diff)
         _report(findings, os.environ.get("GITHUB_STEP_SUMMARY"))
-        has_high = any(item["severity"] in {"critical", "high"} for item in findings)
+        has_high = any(item["severity"] in BLOCKING_SEVERITIES for item in findings)
         return 1 if has_high and _fail_on_high() else 0
     except (OSError, RuntimeError) as exc:
         print(f"OpenRouter security review failed: {exc}", file=sys.stderr)

@@ -12,7 +12,7 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Literal, cast
+from typing import Any, Literal, cast, get_args
 
 from recall.errors import RecallError
 
@@ -24,6 +24,7 @@ MAX_RETRIEVAL_LEG_LIMIT = 50
 MAX_RETRIEVAL_LATENCY_BUDGET_MS = 60_000
 
 Modality = Literal["text", "image", "multimodal", "unknown"]
+_MODALITIES: frozenset[str] = frozenset(get_args(Modality))
 LegRole = Literal["primary", "rescue"]
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -253,7 +254,7 @@ def _string_tuple(value: Any, name: str) -> tuple[str, ...]:
 
 def _modality_set(value: Any) -> frozenset[Modality]:
     values = _string_set(value, "modalities")
-    invalid = values - {"text", "image", "multimodal", "unknown"}
+    invalid = values - _MODALITIES
     if invalid:
         raise RetrievalPlanConfigurationError(f"unsupported modality value(s): {sorted(invalid)}")
     return frozenset(cast(Sequence[Modality], tuple(values)))
@@ -367,6 +368,20 @@ class RetrievalPlanResolver:
         modality: str | None = None,
         route_id: str | None = None,
     ) -> RetrievalPlan:
+        """Select one configured route, or the caller's own tenant when none applies.
+
+        An explicit ``route_id`` wins and never adds a rescue leg; an unknown id raises. Otherwise
+        a route is a candidate only when every filter it declares matches: ``scopes`` by exact
+        request scope, ``modalities`` by the normalised modality, ``source_prefixes`` by prefix,
+        and ``query_any`` by substring of the casefolded query. Candidates rank by scope match,
+        then modality match, then the longest matching source prefix, then the number of query
+        signals, then ``route_id``, all descending. With no candidate the configured default route
+        is used, and without one the single tenant compatibility plan for ``current_tenant``.
+        A rescue tenant is added only when the chosen route matched on no specific field.
+        ``current_tenant`` is consulted only for that compatibility plan; serving checks the
+        caller's authority for any other tenant. Raises ``RetrievalPlanError`` for an unknown
+        route id or an unsupported modality.
+        """
         _validate_identifier(current_tenant, "current_tenant")
         selected_modality = _normalize_modality(modality)
         normalized_query = " ".join(query.casefold().split())
@@ -438,9 +453,9 @@ def _normalize_modality(value: str | None) -> Modality:
     if value is None or not value.strip():
         return "unknown"
     normalized = value.strip().casefold()
-    if normalized not in {"text", "image", "multimodal", "unknown"}:
+    if normalized not in _MODALITIES:
         raise RetrievalPlanError("modality must be text, image, multimodal, or unknown")
-    return normalized  # type: ignore[return-value]
+    return cast(Modality, normalized)
 
 
 def _compatibility_plan(current_tenant: str) -> RetrievalPlan:
