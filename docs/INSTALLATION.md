@@ -161,11 +161,13 @@ content changes.
 
 ## Manual schema and corpus path
 
-Use the manual path when the serving role cannot create tables. Apply migrations with the owner DSN,
-then index and search with the serving configuration:
+Use the manual path when the serving role cannot create tables. Apply global migrations to the
+default `chunks` target first, then prepare `recall_notes` with the owner DSN. Index and search
+with the serving configuration:
 
 ```bash
 recall --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply
+recall --table recall_notes --migration-dsn postgresql://recall:recall@localhost:5432/recall schema --dim 384 apply
 RECALL_TRUST_MODE=development recall --table recall_notes index ./notes
 RECALL_TRUST_MODE=development recall --table recall_notes search "what did we decide about caching?"
 recall lint ./notes
