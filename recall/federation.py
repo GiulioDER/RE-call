@@ -12,7 +12,7 @@ path.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 import hashlib
 import os
@@ -35,6 +35,15 @@ MAX_FEDERATION_CANDIDATE_K = 50
 MAX_FEDERATION_RESULT_K = 50
 MAX_FEDERATION_RRF_K = 1_000_000
 MAX_FEDERATION_LATENCY_BUDGET_MS = 120_000
+#: Every federation leg runs on this one process-wide pool. A leg that overruns its latency budget
+#: cannot be interrupted once it is running, so a pool per request left one more runaway thread
+#: (holding its admission slot and connection) behind on every request to a slow tenant. Here the
+#: runaway work is capped at the pool size, and a leg still queued when its budget expires is
+#: cancelled before it starts. A leg already running still holds its slot until it finishes.
+FEDERATION_LEG_WORKERS = 2 * MAX_FEDERATION_CONCURRENCY
+_LEG_EXECUTOR = ThreadPoolExecutor(
+    max_workers=FEDERATION_LEG_WORKERS, thread_name_prefix="recall-federation-leg"
+)
 
 
 class FederationConfigurationError(ValueError, RecallError):
@@ -88,10 +97,6 @@ class FederationConfig:
         ):
             if getattr(self, name) > maximum:
                 raise FederationConfigurationError(f"{name} must be <= {maximum}")
-        if self.candidate_k > MAX_FEDERATION_CANDIDATE_K:
-            raise FederationConfigurationError(
-                f"candidate_k must be <= {MAX_FEDERATION_CANDIDATE_K}"
-            )
         if self.rrf_k < 0:
             raise FederationConfigurationError("rrf_k must be >= 0")
         if self.rescue_slots < 0:
@@ -318,6 +323,14 @@ def _run_leg(leg: FederationLeg, query: str, candidate_k: int) -> tuple[TrustedR
     return result, (time.perf_counter() - started) * 1000.0
 
 
+def _leg_failed(leg: FederationLeg, exc: Exception, settings: FederationConfig) -> None:
+    """Apply the invalid leg policy to a leg that raised: omit it, or fail the request closed."""
+    if settings.invalid_leg_policy == "fail_closed":
+        raise FederationLegRejected(
+            f"tenant leg {leg.tenant_id!r} failed: {type(exc).__name__}"
+        ) from exc
+
+
 def federate(
     query: str,
     legs: Sequence[FederationLeg],
@@ -349,65 +362,60 @@ def federate(
     timed_out: set[int] = set()
     started = time.perf_counter()
     if len(effective_legs) == 1 and latency_budget_ms is not None:
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(_run_leg, effective_legs[0], query, settings.candidate_k)
+        future = _LEG_EXECUTOR.submit(_run_leg, effective_legs[0], query, settings.candidate_k)
         try:
             done, pending = wait((future,), timeout=latency_budget_ms / 1000.0)
             if future in done:
                 try:
                     results[0] = future.result()
                 except Exception as exc:  # BROAD-CATCH: fail-open
-                    if settings.invalid_leg_policy == "fail_closed":
-                        raise FederationLegRejected(
-                            f"tenant leg {effective_legs[0].tenant_id!r} failed: "
-                            f"{type(exc).__name__}"
-                        ) from exc
+                    _leg_failed(effective_legs[0], exc, settings)
             else:
                 timed_out = {0}
-                future.cancel()
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            future.cancel()
     elif len(effective_legs) == 1:
         try:
             results[0] = _run_leg(effective_legs[0], query, settings.candidate_k)
         except Exception as exc:  # BROAD-CATCH: fail-open
-            if settings.invalid_leg_policy == "fail_closed":
-                raise FederationLegRejected(
-                    f"tenant leg {effective_legs[0].tenant_id!r} failed: {type(exc).__name__}"
-                ) from exc
+            _leg_failed(effective_legs[0], exc, settings)
     else:
-        executor = ThreadPoolExecutor(max_workers=settings.max_concurrency)
-        futures = {
-            executor.submit(_run_leg, leg, query, settings.candidate_k): index
-            for index, leg in enumerate(effective_legs)
-        }
+        # Legs are handed to the shared pool from this thread, at most max_concurrency at a
+        # time, so a leg that has not started is never submitted and can never run after the
+        # request has returned. Only legs already running can outlive the budget.
+        waiting = list(enumerate(effective_legs))
+        running: dict[Future[tuple[TrustedResult, float]], int] = {}
+        deadline = None if latency_budget_ms is None else started + latency_budget_ms / 1000.0
+
+        def submit_ready() -> None:
+            if deadline is not None and time.perf_counter() >= deadline:
+                return
+            while waiting and len(running) < settings.max_concurrency:
+                index, leg = waiting.pop(0)
+                running[_LEG_EXECUTOR.submit(_run_leg, leg, query, settings.candidate_k)] = index
+
         try:
-            if latency_budget_ms is None:
-                for future in as_completed(futures):
-                    index = futures[future]
-                    try:
-                        results[index] = future.result()
-                    except Exception as exc:  # BROAD-CATCH: fail-open
-                        if settings.invalid_leg_policy == "fail_closed":
-                            raise FederationLegRejected(
-                                f"tenant leg {effective_legs[index].tenant_id!r} failed: "
-                                f"{type(exc).__name__}"
-                            ) from exc
-            else:
-                done, pending = wait(futures, timeout=latency_budget_ms / 1000.0)
-                timed_out = {futures[future] for future in pending}
+            submit_ready()
+            while running:
+                timeout = None if deadline is None else max(0.0, deadline - time.perf_counter())
+                done, _ = wait(running, timeout=timeout, return_when=FIRST_COMPLETED)
+                if not done:
+                    timed_out = set(running.values()) | {index for index, _ in waiting}
+                    break
                 for future in done:
-                    index = futures[future]
+                    index = running.pop(future)
                     try:
                         results[index] = future.result()
                     except Exception as exc:  # BROAD-CATCH: fail-open
-                        if settings.invalid_leg_policy == "fail_closed":
-                            raise FederationLegRejected(
-                                f"tenant leg {effective_legs[index].tenant_id!r} failed: "
-                                f"{type(exc).__name__}"
-                            ) from exc
+                        _leg_failed(effective_legs[index], exc, settings)
+                submit_ready()
+            # A leg still waiting here was never submitted because the budget had passed.
+            timed_out |= {index for index, _ in waiting}
         finally:
-            executor.shutdown(wait=latency_budget_ms is None, cancel_futures=True)
+            # A future that is still running keeps its pool worker until it returns, which is
+            # what bounds the runaway work; cancel() is a no-op on it and on a finished one.
+            for future in running:
+                future.cancel()
 
     leg_diagnostics: list[FederationLegDiagnostics] = []
     valid_hits: dict[int, list[TrustedHit]] = {}

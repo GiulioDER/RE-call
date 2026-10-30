@@ -27,8 +27,8 @@ base64 data URLs, and unbounded payloads are not stored in vector metadata or ve
 
 `MultimodalSidecar` associates that reference with bounded text. The sidecar can carry OCR and
 operator supplied captions, but it does not replace the original object. The original object is
-returned only as a controlled reference after tenant and principal authorization and within the
-response byte budget. Missing authorization, an unknown object scheme, an overlarge upload, or an
+returned only as a controlled reference after owning tenant authorization (and, for private
+media, a non empty authenticated principal) and within the response byte budget. Missing authorization, an unknown object scheme, an overlarge upload, or an
 overlarge response refuses the operation.
 
 Provider image bytes are transient request material. `MultimodalQuery` builds the provider input

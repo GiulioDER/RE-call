@@ -129,8 +129,8 @@ class HostedSettings:
         ]
         if missing:
             raise RuntimeError("missing required hosted settings: " + ", ".join(missing))
-        authorized_user_id = os.environ.get("RECALL_AML_AUTHORIZED_USER_ID", "")
-        if not authorized_user_id.strip():
+        authorized_user_id = os.environ.get("RECALL_AML_AUTHORIZED_USER_ID", "").strip()
+        if not authorized_user_id:
             raise RuntimeError(
                 "missing required hosted setting: RECALL_AML_AUTHORIZED_USER_ID; "
                 "the shared API key must be bound to one user, or to '*' for an evaluation "

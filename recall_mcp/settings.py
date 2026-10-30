@@ -16,7 +16,12 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Protocol
 
-from recall.multimodal import MultimodalTenantConfig
+from recall.multimodal import (
+    DEFAULT_MAX_ITEMS,
+    DEFAULT_MAX_MEDIA_BYTES,
+    DEFAULT_MAX_RESPONSE_BYTES,
+    MultimodalTenantConfig,
+)
 from recall.ops.secret_mapping import (  # noqa: F401  # re-exported
     SECRET_DESTINATIONS,
     secret_mapping_from_env,
@@ -102,9 +107,9 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_MULTIMODAL_TENANT", "Multimodal", "fixed multimodal tenant", "re-call-multimodal"),
     EnvironmentSpec("RECALL_MULTIMODAL_EMBED_PROFILE", "Multimodal", "fixed multimodal embedding profile", "voyage-multimodal-3.5-v1"),
     EnvironmentSpec("RECALL_MULTIMODAL_OBJECT_ROOT", "Multimodal", "controlled original media object root"),
-    EnvironmentSpec("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", "Multimodal", "validated admission bound; reserved, no serving path applies it yet", "31457280"),
-    EnvironmentSpec("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", "Multimodal", "validated response bound; reserved, no serving path applies it yet", "31457280"),
-    EnvironmentSpec("RECALL_MULTIMODAL_MAX_ITEMS", "Multimodal", "validated item bound; reserved, not enforced yet", "20"),
+    EnvironmentSpec("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", "Multimodal", "validated admission bound; reserved, no serving path applies it yet", str(DEFAULT_MAX_MEDIA_BYTES)),
+    EnvironmentSpec("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", "Multimodal", "validated response bound; reserved, no serving path applies it yet", str(DEFAULT_MAX_RESPONSE_BYTES)),
+    EnvironmentSpec("RECALL_MULTIMODAL_MAX_ITEMS", "Multimodal", "validated item bound; reserved, not enforced yet", str(DEFAULT_MAX_ITEMS)),
     EnvironmentSpec("RECALL_TRANSPORT", "MCP", "stdio, sse, or streamable-http", "stdio"),
     EnvironmentSpec("RECALL_HOST", "MCP", "HTTP bind host", "127.0.0.1"),
     EnvironmentSpec("RECALL_PORT", "MCP", "HTTP bind port", "8000"),
@@ -369,9 +374,9 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         ("RECALL_REDIS_MAX_CONNECTIONS", 32),
         ("RECALL_RERANK_BATCH_SIZE", 4),
         ("RECALL_RERANK_THREADS", 1),
-        ("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", 31_457_280),
-        ("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", 31_457_280),
-        ("RECALL_MULTIMODAL_MAX_ITEMS", 20),
+        ("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", DEFAULT_MAX_MEDIA_BYTES),
+        ("RECALL_MULTIMODAL_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES),
+        ("RECALL_MULTIMODAL_MAX_ITEMS", DEFAULT_MAX_ITEMS),
     ):
         _int(source, name, default_int, minimum=1)
     for name, default_float in (

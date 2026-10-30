@@ -812,6 +812,18 @@ async def _translation_to_thread(fn: Callable[[], _T]) -> _T:
     return await anyio.to_thread.run_sync(fn, limiter=TRANSLATION_THREAD_LIMITER)
 
 
+# An evidence proof runs its own retrievals and up to two blocking provider calls (each up to the
+# proof timeout) on one thread, and none of it passes the retrieval admission gate. Like
+# translation, it gets its own bounded pool so it cannot hold the general workers that
+# authentication and the write tools need.
+PROOF_THREAD_LIMITER = CapacityLimiter(4)
+
+
+async def _proof_to_thread(fn: Callable[[], _T]) -> _T:
+    """Run one evidence proof without consuming a general worker token."""
+    return await anyio.to_thread.run_sync(fn, limiter=PROOF_THREAD_LIMITER)
+
+
 #: Worker threads held back for everything that is not a queued search.
 #:
 #: Every tool body runs through `_to_thread`, and so does the OIDC bearer-token validator. A
@@ -1435,11 +1447,15 @@ def _trust_policy_for(state: Mapping[str, object]) -> TrustPolicy:
     return settings.trust_policy
 
 
-def _runtime_env_for(state: Mapping[str, object]) -> Mapping[str, str]:
+def _runtime_settings_for(state: Mapping[str, object]) -> Settings:
     settings = state.get("settings")
     if not isinstance(settings, Settings):
         raise RuntimeError("MCP runtime state is missing its Settings snapshot")
-    return settings.env
+    return settings
+
+
+def _runtime_env_for(state: Mapping[str, object]) -> Mapping[str, str]:
+    return _runtime_settings_for(state).env
 
 
 def _federation_config_for(state: Mapping[str, object]) -> FederationConfig:
@@ -1560,9 +1576,7 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         current_store=store,
                         current_embedder=cast(Embedder, state["embedder"]),
                         env=_runtime_env_for(state),
-                        multimodal_enabled=bool(
-                            getattr(getattr(state.get("settings"), "multimodal", None), "enabled", False)
-                        ),
+                        multimodal_enabled=_runtime_settings_for(state).multimodal.enabled,
                         embedder_cache=state.get("federation_embedders"),
                         embedder_cache_lock=state.get("federation_embedder_lock"),
                     )
@@ -2235,7 +2249,9 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 return payload
 
             if mode == "evidence_proof":
-                return await _to_thread(lambda: json.dumps(execute_proof(), indent=2, default=str))
+                return await _proof_to_thread(
+                    lambda: json.dumps(execute_proof(), indent=2, default=str)
+                )
             return await _to_thread(
                 lambda: json.dumps(
                     execute_reasoning(mode, query).to_dict(),

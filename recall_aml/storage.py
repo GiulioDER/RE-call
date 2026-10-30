@@ -387,6 +387,13 @@ class PgHostedRepository:
         tenant before each upsert lets the primary, specialist, media, and native-vector rows
         share one commit boundary without weakening row-level security.
         """
+        if self._sparse_encoder is not None:
+            # persist() writes the learned sparse sidecar and verifies coverage; this bundle does
+            # not, so a sparse repository would be left with dense rows Search then refuses.
+            raise RuntimeError(
+                "persist_multimodal_bundle does not write the learned sparse sidecar; "
+                "a repository with a sparse encoder must persist through persist()"
+            )
         primary = list(primary_chunks)
         media = list(media_chunks)
         native = list(multimodal_chunks)
@@ -396,25 +403,20 @@ class PgHostedRepository:
         specialist: list[Chunk] = []
         specialist_vectors: list[list[float]] = []
         if specialist_profile is not None:
-            embedder = self._specialist_embedders.get(specialist_profile)
-            if embedder is None:
-                raise RuntimeError(f"specialist embedder is not configured: {specialist_profile}")
-            specialist = [
-                replace(chunk, metadata={**chunk.metadata, "embedding_profile": specialist_profile})
-                for chunk in primary
-            ]
-            specialist_vectors = embed_passages(embedder, [chunk.text for chunk in specialist])
+            specialist, specialist_vectors = self._specialist_rows(specialist_profile, primary)
         primary_vectors = embed_passages(self._embedder, [chunk.text for chunk in primary])
         media_vectors = [[0.0] * self._embedder.dim for _ in media]
-        table = self._base_store.table
 
         def _write(conn: Any, physical_tenant: str, chunks: list[Chunk], vectors: list[list[float]]) -> int:
             if not chunks:
                 return 0
             conn.execute("SELECT set_config('recall.tenant_id', %s, true)", (physical_tenant,))
+            # A view bound to the physical tenant. The store's own hook drops every piece of
+            # state derived from the previous tenant, which a bare __dict__ copy would inherit.
             tenant_store = object.__new__(type(self._base_store))
             tenant_store.__dict__.update(self._base_store.__dict__)
             tenant_store._tenant = physical_tenant
+            tenant_store._reset_tenant_state()
             tenant_store._upsert_in(conn, chunks, vectors)
             return len(chunks)
 
@@ -432,16 +434,12 @@ class PgHostedRepository:
                 written += _write(conn, multimodal_tenant(tenant), native, native_vectors)
                 return written
 
-        del table  # keep the validated shared-table invariant explicit for static checkers
         return self._base_store._with_retry(_op)
 
-    def persist_specialist(
-        self,
-        tenant: str,
-        embedding_profile: str,
-        chunks: Sequence[Chunk],
-    ) -> int:
-        """Embed identical logical chunks into one isolated specialist namespace."""
+    def _specialist_rows(
+        self, embedding_profile: str, chunks: Sequence[Chunk]
+    ) -> tuple[list[Chunk], list[list[float]]]:
+        """Stamp and embed identical logical chunks for one specialist namespace."""
         embedder = self._specialist_embedders.get(embedding_profile)
         if embedder is None:
             raise RuntimeError(f"specialist embedder is not configured: {embedding_profile}")
@@ -451,6 +449,16 @@ class PgHostedRepository:
             replace(chunk, metadata={**chunk.metadata, "embedding_profile": embedding_profile})
             for chunk in materialized
         ]
+        return specialist_chunks, vectors
+
+    def persist_specialist(
+        self,
+        tenant: str,
+        embedding_profile: str,
+        chunks: Sequence[Chunk],
+    ) -> int:
+        """Embed identical logical chunks into one isolated specialist namespace."""
+        specialist_chunks, vectors = self._specialist_rows(embedding_profile, chunks)
         return self.specialist_store(tenant, embedding_profile).upsert(specialist_chunks, vectors)
 
     def verify_sparse_coverage(self, tenant: str) -> dict[str, object]:

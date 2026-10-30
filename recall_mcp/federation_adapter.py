@@ -42,7 +42,17 @@ class FederationExecution:
     diagnostics: dict[str, object]
 
 
-def _identity_for(tenant: str, identity: TenantIdentity | None) -> TenantIdentity:
+@dataclass(frozen=True)
+class _ResolvedIdentity:
+    """A leg identity whose every field `_identity_for` has proven present and certified."""
+
+    generation: str
+    embedding_profile: str
+    calibration: str
+    calibration_status: str
+
+
+def _identity_for(tenant: str, identity: TenantIdentity | None) -> _ResolvedIdentity:
     if identity is None:
         raise RetrievalPlanError(
             f"retrieval plan tenant {tenant!r} has no resolved generation identity"
@@ -64,7 +74,12 @@ def _identity_for(tenant: str, identity: TenantIdentity | None) -> TenantIdentit
         raise RetrievalPlanError(
             f"retrieval plan tenant {tenant!r} is not certified for federation"
         )
-    return identity
+    return _ResolvedIdentity(
+        generation=str(identity.generation),
+        embedding_profile=str(identity.embedding_profile),
+        calibration=str(identity.calibration),
+        calibration_status=str(identity.calibration_status),
+    )
 
 
 def prepare_federated_execution(
@@ -104,10 +119,9 @@ def prepare_federated_execution(
     cache_lock = embedder_cache_lock or Lock()
     stores: dict[str, Any] = {}
     embedders: dict[str, Embedder] = {}
-    identities: dict[str, TenantIdentity] = {}
+    identities: dict[str, _ResolvedIdentity] = {}
     for leg in plan.selected_legs:
         identity = _identity_for(leg.tenant, leg.identity)
-        assert identity.embedding_profile is not None
         if identity.embedding_profile.startswith("voyage-multimodal") and not multimodal_enabled:
             raise RetrievalPlanError("multimodal federation requires explicit feature enablement")
         identities[leg.tenant] = identity
@@ -206,10 +220,10 @@ def prepare_federated_execution(
         federation_legs = [
             FederationLeg(
                 tenant_id=leg.tenant,
-                generation_id=identities[leg.tenant].generation or "",
-                embedding_profile=identities[leg.tenant].embedding_profile or "",
+                generation_id=identities[leg.tenant].generation,
+                embedding_profile=identities[leg.tenant].embedding_profile,
                 calibration_id=identities[leg.tenant].calibration,
-                calibration_status=identities[leg.tenant].calibration_status or "",
+                calibration_status=identities[leg.tenant].calibration_status,
                 route=plan.route_id,
                 retrieve=make_leg_retriever(leg.tenant),
                 # The primary leg is also the control result, so it must cover the caller's k.
@@ -254,7 +268,13 @@ def prepare_federated_execution(
             ),
         )
         holder["result"] = result
-        return replace(primary_retrieval, result=merged)
+        return replace(
+            primary_retrieval,
+            result=merged,
+            related_seed_in_store=not (
+                result.active and result.served and result.served[0].tenant_id != primary_tenant
+            ),
+        )
 
     return FederationExecution(
         primary_store,

@@ -77,7 +77,7 @@ def canonical_sha256(value: Any) -> str:
 
 def _sha256(value: str, *, field_name: str) -> str:
     normalised = value.lower()
-    if len(normalised) != 64 or any(ch not in "0123456789abcdef" for ch in normalised):
+    if not is_sha256_hex(normalised):
         raise LineageError(f"{field_name} must be a 64-character SHA-256 digest")
     return normalised
 
@@ -495,3 +495,8 @@ class GenerationState(StrEnum):
     RETIRED = "retired"
     FAILED = "failed"
     LEGACY_UNVERIFIED = "legacy_unverified"
+
+
+def is_sha256_hex(value: str) -> bool:
+    """True for exactly 64 lower case hexadecimal characters, the one digest spelling stored."""
+    return len(value) == 64 and all(ch in "0123456789abcdef" for ch in value)

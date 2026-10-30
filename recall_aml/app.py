@@ -98,7 +98,7 @@ def _authenticated(request: Request, expected: str) -> bool:
     )
 
 
-def _authorized_user(request: Request, configured: str | None, requested: str) -> bool:
+def _authorized_user(configured: str | None, requested: str) -> bool:
     """Bind the shared hosted credential to its configured principal.
 
     Directly constructed settings remain usable by unit tests, while production settings loaded
@@ -323,7 +323,7 @@ def create_app(
         async def run() -> Response:
             async with add_slots:
                 model = await _parse(request, AddRequest)
-                if not _authorized_user(request, settings.authorized_user_id, model.user_id):
+                if not _authorized_user(settings.authorized_user_id, model.user_id):
                     return JSONResponse({"error": "forbidden"}, status_code=403)
                 result = await service.add(model)
             return JSONResponse(result.model_dump(mode="json"), status_code=200)
@@ -362,7 +362,7 @@ def create_app(
                     async with preflight:
                         async with parse_slots:
                             model = await _parse(request, AddRequest)
-                            if not _authorized_user(request, settings.authorized_user_id, model.user_id):
+                            if not _authorized_user(settings.authorized_user_id, model.user_id):
                                 return JSONResponse({"error": "forbidden"}, status_code=403)
                             identity = await asyncio.to_thread(add_identity, model)
                             flight = flights.running(identity)
@@ -429,7 +429,7 @@ def create_app(
             started = time.perf_counter()
             async with search_slots:
                 model = await _parse(request, SearchRequest)
-                if not _authorized_user(request, settings.authorized_user_id, model.user_id):
+                if not _authorized_user(settings.authorized_user_id, model.user_id):
                     return JSONResponse({"error": "forbidden"}, status_code=403)
                 if model.top_k == 0 or _blank_query(model.query):
                     # Nothing can be asked of retrieval, and an empty list is inside the
@@ -553,7 +553,7 @@ def create_app(
     async def delete(request: Request) -> Response:
         async def run() -> Response:
             model = await _parse(request, DeleteRequest)
-            if not _authorized_user(request, settings.authorized_user_id, model.user_id):
+            if not _authorized_user(settings.authorized_user_id, model.user_id):
                 return JSONResponse({"error": "forbidden"}, status_code=403)
             deleted = await service.delete_user(model.user_id, **plain_request_queue_budget())
             return JSONResponse({"status": "deleted", "deleted_count": deleted})
@@ -563,7 +563,7 @@ def create_app(
     async def sparse_backfill(request: Request) -> Response:
         async def run() -> Response:
             model = await _parse(request, DeleteRequest)
-            if not _authorized_user(request, settings.authorized_user_id, model.user_id):
+            if not _authorized_user(settings.authorized_user_id, model.user_id):
                 return JSONResponse({"error": "forbidden"}, status_code=403)
             detail = await service.prepare_sparse_user(model.user_id, **plain_request_queue_budget())
             return JSONResponse({"status": "ready", **detail})
@@ -573,7 +573,7 @@ def create_app(
     async def corpus_status(request: Request) -> Response:
         async def run() -> Response:
             model = await _parse(request, DeleteRequest)
-            if not _authorized_user(request, settings.authorized_user_id, model.user_id):
+            if not _authorized_user(settings.authorized_user_id, model.user_id):
                 return JSONResponse({"error": "forbidden"}, status_code=403)
             detail = await service.corpus_status(model.user_id)
             return JSONResponse(

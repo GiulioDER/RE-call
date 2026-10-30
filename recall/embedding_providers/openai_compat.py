@@ -81,7 +81,6 @@ class OpenAICompatEmbedder:
             _ = parsed_base_url.port
         except ValueError as exc:
             raise ValueError("base_url must be a valid absolute HTTP(S) URL") from exc
-        normalized_base_url = parsed_base_url.geturl().rstrip("/")
         url_components = (
             parsed_base_url.scheme,
             parsed_base_url.netloc,
@@ -134,10 +133,12 @@ class OpenAICompatEmbedder:
         if hostname in _OPENAI_COMPAT_REMOTE_HOSTS and parsed_base_url.port not in {None, 443}:
             raise ValueError("approved remote OpenAI-compatible endpoints must use port 443")
         safe_base_url = f"{parsed_base_url.scheme}://{parsed_base_url.netloc}{normalized_path}"
+        # Keyed on the normalised scheme, host and path that approval used, so an approved
+        # spelling (upper-case host, an explicit :443) finds its provider key too.
         provider_key_env = {
-            "https://openrouter.ai/api/v1": "OPENROUTER_API_KEY",
-            "https://api.openai.com/v1": "OPENAI_API_KEY",
-        }.get(normalized_base_url)
+            ("https", "openrouter.ai", "/api/v1"): "OPENROUTER_API_KEY",
+            ("https", "api.openai.com", "/v1"): "OPENAI_API_KEY",
+        }.get((parsed_base_url.scheme, hostname, normalized_path))
         if api_key is None and provider_key_env is None:
             raise RuntimeError(
                 "OpenAICompatEmbedder requires an explicit api_key for an unrecognized base_url"

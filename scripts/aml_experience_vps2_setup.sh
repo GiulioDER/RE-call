@@ -4,10 +4,14 @@ set -euo pipefail
 # Provision the isolated VPS2 service used by the preregistered AML experience compiler replay.
 # This script intentionally reads provider credentials only on VPS2 and never prints them.
 
-readonly app_root="${1:?usage: aml_experience_vps2_setup.sh APP_ROOT EXPECTED_COMMIT [VARIANT]}"
+readonly app_root="${1:?usage: RECALL_AML_EXPERIMENT_AUTHORIZED_USER_ID=<user id or *> aml_experience_vps2_setup.sh APP_ROOT EXPECTED_COMMIT [VARIANT]}"
 readonly expected_commit="${2:?expected git commit is required}"
 readonly selected_variant="${3:-E0_raw}"
 readonly authorized_user_id="${RECALL_AML_EXPERIMENT_AUTHORIZED_USER_ID:-}"
+if [[ -z "${authorized_user_id//[[:space:]]/}" ]]; then
+    echo "RECALL_AML_EXPERIMENT_AUTHORIZED_USER_ID is required: the user id the experiment key is bound to, or '*' for an evaluation platform that sends a different user_id per sample" >&2
+    exit 2
+fi
 readonly recall_env="${RECALL_SOURCE_ENV:-/home/sentiment/recall-repos/.env}"
 readonly amb_env="${AMB_SOURCE_ENV:-/home/sentiment/.amb.env}"
 readonly runtime_dir="${HOME}/.config/recall-aml"

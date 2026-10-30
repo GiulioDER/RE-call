@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import re
-from typing import Literal
+from typing import Literal, cast, get_args
 
 from recall.errors import RecallError
 from recall.evidence import EvidenceBundle, EvidenceItem
@@ -21,7 +21,9 @@ from recall.support import merge_calibration_coverage
 
 
 PROOF_SCHEMA_VERSION = 1
-_SLOT_KINDS = frozenset({"entity", "relation", "time", "scope", "negation", "result"})
+SlotKind = Literal["entity", "relation", "time", "scope", "negation", "result"]
+_SLOT_KINDS: frozenset[str] = frozenset(get_args(SlotKind))
+_MAX_TEXT_CHARS = 512
 _SLOT_ID = re.compile(r"[a-z][a-z0-9_]{0,63}")
 
 
@@ -34,7 +36,7 @@ class ProofSlot:
     """One question requirement the provider must either support or declare missing."""
 
     slot_id: str
-    kind: Literal["entity", "relation", "time", "scope", "negation", "result"]
+    kind: SlotKind
     requirement: str
     required: bool
 
@@ -208,7 +210,8 @@ def validate_proof_assessment(
         return ProofDecision(assessment=assessment, missing_slot_ids=(), sufficient=True)
     if assessment.repair is None:
         return ProofDecision(assessment=assessment, missing_slot_ids=missing, sufficient=False)
-    if assessment.repair.missing_slot_ids != missing:
+    # The prompt names the set of missing slots, not an order; duplicates are refused at parse time.
+    if set(assessment.repair.missing_slot_ids) != set(missing):
         raise ProofValidationError("repair must name exactly the required slots still unsupported")
     return ProofDecision(assessment=assessment, missing_slot_ids=missing, sufficient=False)
 
@@ -304,12 +307,12 @@ def _parse_slot(value: object) -> ProofSlot:
     if kind not in _SLOT_KINDS:
         raise ProofValidationError("slot.kind is unsupported")
     requirement = _string(raw["requirement"], "slot.requirement")
-    if len(requirement) > 512:
+    if len(requirement) > _MAX_TEXT_CHARS:
         raise ProofValidationError("slot.requirement is too long")
     required = raw["required"]
     if not isinstance(required, bool):
         raise ProofValidationError("slot.required must be boolean")
-    return ProofSlot(slot_id, kind, requirement, required)  # type: ignore[arg-type]
+    return ProofSlot(slot_id, cast(SlotKind, kind), requirement, required)
 
 
 def _parse_support(value: object) -> SupportSpan:
@@ -336,7 +339,7 @@ def _parse_repair(value: object) -> RepairRequest | None:
     raw = _mapping(value, "repair")
     _require_keys(raw, {"query", "missing_slot_ids"}, "repair")
     query = _string(raw["query"], "repair.query")
-    if len(query) > 512:
+    if len(query) > _MAX_TEXT_CHARS:
         raise ProofValidationError("repair.query is too long")
     ids = tuple(_string(item, "repair.missing_slot_ids") for item in _list(raw["missing_slot_ids"], "repair.missing_slot_ids"))
     if not ids or len(set(ids)) != len(ids):

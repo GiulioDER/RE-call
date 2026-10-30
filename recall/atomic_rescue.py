@@ -21,6 +21,7 @@ import time
 from typing import Any, Callable, Mapping, Sequence
 
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
+from recall.lineage import is_sha256_hex
 from recall.errors import RecallError
 from recall.types import ScoredChunk, TrustedResult
 
@@ -164,7 +165,7 @@ def _atomic_artifact_path_component(value: str, name: str) -> str:
 def _atomic_artifact_corpus_fingerprint(value: str) -> str:
     """Return a canonical SHA256 fingerprint safe for one registry component."""
 
-    if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+    if not is_sha256_hex(value):
         raise AtomicRescueArtifactError(
             "atomic rescue corpus fingerprint is not a lower case SHA256 digest"
         )

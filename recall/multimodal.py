@@ -31,6 +31,7 @@ from recall.embeddings import (
     retry_with_backoff,
 )
 from recall.errors import RecallError
+from recall.lineage import is_sha256_hex
 
 
 MULTIMODAL_TENANT = "re-call-multimodal"
@@ -42,6 +43,9 @@ DEFAULT_MAX_SIDECAR_CHARS = 64_000
 
 SUPPORTED_MEDIA_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 PROTECTED_TENANTS = frozenset({"default", "memory", "re-call-code-gen", "re-call-docs"})
+# The fixed multimodal tenant must never alias a text specialist; checked once, at import.
+if MULTIMODAL_TENANT in PROTECTED_TENANTS:  # pragma: no cover - a constant invariant
+    raise RuntimeError("MULTIMODAL_TENANT overlaps a protected text specialist tenant")
 AccessPolicy = Literal["private", "tenant", "public"]
 
 
@@ -357,7 +361,7 @@ def media_digest(payload: bytes) -> str:
 
 def _validate_digest(value: str) -> str:
     normalized = value.strip().lower()
-    if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
+    if not is_sha256_hex(normalized):
         raise MediaValidationError("media content_digest must be a SHA256 hex digest")
     return normalized
 
@@ -369,6 +373,9 @@ def _validate_uri(value: str, field: str) -> str:
     return normalized
 
 
+_MAX_URI_DECODE_PASSES = 3
+
+
 def _validate_object_root(object_uri: str, object_root: str) -> str:
     uri = urlsplit(_validate_uri(object_uri, "object_uri"))
     root = urlsplit(_validate_uri(object_root, "object_root"))
@@ -376,7 +383,7 @@ def _validate_object_root(object_uri: str, object_root: str) -> str:
         raise MediaValidationError("object_uri is outside the configured multimodal object root")
     def decode_path(path: str) -> str:
         decoded = path
-        for _ in range(3):
+        for _ in range(_MAX_URI_DECODE_PASSES):
             if any(part == ".." for part in decoded.split("/")):
                 raise MediaValidationError(
                     "object_uri is outside the configured multimodal object root"
@@ -402,8 +409,9 @@ def _validate_object_root(object_uri: str, object_root: str) -> str:
         not root_path.startswith("/")
     ):
         raise MediaValidationError("object_uri is outside the configured multimodal object root")
-    normalized_uri_path = posixpath.normpath(uri_path)
-    normalized_root_path = posixpath.normpath(root_path)
+    # decode_path already returns posixpath.normpath of each path.
+    normalized_uri_path = uri_path
+    normalized_root_path = root_path
     try:
         common_path = posixpath.commonpath([normalized_uri_path, normalized_root_path])
     except ValueError:
@@ -667,8 +675,6 @@ class MultimodalTenantConfig:
             raise MediaValidationError(
                 f"multimodal tenant is fixed at {MULTIMODAL_TENANT!r}; refusing tenant aliasing"
             )
-        if self.tenant_id in PROTECTED_TENANTS:
-            raise MediaValidationError("multimodal tenant cannot overlap a text specialist tenant")
         if self.embedding_profile != MULTIMODAL_EMBEDDING_PROFILE:
             raise MediaValidationError("multimodal embedding profile is fixed and registered")
         if not 1 <= self.max_media_bytes <= DEFAULT_MAX_MEDIA_BYTES:
