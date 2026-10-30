@@ -12,6 +12,7 @@ import hashlib
 import os
 import random
 import threading
+import weakref
 from collections import OrderedDict
 from collections.abc import (
     Mapping,
@@ -261,8 +262,13 @@ def _provisional_graph_seed_result(
     )
 
 
+#: Keyed on the projection's identity, not its relations: hashing a tuple of every relation cost
+#: O(R) per request. The weak reference confirms the identity, because an id is only unique while
+#: its object lives. The relation controls replace relations under the same graph_id, and each
+#: replaced projection is a new object, so it never reads another projection's indexes.
 _SEMANTIC_GRAPH_INDEXES: OrderedDict[
-    tuple[str, str, str, tuple[tuple[str, str, str], ...]], _SemanticGraphIndexes
+    tuple[str, str, str, int],
+    tuple[weakref.ref[SemanticGraphProjection], _SemanticGraphIndexes],
 ] = OrderedDict()
 _SEMANTIC_GRAPH_INDEX_CACHE_MAX = 4
 _SEMANTIC_GRAPH_CACHE: OrderedDict[
@@ -358,17 +364,14 @@ def _cached_deterministic_proposals(
 def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraphIndexes:
     """Build graph adjacency once per immutable tenant, generation, and graph identity."""
     performance = current_performance_trace()
-    relation_identity = tuple(
-        (relation.id, relation.subject_id, relation.object_id) for relation in semantic.relations
-    )
-    key = (semantic.tenant_id, semantic.generation_id, semantic.graph_id, relation_identity)
+    key = (semantic.tenant_id, semantic.generation_id, semantic.graph_id, id(semantic))
     with _GRAPH_PROJECTION_LOCK:
-        cached = _SEMANTIC_GRAPH_INDEXES.get(key)
-        if cached is not None:
+        entry = _SEMANTIC_GRAPH_INDEXES.get(key)
+        if entry is not None and entry[0]() is semantic:
             _SEMANTIC_GRAPH_INDEXES.move_to_end(key)
             if performance is not None:
                 performance.add("adjacency_cache_hits")
-            return cached
+            return entry[1]
 
     span: AbstractContextManager[Any]
     if performance is not None:
@@ -412,12 +415,13 @@ def _semantic_graph_indexes(semantic: SemanticGraphProjection) -> _SemanticGraph
         )
     with _GRAPH_PROJECTION_LOCK:
         existing = _SEMANTIC_GRAPH_INDEXES.get(key)
-        if existing is not None:
+        if existing is not None and existing[0]() is semantic:
             _SEMANTIC_GRAPH_INDEXES.move_to_end(key)
-            return existing
+            return existing[1]
+        _SEMANTIC_GRAPH_INDEXES.pop(key, None)
         while len(_SEMANTIC_GRAPH_INDEXES) >= _SEMANTIC_GRAPH_INDEX_CACHE_MAX:
             _SEMANTIC_GRAPH_INDEXES.popitem(last=False)
-        _SEMANTIC_GRAPH_INDEXES[key] = indexes
+        _SEMANTIC_GRAPH_INDEXES[key] = (weakref.ref(semantic), indexes)
     return indexes
 
 

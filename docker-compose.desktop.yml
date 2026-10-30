@@ -1,5 +1,8 @@
 x-answer-provider-environment: &answer-provider-environment
-  RECALL_REASONING_ANSWER_ENABLED: "1"
+  # Opt in: the hosted answer provider spends OpenRouter credit and needs OPENROUTER_API_KEY, and
+  # with it enabled and no key every MCP server below fails to start. Export
+  # RECALL_REASONING_ANSWER_ENABLED=1 together with OPENROUTER_API_KEY to turn it on.
+  RECALL_REASONING_ANSWER_ENABLED: ${RECALL_REASONING_ANSWER_ENABLED:-0}
   RECALL_REASONING_ANSWER_PROVIDER: openrouter
   RECALL_REASONING_ANSWER_MODEL: deepseek/deepseek-v4-flash
   RECALL_REASONING_ANSWER_API_KEY: ${OPENROUTER_API_KEY:-}

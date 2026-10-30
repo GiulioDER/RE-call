@@ -150,7 +150,8 @@ OPENROUTER_API_KEY=
 # RECALL_REASONING_ANSWER_BASE_URL=                    # empty picks the backend's own default
 # RECALL_REASONING_ANSWER_TIMEOUT=60                   # seconds; empty means the default
 # RECALL_REASONING_ANSWER_MAX_TOKENS=512
-# RECALL_REASONING_ANSWER_CONTEXT_TOKENS=1024
+# RECALL_REASONING_ANSWER_CONTEXT_TOKENS=4096         # Ollama only (num_ctx, prompt plus output);
+#                                                      # 512 to 32768 and above MAX_TOKENS
 # RECALL_REASONING_ANSWER_REVISION=unpinned
 # RECALL_REASONING_ANSWER_MAX_CALLS_PER_MIN=30         # ceiling on PAID answer calls, per PROCESS
 #                                                      # (not per tenant: it guards one API key's
@@ -181,7 +182,8 @@ OPENROUTER_API_KEY=
 #
 # ollama: Ollama's native /api/chat endpoint, default base URL http://127.0.0.1:11434/v1.
 # RECALL_REASONING_ANSWER_THINKING=0                   # explicit boolean; the model's think
-#                                                      # switch. Ollama only: refused with openai.
+#                                                      # switch. Ollama only: ignored by openrouter
+#                                                      # and openai.
 #
 # openrouter and openai: OpenAI-compatible `/chat/completions` endpoints. OpenRouter defaults to
 # https://openrouter.ai/api/v1 and requires `RECALL_REASONING_ANSWER_API_KEY` or
