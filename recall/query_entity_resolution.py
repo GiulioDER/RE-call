@@ -6,12 +6,14 @@ The serving layer still requires a trusted retrieval hit before it can traverse 
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 import re
+import threading
 from typing import Literal
+import weakref
 
 from recall.semantic_graph import SemanticGraphProjection, normalize_entity_name
 
@@ -197,10 +199,12 @@ def extract_query_dates(value: str, *, reference_time: datetime | None = None) -
         if bounds is not None:
             add(match, QueryDate(match.group(0), *bounds, "relative"))
     for match in _YEAR_RE.finditer(value):
-        add(
-            match,
-            QueryDate(match.group(0), *_year_range(int(match.group("year"))), "year"),
-        )
+        try:
+            year_bounds = _year_range(int(match.group("year")))
+        except ValueError:
+            # A token such as `0000` is not a year `date` can hold; skip it like the other parsers.
+            continue
+        add(match, QueryDate(match.group(0), *year_bounds, "year"))
     unique: list[QueryDate] = []
     seen: set[tuple[date, date]] = set()
     for _start, _end, item in sorted(found, key=lambda item: item[0]):
@@ -251,14 +255,20 @@ def _match_label(
     *,
     reference_time: datetime | None,
     query_dates: Sequence[QueryDate],
+    normalized_label: str,
+    normalized_clauses: Sequence[str],
+    may_hold_date: bool,
 ) -> tuple[int, EntityMatchKind] | None:
-    label_dates = extract_query_dates(label, reference_time=reference_time)
     clause_candidates = tuple(enumerate(clauses[1:], start=1))
     clause_candidates += ((0, clauses[0]),) if clauses else ()
-    for clause_index, clause in clause_candidates:
-        if _contains_label(clause, label):
-            return clause_index, "exact"
-    if not label_dates or not query_dates:
+    if normalized_label:
+        for clause_index, _clause in clause_candidates:
+            if f" {normalized_label} " in f" {normalized_clauses[clause_index]} ":
+                return clause_index, "exact"
+    if not may_hold_date or not query_dates:
+        return None
+    label_dates = extract_query_dates(label, reference_time=reference_time)
+    if not label_dates:
         return None
     if not any(_dates_overlap(label_date, query_date) for label_date in label_dates for query_date in query_dates):
         return None
@@ -272,20 +282,35 @@ def _match_label(
     return clause_index, "date"
 
 
-def resolve_query_entities(
-    graph: SemanticGraphProjection,
-    query: str,
-    *,
-    reference_time: datetime | None = None,
-) -> QueryEntityResolution:
-    """Resolve canonical names and explicit aliases, including equivalent date spellings.
+@dataclass(frozen=True)
+class _LabelIndex:
+    """Per graph label work that does not depend on the query: built once, then reused."""
 
-    A label shared by multiple graph entities is rejected. Date matching is bounded by the
-    non-date words in the label, so a query for one date cannot activate every dated entity.
-    """
+    # (entity id, label, normalized label, whether any date pattern occurs in the label), in the
+    # order the resolver visits them, ambiguous and empty labels already removed.
+    labels: tuple[tuple[str, str, str, bool], ...]
+    ambiguous_labels: frozenset[str]
 
-    clauses = decompose_query(query)
-    query_dates = extract_query_dates(query, reference_time=reference_time)
+
+_DATE_PATTERNS = (
+    _ISO_DATE_RE,
+    _D_MONTH_DATE_RE,
+    _MONTH_D_DATE_RE,
+    _MONTH_YEAR_RE,
+    _RELATIVE_RE,
+    _YEAR_RE,
+)
+#: Label indexes keyed on the projection's identity; the weak reference confirms it, because an
+#: id is only unique while its object lives. Projections are immutable and come from a bounded
+#: cache, so the serving path reuses one index per loaded graph.
+_LABEL_INDEXES: OrderedDict[int, tuple[weakref.ref[SemanticGraphProjection], _LabelIndex]] = (
+    OrderedDict()
+)
+_LABEL_INDEX_CACHE_MAX = 4
+_LABEL_INDEX_LOCK = threading.Lock()
+
+
+def _build_label_index(graph: SemanticGraphProjection) -> _LabelIndex:
     ambiguous_entity_ids = {
         entity_id
         for diagnostic in graph.diagnostics
@@ -319,30 +344,71 @@ def resolve_query_entities(
         and isinstance(diagnostic.reference, str)
         and normalize_entity_name(diagnostic.reference)
     )
-    matches: list[tuple[int, int, str, ResolvedQueryEntity]] = []
-    for entity_id, entity in entities.items():
+    indexed: list[tuple[str, str, str, bool]] = []
+    for entity_id in entities:
         for label in labels_by_entity[entity_id]:
             normalized_label = normalize_entity_name(label)
             if not normalized_label or normalized_label in ambiguous_labels:
                 continue
-            label_match = _match_label(
-                query,
-                clauses,
-                label,
-                reference_time=reference_time,
-                query_dates=query_dates,
+            may_hold_date = any(pattern.search(label) for pattern in _DATE_PATTERNS)
+            indexed.append((entity_id, label, normalized_label, may_hold_date))
+    return _LabelIndex(labels=tuple(indexed), ambiguous_labels=frozenset(ambiguous_labels))
+
+
+def _label_index(graph: SemanticGraphProjection) -> _LabelIndex:
+    key = id(graph)
+    with _LABEL_INDEX_LOCK:
+        entry = _LABEL_INDEXES.get(key)
+        if entry is not None and entry[0]() is graph:
+            _LABEL_INDEXES.move_to_end(key)
+            return entry[1]
+    index = _build_label_index(graph)
+    with _LABEL_INDEX_LOCK:
+        while len(_LABEL_INDEXES) >= _LABEL_INDEX_CACHE_MAX:
+            _LABEL_INDEXES.popitem(last=False)
+        _LABEL_INDEXES[key] = (weakref.ref(graph), index)
+    return index
+
+
+def resolve_query_entities(
+    graph: SemanticGraphProjection,
+    query: str,
+    *,
+    reference_time: datetime | None = None,
+) -> QueryEntityResolution:
+    """Resolve canonical names and explicit aliases, including equivalent date spellings.
+
+    A label shared by multiple graph entities is rejected. Date matching is bounded by the
+    non-date words in the label, so a query for one date cannot activate every dated entity.
+    """
+
+    clauses = decompose_query(query)
+    query_dates = extract_query_dates(query, reference_time=reference_time)
+    index = _label_index(graph)
+    normalized_clauses = tuple(normalize_entity_name(clause) for clause in clauses)
+    matches: list[tuple[int, int, str, ResolvedQueryEntity]] = []
+    for entity_id, label, normalized_label, may_hold_date in index.labels:
+        label_match = _match_label(
+            query,
+            clauses,
+            label,
+            reference_time=reference_time,
+            query_dates=query_dates,
+            normalized_label=normalized_label,
+            normalized_clauses=normalized_clauses,
+            may_hold_date=may_hold_date,
+        )
+        if label_match is None:
+            continue
+        clause_index, match_kind = label_match
+        matches.append(
+            (
+                clause_index,
+                0 if match_kind == "exact" else 1,
+                entity_id,
+                ResolvedQueryEntity(entity_id, label, clause_index, match_kind),
             )
-            if label_match is None:
-                continue
-            clause_index, match_kind = label_match
-            matches.append(
-                (
-                    clause_index,
-                    0 if match_kind == "exact" else 1,
-                    entity_id,
-                    ResolvedQueryEntity(entity_id, label, clause_index, match_kind),
-                )
-            )
+        )
 
     selected: list[ResolvedQueryEntity] = []
     seen_entities: set[str] = set()
@@ -364,7 +430,7 @@ def resolve_query_entities(
         clauses=clauses,
         entities=tuple(selected),
         dates=query_dates,
-        ambiguous_labels=tuple(sorted(ambiguous_labels)),
+        ambiguous_labels=tuple(sorted(index.ambiguous_labels)),
     )
 
 

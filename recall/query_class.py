@@ -182,8 +182,11 @@ class GraphBudget:
 LIST_RECALL_GRAPH_BUDGET = GraphBudget(
     "list_recall", max_graph_nodes=64, max_graph_entities=16, max_steps=8
 )
+# Graph first expansion counts its trusted seeds (GRAPH_FIRST_SEED_K = 8 in recall_mcp) against
+# max_graph_nodes, so the temporal budget is eight seeds plus four neighbours: a budget of 8 would
+# leave no candidate slot and silently switch graph expansion off for temporal queries.
 TEMPORAL_GRAPH_BUDGET = GraphBudget(
-    "temporal", max_graph_nodes=8, max_graph_entities=4, max_steps=4
+    "temporal", max_graph_nodes=12, max_graph_entities=4, max_steps=4
 )
 MULTI_HOP_GRAPH_BUDGET = GraphBudget(
     "multi_hop", max_graph_nodes=32, max_graph_entities=12, max_steps=16

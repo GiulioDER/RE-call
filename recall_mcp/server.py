@@ -6,7 +6,7 @@ import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, Protocol, TypeVar, cast
 from urllib.parse import urlsplit
 
@@ -2190,9 +2190,18 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         so an answer is returned only when the optional answer provider is explicitly enabled.
 
         Args:
-        graph_expansion: `auto` by default. Automatic activation uses the measured global one hop
+            max_steps: planner step budget. Unset selects the budget of the query's category
+                (list recall, temporal, multi hop or default); an explicit value is used as given.
+            max_graph_nodes: graph node budget, trusted seeds included. Unset selects the
+                category budget; an explicit value is used as given.
+            max_graph_entities: neighbouring entity budget for one hop expansion. Unset selects
+                the category budget; an explicit value is used as given.
+            graph_expansion: `auto` by default. Automatic activation uses the measured global one hop
                 configuration for every nonempty query. `off` and `one_hop` remain explicit
                 overrides. Expanded chunks are independently trust evaluated.
+            as_of: ISO 8601 valid-time instant for graph traversal. Temporal edges and neighbours
+                outside their validity window, or superseded at that instant, are rejected before
+                ranking. A value without a timezone is read as UTC. Unset means now.
             mode: `evidence_assembly` may call the optional answer provider when
                 `RECALL_REASONING_ANSWER_ENABLED=1`. `evidence_proof` is an experimental
                 proof obligation gate. It uses only the separately configured OpenRouter proof
@@ -2203,6 +2212,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             as_of_instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
         except ValueError as exc:
             raise ValueError("as_of must be an ISO 8601 timestamp") from exc
+        if as_of_instant is not None and as_of_instant.tzinfo is None:
+            # Graph validity bounds are timezone aware (bare dates are read as UTC), and comparing
+            # them with a naive instant raises TypeError.
+            as_of_instant = as_of_instant.replace(tzinfo=UTC)
         store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             def execute_reasoning(mode_name: str, question: str) -> ReasoningResponse:

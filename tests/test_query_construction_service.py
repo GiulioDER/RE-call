@@ -239,6 +239,7 @@ def test_reasoning_query_uses_category_graph_budget_defaults(monkeypatch) -> Non
         assert service.reasoning_query(_Store(), object(), query, policy=TrustPolicy.development()) == "ok"
 
     budgets = [request.budget for request in captured]
-    assert [budget.max_graph_nodes for budget in budgets] == [64, 8, 32]
+    # NUM-001 (CCA PR 629 to 620): temporal was 8, which the eight graph first seeds used up.
+    assert [budget.max_graph_nodes for budget in budgets] == [64, 12, 32]
     assert [budget.max_graph_entities for budget in budgets] == [16, 4, 12]
     assert [budget.max_steps for budget in budgets] == [8, 4, 16]

@@ -9,14 +9,21 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-MCP_PATTERN = os.environ.get("RECALL_MCP_PATTERN", "recall_mcp.server")
+MCP_PATTERN = "recall_mcp.server"
 _MARKER_RE = re.compile(r"(?<!\S)RECALL_MCP_CLIENT=([^\s;&\"']+)")
 _SESSION_ID_RE = re.compile(r"(?<!\S)RECALL_MCP_SESSION_ID=([^\s;&\"']+)")
 _LAUNCHER_RE = re.compile(r"(?<!\S)(?:\S*[\\/])?recall-(?:codex-)?mcp(?:\s|$)")
 
 
+def _mcp_pattern() -> str:
+    # An empty or blank override would match every command line and select every descendant of
+    # the client for termination, so it falls back to the default.
+    override = os.environ.get("RECALL_MCP_PATTERN", "").strip()
+    return override or MCP_PATTERN
+
+
 def _is_mcp_transport(command: str) -> bool:
-    return MCP_PATTERN in command or bool(_LAUNCHER_RE.search(command))
+    return _mcp_pattern() in command or bool(_LAUNCHER_RE.search(command))
 
 
 def _process_table() -> list[tuple[str, str, str]] | None:
@@ -127,7 +134,23 @@ def _session_id_from_config(cwd: str) -> str:
 def close_own_mcp_transports(
     client_pid: str = "", client_mark: str = "", *, session_id: str = "", cwd: str = ""
 ) -> tuple[str, str]:
-    """Close this session's transports and leave every unowned transport alone."""
+    """Close this session's transports and leave every unowned transport alone.
+
+    Ownership is decided in this order: descent from the client pid; without a pid, an exact
+    RECALL_MCP_SESSION_ID on the transport's command line; without either, an exact
+    RECALL_MCP_CLIENT marker. A conflicting nearest `.mcp.json` yields no identity. Returns
+    (status, detail) with status one of skipped, unknown, none, closed, partial or failed.
+
+    RECALL_MCP_PS_FILE (a process table read from a file) and RECALL_MCP_KILL_FILE (a log written
+    instead of a kill, with RECALL_MCP_KILL_RC as its result) are test seams. They are honoured
+    only together, so a fake table never drives a real kill and a fake kill never reports real
+    processes as closed; one set alone closes nothing and reports `unknown`.
+    """
+    if bool(os.environ.get("RECALL_MCP_PS_FILE")) != bool(os.environ.get("RECALL_MCP_KILL_FILE")):
+        return "unknown", (
+            "RECALL_MCP_PS_FILE and RECALL_MCP_KILL_FILE are test seams and must be set together; "
+            "nothing was closed"
+        )
     client_pid = client_pid or os.environ.get("CLAUDE_PID", "")
     session_id = session_id or os.environ.get("RECALL_MCP_SESSION_ID", "")
     client_mark = client_mark or os.environ.get("RECALL_MCP_CLIENT", "")

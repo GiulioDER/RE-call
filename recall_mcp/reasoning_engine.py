@@ -217,11 +217,21 @@ def _execute_reasoning_query(
             defer_trust_evaluation=True,
             excluded_chunk_ids=frozenset(hit.chunk.id for hit in raw.hits),
         )
+        candidates = expansion.scored_candidates
+        if source is not None:
+            # The semantic graph spans the whole store, so a source scoped request keeps only
+            # neighbours inside that source, matched the way the search scope matches it.
+            candidates = tuple(
+                candidate
+                for candidate in candidates
+                if candidate.chunk.metadata.get("file") == source or candidate.chunk.source == source
+            )
+            expansion = replace(expansion, scored_candidates=candidates)
         graph_first_expansion["result"] = expansion
         active_calibration = _resolve_graph_calibration(store, request, calibration)
         return _assemble_graph_first_context(
             raw,
-            expansion.scored_candidates,
+            candidates,
             calibration=active_calibration,
             tail_replacement_margin=_graph_tail_replacement_margin(),
         )

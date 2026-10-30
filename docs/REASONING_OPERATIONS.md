@@ -26,9 +26,11 @@ one hop configuration for every nonempty query. Callers can still force either e
 
 When the reasoning API does not receive explicit graph limits, `route_query` selects a category
 specific budget. `list_recall` uses 64 nodes and 16 neighboring entities for breadth, temporal
-queries use 8 nodes and 4 neighboring entities, and multi hop queries use 32 nodes, 12 neighboring
-entities, and 16 planner steps. Explicit limits remain authoritative for callers that need a
-tighter bound.
+queries use 12 nodes (the eight trusted graph first seeds count against it, leaving four
+neighbours) and 4 neighboring entities, and multi hop queries use 32 nodes, 12 neighboring
+entities, and 16 planner steps. The node budget is also the planner's cap on accepted evidence
+nodes, so temporal queries accept up to 12 even with graph expansion off. Explicit limits remain
+authoritative for callers that need a tighter bound.
 
 ⚠️ The semantic graph `one_hop` walks is **not** the authored supersession projection that
 `recall_reasoning_projection` and `recall_current_state` report on. They are separate structures

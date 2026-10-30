@@ -34,7 +34,7 @@ class OllamaAnswerProvider:
         model_id: str,
         revision: str = "unpinned",
         max_tokens: int = 512,
-        context_tokens: int = 1024,
+        context_tokens: int = 4096,
         thinking: bool = False,
         reasoning_effort: str | None = "none",
         cost_per_1k_tokens: float | None = 0.0,
@@ -45,6 +45,11 @@ class OllamaAnswerProvider:
             raise ValueError("answer max tokens must be between 1 and 4096")
         if context_tokens < 512 or context_tokens > 32768:
             raise ValueError("answer context tokens must be between 512 and 32768")
+        if context_tokens <= max_tokens and not isinstance(client, _OpenRouterClient):
+            # Ollama's num_ctx holds the prompt and the output together, so a window no larger
+            # than max_tokens leaves no room for the evidence at all. The OpenRouter client never
+            # sends a context window, so the setting is ignored there and not checked.
+            raise ValueError("answer context tokens must exceed answer max tokens")
         self.client = client
         self.model_id = model_id
         self.revision = revision
@@ -214,7 +219,7 @@ def resolve_answer_provider(
     except ValueError:
         raise ValueError("RECALL_REASONING_ANSWER_MAX_TOKENS must be an integer") from None
     try:
-        context_tokens = int(source.get("RECALL_REASONING_ANSWER_CONTEXT_TOKENS", "1024"))
+        context_tokens = int(source.get("RECALL_REASONING_ANSWER_CONTEXT_TOKENS", "4096"))
     except ValueError:
         raise ValueError(
             "RECALL_REASONING_ANSWER_CONTEXT_TOKENS must be an integer"

@@ -207,8 +207,9 @@ def main(argv: list[str] | None = None) -> int:
         if event == "session-end":
             # Codex does not expose CLAUDE_PID. Its hook process and its local MCP child are both
             # descended from the Codex client process, so that concrete parent PID is the session
-            # identity used by the shared cleanup path. A marker is included for transports whose
-            # command line carries the client token instead of a usable parent chain.
+            # identity used by the shared cleanup path. The marker and session ID are passed too,
+            # but the cleanup consults them only when no client PID is available; with a PID,
+            # ownership is the parent chain alone, and transports outside it are left alone.
             parent_pid = str(os.getppid())
             payload["_client_pid"] = parent_pid
             payload["_client_mark"] = os.environ.get("RECALL_MCP_CLIENT", f"codex-{parent_pid}")
