@@ -3015,3 +3015,33 @@ def test_generation_hits_serve_first_indexed_at_not_the_build_time(manager) -> N
     assert by_id is not None and by_id.first_indexed_at == first_first
     assert for_query is not None and for_query.first_indexed_at == first_first
     assert candidates == {"older-memo.md": [("memo.md", first_first)]}
+
+
+@requires_db
+def test_a_chunk_built_under_a_security_policy_is_not_reused_without_one(manager) -> None:
+    """DAT-003 (CCA deferred run 20261030T140522Z): reuse must match the policy, absent included.
+
+    A chunk built under a source security policy may carry redacted text. Before the fix a build
+    with no policy matched any digest, so removing an over-broad policy kept serving its redactions.
+    Red proof: failed on 4fc690924 (recall.generations GenerationManager._reuse_source matched
+    `%s IS NULL OR digest = %s`) with AssertionError: reused_objects was 1.
+    """
+    data = b"policy bound source"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    with manager._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET metadata = metadata || %s::jsonb "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            ('{"security_policy_digest": "an-earlier-policy"}', manager.tenant_id, first),
+        )
+
+    must_run = _Embedder(9)
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, must_run, lambda text: [text])
+
+    assert stats.reused_objects == 0, "a chunk built under another policy must not be reused"
+    assert must_run.calls == 1

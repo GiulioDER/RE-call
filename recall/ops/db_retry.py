@@ -1,4 +1,8 @@
-"""Bounded retry policy for Aurora failover without replaying unsafe writes."""
+"""Bounded retry helpers for Aurora failover without replaying unsafe writes.
+
+These are opt-in helpers for callers that wrap their own reads or idempotent writes. Nothing in
+the server or the stores calls them, so the serving path does not retry on failover.
+"""
 
 from __future__ import annotations
 

@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import sys
+import threading
 import uuid
 from collections.abc import Callable
+from typing import Any
 from dataclasses import dataclass
 from time import monotonic
 
@@ -29,6 +33,8 @@ _CHECKSUM_QUERIES = {
         "ORDER BY md5(row_to_json(t)::text)), '')) FROM (SELECT * FROM recall_generations) t"
     ),
 }
+
+_CHECKSUM_TABLES = frozenset(_CHECKSUM_QUERIES)
 
 _BOUNDED_CHECKSUM_QUERIES = {
     "recall_chunks_v1": (
@@ -90,7 +96,19 @@ def _validation_dsn(cluster: dict[str, object]) -> str:
     endpoint = str(cluster.get("endpoint") or "").strip()
     if not endpoint:
         raise RuntimeError("restored cluster did not publish a writer endpoint")
-    return template.format(host=endpoint, port=cluster.get("port", 5432))
+    return template.replace("{host}", endpoint).replace("{port}", str(cluster.get("port", 5432)))
+
+
+def _exit_on_sigterm() -> Any:
+    """Turn SIGTERM into SystemExit on the main thread and return the handler it replaced.
+
+    ECS stops a task with SIGTERM, whose default action skips `finally`; exiting instead runs the
+    drill's cleanup. Returns None, changing nothing, off the main thread, where Python refuses to
+    install a handler.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    return signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(143))
 
 
 def _required_env(name: str, purpose: str) -> str:
@@ -111,10 +129,12 @@ def _expected_checksums() -> dict[str, str] | None:
     if not isinstance(value, dict) or not all(
         isinstance(key, str)
         and isinstance(item, str)
-        and key in {"recall_chunks_v1", "recall_generations"}
+        and key in _CHECKSUM_TABLES
         for key, item in value.items()
     ):
-        raise RuntimeError("restore checksum keys must be recall_chunks_v1 or recall_generations")
+        raise RuntimeError(
+            f"restore checksum keys must be among {', '.join(sorted(_CHECKSUM_TABLES))}"
+        )
     return value
 
 
@@ -196,10 +216,7 @@ def run() -> dict[str, object]:
         "RECALL_RESTORE_EXPECTED_GENERATION", "tenant generation validation"
     )
     expected_role = _required_env("RECALL_RESTORE_EXPECTED_ROLE", "serving role validation")
-    if expected_checksums is None or set(expected_checksums) != {
-        "recall_chunks_v1",
-        "recall_generations",
-    }:
+    if expected_checksums is None or set(expected_checksums) != _CHECKSUM_TABLES:
         raise RuntimeError(
             "RECALL_RESTORE_EXPECTED_CHECKSUMS must contain both restore table checksums"
         )
@@ -208,6 +225,7 @@ def run() -> dict[str, object]:
         "RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID", "representative retrieval validation"
     )
     manager = BackupManager(region=os.environ.get("RECALL_AWS_REGION"))
+    previous_sigterm = _exit_on_sigterm()
     created = False
     instance_created = False
     try:
@@ -232,7 +250,7 @@ def run() -> dict[str, object]:
         dsn = _validation_dsn(restored_writer)
         import psycopg
 
-        with psycopg.connect(dsn, connect_timeout=10) as connection:
+        with psycopg.connect(dsn, connect_timeout=10, autocommit=True) as connection:
             checksum_durations_ms: dict[str, float] = {}
             validation = validate_restored_database(
                 connection,
@@ -278,14 +296,18 @@ def run() -> dict[str, object]:
         print(json.dumps(receipt, sort_keys=True, default=str))
         return receipt
     finally:
-        if instance_created:
-            try:
-                manager.delete_instance(instance, confirmation="DELETE_RESTORE_DRILL_INSTANCE")
-            finally:
-                if created:
-                    manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
-        elif created:
-            manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
+        try:
+            if instance_created:
+                try:
+                    manager.delete_instance(instance, confirmation="DELETE_RESTORE_DRILL_INSTANCE")
+                finally:
+                    if created:
+                        manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
+            elif created:
+                manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
+        finally:
+            if previous_sigterm is not None:
+                signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,12 @@ from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
 from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS
-from recall.idempotency_receipts import check_receipt_matches, check_result_size, receipt_key_hash
+from recall.idempotency_receipts import (
+    ANY_OPERATION,
+    check_receipt_matches,
+    check_result_size,
+    receipt_key_hash,
+)
 from recall.supersession import (  # noqa: F401  # re-exported: public names of this module
     EdgeCandidates,
     SupersessionGraph,
@@ -1543,7 +1548,7 @@ class PgVectorStore:
         return self._with_retry(_op)
 
     @staticmethod
-    def _operation_receipt_event_id(idempotency_key: str, operation: str = "legacy") -> str:
+    def _operation_receipt_event_id(idempotency_key: str, operation: str = ANY_OPERATION) -> str:
         """Derive one bounded, nonrevealing audit identity from the request key.
 
         Kept for existing callers; the rule is `recall.idempotency_receipts.receipt_key_hash`,
@@ -1555,7 +1560,7 @@ class PgVectorStore:
         self,
         idempotency_key: str,
         *,
-        operation: str = "legacy",
+        operation: str = ANY_OPERATION,
         request_fingerprint: str | None = None,
     ) -> str | None:
         """Return the durable response for an idempotent operation, when one exists."""
@@ -1601,7 +1606,7 @@ class PgVectorStore:
         idempotency_key: str,
         result: str,
         *,
-        operation: str = "legacy",
+        operation: str = ANY_OPERATION,
         request_fingerprint: str | None = None,
     ) -> None:
         """Persist a completed mutation response before any cache response is attempted."""

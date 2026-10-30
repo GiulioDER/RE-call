@@ -1,7 +1,7 @@
 resource "aws_cloudwatch_event_rule" "restore_drill" {
   name                = "${var.name}-${var.environment}-restore-drill"
   description         = "Run an isolated Aurora restore drill at least every seven days"
-  schedule_expression = "rate(7 days)"
+  schedule_expression = "rate(6 days)"
 }
 
 resource "aws_iam_role" "restore_drill" {
@@ -25,7 +25,7 @@ resource "aws_ecs_task_definition" "restore_drill" {
   memory                   = 2048
   execution_role_arn       = aws_iam_role.restore_drill_execution.arn
   task_role_arn            = aws_iam_role.restore_drill_task.arn
-  container_definitions = jsonencode([{ name = "restore-drill", image = var.image, essential = true, command = ["python", "-m", "recall.ops.restore_drill"], environment = [
+  container_definitions = jsonencode([{ name = "restore-drill", image = var.image, essential = true, stopTimeout = 120, command = ["python", "-m", "recall.ops.restore_drill"], environment = [
     { name = "RECALL_AWS_REGION", value = var.aws_region },
     { name = "RECALL_RESTORE_SOURCE_CLUSTER", value = var.restore_source_cluster },
     { name = "RECALL_RESTORE_SUBNET_GROUP", value = var.restore_subnet_group },

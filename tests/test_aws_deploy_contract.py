@@ -303,3 +303,99 @@ def test_drill_refuses_an_empty_security_group_list(drill_env: pytest.MonkeyPatc
     with pytest.raises(RuntimeError, match="at least one security group"):
         restore_drill.run()
     assert _Manager.calls == []
+
+
+def test_validation_dsn_keeps_braces_in_the_credential(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ENV-007: a generated password may contain braces; only {host} and {port} are placeholders.
+
+    Red proof: failed on 4fc690924 (recall.ops.restore_drill._validation_dsn used str.format) with
+    KeyError on the brace in the password.
+    """
+    monkeypatch.setenv("RECALL_RESTORE_VALIDATION_DSN", "postgresql://u:p{x}y@{host}:{port}/recall")
+    assert restore_drill._validation_dsn({"endpoint": "writer.example", "port": 5433}) == (
+        "postgresql://u:p{x}y@writer.example:5433/recall"
+    )
+
+
+def test_drill_turns_sigterm_into_an_exit_that_runs_cleanup(
+    drill_env: pytest.MonkeyPatch,
+) -> None:
+    """STAKES-005: ECS stops the drill with SIGTERM, whose default action skips the cleanup.
+
+    Red proof: failed on 4fc690924 (recall.ops.restore_drill.run installed no handler) with
+    AssertionError: no SIGTERM handler was installed.
+    """
+    import signal
+
+    installed: list[tuple[int, object]] = []
+
+    def record(signum: int, handler: object) -> object:
+        installed.append((signum, handler))
+        return signal.SIG_DFL
+
+    drill_env.setattr(signal, "signal", record)
+    with pytest.raises(RuntimeError, match="stop after the restore call"):
+        restore_drill.run()
+    handlers = [handler for signum, handler in installed if signum == signal.SIGTERM]
+    assert handlers, "no SIGTERM handler was installed"
+    with pytest.raises(SystemExit) as stopped:
+        handlers[0](signal.SIGTERM, None)  # type: ignore[operator]
+    assert stopped.value.code == 143
+    assert handlers[-1] is signal.SIG_DFL, "the previous handler must be restored after cleanup"
+
+
+def test_drill_validates_on_an_autocommit_connection(drill_env: pytest.MonkeyPatch) -> None:
+    """DAT-005: one failing guarded check must not abort the transaction for every later check.
+
+    Red proof: failed on 4fc690924 (run opened the validation connection with autocommit off) with
+    AssertionError on the autocommit argument.
+    """
+    import psycopg
+
+    class _Ready(_Manager):
+        def restore_pitr(self, source: str, target: str, **kwargs: object) -> dict[str, object]:
+            return {"cluster_identifier": target}
+
+        def wait_for_cluster_available(self, target: str) -> None:
+            return None
+
+        def create_restore_instance(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def wait_for_instance_available(self, _instance: str) -> dict[str, object]:
+            return {"endpoint": "writer.example", "port": 5432}
+
+        def delete_instance(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+    seen: dict[str, object] = {}
+
+    def connect(_dsn: str, **kwargs: object) -> object:
+        seen.update(kwargs)
+        raise RuntimeError("stop at the validation connection")
+
+    drill_env.setattr(restore_drill, "BackupManager", _Ready)
+    drill_env.setattr(psycopg, "connect", connect)
+    with pytest.raises(RuntimeError, match="stop at the validation connection"):
+        restore_drill.run()
+    assert seen.get("autocommit") is True
+
+
+def test_restore_drill_runs_more_often_than_its_missing_alarm_window() -> None:
+    """NUM-002: a schedule equal to the alarm window leaves windows with no success after a slow run.
+
+    Red proof: failed on 4fc690924 (rate(7 days) against a 604800 s period) with AssertionError.
+    """
+    drill = _tf("restore_drill.tf")
+    days = int(re.search(r'schedule_expression = "rate\((\d+) days\)"', drill).group(1))  # type: ignore[union-attr]
+    period = int(re.search(r"period\s*=\s*(\d+)", drill).group(1))  # type: ignore[union-attr]
+    assert days * 86400 < period
+
+
+def test_restore_drill_has_time_to_clean_up_after_a_stop() -> None:
+    """STAKES-005: the SIGTERM handler starts cleanup, which needs more than Fargate's 30 s default.
+
+    Red proof: failed on 4fc690924 (no stopTimeout in the restore-drill container definition) with
+    AssertionError.
+    """
+    assert "stopTimeout = 120" in _tf("restore_drill.tf")

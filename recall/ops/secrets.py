@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol
 
+from recall._env import env_is_production
 from recall.ops.secret_mapping import secret_mapping_from_env
 
 
@@ -46,11 +47,21 @@ class RotationReceipt:
         }
 
 
+#: ECS task tag prefix that carries a secret version identifier, written here and read by rotation.
+SECRET_VERSION_TAG_PREFIX = "recall:secret-version:"  # noqa: S105 - a tag name, not a credential
+
+
+def aws_region(env: Mapping[str, str] | None = None) -> str | None:
+    """The AWS region RE-call uses: RECALL_AWS_REGION, then AWS_REGION, else None."""
+    source = os.environ if env is None else env
+    return source.get("RECALL_AWS_REGION") or source.get("AWS_REGION") or None
+
+
 class AwsSecretsManagerProvider:
     """Fetch a JSON or plain text secret lazily, never at module import."""
 
     def __init__(self, *, region_name: str | None = None, client: Any | None = None) -> None:
-        self._region_name = region_name or os.environ.get("RECALL_AWS_REGION") or os.environ.get("AWS_REGION")
+        self._region_name = region_name or aws_region()
         self._client = client
 
     def _get_client(self) -> Any:
@@ -115,7 +126,7 @@ def apply_aws_secret_mapping(
     if not mapping:
         return {}
     resolved_by = provider or AwsSecretsManagerProvider(
-        region_name=target.get("RECALL_AWS_REGION") or target.get("AWS_REGION")
+        region_name=aws_region(target)
     )
     values = resolved_by.resolve_env(mapping)
     for env_name, secret in values.items():
@@ -163,9 +174,7 @@ def tag_ecs_task_secret_versions(
         import boto3
 
         session = boto3.session.Session(
-            region_name=region_name
-            or source.get("RECALL_AWS_REGION")
-            or source.get("AWS_REGION")
+            region_name=region_name or aws_region(source)
         )
         secrets = session.client("secretsmanager")
         ecs = session.client("ecs")
@@ -184,10 +193,10 @@ def tag_ecs_task_secret_versions(
             if not current:
                 raise RuntimeError(f"secret {name!r} has no AWSCURRENT version")
             versions[name] = str(current)
-            tags.append({"key": f"recall:secret-version:{name}", "value": str(current)})
+            tags.append({"key": f"{SECRET_VERSION_TAG_PREFIX}{name}", "value": str(current)})
         ecs.tag_resource(resourceArn=task_arn, tags=tags)
         return versions
     except Exception:  # BROAD-CATCH: fail-closed
-        if source.get("RECALL_ENV", "development").strip().lower() == "production":
+        if env_is_production(dict(source)):
             raise
         return {}

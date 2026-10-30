@@ -36,6 +36,7 @@ from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import Embedder, embedding_profile_id
 from recall.errors import IdempotencyConflict, RecallError
+from recall.idempotency_receipts import ANY_OPERATION
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
@@ -231,7 +232,7 @@ async def _record_mutation_result(
             lambda: durable(
                 idempotency_key,
                 result,
-                operation=idempotency_operation or "legacy",
+                operation=idempotency_operation or ANY_OPERATION,
                 request_fingerprint=idempotency_fingerprint,
             )
         )
@@ -1159,8 +1160,6 @@ def _make_lifespan(
         )
         if limiter is not None:
             limits = getattr(limiter, "limits", {})
-            if callable(limits):
-                limits = limits()
             _log.info(
                 "per-tenant budgets: %s",
                 ", ".join(f"{k}={v.capacity:,.0f}" for k, v in sorted(limits.items()))

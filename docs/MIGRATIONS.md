@@ -171,6 +171,11 @@ serving process checks at startup that the receipt table exists with forced row 
 its tenant policy. It does not check table privileges, so a skipped grant step is not caught at
 startup: the first keyed mutation fails with a permission error instead.
 
+Migration 0024 moved durable receipts from `recall_audit_events` into `recall_idempotency_receipts`
+and changed the key hash, and it copies no earlier receipt. A keyed mutation that completed before
+the upgrade and is retried after it is not recognized and runs again. Let in-flight keyed retries
+finish before upgrading across 0024.
+
 `--enterprise` adds the four control-plane tables (`recall_index_generations`,
 `recall_schema_versions`, `recall_tenant_routes`, `recall_migration_events`) and, critically,
 `GRANT USAGE ON SEQUENCE recall_migration_events_sequence_id_seq`. The serving process reads the

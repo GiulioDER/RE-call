@@ -37,7 +37,10 @@ def _cmd_secret(args: argparse.Namespace) -> None:
         raise SystemExit("--versions must contain at least one expected secret version")
     from recall.ops.rotation import EcsSecretRotator
 
-    checks = EcsSecretRotator(region=args.region).verify_tasks(args.cluster, args.service, versions)
+    rotator = EcsSecretRotator(region=args.region)
+    checks = rotator.verify_tasks(args.cluster, args.service, versions)
     print(json.dumps([check.to_dict() for check in checks], indent=2))
-    if not checks or any(not check.healthy for check in checks):
-        raise SystemExit(1)
+    try:
+        rotator.require_all_tasks_healthy(checks)
+    except RuntimeError:
+        raise SystemExit(1) from None

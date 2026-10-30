@@ -13,10 +13,17 @@ from recall.constants import MAX_IDEMPOTENCY_RESULT_BYTES
 from recall.errors import IdempotencyConflict
 from recall.lineage import canonical_sha256
 
-RESULT_TOO_LARGE_MESSAGE = "idempotent mutation result exceeds the 512 KiB replay limit"
+RESULT_TOO_LARGE_MESSAGE = (
+    f"idempotent mutation result exceeds the {MAX_IDEMPOTENCY_RESULT_BYTES // 1024} KiB replay limit"
+)
 
 
-def receipt_key_hash(idempotency_key: str, operation: str = "legacy") -> str:
+#: Operation recorded for, and matched by, a receipt written without one: it skips the
+#: operation conflict check, so only callers that cannot name their operation use it.
+ANY_OPERATION = "legacy"
+
+
+def receipt_key_hash(idempotency_key: str, operation: str = ANY_OPERATION) -> str:
     """Derive one bounded, nonrevealing audit identity from the request key.
 
     ``operation`` remains an accepted compatibility argument for callers that used the old
@@ -38,7 +45,7 @@ def check_receipt_matches(
     request_fingerprint: str | None,
 ) -> None:
     """Refuse a stored receipt that answers another operation or other arguments."""
-    if operation != "legacy" and stored_operation != operation:
+    if operation != ANY_OPERATION and stored_operation != operation:
         raise IdempotencyConflict()
     if request_fingerprint is not None and stored_fingerprint != request_fingerprint:
         raise IdempotencyConflict()

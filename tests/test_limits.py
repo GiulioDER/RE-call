@@ -230,14 +230,14 @@ def test_defaults_apply_when_nothing_is_configured(monkeypatch):
         monkeypatch.delenv(f"RECALL_RATE_{scope.upper()}_PER_MIN", raising=False)
     monkeypatch.delenv("RECALL_INDEX_BYTES_PER_HOUR", raising=False)
 
-    limits = limiter_from_env().limits()
+    limits = limiter_from_env().limits
     assert set(limits) == {"read", "write", "forget", "admin", "index_bytes"}
     assert limits["read"].capacity == DEFAULT_CALLS_PER_MIN["read"]
 
 
 def test_off_disables_exactly_one_limit(monkeypatch):
     monkeypatch.setenv("RECALL_RATE_READ_PER_MIN", OFF)
-    limits = limiter_from_env().limits()
+    limits = limiter_from_env().limits
     assert "read" not in limits
     assert "write" in limits and "index_bytes" in limits
 
@@ -274,20 +274,20 @@ def test_a_malformed_or_non_positive_limit_falls_back_to_the_default(monkeypatch
     being logged and defaulted.
     """
     monkeypatch.setenv("RECALL_RATE_WRITE_PER_MIN", raw)
-    limits = limiter_from_env().limits()
+    limits = limiter_from_env().limits
     assert limits["write"].capacity == DEFAULT_CALLS_PER_MIN["write"]
 
 
 def test_a_valid_override_is_applied(monkeypatch):
     monkeypatch.setenv("RECALL_RATE_WRITE_PER_MIN", "7")
-    limits = limiter_from_env().limits()
+    limits = limiter_from_env().limits
     assert limits["write"].capacity == 7.0
     assert limits["write"].per_second == pytest.approx(7.0 / 60.0)
 
 
 def test_the_byte_quota_is_expressed_per_hour(monkeypatch):
     monkeypatch.setenv("RECALL_INDEX_BYTES_PER_HOUR", "3600")
-    rate = limiter_from_env().limits()["index_bytes"]
+    rate = limiter_from_env().limits["index_bytes"]
     assert rate.capacity == 3600.0
     assert rate.per_second == pytest.approx(1.0)
 

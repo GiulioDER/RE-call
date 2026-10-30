@@ -94,6 +94,7 @@ class HealthController:
                         failures.append(f"active_generation:{index}")
             # /readyz is unauthenticated, so expose only the bounded probe count. The configured
             # tenant inventory remains in startup logs and runtime state, not a public endpoint.
+            # `tenants` is a deprecated alias of `tenant_probes`: the probe count, not the tenant count.
             checks["tenants"] = str(len(probes))
             checks["tenant_probes"] = str(len(probes))
             if state.get("enterprise_readiness_ok") is False:

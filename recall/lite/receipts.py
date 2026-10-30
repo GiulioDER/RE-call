@@ -11,7 +11,12 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS
-from recall.idempotency_receipts import check_receipt_matches, check_result_size, receipt_key_hash
+from recall.idempotency_receipts import (
+    ANY_OPERATION,
+    check_receipt_matches,
+    check_result_size,
+    receipt_key_hash,
+)
 
 if TYPE_CHECKING:
     from recall.lite.store import LiteStore
@@ -44,7 +49,7 @@ def get_receipt(
     store: LiteStore,
     idempotency_key: str,
     *,
-    operation: str = "legacy",
+    operation: str = ANY_OPERATION,
     request_fingerprint: str | None = None,
     now: datetime | None = None,
 ) -> str | None:
@@ -70,7 +75,7 @@ def record_receipt(
     idempotency_key: str,
     result: str,
     *,
-    operation: str = "legacy",
+    operation: str = ANY_OPERATION,
     request_fingerprint: str | None = None,
     now: datetime | None = None,
 ) -> None:

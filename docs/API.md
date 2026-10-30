@@ -137,15 +137,22 @@ The JSON response includes `checks.control_plane`, `checks.tenant_probes` (the n
 probed), `checks.rate_limiter`, and `failures`. Tenant inventory counts are kept out of this
 unauthenticated endpoint; the full configured count and probe limit are emitted in startup logs.
 The probe count is not the configured tenant count, so a `200` response is representative process
-readiness only and does not prove that every configured tenant is correctly provisioned. Perform a
+readiness only and does not prove that every configured tenant is correctly provisioned. The
+`tenants` check is a deprecated alias of `tenant_probes`: it reports the probe count, not the
+tenant count. Perform a
 separate exhaustive tenant validation when that guarantee is required.
-Durable receipts are operational replay records rather than long-term audit history. Retain them
-for the replay window and prune older rows with scheduled database maintenance, for example:
+Durable receipts are operational replay records rather than long-term audit history. A tenant's
+expired rows are pruned whenever that tenant records a new receipt, so only tenants that stop
+writing keep them. The table forces row level security, so a scheduled prune must set the tenant
+for each tenant it cleans, for example:
 
 ```sql
+SELECT set_config('recall.tenant_id', '<tenant>', false);
 DELETE FROM recall_idempotency_receipts
-WHERE expires_at <= now();
+WHERE tenant_id = '<tenant>' AND expires_at <= now();
 ```
+
+Without the tenant setting the statement matches no rows and reports nothing.
 
 The MCP server is `python -m recall_mcp.server`. Every registered tool, in `tools/list` order;
 the same drift test diffs this table against the `@mcp.tool` registrations:
