@@ -216,3 +216,28 @@ def test_every_generated_default_is_accepted_by_settings_parser(name: str, defau
         Settings.from_env({name: default})
     except ValueError as exc:
         pytest.fail(f"generated default {name}={default!r} is rejected: {exc}")
+
+
+def test_the_token_lifetime_default_is_the_one_the_validator_applies() -> None:
+    """ENV-006 (CCA run 20261030T101709Z): the documented default must be the applied one.
+
+    The schema documented RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS=900 while an unset value applies
+    no cap, so an operator reading the reference believed long-lived tokens were refused.
+    Red proof: failed on 7846116b9, where recall_mcp.settings.ENVIRONMENT_SCHEMA gave the key the
+    default "900", with AssertionError on the schema default.
+    """
+    from recall_mcp.oidc import oidc_validator_from_env
+
+    spec = next(s for s in ENVIRONMENT_SCHEMA if s.name == "RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS")
+    assert spec.default == ""
+    assert "no cap" in spec.description
+    env = {
+        "RECALL_OIDC_ISSUER": "https://issuer.example.test",
+        "RECALL_OIDC_AUDIENCE": "recall",
+        "RECALL_OIDC_TENANTS": "tenant-a",
+        "RECALL_OIDC_SUBJECT_TENANTS": "svc:tenant-a",
+    }
+    validator = oidc_validator_from_env(env)
+    assert validator is not None and validator.config.max_token_lifetime_s is None
+    validator = oidc_validator_from_env({**env, "RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS": "600"})
+    assert validator is not None and validator.config.max_token_lifetime_s == 600

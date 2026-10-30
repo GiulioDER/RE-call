@@ -1023,8 +1023,9 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
             allowed_tenants=tenants,
             subject_tenants=subject_tenants,
             jwks_refresh_s=_positive_int("RECALL_OIDC_JWKS_REFRESH_SECONDS", DEFAULT_JWKS_REFRESH_S),
+            # Opt-in: unset applies no lifetime cap, and the schema documents no default.
             max_token_lifetime_s=(
-                _positive_int("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS", 900)
+                _positive_int("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS", 0)
                 if source.get("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS")
                 else None
             ),

@@ -129,7 +129,11 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_OIDC_SUBJECT_TENANTS", "Authentication", "OIDC subject bindings"),
     EnvironmentSpec("RECALL_OIDC_TRUST_TENANT_CLAIM", "Authentication", "trust IdP tenant claim"),
     EnvironmentSpec("RECALL_OIDC_JWKS_REFRESH_SECONDS", "Authentication", "OIDC JWKS refresh interval", "300"),
-    EnvironmentSpec("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS", "Authentication", "OIDC maximum token lifetime", "900"),
+    EnvironmentSpec(
+        "RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS",
+        "Authentication",
+        "OIDC maximum token lifetime in seconds; unset applies no cap",
+    ),
     EnvironmentSpec("RECALL_POOL_SIZE", "Resources", "database pool size", str(DEFAULT_POOL_SIZE)),
     EnvironmentSpec("RECALL_CONNECTION_BUDGET", "Resources", "database connection budget"),
     EnvironmentSpec("RECALL_MAX_TENANTS", "Resources", "maximum provisioned tenants", str(DEFAULT_MAX_TENANTS)),
