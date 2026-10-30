@@ -226,7 +226,13 @@ def test_redis_and_local_limiters_share_permanent_oversized_cost_semantics() -> 
 
 @requires_db
 def test_postgres_receipt_recovers_after_redis_result_write_failure(make_store) -> None:
-    """A committed receipt must recover the response when the Redis cache write fails."""
+    """A committed receipt must recover the response when the Redis cache write fails.
+
+    BUG-002 (CCA run 20261030T101709Z) changed the contract this test pins: the cache write is best
+    effort once the durable receipt exists, so the committed mutation no longer surfaces the Redis
+    error. Red proof: failed on 3ada1afd0, where recall_mcp.server._record_mutation_result awaited
+    the cache write bare, with the injected OSError raised out of _record_mutation_result.
+    """
 
     class Redis:
         def __init__(self) -> None:
@@ -275,17 +281,16 @@ def test_postgres_receipt_recovers_after_redis_result_write_failure(make_store) 
             idempotency_fingerprint=fingerprint,
         )
     )
-    with pytest.raises(OSError, match="injected Redis result-write failure"):
-        asyncio.run(
-            _record_mutation_result(
-                state,
-                store.tenant,
-                key,
-                result,
-                idempotency_operation=operation,
-                idempotency_fingerprint=fingerprint,
-            )
+    asyncio.run(
+        _record_mutation_result(
+            state,
+            store.tenant,
+            key,
+            result,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
         )
+    )
     assert redis.result_write_attempts == 1
 
     with pytest.raises(IdempotencyResultMissing):
@@ -772,3 +777,36 @@ def test_restore_drill_isolated_from_serving_task_and_role() -> None:
     cluster_policy = iam.split('resource "aws_iam_role_policy" "restore_drill_task"', 1)[1]
     cluster_actions = cluster_policy.split("Resource = [local.rds_cluster_arn_pattern]", 1)[0]
     assert '"rds:CreateDBInstance"' in cluster_actions
+
+
+def test_idempotency_reservation_outlives_the_bucket_window() -> None:
+    """BUG-001: a reservation must last as long as the durable receipt it guards.
+
+    With the bucket TTL (twice the refill window, 120 s for a per-minute budget) a retry after a
+    crash or during a long mutation found no reservation and no receipt, and ran the mutation again.
+    Red proof: failed on 3ada1afd0 (recall_mcp.limits.RedisRateLimiter.check passed six script
+    arguments and the script reused the bucket TTL) with AssertionError on the argument count.
+    """
+    from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS
+    from recall_mcp.limits import _token_bucket_lua
+
+    calls: list[tuple[object, ...]] = []
+
+    class Redis:
+        async def script_load(self, _script: str) -> str:
+            return "sha"
+
+        async def evalsha(self, _sha: str, _numkeys: int, *args: object) -> list[int]:
+            calls.append(args)
+            return [1, 0, 0]
+
+    limiter = RedisRateLimiter("redis://unused", {"write": Rate(20, 20 / 60)}, redis_client=Redis())
+    asyncio.run(
+        limiter.check(
+            "tenant-a", "write", idempotency_key="k-1", idempotency_operation="recall_index"
+        )
+    )
+    script_args = calls[0][2:]
+    assert len(script_args) == 7
+    assert script_args[6] == IDEMPOTENCY_RECEIPT_RETENTION_SECONDS * 1000
+    assert "redis.call('SET', KEYS[2], ARGV[6], 'PX', tonumber(ARGV[7]))" in _token_bucket_lua()

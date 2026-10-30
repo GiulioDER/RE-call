@@ -2,7 +2,7 @@ aws_region         = "eu-west-1"
 offline_plan       = true
 aws_account_id     = "123456789012"
 availability_zones = ["eu-west-1a", "eu-west-1b"]
-environment        = "ci"
+environment        = "development"
 name               = "recall-ci"
 
 # Synthetic digest only. CI never pulls or deploys this image.

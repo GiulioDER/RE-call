@@ -29,6 +29,13 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
    representative chunk identifier. The receipt is not successful unless this application smoke
    passes too. The smoke uses a task local static token only for the isolated drill; it does not
    change production OIDC configuration.
+   The drill names its restored cluster and writer `<source>-drill-*` and refuses any other target,
+   because the drill task role may delete only resources under that prefix. It reads every required
+   setting before it starts the restore, so a misconfigured drill creates nothing.
+   `RECALL_RESTORE_SECURITY_GROUP_IDS` lists the security groups attached to the restored cluster;
+   the stack sets it to the data security group, which admits the drill task on 5432. The drill
+   task role may use only the stack's data key (`kms_key_arn`, or the key the stack creates), so
+   `restore_kms_key_id` must name that same key.
    The validation task must set `RECALL_RESTORE_TENANT`, `RECALL_RESTORE_EXPECTED_GENERATION`,
    `RECALL_RESTORE_EXPECTED_ROLE`, and `RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID`. The latter names
    a known chunk in that tenant and makes the database search check prove tenant bound vector
@@ -60,13 +67,15 @@ scoped RDS restore, instance creation, tagging, and cleanup actions.
 
 Use `offline_plan = true` only for a nonproduction validation plan. Supply an explicit
 `aws_account_id` and at least two `availability_zones` so the plan does not query AWS metadata.
-The production safety check refuses any plan that combines `offline_plan` with
-`environment = "production"`.
+A precondition on the serving ECS service refuses any plan that combines `offline_plan` with
+`environment = "production"`. `environment` becomes `RECALL_ENV`, so it must be `development` or
+`production`; give a nonproduction stack its own `name` instead.
 
 ```bash
 terraform -chdir=infra/aws plan -refresh=false \
   -var='offline_plan=true' \
-  -var='environment=staging' \
+  -var='environment=development' \
+  -var='name=recall-staging' \
   -var='aws_account_id=123456789012' \
   -var='availability_zones=["eu-west-1a","eu-west-1b"]'
 ```

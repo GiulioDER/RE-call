@@ -30,6 +30,7 @@ resource "aws_ecs_task_definition" "restore_drill" {
     { name = "RECALL_RESTORE_SOURCE_CLUSTER", value = var.restore_source_cluster },
     { name = "RECALL_RESTORE_SUBNET_GROUP", value = var.restore_subnet_group },
     { name = "RECALL_RESTORE_KMS_KEY_ID", value = var.restore_kms_key_id },
+    { name = "RECALL_RESTORE_SECURITY_GROUP_IDS", value = aws_security_group.data.id },
     { name = "RECALL_RESTORE_SCHEMA_VERSION", value = var.restore_schema_version },
     { name = "RECALL_RESTORE_TENANT", value = var.restore_tenant },
     { name = "RECALL_RESTORE_EXPECTED_GENERATION", value = var.restore_expected_generation },
@@ -41,6 +42,33 @@ resource "aws_ecs_task_definition" "restore_drill" {
     { name = "RECALL_RESTORE_SMOKE_EMBEDDER", value = var.restore_smoke_embedder },
     { name = "RECALL_RESTORE_INSTANCE_CLASS", value = var.db_instance_class },
   ], secrets = [{ name = "RECALL_RESTORE_VALIDATION_DSN", valueFrom = var.restore_validation_dsn_secret_arn }], logConfiguration = { logDriver = "awslogs", options = { awslogs-group = aws_cloudwatch_log_group.this.name, awslogs-region = var.aws_region, awslogs-stream-prefix = "restore-drill" } } }])
+
+  lifecycle {
+    precondition {
+      condition = lower(trimspace(var.environment)) != "production" || (
+        alltrue([
+          for value in [
+            var.restore_source_cluster,
+            var.restore_subnet_group,
+            var.restore_kms_key_id,
+            var.restore_schema_version,
+            var.restore_tenant,
+            var.restore_expected_generation,
+            var.restore_expected_role,
+            var.restore_representative_chunk_id,
+            var.restore_expected_checksums,
+            var.restore_smoke_embedder,
+          ] : trimspace(value) != ""
+        ]) &&
+        try(
+          toset(keys(jsondecode(trimspace(var.restore_expected_checksums)))) == toset(["recall_chunks_v1", "recall_generations"]) &&
+          alltrue([for checksum in values(jsondecode(trimspace(var.restore_expected_checksums))) : trimspace(checksum) != ""]),
+          false
+        )
+      )
+      error_message = "Production requires nonempty restore source, subnet group, KMS key, schema version, tenant, generation, role, representative chunk, and both restore table checksums."
+    }
+  }
 }
 
 resource "aws_cloudwatch_event_target" "restore_drill" {

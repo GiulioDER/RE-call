@@ -104,7 +104,9 @@ removal.
 The HTTP deployment exposes `GET /livez`, `GET /readyz`, and `GET /startupz`. `livez` is
 dependency free and returns `200` while the process is running. `startupz` returns `200` after
 startup completed, otherwise `503`. `readyz` returns `200` only when the database, schema, pgvector,
-RLS, active generation, and calibration checks pass. Redis limiter state is reported but does not
+RLS, and active generation checks pass. Its `calibration` entry reflects the enterprise startup
+readiness gate, which runs once at startup; `readyz` does not re-evaluate calibration, and strict
+trust still refuses an answer whose calibration is not certified. Redis limiter state is reported but does not
 make reads unready, because reads have a bounded local fallback and mutations fail closed.
 
 Mutating MCP tools require an idempotency key on HTTP deployments for writes, forget, and admin

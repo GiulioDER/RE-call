@@ -70,7 +70,7 @@ def resolve_runtime_route(
 
     ``RECALL_INDEX_MODE`` is the explicit operator setting.  Its absence retains the historical
     development default for compatibility, but the returned object marks that decision as
-    implicit so ``recall route status`` can surface it.  Production and enterprise deployments
+    implicit.  Production and enterprise deployments
     are always generation based and refuse an explicit legacy request.
     """
 

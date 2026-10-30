@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
 from mcp.server.mcpserver.exceptions import ToolError
-from recall.constants import MAX_IDEMPOTENCY_RESULT_BYTES
+from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS, MAX_IDEMPOTENCY_RESULT_BYTES
 from recall.observability import get_logger
 from recall.errors import IdempotencyConflict, RecallError
 
@@ -319,7 +319,7 @@ tokens = tokens - cost
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'updated', now_ms)
 redis.call('PEXPIRE', KEYS[1], ttl_ms)
 if KEYS[2] ~= '' then
-  redis.call('SET', KEYS[2], ARGV[6], 'PX', ttl_ms)
+  redis.call('SET', KEYS[2], ARGV[6], 'PX', tonumber(ARGV[7]))
 end
 return {1, 0, duplicate}
 """
@@ -444,6 +444,10 @@ class RedisRateLimiter:
                 ttl_ms,
                 1 if read_only else 0,
                 reservation,
+                # A mutation's reservation lives as long as the durable receipt it guards, not as
+                # long as the bucket: a retry after a crash or during a long mutation must
+                # reconcile, not execute again. A read writes no receipt and keeps the bucket TTL.
+                ttl_ms if read_only else IDEMPOTENCY_RECEIPT_RETENTION_SECONDS * 1000,
             ]
             try:
                 if self._script_sha is None:
@@ -750,19 +754,7 @@ def failed_auth_throttle_from_env(env: Mapping[str, str] | None = None) -> Faile
 
 def limiter_from_env(env: Mapping[str, str] | None = None) -> RateLimiter:
     """Build the limiter the server uses, from `RECALL_RATE_*` / `RECALL_INDEX_BYTES_PER_HOUR`."""
-    rates: dict[str, Rate] = {}
-    for scope, default in DEFAULT_CALLS_PER_MIN.items():
-        rate = _rate_from_env(
-            f"RECALL_RATE_{scope.upper()}_PER_MIN", default, _SECONDS_PER_MIN, env
-        )
-        if rate is not None:
-            rates[scope] = rate
-    byte_rate = _rate_from_env(
-        "RECALL_INDEX_BYTES_PER_HOUR", float(DEFAULT_INDEX_BYTES_PER_HOUR), _SECONDS_PER_HOUR, env
-    )
-    if byte_rate is not None:
-        rates[INDEX_BYTES_BUDGET] = byte_rate
-    return RateLimiter(rates)
+    return RateLimiter(_limiter_rates_from_env(env))
 
 
 def _limiter_rates_from_env(env: Mapping[str, str] | None = None) -> dict[str, Rate]:

@@ -238,13 +238,20 @@ async def _record_mutation_result(
     limiter = state.get("limiter")
     record = getattr(limiter, "store_idempotency_result", None)
     if callable(record):
-        await record(
-            tenant,
-            idempotency_key,
-            result,
-            operation=idempotency_operation,
-            request_fingerprint=idempotency_fingerprint,
-        )
+        try:
+            await record(
+                tenant,
+                idempotency_key,
+                result,
+                operation=idempotency_operation,
+                request_fingerprint=idempotency_fingerprint,
+            )
+        except Exception:  # BROAD-CATCH: fail-open, the durable receipt replays a retry
+            # The mutation has committed. When the durable receipt exists, a retry with the same
+            # key replays it, so a Redis failure here must not turn a success into an error.
+            if not callable(durable):
+                raise
+            _log.warning("idempotency replay cache write failed; durable receipt retained")
 
 
 async def _durable_replay(
@@ -901,6 +908,11 @@ def _make_lifespan(
         enterprise = runtime_settings.enterprise_control_plane
         runtime_route = resolve_runtime_route(runtime_env, enterprise=enterprise)
         source_policy = load_source_policy(runtime_env)
+        if enterprise and source_policy is None:
+            raise RuntimeError(
+                "enterprise control plane requires RECALL_SOURCE_POLICY_FILE; "
+                "source authorization and redaction must be configured"
+            )
         settings_token = None
         lite_refresher: LiteAutoRefresher | None = None
         clock_installed = False

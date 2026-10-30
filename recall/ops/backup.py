@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, asdict
 from datetime import UTC, datetime
 from typing import Any
@@ -182,8 +183,10 @@ class BackupManager:
         restore_time: datetime | None = None,
         subnet_group_name: str,
         kms_key_id: str,
+        vpc_security_group_ids: Sequence[str] | None = None,
         confirmation: str | None = None,
     ) -> dict[str, object]:
+        """Restore a new cluster, to ``restore_time`` or, when it is None, to the latest restorable time."""
         if confirmation != "RESTORE_NEW_CLUSTER":
             raise ValueError("restore requires confirmation=RESTORE_NEW_CLUSTER")
         rds, _ = self._clients()
@@ -196,9 +199,14 @@ class BackupManager:
             "DeletionProtection": False,
             "CopyTagsToSnapshot": True,
         }
+        if vpc_security_group_ids:
+            params["VpcSecurityGroupIds"] = list(vpc_security_group_ids)
+        # RDS requires exactly one of RestoreToTime and UseLatestRestorableTime, and refuses
+        # RestoreToTime with a copy-on-write clone, so a point-in-time restore is a full copy.
         if restore_time is not None:
-            params["RestoreType"] = "copy-on-write"
             params["RestoreToTime"] = restore_time.astimezone(UTC)
+        else:
+            params["UseLatestRestorableTime"] = True
         cluster = rds.restore_db_cluster_to_point_in_time(**params)["DBCluster"]
         return {
             "cluster_identifier": cluster.get("DBClusterIdentifier"),

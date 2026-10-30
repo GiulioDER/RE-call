@@ -167,8 +167,9 @@ recall schema grants --role recall_server --enterprise   # if RECALL_ENTERPRISE_
 
 The command prints SQL and runs nothing, so it needs no DSN. Run the output as the object owner.
 Treat applying migrations and applying this generated grant output as one deployment gate. The
-serving process checks the receipt table and its required privileges during startup, so it remains
-unready rather than accepting mutations if the grant step is skipped.
+serving process checks at startup that the receipt table exists with forced row level security and
+its tenant policy. It does not check table privileges, so a skipped grant step is not caught at
+startup: the first keyed mutation fails with a permission error instead.
 
 `--enterprise` adds the four control-plane tables (`recall_index_generations`,
 `recall_schema_versions`, `recall_tenant_routes`, `recall_migration_events`) and, critically,

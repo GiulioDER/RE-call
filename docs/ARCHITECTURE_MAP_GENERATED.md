@@ -703,7 +703,7 @@ They are observations, not automatic failures.
 | `recall.schemas` | 0 | 0 |
 | `recall.scope` | 0 | 0 |
 | `recall.scope_prior` | 2 | 5 |
-| `recall.security_policy` | 1 | 1 |
+| `recall.security_policy` | 2 | 2 |
 | `recall.seed` | 4 | 98 |
 | `recall.semantic_graph` | 4 | 25 |
 | `recall.semantic_graph._build` | 4 | 23 |
