@@ -31,9 +31,9 @@ def main():
         if proc is not None and proc.poll() is None:
             try:
                 # On Unix, kill the process group; on Windows, kill the tree
-                if hasattr(signal, "SIGTERM"):
-                    # Unix: kill the process group
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                if os.name == "posix":
+                    # Unix: enforce the deadline even when the command ignores SIGTERM
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 else:
                     # Windows: use taskkill
                     subprocess.run(
