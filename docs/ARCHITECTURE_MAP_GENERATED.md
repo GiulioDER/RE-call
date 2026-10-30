@@ -9,16 +9,16 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 346
-Cross package edges: 367
+Cross package edges: 369
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
-| 198 | `recall.cli_commands.calibration_cmd` |
+| 199 | `recall.cli_commands.calibration_cmd` |
 | 189 | `recall_mcp.codex_server` |
 | 188 | `recall_mcp.server` |
-| 172 | `recall_mcp.service` |
+| 173 | `recall_mcp.service` |
 | 167 | `recall.cli_commands.setup_wizard` |
 | 162 | `recall.desktop.main` |
 | 158 | `recall.cli_commands.reasoning_cmd` |
@@ -36,9 +36,9 @@ Cross package edges: 367
 | 136 | `recall_mcp.graph_first_api` |
 | 136 | `recall_mcp.query_construction_api` |
 | 134 | `recall_mcp.reasoning_admin` |
-| 132 | `recall_agent` |
-| 131 | `recall_agent._sdk` |
-| 131 | `recall_agent.memory` |
+| 133 | `recall_agent` |
+| 132 | `recall_agent._sdk` |
+| 132 | `recall_agent.memory` |
 | 129 | `recall.dashboard.activity` |
 | 128 | `recall.cli_commands.provenance_cmd` |
 | 127 | `recall.dashboard.graph` |
@@ -69,9 +69,9 @@ Cross package edges: 367
 | 22 | `recall_mcp.reasoning_engine` |
 | 21 | `recall` |
 | 20 | `recall.rewrite` |
+| 20 | `recall_mcp.indexing` |
 | 19 | `recall_mcp.provenance` |
 | 18 | `recall.index` |
-| 18 | `recall_mcp.indexing` |
 | 17 | `recall.cli_commands.calibration_cmd` |
 | 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall.generation_store` |
@@ -229,10 +229,12 @@ They are observations, not automatic failures.
 | `recall_mcp.indexing` | `recall.cache` |
 | `recall_mcp.indexing` | `recall.context` |
 | `recall_mcp.indexing` | `recall.control_plane` |
+| `recall_mcp.indexing` | `recall.desktop.uploads` |
 | `recall_mcp.indexing` | `recall.embeddings` |
 | `recall_mcp.indexing` | `recall.errors` |
 | `recall_mcp.indexing` | `recall.index` |
 | `recall_mcp.indexing` | `recall.index_budget` |
+| `recall_mcp.indexing` | `recall.index_lock` |
 | `recall_mcp.indexing` | `recall.lite` |
 | `recall_mcp.indexing` | `recall.lite.calibration` |
 | `recall_mcp.indexing` | `recall.observability` |
@@ -504,7 +506,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands._lite` | 3 | 99 |
 | `recall.cli_commands._shared` | 10 | 109 |
 | `recall.cli_commands.backup_cmd` | 1 | 5 |
-| `recall.cli_commands.calibration_cmd` | 17 | 198 |
+| `recall.cli_commands.calibration_cmd` | 17 | 199 |
 | `recall.cli_commands.dashboard_cmd` | 4 | 156 |
 | `recall.cli_commands.doctor_cmd` | 1 | 149 |
 | `recall.cli_commands.extract_rewrite` | 12 | 125 |
@@ -761,10 +763,10 @@ They are observations, not automatic failures.
 | `recall.wizard.state` | 3 | 149 |
 | `recall.wizard.uninstall` | 4 | 145 |
 | `recall.wizard.wiring` | 4 | 121 |
-| `recall_agent` | 1 | 132 |
+| `recall_agent` | 1 | 133 |
 | `recall_agent._descriptions` | 0 | 0 |
-| `recall_agent._sdk` | 2 | 131 |
-| `recall_agent.memory` | 12 | 131 |
+| `recall_agent._sdk` | 2 | 132 |
+| `recall_agent.memory` | 12 | 132 |
 | `recall_agent.rendering` | 2 | 101 |
 | `recall_consistency` | 0 | 0 |
 | `recall_consistency.__main__` | 8 | 113 |
@@ -777,7 +779,7 @@ They are observations, not automatic failures.
 | `recall_hooks.__main__` | 1 | 111 |
 | `recall_hooks.auditor_brief` | 5 | 110 |
 | `recall_hooks.codex` | 3 | 112 |
-| `recall_hooks.credentials` | 0 | 0 |
+| `recall_hooks.credentials` | 1 | 110 |
 | `recall_hooks.general_knowledge` | 2 | 110 |
 | `recall_hooks.hosted` | 3 | 110 |
 | `recall_hooks.mcp_cleanup` | 0 | 0 |
@@ -801,7 +803,7 @@ They are observations, not automatic failures.
 | `recall_mcp.graph_expansion` | 9 | 115 |
 | `recall_mcp.graph_first_api` | 15 | 136 |
 | `recall_mcp.graph_projection` | 6 | 41 |
-| `recall_mcp.indexing` | 18 | 117 |
+| `recall_mcp.indexing` | 20 | 118 |
 | `recall_mcp.lifecycle` | 14 | 117 |
 | `recall_mcp.limits` | 3 | 3 |
 | `recall_mcp.lite_refresh` | 5 | 99 |
@@ -818,7 +820,7 @@ They are observations, not automatic failures.
 | `recall_mcp.retrieval` | 23 | 122 |
 | `recall_mcp.semantic_graph_cache` | 16 | 119 |
 | `recall_mcp.server` | 58 | 188 |
-| `recall_mcp.service` | 59 | 172 |
+| `recall_mcp.service` | 59 | 173 |
 | `recall_mcp.settings` | 8 | 113 |
 | `recall_mcp.stale_reports_api` | 3 | 124 |
 | `recall_mcp.status` | 8 | 99 |

@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import claude_config_home
+
 #: Seconds of remaining life below which a cached access token is refreshed rather than used. A
 #: token that expires mid-request costs a 401 and a retry; a minute of slack costs nothing.
 REFRESH_MARGIN_S = 60
@@ -63,13 +65,12 @@ class Credential:
 
 
 def _config_home() -> Path:
-    """The Claude config directory, honouring `CLAUDE_CONFIG_DIR` as the rest of the package does."""
-    override = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(override) if override else Path.home() / ".claude"
+    """Use the hook's canonical config directory, including its override and expansion rules."""
+    return claude_config_home()
 
 
 def token_cache_path(config: dict[str, Any]) -> Path:
-    """Where this ACCOUNT's short-lived access token is cached.
+    """Where this credential context's short-lived access token is cached.
 
     ⛔ **Per account, and that is a correctness requirement rather than tidiness.** The refresh
     token has always been keyed by account, so that two accounts on one machine do not overwrite
@@ -83,8 +84,11 @@ def token_cache_path(config: dict[str, Any]) -> Path:
 
     The account is hashed rather than written in, so the filename does not put somebody's email
     address in a directory listing.
+
+    Service identity is part of the key too: account isolation alone cannot prevent
+    another issuer, client, scope set or endpoint from receiving this credential.
     """
-    digest = hashlib.sha256(_account(config).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(_credential_key(config).encode("utf-8")).hexdigest()[:16]
     return _config_home() / f"{TOKEN_CACHE_NAME}-{digest}.json"
 
 def fallback_path() -> Path:
@@ -120,6 +124,26 @@ def _account(config: dict[str, Any]) -> str:
     return str(config.get("account") or config.get("tenant") or "default")
 
 
+def _credential_key(config: dict[str, Any]) -> str:
+    """Bind both stores and the cache to the service that may receive the token.
+
+    Unbound legacy account keys are deliberately not read. Their intended issuer
+    cannot be established, so the user must sign in again after this upgrade.
+    """
+    raw_auth = config.get("auth")
+    auth = raw_auth if isinstance(raw_auth, dict) else {}
+    context = {
+        "account": _account(config),
+        "tenant": str(config.get("tenant") or ""),
+        "endpoint": str(config.get("endpoint") or ""),
+        "token_url": str(auth.get("token_url") or ""),
+        "client_id": str(auth.get("client_id") or ""),
+        "scopes": sorted(set(str(auth.get("scopes") or "").split())),
+    }
+    payload = json.dumps(context, sort_keys=True, separators=(",", ":"))
+    return "context-v1:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
     """Atomically, and readable only by this user.
 
@@ -147,7 +171,7 @@ def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
 
 def read_refresh_token(config: dict[str, Any]) -> str | None:
     """From the OS keychain if there is one, else from the plaintext fallback, else None."""
-    account = _account(config)
+    account = _credential_key(config)
     ring = _keyring()
     if ring is not None:
         try:
@@ -170,7 +194,7 @@ def write_refresh_token(config: dict[str, Any], token: str) -> str:
     Returning the store rather than logging it keeps this function quiet enough to call from a
     hook, while making it impossible for `login` to downgrade to plaintext without knowing.
     """
-    account = _account(config)
+    account = _credential_key(config)
     ring = _keyring()
     if ring is not None:
         try:
@@ -203,10 +227,9 @@ def cached_access_token(config: dict[str, Any], *, now: float | None = None) -> 
         return None
     if not isinstance(raw, dict):
         return None
-    if str(raw.get("account", "")) != _account(config):
-        # The digest in the filename should already have prevented this, so reaching here means a
-        # hash collision, a hand-edited file, or a payload written by an older version. Every one
-        # of those is a reason to fetch a fresh token rather than to use this one.
+    if raw.get("context") != _credential_key(config):
+        # Check the complete context even after selecting its hashed filename. Legacy
+        # account-only payloads have no established audience and are never reused.
         return None
     token = raw.get("access_token")
     expires = raw.get("expires_at")
@@ -217,12 +240,12 @@ def cached_access_token(config: dict[str, Any], *, now: float | None = None) -> 
 
 
 def store_access_token(config: dict[str, Any], cred: Credential) -> None:
-    """Cache it under this config's account. The account is written INTO the file as well as into
-    its name, so a cache read can prove what it is holding rather than trusting the path."""
+    """Cache it with its full credential context, verified independently of the filename."""
     _write_private_json(
         token_cache_path(config),
         {
             "account": _account(config),
+            "context": _credential_key(config),
             "access_token": cred.access_token,
             "expires_at": cred.expires_at,
         },
@@ -277,6 +300,9 @@ def refresh(config: dict[str, Any], refresh_token: str, *, now: float | None = N
 
 def access_token(config: dict[str, Any], *, now: float | None = None) -> Credential:
     """A usable access token: cached if fresh, refreshed if not, `AuthError` if neither."""
+    block = config.get("auth")
+    if isinstance(block, dict) and block.get("token_url") and not str(block["token_url"]).startswith("https://"):
+        raise AuthError("token_url must be https; a bearer token must not cross a plaintext hop")
     cached = cached_access_token(config, now=now)
     if cached is not None:
         return cached
@@ -417,7 +443,7 @@ def logout(config: dict[str, Any], *, out: Any = None) -> int:
     """
     out = out or sys.stdout
     removed = []
-    account = _account(config)
+    account = _credential_key(config)
     ring = _keyring()
     if ring is not None:
         try:

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from pathlib import Path
+import re
 from typing import TYPE_CHECKING
 
 from recall._env import strict_bool
@@ -77,6 +79,7 @@ def index_memory(
     env: Mapping[str, str] | None = None,
     candidate_files_fn: CandidateFiles | None = None,
     lane_purpose: str = "index",
+    source_namespace: str | None = None,
 ) -> IndexResult:
     """Index a markdown file or folder into memory; return counts plus a human message.
 
@@ -84,12 +87,25 @@ def index_memory(
     write lane, so two servers indexing one file take turns (`recall.lite.writer_lock`).
     """
     from recall.backends import write_session
+    from recall.index_lock import single_writer
+
+    if source_namespace is not None:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", source_namespace):
+            raise IndexPreflightError("source_namespace must contain 1 to 64 safe characters")
+        if security_policy is not None:
+            raise IndexPreflightError(
+                "stable source namespaces are not supported with source security policies; "
+                "use a reviewed source manifest instead"
+            )
 
     with write_session(store, lane_purpose):
-        return _index_memory_unlocked(
-            store, embedder, path, on_measured, shadow_store, shadow_embedder, control_plane, glob,
-            chunker, security_policy, security_context, env, candidate_files_fn,
-        )
+        guard = single_writer(store, env=env) if source_namespace is not None and not _is_lite(store) else nullcontext()
+        with guard:
+            return _index_memory_unlocked(
+                store, embedder, path, on_measured, shadow_store, shadow_embedder, control_plane, glob,
+                chunker, security_policy, security_context, env, candidate_files_fn,
+                _publication_namespace=source_namespace,
+            )
 
 
 def _index_memory_unlocked(
@@ -106,6 +122,7 @@ def _index_memory_unlocked(
     security_context: AccessContext | None = None,
     env: Mapping[str, str] | None = None,
     candidate_files_fn: CandidateFiles | None = None,
+    _publication_namespace: str | None = None,
 ) -> IndexResult:
     """`index_memory` without the lite store's write lane; call `index_memory`."""
     values = dict(runtime_environment() if env is None else env)
@@ -189,6 +206,26 @@ def _index_memory_unlocked(
             if not decision.allowed:
                 raise IndexPreflightError(f"source {relative!r} denied: {decision.reason}")
 
+    if _publication_namespace is not None:
+        # Admission above measured the disposable upload. Publish only after all
+        # guards passed, while the caller holds the corpus's writer boundary.
+        from recall.desktop.uploads import _promote_staged, discard_staging
+
+        if not target.is_dir():
+            raise IndexPreflightError("namespaced uploads require a staged directory")
+        stable = target.parent / f"sync-memory-{_publication_namespace}"
+        destination = stable.resolve()
+        published_files = [stable / file.relative_to(target) for file in files]
+        if not destination.is_relative_to(root) or any(
+            not file.resolve().is_relative_to(destination) for file in published_files
+        ):
+            raise IndexPreflightError("stable upload destination escapes the index root")
+        try:
+            _promote_staged(target, stable)
+        finally:
+            discard_staging(target)
+        target, files = stable, published_files
+
     if on_measured is not None:
         on_measured(len(files), total_bytes)
 
@@ -207,7 +244,7 @@ def _index_memory_unlocked(
         # text is served from it rather than re-embedded. Opened only after preflight, so a
         # refused request never touches the cache file. `RECALL_EMBED_CACHE` moves or disables it.
         with default_cache() as cache:
-            stats = Indexer(
+            indexer = Indexer(
                 store,
                 embedder,
                 chunker=chunker,
@@ -217,7 +254,11 @@ def _index_memory_unlocked(
                 security_policy=security_policy,
                 security_context=security_context,
                 env=values,
-            ).index_path(
+            )
+            # Publication already holds this same guard; a second PostgreSQL
+            # connection would contend with the caller's non-reentrant lock.
+            index_path = indexer._index_path if _publication_namespace is not None else indexer.index_path
+            stats = index_path(
                 target,
                 files=files,
                 # A lite server names every file relative to RECALL_INDEX_ROOT, as its automatic
