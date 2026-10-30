@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import time
 import re
 import threading
 import uuid
+import weakref
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 
@@ -182,6 +185,82 @@ def _context_group_inputs(tenant):
         S3Allowlist.parse("approved/corpora/"),
     )
     return manifest, reader
+
+
+@requires_db
+@pytest.mark.parametrize(
+    ("buffer_kind", "boundary"),
+    [("prepared", "between_groups"), ("prepared", "before_graph"),
+     ("vectors", "between_groups"), ("vectors", "before_graph")],
+)
+def test_grouped_build_releases_completed_buffers(manager, monkeypatch, buffer_kind, boundary):
+    """PERF-001: completed group buffers must not survive into later build phases.
+
+    Red-proof baseline ac4732a0: these exact parameter nodes fail weak-reference
+    lifetime assertions in GenerationManager.build, at the next encoding boundary
+    or before the real graph builder. No RSS, timing or peak-memory claim is made.
+    """
+    import recall.generations as generations
+
+    class Buffer(list):
+        pass
+
+    manifest, reader = _context_group_inputs(manager.tenant_id)
+    manifest = replace(
+        manifest,
+        objects=tuple(replace(entry, context_group_id=entry.uri) for entry in manifest.objects),
+    )
+    prepared_refs = []
+    vector_refs = []
+    encoding_calls = 0
+    original_chunks = manager._chunks_for_source
+    original_encode = generations.embed_document_groups
+    original_graph = manager._build_semantic_graph
+
+    def tracked_chunks(*args, **kwargs):
+        result = original_chunks(*args, **kwargs)
+        if result is None:
+            return None
+        chunks, texts = (Buffer(values) for values in result)
+        prepared_refs.append((weakref.ref(chunks), weakref.ref(texts)))
+        return chunks, texts
+
+    def check_released():
+        gc.collect()
+        watched = (
+            [ref for pair in prepared_refs[:encoding_calls] for ref in pair]
+            if buffer_kind == "prepared" else vector_refs
+        )
+        assert watched, "the fixture must observe actual allocated build buffers"
+        assert all(ref() is None for ref in watched), (
+            f"completed {buffer_kind} buffers remain alive at {boundary}"
+        )
+
+    def tracked_encode(embedder, groups):
+        nonlocal encoding_calls
+        if boundary == "between_groups" and encoding_calls:
+            check_released()
+        result = [Buffer(Buffer(vector) for vector in group)
+                  for group in original_encode(embedder, groups)]
+        vector_refs.extend(weakref.ref(group) for group in result)
+        vector_refs.extend(weakref.ref(vector) for group in result for vector in group)
+        encoding_calls += 1
+        return result
+
+    def checked_graph(*args, **kwargs):
+        if boundary == "before_graph":
+            check_released()
+        return original_graph(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_chunks_for_source", tracked_chunks)
+    monkeypatch.setattr(generations, "embed_document_groups", tracked_encode)
+    monkeypatch.setattr(manager, "_build_semantic_graph", checked_graph)
+    embedder = _ContextGroupEmbedder()
+    generation = manager.create(manifest, _pipeline("model-a"))
+    stats = manager.build(generation.generation_id, reader, embedder, lambda text: [text])
+    manager.validate(generation.generation_id)
+    assert stats.chunks == 2
+    assert embedder.groups == [[["first group member"]], [["second group member"]]]
 
 
 @requires_db

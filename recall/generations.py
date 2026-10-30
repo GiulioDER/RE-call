@@ -1407,6 +1407,9 @@ class GenerationManager:
                     pending_grouped.setdefault(group_keys[entry.uri], []).append(
                         _PreparedSource(entry, chunks, embedding_texts, group_keys[entry.uri])
                     )
+                    # The prepared group owns these buffers until it is encoded. Leaving the
+                    # preparation-loop locals alive would retain the final source afterward.
+                    del source_chunks, chunks, embedding_texts
                     continue
                 if progress is not None:
                     progress.update(_counters(done), stage="embedding", current=entry.uri)
@@ -1429,13 +1432,13 @@ class GenerationManager:
                     embedded_objects += 1
                     indexed_sources.append(entry.uri)
 
-            for group_number, (group_key, prepared_sources) in enumerate(
-                pending_grouped.items(), start=1
-            ):
+            group_count = len(pending_grouped)
+            for group_number, group_key in enumerate(tuple(pending_grouped), start=1):
+                prepared_sources = pending_grouped.pop(group_key)
                 if progress is not None:
                     progress.update(
                         _counters(total_objects),
-                        stage=f"embedding context group {group_number}/{len(pending_grouped)}",
+                        stage=f"embedding context group {group_number}/{group_count}",
                         current=group_key,
                     )
                 # A source can be erased after it was prepared. Do not send a group known
@@ -1479,6 +1482,10 @@ class GenerationManager:
                     raise GenerationError(
                         f"context group {group_key!r} returned unconsumed embeddings"
                     )
+                # Consume completed groups in their original order and release both the
+                # prepared data and encoding scratch before the next group or graph build.
+                # Preparation still buffers every changed group before this loop begins.
+                del prepared_sources, prepared, group_texts, group_vectors, vectors
 
             if progress is not None:
                 progress.update(_counters(total_objects), stage="building semantic graph")

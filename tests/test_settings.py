@@ -139,6 +139,57 @@ def test_generated_environment_reference_comes_from_the_schema() -> None:
     assert document.endswith(render_env_example() + "\n")
 
 
+def test_documented_voyage_timeout_reaches_the_contextual_provider(monkeypatch) -> None:
+    """ENV-001: an operator can discover the timeout and configure the actual provider.
+
+    Red proof: with the pre-fix ENVIRONMENT_SCHEMA, this exact node fails the
+    missing-schema assertion below. After documenting the setting, the generated reference
+    and example must agree, and their default must reach the real Context 4 factory/registry
+    path. Only the HTTP client and optional tokenizer download are replaced with offline ports.
+    """
+    name = "RECALL_VOYAGE_TIMEOUT_SECONDS"
+    spec = next((item for item in ENVIRONMENT_SCHEMA if item.name == name), None)
+    assert spec is not None, "Voyage request timeout is absent from the canonical environment schema"
+
+    rendered = render_env_example()
+    assignment = re.search(rf"^# {name}=(\S+)\s+# ", rendered, re.MULTILINE)
+    assert assignment is not None, "the generated operator reference omits the timeout default"
+    documented_default = assignment.group(1)
+    assert documented_default == spec.default
+    assert float(documented_default) == 60.0
+    root = Path(__file__).resolve().parents[1]
+    document = (root / "docs" / "ENVIRONMENT_GENERATED.md").read_text(encoding="utf-8")
+    assert document.endswith(rendered + "\n")
+    example = (root / ".env.example").read_text(encoding="utf-8")
+    example_assignment = re.search(rf"^# {name}=(\S+)", example, re.MULTILINE)
+    assert example_assignment is not None, "the maintained example omits the timeout override"
+    assert example_assignment.group(1) == documented_default
+
+    import sys
+    import types
+
+    from recall_mcp.factories import make_embedder
+    from tests.test_hosted_embedding_profiles import _StubVoyageClient
+
+    monkeypatch.setitem(sys.modules, "voyageai", types.ModuleType("voyageai"))
+    monkeypatch.setattr("recall._voyage_http.Client", _StubVoyageClient)
+    monkeypatch.setattr("recall.embedding_providers.voyage._voyage_token_counter", lambda _model: None)
+    monkeypatch.setattr(_StubVoyageClient, "width", 1024, raising=False)
+    monkeypatch.setattr(_StubVoyageClient, "calls", [])
+    for configured in (None, documented_default, "12.5"):
+        environment = {
+            "RECALL_EMBEDDER": "voyage-context",
+            "RECALL_EMBED_PROFILE": "voyage-context-4-v1",
+            "VOYAGE_API_KEY": "offline-test-key",
+        }
+        if configured is not None:
+            environment[name] = configured
+        settings = Settings.from_env(environment)
+        embedder = make_embedder(settings.embedder, env=dict(settings.env))
+        assert embedder._client.timeout == float(configured or documented_default)
+        assert embedder.dim == 1024
+
+
 def _generated_environment_defaults() -> list[tuple[str, str]]:
     defaults: list[tuple[str, str]] = []
     for line in render_env_example().splitlines():
