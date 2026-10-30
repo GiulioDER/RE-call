@@ -652,7 +652,7 @@
       "readOnlyHint": false,
       "title": "Upload and index source files"
     },
-    "description": "Upload bounded source files and index them in the caller's tenant.",
+    "description": "Upload bounded source files and index them in the caller's tenant.\n\nsource_namespace optionally gives legacy memory uploads a stable destination.\nIt accepts 1 to 64 ASCII letters, digits, underscores or hyphens. Names within\nit identify logical sources; use project-specific prefixes for shared tenants.\nOther files are retained across partial batches. Generation uploads retain\ntheir immutable staging behavior.\nLegacy namespaced replacement refuses when a source security policy is\nconfigured; it does not overwrite files before that refusal.\nEach file may include source_key, a lowercase SHA-256 root identity that\nqualifies its first name component without exposing the local root path.",
     "inputSchema": {
       "properties": {
         "category": {
@@ -681,6 +681,18 @@
           ],
           "default": null,
           "title": "Idempotency Key"
+        },
+        "source_namespace": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Namespace"
         },
         "tenant": {
           "anyOf": [

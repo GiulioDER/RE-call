@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import threading
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, Protocol, TypeVar, cast
+from typing import Annotated, Any, Literal, Protocol, TypedDict, TypeVar, cast
 from urllib.parse import urlsplit
 
 import anyio.to_thread
@@ -190,7 +191,9 @@ def _mutation_fingerprint(operation: str, arguments: Mapping[str, object]) -> st
     return canonical_sha256({"operation": operation, "arguments": arguments})
 
 
-def _ingest_mutation_fingerprint(files: list[dict[str, str]], category: str) -> str:
+def _ingest_mutation_fingerprint(
+    files: list[dict[str, str]], category: str, source_namespace: str | None = None,
+) -> str:
     """Fingerprint an upload without copying its complete base64 payload into canonical JSON."""
     import hashlib
 
@@ -199,7 +202,17 @@ def _ingest_mutation_fingerprint(files: list[dict[str, str]], category: str) -> 
     encoded_category = category.encode("utf-8")
     digest.update(len(encoded_category).to_bytes(8, "big"))
     digest.update(encoded_category)
+    if source_namespace is not None:
+        encoded_namespace = source_namespace.encode("utf-8")
+        digest.update(b"\0source-namespace\0")
+        digest.update(len(encoded_namespace).to_bytes(8, "big"))
+        digest.update(encoded_namespace)
     for item in files:
+        if "source_key" in item:
+            encoded_source_key = str(item["source_key"]).encode("utf-8")
+            digest.update(b"\0source-key\0")
+            digest.update(len(encoded_source_key).to_bytes(8, "big"))
+            digest.update(encoded_source_key)
         encoded_name = str(item.get("name", "")).encode("utf-8")
         encoded_content = str(item.get("content_b64", "")).encode("utf-8")
         for encoded_value in (encoded_name, encoded_content):
@@ -1251,12 +1264,17 @@ def _make_lifespan(
     return _lifespan
 
 
+class _IngestNamespaceOptions(TypedDict, total=False):
+    source_namespace: str
+
+
 def ingest_into_serving_store(
     state: Mapping[str, object],
     store: PgVectorStore,
     staged_root: str,
     category: str,
     access_context: AccessContext | None = None,
+    source_namespace: str | None = None,
 ) -> IndexResult:
     """Index a staged upload into the store this server SERVES FROM.
 
@@ -1277,6 +1295,10 @@ def ingest_into_serving_store(
     immutable embedder revision or artifact digest. Calling the wrong one is therefore either an
     error or, as here, a silent write to a table nobody reads.
     """
+    if source_namespace is not None and (
+        category != "memory" or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", source_namespace)
+    ):
+        raise ValueError("source_namespace requires memory uploads and 1 to 64 safe characters")
     embedder = cast(Embedder, state["embedder"])
     route = state.get("route")
     if route is None:
@@ -1331,6 +1353,9 @@ def ingest_into_serving_store(
     security_policy = (
         raw_security_policy if isinstance(raw_security_policy, SourceSecurityPolicy) else None
     )
+    namespace_options: _IngestNamespaceOptions = {}
+    if source_namespace is not None:
+        namespace_options["source_namespace"] = source_namespace
     if security_policy is None and access_context is None:
         return index_memory(
             store,
@@ -1339,6 +1364,7 @@ def ingest_into_serving_store(
             chunker=chunk_code if category == "code" else chunk_text,
             env=_runtime_env_for(state),
             lane_purpose="ingest",
+            **namespace_options,
         )
     return index_memory(
         store,
@@ -1349,6 +1375,7 @@ def ingest_into_serving_store(
         security_context=access_context,
         env=_runtime_env_for(state),
         lane_purpose="ingest",
+        **namespace_options,
     )
 
 
@@ -2737,13 +2764,29 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         category: str = "memory",
         tenant: str | None = None,
         idempotency_key: str | None = None,
+        source_namespace: str | None = None,
     ) -> str:
-        """Upload bounded source files and index them in the caller's tenant."""
+        """Upload bounded source files and index them in the caller's tenant.
+
+        source_namespace optionally gives legacy memory uploads a stable destination.
+        It accepts 1 to 64 ASCII letters, digits, underscores or hyphens. Names within
+        it identify logical sources; use project-specific prefixes for shared tenants.
+        Other files are retained across partial batches. Generation uploads retain
+        their immutable staging behavior.
+        Legacy namespaced replacement refuses when a source security policy is
+        configured; it does not overwrite files before that refusal.
+        Each file may include source_key, a lowercase SHA-256 root identity that
+        qualifies its first name component without exposing the local root path.
+        """
         state = _state(ctx)
         operation = "recall_ingest"
         if category not in {"documents", "code", "memory"}:
             raise ValueError("category must be documents, code, or memory")
-        fingerprint = _ingest_mutation_fingerprint(files, category) if idempotency_key else None
+        if source_namespace is not None and (
+            category != "memory" or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", source_namespace)
+        ):
+            raise ValueError("source_namespace requires memory uploads and 1 to 64 safe characters")
+        fingerprint = _ingest_mutation_fingerprint(files, category, source_namespace) if idempotency_key else None
         store, replay = await _require_mutation(
             SCOPE_WRITE,
             ctx,
@@ -2781,7 +2824,8 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
                 result = await _to_thread(
                     lambda: ingest_into_serving_store(
-                        state, store, str(root), category, access_context=_access_context(state, store)
+                        state, store, str(root), category, access_context=_access_context(state, store),
+                        **({"source_namespace": source_namespace} if source_namespace is not None else {}),
                     )
                 )
         except LiteWriterBusy:

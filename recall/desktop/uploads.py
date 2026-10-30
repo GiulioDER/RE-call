@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -179,6 +180,10 @@ def stage_uploads(
     On any refusal the job's staging directory is removed, so a rejected upload
     never leaves partial files behind for a later index run to pick up.
 
+    An optional per-file `source_key` is a lowercase SHA-256 root identity. It
+    qualifies the first name component, keeping equal relative names in separate
+    projects distinct without adding another path level or exposing local paths.
+
     `job_key` names a STABLE destination under the tenant's uploads root. Without it every call
     stages into a fresh `uuid4` directory, which is what made a re-upload accumulate rather than
     supersede: the manifest keys objects on the staged file's URI, so the same document uploaded
@@ -215,6 +220,12 @@ def stage_uploads(
             if not encoded:
                 raise UploadError("every uploaded file needs name and content_b64")
             name = _safe_relative_name(item.get("name", ""))
+            source_key = item.get("source_key")
+            if source_key is not None:
+                if not isinstance(source_key, str) or not re.fullmatch(r"[0-9a-f]{64}", source_key):
+                    raise UploadError("source_key must be a lowercase SHA-256 root identity")
+                first, slash, rest = name.partition("/")
+                name = _safe_relative_name(f"{first}-{source_key}{slash}{rest}")
             collision_key = name.casefold()
             if collision_key in seen:
                 # Two entries with one name would silently drop the first from the
