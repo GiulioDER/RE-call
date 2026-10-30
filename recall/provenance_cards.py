@@ -19,6 +19,7 @@ from psycopg.types.json import Jsonb
 
 from recall.fact_ledger import SQLITE_REDACTION_SESSION_DDL
 from recall.provenance_controller import EvidenceCardStore, evidence_card_from_payload
+from recall.provenance_json import encode_jsonb
 from recall.store import TENANT_GUC
 from recall.types import EvidenceCard, RedactedEvidenceCard
 
@@ -71,7 +72,7 @@ def _put_cards(conn: Any, tenant_id: str, cards: tuple[EvidenceCard, ...]) -> No
     the same identity is refused.
     """
     for card in cards:
-        payload = dict(card.to_payload())
+        payload = encode_jsonb(card.to_payload())
         inserted = conn.execute(
             f"INSERT INTO {EVIDENCE_CARD_TABLE} "
             "(card_id, tenant_id, generation_id, chunk_id, source_digest, card, indexed_at) "
