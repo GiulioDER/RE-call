@@ -165,12 +165,13 @@ def _one_request(
     reranker: Reranker | None,
     calibration: Calibration,
     request_id: int,
+    admission: RetrievalAdmission,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     row: dict[str, Any] = {"request_id": request_id, "query": query, "ok": False}
     try:
         admitted_at = time.perf_counter()
-        with RetrievalAdmission(profile):
+        with admission:
             admission_wait = (time.perf_counter() - admitted_at) * 1000.0
             result = bench_search(
                 store,
@@ -269,6 +270,7 @@ def _worker(
 ) -> None:
     profile = PROFILES[config["profile"]]
     started = time.perf_counter()
+    admission = RetrievalAdmission(profile)
     embedder = _build_embedder(embedder_name)
     reranker = _build_reranker(config["profile"], reranker_path, reranker_digest)
     pool_size = profile.max_concurrency + profile.queue_capacity
@@ -301,6 +303,7 @@ def _worker(
             reranker,
             calibration,
             0,
+            admission,
         )
         cold["phase"] = "cold"
         cold["construction_ms"] = construction_ms
@@ -316,6 +319,7 @@ def _worker(
                 reranker,
                 calibration,
                 -(index + 1),
+                admission,
             )
         offered = config["concurrency"]
         completed = 0
@@ -334,6 +338,7 @@ def _worker(
                         reranker,
                         calibration,
                             completed + 1,
+                            admission,
                         )
                     ]
             else:
@@ -350,6 +355,7 @@ def _worker(
                             reranker,
                             calibration,
                             completed + offset + 1,
+                            admission,
                         )
                         for offset in range(batch_size)
                     ]
