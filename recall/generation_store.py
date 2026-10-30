@@ -25,14 +25,12 @@ from recall.semantic_graph import (
     read_graph_readiness,
     write_semantic_graph,
 )
-from recall.scope import Scope, coerce_scope, group_expression
+from recall.scope import Scope, coerce_scope
 from recall.observability import METRICS
 from recall.store import DEFAULT_TABLE
 from recall.store import (
     EdgeCandidates,
     PgVectorStore,
-    _EXACT_SCAN_GUARDS,
-    _HNSW_FILTERED_TUNING_SQL,
     SupersessionGraph,
     resolve_supersession_graph,
     supersession_rows_sql,
@@ -122,6 +120,12 @@ _CONFIRM_LIMIT = 8
 class GenerationStore(PgVectorStore):
     """The retrieval surface for v1, scoped to a request-consistent active generation."""
 
+    #: Fixed for this class, so it is also the class-level default: the inherited reads name
+    #: `self._table`, and a store built without `__init__` (the tests' recording doubles) must
+    #: still read this table rather than raise. `PgVectorStore._pool` has the same default for
+    #: the same reason.
+    _table = "recall_chunks_v1"
+
     def __init__(
         self,
         dsn: str,
@@ -137,7 +141,7 @@ class GenerationStore(PgVectorStore):
         super().__init__(
             dsn,
             dim,
-            table="recall_chunks_v1",
+            table=GenerationStore._table,
             tenant=tenant,
             pool_size=pool_size,
             statement_timeout_ms=statement_timeout_ms,
@@ -161,6 +165,30 @@ class GenerationStore(PgVectorStore):
         self._binding_cache: tuple[tuple[str, str], dict[str, str]] | None = None
         self._newest_indexed_at_cache: tuple[tuple[str, str], datetime | None] | None = None
         self._coverage_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+
+    #: `recall_chunks_v1` names its identifier and source columns differently from the legacy
+    #: table. Every read this class shares with `PgVectorStore` names them through these.
+    _ID_COL = "chunk_id"
+    _SOURCE_COL = "source_uri"
+
+    def _row_scope(self, alias: str = "") -> tuple[str, dict[str, Any]]:
+        """Confine a shared read to the pinned generation.
+
+        Every inherited read goes through here, and that is the whole reason it exists: a tenant
+        holds every generation it has ever built in this one table, so a tenant-only read would
+        mix them. A folder inventory would list values only a retired generation holds, a
+        centroid would average two generations of one folder into a vector describing neither,
+        and `top_cosine` would read the parent's vectors during carry-forward and report that the
+        corpus had not moved. The generation is resolved once per statement, before it runs.
+        """
+        return f" AND {alias}generation_id = %(generation)s", {"generation": self._generation_id()}
+
+    def _row_scope_args(self, alias: str = "") -> tuple[str, tuple[Any, ...]]:
+        return f" AND {alias}generation_id = %s", (self._generation_id(),)
+
+    def _hit_first_write(self, alias: str = "") -> str:
+        """A generation row's `indexed_at` is the build that wrote or copied it (`_first_write_sql`)."""
+        return _first_write_sql(alias)
 
     def _reset_tenant_state(self) -> None:
         """Also rebuild the pinned-generation ContextVar, which is tenant-derived.
@@ -558,132 +586,20 @@ class GenerationStore(PgVectorStore):
         source: str | None = None,
         scope: Scope | None = None,
     ) -> list[ScoredChunk]:
-        """Generation-scoped dense search. PRIVATE on purpose: the timed public `query_dense` on
-        `PgVectorStore` delegates here, so this subclass inherits the instrumentation and the
-        `k <= 0` check rather than re-stating them.
+        """Generation-scoped dense search: exact unless `RECALL_GENERATION_DENSE_SEARCH=hnsw`.
 
-        Overriding the PUBLIC method (as this did) silently drops the timing, and
-        `RECALL_ENV=production` selects exactly this class — so the metric fired on a laptop and
-        recorded nothing in production, with an empty series and a free store reading the same.
+        PRIVATE on purpose: the timed public `query_dense` on `PgVectorStore` delegates here, so
+        this subclass inherits the instrumentation and the `k <= 0` check rather than re-stating
+        them. Overriding the PUBLIC method (as this once did) silently drops the timing, and
+        `RECALL_ENV=production` selects exactly this class.
 
-        Exact unless `RECALL_GENERATION_DENSE_SEARCH=hnsw`; see `GENERATION_DENSE_SEARCH_ENV`.
+        Both paths are the base statements, confined to the pinned generation by `_row_scope`.
+        The `hnsw` path is the base's filtered arm (a tenant is always set), including its exact
+        retry when the filter-blind walk comes back empty; see `GENERATION_DENSE_SEARCH_ENV`.
         """
         if _generation_dense_search() == "exact":
             return self._query_dense_exact(vector, k, source, scope)
-        generation_id = self._generation_id()
-        # `source_uri`, not `source`: this table names the column differently from the legacy
-        # one, and the predicate is told which rather than guessing. Everything else about a
-        # scope reads `metadata`, which both tables carry alike.
-        source_filter, scope_params = coerce_scope(scope, source).predicate(
-            "c", source_column="source_uri"
-        )
-        sql = f"""
-            SELECT chunk_id, source_uri, text, metadata, indexed_at,
-                   {_first_write_sql()},
-                   1 - (embedding <=> %(vec)s) AS score
-            FROM recall_chunks_v1 c
-            WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s {source_filter}
-            ORDER BY embedding <=> %(vec)s
-            LIMIT %(k)s
-        """
-        params: dict[str, Any] = {
-            "vec": Vector(vector),
-            "k": k,
-            "tenant": self._tenant,
-            "generation": generation_id,
-        }
-        params.update(scope_params)
-        # `k`, as the legacy store passes it: without it a large page is never widened past the
-        # default filtered width and comes back silently short.
-        ef_search, iterative_scan = self._hnsw_filtered_tuning(k)
-
-        def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
-            with conn.transaction():
-                conn.execute(_HNSW_FILTERED_TUNING_SQL, (str(ef_search), iterative_scan))
-                return conn.execute(sql, params).fetchall()
-
-        rows = self._with_retry(_op)
-        if not rows:
-            # The filter-blind walk can exhaust its candidates on other tenants' / generations'
-            # rows and report an occupied generation as empty; see `_dense_exact_fallback`.
-            rows = self._dense_exact_fallback(sql, params)
-        return self._generation_rows(rows)
-
-    def _query_dense_exact(
-        self,
-        vector: list[float],
-        k: int,
-        source: str | None = None,
-        scope: Scope | None = None,
-    ) -> list[ScoredChunk]:
-        """Generation scoped exact search: the default dense path (see `GENERATION_DENSE_SEARCH_ENV`).
-
-        Reached from `query_dense` unless `RECALL_GENERATION_DENSE_SEARCH=hnsw`, and from the
-        inherited timed `query_dense_exact` wrapper. Runs under `_EXACT_SCAN_GUARDS` with a
-        deterministic tie order, so changing it changes what production serves.
-        """
-        generation_id = self._generation_id()
-        source_filter, scope_params = coerce_scope(scope, source).predicate(
-            "c", source_column="source_uri"
-        )
-        sql = f"""
-            SELECT chunk_id, source_uri, text, metadata, indexed_at,
-                   {_first_write_sql()},
-                   1 - (embedding <=> %(vec)s) AS score
-            FROM recall_chunks_v1 c
-            WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s {source_filter}
-            ORDER BY embedding <=> %(vec)s,
-                     COALESCE(metadata->>'source_session_id', '') COLLATE "C",
-                     CASE WHEN (metadata->>'segment') ~ '^[0-9]+$'
-                          THEN (metadata->>'segment')::bigint ELSE 0 END,
-                     chunk_id
-            LIMIT %(k)s
-        """
-        params: dict[str, Any] = {
-            "vec": Vector(vector),
-            "k": k,
-            "tenant": self._tenant,
-            "generation": generation_id,
-        }
-        params.update(scope_params)
-
-        def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
-            with conn.transaction():
-                for guard in _EXACT_SCAN_GUARDS:
-                    conn.execute(guard)
-                return conn.execute(sql, params).fetchall()
-
-        return self._generation_rows(self._with_retry(_op))
-
-    def top_cosine(self, vector: list[float]) -> float:
-        """Exact best cosine within the PINNED generation. See `PgVectorStore.top_cosine`.
-
-        Overridden because the base implementation scopes by tenant alone, and a tenant here holds
-        every generation it has ever built. Carry-forward re-scores a parent's query set against
-        the CHILD generation specifically; a tenant-wide maximum would silently read the parent's
-        vectors too and report that the corpus had not moved.
-
-        `1 - min(distance)` rather than `max(1 - distance)` for the NaN reason the base method
-        documents; the two forms disagree whenever one row of the scope is a zero-norm vector.
-
-        Runs under `_EXACT_SCAN_GUARDS` for the reason the base method documents: Postgres's
-        min/max optimization can otherwise hand this aggregate to the ordering index and make
-        the measurement approximate.
-        """
-        generation_id = self._generation_id()
-
-        def _op(conn: psycopg.Connection) -> tuple[Any, ...] | None:
-            with conn.transaction():
-                for guard in _EXACT_SCAN_GUARDS:
-                    conn.execute(guard)
-                return conn.execute(
-                    "SELECT 1 - min(embedding <=> %(vec)s) FROM recall_chunks_v1 "
-                    "WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s",
-                    {"vec": Vector(vector), "tenant": self._tenant, "generation": generation_id},
-                ).fetchone()
-
-        row = self._with_retry(_op)
-        return 0.0 if row is None or row[0] is None else float(row[0])
+        return super()._query_dense(vector, k, source, scope)
 
     def unknown_terms(self, tokens: Sequence[str]) -> list[str]:
         """The tokens that occur nowhere in this generation, judged by its full-text vocabulary.
@@ -823,81 +739,6 @@ class GenerationStore(PgVectorStore):
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return self._generation_rows(rows)
 
-    def scope_inventory(self, dimension: str = "folder") -> list[tuple[str, int, int]]:
-        """Generation-scoped `PgVectorStore.scope_inventory`.
-
-        Overridden for the reason every read here is: a tenant holds every generation it has ever
-        built, so the inherited tenant-only version would list the folders of retired generations
-        beside the active one. An inventory is read as "what can I filter on", and a value that
-        exists only in a generation nobody serves answers that question wrongly in the direction
-        that costs an empty result.
-        """
-        generation_id = self._generation_id()
-        value_sql = group_expression(dimension, "c")
-        sql = f"""
-            SELECT {value_sql} AS scope_value,
-                   count(*) AS chunks,
-                   count(DISTINCT COALESCE(c.metadata->>'file', c.source_uri)) AS documents
-            FROM recall_chunks_v1 c
-            WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
-              AND {value_sql} IS NOT NULL
-            GROUP BY {value_sql}
-            ORDER BY chunks DESC, scope_value
-        """
-        params = {"tenant": self._tenant, "generation": generation_id}
-        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
-        return [(str(value), int(chunks), int(docs)) for value, chunks, docs in rows]
-
-    def scope_undeclared_count(self, dimension: str = "folder") -> int:
-        """Generation-scoped `PgVectorStore.scope_undeclared_count`."""
-        generation_id = self._generation_id()
-        value_sql = group_expression(dimension, "c")
-        sql = f"""
-            SELECT count(*) FROM recall_chunks_v1 c
-            WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
-              AND {value_sql} IS NULL
-        """
-        params = {"tenant": self._tenant, "generation": generation_id}
-        row = self._with_retry(lambda conn: conn.execute(sql, params).fetchone())
-        return 0 if row is None else int(row[0])
-
-    def scope_centroids(
-        self, dimension: str = "folder", min_chunks: int = 1
-    ) -> list[tuple[str, int, list[float]]]:
-        """Generation-scoped `PgVectorStore.scope_centroids`.
-
-        The generation binding matters more here than for the inventory: a centroid averaged over
-        two generations of the same folder is a vector describing neither, and it would be used to
-        rank against the active one. Wrong quietly, which is the worst way to be wrong.
-        """
-        if min_chunks < 1:
-            raise ValueError(f"min_chunks must be >= 1, got {min_chunks}")
-        generation_id = self._generation_id()
-        value_sql = group_expression(dimension, "c")
-        sql = f"""
-            SELECT {value_sql} AS scope_value, count(*) AS n, AVG(c.embedding) AS centroid
-            FROM recall_chunks_v1 c
-            WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
-              AND {value_sql} IS NOT NULL
-            GROUP BY {value_sql}
-            HAVING count(*) >= %(min_chunks)s
-            ORDER BY n DESC
-        """
-        params = {
-            "tenant": self._tenant,
-            "generation": generation_id,
-            "min_chunks": min_chunks,
-        }
-        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
-        return [
-            (
-                str(value),
-                int(n),
-                [float(x) for x in (c.to_list() if hasattr(c, "to_list") else c)],
-            )
-            for value, n, c in rows
-        ]
-
     def _newest_indexed_at(self) -> datetime | None:
         """Generation-scoped freshness. PRIVATE so the timed public wrapper is inherited —
         see `store.TIMED_PUBLIC_METHODS`.
@@ -922,38 +763,6 @@ class GenerationStore(PgVectorStore):
         newest: datetime | None = row[0] if row else None
         self._newest_indexed_at_cache = (identity, newest)
         return newest
-
-    def _cosines_for(self, ids: Sequence[str], vec: list[float]) -> dict[str, float]:
-        """Generation-scoped rescore. PRIVATE for the same reason as `_newest_indexed_at`.
-
-        The base implementation selects `id` from `self._table`, but `recall_chunks_v1`'s
-        identifier column is `chunk_id`, not `id`, and it holds rows from every generation the
-        tenant has in `LIVE_MANIFEST_STATES` at once, so an unscoped query would raise
-        `UndefinedColumn` and, once the column name were fixed, could still return a cosine for a
-        chunk from a retired or not yet active generation, not the one being searched.
-        """
-        wanted = list(dict.fromkeys(str(i) for i in ids))
-        generation_id = self._generation_id()
-
-        def _op(conn: psycopg.Connection) -> list[tuple[Any, ...]]:
-            return conn.execute(
-                "SELECT chunk_id, 1 - (embedding <=> %s) FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s AND chunk_id = ANY(%s)",
-                (Vector(vec), self._tenant, generation_id, wanted),
-            ).fetchall()
-
-        rows = self._with_retry(_op)
-        return {str(row[0]): float(row[1]) for row in rows}
-
-    def count(self) -> int:
-        generation_id = self._generation_id()
-        row = self._with_retry(
-            lambda conn: conn.execute(
-                "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
-                (self._tenant, generation_id),
-            ).fetchone()
-        )
-        return int(row[0]) if row else 0
 
     def source_content_hashes(self) -> dict[str, str]:
         generation_id = self._generation_id()
@@ -1218,32 +1027,6 @@ class GenerationStore(PgVectorStore):
             for chunk_id, source, metadata in rows
         ]
 
-    def iter_chunks(self, batch_size: int = 1000) -> Iterator[Chunk]:
-        if batch_size < 1:
-            raise ValueError("batch_size must be positive")
-        generation_id = self._generation_id()
-        # The explicit transaction is NOT optional, and its absence here made five MCP tools
-        # unusable under `RECALL_ENV=production` — the only mode that selects this class. A
-        # server-side cursor is transaction-scoped, and these connections are autocommit, so
-        # `DECLARE CURSOR` fails outright. `PgVectorStore.iter_chunks` has carried the same
-        # `conn.transaction()` and the same reasoning all along; this override inherited the
-        # cursor and dropped the transaction around it.
-        with (
-            self._borrowed() as conn,
-            conn.transaction(),
-            conn.cursor(name=f"recall_gen_{uuid.uuid4().hex[:12]}") as cur,
-        ):
-            with conn.transaction():
-                cur.execute(
-                    "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
-                    "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
-                    (self._tenant, generation_id),
-                )
-                while rows := cur.fetchmany(batch_size):
-                    for chunk_id, source, text, metadata in rows:
-                        value = metadata if isinstance(metadata, dict) else json.loads(metadata)
-                        yield Chunk(str(chunk_id), str(source), str(text), value)
-
     def related_chunks(
         self, seed_chunk_id: str, relation: str, max_items: int
     ) -> tuple[Chunk, list[Chunk]] | None:
@@ -1331,68 +1114,6 @@ class GenerationStore(PgVectorStore):
             for chunk_id, source, text, metadata in rows
         ]
 
-    def iter_chunks_with_times(
-        self, batch_size: int = 1000
-    ) -> Iterator[tuple[Chunk, datetime | None]]:
-        """Yield generation chunks with their first transaction time for replayable state."""
-        yield from self._iter_chunks_with_times(batch_size, include_text=True)
-
-    def _iter_chunks_with_times(
-        self, batch_size: int, *, include_text: bool
-    ) -> Iterator[tuple[Chunk, datetime | None]]:
-        """`iter_chunks_with_times`, optionally without transferring chunk text (yielded as "")."""
-        if not isinstance(batch_size, int) or batch_size < 1:
-            raise ValueError("batch_size must be a positive int")
-        generation_id = self._generation_id()
-        text_column = "text" if include_text else "''"
-        with (
-            self._borrowed() as conn,
-            conn.transaction(),
-            conn.cursor(name=f"recall_gen_times_{uuid.uuid4().hex[:12]}") as cur,
-        ):
-            cur.itersize = batch_size
-            cur.execute(
-                f"SELECT chunk_id, source_uri, {text_column}, metadata, "
-                f"{_first_write_sql()} "
-                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
-                "ORDER BY chunk_id",
-                (self._tenant, generation_id),
-            )
-            for chunk_id, source, text, metadata, first_indexed_at in cur:
-                value = metadata if isinstance(metadata, dict) else json.loads(metadata)
-                yield (
-                    Chunk(str(chunk_id), str(source), str(text), value),
-                    first_indexed_at,
-                )
-
-    def chunks_by_ids(self, chunk_ids: Sequence[str]) -> dict[str, Chunk]:
-        """Fetch candidate text once, scoped to this tenant and pinned generation."""
-        if isinstance(chunk_ids, (str, bytes, bytearray)):
-            raise ValueError("chunk_ids must be a sequence of strings")
-        wanted = list(dict.fromkeys(chunk_ids))
-        if any(not isinstance(chunk_id, str) or not chunk_id for chunk_id in wanted):
-            raise ValueError("chunk_ids must contain only non-empty strings")
-        if not wanted:
-            return {}
-        generation_id = self._generation_id()
-        rows = self._with_retry(
-            lambda conn: conn.execute(
-                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s AND chunk_id = ANY(%s)",
-                (self._tenant, generation_id, wanted),
-            ).fetchall()
-        )
-        found = {
-            str(row[0]): Chunk(
-                id=str(row[0]),
-                source=str(row[1]),
-                text=str(row[2]),
-                metadata=row[3] if isinstance(row[3], dict) else json.loads(row[3]),
-            )
-            for row in rows
-        }
-        return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
-
     def scored_chunk_by_id(self, chunk_id: str, score: float) -> ScoredChunk | None:
         """Fetch one generation-bound parent with transaction timestamps for active rescue."""
 
@@ -1437,34 +1158,6 @@ class GenerationStore(PgVectorStore):
             return None
         values = self._generation_rows([tuple(row)])
         return values[0] if values else None
-
-    def chunk_metadata_by_ids(self, chunk_ids: Sequence[str]) -> dict[str, Chunk]:
-        """Fetch candidate identity and metadata without transferring passage text."""
-        if isinstance(chunk_ids, (str, bytes, bytearray)):
-            raise ValueError("chunk_ids must be a sequence of strings")
-        wanted = list(dict.fromkeys(chunk_ids))
-        if any(not isinstance(chunk_id, str) or not chunk_id for chunk_id in wanted):
-            raise ValueError("chunk_ids must contain only non-empty strings")
-        if not wanted:
-            return {}
-        generation_id = self._generation_id()
-        rows = self._with_retry(
-            lambda conn: conn.execute(
-                "SELECT chunk_id, source_uri, metadata FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s AND chunk_id = ANY(%s)",
-                (self._tenant, generation_id, wanted),
-            ).fetchall()
-        )
-        found = {
-            str(row[0]): Chunk(
-                id=str(row[0]),
-                source=str(row[1]),
-                text="",
-                metadata=row[2] if isinstance(row[2], dict) else json.loads(row[2]),
-            )
-            for row in rows
-        }
-        return {chunk_id: found[chunk_id] for chunk_id in wanted if chunk_id in found}
 
     def served_identifiers(self, identifiers: list[str]) -> set[str]:
         """The identifiers (`file` or `source_uri`) the pinned generation serves.

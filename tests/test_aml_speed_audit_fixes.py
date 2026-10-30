@@ -303,6 +303,10 @@ class _Capture:
             dsn="d",
             _borrowed=borrowed,
             _with_retry=lambda fn: fn(capture),
+            # The shape a plain `PgVectorStore` reads with: its own columns, no row scope.
+            _ID_COL=PgVectorStore._ID_COL,
+            _SOURCE_COL=PgVectorStore._SOURCE_COL,
+            _row_scope_args=lambda alias="": PgVectorStore._row_scope_args(None, alias),  # type: ignore[arg-type]
         )
 
 
