@@ -52,8 +52,8 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
    tradeoff before changing the bounded row limit.
 
 The scheduled restore drill runs a dedicated ECS task definition, execution role, and task role.
-The serving task role has no permission to create, restore, tag, or delete ECS or RDS
-infrastructure. The restore task role is the only application task role that receives the narrowly
+The serving task has no application IAM role and makes no bootstrap AWS calls. Its execution
+role injects the pinned secrets. The restore task role is the only application task role that receives the narrowly
 scoped RDS restore, instance creation, tagging, and cleanup actions.
 
 ## Offline Terraform validation
@@ -79,6 +79,36 @@ revoking the old version. Rotate Valkey credentials with the overlapping token s
 provider and MCP credentials by validating a real authenticated call before revocation. Never put a
 secret value in Terraform state, task definition JSON, logs, backup receipts, or this repository.
 
+Before planning a rollout, the deployment identity resolves each configured serving secret's
+version ID and supplies `serving_secret_version_ids`, keyed by the container environment name.
+The map must exactly match the configured serving DSN, Redis URL, and optional provider secret.
+Supply base Secrets Manager ARNs without a JSON-key, stage, or version suffix. Terraform pins
+each `valueFrom` to that ID and derives the propagated task-definition version tags from the same
+map. Only nonsecret identifiers enter the plan. After rotation, update the pins and roll the new
+task definition; forcing a deployment of the old pinned definition keeps the old versions.
+
+Version verification requires both `RUNNING` and `HEALTHY` ECS task status as well as matching
+tags. The container health check calls `/livez`; the separate `/readyz` and authenticated-call
+checks above remain necessary before revocation.
+
 Verify the rollout with `recall secret verify --cluster <cluster> --service <service> --versions
 '{"RECALL_SERVING_DSN":"<version-id>","RECALL_REDIS_URL":"<version-id>"}'`. The command rejects
 an empty expected map and exits nonzero if any running task is missing a version.
+
+## Edge limits and alarm delivery
+
+The ALB WAF inspects only the first 8 KiB of a request body. Its common rule group's
+`SizeRestrictions_BODY` rule counts oversized bodies because a valid 4096-character Unicode
+query can exceed 8 KiB. The pinned MCP SDK caps HTTP request bodies at 4 MiB before parsing,
+checking both Content-Length and received chunks. The application's query bound, source restrictions, per-IP limit, and
+remaining managed blocking rules still apply; counting a body does not mean WAF inspected its
+unseen suffix. See the [AWS body inspection limits](https://docs.aws.amazon.com/waf/latest/developerguide/web-acl-setting-body-inspection-limit.html).
+The body cap is implemented by the [pinned MCP transport middleware](https://github.com/modelcontextprotocol/python-sdk/blob/v2.2.0/src/mcp/server/transport_security.py).
+
+The stack-owned KMS key and SNS topic permit CloudWatch publication only from this account's
+stack alarm ARN prefix. If `kms_key_arn` selects an external key, its owner must grant
+`cloudwatch.amazonaws.com` `kms:GenerateDataKey*` and `kms:Decrypt`, with `aws:SourceAccount`
+equal to the deployment account and `aws:SourceArn` matching
+`arn:aws:cloudwatch:<region>:<account>:alarm:<name>-<environment>-*`. Terraform does not replace
+that external policy. Confirm the email subscription and exercise an alarm delivery in staging
+before relying on notifications. See [AWS encrypted SNS publisher permissions](https://docs.aws.amazon.com/sns/latest/dg/sns-key-management.html).

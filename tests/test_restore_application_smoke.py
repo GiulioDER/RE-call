@@ -52,6 +52,45 @@ def test_restore_smoke_decodes_json_and_sse_mcp_responses() -> None:
     ) == payload
 
 
+@pytest.mark.parametrize("timeout", ["invalid", "nan", "inf", "-inf", "0", "-1"])
+def test_invalid_smoke_timeout_never_starts_a_child(monkeypatch, timeout) -> None:
+    """BUG-002: bad configuration must be rejected before creating a child.
+
+    Red proof: 3ada1afd0 run_application_smoke starts Process before parsing or checking
+    the timeout. Every unchanged parameter case fails the ``started == []`` assertion;
+    invalid numeric text additionally used to bypass child cleanup entirely.
+    """
+    started = []
+
+    class Process:
+        def poll(self):
+            return 1
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    def start(*args, **kwargs):
+        started.append(True)
+        return Process()
+
+    monkeypatch.setenv("RECALL_RESTORE_SMOKE_TIMEOUT_SECONDS", timeout)
+    monkeypatch.setattr(smoke.subprocess, "Popen", start)
+    caught = None
+    try:
+        smoke.run_application_smoke(
+            dsn="postgresql://restore.example/recall", tenant="tenant-a",
+            expected_generation="generation-a", representative_chunk_id="chunk-a",
+        )
+    except (ValueError, smoke.ApplicationSmokeError) as exc:
+        caught = exc
+    assert started == [], "invalid timeout configuration must not create a child process"
+    assert isinstance(caught, smoke.ApplicationSmokeError)
+    assert "timeout" in str(caught)
+
+
 def _search_tool_result(document: dict[str, object]) -> dict[str, object]:
     """Shape a ``recall_search`` tools/call result exactly as the shipped app returns it.
 

@@ -141,6 +141,15 @@ variable "backup_receipt_bucket" {
   type    = string
   default = null
 }
+variable "serving_secret_version_ids" {
+  type        = map(string)
+  default     = {}
+  description = "Nonsecret version IDs for every configured serving secret, keyed by its container environment name. Resolve these in the deployment identity before planning a rollout."
+  validation {
+    condition     = alltrue([for version in values(var.serving_secret_version_ids) : can(regex("^[^:]{32,64}$", version))])
+    error_message = "serving_secret_version_ids values must be 32 to 64 character version IDs without ARN separators."
+  }
+}
 variable "certificate_arn" {
   type        = string
   default     = null
@@ -152,8 +161,8 @@ variable "waf_allowed_source_cidrs" {
   default     = []
   description = "Optional IPv4 source allowlist. When nonempty, every other source is blocked at the ALB WAF."
   validation {
-    condition     = alltrue([for cidr in var.waf_allowed_source_cidrs : can(cidrhost(cidr, 0))])
-    error_message = "waf_allowed_source_cidrs must contain valid IPv4 CIDR ranges."
+    condition     = alltrue([for cidr in var.waf_allowed_source_cidrs : can(cidrnetmask(cidr)) && can(regex("/([1-9]|[12][0-9]|3[0-2])$", cidr))])
+    error_message = "waf_allowed_source_cidrs must contain IPv4 CIDR ranges with prefixes from 1 to 32."
   }
 }
 
@@ -162,8 +171,8 @@ variable "waf_blocked_source_cidrs" {
   default     = []
   description = "IPv4 source ranges blocked before authentication at the ALB WAF."
   validation {
-    condition     = alltrue([for cidr in var.waf_blocked_source_cidrs : can(cidrhost(cidr, 0))])
-    error_message = "waf_blocked_source_cidrs must contain valid IPv4 CIDR ranges."
+    condition     = alltrue([for cidr in var.waf_blocked_source_cidrs : can(cidrnetmask(cidr)) && can(regex("/([1-9]|[12][0-9]|3[0-2])$", cidr))])
+    error_message = "waf_blocked_source_cidrs must contain IPv4 CIDR ranges with prefixes from 1 to 32."
   }
 }
 

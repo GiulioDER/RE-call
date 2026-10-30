@@ -1,3 +1,11 @@
+locals {
+  serving_secret_arns = { for name, arn in {
+    RECALL_SERVING_DSN      = var.serving_dsn_secret_arn,
+    RECALL_REDIS_URL        = var.redis_url_secret_arn,
+    (var.provider_env_name) = var.provider_secret_arn,
+  } : name => arn if arn != null }
+}
+
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/ecs/${var.name}/${var.environment}"
   retention_in_days = 30
@@ -11,7 +19,7 @@ resource "aws_ecs_cluster" "this" {
   }
 }
 
-# This is a map of secret ARNs used for rotation provenance tagging, not secret values.
+# Version pins and propagated tags contain identifiers only, never secret values.
 #trivy:ignore:AVD-AWS-0036:exp:2027-09-08
 resource "aws_ecs_task_definition" "this" {
   family                   = "${var.name}-${var.environment}"
@@ -32,12 +40,20 @@ resource "aws_ecs_task_definition" "this" {
     { name = "RECALL_OIDC_TENANTS", value = var.oidc_tenants },
     { name = "RECALL_OIDC_SUBJECT_TENANTS", value = var.oidc_subject_tenants },
     { name = "RECALL_AUTH_RESOURCE_URL", value = var.auth_resource_url },
-    { name = "RECALL_SECRET_VERSION_SECRETS", value = jsonencode({ for name, arn in {
-      RECALL_SERVING_DSN      = var.serving_dsn_secret_arn,
-      RECALL_REDIS_URL        = var.redis_url_secret_arn,
-      (var.provider_env_name) = var.provider_secret_arn,
-    } : name => arn if arn != null }) },
-  ], secrets = concat(var.provider_secret_arn == null ? [] : [{ name = var.provider_env_name, valueFrom = var.provider_secret_arn }], var.serving_dsn_secret_arn == null ? [] : [{ name = "RECALL_SERVING_DSN", valueFrom = var.serving_dsn_secret_arn }], var.redis_url_secret_arn == null ? [] : [{ name = "RECALL_REDIS_URL", valueFrom = var.redis_url_secret_arn }]), healthCheck = { command = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/livez', timeout=2)\""], interval = 10, timeout = 5, retries = 3, startPeriod = 30 }, logConfiguration = { logDriver = "awslogs", options = { awslogs-group = aws_cloudwatch_log_group.this.name, awslogs-region = var.aws_region, awslogs-stream-prefix = "recall" } } }])
+  ], secrets = [for name, arn in local.serving_secret_arns : { name = name, valueFrom = "${arn}:::${lookup(var.serving_secret_version_ids, name, "")}" }], healthCheck = { command = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/livez', timeout=2)\""], interval = 10, timeout = 5, retries = 3, startPeriod = 30 }, logConfiguration = { logDriver = "awslogs", options = { awslogs-group = aws_cloudwatch_log_group.this.name, awslogs-region = var.aws_region, awslogs-stream-prefix = "recall" } } }])
+  tags = merge(local.tags, {
+    for name, version in var.serving_secret_version_ids : "recall:secret-version:${name}" => version
+  })
+  lifecycle {
+    precondition {
+      condition     = length(var.serving_secret_version_ids) == length(local.serving_secret_arns) && alltrue([for name in keys(local.serving_secret_arns) : contains(keys(var.serving_secret_version_ids), name)])
+      error_message = "Every configured serving secret requires exactly one version pin; extra names are not allowed."
+    }
+    precondition {
+      condition     = alltrue([for arn in values(local.serving_secret_arns) : can(regex("^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:[^:]+$", arn))])
+      error_message = "Serving secrets must use base Secrets Manager ARNs without JSON-key, stage, or version suffixes."
+    }
+  }
 }
 
 resource "aws_ecs_service" "this" {
@@ -47,6 +63,7 @@ resource "aws_ecs_service" "this" {
   desired_count                      = max(2, var.desired_count)
   launch_type                        = "FARGATE"
   platform_version                   = "LATEST"
+  propagate_tags                     = "TASK_DEFINITION"
   health_check_grace_period_seconds  = 60
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
