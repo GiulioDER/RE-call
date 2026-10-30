@@ -62,15 +62,19 @@ part of the public request surface:
 
 Those counters are **two fields, and reading them as one gives the wrong answer**:
 
-* `graph_admission_rejections` counts individual CANDIDATES the admission policy turned away.
-  Non-zero here means the criteria are worth tuning.
+* `graph_admission_rejections` counts admission rejection events at the relation and candidate
+  stages. A relation can be rejected before any candidate is discovered, for example because it
+  is not authored or its evidence is untrusted. Other reasons, such as `missing_query_score`, apply
+  to candidates. These are not counts of unique rejected candidates; inspect the reason before
+  deciding which stage or criterion needs attention.
 * `graph_expansion_refusals` counts refusals of the WHOLE expansion, before any candidate is
   discovered: `graph_not_ready`, `generation_mismatch`, `no_trusted_seed`, `selective_gate`. At
   most one fires per query, and `graph_gate_reason` names it. Non-zero here means expansion never
   started, so the admission criteria had nothing to do with the outcome.
 
 `selective_gate` used to be reported in the first field, which put `{'selective_gate': 1}` beside
-`graph_candidates_discovered: 0` — one candidate rejected, zero candidates discovered. The
+`graph_candidates_discovered: 0` even though admission had not started. Relation admission can
+still report rejection events with zero discovered candidates. The
 expansion is also refused **before** the graph projection is built, so a gated query no longer
 pays for one: `graph_diagnostics_encountered` is 0 on those queries rather than the whole graph's
 diagnostic count, because nothing inspected the graph.
