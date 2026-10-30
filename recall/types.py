@@ -167,6 +167,8 @@ class AtomicFact:
     def from_payload(cls, payload: Mapping[str, Any]) -> "AtomicFact":
         if not isinstance(payload, dict):
             raise ValueError("structured fact must be an object")
+        from recall.provenance_json import decode_jsonb
+        payload = decode_jsonb(payload)
         def parse_time(value: object) -> datetime | None:
             if value is None:
                 return None
@@ -222,6 +224,7 @@ class EvidenceCard:
             raise ValueError("evidence card rank must be positive")
         if not 0.0 <= self.confidence <= 1.0:
             raise ValueError("evidence card confidence must be in [0, 1]")
+        object.__setattr__(self, "confidence", float(self.confidence))
         valid_from = _utc_datetime(self.valid_from)
         valid_until = _utc_datetime(self.valid_until)
         object.__setattr__(self, "valid_from", valid_from)

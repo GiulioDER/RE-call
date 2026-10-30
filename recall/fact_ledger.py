@@ -55,6 +55,7 @@ from recall.provenance_controller import (
     fact_identity,
 )
 from recall.schema import FACT_LEDGER_APPEND_FUNCTION, FACT_MATERIALIZATION_APPEND_FUNCTION
+from recall.provenance_json import encode_jsonb
 from recall.types import AtomicFact, EvidenceCard, is_redaction_marker
 
 
@@ -445,7 +446,7 @@ class SQLiteFactLedger(InMemoryFactLedger):
         for row in rows:
             event = decode_ledger_row(row)
             self._events.append(event)
-            self._by_request[event.request_id] = event
+            self._by_request[(event.tenant_id, event.request_id)] = event
 
     def _persist_in_transaction(self, events: tuple[FactEvent, ...]) -> None:
         for event in events:
@@ -472,11 +473,11 @@ class SQLiteFactLedger(InMemoryFactLedger):
             (self.tenant_id,),
         ).fetchall()
         events: list[FactEvent] = []
-        requests: dict[str, FactEvent] = {}
+        requests: dict[tuple[str, str], FactEvent] = {}
         for row in rows:
             event = decode_ledger_row(row)
             events.append(event)
-            requests[event.request_id] = event
+            requests[(event.tenant_id, event.request_id)] = event
         self._events[:] = events
         self._by_request.clear()
         self._by_request.update(requests)
@@ -575,7 +576,7 @@ class InMemoryMaterializationOutbox:
             raise ValueError("outbox tenant must be non-empty")
         if not isinstance(limit, int) or not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
-        moment = _as_utc(now or datetime.now(UTC))
+        moment = _as_utc(now or datetime.now(UTC)).astimezone(UTC)
         with self._lock:
             selected: list[FactEvent] = []
             for key, event in self._events.items():
@@ -616,7 +617,7 @@ class InMemoryMaterializationOutbox:
             _status, attempts, _lease, _old_error = self._state[event_id]
             self._state[event_id] = ("failed", attempts, None, error[:2000])
 
-    def status(self, event_id: str) -> str:
+    def status(self, event_id: str) -> str | None:
         with self._lock:
             return self._state[event_id][0]
 
@@ -697,6 +698,15 @@ class SQLiteMaterializationOutbox(InMemoryMaterializationOutbox):
                 self._state.pop(event.event_id, None)
                 raise
 
+    def status(self, event_id: str) -> str | None:
+        """Read delivery state from SQLite, including changes made by another worker."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status FROM recall_fact_materialization_outbox "
+                "WHERE event_id = ? AND tenant_id = ?", (event_id, self.tenant_id),
+            ).fetchone()
+        return str(row[0]) if row else None
+
     def claim(self, **kwargs: Any) -> tuple[FactEvent, ...]:
         with self._lock:
             tenant_id = kwargs.get("tenant_id")
@@ -706,24 +716,33 @@ class SQLiteMaterializationOutbox(InMemoryMaterializationOutbox):
                 raise ValueError("outbox tenant mismatch")
             if not isinstance(limit, int) or not 1 <= limit <= 1000:
                 raise ValueError("limit must be between 1 and 1000")
-            moment = _as_utc(kwargs.get("now") or datetime.now(UTC))
+            moment = _as_utc(kwargs.get("now") or datetime.now(UTC)).astimezone(UTC)
             self._conn.execute("BEGIN IMMEDIATE")
             try:
-                params: list[Any] = [self.tenant_id, moment.isoformat()]
-                where = (
-                    "tenant_id = ? AND (status IN ('pending', 'failed') "
-                    "OR (status = 'processing' AND lease_until IS NOT NULL AND lease_until <= ?))"
-                )
+                params: list[Any] = [self.tenant_id]
+                where = "tenant_id = ? AND status IN ('pending', 'failed', 'processing')"
                 if event_id is not None:
                     where += " AND event_id = ?"
                     params.append(event_id)
-                params.append(limit)
-                rows = self._conn.execute(
-                    "SELECT event_id, event, attempts, last_error FROM "
+                # Existing rows may hold any UTC offset. Compare parsed instants, including
+                # microseconds, rather than ISO text or SQLite's millisecond date functions.
+                cursor = self._conn.execute(
+                    "SELECT event_id, event, attempts, last_error, status, lease_until FROM "
                     "recall_fact_materialization_outbox WHERE " + where +
-                    " ORDER BY created_at, event_id LIMIT ?",
+                    " ORDER BY created_at, event_id",
                     params,
-                ).fetchall()
+                )
+                rows = []
+                try:
+                    for row in cursor:
+                        expiry = _parse_time(row[5])
+                        if row[4] == "processing" and (expiry is None or expiry > moment):
+                            continue
+                        rows.append(row[:4])
+                        if len(rows) == limit:
+                            break
+                finally:
+                    cursor.close()
                 lease_until = moment + timedelta(seconds=self.lease_seconds)
                 events: list[FactEvent] = []
                 for row_event_id, payload, attempts, error in rows:
@@ -934,8 +953,8 @@ class PostgresFactLedger:
             (
                 event_id, self.tenant_id, generation_id, event_type,
                 fact_identity(fact) if fact else None,
-                Jsonb(fact.to_payload()) if fact else None,
-                Jsonb([card.to_payload() for card in cards]),
+                Jsonb(encode_jsonb(fact.to_payload())) if fact else None,
+                Jsonb([encode_jsonb(card.to_payload()) for card in cards]),
                 Jsonb(list(supersedes_fact_ids)), request_id, writer, decision_code,
                 policy_version, CONTROLLER_SCHEMA_VERSION, _as_utc(now),
             ),
@@ -1168,12 +1187,16 @@ class PostgresMaterializationOutbox:
     def _enqueue_in_transaction(self, conn: psycopg.Connection, event: FactEvent) -> None:
         if event.tenant_id != self.tenant_id:
             raise ValueError("outbox tenant mismatch")
-        payload = Jsonb(_event_to_payload(event))
+        event_payload = _event_to_payload(event)
+        if event.fact is not None:
+            event_payload["fact"] = encode_jsonb(event.fact.to_payload())
+        event_payload["evidence_cards"] = [encode_jsonb(card.to_payload()) for card in event.evidence_cards]
+        payload = Jsonb(event_payload)
         prior = conn.execute(
             f"SELECT event FROM {self.TABLE} WHERE event_id = %s AND tenant_id = %s FOR UPDATE",
             (event.event_id, self.tenant_id),
         ).fetchone()
-        if prior is not None and canonical_json(prior[0]) != canonical_json(_event_to_payload(event)):
+        if prior is not None and canonical_json(_event_to_payload(_event_from_payload(prior[0]))) != canonical_json(_event_to_payload(event)):
             raise ValueError(f"materialization event collision for {event.event_id}")
         conn.execute(
             f"SELECT {FACT_MATERIALIZATION_APPEND_FUNCTION}(%s, %s, %s)",
@@ -1188,7 +1211,7 @@ class PostgresMaterializationOutbox:
             raise ValueError("outbox tenant mismatch")
         if not isinstance(limit, int) or not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
-        moment = _as_utc(now or datetime.now(UTC))
+        moment = _as_utc(now or datetime.now(UTC)).astimezone(UTC)
         with self._connect() as conn, conn.transaction():
             where = (
                 "tenant_id = %s AND (status IN ('pending', 'failed') "

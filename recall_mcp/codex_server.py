@@ -29,7 +29,7 @@ def main() -> int:
     # The installer-owned file is the source of truth. Codex inherits the user's environment, which
     # may contain stale RECALL_* values from another project; set these explicitly or the server can
     # silently serve the wrong corpus.
-    keys = ("RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_EMBEDDER", "RECALL_TABLE")
+    keys = ("RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_EMBEDDER", "RECALL_TABLE", "RECALL_TRANSPORT")
     previous = {key: os.environ.get(key) for key in keys}
     previous_mark = os.environ.get("RECALL_MCP_CLIENT")
     try:
@@ -37,6 +37,7 @@ def main() -> int:
         os.environ["RECALL_TENANT"] = str(document.get("tenant", "default"))
         os.environ["RECALL_EMBEDDER"] = str(document.get("embedder", "fastembed"))
         os.environ["RECALL_TABLE"] = str(document.get("table", "chunks"))
+        os.environ["RECALL_TRANSPORT"] = "stdio"
         # Codex does not provide CLAUDE_PID. The parent is the concrete Codex client process, so
         # stamp its identity into the server environment for the SessionEnd hook to match.
         os.environ.setdefault("RECALL_MCP_CLIENT", f"codex-{os.getppid()}")

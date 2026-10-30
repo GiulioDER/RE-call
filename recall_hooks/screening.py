@@ -74,7 +74,7 @@ RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("an OpenAI API key", re.compile(r"\bsk-(?!ant-)(?:proj-)?[A-Za-z0-9_\-]{32,}")),
     ("a Voyage API key", re.compile(r"\bpa-[A-Za-z0-9_\-]{32,}\b")),
     ("a Slack token", re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}")),
-    ("a Google API key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("a Google API key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}(?![0-9A-Za-z_\-])")),
     ("a Stripe secret key", re.compile(r"\bsk_live_[A-Za-z0-9]{20,}\b")),
     ("an npm access token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
     ("a PyPI API token", re.compile(r"\bpypi-AgEI[A-Za-z0-9_\-]{50,}")),
