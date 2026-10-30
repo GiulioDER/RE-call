@@ -1095,6 +1095,17 @@ class Indexer:
         }
         if any(not value for value in group_for_file.values()):
             raise ValueError("context group identifiers must be non-empty")
+        # Per-file fingerprints do not describe neighboring files' context. With explicit
+        # groups, re-encode every supplied member on every pass, even when only the shadow
+        # encoder groups passages. This conservatively spends another embedding call for an
+        # unchanged group rather than mixing reused vectors with changed group membership.
+        complete_context_groups = self._context_group_for_file is not None and (
+            callable(getattr(self._embedder, "embed_document_groups", None))
+            or (
+                self._shadow is not None
+                and callable(getattr(self._shadow.embedder, "embed_document_groups", None))
+            )
+        )
         # The index of each group's LAST file. "No pending group appears in a later file" is then
         # one lookup per pending group, where rebuilding the set of every later file's group on
         # each iteration made the scan quadratic in the number of files.
@@ -1211,7 +1222,8 @@ class Indexer:
                 project is not None and known_by_file.get(rel[f]) == index_fingerprint
             )
             if (
-                already_indexed
+                not complete_context_groups
+                and already_indexed
                 and (
                     shadow_fingerprint is None
                     or known_shadow.get(str(f)) == shadow_fingerprint
@@ -1450,7 +1462,8 @@ class Indexer:
         embeddings = self._embed_bounded(
             self._embedder,
             active_texts,
-            [str(c.metadata.get("file", c.source)) for c in chunks],
+            [str(c.metadata.get("context_group_id", c.metadata.get("file", c.source)))
+             for c in chunks],
         )
         if self._shadow is None:
             self._store.replace_sources(sources, chunks, embeddings)
@@ -1466,7 +1479,8 @@ class Indexer:
         shadow_embeddings = self._embed_bounded(
             self._shadow.embedder,
             shadow_embedding_texts,
-            [str(c.metadata.get("file", c.source)) for c in shadow_chunks],
+            [str(c.metadata.get("context_group_id", c.metadata.get("file", c.source)))
+             for c in shadow_chunks],
         )
         operation_id = str(uuid4())
         payload: dict[str, object] = {
@@ -1505,16 +1519,25 @@ class Indexer:
                 if group_keys is None or len(group_keys) != len(texts):
                     raise ValueError("group keys must align with contextualized passage texts")
                 groups: list[list[str]] = []
+                group_indices: list[list[int]] = []
                 positions: dict[str, int] = {}
-                for key, text in zip(group_keys, texts, strict=True):
+                for index, (key, text) in enumerate(zip(group_keys, texts, strict=True)):
                     position = positions.get(key)
                     if position is None:
                         positions[key] = len(groups)
                         groups.append([])
+                        group_indices.append([])
                         position = len(groups) - 1
                     groups[position].append(text)
+                    group_indices[position].append(index)
                 grouped_embeddings = embed_document_groups(embedder, groups)
-                return [vector for group in grouped_embeddings for vector in group]
+                # Logical groups may interleave in source order. Restore that order before
+                # pairing vectors with chunks, rather than flattening group order into rows.
+                embeddings = [[] for _ in texts]
+                for indices, vectors in zip(group_indices, grouped_embeddings, strict=True):
+                    for index, vector in zip(indices, vectors, strict=True):
+                        embeddings[index] = vector
+                return embeddings
             for start in range(0, len(texts), self._batch_chunks):
                 embeddings.extend(
                     embed_with_cache(

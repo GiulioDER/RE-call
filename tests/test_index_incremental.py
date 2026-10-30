@@ -14,12 +14,15 @@ Three defects, one code path:
 """
 from __future__ import annotations
 
+import json
 import uuid
+from unittest.mock import Mock
 
 import pytest
 
 from recall.embeddings import HashingEmbedder
-from recall.index import Indexer
+from recall.control_plane import ControlPlane
+from recall.index import Indexer, ShadowIndexTarget
 from recall.store import PgVectorStore
 
 from tests.conftest import TEST_DSN, requires_db
@@ -47,6 +50,25 @@ class _CountingEmbedder:
         return self._inner.embed(texts)
 
 
+class _GroupedEmbedder(_CountingEmbedder):
+    """Record logical documents and make each vector depend on its complete group."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.groups: list[list[str]] = []
+
+    def embed_document_groups(self, groups: list[list[str]]) -> list[list[list[float]]]:
+        self.groups.extend(list(group) for group in groups)
+        result: list[list[list[float]]] = []
+        for group in groups:
+            checksum = float(sum(ord(character) for text in group for character in text))
+            result.append([
+                [float(len(group)), float(position + 1), checksum] + [0.0] * (DIM - 3)
+                for position, _text in enumerate(group)
+            ])
+        return result
+
+
 @pytest.fixture
 def store():
     table = "ix_" + uuid.uuid4().hex[:8]
@@ -59,12 +81,151 @@ def store():
         s.close()
 
 
+@pytest.fixture
+def shadow_store():
+    table = "ix_shadow_" + uuid.uuid4().hex[:8]
+    value = PgVectorStore(TEST_DSN, dim=DIM, table=table)
+    value.ensure_schema()
+    yield value
+    try:
+        value.drop_table()
+    finally:
+        value.close()
+
+
+def _explicit_group_corpus(tmp_path):
+    root = tmp_path / "grouped"
+    root.mkdir()
+    for name in ("01-a", "02-b", "03-a", "04-b"):
+        (root / f"{name}.md").write_text(f"memory {name}", encoding="utf-8")
+    return root
+
+
+def _explicit_group_indexer(store, shadow_store, grouped_role):
+    active = _GroupedEmbedder() if grouped_role != "shadow" else _CountingEmbedder()
+    shadow = _GroupedEmbedder() if grouped_role != "active" else _CountingEmbedder()
+    # The ledger is outside the grouping contract; both encoders and stores remain real ports.
+    indexer = Indexer(
+        store,
+        active,
+        batch_chunks=1,
+        context_group_for_file=lambda path: path.stem.split("-")[1],
+        shadow=ShadowIndexTarget(shadow_store, shadow, Mock(spec=ControlPlane)),
+    )
+    return indexer, active, shadow
+
+
+def _stored_group_markers(store):
+    rows = store._with_retry(
+        lambda connection: connection.execute(
+            f"SELECT metadata->>'file', embedding::text FROM {store.table} "
+            "WHERE tenant_id = %s",
+            (store.tenant,),
+        ).fetchall()
+    )
+    return {name: json.loads(vector)[:3] for name, vector in rows}
+
+
 def _corpus(tmp_path, n: int):
     root = tmp_path / "corpus"
     root.mkdir()
     for i in range(n):
         (root / f"note{i}.md").write_text(f"memory number {i}", encoding="utf-8")
     return root
+
+
+@requires_db
+@pytest.mark.parametrize("grouped_role", ["active", "shadow", "both"])
+def test_explicit_groups_reach_encoders_and_preserve_vector_alignment(
+    tmp_path, store, shadow_store, grouped_role
+):
+    """FIX-001: interleaved sources share context without exchanging their vectors.
+
+    Red-proof baseline: 63e89b1d0, Indexer._flush's file-based group keys. The intended
+    assertion failure is that the encoder receives four singleton documents instead of two
+    complete logical groups. Removing the repaired scatter step must also fail the persisted
+    marker assertions, because source order is A1, B1, A2, B2 rather than A1, A2, B1, B2.
+    """
+    root = _explicit_group_corpus(tmp_path)
+    indexer, active, shadow = _explicit_group_indexer(store, shadow_store, grouped_role)
+
+    stats = indexer.index_path(root)
+
+    expected_groups = [["memory 01-a", "memory 03-a"], ["memory 02-b", "memory 04-b"]]
+    assert stats.files == 4
+    for embedder, target in ((active, store), (shadow, shadow_store)):
+        if not isinstance(embedder, _GroupedEmbedder):
+            continue
+        assert embedder.groups == expected_groups, "grouped encoder lost logical document context"
+        expected_markers = {
+            f"{text.removeprefix('memory ')}.md": [
+                2.0,
+                float(position + 1),
+                float(sum(ord(character) for value in group for character in value)),
+            ]
+            for group in expected_groups
+            for position, text in enumerate(group)
+        }
+        assert _stored_group_markers(target) == expected_markers, (
+            "grouped vectors were assigned to a different source"
+        )
+
+
+@requires_db
+@pytest.mark.parametrize(
+    ("grouped_role", "change"),
+    [(role, change) for role in ("active", "shadow", "both")
+     for change in ("unchanged", "edit", "delete")],
+    ids=[f"{role}-{change}" for role in ("active", "shadow", "both")
+         for change in ("unchanged", "edit", "delete")],
+)
+def test_explicit_groups_reencode_complete_surviving_documents(
+    tmp_path, store, shadow_store, grouped_role, change
+):
+    """FIX-001: per-file reuse must not retain vectors with obsolete sibling context.
+
+    Red-proof baseline: 63e89b1d0, Indexer._index_path's per-file skip. Unchanged and deleted
+    members produce no encoder call, while an edit encodes only its changed file; each fails
+    the complete-group input assertion. Both active-only and shadow-only grouped configurations
+    must trigger the same conservative policy. Ordinary ungrouped skip controls live below.
+    """
+    root = _explicit_group_corpus(tmp_path)
+    indexer, active, shadow = _explicit_group_indexer(store, shadow_store, grouped_role)
+    indexer.index_path(root)
+    for embedder in (active, shadow):
+        if isinstance(embedder, _GroupedEmbedder):
+            embedder.groups.clear()
+    if change == "edit":
+        (root / "03-a.md").write_text("memory 03-a revised", encoding="utf-8")
+    elif change == "delete":
+        (root / "03-a.md").unlink()
+
+    stats = indexer.index_path(root)
+
+    group_a = ["memory 01-a"]
+    if change != "delete":
+        group_a.append("memory 03-a revised" if change == "edit" else "memory 03-a")
+    expected_groups = [group_a, ["memory 02-b", "memory 04-b"]]
+    for embedder, target in ((active, store), (shadow, shadow_store)):
+        if not isinstance(embedder, _GroupedEmbedder):
+            continue
+        assert embedder.groups == expected_groups, "grouped reindex reused partial document context"
+        expected_markers = {
+            ("03-a.md" if text == "memory 03-a revised" else
+             f"{text.removeprefix('memory ')}.md"): [
+                float(len(group)),
+                float(position + 1),
+                float(sum(ord(character) for value in group for character in value)),
+            ]
+            for group in expected_groups
+            for position, text in enumerate(group)
+        }
+        assert _stored_group_markers(target) == expected_markers, (
+            "surviving sources retained vectors from an obsolete context group"
+        )
+    assert stats.skipped == 0
+    assert stats.files == (3 if change == "delete" else 4)
+    assert store.count() == shadow_store.count() == stats.files
 
 
 @requires_db

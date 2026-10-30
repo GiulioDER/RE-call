@@ -149,3 +149,30 @@ def test_aggregate_count_survives_a_server_restart(tmp_path: Path) -> None:
     second = GuestbookStore(database)
     assert second.snapshot().hello_count == 1
     assert second.record_hello().visitor == 2
+
+
+def test_handler_failures_do_not_log_request_metadata(tmp_path, monkeypatch, capsys) -> None:
+    """SEC-001: inherited request errors must not retain peer or exception details.
+
+    Red proof: baseline 63e89b1d0, this exact node fails the empty-stderr assertion
+    because AgentGuestbookServer inherits BaseServer.handle_error. The same test
+    passes after suppressing that error reporter; request cleanup remains exercised.
+    """
+    server = make_server("127.0.0.1", 0, tmp_path / "guestbook.sqlite3")
+    request = object()
+    cleaned = []
+
+    def fail_handler(_request, _address):
+        raise sqlite3.OperationalError("PRIVATE_REQUEST_SENTINEL")
+
+    monkeypatch.setattr(server, "finish_request", fail_handler)
+    monkeypatch.setattr(server, "shutdown_request", cleaned.append)
+    try:
+        assert server._request_slots.acquire(blocking=False)
+        server.process_request_thread(request, ("192.0.2.7", 45678))
+        assert capsys.readouterr().err == "", "handler diagnostics retained request metadata"
+        assert cleaned == [request]
+        assert all(server._request_slots.acquire(blocking=False) for _ in range(8))
+        assert not server._request_slots.acquire(blocking=False)
+    finally:
+        server.server_close()
