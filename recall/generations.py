@@ -178,7 +178,8 @@ class _BuildInputs:
 
 
 def _context_groups(
-    manifest: "IndexManifestV1", runtime_profile: EmbeddingProfile, grouped_passages: bool
+    manifest: "IndexManifestV1", runtime_profile: EmbeddingProfile, grouped_passages: bool,
+    excluded_sources: set[str] | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Each object's context group, and each group's fingerprint when the embedder groups passages."""
     group_keys = {
@@ -193,7 +194,9 @@ def _context_groups(
         )
         members: dict[str, list[Any]] = {}
         for entry in manifest.objects:
-            members.setdefault(group_keys[entry.uri], []).append(entry)
+            values = members.setdefault(group_keys[entry.uri], [])
+            if excluded_sources is None or entry.uri not in excluded_sources:
+                values.append(entry)
         group_fingerprints = {
             key: canonical_sha256(
                 {
@@ -1176,7 +1179,10 @@ class GenerationManager:
         return semantic_graph
 
 
-    def _mark_validating(self, generation_id: str, summary: dict[str, Any]) -> None:
+    def _mark_validating(
+        self, generation_id: str, summary: dict[str, Any], *,
+        expected_corpus_fingerprint: str | None = None,
+    ) -> None:
         """Move the generation from building to validating, recording what the build wrote."""
         with self._connect() as conn, conn.transaction():
             current = self._require_generation(conn, generation_id, lock=True)
@@ -1184,6 +1190,11 @@ class GenerationManager:
                 raise InvalidGenerationTransition(
                     f"generation changed to {current.state.value} during build"
                 )
+            if (
+                expected_corpus_fingerprint is not None
+                and current.corpus_fingerprint != expected_corpus_fingerprint
+            ):
+                raise GenerationError("corpus changed during grouped build; retry the generation")
             conn.execute(
                 "UPDATE recall_generations SET state = 'validating', "
                 "validating_at = clock_timestamp(), validation_summary = %s "
@@ -1240,13 +1251,24 @@ class GenerationManager:
                         f"build requires building state, found {record.state.value}"
                     )
                 manifest, pipeline = self._load_identity(conn, generation_id)
+                grouped_passages = callable(getattr(embedder, "embed_document_groups", None))
+                tombstones = (
+                    {
+                        str(row[0]) for row in conn.execute(
+                            "SELECT source_uri FROM recall_source_tombstones WHERE tenant_id = %s",
+                            (self.tenant_id,),
+                        ).fetchall()
+                    }
+                    if grouped_passages else set()
+                )
             runtime_profile, context_policy, fts_language, security_policy_digest = (
                 self._check_build_identity(pipeline, embedder, security_policy, security_context)
             )
 
             relative_paths = manifest_relative_paths(manifest)
-            grouped_passages = callable(getattr(embedder, "embed_document_groups", None))
-            group_keys, group_fingerprints = _context_groups(manifest, runtime_profile, grouped_passages)
+            group_keys, group_fingerprints = _context_groups(
+                manifest, runtime_profile, grouped_passages, tombstones
+            )
             pending_grouped: dict[str, list[_PreparedSource]] = {}
             total_objects = len(manifest.objects)
             if progress is not None:
@@ -1385,6 +1407,9 @@ class GenerationManager:
                     pending_grouped.setdefault(group_keys[entry.uri], []).append(
                         _PreparedSource(entry, chunks, embedding_texts, group_keys[entry.uri])
                     )
+                    # The prepared group owns these buffers until it is encoded. Leaving the
+                    # preparation-loop locals alive would retain the final source afterward.
+                    del source_chunks, chunks, embedding_texts
                     continue
                 if progress is not None:
                     progress.update(_counters(done), stage="embedding", current=entry.uri)
@@ -1407,15 +1432,24 @@ class GenerationManager:
                     embedded_objects += 1
                     indexed_sources.append(entry.uri)
 
-            for group_number, (group_key, prepared_sources) in enumerate(
-                pending_grouped.items(), start=1
-            ):
+            group_count = len(pending_grouped)
+            for group_number, group_key in enumerate(tuple(pending_grouped), start=1):
+                prepared_sources = pending_grouped.pop(group_key)
                 if progress is not None:
                     progress.update(
                         _counters(total_objects),
-                        stage=f"embedding context group {group_number}/{len(pending_grouped)}",
+                        stage=f"embedding context group {group_number}/{group_count}",
                         current=group_key,
                     )
+                # A source can be erased after it was prepared. Do not send a group known
+                # to have changed to the provider; the final locked transition also catches
+                # erasure during encoding or graph construction, including all-reused builds.
+                with self._connect() as conn:
+                    current = self._require_generation(conn, generation_id)
+                    if current.corpus_fingerprint != record.corpus_fingerprint:
+                        raise GenerationError(
+                            "corpus changed during grouped build; retry the generation"
+                        )
                 group_texts = [
                     text
                     for prepared in prepared_sources
@@ -1448,6 +1482,10 @@ class GenerationManager:
                     raise GenerationError(
                         f"context group {group_key!r} returned unconsumed embeddings"
                     )
+                # Consume completed groups in their original order and release both the
+                # prepared data and encoding scratch before the next group or graph build.
+                # Preparation still buffers every changed group before this loop begins.
+                del prepared_sources, prepared, group_texts, group_vectors, vectors
 
             if progress is not None:
                 progress.update(_counters(total_objects), stage="building semantic graph")
@@ -1462,7 +1500,13 @@ class GenerationManager:
                 "indexed_sources": sorted(indexed_sources),
                 "semantic_graph": _semantic_graph_marker(semantic_graph),
             }
-            self._mark_validating(generation_id, summary)
+            if grouped_passages:
+                self._mark_validating(
+                    generation_id, summary,
+                    expected_corpus_fingerprint=record.corpus_fingerprint,
+                )
+            else:
+                self._mark_validating(generation_id, summary)
             self._refresh_chunk_statistics()
             if progress is not None:
                 progress.finished(_counters(total_objects))

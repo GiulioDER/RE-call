@@ -131,6 +131,10 @@ class AgentGuestbookServer(ThreadingHTTPServer):
         finally:
             self._request_slots.release()
 
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        """Keep handler exceptions out of request logs, including peer and error details."""
+        return
+
 
 class AgentGuestbookHandler(BaseHTTPRequestHandler):
     """HTTP protocol with no request logging and no caller-controlled storage."""

@@ -77,6 +77,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_INDEX_BATCH_CHUNKS", "Core runtime", "embedding batch size", "64"),
     EnvironmentSpec("RECALL_FASTEMBED_BATCH", "Core runtime", "fastembed batch size"),
     EnvironmentSpec("RECALL_EMBED_THREADS", "Core runtime", "local embedder thread cap"),
+    EnvironmentSpec("RECALL_VOYAGE_TIMEOUT_SECONDS", "Core runtime", "Voyage request timeout in seconds; positive and finite", "60"),
     EnvironmentSpec("RECALL_MAX_PRUNE_FRACTION", "Core runtime", "maximum source prune fraction", "0.5"),
     EnvironmentSpec("RECALL_INDEX_ALLOW_CONCURRENT", "Core runtime", "disable the single writer lock"),
     EnvironmentSpec("RECALL_DEPENDENCY_INVALIDATION", "Core runtime", "dependency invalidation mode", "off"),

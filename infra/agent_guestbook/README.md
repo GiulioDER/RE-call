@@ -61,9 +61,9 @@ cp -a ~/.local/share/recall-agent-guestbook/guestbook.sqlite3* "$data_volume/"
 cp ~/.cloudflared/"$TUNNEL_ID".json "$credential_volume/tunnel.json"
 docker compose build app
 docker run --rm --user 0:0 --entrypoint /bin/sh --volume recall-agent-guestbook-data:/data recall-agent-guestbook:local \
-  /bin/sh -c 'chown -R 10001:10001 /data && chmod 700 /data && find /data -type f -exec chmod 600 {} +'
+  -c 'chown -R 10001:10001 /data && chmod 700 /data && find /data -type f -exec chmod 600 {} +'
 docker run --rm --user 0:0 --entrypoint /bin/sh --volume recall-agent-guestbook-credentials:/run/secrets recall-agent-guestbook:local \
-  /bin/sh -c 'chown 65532:65532 /run/secrets/tunnel.json && chmod 400 /run/secrets/tunnel.json'
+  -c 'chown 65532:65532 /run/secrets/tunnel.json && chmod 400 /run/secrets/tunnel.json'
 ```
 
 The two root commands are one time volume ownership preparation inside the rootless Docker
