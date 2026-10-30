@@ -31,6 +31,22 @@ class RestoreValidation:
         return {"passed": self.passed, "checks": self.checks, "failures": list(self.failures)}
 
 
+# One SELECT and JOIN for the active generation; only the tenant predicate differs, so a change to
+# the join or the state filter cannot reach one branch and miss the other.
+_ACTIVE_GENERATION_SELECT = (
+    "SELECT s.active_generation_id FROM recall_tenant_state s "
+    "JOIN recall_generations g ON g.tenant_id = s.tenant_id "
+    "AND g.generation_id = s.active_generation_id "
+)
+_ACTIVE_GENERATION_TENANT = {
+    True: "WHERE s.tenant_id = %s AND g.state = 'active' LIMIT 1",
+    False: (
+        "WHERE s.tenant_id = current_setting('recall.tenant_id', true) "
+        "AND g.state = 'active' LIMIT 1"
+    ),
+}
+
+
 def validate_restored_database(
     connection: Any,
     *,
@@ -66,7 +82,6 @@ def validate_restored_database(
 
     tenant = expected_tenant.strip() if expected_tenant else None
     tenant_context = True
-    tenant_params: tuple[Any, ...]
     if tenant:
         try:
             scalar("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
@@ -136,24 +151,10 @@ def validate_restored_database(
         )
     )
 
-    if tenant:
-        active_generation_sql = (
-            "SELECT s.active_generation_id FROM recall_tenant_state s "
-            "JOIN recall_generations g ON g.tenant_id = s.tenant_id "
-            "AND g.generation_id = s.active_generation_id "
-            "WHERE s.tenant_id = %s AND g.state = 'active' LIMIT 1"
-        )
-        tenant_params = (tenant,)
-    else:
-        active_generation_sql = (
-            "SELECT s.active_generation_id FROM recall_tenant_state s "
-            "JOIN recall_generations g ON g.tenant_id = s.tenant_id "
-            "AND g.generation_id = s.active_generation_id "
-            "WHERE s.tenant_id = current_setting('recall.tenant_id', true) "
-            "AND g.state = 'active' LIMIT 1"
-        )
-        tenant_params = ()
-    active_generation = scalar(active_generation_sql, tenant_params)
+    active_generation = scalar(
+        _ACTIVE_GENERATION_SELECT + _ACTIVE_GENERATION_TENANT[bool(tenant)],
+        (tenant,) if tenant else (),
+    )
     if tenant:
         checks["tenant"] = tenant_context
         checks["active_generation"] = tenant_context and active_generation is not None
@@ -236,7 +237,11 @@ def validate_restored_database(
 
 @dataclass
 class CutoverGuard:
-    """Require an explicit operator confirmation and retain the previous target for rollback."""
+    """Require an explicit operator confirmation and retain the previous target for rollback.
+
+    An opt-in library helper: no CLI command or server path uses it. Cutover and rollback are
+    operator steps (docs/AWS_OPERATIONS.md, restore runbook steps 4 and 5).
+    """
 
     write_frozen: bool = False
     previous_target: str | None = None

@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
+from recall._env import strict_bool
 from recall.scope import Scope
 
 Classification = Literal["public", "internal", "confidential", "restricted"]
@@ -71,8 +72,13 @@ def _strict_bool(raw: object, *, field_name: str) -> bool:
         return raw
     if isinstance(raw, int) and raw in {0, 1}:
         return bool(raw)
-    if isinstance(raw, str) and raw.strip().lower() in {"0", "1", "false", "true"}:
-        return raw.strip().lower() in {"1", "true"}
+    if isinstance(raw, str) and raw.strip():
+        # One vocabulary for every security boolean; an empty value is refused here because a
+        # policy field such as default_deny must never fall to false through a blank string.
+        try:
+            return strict_bool(raw, name=field_name)
+        except ValueError:
+            pass
     raise ValueError(f"{field_name} must be a boolean")
 
 

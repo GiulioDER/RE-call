@@ -30,6 +30,7 @@ resource "aws_ecs_task_definition" "this" {
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   container_definitions = jsonencode([{ name = "recall", image = var.image, essential = true, portMappings = [{ containerPort = 8000, protocol = "tcp" }], environment = [
     { name = "RECALL_TRANSPORT", value = "streamable-http" },
+    { name = "RECALL_HOST", value = "0.0.0.0" },
     { name = "RECALL_ENV", value = lower(trimspace(var.environment)) },
     { name = "RECALL_RATE_LIMIT_BACKEND", value = "redis" },
     { name = "RECALL_DEPLOYMENT", value = lower(trimspace(var.environment)) },
@@ -87,5 +88,21 @@ resource "aws_ecs_service" "this" {
   }
   lifecycle {
     ignore_changes = [desired_count]
+    precondition {
+      condition = lower(trimspace(var.environment)) != "production" || (
+        var.serving_dsn_secret_arn != null &&
+        var.redis_url_secret_arn != null &&
+        var.certificate_arn != null &&
+        var.redis_auth_token != null &&
+        var.restore_validation_dsn_secret_arn != null &&
+        var.db_proxy_secret_arn != null &&
+        trimspace(var.oidc_subject_tenants) != ""
+      )
+      error_message = "Production requires serving, Redis, restore validation, proxy credentials, OIDC subject bindings, Redis AUTH, and an ACM certificate."
+    }
+    precondition {
+      condition     = !var.offline_plan || lower(trimspace(var.environment)) != "production"
+      error_message = "offline_plan is for non-production validation only."
+    }
   }
 }

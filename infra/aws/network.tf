@@ -120,5 +120,17 @@ resource "aws_security_group" "data" {
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs.id]
   }
-  egress = []
+  # RDS Proxy shares this group and opens its own connections to the Aurora cluster.
+  ingress {
+    from_port = 5432
+    to_port   = 5432
+    protocol  = "tcp"
+    self      = true
+  }
+  egress {
+    from_port = 5432
+    to_port   = 5432
+    protocol  = "tcp"
+    self      = true
+  }
 }

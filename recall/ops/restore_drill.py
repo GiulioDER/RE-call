@@ -9,12 +9,18 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import sys
+import threading
 import uuid
 from collections.abc import Callable
+from typing import Any
 from dataclasses import dataclass
 from time import monotonic
 
-from recall.ops.backup import BackupManager
+from datetime import UTC, datetime, timedelta
+
+from recall.ops.backup import DRILL_TAG, BackupManager
 from recall.ops.restore import validate_restored_database
 from recall.ops.restore_smoke import run_application_smoke
 
@@ -29,6 +35,8 @@ _CHECKSUM_QUERIES = {
         "ORDER BY md5(row_to_json(t)::text)), '')) FROM (SELECT * FROM recall_generations) t"
     ),
 }
+
+_CHECKSUM_TABLES = frozenset(_CHECKSUM_QUERIES)
 
 _BOUNDED_CHECKSUM_QUERIES = {
     "recall_chunks_v1": (
@@ -71,21 +79,75 @@ def _checksum_policy() -> ChecksumPolicy:
     return ChecksumPolicy(mode="bounded", max_rows_per_table=limit)
 
 
-def _validation_dsn(cluster: dict[str, object]) -> str:
-    """Bind the validation credential to the endpoint returned for this restore."""
+def _validation_dsn_template() -> str:
     template = os.environ.get("RECALL_RESTORE_VALIDATION_DSN", "").strip()
     if not template:
         raise RuntimeError(
             "RECALL_RESTORE_VALIDATION_DSN is required for a successful restore drill"
         )
-    endpoint = str(cluster.get("endpoint") or "").strip()
-    if not endpoint:
-        raise RuntimeError("restored cluster did not publish a writer endpoint")
     if "{host}" not in template:
         raise RuntimeError(
             "RECALL_RESTORE_VALIDATION_DSN must contain {host} so validation binds to the restored cluster"
         )
-    return template.format(host=endpoint, port=cluster.get("port", 5432))
+    return template
+
+
+def _validation_dsn(cluster: dict[str, object]) -> str:
+    """Bind the validation credential to the endpoint returned for this restore."""
+    template = _validation_dsn_template()
+    endpoint = str(cluster.get("endpoint") or "").strip()
+    if not endpoint:
+        raise RuntimeError("restored cluster did not publish a writer endpoint")
+    return template.replace("{host}", endpoint).replace("{port}", str(cluster.get("port", 5432)))
+
+
+def _exit_on_sigterm() -> Any:
+    """Turn SIGTERM into SystemExit on the main thread and return the handler it replaced.
+
+    ECS stops a task with SIGTERM, whose default action skips `finally`; exiting instead runs the
+    drill's cleanup. Returns None, changing nothing, off the main thread, where Python refuses to
+    install a handler.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    return signal.signal(signal.SIGTERM, lambda _signum, _frame: sys.exit(143))
+
+
+#: A drill normally finishes within two hours; a drill-tagged cluster this old was left by a
+#: stopped drill whose cleanup could not finish.
+_STALE_DRILL_AGE = timedelta(hours=6)
+
+
+def _reap_stale_drills(manager: Any, prefix: str) -> list[dict[str, object]]:
+    """Delete drill clusters earlier stopped drills left behind, recording each outcome.
+
+    One cluster that cannot be deleted must not stop every later drill, so a failure is recorded
+    in the receipt and the next cluster is tried.
+    """
+    reaped: list[dict[str, object]] = []
+    try:
+        stale = manager.stale_drill_clusters(prefix, older_than=datetime.now(UTC) - _STALE_DRILL_AGE)
+    except Exception as exc:  # BROAD-CATCH: fail-open, the next drill lists again
+        return [{"result": "list_failed", "error": type(exc).__name__}]
+    for cluster in stale:
+        identifier = str(cluster["cluster_identifier"])
+        try:
+            for instance in cluster.get("instances") or []:
+                manager.delete_instance(str(instance), confirmation="DELETE_RESTORE_DRILL_INSTANCE")
+            manager.delete_cluster(identifier, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
+            reaped.append({"cluster_identifier": identifier, "result": "deleted"})
+        except Exception as exc:  # BROAD-CATCH: fail-open, the next drill retries this cluster
+            reaped.append(
+                {"cluster_identifier": identifier, "result": "failed", "error": type(exc).__name__}
+            )
+    return reaped
+
+
+def _required_env(name: str, purpose: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"{name} is required for {purpose}")
+    return value
 
 
 def _expected_checksums() -> dict[str, str] | None:
@@ -99,10 +161,12 @@ def _expected_checksums() -> dict[str, str] | None:
     if not isinstance(value, dict) or not all(
         isinstance(key, str)
         and isinstance(item, str)
-        and key in {"recall_chunks_v1", "recall_generations"}
+        and key in _CHECKSUM_TABLES
         for key, item in value.items()
     ):
-        raise RuntimeError("restore checksum keys must be recall_chunks_v1 or recall_generations")
+        raise RuntimeError(
+            f"restore checksum keys must be among {', '.join(sorted(_CHECKSUM_TABLES))}"
+        )
     return value
 
 
@@ -147,20 +211,64 @@ def _calibration_check(dsn: str, tenant: str, generation: str) -> Callable[[obje
 
 
 def run() -> dict[str, object]:
+    """Restore, validate and delete one drill copy of the source cluster, then print a receipt.
+
+    Every required setting is read before the restore is started, so a misconfigured drill fails
+    without creating a cluster. Targets must carry the ``<source>-drill-`` prefix, which is the
+    only name the drill task role may delete.
+    """
     source = os.environ["RECALL_RESTORE_SOURCE_CLUSTER"]
     target = os.environ.get(
         "RECALL_RESTORE_TARGET_CLUSTER", f"{source}-drill-{uuid.uuid4().hex[:10]}"
     )
     instance = os.environ.get("RECALL_RESTORE_TARGET_INSTANCE", f"{target}-writer")
+    drill_prefix = f"{source}-drill-"
+    if not target.startswith(drill_prefix) or not instance.startswith(drill_prefix):
+        raise RuntimeError(
+            f"restore drill targets must be named {drill_prefix}*; "
+            "cleanup deletes them and must never reach a serving resource"
+        )
+    subnet_group = os.environ["RECALL_RESTORE_SUBNET_GROUP"]
+    kms_key_id = os.environ["RECALL_RESTORE_KMS_KEY_ID"]
+    instance_class = os.environ["RECALL_RESTORE_INSTANCE_CLASS"]
+    security_group_ids = [
+        item.strip()
+        for item in _required_env(
+            "RECALL_RESTORE_SECURITY_GROUP_IDS", "network access to the restored cluster"
+        ).split(",")
+        if item.strip()
+    ]
+    if not security_group_ids:
+        raise RuntimeError("RECALL_RESTORE_SECURITY_GROUP_IDS must name at least one security group")
+    _validation_dsn_template()
+    expected_checksums = _expected_checksums()
+    checksum_policy = _checksum_policy()
+    schema_version = _required_env("RECALL_RESTORE_SCHEMA_VERSION", "restore validation")
+    expected_generation = _required_env(
+        "RECALL_RESTORE_EXPECTED_GENERATION", "tenant generation validation"
+    )
+    expected_role = _required_env("RECALL_RESTORE_EXPECTED_ROLE", "serving role validation")
+    if expected_checksums is None or set(expected_checksums) != _CHECKSUM_TABLES:
+        raise RuntimeError(
+            "RECALL_RESTORE_EXPECTED_CHECKSUMS must contain both restore table checksums"
+        )
+    tenant = _required_env("RECALL_RESTORE_TENANT", "tenant scoped restore validation")
+    representative_chunk_id = _required_env(
+        "RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID", "representative retrieval validation"
+    )
     manager = BackupManager(region=os.environ.get("RECALL_AWS_REGION"))
+    previous_sigterm = _exit_on_sigterm()
     created = False
     instance_created = False
     try:
+        reaped = _reap_stale_drills(manager, drill_prefix)
         result = manager.restore_pitr(
             source,
             target,
-            subnet_group_name=os.environ["RECALL_RESTORE_SUBNET_GROUP"],
-            kms_key_id=os.environ["RECALL_RESTORE_KMS_KEY_ID"],
+            subnet_group_name=subnet_group,
+            kms_key_id=kms_key_id,
+            vpc_security_group_ids=security_group_ids,
+            tags=[DRILL_TAG],
             confirmation="RESTORE_NEW_CLUSTER",
         )
         created = True
@@ -168,52 +276,16 @@ def run() -> dict[str, object]:
         manager.create_restore_instance(
             target,
             instance,
-            instance_class=os.environ["RECALL_RESTORE_INSTANCE_CLASS"],
-            subnet_group_name=os.environ["RECALL_RESTORE_SUBNET_GROUP"],
+            instance_class=instance_class,
+            subnet_group_name=subnet_group,
         )
         instance_created = True
         restored_writer = manager.wait_for_instance_available(instance)
         dsn = _validation_dsn(restored_writer)
         import psycopg
 
-        with psycopg.connect(dsn, connect_timeout=10) as connection:
-            expected_checksums = _expected_checksums()
-            checksum_policy = _checksum_policy()
+        with psycopg.connect(dsn, connect_timeout=10, autocommit=True) as connection:
             checksum_durations_ms: dict[str, float] = {}
-            schema_version = os.environ.get("RECALL_RESTORE_SCHEMA_VERSION", "").strip()
-            if not schema_version:
-                raise RuntimeError(
-                    "RECALL_RESTORE_SCHEMA_VERSION is required for restore validation"
-                )
-            expected_generation = os.environ.get("RECALL_RESTORE_EXPECTED_GENERATION", "").strip()
-            if not expected_generation:
-                raise RuntimeError(
-                    "RECALL_RESTORE_EXPECTED_GENERATION is required for tenant generation validation"
-                )
-            expected_role = os.environ.get("RECALL_RESTORE_EXPECTED_ROLE", "").strip()
-            if not expected_role:
-                raise RuntimeError(
-                    "RECALL_RESTORE_EXPECTED_ROLE is required for serving role validation"
-                )
-            if expected_checksums is None or set(expected_checksums) != {
-                "recall_chunks_v1",
-                "recall_generations",
-            }:
-                raise RuntimeError(
-                    "RECALL_RESTORE_EXPECTED_CHECKSUMS must contain both restore table checksums"
-                )
-            tenant = os.environ.get("RECALL_RESTORE_TENANT", "").strip()
-            if not tenant:
-                raise RuntimeError(
-                    "RECALL_RESTORE_TENANT is required for tenant scoped restore validation"
-                )
-            representative_chunk_id = os.environ.get(
-                "RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID", ""
-            ).strip()
-            if not representative_chunk_id:
-                raise RuntimeError(
-                    "RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID is required for representative retrieval validation"
-                )
             validation = validate_restored_database(
                 connection,
                 expected_schema_version=schema_version,
@@ -247,6 +319,7 @@ def run() -> dict[str, object]:
             "source": source,
             "target": target,
             "restore": result,
+            "reaped_stale_drills": reaped,
             "validation": validation.to_dict(),
             "checksum_validation": {
                 "mode": checksum_policy.mode,
@@ -258,14 +331,18 @@ def run() -> dict[str, object]:
         print(json.dumps(receipt, sort_keys=True, default=str))
         return receipt
     finally:
-        if instance_created:
-            try:
-                manager.delete_instance(instance, confirmation="DELETE_RESTORE_DRILL_INSTANCE")
-            finally:
-                if created:
-                    manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
-        elif created:
-            manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
+        try:
+            if instance_created:
+                try:
+                    manager.delete_instance(instance, confirmation="DELETE_RESTORE_DRILL_INSTANCE")
+                finally:
+                    if created:
+                        manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
+            elif created:
+                manager.delete_cluster(target, confirmation="DELETE_RESTORE_DRILL_CLUSTER")
+        finally:
+            if previous_sigterm is not None:
+                signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":

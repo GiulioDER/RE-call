@@ -694,7 +694,8 @@ class GenerationManager:
             "AND ((%s::text IS NULL AND c.metadata ->> %s IS NULL) "
             "OR (%s::text IS NOT NULL AND c.metadata ->> %s = %s)) "
             "AND c.metadata ->> %s = ANY(%s) "
-            "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
+            "AND ((%s::text IS NULL AND c.metadata ->> %s IS NULL) "
+            "OR (%s::text IS NOT NULL AND c.metadata ->> %s = %s)) "
             "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND (NOT %s OR c.metadata -> 'code_anchor' ->> 'repo' "
             "IS NOT DISTINCT FROM %s::text) "
@@ -711,6 +712,8 @@ class GenerationManager:
                 require_body_rule_version,
                 _METADATA_RULE_VERSION_KEY,
                 list(accepted_metadata_rules),
+                security_policy_digest,
+                "security_policy_digest",
                 security_policy_digest,
                 "security_policy_digest",
                 security_policy_digest,
@@ -827,7 +830,7 @@ class GenerationManager:
             wanted_group = group_fingerprints.get(entry.uri) if group_fingerprints else None
             if any(
                 rule in (_METADATA_RULE_VERSION, _PRE_RECORD_METADATA_RULE_VERSION)
-                and (security_policy_digest is None or digest == security_policy_digest)
+                and digest == security_policy_digest
                 and (wanted_group is None or group == wanted_group)
                 for rule, digest, group in available.get((entry.uri, entry.sha256), [])
             ):

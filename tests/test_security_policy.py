@@ -8,6 +8,7 @@ from recall.security_policy import (
     SourceRule,
     SourceSecurityPolicy,
     access_context_from_environment,
+    load_source_policy,
 )
 from recall.embeddings import HashingEmbedder
 from recall.index import Indexer
@@ -168,3 +169,50 @@ def test_generation_security_refuses_a_denied_source_before_reading() -> None:
     context = AccessContext("bob", "tenant", clearance="restricted")
     with pytest.raises(PermissionError):
         _secure_generation_text("finance/budget.csv", "secret", (), policy, context)
+
+
+def test_policy_booleans_share_the_environment_vocabulary(tmp_path) -> None:
+    """CODE-010: every security boolean accepts one vocabulary, and a blank one is refused.
+
+    Red proof: failed on 3ada1afd0, where recall.security_policy._strict_bool accepted only
+    0, 1, false and true, with ValueError on RECALL_EGRESS_ALLOWED=yes.
+    """
+    assert access_context_from_environment("t", {"RECALL_EGRESS_ALLOWED": "yes"}).egress_allowed is True
+    assert access_context_from_environment("t", {"RECALL_EGRESS_ALLOWED": "off"}).egress_allowed is False
+    policy = tmp_path / "policy.json"
+    policy.write_text('{"default_deny": " ", "rules": []}', encoding="utf-8")
+    with pytest.raises(ValueError, match="default_deny must be a boolean"):
+        load_source_policy({"RECALL_SOURCE_POLICY_FILE": str(policy)})
+    with pytest.raises(ValueError, match="RECALL_EGRESS_ALLOWED must be a boolean"):
+        access_context_from_environment("t", {"RECALL_EGRESS_ALLOWED": "maybe"})
+
+
+def test_enterprise_startup_refuses_without_a_source_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DOC-002: the enterprise control plane must not serve without source authorization.
+
+    docs/SECURITY_MODEL.md promises the refusal; PR 603 added it and PR 604's merge lost it.
+    Red proof: failed on 3ada1afd0 (recall_mcp.server._make_lifespan loaded no policy and went on
+    to open stores) with psycopg.OperationalError from the unreachable DSN instead of the refusal.
+    """
+    import asyncio
+
+    from recall_mcp import server
+    from recall_mcp.settings import Settings
+
+    env = {
+        "RECALL_ENTERPRISE_CONTROL_PLANE": "1",
+        "RECALL_INDEX_MODE": "generation",
+        "RECALL_ENV": "development",
+        "RECALL_SERVING_DSN": "postgresql://recall:recall@127.0.0.1:1/recall",
+    }
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("RECALL_SOURCE_POLICY_FILE", raising=False)
+    lifespan = server._make_lifespan(None, settings=Settings.from_env(env))
+
+    async def enter() -> None:
+        async with lifespan(None):  # type: ignore[arg-type]
+            pass
+
+    with pytest.raises(RuntimeError, match="requires RECALL_SOURCE_POLICY_FILE"):
+        asyncio.run(enter())

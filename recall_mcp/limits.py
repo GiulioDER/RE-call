@@ -38,7 +38,15 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
 from mcp.server.mcpserver.exceptions import ToolError
-from recall.constants import MAX_IDEMPOTENCY_RESULT_BYTES
+from recall.constants import (
+    DEFAULT_RATE_LIMIT_KEY_PREFIX,
+    DEFAULT_READ_FALLBACK_BUDGET,
+    DEFAULT_REDIS_MAX_CONNECTIONS,
+    DEFAULT_REDIS_TIMEOUT_SECONDS,
+    IDEMPOTENCY_RECEIPT_RETENTION_SECONDS,
+)
+from recall.idempotency_receipts import check_result_size
+from recall._env import env_is_production
 from recall.observability import get_logger
 from recall.errors import IdempotencyConflict, RecallError
 
@@ -229,6 +237,7 @@ class RateLimiter:
         self._buckets: dict[tuple[str, str], _Bucket] = {}
         self._lock = threading.Lock()
 
+    @property
     def limits(self) -> dict[str, Rate]:
         return dict(self._rates)
 
@@ -241,7 +250,7 @@ class RateLimiter:
         idempotency_key: str | None = None,
         read_only: bool = False,
     ) -> None:
-        """Async adapter used by the MCP server without changing local semantics."""
+        """Async form of `check` for callers holding a bare `RateLimiter`; the server wraps it instead."""
         del idempotency_key, read_only
         self.check(tenant, key, cost)
 
@@ -300,6 +309,16 @@ end
 tokens = math.min(capacity, tokens + math.max(0, now_ms - updated) * refill / 1000)
 local duplicate = 0
 if KEYS[2] ~= '' and redis.call('EXISTS', KEYS[2]) == 1 then
+  -- A replay answers from a stored result but is still a request, so it costs one token:
+  -- otherwise one key could be repeated without limit, each call reading Redis and, once the
+  -- cached result has expired, the durable receipt.
+  local replay_cost = math.min(1, cost)
+  if tokens < replay_cost then
+    return {0, math.ceil((replay_cost - tokens) / refill * 1000), 0}
+  end
+  tokens = tokens - replay_cost
+  redis.call('HSET', KEYS[1], 'tokens', tokens, 'updated', now_ms)
+  redis.call('PEXPIRE', KEYS[1], ttl_ms)
   duplicate = 1
   if tonumber(ARGV[5]) == 1 then
     return {1, 0, duplicate}
@@ -319,10 +338,19 @@ tokens = tokens - cost
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'updated', now_ms)
 redis.call('PEXPIRE', KEYS[1], ttl_ms)
 if KEYS[2] ~= '' then
-  redis.call('SET', KEYS[2], ARGV[6], 'PX', ttl_ms)
+  redis.call('SET', KEYS[2], ARGV[6], 'PX', tonumber(ARGV[7]))
 end
 return {1, 0, duplicate}
 """
+
+
+# A bucket key outlives two full refill windows, so an idle tenant's bucket is refilled, not
+# forgotten mid-window. The cached replay result lives as long, at least a minute, and is shorter
+# than the reservation: a retry after it expires replays the durable receipt instead.
+_BUCKET_TTL_REFILL_WINDOWS = 2
+_MIN_BUCKET_TTL_MS = 1000
+_MIN_RESULT_TTL_MS = 60_000
+_RESULT_TTL_WINDOW_WITHOUT_BUDGET_SECONDS = 3600
 
 
 class RedisRateLimiter:
@@ -334,10 +362,10 @@ class RedisRateLimiter:
         rates: dict[str, Rate],
         *,
         deployment: str = "default",
-        key_prefix: str = "recall:rate",
-        timeout_seconds: float = 0.25,
-        fallback_read_budget: float = 3.0,
-        max_connections: int = 32,
+        key_prefix: str = DEFAULT_RATE_LIMIT_KEY_PREFIX,
+        timeout_seconds: float = DEFAULT_REDIS_TIMEOUT_SECONDS,
+        fallback_read_budget: float = DEFAULT_READ_FALLBACK_BUDGET,
+        max_connections: int = DEFAULT_REDIS_MAX_CONNECTIONS,
         redis_client: Any | None = None,
     ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -355,6 +383,7 @@ class RedisRateLimiter:
         self._max_connections = max_connections
         self._fallback = RateLimiter({"read": Rate(fallback_read_budget, 1.0)} if fallback_read_budget else {})
         self._redis = redis_client
+        self._client_injected = redis_client is not None
         self._script_sha: str | None = None
         self.requires_idempotency = True
 
@@ -384,7 +413,7 @@ class RedisRateLimiter:
             idem = f"{self._prefix}:{self._deployment}:{tenant_hash}:idempotency:{request_hash}"
         return base, idem
 
-    def _result_key(self, tenant: str, request_id: str, operation: str | None = None) -> str:
+    def _result_key(self, tenant: str, request_id: str) -> str:
         tenant_hash = hashlib.sha256(tenant.encode("utf-8")).hexdigest()
         request_hash = self._request_hash(request_id)
         return f"{self._prefix}:{self._deployment}:{tenant_hash}:idempotency-result:{request_hash}"
@@ -426,7 +455,10 @@ class RedisRateLimiter:
         try:
             client = await self._client()
             bucket, idem = self._keys(tenant, key, idempotency_key)
-            ttl_ms = max(1000, int((rate.capacity / rate.per_second) * 2000))
+            ttl_ms = max(
+                _MIN_BUCKET_TTL_MS,
+                int((rate.capacity / rate.per_second) * _BUCKET_TTL_REFILL_WINDOWS * 1000),
+            )
             reservation = ""
             if idempotency_key:
                 reservation = json.dumps(
@@ -444,6 +476,10 @@ class RedisRateLimiter:
                 ttl_ms,
                 1 if read_only else 0,
                 reservation,
+                # A mutation's reservation lives as long as the durable receipt it guards, not as
+                # long as the bucket: a retry after a crash or during a long mutation must
+                # reconcile, not execute again. A read writes no receipt and keeps the bucket TTL.
+                ttl_ms if read_only else IDEMPOTENCY_RECEIPT_RETENTION_SECONDS * 1000,
             ]
             try:
                 if self._script_sha is None:
@@ -458,7 +494,7 @@ class RedisRateLimiter:
             if duplicate == 2:
                 if idempotency_key:
                     stored, cached_result = await client.mget(
-                        [idem, self._result_key(tenant, idempotency_key, idempotency_operation)]
+                        [idem, self._result_key(tenant, idempotency_key)]
                     )
                     if stored is not None:
                         try:
@@ -543,7 +579,7 @@ class RedisRateLimiter:
         if not idempotency_key:
             return None
         client = await self._client()
-        raw = await client.get(self._result_key(tenant, idempotency_key, operation))
+        raw = await client.get(self._result_key(tenant, idempotency_key))
         if raw is None:
             return None
         return self._decode_idempotency_result(raw, request_fingerprint=request_fingerprint)
@@ -580,10 +616,12 @@ class RedisRateLimiter:
         """Store a bounded mutation response for safe retries with the same request key."""
         if not idempotency_key:
             return
-        if len(result.encode("utf-8")) > MAX_IDEMPOTENCY_RESULT_BYTES:
-            raise ValueError("idempotent mutation result exceeds the 512 KiB replay limit")
+        check_result_size(result)
         rate = self._rates.get("write") or self._rates.get("admin") or self._rates.get("forget")
-        ttl_ms = max(60_000, int(((rate.capacity / rate.per_second) if rate else 3600) * 2000))
+        window_s = (
+            rate.capacity / rate.per_second if rate else _RESULT_TTL_WINDOW_WITHOUT_BUDGET_SECONDS
+        )
+        ttl_ms = max(_MIN_RESULT_TTL_MS, int(window_s * _BUCKET_TTL_REFILL_WINDOWS * 1000))
         client = await self._client()
         value = result
         if request_fingerprint is not None:
@@ -596,11 +634,9 @@ class RedisRateLimiter:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-        await client.set(self._result_key(tenant, idempotency_key, operation), value, px=ttl_ms)
+        await client.set(self._result_key(tenant, idempotency_key), value, px=ttl_ms)
 
-    async def release_idempotency_reservation(
-        self, tenant: str, idempotency_key: str, *, operation: str | None = None
-    ) -> None:
+    async def release_idempotency_reservation(self, tenant: str, idempotency_key: str) -> None:
         """Release a reservation after a verified pre-side-effect failure."""
         if not idempotency_key:
             return
@@ -633,18 +669,52 @@ class RedisRateLimiter:
         idempotency_key: str | None = None,
         read_only: bool = False,
     ) -> None:
-        """Bridge the synchronous indexing callback from the worker thread to the async limiter."""
-        import asyncio
+        """Bridge the synchronous indexing callback from the worker thread to the async limiter.
 
-        asyncio.run(
-            self.check(
-                tenant,
-                key,
-                cost,
-                idempotency_key=idempotency_key,
-                read_only=read_only,
-            )
+        The cached redis.asyncio client belongs to the event loop that opened it, so the check runs
+        there when the caller is an AnyIO worker thread (the server's `_to_thread`). A throwaway
+        loop on the worker would bind pooled connections to a loop that then closes, and the next
+        call on either side fails with "attached to a different loop". Any other thread gets a
+        client of its own for the one call.
+        """
+        import asyncio
+        import functools
+
+        import anyio.from_thread
+
+        call = functools.partial(
+            self.check, tenant, key, cost, idempotency_key=idempotency_key, read_only=read_only
         )
+        try:
+            anyio.from_thread.run(call)
+            return
+        except RuntimeError as exc:
+            # The limiter's own errors (RateLimited, RateLimiterUnavailable and the idempotency
+            # outcomes) are RuntimeErrors too; only AnyIO's refusal of a thread it did not start
+            # carries this text, so everything else is re-raised.
+            if "AnyIO worker thread" not in str(exc):
+                raise
+
+        async def isolated() -> None:
+            limiter = RedisRateLimiter(
+                self._redis_url,
+                self._rates,
+                deployment=self._deployment,
+                key_prefix=self._prefix,
+                timeout_seconds=self._timeout,
+                fallback_read_budget=self._fallback_read_budget,
+                max_connections=self._max_connections,
+                redis_client=self._redis if self._client_injected else None,
+            )
+            try:
+                await limiter.check(
+                    tenant, key, cost, idempotency_key=idempotency_key, read_only=read_only
+                )
+            finally:
+                if not self._client_injected:
+                    await limiter.close()
+
+        asyncio.run(isolated())
 
 
 def _rate_from_env(
@@ -750,19 +820,7 @@ def failed_auth_throttle_from_env(env: Mapping[str, str] | None = None) -> Faile
 
 def limiter_from_env(env: Mapping[str, str] | None = None) -> RateLimiter:
     """Build the limiter the server uses, from `RECALL_RATE_*` / `RECALL_INDEX_BYTES_PER_HOUR`."""
-    rates: dict[str, Rate] = {}
-    for scope, default in DEFAULT_CALLS_PER_MIN.items():
-        rate = _rate_from_env(
-            f"RECALL_RATE_{scope.upper()}_PER_MIN", default, _SECONDS_PER_MIN, env
-        )
-        if rate is not None:
-            rates[scope] = rate
-    byte_rate = _rate_from_env(
-        "RECALL_INDEX_BYTES_PER_HOUR", float(DEFAULT_INDEX_BYTES_PER_HOUR), _SECONDS_PER_HOUR, env
-    )
-    if byte_rate is not None:
-        rates[INDEX_BYTES_BUDGET] = byte_rate
-    return RateLimiter(rates)
+    return RateLimiter(_limiter_rates_from_env(env))
 
 
 def _limiter_rates_from_env(env: Mapping[str, str] | None = None) -> dict[str, Rate]:
@@ -785,7 +843,7 @@ def async_limiter_from_env(env: Mapping[str, str] | None = None) -> AsyncRateLim
     """Resolve the configured local or Redis limiter without opening a network connection."""
     source = os.environ if env is None else env
     backend = source.get("RECALL_RATE_LIMIT_BACKEND", "local").strip().lower()
-    if source.get("RECALL_ENV", "development").strip().lower() == "production" and backend != "redis":
+    if env_is_production(dict(source)) and backend != "redis":
         raise ValueError("production deployments require RECALL_RATE_LIMIT_BACKEND=redis")
     if backend in {"off", "none"}:
         return None
@@ -796,14 +854,16 @@ def async_limiter_from_env(env: Mapping[str, str] | None = None) -> AsyncRateLim
     redis_url = source.get("RECALL_REDIS_URL", "").strip()
     if not redis_url:
         raise ValueError("RECALL_REDIS_URL is required when RECALL_RATE_LIMIT_BACKEND=redis")
-    timeout = float(source.get("RECALL_REDIS_TIMEOUT_SECONDS", "0.25"))
-    fallback = float(source.get("RECALL_RATE_READ_FALLBACK_BUDGET", "3"))
-    max_connections = int(source.get("RECALL_REDIS_MAX_CONNECTIONS", "32"))
+    timeout = float(source.get("RECALL_REDIS_TIMEOUT_SECONDS", str(DEFAULT_REDIS_TIMEOUT_SECONDS)))
+    fallback = float(source.get("RECALL_RATE_READ_FALLBACK_BUDGET", str(DEFAULT_READ_FALLBACK_BUDGET)))
+    max_connections = int(
+        source.get("RECALL_REDIS_MAX_CONNECTIONS", str(DEFAULT_REDIS_MAX_CONNECTIONS))
+    )
     return RedisRateLimiter(
         redis_url,
         _limiter_rates_from_env(source),
         deployment=source.get("RECALL_DEPLOYMENT", "default"),
-        key_prefix=source.get("RECALL_RATE_LIMIT_KEY_PREFIX", "recall:rate"),
+        key_prefix=source.get("RECALL_RATE_LIMIT_KEY_PREFIX", DEFAULT_RATE_LIMIT_KEY_PREFIX),
         timeout_seconds=timeout,
         fallback_read_budget=fallback,
         max_connections=max_connections,
@@ -816,7 +876,7 @@ class _AsyncLocalLimiter:
 
     @property
     def limits(self) -> dict[str, Rate]:
-        return self._limiter.limits()
+        return self._limiter.limits
 
     async def check(
         self,

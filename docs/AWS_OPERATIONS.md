@@ -8,8 +8,10 @@ Secrets Manager, and versioned S3 backup receipts. Terraform lives in `infra/aws
 
 The production target is an RPO of at most five minutes and an RTO of at most thirty minutes.
 Aurora continuous backups retain thirty five days. Daily snapshots, weekly retained snapshots, and
-cross region copies are environment policies. Every backup receipt records only identifiers,
-timestamps, schema and generation state, counts, checksums, and configuration fingerprints.
+cross region copies are environment policies. Backup receipts record only identifiers,
+timestamps, the code's latest schema version, and a configuration fingerprint. The generation, row
+count, and checksum fields exist but `recall backup create` leaves them empty, so do not take
+`RECALL_RESTORE_EXPECTED_CHECKSUMS` from a backup receipt.
 
 ## Restore runbook
 
@@ -29,6 +31,22 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
    representative chunk identifier. The receipt is not successful unless this application smoke
    passes too. The smoke uses a task local static token only for the isolated drill; it does not
    change production OIDC configuration.
+   The drill names its restored cluster and writer `<source>-drill-*` and refuses any other target,
+   because the drill task role may delete only resources under that prefix. It reads every required
+   setting before it starts the restore, so a misconfigured drill creates nothing.
+   The secret named by `restore_validation_dsn_secret_arn` holds `RECALL_RESTORE_VALIDATION_DSN`,
+   a DSN template that must contain `{host}` and may contain `{port}`; the drill replaces them with
+   the restored writer's endpoint and port, and leaves every other character, braces included, as is.
+   A stopped drill task starts its cleanup and has 120 seconds to finish it. Deleting an Aurora
+   instance can take longer, so a stopped drill can leave its `<source>-drill-*` cluster behind.
+   Every drill tags what it creates `recall:restore-drill=true`, and before restoring it deletes
+   drill clusters that carry the tag, the `<source>-drill-` prefix, and are older than six hours,
+   recording each in `reaped_stale_drills` in its receipt. A leftover is therefore removed by the
+   next scheduled drill; the drill role may list clusters but delete only drill-named ones.
+   `RECALL_RESTORE_SECURITY_GROUP_IDS` lists the security groups attached to the restored cluster;
+   the stack sets it to the data security group, which admits the drill task on 5432. The drill
+   task role may use only the stack's data key (`kms_key_arn`, or the key the stack creates), so
+   `restore_kms_key_id` must name that same key.
    The validation task must set `RECALL_RESTORE_TENANT`, `RECALL_RESTORE_EXPECTED_GENERATION`,
    `RECALL_RESTORE_EXPECTED_ROLE`, and `RECALL_RESTORE_REPRESENTATIVE_CHUNK_ID`. The latter names
    a known chunk in that tenant and makes the database search check prove tenant bound vector
@@ -43,11 +61,14 @@ timestamps, schema and generation state, counts, checksums, and configuration fi
    Each successful receipt records the selected mode, row limit, and measured duration per table.
    The validation role must be a non-superuser role without `BYPASSRLS`, with `SELECT` on the
    restored serving tables.
-4. Freeze writes, keep the old production target, and cut over only after the operator confirms
-   `CUTOVER_RESTORED_CLUSTER`.
-5. If smoke tests or monitoring fail, restore the previous target with `ROLLBACK_RESTORE`.
-6. Record measured restore duration, checksum durations, effective RPO, application smoke result,
-   and rollback result in the drill receipt. Alert when no successful drill exists in seven days. Periodically
+4. Freeze writes, keep the old production target, and cut over by repointing the serving secrets
+   to the restored cluster. Cutover and rollback are manual operator steps; RE-call has no command
+   for them.
+5. If smoke tests or monitoring fail, repoint the serving secrets back to the previous target.
+6. The drill receipt records the source, target, restore response, validation result, checksum mode,
+   row limit and per table checksum durations, and the application smoke result. Record the measured
+   restore duration, effective RPO, and rollback result yourself. Alert when no successful drill
+   exists in seven days. Periodically
    run one full mode drill against a production sized dataset to measure the coverage and RTO
    tradeoff before changing the bounded row limit.
 
@@ -60,13 +81,15 @@ scoped RDS restore, instance creation, tagging, and cleanup actions.
 
 Use `offline_plan = true` only for a nonproduction validation plan. Supply an explicit
 `aws_account_id` and at least two `availability_zones` so the plan does not query AWS metadata.
-The production safety check refuses any plan that combines `offline_plan` with
-`environment = "production"`.
+A precondition on the serving ECS service refuses any plan that combines `offline_plan` with
+`environment = "production"`. `environment` becomes `RECALL_ENV`, so it must be `development` or
+`production`; give a nonproduction stack its own `name` instead.
 
 ```bash
 terraform -chdir=infra/aws plan -refresh=false \
   -var='offline_plan=true' \
-  -var='environment=staging' \
+  -var='environment=development' \
+  -var='name=recall-staging' \
   -var='aws_account_id=123456789012' \
   -var='availability_zones=["eu-west-1a","eu-west-1b"]'
 ```

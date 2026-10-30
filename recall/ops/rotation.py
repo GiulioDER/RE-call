@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from recall.ops.secrets import RotationReceipt, rotation_receipt
+from recall.ops.secrets import SECRET_VERSION_TAG_PREFIX, RotationReceipt, rotation_receipt
 
 
 @dataclass(frozen=True)
@@ -53,9 +53,9 @@ class EcsSecretRotator:
             # Matching tags alone therefore do not prove that the replacement is running healthy.
             tags = ecs.list_tags_for_resource(resourceArn=task["taskArn"]).get("tags", [])
             observed = {
-                str(tag["key"]).removeprefix("recall:secret-version:"): str(tag["value"])
+                str(tag["key"]).removeprefix(SECRET_VERSION_TAG_PREFIX): str(tag["value"])
                 for tag in tags
-                if str(tag.get("key", "")).startswith("recall:secret-version:")
+                if str(tag.get("key", "")).startswith(SECRET_VERSION_TAG_PREFIX)
             }
             missing = tuple(name for name, version in expected_versions.items() if observed.get(name) != version)
             healthy = (
@@ -71,6 +71,11 @@ class EcsSecretRotator:
             raise RuntimeError("not every replacement ECS task reports the intended secret versions")
 
     def start_rolling_deployment(self, cluster: str, service: str) -> dict[str, object]:
+        """Force a new deployment of `service`.
+
+        An opt-in library helper: no CLI command or server path calls it. Rolling out the new
+        secret version is an operator step (docs/AWS_OPERATIONS.md, Secret rotation).
+        """
         ecs, _ = self._clients()
         result = ecs.update_service(cluster=cluster, service=service, forceNewDeployment=True)
         return {"cluster": cluster, "service": service, "deployment": result["service"].get("deployments", [])}

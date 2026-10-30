@@ -22,11 +22,18 @@ from recall.multimodal import (
     DEFAULT_MAX_RESPONSE_BYTES,
     MultimodalTenantConfig,
 )
+from recall.ops.secrets import aws_region
 from recall.ops.secret_mapping import (  # noqa: F401  # re-exported
     SECRET_DESTINATIONS,
     secret_mapping_from_env,
 )
 from recall._env import parse_generation_dense_search
+from recall.constants import (
+    DEFAULT_RATE_LIMIT_KEY_PREFIX,
+    DEFAULT_READ_FALLBACK_BUDGET,
+    DEFAULT_REDIS_MAX_CONNECTIONS,
+    DEFAULT_REDIS_TIMEOUT_SECONDS,
+)
 from recall.paged_evidence import paged_evidence_mode
 from recall.federation import FederationConfig
 from recall.trust_policy import TrustPolicy
@@ -129,7 +136,11 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_OIDC_SUBJECT_TENANTS", "Authentication", "OIDC subject bindings"),
     EnvironmentSpec("RECALL_OIDC_TRUST_TENANT_CLAIM", "Authentication", "trust IdP tenant claim"),
     EnvironmentSpec("RECALL_OIDC_JWKS_REFRESH_SECONDS", "Authentication", "OIDC JWKS refresh interval", "300"),
-    EnvironmentSpec("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS", "Authentication", "OIDC maximum token lifetime", "900"),
+    EnvironmentSpec(
+        "RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS",
+        "Authentication",
+        "OIDC maximum token lifetime in seconds; unset applies no cap",
+    ),
     EnvironmentSpec("RECALL_POOL_SIZE", "Resources", "database pool size", str(DEFAULT_POOL_SIZE)),
     EnvironmentSpec("RECALL_CONNECTION_BUDGET", "Resources", "database connection budget"),
     EnvironmentSpec("RECALL_MAX_TENANTS", "Resources", "maximum provisioned tenants", str(DEFAULT_MAX_TENANTS)),
@@ -137,10 +148,10 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_STATEMENT_TIMEOUT_MS", "Resources", "database statement timeout", str(DEFAULT_STATEMENT_TIMEOUT_MS)),
     EnvironmentSpec("RECALL_RATE_LIMIT_BACKEND", "Rate limits", "local, redis, or off", "local"),
     EnvironmentSpec("RECALL_REDIS_URL", "Rate limits", "Redis URL", secret=True),
-    EnvironmentSpec("RECALL_REDIS_TIMEOUT_SECONDS", "Rate limits", "Redis operation timeout", "0.25"),
-    EnvironmentSpec("RECALL_REDIS_MAX_CONNECTIONS", "Rate limits", "Redis connection cap", "32"),
-    EnvironmentSpec("RECALL_RATE_LIMIT_KEY_PREFIX", "Rate limits", "Redis key prefix", "recall:rate"),
-    EnvironmentSpec("RECALL_RATE_READ_FALLBACK_BUDGET", "Rate limits", "read fallback budget", "3"),
+    EnvironmentSpec("RECALL_REDIS_TIMEOUT_SECONDS", "Rate limits", "Redis operation timeout", str(DEFAULT_REDIS_TIMEOUT_SECONDS)),
+    EnvironmentSpec("RECALL_REDIS_MAX_CONNECTIONS", "Rate limits", "Redis connection cap", str(DEFAULT_REDIS_MAX_CONNECTIONS)),
+    EnvironmentSpec("RECALL_RATE_LIMIT_KEY_PREFIX", "Rate limits", "Redis key prefix", DEFAULT_RATE_LIMIT_KEY_PREFIX),
+    EnvironmentSpec("RECALL_RATE_READ_FALLBACK_BUDGET", "Rate limits", "read fallback budget", f"{DEFAULT_READ_FALLBACK_BUDGET:g}"),
     EnvironmentSpec("RECALL_RATE_READ_PER_MIN", "Rate limits", "read calls per minute", "120"),
     EnvironmentSpec("RECALL_RATE_WRITE_PER_MIN", "Rate limits", "write calls per minute", "20"),
     EnvironmentSpec("RECALL_RATE_FORGET_PER_MIN", "Rate limits", "forget calls per minute", "10"),
@@ -372,7 +383,7 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         ("RECALL_TRANSLATION_MAX_BATCH", 32),
         ("RECALL_TRANSLATION_MAX_TEXT_CHARS", 20_000),
         ("RECALL_TRANSLATION_MAX_RESPONSE_BYTES", 2_000_000),
-        ("RECALL_REDIS_MAX_CONNECTIONS", 32),
+        ("RECALL_REDIS_MAX_CONNECTIONS", DEFAULT_REDIS_MAX_CONNECTIONS),
         ("RECALL_RERANK_BATCH_SIZE", 4),
         ("RECALL_RERANK_THREADS", 1),
         ("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", DEFAULT_MAX_MEDIA_BYTES),
@@ -381,8 +392,8 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
     ):
         _int(source, name, default_int, minimum=1)
     for name, default_float in (
-        ("RECALL_REDIS_TIMEOUT_SECONDS", 0.25),
-        ("RECALL_RATE_READ_FALLBACK_BUDGET", 3.0),
+        ("RECALL_REDIS_TIMEOUT_SECONDS", DEFAULT_REDIS_TIMEOUT_SECONDS),
+        ("RECALL_RATE_READ_FALLBACK_BUDGET", DEFAULT_READ_FALLBACK_BUDGET),
         ("RECALL_REASONING_ANSWER_TIMEOUT", 60.0),
     ):
         _number(source, name, default_float, minimum=0.0)
@@ -493,7 +504,7 @@ class Settings:
             mcp_stateless=_bool(source, "RECALL_MCP_STATELESS", transport in {"sse", "streamable-http"}),
             enterprise_control_plane=_bool(source, "RECALL_ENTERPRISE_CONTROL_PLANE", False),
             trust_policy=TrustPolicy.from_env(source),
-            aws_region=source.get("RECALL_AWS_REGION") or source.get("AWS_REGION"),
+            aws_region=aws_region(source),
             secret_mapping=secret_mapping,
             secret_versions=secret_versions or {},
             multimodal=MultimodalTenantConfig.from_env(source),
@@ -531,7 +542,7 @@ def bootstrap_settings(
             from recall.ops.secrets import AwsSecretsManagerProvider
 
             secret_provider = AwsSecretsManagerProvider(
-                region_name=source.get("RECALL_AWS_REGION") or source.get("AWS_REGION")
+                region_name=aws_region(source)
             )
         resolved = secret_provider.resolve_env(mapping)
         for destination, secret in resolved.items():
@@ -545,7 +556,7 @@ def bootstrap_settings(
         versions.update(
             tag_ecs_task_secret_versions(
                 env=source,
-                region_name=source.get("RECALL_AWS_REGION") or source.get("AWS_REGION"),
+                region_name=aws_region(source),
             )
         )
     return Settings.from_env(source, secret_versions=versions)

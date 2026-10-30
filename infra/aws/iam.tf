@@ -42,7 +42,10 @@ resource "aws_iam_role" "restore_drill_task" {
 resource "aws_iam_role_policy" "restore_drill_task" {
   role = aws_iam_role.restore_drill_task.id
   policy = jsonencode({ Version = "2012-10-17", Statement = [
-    { Effect = "Allow", Action = ["rds:RestoreDBClusterToPointInTime", "rds:DescribeDBClusters", "rds:DescribeDBClusterSnapshots", "rds:DeleteDBCluster", "rds:CreateDBInstance"], Resource = [local.rds_cluster_arn_pattern] },
-    { Effect = "Allow", Action = ["rds:CreateDBInstance", "rds:AddTagsToResource", "rds:DescribeDBInstances", "rds:DeleteDBInstance"], Resource = [local.rds_instance_arn_pattern] }
+    { Effect = "Allow", Action = ["rds:RestoreDBClusterToPointInTime", "rds:DescribeDBClusters", "rds:DescribeDBClusterSnapshots", "rds:DeleteDBCluster", "rds:CreateDBInstance", "rds:AddTagsToResource"], Resource = [local.rds_cluster_arn_pattern] },
+    { Effect = "Allow", Action = ["rds:DescribeDBClusters"], Resource = ["arn:aws:rds:${var.aws_region}:${local.aws_account_id}:cluster:*"] },
+    { Effect = "Allow", Action = ["rds:CreateDBInstance", "rds:AddTagsToResource", "rds:DescribeDBInstances", "rds:DeleteDBInstance"], Resource = [local.rds_instance_arn_pattern] },
+    { Effect = "Allow", Action = ["rds:RestoreDBClusterToPointInTime", "rds:CreateDBInstance"], Resource = ["arn:aws:rds:${var.aws_region}:${local.aws_account_id}:subgrp:${var.restore_subnet_group}"] },
+    { Effect = "Allow", Action = ["kms:CreateGrant", "kms:DescribeKey"], Resource = [coalesce(var.kms_key_arn, aws_kms_key.this.arn)], Condition = { StringEquals = { "kms:ViaService" = "rds.${var.aws_region}.amazonaws.com" } } }
   ] })
 }

@@ -104,15 +104,21 @@ removal.
 The HTTP deployment exposes `GET /livez`, `GET /readyz`, and `GET /startupz`. `livez` is
 dependency free and returns `200` while the process is running. `startupz` returns `200` after
 startup completed, otherwise `503`. `readyz` returns `200` only when the database, schema, pgvector,
-RLS, active generation, and calibration checks pass. Redis limiter state is reported but does not
+RLS, and active generation checks pass. Its `calibration` entry reflects the enterprise startup
+readiness gate, which runs once at startup; `readyz` does not re-evaluate calibration, and strict
+trust still refuses an answer whose calibration is not certified. Redis limiter state is reported but does not
 make reads unready, because reads have a bounded local fallback and mutations fail closed.
 
 Mutating MCP tools require an idempotency key on HTTP deployments for writes, forget, and admin
 operations. Most tools expose it as `idempotency_key`; `recall_apply_fact` exposes the same value
 as `request_id`. PostgreSQL records the completed response before Redis stores its replay cache,
 so a repeated mutation key returns the original response even when Redis lost the response write.
-The receipt is bound to the idempotency key, tool, and canonical request arguments, so reusing one
-key for a different operation or different arguments is rejected as `idempotency_conflict`. The
+The receipt is bound to the idempotency key, tool, canonical request arguments, and the
+authenticated principal, so reusing one key for a different operation, different arguments, or
+from another principal of the same tenant is rejected as `idempotency_conflict`. A replay is
+still a request and spends one unit of the tool's budget. Receipts and reservations written
+before principal binding hold the unbound fingerprint, so a key in flight across that upgrade
+cannot be replayed and needs a new key. The
 `recall_apply_fact` tool calls this public key `request_id`; other mutating tools call it
 `idempotency_key`. If neither receipt is available, the server returns
 `reconciliation_required` and does not execute the mutation again.
@@ -135,15 +141,22 @@ The JSON response includes `checks.control_plane`, `checks.tenant_probes` (the n
 probed), `checks.rate_limiter`, and `failures`. Tenant inventory counts are kept out of this
 unauthenticated endpoint; the full configured count and probe limit are emitted in startup logs.
 The probe count is not the configured tenant count, so a `200` response is representative process
-readiness only and does not prove that every configured tenant is correctly provisioned. Perform a
+readiness only and does not prove that every configured tenant is correctly provisioned. The
+`tenants` check is a deprecated alias of `tenant_probes`: it reports the probe count, not the
+tenant count. Perform a
 separate exhaustive tenant validation when that guarantee is required.
-Durable receipts are operational replay records rather than long-term audit history. Retain them
-for the replay window and prune older rows with scheduled database maintenance, for example:
+Durable receipts are operational replay records rather than long-term audit history. A tenant's
+expired rows are pruned whenever that tenant records a new receipt, so only tenants that stop
+writing keep them. The table forces row level security, so a scheduled prune must set the tenant
+for each tenant it cleans, for example:
 
 ```sql
+SELECT set_config('recall.tenant_id', '<tenant>', false);
 DELETE FROM recall_idempotency_receipts
-WHERE expires_at <= now();
+WHERE tenant_id = '<tenant>' AND expires_at <= now();
 ```
+
+Without the tenant setting the statement matches no rows and reports nothing.
 
 The MCP server is `python -m recall_mcp.server`. Every registered tool, in `tools/list` order;
 the same drift test diffs this table against the `@mcp.tool` registrations:

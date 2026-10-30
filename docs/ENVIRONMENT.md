@@ -100,7 +100,7 @@ OPENROUTER_API_KEY=
 # RECALL_SOURCE_POLICY_FILE=/etc/recall/source-policy.json
 # RECALL_PRINCIPAL=cli
 # RECALL_CLEARANCE=internal
-# RECALL_EGRESS_ALLOWED=0             # 0, 1, false, or true; malformed values are refused
+# RECALL_EGRESS_ALLOWED=0             # 1/true/yes/on or 0/false/no/off; malformed values are refused
 # RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
 # RECALL_INDEX_BATCH_CHUNKS=64           # chunks per embedding batch; lower this if the local
 #                                        # embedder runs out of memory

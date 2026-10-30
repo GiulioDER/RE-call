@@ -37,6 +37,7 @@ from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import Embedder, embedding_profile_id
 from recall.errors import IdempotencyConflict, RecallError
+from recall.idempotency_receipts import ANY_OPERATION
 from recall.index import chunk_code, chunk_text
 from recall.readiness import check_enterprise_readiness
 from recall.observability import METRICS, configure_logging, get_logger
@@ -221,6 +222,25 @@ def _ingest_mutation_fingerprint(
     return digest.hexdigest()
 
 
+def _principal_bound_fingerprint(fingerprint: str | None) -> str | None:
+    """Bind an idempotency fingerprint to the authenticated principal.
+
+    Receipts are keyed by tenant and request key, so without this another principal of the same
+    tenant who sends the same key and arguments would be handed the first principal's response,
+    whatever the source policy grants it. Bound, that reuse is an idempotency conflict. A call
+    with no authenticated principal (stdio) keeps the bare fingerprint.
+    """
+    if fingerprint is None:
+        return None
+    token = get_access_token()
+    if token is None:
+        return fingerprint
+    principal = str((getattr(token, "claims", None) or {}).get("principal") or token.client_id or "")
+    if not principal:
+        return fingerprint
+    return canonical_sha256({"principal": principal, "request": fingerprint})
+
+
 async def _record_mutation_result(
     state: dict[str, object],
     tenant: str,
@@ -233,6 +253,7 @@ async def _record_mutation_result(
     """Persist a mutation receipt before attempting the Redis replay-cache write."""
     if not idempotency_key:
         return
+    idempotency_fingerprint = _principal_bound_fingerprint(idempotency_fingerprint)
     store = state.get("store")
     if store is None:
         registry = state.get("stores")
@@ -244,20 +265,27 @@ async def _record_mutation_result(
             lambda: durable(
                 idempotency_key,
                 result,
-                operation=idempotency_operation or "legacy",
+                operation=idempotency_operation or ANY_OPERATION,
                 request_fingerprint=idempotency_fingerprint,
             )
         )
     limiter = state.get("limiter")
     record = getattr(limiter, "store_idempotency_result", None)
     if callable(record):
-        await record(
-            tenant,
-            idempotency_key,
-            result,
-            operation=idempotency_operation,
-            request_fingerprint=idempotency_fingerprint,
-        )
+        try:
+            await record(
+                tenant,
+                idempotency_key,
+                result,
+                operation=idempotency_operation,
+                request_fingerprint=idempotency_fingerprint,
+            )
+        except Exception:  # BROAD-CATCH: fail-open, the durable receipt replays a retry
+            # The mutation has committed. When the durable receipt exists, a retry with the same
+            # key replays it, so a Redis failure here must not turn a success into an error.
+            if not callable(durable):
+                raise
+            _log.warning("idempotency replay cache write failed; durable receipt retained")
 
 
 async def _durable_replay(
@@ -914,6 +942,11 @@ def _make_lifespan(
         enterprise = runtime_settings.enterprise_control_plane
         runtime_route = resolve_runtime_route(runtime_env, enterprise=enterprise)
         source_policy = load_source_policy(runtime_env)
+        if enterprise and source_policy is None:
+            raise RuntimeError(
+                "enterprise control plane requires RECALL_SOURCE_POLICY_FILE; "
+                "source authorization and redaction must be configured"
+            )
         settings_token = None
         lite_refresher: LiteAutoRefresher | None = None
         clock_installed = False
@@ -1160,8 +1193,6 @@ def _make_lifespan(
         )
         if limiter is not None:
             limits = getattr(limiter, "limits", {})
-            if callable(limits):
-                limits = limits()
             _log.info(
                 "per-tenant budgets: %s",
                 ", ".join(f"{k}={v.capacity:,.0f}" for k, v in sorted(limits.items()))
@@ -3622,6 +3653,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
             # alternative — falling through to some default store — would turn any future gap in
             # that middleware into a silent full-corpus read.
             raise PermissionError("this server requires authentication")
+        idempotency_fingerprint = _principal_bound_fingerprint(idempotency_fingerprint)
         try:
             tenant = authorize(token.scopes, token.claims, scope)
         except PermissionError:

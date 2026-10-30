@@ -25,6 +25,10 @@ variable "availability_zones" {
 variable "environment" {
   type    = string
   default = "production"
+  validation {
+    condition     = contains(["development", "production"], lower(trimspace(var.environment)))
+    error_message = "environment becomes RECALL_ENV, which the server accepts only as development or production."
+  }
 }
 variable "name" {
   type    = string
@@ -245,53 +249,5 @@ variable "restore_smoke_embedder" {
   validation {
     condition     = trimspace(var.restore_smoke_embedder) != ""
     error_message = "restore_smoke_embedder must be nonempty."
-  }
-}
-
-check "production_secrets" {
-  assert {
-    condition = lower(trimspace(var.environment)) != "production" || (
-      var.serving_dsn_secret_arn != null &&
-      var.redis_url_secret_arn != null &&
-      var.certificate_arn != null &&
-      var.redis_auth_token != null &&
-      var.restore_validation_dsn_secret_arn != null &&
-      var.db_proxy_secret_arn != null &&
-      trimspace(var.oidc_subject_tenants) != ""
-    )
-    error_message = "Production requires serving, Redis, restore validation, proxy credentials, OIDC subject bindings, Redis AUTH, and an ACM certificate."
-  }
-}
-
-check "production_restore_validation" {
-  assert {
-    condition = lower(trimspace(var.environment)) != "production" || (
-      alltrue([
-        for value in [
-          var.restore_source_cluster,
-          var.restore_subnet_group,
-          var.restore_kms_key_id,
-          var.restore_tenant,
-          var.restore_expected_generation,
-          var.restore_expected_role,
-          var.restore_representative_chunk_id,
-          var.restore_expected_checksums,
-          var.restore_smoke_embedder,
-        ] : trimspace(value) != ""
-      ]) &&
-      try(
-        toset(keys(jsondecode(trimspace(var.restore_expected_checksums)))) == toset(["recall_chunks_v1", "recall_generations"]) &&
-        alltrue([for checksum in values(jsondecode(trimspace(var.restore_expected_checksums))) : trimspace(checksum) != ""]),
-        false
-      )
-    )
-    error_message = "Production requires nonempty restore source, subnet group, KMS key, tenant, generation, role, representative chunk, and both restore table checksums."
-  }
-}
-
-check "offline_plan_safety" {
-  assert {
-    condition     = !var.offline_plan || lower(trimspace(var.environment)) != "production"
-    error_message = "offline_plan is for non-production validation only."
   }
 }
