@@ -215,12 +215,15 @@ def stage_uploads(
             if not encoded:
                 raise UploadError("every uploaded file needs name and content_b64")
             name = _safe_relative_name(item.get("name", ""))
-            if name in seen:
+            collision_key = name.casefold()
+            if collision_key in seen:
                 # Two entries with one name would silently drop the first from the
                 # indexed set; refuse rather than guess which one was meant. Keyed on the
                 # relative path, so two files that merely share a basename no longer collide.
+                # Compare without case on every platform: Windows aliases directory names
+                # such as Notes and notes, so accepting both can overwrite the first file.
                 raise UploadError(f"duplicate file name {name!r} in one upload")
-            seen.add(name)
+            seen.add(collision_key)
             # Refuse an oversized entry before materialising it: base64 encodes 3
             # bytes into 4 characters, so the encoded length bounds the decoded
             # size without decoding. The post-decode check below stays as the

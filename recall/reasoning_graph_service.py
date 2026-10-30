@@ -33,9 +33,10 @@ class SemanticGraphExpansionResult:
     relation_new_trusted_evidence: Mapping[str, int] = dataclass_field(default_factory=dict)
     diagnostics_encountered: int = 0
     latency_ms: float = 0.0
-    #: Pairs of (rejection reason, count) for individual CANDIDATES the expansion's admission
-    #: policy refused. The reason vocabulary belongs to the graph expansion provider's admission
-    #: policy (for example "hub_entity" or "cosine_admission"); the pairs are surfaced
+    #: Pairs of (rejection reason, event count) from relation and candidate admission.
+    #: A relation can be rejected before any candidate is discovered, so these are not counts
+    #: of unique candidates. The provider owns the reasons (for example "relation_non_authored"
+    #: or "missing_query_score"); the pairs are surfaced
     #: verbatim as :attr:`ReasoningDiagnostics.graph_admission_rejections`.
     admission_rejections: tuple[tuple[str, int], ...] = ()
     #: Pairs of (reason, count) for a refusal of the WHOLE expansion, before any candidate is

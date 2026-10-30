@@ -201,6 +201,59 @@ def test_duplicate_upload_names_are_refused_not_last_writer_wins() -> None:
         )
 
 
+@pytest.mark.parametrize("job_key", [None, "sync-memory"])
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("Notes/memo.md", "notes/memo.md"),
+        ("Notes/Sub/memo.md", "notes/sub/memo.md"),
+        ("notes\\memo.md", "NOTES/memo.md"),
+    ],
+)
+def test_upload_refuses_directory_case_aliases_without_changing_staged_content(
+    names: tuple[str, str], job_key: str | None
+) -> None:
+    """STAKES-001: refuse paths that overwrite one document on Windows.
+
+    Red proof: all six parameter nodes failed the refusal assertion on 196f9dbaf,
+    with stage_uploads comparing exact relative names. The same test bytes pass
+    after its duplicate identity becomes case-insensitive. The refusal must also
+    remove disposable staging and preserve any existing stable corpus.
+    """
+    tenant = "case-aliases"
+    tenant_root = Path(os.environ["RECALL_INDEX_ROOT"]) / "uploads" / tenant
+    if job_key is not None:
+        stage_uploads(
+            tenant,
+            [{"name": "notes/memo.md", "content_b64": base64.b64encode(b"kept").decode()}],
+            job_key=job_key,
+        )
+    before = {
+        path.relative_to(tenant_root): path.read_bytes()
+        for path in tenant_root.rglob("*") if path.is_file()
+    }
+    before_roots = set(tenant_root.glob("*"))
+    refusal = None
+    try:
+        stage_uploads(
+            tenant,
+            [
+                {"name": names[0], "content_b64": base64.b64encode(b"first").decode()},
+                {"name": names[1], "content_b64": base64.b64encode(b"second").decode()},
+            ],
+            job_key=job_key,
+        )
+    except UploadError as exc:
+        refusal = exc
+    assert refusal is not None, "case-aliased upload names must be refused on every platform"
+    assert "duplicate" in str(refusal)
+    assert set(tenant_root.glob("*")) == before_roots
+    assert {
+        path.relative_to(tenant_root): path.read_bytes()
+        for path in tenant_root.rglob("*") if path.is_file()
+    } == before
+
+
 def test_a_nested_upload_name_keeps_its_directories() -> None:
     """A relative path survives staging instead of collapsing to its basename.
 
