@@ -164,6 +164,10 @@ def test_prompt_hook_ignores_a_project_local_package(tmp_path, monkeypatch):
     package.joinpath("__main__.py").write_text("", encoding="utf-8")
     environment = os.environ.copy()
     environment.pop("PYTHONSAFEPATH", None)
+    # Mutmut's stats mode needs configuration in cwd. This child deliberately
+    # leaves the repository, so disable profiling there, retaining real mutants.
+    if environment.get("MUTANT_UNDER_TEST") == "stats":
+        environment.pop("MUTANT_UNDER_TEST")
     # An explicit trusted install path remains available; only implicit cwd
     # precedence is forbidden. No ambient PYTHONPATH reaches the subprocess.
     environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
