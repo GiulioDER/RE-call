@@ -95,6 +95,9 @@ def _identity_from_config(cwd: str) -> tuple[str, str]:
                     collect(item)
 
         collect(document)
+        # Conflicting session identities cannot fall back to a shared client marker.
+        if len(session_ids) > 1:
+            return "", ""
         if len(markers) == 1:
             marker = next(iter(markers))
         elif markers:
@@ -105,7 +108,8 @@ def _identity_from_config(cwd: str) -> tuple[str, str]:
             session_id = next(iter(session_ids))
         else:
             session_id = ""
-        if marker or session_id:
+        # An ambiguous nearest config is a boundary, not an absent identity.
+        if markers or session_ids:
             return session_id, marker
     return "", ""
 
