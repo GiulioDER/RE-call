@@ -1,8 +1,8 @@
 """Retrieval application boundary for MCP and in process clients.
 
-Profile startup is owned here. Search and evidence remain forwarding façades until their
-dependencies are moved in a later retrieval slice. The legacy service import path is preserved
-for callers during the migration.
+Profile startup, trusted retrieval (`_retrieve_trusted`), `search_memory` and `evidence_memory`
+are implemented here. `recall_mcp.service` only forwards to them, so legacy imports and its
+monkeypatch seams keep working.
 """
 
 from __future__ import annotations
