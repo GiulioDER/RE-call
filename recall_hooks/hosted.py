@@ -19,7 +19,8 @@ visible and this docstring is where the next reader is told to check both.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -66,11 +67,12 @@ class Change:
     """
 
     wire_size: int = 0
-    """Bytes actually sent, i.e. `path.stat().st_size`.
+    """Conservative wire bound from the original buffer length.
 
     An audit measured ten CRLF files at 40.0 MiB by `size` and 80.0 MiB on the wire: a batch the
     client believed was exactly at its cap, refused whole by the server, and rebuilt identically
-    every session. Every limit in `plan` is applied to this field for that reason.
+    every session. Every limit in `plan` is applied to this field. Normalized Markdown uploads
+    may now be smaller; retaining the original bound also caps the local scan allocation.
     """
 
     text: str | None = None
@@ -80,6 +82,9 @@ class Change:
     file and gating a snapshot it does not own. `None` for a non-markdown file, which is hashed
     as raw bytes and has no text form to screen.
     """
+
+    source_key: str = ""
+    """Private root identity digest used only to qualify the uploaded source name."""
 
 
 @dataclass(frozen=True)
@@ -296,10 +301,10 @@ def scan(
                 note[name] = "could not be read or decoded as UTF-8"
                 continue
             sha, size, wire, text = got
-            if not wire:
+            if not size:
                 # ⛔ A zero-byte file sends an empty `content_b64`, which `stage_uploads` refuses
                 # with an UploadError, and that refusal takes the WHOLE batch with it, every
-                # session. Only this exact shape is skipped.
+                # session. BOM/NUL-only Markdown normalizes to the same empty upload.
                 #
                 # A whitespace-only memo is NOT skipped, although the salvaged version skipped it.
                 # The server accepts it and indexes it as a zero-chunk replacement precisely so
@@ -783,16 +788,15 @@ def insecure_endpoint_reason(endpoint: str) -> str:
 
 
 def _bytes_if_unchanged(change: Change) -> bytes | None:
-    """The raw bytes to upload, or `None` if the file moved under us since the scan.
+    """Canonical upload bytes, or `None` if the file changed since the screen.
 
     The screen inspected the buffer read during the scan; this read happens minutes later. Only
-    the raw bytes can be uploaded (markdown is normalised for hashing, so the screened text is not
-    the payload), which means a fresh read is unavoidable, so the digest is recomputed and
-    compared, and a mismatch drops the file from this run rather than sending content no screen
-    has seen.
+    a fresh read is unavoidable, so the digest is recomputed and compared. Markdown is sent as
+    the normalized UTF-8 text that was hashed and screened. Both the legacy text hash and a
+    generation's raw upload hash therefore describe the same bytes, without editing local memos.
 
-    ⛔ The digest is taken over `data`, the buffer that is returned and sent, never over a second
-    read. The salvaged version read the bytes once to send and again to hash, so a file rewritten
+    ⛔ The digest and payload come from this same read and normalization. The salvaged
+    version read the bytes once to send and again to hash, so a file rewritten
     between those two reads and then restored could send content the check never looked at.
     """
     try:
@@ -802,7 +806,7 @@ def _bytes_if_unchanged(change: Change) -> bytes | None:
     got = _digest_raw(change.path, data)
     if got is None or got[0] != change.sha256:
         return None
-    return data
+    return got[2].encode("utf-8") if got[2] is not None else data
 
 
 def sync_memory_roots(
@@ -881,6 +885,22 @@ def sync_memory_roots(
     local, withheld, screen_error = _screened(scan(
         roots, skipped=skipped, max_file_bytes=limits.max_file_bytes, oversize=oversize,
     ))
+    # Scan first, retaining nearest-root shadowing and readable diagnostic names.
+    # Only wire identity is qualified, consistently with upload staging server-side.
+    qualified: dict[str, Change] = {}
+    original: dict[str, Change] = {}
+    for name, change in local.items():
+        root = next(
+            path for root_id, path in roots
+            if change.path.is_relative_to(path)
+            and name == f"{root_id}/{change.path.relative_to(path).as_posix()}"
+        )
+        source_key = hashlib.sha256(os.path.normcase(str(root.resolve())).encode("utf-8")).hexdigest()
+        change = replace(change, source_key=source_key)
+        first, slash, rest = name.partition("/")
+        wire_name = f"{first}-{source_key}{slash}{rest}"
+        qualified[wire_name] = replace(change, name=wire_name)
+        original[wire_name] = change
     manifest["skipped"] = skipped
     manifest["oversize"] = oversize
     manifest["withheld"] = {name: [str(f) for f in found] for name, found in withheld.items()}
@@ -889,6 +909,9 @@ def sync_memory_roots(
     else:
         manifest.pop("screen_error", None)
 
+    # Before inventory answers, every eligible file remains unverified on early failures.
+    manifest["pending"] = {name: "" for name in local}
+
     try:
         head = _cred.headers(config)
     except Exception as exc:  # noqa: BLE001 - classified below, never raised into a session  # BROAD-CATCH: error-translation
@@ -896,20 +919,25 @@ def sync_memory_roots(
         manifest["last_error"] = {"kind": "auth", "message": message}
         write_manifest(config, manifest)
         return SyncOutcome(
-            kind="auth", withheld=len(withheld), skipped=len(skipped),
+            kind="auth", pending=len(local), withheld=len(withheld), skipped=len(skipped),
             oversize=len(oversize), message=message,
         )
 
     try:
         remote = remote_inventory(endpoint, head)
-        decided = plan(local, remote, limits)
+        wire_plan = plan(qualified, remote, limits)
+        decided = replace(
+            wire_plan,
+            upload=[[original[change.name] for change in batch] for batch in wire_plan.upload],
+            oversize=[original[name].name for name in wire_plan.oversize],
+        )
     except SyncError as exc:
         manifest["last_error"] = {"kind": exc.kind, "message": exc.message}
         if exc.blocking:
             manifest["blocked"] = exc.message
         write_manifest(config, manifest)
         return SyncOutcome(
-            kind=exc.kind, withheld=len(withheld), skipped=len(skipped),
+            kind=exc.kind, pending=len(local), withheld=len(withheld), skipped=len(skipped),
             oversize=len(oversize), message=exc.message,
         )
     # The endpoint was accepted and the transport answered, so nothing is blocking any more.
@@ -956,13 +984,16 @@ def sync_memory_roots(
                 # saw, which is the one outcome this module exists to prevent.
                 continue
             files.append(
-                {"name": change.name, "content_b64": _b64.b64encode(data).decode("ascii")}
+                {"name": change.name, "content_b64": _b64.b64encode(data).decode("ascii"),
+                 "source_key": change.source_key}
             )
             sent.append(change)
         if not files:
             continue
         try:
-            call_tool(endpoint, head, "recall_ingest", {"files": files, "category": "memory"})
+            call_tool(endpoint, head, "recall_ingest", {
+                "files": files, "category": "memory", "source_namespace": "hook-memory-v1",
+            })
         except SyncError as exc:
             # ⛔ A quota refusal means NOTHING was ingested: the debit happens before embedding and
             # raises. So this batch and every later one stay pending, and none of them is recorded.

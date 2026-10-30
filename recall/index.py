@@ -171,8 +171,10 @@ def _batch_chunks_from_env(env: Mapping[str, str] | None = None) -> int:
 def _looks_like_allocation_failure(exc: BaseException) -> bool:
     """Recognise backend allocation failures without relabelling ordinary embedder errors."""
     messages: list[str] = []
+    visited: set[int] = set()
     current: BaseException | None = exc
-    while current is not None:
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
         messages.append(str(current).lower())
         current = current.__cause__ or current.__context__
     text = " ".join(messages)

@@ -144,7 +144,7 @@ the controller process. The serving role always receives read-only ledger, card,
 access, so a raw SQL connection using the serving DSN cannot append a fact event. The controller
 grants also cover migration 0029's `recall_redact_fact_values`, through which `recall_forget`
 erases fact values (below); re-run them after applying 0029. Migration
-`0026_provenance_protected_append.sql` removes raw `INSERT` from the
+`0022_provenance_protected_append.sql` removes raw `INSERT` from the
 isolated controller role as well. Its ledger and outbox appends go through owner-controlled
 `SECURITY DEFINER` functions with a tenant-context check, while outbox delivery updates remain
 available to the controller worker. The functions are revoked from `PUBLIC` and exposed only by

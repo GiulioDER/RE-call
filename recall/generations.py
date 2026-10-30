@@ -22,6 +22,7 @@ from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextu
 from recall.build_progress import BuildCounters, BuildPlan, BuildProgressSink
 from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
+from recall.dependency_invalidation import build_dependency_projection, write_dependency_projection, dependency_key
 from recall.records import admit_record
 from recall.embeddings import (
     Embedder,
@@ -61,7 +62,8 @@ from recall.manifest import ManifestObjectV1, ObjectReader, VerifiedObject
 from recall.observability import METRICS, get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
-from recall.supersession_records import pg_delete_removals, pg_record_removals
+from recall.supersession_records import pg_delete_removals, pg_record_removals, pg_records
+from recall.supersession import resolve_supersession_graph, supersession_rows_sql
 from recall.types import Chunk, EvidenceCard
 
 Chunker = Callable[[str], list[str]]
@@ -1138,10 +1140,47 @@ class GenerationManager:
         return chunks, embedding_texts
 
 
+    def _persist_dependency_projection(
+        self, conn: psycopg.Connection, generation_id: str,
+        corpus_fingerprint: str, chunks: Sequence[Chunk],
+    ) -> dict[str, Any]:
+        """Persist dependency rows and return their marker in the caller's transaction."""
+        rows = conn.execute(
+            supersession_rows_sql(
+                "recall_chunks_v1", source_column="source_uri",
+                scope="c.tenant_id = %s AND c.generation_id = %s",
+            ), (self.tenant_id, generation_id),
+        ).fetchall()
+        supersession = resolve_supersession_graph(
+            rows, pg_records(conn, self.tenant_id, "recall_chunks_v1"), self.tenant_id,
+        )
+        timed_rows = conn.execute(
+            "SELECT chunk_id, COALESCE(first_indexed_at, indexed_at) FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s", (self.tenant_id, generation_id),
+        ).fetchall()
+        times = {str(row[0]): row[1] for row in timed_rows}
+        asserted_at: dict[str, datetime | None] = {}
+        for chunk in chunks:
+            key = dependency_key(chunk, supersession.collided)
+            moment = times.get(chunk.id)
+            previous = asserted_at.get(key)
+            if key not in asserted_at or (moment is not None and (previous is None or moment < previous)):
+                asserted_at[key] = moment
+        projection = build_dependency_projection(
+            chunks, tenant_id=self.tenant_id, generation_id=generation_id,
+            asserted_at_by_source=asserted_at, corpus_fingerprint=corpus_fingerprint,
+            collided=supersession.collided,
+        )
+        write_dependency_projection(conn, projection)
+        return {
+            "projection_id": projection.projection_id, "edge_count": len(projection.edges),
+            "diagnostic_count": len(projection.diagnostics), "ready": True,
+        }
+
     def _build_semantic_graph(
         self, generation_id: str, pipeline: PipelineIdentity
-    ) -> SemanticGraphProjection:
-        """Build and store the semantic graph over the chunks this build wrote."""
+    ) -> tuple[SemanticGraphProjection, dict[str, Any]]:
+        """Build and store both graphs over the chunks this build wrote."""
         with self._connect() as conn, conn.transaction():
             graph_started = time.perf_counter()
             current = self._require_generation(conn, generation_id)
@@ -1168,6 +1207,9 @@ class GenerationManager:
                     corpus_fingerprint=current.corpus_fingerprint,
                 )
                 write_semantic_graph(conn, semantic_graph)
+                dependency_marker = self._persist_dependency_projection(
+                    conn, generation_id, current.corpus_fingerprint, graph_chunks,
+                )
             except BaseException:
                 METRICS.increment("recall_graph_build_failure_total")
                 METRICS.observe(
@@ -1179,7 +1221,7 @@ class GenerationManager:
             METRICS.observe(
                 "recall_graph_latency_ms", (time.perf_counter() - graph_started) * 1000.0
             )
-        return semantic_graph
+        return semantic_graph, dependency_marker
 
 
     def _mark_validating(
@@ -1492,7 +1534,7 @@ class GenerationManager:
 
             if progress is not None:
                 progress.update(_counters(total_objects), stage="building semantic graph")
-            semantic_graph = self._build_semantic_graph(generation_id, pipeline)
+            semantic_graph, dependency_marker = self._build_semantic_graph(generation_id, pipeline)
             summary = {
                 "objects": len(manifest.objects),
                 "chunks": chunks_written,
@@ -1502,6 +1544,7 @@ class GenerationManager:
                 "empty_objects": empty,
                 "indexed_sources": sorted(indexed_sources),
                 "semantic_graph": _semantic_graph_marker(semantic_graph),
+                "dependency_projection": dependency_marker,
             }
             if grouped_passages:
                 self._mark_validating(
@@ -1720,6 +1763,10 @@ class GenerationManager:
                 or graph_marker.get("graph_fingerprint") != graph.fingerprint
             ):
                 raise GenerationError("generation semantic graph fingerprint mismatch")
+            summary["dependency_projection"] = self._persist_dependency_projection(
+                conn, generation_id, current.corpus_fingerprint,
+                [Chunk(str(item[0]), str(item[1]), str(item[2]), item[3] if isinstance(item[3], dict) else {}) for item in graph_rows],
+            )
             summary.update({"validated_sources": len(actual), "validated_chunks": chunks})
             conn.execute(
                 "UPDATE recall_generations SET state = 'ready', ready_at = clock_timestamp(), "
@@ -1798,6 +1845,10 @@ class GenerationManager:
             ).fetchone()
             summary = dict(summary_row[0]) if summary_row and isinstance(summary_row[0], Mapping) else {}
             summary["semantic_graph"] = _semantic_graph_marker(graph)
+            summary["dependency_projection"] = self._persist_dependency_projection(
+                conn, generation_id, current.corpus_fingerprint,
+                [Chunk(str(row[0]), str(row[1]), str(row[2]), row[3] if isinstance(row[3], dict) else {}) for row in rows],
+            )
             conn.execute(
                 "UPDATE recall_generations SET validation_summary = %s "
                 "WHERE tenant_id = %s AND generation_id = %s",
@@ -1862,7 +1913,7 @@ class GenerationManager:
             )
             self._audit(
                 conn,
-                "generation_promoted_unsafe_development",
+                "generation_promoted_certified" if self.certification_required else "generation_promoted_unsafe_development",
                 generation_id=generation_id,
                 payload={"previous_generation_id": active},
             )

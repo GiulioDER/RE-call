@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import threading
 import time
 
 import pytest
@@ -115,16 +116,28 @@ def test_the_event_loop_stays_responsive_while_a_tool_blocks():
 
 
 def test_concurrent_tool_bodies_overlap():
-    """Four 200 ms bodies offloaded to threads finish in well under the 800 ms serial cost."""
+    """All four bodies must enter before any can finish, independent of runner speed.
+
+    Red proof: replace recall_mcp.server._to_thread's run_sync offload with
+    ``return fn()``. The first body breaks the barrier and the arrival assertion
+    fails. The ten-second timeout only bounds a broken implementation's wait;
+    elapsed time is not evidence of concurrent execution.
+    """
     from recall_mcp import server as srv
 
-    async def scenario() -> float:
-        t0 = time.perf_counter()
-        await asyncio.gather(*(srv._to_thread(lambda: time.sleep(0.2)) for _ in range(4)))
-        return time.perf_counter() - t0
+    barrier = threading.Barrier(4, timeout=10)
 
-    elapsed = asyncio.run(scenario())
-    assert elapsed < 0.6, f"tool bodies serialised: {elapsed:.2f}s for 4x200ms"
+    def body() -> int | None:
+        try:
+            return barrier.wait()
+        except threading.BrokenBarrierError:
+            return None
+
+    async def scenario() -> list[int | None]:
+        return await asyncio.gather(*(srv._to_thread(body) for _ in range(4)))
+
+    arrivals = asyncio.run(scenario())
+    assert set(arrivals) == set(range(4)), "all four tool bodies must overlap at the barrier"
 
 
 @pytest.mark.parametrize("name", sorted(ALL_TOOLS))

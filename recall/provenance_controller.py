@@ -910,6 +910,8 @@ def evidence_card_from_payload(payload: Mapping[str, Any]) -> EvidenceCard:
 
     A card `recall_forget` erased (`recall.fact_redaction`) parses as a `RedactedEvidenceCard`.
     """
+    from recall.provenance_json import decode_jsonb
+    payload = decode_jsonb(payload)
     if payload.get("redacted") is True:
         return RedactedEvidenceCard.from_marker(payload)
 
@@ -1231,6 +1233,8 @@ class FactMaterializationOutbox(Protocol):
 
     def enqueue(self, event: FactEvent) -> None: ...
 
+    def status(self, event_id: str) -> str | None: ...
+
     def claim(
         self,
         *,
@@ -1435,7 +1439,7 @@ class InMemoryFactLedger:
 
     def __init__(self) -> None:
         self._events: list[FactEvent] = []
-        self._by_request: dict[str, FactEvent] = {}
+        self._by_request: dict[tuple[str, str], FactEvent] = {}
         self._lock = threading.RLock()
 
     def _event(
@@ -1484,7 +1488,7 @@ class InMemoryFactLedger:
 
     def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None:
         with self._lock:
-            event = self._by_request.get(request_id)
+            event = self._by_request.get((tenant_id, request_id))
             return event if event is not None and event.tenant_id == tenant_id else None
 
     def _project_candidates(self, *, tenant_id: str) -> tuple[FactEvent, ...]:
@@ -1517,7 +1521,7 @@ class InMemoryFactLedger:
                 fact=fact,
                 cards=cards,
             )
-            prior = self._by_request.get(request_id)
+            prior = self._by_request.get((tenant_id, request_id))
             if prior is not None:
                 if not replays_request(prior, fact, cards):
                     raise ValueError(DecisionCode.REQUEST_ID_REUSED)
@@ -1540,7 +1544,7 @@ class InMemoryFactLedger:
                     policy_version=policy_version,
                 )
                 self._events.append(event)
-                self._by_request[request_id] = event
+                self._by_request[(tenant_id, request_id)] = event
                 return LedgerApplyResult(event, duplicate=True)
             # A fact whose memos the store no longer serves is a DUPLICATE above (a re-application
             # must not list it twice) but never a conflict: a deleted memo cannot block a new value.
@@ -1564,7 +1568,7 @@ class InMemoryFactLedger:
                 policy_version=policy_version,
             )
             self._events.append(event)
-            self._by_request[request_id] = event
+            self._by_request[(tenant_id, request_id)] = event
             if supersedes_fact_ids:
                 replacement = self._event(
                     event_type="superseded",
@@ -1582,7 +1586,7 @@ class InMemoryFactLedger:
                 self._events.append(replacement)
                 # Registered as every durable ledger holds it (its id is unique per tenant there),
                 # so a later request under it is refused here too (`reserved_request_id`).
-                self._by_request[replacement.request_id] = replacement
+                self._by_request[(tenant_id, replacement.request_id)] = replacement
             return LedgerApplyResult(event)
 
     def record_decision(
@@ -1598,7 +1602,7 @@ class InMemoryFactLedger:
         now: datetime | None = None,
     ) -> FactEvent:
         with self._lock:
-            prior = self._by_request.get(request_id)
+            prior = self._by_request.get((tenant_id, request_id))
             if prior is not None:
                 return prior
             event = self._event(
@@ -1613,7 +1617,7 @@ class InMemoryFactLedger:
                 now=now,
             )
             self._events.append(event)
-            self._by_request[request_id] = event
+            self._by_request[(tenant_id, request_id)] = event
             return event
 
     @property
@@ -1997,6 +2001,17 @@ class ProvenanceController:
                     # An already applied outbox entry is a successful idempotent replay.  It is
                     # important not to invoke an external writer again in that case.
                     if not claimed:
+                        try:
+                            delivery_status = self.materialization_outbox.status(event.event_id)
+                        except Exception:  # BROAD-CATCH: fail-closed
+                            # This read owns no lease. Keep another worker's delivery state
+                            # intact rather than entering the materializer failure cleanup.
+                            delivery_status = None
+                        if delivery_status != "applied":
+                            return self._decision(
+                                request, DecisionCode.MATERIALIZATION_UNAVAILABLE,
+                                cards=cards, retried=retried, event=event,
+                            )
                         return self._decision(
                             request,
                             DecisionCode.DUPLICATE if result.duplicate else DecisionCode.APPLIED,

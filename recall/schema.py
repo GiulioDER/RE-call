@@ -45,6 +45,8 @@ GENERATION_TABLES = (
     "recall_graph_mentions_v1",
     "recall_graph_relations_v1",
     "recall_graph_relation_evidence_v1",
+    "recall_dependency_edges_v1",
+    "recall_dependency_diagnostics_v1",
     "recall_fact_ledger_events",
     "recall_evidence_cards",
     "recall_fact_materialization_outbox",
