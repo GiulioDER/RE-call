@@ -244,7 +244,9 @@ def test_adapter_keeps_tenant_generation_and_profile_bound_per_leg() -> None:
 
     # NUM-001 (CCA, PRs 699 to 690): the primary leg is the control result, so it is asked for the
     # request's k (5) rather than its plan limit (2); the rescue leg keeps its own limit.
-    assert seen == [("memory", "hashing-64", 5), ("code", "hashing-32", 1)]
+    # The legs run concurrently on the shared leg pool, so `seen` is in completion order; the
+    # binding per leg is what this asserts, not which leg finished first.
+    assert sorted(seen) == sorted([("memory", "hashing-64", 5), ("code", "hashing-32", 1)])
     assert registry.calls == [("memory", "hashing-64"), ("code", "hashing-32")]
     assert [hit.chunk.id for hit in merged.result.hits] == ["memory-chunk", "code-chunk"]
     diagnostics = federation_diagnostics(execution)
