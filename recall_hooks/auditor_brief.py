@@ -1055,7 +1055,11 @@ def _cca_roots(cwd: str, deadline: float) -> list[Path]:
             pass  # not a git work tree, or git is slow: the root is `cwd` itself
         try:
             listing = _finish_git(processes[1], deadline).decode("utf-8", "replace")
-        except subprocess.SubprocessError:
+        except subprocess.SubprocessError as error:
+            _log(
+                f"cwd {cwd}: git worktree list failed ({type(error).__name__}); "
+                "CCA runs in other worktrees are not checked"
+            )
             listing = ""
         for line in listing.splitlines():
             if line.startswith("worktree ") and (root := _worktree_root(line[len("worktree "):])) is not None:
@@ -1068,6 +1072,17 @@ def _cca_roots(cwd: str, deadline: float) -> list[Path]:
     return list(unique.values())[:MAX_CCA_ROOTS]
 
 
+def _may_launch_l1(state: dict[str, Any]) -> bool:
+    """True when the CCA run state `state` can still be dispatching L1 auditors: its `mode` is
+    DIFF (a missing mode is DIFF, as `PipelineState.from_json` reads it) and its `layers`, the
+    object keyed by recorded layer name, holds no `L1`. A `layers` that is missing or not an
+    object is read as no layer recorded, so the run still votes."""
+    if str(state.get("mode", "DIFF")).upper() != "DIFF":
+        return False
+    layers = state.get("layers")
+    return not (isinstance(layers, dict) and "L1" in layers)
+
+
 def cca_holdout_run(cwd: str, *, deadline: float) -> str | None:
     """The id of the CCA run open for `cwd` when its `memory-arm.json` names the `holdout` arm,
     else None. Never raises.
@@ -1075,8 +1090,10 @@ def cca_holdout_run(cwd: str, *, deadline: float) -> str | None:
     CCA withholds its prior-bugs brief from about one DIFF run in three to measure what memory
     adds; briefing that run's auditors here would hand them the records CCA withheld. A run is open
     at a candidate root (`_cca_roots`) when its state names a valid run id and that run's arm file
-    names the same run id. When every open run is in the holdout arm, the answer is their ids;
-    when open runs disagree, the arm is ambiguous, which is logged and answers None. Everything
+    names the same run id. Only a run that can be launching L1 auditors votes (`_may_launch_l1`):
+    a HUNT run or one past L1 is open in some worktree for hours and must not outvote the run
+    actually dispatching. When every voting run is in the holdout arm, the answer is their ids;
+    when voting runs disagree, the arm is ambiguous, which is logged and answers None. Everything
     else (no open run, unreadable JSON, a link, any other arm) answers None, so the brief is
     delivered as before.
     """
@@ -1084,10 +1101,13 @@ def cca_holdout_run(cwd: str, *, deadline: float) -> str | None:
         arms: dict[str, str] = {}
         for root in _cca_roots(cwd, deadline):
             if time.monotonic() > deadline:
+                _log(f"cwd {cwd}: the CCA holdout check reached its deadline before reading every worktree")
                 break
             state = _read_repo_json(root, CCA_STATE)
             run_id = state.get("run_id") if isinstance(state, dict) else None
             if not isinstance(run_id, str) or not _CCA_RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
+                continue
+            if not _may_launch_l1(state):
                 continue
             arm = _read_repo_json(root, (*CCA_RUNS, run_id, CCA_ARM_FILE))
             if isinstance(arm, dict) and arm.get("run_id") == run_id:
@@ -1162,7 +1182,7 @@ def pre_agent(payload: dict[str, Any]) -> int:
         if not block:
             return 0
         if not holdout.wait(started + budget - time.monotonic()):
-            _log(f"{agent_type}: the CCA holdout check did not finish within the budget; brief delivered")
+            _log(f"{agent_type}: cwd {cwd}: the CCA holdout check did not finish within the budget; brief delivered")
         elif (run_id := holdout.value()) is not None:
             _log(f"{agent_type}: CCA run {run_id} is in the memory holdout arm; prompt left unchanged")
             return 0

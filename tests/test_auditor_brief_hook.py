@@ -1589,12 +1589,26 @@ def test_the_probe_constant_is_set() -> None:
 # holdout run's auditors the very records CCA withheld, which voids the comparison.
 
 
-def _cca_run(root: Path, run_id: str = "r1", arm: str | None = "holdout", raw: str | None = None) -> None:
+def _cca_run(
+    root: Path,
+    run_id: str = "r1",
+    arm: str | None = "holdout",
+    raw: str | None = None,
+    *,
+    mode: str | None = None,
+    layers: dict[str, Any] | None = None,
+) -> None:
     """CCA's on-disk state for an open run `run_id` at `root`, and its arm file unless `arm` and
-    `raw` are both None. `raw`, when given, is the arm file's whole text."""
+    `raw` are both None. `raw`, when given, is the arm file's whole text. `mode` and `layers` are
+    written into the state only when given (CCA reads a missing mode as DIFF)."""
     audits = root / ".claude" / "audits"
     audits.mkdir(parents=True, exist_ok=True)
-    (audits / "run-state.json").write_text(json.dumps({"run_id": run_id, "tier": "STANDARD"}), encoding="utf-8")
+    state: dict[str, Any] = {"run_id": run_id, "tier": "STANDARD"}
+    if mode is not None:
+        state["mode"] = mode
+    if layers is not None:
+        state["layers"] = layers
+    (audits / "run-state.json").write_text(json.dumps(state), encoding="utf-8")
     if arm is None and raw is None:
         return
     run = audits / "runs" / run_id
@@ -1846,3 +1860,137 @@ def test_a_missing_git_still_honours_a_holdout_at_cwd(
     _cca_run(repo, arm="holdout")
     output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
     assert output is None, "a holdout run at cwd was briefed without git"
+
+
+# Final review fixes (review of 03cbc2df2). Invariants and the failure each catches:
+# - I1: only a run that can be launching L1 auditors votes on the arm, that is a DIFF run (a
+#   missing mode is DIFF) whose `layers` holds no `L1`. Caught: an open HUNT run, or a DIFF run
+#   past L1, both of which CCA records with arm `brief`, outvoting the holdout run that is
+#   actually dispatching, so the hook logs "ambiguous" and briefs a held-out run.
+# - I2: each silent fail-open in the holdout check (a failed `git worktree list`, the deadline
+#   cut in the root loop) is logged with the cwd. Caught: a holdout skipped with no trace.
+# - M2: the outer "did not finish within the budget" line names the cwd.
+
+
+def test_an_open_hunt_run_does_not_outvote_a_diff_holdout(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (every open run
+    votes), node id
+    tests/test_auditor_brief_hook.py::test_an_open_hunt_run_does_not_outvote_a_diff_holdout failed
+    on "a holdout run was briefed beside an open HUNT run". Targets the mode check in
+    `_may_launch_l1` and its use in `cca_holdout_run`."""
+    _cca_run(repo, run_id="r1", arm="brief", mode="HUNT", layers={})
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout", mode="DIFF", layers={})
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "a holdout run was briefed beside an open HUNT run"
+    assert "CCA run r2 is in the memory holdout arm" in env.read_text(encoding="utf-8")
+
+
+def test_an_open_run_past_l1_does_not_outvote_a_diff_holdout(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (every open run
+    votes), node id
+    tests/test_auditor_brief_hook.py::test_an_open_run_past_l1_does_not_outvote_a_diff_holdout
+    failed on "a holdout run was briefed beside a run past L1". Targets the layers check in
+    `_may_launch_l1`; the entries have the shape CCA's `record` stores (keyed by layer name)."""
+    past = {"L0": {"seq": 1, "source": "orchestrator"}, "L1": {"seq": 2, "source": "orchestrator"}}
+    _cca_run(repo, run_id="r1", arm="brief", mode="DIFF", layers=past)
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout")
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "a holdout run was briefed beside a run past L1"
+
+
+def test_two_diff_runs_before_l1_that_disagree_stay_ambiguous(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): mutation of `_may_launch_l1` to
+    `return False` (no run votes), node id
+    tests/test_auditor_brief_hook.py::test_two_diff_runs_before_l1_that_disagree_stay_ambiguous
+    failed on "a disagreement was not logged". Targets the voting filter, which must keep both
+    pre-L1 DIFF runs (one with a lower-case mode, which CCA upper-cases)."""
+    _cca_run(repo, run_id="r1", arm="brief", mode="DIFF", layers={"L0": {"seq": 1}})
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout", mode="diff", layers={})
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    assert "ambiguous" in _log_text(env), "a disagreement was not logged"
+
+
+def test_a_failed_worktree_listing_is_logged_with_the_cwd(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (the failure
+    swallowed into an empty listing), node id
+    tests/test_auditor_brief_hook.py::test_a_failed_worktree_listing_is_logged_with_the_cwd failed
+    on "a failed git worktree list left no trace". Targets the `listing = ""` branch of
+    `_cca_roots`."""
+    real_finish = auditor_brief._finish_git
+
+    def finish(process: Any, deadline: float, data: bytes | None = None) -> bytes:
+        out = real_finish(process, deadline, data)
+        if "worktree" in process.args:
+            raise subprocess.TimeoutExpired(process.args, 1.0)
+        return out
+
+    monkeypatch.setattr(auditor_brief, "_finish_git", finish)
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    log = _log_text(env)
+    assert f"cwd {repo}: git worktree list failed (TimeoutExpired)" in log, (
+        f"a failed git worktree list left no trace: {log!r}"
+    )
+
+
+def test_the_deadline_cut_in_the_root_loop_is_logged_with_the_cwd(env: Path, repo: Path) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (a bare
+    `break`), node id
+    tests/test_auditor_brief_hook.py::test_the_deadline_cut_in_the_root_loop_is_logged_with_the_cwd
+    failed on "the deadline cut left no trace". Targets the deadline `break` in
+    `cca_holdout_run`. A deadline already past still lets git answer (`MIN_GIT_WAIT_SECONDS`), so
+    the loop is reached and cut on its first root."""
+    _cca_run(repo, arm="holdout")
+    assert auditor_brief.cca_holdout_run(str(repo), deadline=time.monotonic() - 1.0) is None
+    log = _log_text(env)
+    assert f"cwd {repo}: the CCA holdout check reached its deadline" in log, (
+        f"the deadline cut left no trace: {log!r}"
+    )
+
+
+def test_the_outer_holdout_timeout_names_the_cwd(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (the line named
+    the agent type only), node id
+    tests/test_auditor_brief_hook.py::test_the_outer_holdout_timeout_names_the_cwd failed on "the
+    holdout timeout line does not name the cwd". Targets the `holdout.wait` log line in
+    `pre_agent`. The brief is still delivered: a slow check never blocks or alters a launch."""
+    release = threading.Event()
+
+    def slow(cwd: str, *, deadline: float) -> str | None:
+        release.wait(10.0)
+        return None
+
+    monkeypatch.setattr(auditor_brief, "cca_holdout_run", slow)
+    monkeypatch.setenv("RECALL_AUDITOR_BRIEF_BUDGET", "2")
+    try:
+        assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    finally:
+        release.set()
+    log = _log_text(env)
+    assert f"bug-auditor: cwd {repo}: the CCA holdout check did not finish" in log, (
+        f"the holdout timeout line does not name the cwd: {log!r}"
+    )
