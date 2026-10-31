@@ -7,10 +7,10 @@ actually produced their leaderboard's signed manifests (the clone ships them und
 Where the website and the code disagree, this document says so and sides with the code, because
 the signed manifests agree with the code.
 
-**Status: nothing has been run.** This is preparation. The RE-call configuration is to be
-discussed before the smoke test, and a pre-registration must be written and committed before the
-full measured run (`/preregister`; the guard denies measurement commands while anything under
-`docs/preregistrations/` is uncommitted).
+**Status: smoke runs completed and a champion configuration selected.** The retained smoke
+observations and configuration are recorded below. They are separate from the evidence for a
+full official run. Any new measured run requires its own committed pre-registration before
+execution (`/preregister`).
 
 ## 1. What Bench'd is
 

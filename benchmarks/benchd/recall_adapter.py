@@ -6,6 +6,11 @@ harness clone as ``benchd_harness/adapters/recall_adapter.py`` and registered in
 ``recall_interop.memory_benchmarks.RecallBackend`` (the mem0-harness seam), restated where they
 apply because each one changes a number.
 
+Prior work: this adapter follows Bench'd's BaseAdapter contract and reuses RE-call's
+indexing and retrieval stack. Its faithfulness rules match
+``recall_interop.memory_benchmarks.RecallBackend``; the lifecycle wiring here adapts
+that approach to Bench'd's reset/ingest/recall interface.
+
 Bench'd calls, per benchmark item (``benchd_harness/runner.py``):
 
     reset() -> ingest(turns) -> recall(query) -> str
@@ -275,20 +280,20 @@ class RecallAdapter(BaseAdapter):
         )
         digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
-        if digest in self._tenants:
+        if self._cache and digest in self._tenants:
             self._checkout_store(digest)
             self._active = digest
             return
-        if not self._cache and self._active and self._active in self._tenants:
-            # Cache disabled: drop the previous conversation's rows before building the next,
-            # so storage stays bounded to one corpus at a time.
-            old = self._checkout_store(self._active)
-            sources = sorted({c.source for c in old.iter_chunks()})
-            if sources:
-                old.delete_sources(sources)
-            old.close()
-            self._stores.pop(self._active, None)
-            self._tenants.pop(self._active, None)
+        if not self._cache:
+            # reset() clears _active, but retained corpora still need cleanup before rebuilding.
+            for previous in tuple(self._tenants):
+                old = self._checkout_store(previous)
+                sources = sorted({c.source for c in old.iter_chunks()})
+                if sources:
+                    old.delete_sources(sources)
+                old.close()
+                self._stores.pop(previous, None)
+                self._tenants.pop(previous, None)
 
         docs = (
             self._docs_by_session(turns)

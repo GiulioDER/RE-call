@@ -13,7 +13,7 @@
 # It never wipes a database: point RECALL_BENCHD_DSN at a fresh, dedicated instance.
 set -euo pipefail
 
-HARNESS_DIR=${1:?harness dir}
+HARNESS_DIR=$(cd "${1:?harness dir}" && pwd)
 BENCH=${2:?benchmark slug (longmemeval-v1 | locomo-v1)}
 WORKERS=${3:-4}  # measured 2026-08-23: 2.4x at 4 workers, score stable 12/13/12 across 1/4/8
 REPO_DIR=$(cd "$(dirname "$0")/../.." && pwd)
@@ -95,6 +95,12 @@ python "$REPO_DIR/benchmarks/benchd/count_tokens.py" manifest "$MANIFEST" > "$OU
 python - "$OUT" "$BENCH" "$WORKERS" "$RECALL_SHA" "$HARNESS_SHA" "$ADAPTER_REPO_SHA" "$MANIFEST" <<'EOF'
 import json, os, sys
 out, bench, workers, recall_sha, harness_sha, adapter_sha, manifest = sys.argv[1:8]
+# Public provenance contains tuning settings only, never connection strings or unknown keys.
+config_keys = (
+    "EMBEDDER", "RERANKER", "SPARSE", "SPARSE_MODEL", "TOP_K", "GRANULARITY",
+    "SYNTH", "SYNTH_REASONING", "SYNTH_MAX_TOKENS", "THRESHOLD", "ABSTAIN",
+    "INGEST_CACHE", "STORE_CAP", "TABLE", "VERSION_TAG",
+)
 record = {
     "benchmark": bench,
     "workers": int(workers),
@@ -104,7 +110,10 @@ record = {
     "harness_patch": "benchmarks/benchd/harness-workers.patch (adds --workers; per-item pipeline unchanged)",
     "adapter_sha256": adapter_sha,
     "manifest": manifest,
-    "config": {k: v for k, v in os.environ.items() if k.startswith("RECALL_BENCHD_")},
+    "config": {
+        f"RECALL_BENCHD_{key}": os.environ[f"RECALL_BENCHD_{key}"]
+        for key in config_keys if f"RECALL_BENCHD_{key}" in os.environ
+    },
 }
 with open(os.path.join(out, "run-record.json"), "w") as fh:
     json.dump(record, fh, indent=2, sort_keys=True)
