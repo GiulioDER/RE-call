@@ -335,8 +335,7 @@ def next_steps(dsn: str, *, provisioned: bool, compose_path: Path | None) -> tup
     shown = dsn if provisioned else "<your dsn>"
     lines = [
         "Next, in the order most people want them:",
-        f"  index your own notes    recall --dsn {shown} --table {QUICKSTART_TABLE} \\",
-        f"                            --tenant {QUICKSTART_TENANT} index <folder>",
+        "  index your own notes    recall setup        (a separate corpus from this demo)",
         "  fit a real threshold    recall setup        (the demo threshold above is not one)",
         "  give it to Claude Code  recall setup        (registers the MCP server and hooks)",
     ]
@@ -351,7 +350,7 @@ def next_steps(dsn: str, *, provisioned: bool, compose_path: Path | None) -> tup
     lines.extend(
         [
             "",
-            "Giving this to the Claude Code plugin (/plugin install recall@re-call)?",
+            "Giving this fictional demo to the Claude Code plugin (/plugin install recall@re-call)?",
             "It asks for four values, and NONE of them is what it fills in by default:",
             f"  Database DSN    {shown}",
             f"  Table           {QUICKSTART_TABLE}",
@@ -380,7 +379,7 @@ def remove_stack(root: Path | None = None) -> bool:
     compose_path = target / COMPOSE_NAME
     if not compose_path.exists():
         return False
-    subprocess.run(
+    result = subprocess.run(
         [
             "docker",
             "compose",
@@ -396,9 +395,14 @@ def remove_stack(root: Path | None = None) -> bool:
         encoding="utf-8",
         errors="replace",
         timeout=300,
-        # Not `check=True`: a stack that is already gone is the outcome this asks for, and a reader
-        # running `--remove` twice should not get a traceback the second time.
+        # Inspect the outcome before discarding the metadata needed for another attempt.
         check=False,
     )
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise SystemExit(
+            f"could not remove the quickstart stack: {detail}\n"
+            f"The compose file is retained at {compose_path}; fix Docker and retry."
+        )
     compose_path.unlink(missing_ok=True)
     return True

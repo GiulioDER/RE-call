@@ -4,8 +4,9 @@ import json
 import os
 import re
 import warnings
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -64,6 +65,13 @@ if TYPE_CHECKING:  # the pool extra is optional; the annotation must not require
     from psycopg_pool import ConnectionPool
 
     from recall.pool import SharedPool
+
+# An indexing operation must write on the session holding its advisory lock. A
+# context-local map supports nested stores without sharing bindings with tenant
+# views or unrelated threads. Each context installs a new map, never mutating it.
+_INDEX_CONNECTIONS: ContextVar[Mapping[PgVectorStore, psycopg.Connection] | None] = ContextVar(
+    "recall_index_connections", default=None
+)
 
 _NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
 
@@ -679,6 +687,31 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             pass
         self._conn = self._connect()
 
+    @contextmanager
+    def _indexing_session(self, conn: "psycopg.Connection") -> Iterator[None]:
+        """Use the lock-owning session for this indexing call, without reconnecting."""
+        token = _INDEX_CONNECTIONS.set({**(_INDEX_CONNECTIONS.get() or {}), self: conn})
+        try:
+            yield
+        finally:
+            _INDEX_CONNECTIONS.reset(token)
+
+    def _index_connection(self) -> "psycopg.Connection":
+        """Open a dedicated guard/write session with the normal store policy."""
+        if self._closed:
+            raise RuntimeError("store is closed")
+        if self._shared is None:
+            return self._connect()
+        conn = self._shared._connect_dedicated()
+        try:
+            # The shared pool's timeout and transport settings remain authoritative.
+            # This session is dedicated to one tenant and is never returned to it.
+            conn.execute("SELECT set_config(%s, %s, false)", (TENANT_GUC, self._tenant))
+        except Exception:  # BROAD-CATCH: fail-closed
+            conn.close()
+            raise
+        return conn
+
     def _with_retry(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
         """Run ``op(conn)``; on a broken-connection error, reconnect once and retry.
 
@@ -700,6 +733,10 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         """
         if self._closed:
             raise RuntimeError("store is closed")
+        pinned = (_INDEX_CONNECTIONS.get() or {}).get(self)
+        if pinned is not None:
+            # Reconnecting here would resume writes after losing the writer lock.
+            return _observed_db_call(pinned, op)
         if self._shared is not None:
             return self._with_retry_shared(op)
         if self._pool is not None:
@@ -2441,7 +2478,10 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         """
         if self._closed:
             raise RuntimeError("store is closed")
-        if self._shared is not None:
+        pinned = (_INDEX_CONNECTIONS.get() or {}).get(self)
+        if pinned is not None:
+            yield pinned
+        elif self._shared is not None:
             # One transaction spanning the whole iteration, deliberately. A server-side cursor
             # lives in the transaction that declared it, so the tenant `SET LOCAL` and the cursor
             # have exactly the same lifetime here — which is what a streaming read needs, and is

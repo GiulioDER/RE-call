@@ -39,7 +39,7 @@ import os
 import socket
 import time
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager, nullcontext, suppress
 from typing import TYPE_CHECKING, Any
 
 import psycopg
@@ -70,7 +70,7 @@ class ConcurrentIndex(RuntimeError, RecallError):
 
 
 def lock_name(table: str, tenant: str) -> str:
-    """The advisory-lock name for one corpus.
+    """The advisory-lock name for one corpus, given its canonical table identifier.
 
     `\\x1f` (unit separator) joins the parts rather than `:`, so a tenant that contains the
     separator cannot be made to collide with another table's key.
@@ -140,7 +140,7 @@ def single_writer(
     Yields `False`, having locked nothing, in exactly two cases, and both are reported rather than
     assumed:
 
-    * **the store has no DSN** — an in-memory or stubbed store used by a test. There is no shared
+    * **the store has no DSN or connection factory** — an in-memory or stubbed store used by a test. There is no shared
       database, so there is nothing to serialise against;
     * **the escape hatch is set** — `RECALL_INDEX_ALLOW_CONCURRENT`, which logs a warning.
 
@@ -149,12 +149,13 @@ def single_writer(
     now rather than discovered halfway through an embedding run.
     """
     dsn = getattr(store, "_dsn", None)
+    connect = getattr(store, "_index_connection", None)
     # `str(... or default)`: a store is duck-typed here on purpose (tests pass stubs, and the
     # generation store is a subclass), so neither attribute is guaranteed to be a string. A `None`
     # tenant reaching the key would build a lock name that reads plausibly and matches nothing.
     table = str(getattr(store, "_table", None) or "chunks")
     tenant = str(getattr(store, "_tenant", None) or getattr(store, "tenant", None) or "default")
-    if not dsn:
+    if not dsn and connect is None:
         yield False
         return
     source = os.environ if env is None else env
@@ -167,11 +168,28 @@ def single_writer(
         yield False
         return
 
-    key = lock_name(table, tenant)
-    conn = psycopg.connect(
-        dsn, autocommit=True, connect_timeout=10, application_name=_application_name(table, tenant)
-    )
+    if connect is not None:
+        conn = connect()
+    else:
+        assert dsn is not None  # the no-DSN/no-factory case returned above
+        conn = psycopg.connect(dsn, autocommit=True, connect_timeout=10)
     try:
+        conn.execute(
+            "SELECT set_config('application_name', %s, false)",
+            (_application_name(table, tenant),),
+        )
+        # Ask PostgreSQL to fold and truncate the unquoted identifier exactly as
+        # the store's SQL does, including the server encoding's byte limit.
+        canonical = conn.execute(
+            "SELECT (parse_ident(%s))[1]::name::text", (table,)
+        ).fetchone()
+        if canonical is None or not canonical[0]:
+            raise ValueError("could not resolve the indexing table identifier")
+        key = lock_name(canonical[0], tenant)
+        # Embedding can take longer than a server's idle-session timeout. This
+        # setting is confined to the dedicated guard; unexpected loss still fails
+        # closed because actual store operations use this same session below.
+        conn.execute("SET idle_session_timeout = 0")
         deadline = time.monotonic() + wait_seconds
         while True:
             row = conn.execute(
@@ -191,7 +209,9 @@ def single_writer(
                 )
             time.sleep(_POLL_SECONDS)
         try:
-            yield True
+            bind = getattr(store, "_indexing_session", None)
+            with bind(conn) if bind is not None else nullcontext():
+                yield True
         finally:
             with suppress(Exception):
                 conn.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (key,))
