@@ -507,7 +507,7 @@ They are observations, not automatic failures.
 | `recall.calibration_v2_bounds` | 2 | 16 |
 | `recall.capabilities` | 0 | 0 |
 | `recall.check` | 4 | 29 |
-| `recall.claude_code` | 5 | 127 |
+| `recall.claude_code` | 6 | 127 |
 | `recall.cli` | 5 | 107 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._lite` | 3 | 105 |
@@ -715,7 +715,7 @@ They are observations, not automatic failures.
 | `recall.scope` | 0 | 0 |
 | `recall.scope_prior` | 2 | 6 |
 | `recall.security_policy` | 2 | 2 |
-| `recall.seed` | 4 | 105 |
+| `recall.seed` | 5 | 105 |
 | `recall.semantic_graph` | 4 | 26 |
 | `recall.semantic_graph._build` | 4 | 24 |
 | `recall.semantic_graph._model` | 2 | 14 |

@@ -3,6 +3,10 @@
 The adapter consumes the JSONL stream emitted by ``codex exec --json``. It does not decide how
 RE-call is configured. Callers provide separate environments or Codex configuration directories
 for the two variants, so the benchmark can keep the only intended difference explicit.
+
+Prior work: the existing paired runner and record contracts in
+``benchmarks/agent_ab/runner.py`` and ``benchmarks/agent_ab/schema.py``;
+this module adapts Codex JSONL output to those contracts.
 """
 
 from __future__ import annotations
@@ -120,6 +124,8 @@ def parse_codex_jsonl(stream: str) -> list[dict[str, Any]]:
 
 
 def _usage_totals(events: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Sum counters only when every completed turn reports a valid count for them."""
+
     totals = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -131,13 +137,20 @@ def _usage_totals(events: Sequence[Mapping[str, Any]]) -> dict[str, int]:
         if _event_type(event) not in {"turn.completed", "turn_complete"}:
             continue
         usage = _event_payload(event).get("usage")
-        if not isinstance(usage, Mapping):
-            continue
         observed = True
-        for key in totals:
-            value = usage.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
+        for key in tuple(totals):
+            value = usage.get(key) if isinstance(usage, Mapping) else None
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and value >= 0
+                and (not isinstance(value, float) or value.is_integer())
+            ):
                 totals[key] += int(value)
+            else:
+                # A partial sum is not a measured total. Once a turn leaves this counter
+                # unknown, a later observation cannot repair the missing contribution.
+                del totals[key]
     return totals if observed else {}
 
 

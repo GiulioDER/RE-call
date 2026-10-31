@@ -20,6 +20,9 @@ import recall_hooks
 
 def _configure(tmp_path: Path, monkeypatch: Any, **values: Any) -> Path:
     config = tmp_path / "recall-hook.json"
+    # Fixture alignment: installed local configurations carry an absolute project root.
+    # Existing behavior assertions are unchanged. Missing-root refusal has a separate test.
+    values.setdefault("project_root", str(tmp_path))
     config.write_text(json.dumps(values), encoding="utf-8")
     monkeypatch.setattr(recall_hooks, "config_path", lambda: config)
     return config
