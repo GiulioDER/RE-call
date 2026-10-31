@@ -32,6 +32,7 @@ from recall.store import (
     EdgeCandidates,
     PgVectorStore,
     SupersessionGraph,
+    _first_write_sql,
     resolve_supersession_graph,
     supersession_rows_sql,
 )
@@ -69,17 +70,6 @@ def _generation_dense_search() -> str:
     server refuses a bad value at boot instead of failing every search after it.
     """
     return parse_generation_dense_search(os.environ.get(GENERATION_DENSE_SEARCH_ENV))
-
-
-def _first_write_sql(alias: str = "") -> str:
-    """SQL for a generation row's first write: `first_indexed_at`, or `indexed_at` where it is NULL.
-
-    Every read of that date in this module goes through here. A generation row's `indexed_at` is
-    the build that wrote or copied it, so a read that served it in place of `first_indexed_at`
-    dated the whole corpus to the last rebuild (#835); one definition keeps a new read path in
-    this module from doing that again.
-    """
-    return f"COALESCE({alias}first_indexed_at, {alias}indexed_at)"
 
 
 class ImmutableGenerationError(RuntimeError, RecallError):
@@ -172,11 +162,13 @@ class GenerationStore(PgVectorStore):
     _SOURCE_COL = "source_uri"
 
     def _row_scope(self, alias: str = "") -> tuple[str, dict[str, Any]]:
-        """Confine a shared read to the pinned generation.
+        """Confine a shared read to the pinned generation; `_row_scope_args` is its positional twin.
 
-        Every inherited read goes through here, and that is the whole reason it exists: a tenant
-        holds every generation it has ever built in this one table, so a tenant-only read would
-        mix them. A folder inventory would list values only a retired generation holds, a
+        The inherited reads that name the chunk table go through one of the two, and that is the
+        whole reason they exist: a tenant holds every generation it has ever built in this one
+        table, so a tenant-only read would mix them. Two inherited reads do NOT yet:
+        `explicit_superseded_chunk_ids` and `readiness_facts` still read the whole tenant, listed as
+        undecided in `tests/test_generation_store_row_scope.py::EXEMPT`. A folder inventory would list values only a retired generation holds, a
         centroid would average two generations of one folder into a vector describing neither,
         and `top_cosine` would read the parent's vectors during carry-forward and report that the
         corpus had not moved. The generation is resolved once per statement, before it runs.
