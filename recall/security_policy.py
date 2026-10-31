@@ -79,8 +79,11 @@ _REDACTIONS: dict[str, re.Pattern[str]] = {
     # at least one a digit (a hyphen alone is not enough: "bearer self-identification" is prose).
     # "The bearer of bad news" is prose, and a redaction cannot be undone in the stored text.
     "secret": re.compile(
-        r"(?i)(?:\b(?:[a-z0-9]+_)*(?:api[_ -]?key|token|secret|password)[\"']?\s*[:=]\s*[\"']?"
-        r"[^\s,;\"']+"
+        # A quoted value is taken whole, to its closing quote and on through anything glued to it
+        # (`TOKEN="abc"def` is abcdef to a shell); an unquoted one runs to whitespace, a comma or a
+        # semicolon, as it always did, so `password=it'sx` is redacted entirely.
+        r"(?i)(?:\b(?:[a-z0-9]+_)*(?:api[_ -]?key|token|secret|password)[\"']?\s*[:=]\s*"
+        r"(?:(?:\"[^\"\n]*\"|'[^'\n]*')[^\s,;\"'}\]]*|[^\s,;]+)"
         r"|\bauthorization[\"']?\s*[:=]\s*[\"']?bearer\s+[^\s,;\"']+"
         r"|\bbearer\s+(?=[a-z0-9._~+/=-]*[0-9])[a-z0-9._~+/=-]{16,})"
     ),

@@ -135,6 +135,30 @@ def test_secret_redaction_covers_prefixed_quoted_and_bearer_forms(text: str, lea
 
 
 @pytest.mark.parametrize(
+    ("text", "leaked"),
+    [
+        ("password=it'sx", "sx"),
+        ('token: "a\'b c"', "b c"),
+        ("secret='x\"y'", "y"),
+        ('token="abc"def', "def"),
+    ],
+)
+def test_secret_redaction_takes_a_value_containing_quotes_whole(text: str, leaked: str) -> None:
+    """SEC-001 follow-up: a value containing a quote is redacted whole, as before this hunt.
+
+    Red proof: on 3daf7cf (this PR's first commit) the value stopped at the first quote, so
+    `password=it'sx` came back as `[REDACTED:secret]'sx` and `leaked not in redacted` failed.
+    The pre-hunt pattern (`[^\\s,;]+`) redacted these whole. Found by the post-commit security
+    review; the last case (text glued after the closing quote) by the regression review of the
+    first follow-up, against which it was red too. Production line: the value group of
+    `_REDACTIONS["secret"]`.
+    """
+    policy = SourceSecurityPolicy((SourceRule("notes", redactions=("secret",)),))
+    redacted, _ = policy.redact("notes/a.md", text, AccessContext("alice", "t"))
+    assert leaked not in redacted
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "the secret garden",
