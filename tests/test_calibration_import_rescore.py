@@ -310,6 +310,22 @@ def test_require_scores_reproduce_names_how_the_scores_disagree(measured, messag
         _require_scores_reproduce(_fitted(ANSWERABLE, UNANSWERABLE), *measured)
 
 
+@pytest.mark.parametrize("position", [0, 7], ids=["first", "later"])
+def test_a_non_finite_fresh_score_is_refused(position: int) -> None:
+    """NUM-003: `max()` over differences and `> tol` both pass a NaN through.
+
+    A NaN in the first position made the whole class's largest difference NaN, and `nan > 0.01`
+    is False; a NaN later was skipped by `max()`. Either way that query went unchecked. Fresh
+    scores come from this generation (a zero-norm query vector is one documented source), so a
+    NaN is refused by name rather than compared.
+    Red: on the first fix (PR 1095 at e213d6ec0) both cases passed the check (`DID NOT RAISE`).
+    """
+    fresh = list(ANSWERABLE)
+    fresh[position] = float("nan")
+    with pytest.raises(CalibrationBindingError, match="non-finite"):
+        _require_scores_reproduce(_fitted(ANSWERABLE, UNANSWERABLE), fresh, list(UNANSWERABLE))
+
+
 def test_require_scores_reproduce_still_accepts_embedding_noise() -> None:
     """Control: the measured run-to-run movement of a hosted model (up to 0.0051) passes."""
     _require_scores_reproduce(

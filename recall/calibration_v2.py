@@ -580,6 +580,13 @@ def _require_scores_reproduce(
                 f"bundle records {len(stored)} {name} scores, but its query set re-scores to "
                 f"{len(fresh)} on this generation"
             )
+        # Before the comparison, because NaN fails it open: `max()` either skips a NaN or
+        # returns it, and `nan > tolerance` is False, so the query would go unchecked.
+        if not all(math.isfinite(value) for value in fresh):
+            raise CalibrationBindingError(
+                f"this generation re-scored a {name} query to a non-finite cosine, so the "
+                f"bundle cannot be checked against it; recalibrate here instead"
+            )
         worst = max((abs(a - b) for a, b in zip(stored, fresh, strict=True)), default=0.0)
         if worst > _RESCORE_TOLERANCE:
             raise CalibrationBindingError(
