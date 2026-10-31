@@ -6,6 +6,11 @@ harness clone as ``benchd_harness/adapters/recall_adapter.py`` and registered in
 ``recall_interop.memory_benchmarks.RecallBackend`` (the mem0-harness seam), restated where they
 apply because each one changes a number.
 
+Prior work: this adapter follows Bench'd's BaseAdapter contract and reuses RE-call's
+indexing and retrieval stack. Its faithfulness rules match
+``recall_interop.memory_benchmarks.RecallBackend``; the lifecycle wiring here adapts
+that approach to Bench'd's reset/ingest/recall interface.
+
 Bench'd calls, per benchmark item (``benchd_harness/runner.py``):
 
     reset() -> ingest(turns) -> recall(query) -> str
