@@ -673,6 +673,19 @@ def refusal_message(exc: TrustRefusal) -> str:
 
 
 def _cmd_scopes(args: argparse.Namespace) -> None:
+    # Inventory aggregates cannot currently apply source authorization. Refuse before reading
+    # even Lite metadata: labels and counts can reveal sources that this caller cannot retrieve.
+    try:
+        source_policy = load_source_policy()
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"recall scopes: cannot load source policy ({type(exc).__name__})"
+        ) from exc
+    if source_policy is not None:
+        raise SystemExit(
+            "recall scopes: source policy is configured, but scope inventory cannot enforce "
+            "source authorization"
+        )
     # Scope inventory reads only provenance and counts. It deliberately does not resolve an
     # embedder, because the command is documented as a cheap metadata listing and must work on a
     # minimal install without optional embedding packages. The sentinel dimension is unused here;

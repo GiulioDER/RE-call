@@ -317,7 +317,7 @@ def _trusted_search(
     if configured_dependency_mode is None:
         configured_dependency_mode = environment_source.get("RECALL_DEPENDENCY_INVALIDATION", "off")
     if configured_dependency_mode not in {"off", "enforce"}:
-        configured_dependency_mode = "off"
+        raise ValueError("dependency_mode must be 'off' or 'enforce'")
     dependency_projection: DependencyProjection | None = None
     dependency_failure: TrustFailureCode | None = None
     # A dependency fault must be distinguishable from a calibration verdict. Reading the binding
