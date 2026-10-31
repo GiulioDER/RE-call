@@ -13,13 +13,11 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 
-
 from recall.calibration import Calibration
-from recall.lineage import canonical_json, canonical_sha256
 from recall.errors import RecallError
+from recall.lineage import canonical_json, canonical_sha256
 
 ARTIFACT_VERSION = 2
-
 
 
 class CalibrationStatus(StrEnum):
@@ -97,23 +95,6 @@ _CERTIFIED_STATES = frozenset(
 #: Model name used when an embedder identity carries none. One constant because the import
 #: check re-derives a `Calibration` that must name the same embedder serving does.
 _FALLBACK_EMBEDDER = "bound-v2"
-
-#: Float tolerance for re-deriving an imported artifact's statistics from its own scores. A
-#: legitimate round trip is exact (every column is DOUBLE PRECISION and the functions are the
-#: ones `calibrate` used), so this absorbs only representation noise, never a different fit.
-_REDERIVE_TOLERANCE = 1e-9
-
-#: How far a re-scored query's best cosine may sit from the score a bundle recorded for it, on
-#: import. Not a float-noise bound: embedding the same query again is not deterministic on a hosted
-#: model, measured moving a best cosine by up to 0.0051 between calls (`recall.served_gap`), so
-#: an honest bundle re-scores within about that. It is also the price of the check: a forger who
-#: must stay within it can move each score, and so a fitted threshold, by at most this much.
-_RESCORE_TOLERANCE = 0.01
-
-#: Tolerance on the cumulative carry-forward delta. The chain total is a sum of floats, and a
-#: chain that is exactly at the bound can sum a few ulps above it (25 steps of 0.01 sum to
-#: 0.25000000000000006), which refused a chain the bound is documented to allow.
-_CUMULATIVE_DELTA_TOLERANCE = 1e-9
 
 
 def _frozen_json(value: Any) -> Any:
@@ -204,9 +185,10 @@ def _require_carry_forward(value: Mapping[str, Any], threshold: float, scale: fl
     if not 0.0 <= float(delta) <= 1.0:
         raise CalibrationBindingError("carry-forward corpus_delta must be a fraction in [0, 1]")
     # `cumulative_corpus_delta` is a NEWER key than the step delta above, so artifacts written
-    # before it existed legitimately lack it (see `_cumulative_corpus_delta`, which reads such an
-    # artifact's step delta in its place). When present it must at least be a sane number; it is
-    # not capped at 1.0 because a sum of per-step fractions is not itself a fraction.
+    # before it existed legitimately lack it (see `_cumulative_corpus_delta` in
+    # `recall.calibration_v2_bounds`, which reads such an artifact's step delta in its place).
+    # When present it must at least be a sane number; it is not capped at 1.0 because a sum of
+    # per-step fractions is not itself a fraction.
     cumulative = value.get("cumulative_corpus_delta")
     if cumulative is not None:
         if (

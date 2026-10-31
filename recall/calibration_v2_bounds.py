@@ -10,16 +10,28 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, TypedDict
 
-
 from recall.calibration import Calibration, from_samples, separability
-
 from recall.calibration_v2_artifact import (
-    CalibrationBindingError,
-    _REDERIVE_TOLERANCE,
-    _RESCORE_TOLERANCE,
-    _CUMULATIVE_DELTA_TOLERANCE,
     CalibrationArtifactV2,
+    CalibrationBindingError,
 )
+
+#: Float tolerance for re-deriving an imported artifact's statistics from its own scores. A
+#: legitimate round trip is exact (every column is DOUBLE PRECISION and the functions are the
+#: ones `calibrate` used), so this absorbs only representation noise, never a different fit.
+_REDERIVE_TOLERANCE = 1e-9
+
+#: How far a re-scored query's best cosine may sit from the score a bundle recorded for it, on
+#: import. Not a float-noise bound: embedding the same query again is not deterministic on a hosted
+#: model, measured moving a best cosine by up to 0.0051 between calls (`recall.served_gap`), so
+#: an honest bundle re-scores within about that. It is also the price of the check: a forger who
+#: must stay within it can move each score, and so a fitted threshold, by at most this much.
+_RESCORE_TOLERANCE = 0.01
+
+#: Tolerance on the cumulative carry-forward delta. The chain total is a sum of floats, and a
+#: chain that is exactly at the bound can sum a few ulps above it (25 steps of 0.01 sum to
+#: 0.25000000000000006), which refused a chain the bound is documented to allow.
+_CUMULATIVE_DELTA_TOLERANCE = 1e-9
 
 #: Largest corpus delta a threshold may be carried across without being refitted, as a fraction of
 #: the union of parent and child source URIs.
