@@ -64,6 +64,10 @@ def test_detached_child_does_not_import_the_project_package(tmp_path, monkeypatc
     )
     environment = dict(os.environ)
     environment.pop("PYTHONSAFEPATH", None)
+    # Stats profiling requires mutmut configuration in cwd, which this child leaves.
+    # Keep real mutant selections so the launcher's security regression still runs.
+    if environment.get("MUTANT_UNDER_TEST") == "stats":
+        environment.pop("MUTANT_UNDER_TEST")
     # The trusted snapshot is importable after cwd. Baseline -m still puts cwd first.
     environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
     environment["RECALL_HOOK_CONFIG_HOME"] = str(tmp_path / "empty-config")
