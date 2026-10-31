@@ -254,3 +254,31 @@ def test_a_module_imported_only_in_a_parenthesised_block_is_found(tmp_path: Path
 
     assert "tests/test_paren.py" in _selection(env)
     assert "Changed modules that no test imports" not in summary
+
+
+def test_a_module_split_out_of_store_is_mutated_with_the_tests_of_store(tmp_path: Path) -> None:
+    """CCA of #1093, STAKES-001: code split out of recall/store.py (S7d) is reached by tests
+    through `recall.store`, which re-exports or inherits it, so a module like
+    recall/store_mutation.py that no test imports directly still gets `recall.store`'s importers,
+    ranked as `recall.store`'s are: under the cap, test_store.py beats an importer that only sorts
+    first (in the real tree, 90 test files import recall.store and the AML ones sort first).
+
+    Red proof, 2026-10-31, on the test host, each with this test unchanged, failing at its
+    assertion, then restored and green:
+    - against `scripts/mutation_changed.sh` before the fix (the run's pre-fix snapshot): the summary
+      listed recall/store_mutation.py under "Changed modules that no test imports" (first assert);
+    - against the fix without its ranking (`rank_leaf` left as the split-out module's own leaf):
+      the one slot went to tests/test_aaa.py (second assert).
+    """
+    importer = "from recall.store import store_value\n\n\ndef test_s():\n    assert store_value() == 0\n"
+    repo, env = _repository(tmp_path, {
+        "test_aaa.py": importer,
+        "test_store.py": importer,
+    }, modules=("store", "store_mutation"))
+    env["MUTATE_FILES"] = "recall/store_mutation.py"
+    env["MAX_TESTS_PER_FILE"] = "1"
+
+    summary = _summary(repo, env)
+
+    assert "Changed modules that no test imports" not in summary
+    assert _selection(env) == ["tests/test_store.py"]

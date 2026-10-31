@@ -13,24 +13,11 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import psycopg
 
-from recall.db_constants import (  # noqa: F401  # re-exported: public names of this module
-    _PG_MAX_INT,
-    DEFAULT_SCHEMA_LOCK_TIMEOUT_MS,
-    DEFAULT_TABLE,
-    DEFAULT_TENANT,
-    TENANT_GUC,
-    _schema_lock_timeout_ms,
-)
 from recall.lineage import canonical_sha256
 from recall.observability import METRICS, get_logger
-from recall.supersession import (  # noqa: F401  # re-exported: public names of this module
-    SUPERSEDES_TARGET_ROWS_SQL,
+from recall.supersession import (
     EdgeCandidates,
     SupersessionGraph,
-    _basename,
-    _resolve_rows,
-    resolve_supersession,
-    resolve_supersession_candidates,
     resolve_supersession_graph,
     supersession_rows_sql,
 )

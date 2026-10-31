@@ -73,6 +73,14 @@ fi
 files=()
 untested=()
 skipped=()
+# Modules split out of recall/store.py (S7d). Tests reach them through `recall.store`, which
+# re-exports the DSN helpers and inherits the mixins, so that module's importers are their tests.
+declare -A REACHED_THROUGH=(
+  [recall.dsn_security]=recall.store
+  [recall.store_mutation]=recall.store
+  [recall.store_receipts]=recall.store
+  [recall.store_supersession]=recall.store
+)
 declare -A tests=()
 declare -A dropped_tests=()
 for file in "${changed[@]}"; do
@@ -97,6 +105,15 @@ for file in "${changed[@]}"; do
     # is never listed twice.
     mapfile -t found < <(grep -lzE "from ${parent//./\\.}[[:space:]]+import[[:space:]]*\\([^)]*\\b${leaf}\\b" tests/*.py 2>/dev/null || true)
   fi
+  rank_leaf="$leaf"
+  if [ ${#found[@]} -eq 0 ] && [ -n "${REACHED_THROUGH[$module]:-}" ]; then
+    # Code split out of a module that tests still reach through it (it re-exports or inherits it):
+    # without this the moved code would be listed as untested and never mutated. Its tests are
+    # ranked as that module's are, or the cap below keeps whichever importers sort first.
+    rank_leaf="${REACHED_THROUGH[$module]##*.}"
+    via="${REACHED_THROUGH[$module]//./\\.}"
+    mapfile -t found < <(grep -lE "^[[:space:]]*(import ${via}([[:space:],]|$)|from ${via}[[:space:]]+import)" tests/*.py 2>/dev/null || true)
+  fi
   # Only test files: conftest.py and helper modules hold no tests (pytest loads conftest.py
   # anyway), and under the cap below each one would push a real test file out.
   importers=()
@@ -119,8 +136,8 @@ for file in "${changed[@]}"; do
   # then the number of its lines naming the leaf as a whole word.
   mapfile -t ranked < <(
     for t in "${importers[@]}"; do
-      named=0; case "${t##*/}" in "test_${leaf}.py" | "test_${leaf}_"*) named=1 ;; esac
-      mentions=$(grep -cwF -- "$leaf" "$t" 2>/dev/null || true)
+      named=0; case "${t##*/}" in "test_${rank_leaf}.py" | "test_${rank_leaf}_"*) named=1 ;; esac
+      mentions=$(grep -cwF -- "$rank_leaf" "$t" 2>/dev/null || true)
       printf '%d %06d %s\n' "$named" "$mentions" "$t"
     done | sort -k1,1nr -k2,2nr -k3,3 | awk '{print $3}'
   )
