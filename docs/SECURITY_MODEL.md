@@ -64,7 +64,7 @@ it serves:
 
 | Deployment | On an RLS-bypassing role |
 |---|---|
-| Authenticated multi-tenant HTTP | **Refuses to start.** `require_effective_rls` in `recall_mcp/server.py` |
+| Authenticated multi-tenant HTTP | **Refuses to start.** `require_effective_rls` in `recall_mcp/server_auth.py`, called from the server's lifespan in `recall_mcp/server.py` |
 | Single-tenant, or `stdio` | Warns at startup, and serves |
 
 The refusal is narrow on purpose. A multi-tenant server is the deployment where RLS is the control

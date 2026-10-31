@@ -500,9 +500,9 @@ source_modules = [
     "recall_mcp.query_construction_api", "recall_mcp.reasoning_admin", "recall_mcp.reasoning_api",
     "recall_mcp.reasoning_common", "recall_mcp.reasoning_diagnostics",
     "recall_mcp.reasoning_engine", "recall_mcp.related_api", "recall_mcp.retrieval",
-    "recall_mcp.semantic_graph_cache", "recall_mcp.settings", "recall_mcp.stale_reports_api",
-    "recall_mcp.status", "recall_mcp.stores", "recall_mcp.tool_surface", "recall_mcp.translation",
-    "recall_mcp.use_reports_api",
+    "recall_mcp.semantic_graph_cache", "recall_mcp.server_auth", "recall_mcp.settings",
+    "recall_mcp.stale_reports_api", "recall_mcp.status", "recall_mcp.stores", "recall_mcp.threads",
+    "recall_mcp.tool_surface", "recall_mcp.translation", "recall_mcp.use_reports_api",
 ]
 forbidden_modules = ["recall_mcp.service"]
 # Direct imports only: the server imports the facade, and modules that load the server reach it
