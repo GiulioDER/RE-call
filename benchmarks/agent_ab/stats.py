@@ -112,7 +112,9 @@ def _exact_binomial_two_sided(successes: int, trials: int) -> float:
     total = 2**trials
     lower = sum(math.comb(trials, k) for k in range(0, successes + 1))
     upper = sum(math.comb(trials, k) for k in range(successes, trials + 1))
-    tail = 2.0 * float(min(lower, upper)) / float(total)
+    # Divide integers directly: either count can exceed binary64's range even
+    # though their probability ratio is finite.
+    tail = float((2 * min(lower, upper)) / total)
     return min(1.0, tail)
 
 

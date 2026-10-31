@@ -23,23 +23,56 @@ second run therefore comes from the test the agent added, and from nothing else.
 from __future__ import annotations
 
 import shutil
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..tasksuccess import CheckResult
 from ._run import run_bounded
-import sys
 
 TESTS = "tests/test_normalise.py"
 MODULE = "recall/normalise.py"
 
 
-def _pytest(cwd: Path) -> tuple[bool, str]:
-    result = run_bounded(
-        [sys.executable, "-m", "pytest", TESTS, "-q", "-p", "no:cacheprovider"],
-        cwd=cwd,
-        timeout_s=180,
+@dataclass(frozen=True)
+class PytestRun:
+    passed: bool
+    behavioral_red: bool
+    nodes: frozenset[tuple[str, str]]
+    output: str
+
+
+def _pytest(cwd: Path) -> PytestRun:
+    with tempfile.TemporaryDirectory(prefix="recall-canary-") as directory:
+        report = Path(directory) / "pytest.xml"
+        result = run_bounded(
+            [sys.executable, "-m", "pytest", TESTS, "-q", "-p", "no:cacheprovider",
+             f"--junitxml={report}"],
+            cwd=cwd,
+            timeout_s=180,
+        )
+        output = (result.stdout + result.stderr)[-700:]
+        try:
+            root = ET.parse(report).getroot()  # noqa: S314 - local pytest report
+        except (OSError, ET.ParseError):
+            return PytestRun(False, False, frozenset(), output)
+    cases = list(root.iter("testcase"))
+    nodes = frozenset((case.get("classname", ""), case.get("name", "")) for case in cases)
+    failures = list(root.iter("failure"))
+    valid = bool(cases) and len(nodes) == len(cases) and not list(root.iter("error")) and not list(root.iter("skipped"))
+    assertions = all(
+        failure.get("message", "") == "AssertionError"
+        or failure.get("message", "").startswith(("assert ", "AssertionError:"))
+        for failure in failures
     )
-    return (result.returncode == 0 and not result.timed_out), (result.stdout + result.stderr)[-700:]
+    return PytestRun(
+        passed=valid and result.ok and not failures,
+        behavioral_red=valid and result.returncode == 1 and not result.timed_out and bool(failures) and assertions,
+        nodes=nodes,
+        output=output,
+    )
 
 
 def check(workdir: Path) -> CheckResult:
@@ -50,15 +83,15 @@ def check(workdir: Path) -> CheckResult:
         return CheckResult(False, f"{TESTS} is missing")
     source = tests.read_text(encoding="utf-8", errors="replace")
 
-    green, green_output = _pytest(workdir)
+    green = _pytest(workdir)
     detail: dict[str, object] = {
-        "green_as_written": green,
-        "green_output": green_output,
+        "green_as_written": green.passed,
+        "green_output": green.output,
         "mentions_chr_2028": "0x2028" in source or "\\u2028" in source.lower(),
         "contains_literal_2028": chr(0x2028) in source,
         "test_count_in_file": source.count("def test_"),
     }
-    if not green:
+    if not green.passed:
         return CheckResult(False, "the test file does not pass as written", detail)
 
     # A sibling copy, so the agent's tree is left exactly as the session ended it.
@@ -68,12 +101,15 @@ def check(workdir: Path) -> CheckResult:
     shutil.copytree(workdir, mutant_dir, ignore=shutil.ignore_patterns(".git", "__pycache__"))
     shutil.copyfile(oracle("ts-separator-canary") / "normalise_broken.py", mutant_dir / MODULE)
 
-    survived, mutant_output = _pytest(mutant_dir)
-    detail.update({"passed_under_mutation": survived, "mutant_output": mutant_output})
-    if survived:
+    mutant = _pytest(mutant_dir)
+    detail.update({"passed_under_mutation": mutant.passed, "mutant_output": mutant.output})
+    if mutant.passed:
         return CheckResult(
             False,
             "the suite still passes with U+2028 handling removed: the test pins nothing",
             detail,
         )
+    if not mutant.behavioral_red or mutant.nodes != green.nodes:
+        detail["checker_error"] = True
+        return CheckResult(False, "mutation run is inconclusive: no matching behavioral assertion proof", detail)
     return CheckResult(True, "green as written and red under the mutation", detail)
