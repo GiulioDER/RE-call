@@ -18,6 +18,7 @@ not branch on which produced the set.
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
@@ -138,11 +139,17 @@ def test_openrouter_catalogue_is_parsed_from_the_live_response(monkeypatch) -> N
     assert "broken/entry-with-no-pricing" not in ids
 
 
+@pytest.mark.skipif(
+    os.environ.get("RECALL_RUN_PAID_TESTS") != "1",
+    reason="calls the live OpenRouter catalogue (free, but a real API); tests never call one "
+    "unless RECALL_RUN_PAID_TESTS=1",
+)
 def test_the_pinned_defaults_are_all_real_ids_in_the_live_roster() -> None:
     """A fallback list that has gone stale is worse than none: it names models that 404.
 
-    Hits the live public catalogue, so it is skipped rather than failed when offline. This is the
-    check that would have caught `gpt-4o-mini` going two generations stale in `recall/setup.py`.
+    Hits the live public catalogue, so it runs only with the live-API opt-in, and is skipped
+    rather than failed when offline even then. This is the check that would have caught
+    `gpt-4o-mini` going two generations stale in `recall/setup.py`.
     """
     models = L.openrouter_catalogue()
     if models == list(L.PINNED_OPENROUTER_MODELS):

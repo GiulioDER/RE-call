@@ -127,16 +127,45 @@ def test_repair_may_name_the_missing_slots_in_any_order() -> None:
 def test_an_approved_spelling_finds_its_provider_key(
     base_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """BUG-008 ``OpenAICompatEmbedder``: approval and the key lookup use the same normalisation."""
+    """BUG-008 ``OpenAICompatEmbedder``: approval and the key lookup use the same normalisation.
+
+    Offline by construction. The constructor probes the provider for its width, so with the real
+    ``openai`` SDK installed this test used to call OpenRouter and fail on a 401 (it passed in CI
+    only because CI installs no SDK). A fake ``openai`` module replaces the SDK: it records the
+    client it was built with and answers the probe itself, so the test asserts the key was found
+    rather than inferring it from an ImportError.
+
+    Red: mutation of the key lookup to the raw spelling, ``(parsed_base_url.scheme,
+    parsed_base_url.netloc, raw_path)`` in place of ``(scheme, hostname, normalized_path)``, failed
+    both cases with ``RuntimeError: OpenAICompatEmbedder requires an explicit api_key for an
+    unrecognized base_url``, reported through ``pytest.fail``. Green with ``HTTPS_PROXY`` and
+    ``HTTP_PROXY`` pointed at a dead port, so no request left the machine.
+    """
+    import sys
+
     from recall.embedding_providers.openai_compat import OpenAICompatEmbedder
 
+    built: dict[str, Any] = {}
+
+    class _FakeOpenAI:
+        def __init__(self, *, api_key: str, base_url: str, max_retries: int) -> None:
+            built.update(api_key=api_key, base_url=base_url, max_retries=max_retries)
+            self.embeddings = self
+
+        def create(self, **_request: Any) -> Any:
+            item = type("Item", (), {"embedding": [0.0, 1.0, 0.0]})()
+            return type("Response", (), {"data": [item]})()
+
+    fake = ModuleType("openai")
+    fake.OpenAI = _FakeOpenAI  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", fake)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     try:
-        OpenAICompatEmbedder(base_url=base_url)
-    except ImportError:
-        pass  # SDK absent: the key was found and construction reached the client import.
+        embedder = OpenAICompatEmbedder(base_url=base_url)
     except RuntimeError as exc:
         pytest.fail(f"an approved base_url spelling was refused: {exc}")
+    assert built["api_key"] == "test-key"
+    assert embedder.dim == 3, "the width probe must be answered by the fake, not the provider"
 
 
 def test_hosted_user_binding_is_stored_stripped(monkeypatch: pytest.MonkeyPatch) -> None:

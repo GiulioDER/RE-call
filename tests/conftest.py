@@ -3,9 +3,74 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import socket
 import sys
 import uuid
 from typing import TYPE_CHECKING, Any
+
+# ─── No test reaches a paid model API ────────────────────────────────────────────────────────────
+# The owner's rule (2026-10-31): tests never call a real API. They fake the SDK or the transport.
+# `RECALL_RUN_PAID_TESTS=1` is the one door for a deliberate live run, and leaves the guard off.
+#
+# A grep cannot tell a test that reads a key from one that spends it, and a skip on a missing SDK
+# is not proof either: `test_an_approved_spelling_finds_its_provider_key` passed in CI on an
+# ImportError branch for weeks and called OpenRouter for real on any machine with `openai`
+# installed. So the guard sits where every client must pass, the name lookup, and refuses the
+# paid hosts there. A refusal can be swallowed by fail-open code, so `_no_paid_api_calls` also
+# fails the test that attempted one. In-process only: a subprocess the test starts is not covered,
+# nor a request sent through an HTTP(S) proxy, which resolves the proxy rather than the host.
+
+#: Hosts of the paid model APIs this project calls, and every subdomain of each.
+PAID_API_HOSTS = frozenset({"openrouter.ai", "api.voyageai.com", "api.openai.com", "api.anthropic.com"})
+
+#: Every paid host a test tried to resolve, in order. `_no_paid_api_calls` reads and clears it.
+PAID_API_LOOKUPS: list[str] = []
+
+
+def is_paid_api_host(host: object) -> bool:
+    """True for a name in `PAID_API_HOSTS` or under one, in any case, with or without a root dot."""
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    if not isinstance(host, str):
+        return False
+    name = host.strip().rstrip(".").lower()
+    return any(name == paid or name.endswith("." + paid) for paid in PAID_API_HOSTS)
+
+
+def _install_paid_api_guard() -> None:
+    real = socket.getaddrinfo
+    if getattr(real, "_recall_paid_api_guard", False):
+        return
+
+    @functools.wraps(real)
+    def guarded(host: Any, *args: Any, **kwargs: Any) -> Any:
+        if is_paid_api_host(host):
+            PAID_API_LOOKUPS.append(str(host))
+            raise socket.gaierror(
+                socket.EAI_NONAME,
+                f"{host!r} is a paid API host, refused in tests: fake the SDK or the transport "
+                f"(RECALL_RUN_PAID_TESTS=1 opens it for a deliberate live run)",
+            )
+        return real(host, *args, **kwargs)
+
+    guarded._recall_paid_api_guard = True  # type: ignore[attr-defined]
+    socket.getaddrinfo = guarded
+
+
+def paid_api_violation(start: int) -> str | None:
+    """The failure for lookups recorded since `start`, clearing them; None when there were none."""
+    attempted = PAID_API_LOOKUPS[start:]
+    del PAID_API_LOOKUPS[start:]
+    if not attempted:
+        return None
+    return (
+        f"this test tried to reach a paid API host {sorted(set(attempted))}: tests never call a "
+        f"real API. Fake the SDK or the transport (see tests/conftest.py, PAID_API_HOSTS)"
+    )
+
+
+if os.environ.get("RECALL_RUN_PAID_TESTS") != "1":
+    _install_paid_api_guard()
 
 # ─── Import-time environment neutralisation ──────────────────────────────────────────────────────
 # This block runs BEFORE the `recall.*` imports below, and that ordering is load-bearing — see
@@ -608,6 +673,21 @@ def _suite_index_root(tmp_path_factory):
     # This is defensive: the upload code requires it before writing.
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+@pytest.fixture(autouse=True)
+def _no_paid_api_calls() -> Iterator[None]:
+    """Fail a test that tried to reach a paid API host, even when its code swallowed the refusal.
+
+    The lookup itself is refused by the guard installed at the top of this file. Fail-open code
+    (a catalogue fetch that falls back to a pinned list, a coverage report that logs and moves on)
+    turns that refusal into a quiet pass, so the attempt is recorded and checked here instead.
+    """
+    start = len(PAID_API_LOOKUPS)
+    yield
+    failure = paid_api_violation(start)
+    if failure is not None:
+        pytest.fail(failure)
 
 
 @pytest.fixture(autouse=True)
