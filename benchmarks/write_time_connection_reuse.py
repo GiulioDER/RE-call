@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import statistics
 import subprocess
 import sys
 import time
@@ -51,14 +52,9 @@ PAYLOADS = (
 
 
 def _redact_dsn(dsn: str) -> str:
-    if "://" not in dsn:
-        return dsn
-    scheme, _, rest = dsn.partition("://")
-    if "@" not in rest:
-        return f"{scheme}://{rest}"
-    userinfo, _, host = rest.rpartition("@")
-    user, sep, _password = userinfo.partition(":")
-    return f"{scheme}://{user}{':***' if sep else ''}@{host}"
+    # libpq accepts keyword and URI credentials, including URI query parameters.
+    # The artifact needs no connection string; retain only separately derived host metadata.
+    return "<redacted>"
 
 
 def _dsn_host(dsn: str) -> str:
@@ -170,8 +166,8 @@ def _run(args: argparse.Namespace) -> int:
     print(json.dumps({
         "artifact": str(path),
         "result_equality": equality,
-        "cold_median_ms": sorted(cold_times)[len(cold_times) // 2] if cold_times else None,
-        "relay_median_ms": sorted(relay_times)[len(relay_times) // 2] if relay_times else None,
+        "cold_median_ms": statistics.median(cold_times) if cold_times else None,
+        "relay_median_ms": statistics.median(relay_times) if relay_times else None,
         "unreachable_followup_under_500ms": safety,
     }, indent=2))
     return 0 if equality and safety else 1

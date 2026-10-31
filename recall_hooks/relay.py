@@ -54,6 +54,7 @@ class RelayState(TypedDict, total=False):
     fingerprint: str
     created_at: float
     last_used: float
+    options: dict[str, Any]
 
 
 class RelayResponse(TypedDict, total=False):
@@ -170,6 +171,7 @@ def _fingerprint(config: dict[str, Any], options: dict[str, Any]) -> str:
     stable = {
         "dsn": str(config.get("dsn", "")),
         "tenant": str(config.get("tenant", "default")),
+        "project_root": str(config.get("project_root", "")),
         "k": int(options["k"]),
         "connect_timeout": float(options["connect_timeout"]),
     }
@@ -181,6 +183,29 @@ def _pid_alive(pid: Any) -> bool:
         numeric = int(pid)
         if numeric <= 0:
             return False
+        if sys.platform == "win32":
+            # Signal zero is a console-control event on Windows, not a status probe.
+            import ctypes
+            from ctypes import wintypes
+
+            if numeric > 0xFFFFFFFF:
+                return False
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel.CloseHandle.restype = wintypes.BOOL
+            handle = kernel.OpenProcess(0x00100000, False, numeric)  # SYNCHRONIZE only
+            if not handle:
+                # An inaccessible process is not a confirmed exit. ERROR_INVALID_PARAMETER
+                # is Windows' missing-PID result; keep all other failures conservative.
+                return ctypes.get_last_error() != 87
+            try:
+                return bool(kernel.WaitForSingleObject(handle, 0) != 0)  # WAIT_OBJECT_0
+            finally:
+                kernel.CloseHandle(handle)
         os.kill(numeric, 0)
         return True
     except (OSError, TypeError, ValueError):
@@ -300,8 +325,10 @@ def _stop_state(path: Path, state: RelayState | None = None) -> bool:
     return stopped
 
 
-def _initial_state(token: str, fingerprint: str) -> RelayState:
-    return {
+def _initial_state(
+    token: str, fingerprint: str, options: dict[str, Any] | None = None
+) -> RelayState:
+    state: RelayState = {
         "version": 1,
         "host": "127.0.0.1",
         "port": 0,
@@ -310,6 +337,10 @@ def _initial_state(token: str, fingerprint: str) -> RelayState:
         "fingerprint": fingerprint,
         "created_at": time.time(),
     }
+    if options is not None:
+        state["options"] = {"k": int(options["k"]),
+                            "connect_timeout": float(options["connect_timeout"])}
+    return state
 
 
 def _spawn(
@@ -334,6 +365,7 @@ def _spawn(
         subprocess.Popen(
             [
                 sys.executable,
+                "-P",
                 "-m",
                 "recall_hooks",
                 "write-time-relay",
@@ -366,6 +398,9 @@ def _spawn(
         start_deadline = min(start_deadline, deadline)
     while time.monotonic() < start_deadline:
         state = _read(path)
+        if state and (state.get("token") != token or state.get("fingerprint") != fingerprint):
+            # Another startup owns this path now. Do not contact or retire its endpoint.
+            raise RelayUnavailable("relay startup claim changed")
         if state and int(state.get("port", 0) or 0) > 0:
             try:
                 response = _endpoint_request(
@@ -413,7 +448,7 @@ def _ensure(
             if state:
                 _retire_state_locked(path, state)
             token = secrets.token_urlsafe(32)
-            _atomic_write(path, _initial_state(token, fingerprint))
+            _atomic_write(path, _initial_state(token, fingerprint, options))
             start = True
 
     if start:
@@ -677,6 +712,14 @@ def _serve(state_path_value: Path, expected_token_digest: str | None = None) -> 
     from .write_time import settings
 
     options = settings(config)
+    # These non-secret query settings were approved by the parent. Callers may supply
+    # explicit options without writing them into the machine's global hook config.
+    startup_options = state.get("options")
+    if isinstance(startup_options, dict):
+        options = {**options, "k": startup_options["k"],
+                   "connect_timeout": startup_options["connect_timeout"]}
+    if state.get("fingerprint") != _fingerprint(config, options):
+        return 0
     token = str(state["token"])
     connection: ConnectionLike | None = None
     next_connect = 0.0

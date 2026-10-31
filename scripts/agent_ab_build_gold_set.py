@@ -3,7 +3,8 @@
     python -u scripts/agent_ab_build_gold_set.py \
         --validation benchmarks/artifacts/agent_ab/validation.json \
         --trigger benchmarks/artifacts/agent_ab/trigger-screen.json \
-        --dsn postgresql://recall:recall@127.0.0.1:<port>/probe2_control
+        --dsn postgresql://recall:recall@127.0.0.1:<port>/probe2_control \
+        --tenant default --generation <frozen-generation>
 
 Three judges on the same 46 items implied actionable recalls of 10, 9 and 6 of 14, so no model
 label is currently defensible. This produces the instrument for a human to settle it. It does NOT
@@ -48,6 +49,8 @@ def main() -> int:
     parser.add_argument("--validation", required=True)
     parser.add_argument("--trigger", required=True)
     parser.add_argument("--dsn", required=True)
+    parser.add_argument("--tenant", required=True, help="tenant used by the labelled benchmark")
+    parser.add_argument("--generation", required=True, help="immutable benchmark generation ID")
     parser.add_argument("--out", default="benchmarks/artifacts/agent_ab/gold")
     args = parser.parse_args()
 
@@ -75,18 +78,19 @@ def main() -> int:
     # The retriever would load fastembed, and the embedder is not needed to choose a chunk for a
     # human to read: this is a display decision, not a measurement. It also avoids the documented
     # onnxruntime `bad allocation` on this 12 GB box, which is exactly how the first attempt died.
-    def best_chunk(conn, memo: str, draft: str) -> str:
+    def best_chunk(conn, memo: str, draft: str) -> tuple[str, str, str]:
         terms = " | ".join(
             sorted({t.lower() for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", draft)})[:200]
         )
         if not terms:
             terms = "the"
         row = conn.execute(
-            "SELECT text FROM recall_chunks_v1 WHERE source_uri LIKE %s "
+            "SELECT chunk_id, source_uri, text FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s AND source_uri LIKE %s "
             "ORDER BY ts_rank(tsv, to_tsquery('english', %s)) DESC LIMIT 1",
-            (f"%/{memo}.md", terms),
+            (args.tenant, args.generation, f"%/{memo}.md", terms),
         ).fetchone()
-        return row[0] if row else ""
+        return (str(row[0]), str(row[1]), str(row[2])) if row else ("", "", "")
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -109,9 +113,16 @@ def main() -> int:
     sheet.append("---\n")
 
     conn = psycopg.connect(args.dsn, connect_timeout=20)
+    conn.execute("SELECT set_config('recall.tenant_id', %s, true)", (args.tenant,))
+    if not conn.execute(
+        "SELECT 1 FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
+        (args.tenant, args.generation),
+    ).fetchone():
+        conn.close()
+        raise SystemExit("the requested tenant/generation does not exist")
     for number, item in enumerate(chosen, 1):
         draft = full.get((item["task_id"], item["draft_prefix"][:200]), item["draft_prefix"])
-        note = best_chunk(conn, item["memo"], draft)
+        chunk_id, source_uri, note = best_chunk(conn, item["memo"], draft)
         sheet.append(f"## Item {number}\n")
         sheet.append("**Code about to be saved:**\n")
         sheet.append("```\n" + draft.strip()[:2500] + "\n```\n")
@@ -121,6 +132,7 @@ def main() -> int:
         sheet.append("---\n")
         key.append({
             "number": number, "task_id": item["task_id"], "memo": item["memo"],
+            "chunk_id": chunk_id, "source_uri": source_uri,
             "haiku": item["haiku"], "sonnet": item["sonnet"], "gemini": item["gemini"],
             "kind": "split" if len({item["haiku"], item["sonnet"], item["gemini"]}) > 1
                     else ("unanimous_yes" if item["haiku"] else "unanimous_no"),
@@ -129,7 +141,8 @@ def main() -> int:
     conn.close()
     (out / "gold-set.md").write_text("\n".join(sheet), encoding="utf-8", newline="\n")
     (out / "gold-key.json").write_text(
-        json.dumps({"seed": SEED, "question": QUESTION, "items": key}, indent=2) + "\n",
+        json.dumps({"seed": SEED, "question": QUESTION, "tenant": args.tenant,
+                    "generation_id": args.generation, "items": key}, indent=2) + "\n",
         encoding="utf-8", newline="\n",
     )
     (out / "gold-answers.txt").write_text(

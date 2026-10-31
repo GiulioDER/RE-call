@@ -190,6 +190,15 @@ def payload_of(tool_name: str, tool_input: dict[str, Any]) -> str:
     carries the hazard's own vocabulary; a goal statement does not.
     """
 
+    if tool_name == "MultiEdit":
+        edits = tool_input.get("edits")
+        if not isinstance(edits, list):
+            return ""
+        return "\n".join(
+            edit["new_string"]
+            for edit in edits
+            if isinstance(edit, dict) and isinstance(edit.get("new_string"), str)
+        )
     if tool_name in WRITE_TOOLS:
         return str(
             tool_input.get("content")
