@@ -314,6 +314,12 @@ def _quickstart(args: argparse.Namespace) -> None:
     _refuse_removed_entailment()
 
     provisioned = args.existing_dsn is None
+    if not provisioned:
+        # The global CLI guard cannot see this command's separately supplied DSN.
+        try:
+            require_secure_dsn(args.existing_dsn)
+        except PermissionError as exc:
+            raise SystemExit(f"the quickstart's existing DSN is refused: {exc}") from exc
     if provisioned:
         # Checked BEFORE anything is written. A reader without Docker should get advice, not a
         # half-provisioned directory they then have to know to delete.

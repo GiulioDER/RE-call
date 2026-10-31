@@ -35,7 +35,8 @@ Run:
         --package /path/to/atm-benchmark-20260821 \\
         --ground-truth /path/to/atm-bench.json \\
         --atm-bench-root /path/to/atm-bench-official \\
-        --out results/atm/atm_answer_diagnosis_20260822.json
+        --run-artifact results/atm/atm_bench_full_20260821.json \\
+        --out /path/to/revalidated-diagnosis.json
 """
 from __future__ import annotations
 
@@ -117,7 +118,7 @@ def token_coverage(
     tokens = [t for t in tokenize(gold_answer) if t not in stopwords]
     if not tokens:
         return None
-    haystack = evidence_text.lower()
+    haystack = set(tokenize(evidence_text.lower()))
     return sum(1 for t in tokens if t in haystack) / len(tokens)
 
 

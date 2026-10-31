@@ -342,10 +342,13 @@ def test_remove_tears_down_this_project_only_and_deletes_the_compose_file(
 
 
 def test_remove_does_not_raise_when_the_stack_is_already_gone(tmp_path, no_docker, monkeypatch) -> None:
-    """`--remove` run twice is a reader being careful, not a reader making a mistake."""
+    """BUG-001: successful removal stays idempotent; arbitrary Docker failure is not absence.
+
+    Red proof: mutate remove_stack's successful return to False; its first assertion fails.
+    """
     root = tmp_path / "qs"
     Q.provision(root)
-    monkeypatch.setattr(Q.subprocess, "run", lambda cmd, **kw: _failed())
+    monkeypatch.setattr(Q.subprocess, "run", lambda cmd, **kw: _completed())
     assert Q.remove_stack(root) is True
     assert Q.remove_stack(root) is False
 
