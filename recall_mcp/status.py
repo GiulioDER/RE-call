@@ -83,7 +83,6 @@ def calibration_status(store: PgVectorStore) -> dict[str, object]:
 
         return status_report(store)
     repository = CalibrationRepository(store._dsn, store.tenant, actor="recall-mcp")
-    records = repository.list_records()
     manager = GenerationManager(store._dsn, store.tenant, actor="recall-mcp")
     try:
         generation_id = manager.active_generation_id()
@@ -93,6 +92,8 @@ def calibration_status(store: PgVectorStore) -> dict[str, object]:
             "status": "missing",
             "message": "No active generation exists for this tenant.",
         }
+    # Only the active generation's rows: the tenant's full history grows with every fit.
+    records = repository.list_records(generation_id)
     resolution = manager.calibration_status_for(generation_id)
     matching = [
         item

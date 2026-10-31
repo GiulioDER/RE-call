@@ -84,6 +84,7 @@ Cross package edges: 373
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall_mcp.lifecycle` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
+| 13 | `recall.calibration_v2` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.lite.refresh` |
 | 13 | `recall.lite.store` |
@@ -91,7 +92,6 @@ Cross package edges: 373
 | 13 | `recall.store` |
 | 13 | `recall_mcp.desktop_ingest` |
 | 13 | `recall_mcp.reasoning_api` |
-| 12 | `recall.calibration_v2` |
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.doctor` |
 | 12 | `recall.eval.harness` |
@@ -501,7 +501,7 @@ They are observations, not automatic failures.
 | `recall.build_progress` | 0 | 0 |
 | `recall.cache` | 2 | 13 |
 | `recall.calibration` | 3 | 14 |
-| `recall.calibration_v2` | 12 | 98 |
+| `recall.calibration_v2` | 13 | 98 |
 | `recall.capabilities` | 0 | 0 |
 | `recall.check` | 4 | 29 |
 | `recall.claude_code` | 5 | 121 |
