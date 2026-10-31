@@ -130,7 +130,7 @@ def test_precompact_is_registered_async_and_never_blocking() -> None:
     handler = group["hooks"][0]
     assert group["matcher"] == "manual|auto"
     assert handler["async"] is True
-    assert handler["args"] == ["-m", "recall_hooks", "pre-compact"]
+    assert handler["args"] == ["-P", "-m", "recall_hooks", "pre-compact"]
 
 
 def test_prompt_time_is_registered_synchronous_and_bounded() -> None:
@@ -312,7 +312,7 @@ def test_the_installer_registers_general_knowledge_for_both_shells() -> None:
     (group,) = entries["PostToolUseFailure"]
     assert set(group["matcher"].split("|")) == {"Bash", "PowerShell"}
     (handler,) = group["hooks"]
-    assert handler["args"] == ["-m", "recall_hooks", "post-tool-use-failure"]
+    assert handler["args"] == ["-P", "-m", "recall_hooks", "post-tool-use-failure"]
     assert handler.get("async") is not True
     assert isinstance(handler.get("timeout"), int)
 
@@ -396,7 +396,7 @@ def test_interpreter_path_is_passed_as_argv_not_concatenated() -> None:
     """A Windows interpreter path contains a space; a shell would re-split a joined string."""
     handler = hook_entries(PYTHON)["SessionStart"][0]["hooks"][0]
     assert handler["command"] == PYTHON
-    assert handler["args"][:2] == ["-m", "recall_hooks"]
+    assert handler["args"][:3] == ["-P", "-m", "recall_hooks"]
 
 
 def test_uninstall_removes_only_our_handlers(tmp_path: Path, monkeypatch: Any) -> None:
