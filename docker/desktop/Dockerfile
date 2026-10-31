@@ -33,11 +33,13 @@ RUN groupadd --system --gid 10001 recall \
 # ⛔ An EXISTING volume keeps the ownership it already has. A stack that ran a previous version of
 # this image has a root-owned `recall_desktop_uploads`, and after `docker compose pull` the ingest
 # path will fail with EACCES on mkdir rather than anything that names this change. That volume
-# holds staging trees only, and in this stack's configuration (RECALL_ENV=development, no control
-# plane, so legacy mode) `discard_staging` removes each one once its ingest completes, so it is
-# safe to reset. One time, with the stack down:
+# holds staging trees. Repair ownership once through its Compose mount, keeping the same project
+# name and Compose options used to create the stack. This preserves both staging and database data:
 #
-#     docker volume rm recall_desktop_uploads
+#     docker compose -f docker-compose.desktop.yml stop
+#     docker compose -f docker-compose.desktop.yml run --rm --no-deps --user 0 recall-docs \
+#         chown -R 10001:10001 /opt/recall/uploads
+#     docker compose -f docker-compose.desktop.yml up -d
 #
 # The application code stays root-owned and is NOT chowned: the runtime user has no business
 # rewriting the package it executes, and read+execute is all it needs.

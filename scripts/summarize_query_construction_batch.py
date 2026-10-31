@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 
+RECOVERY_K = 5
+
+
 def _hit_keys(row: dict[str, Any]) -> set[str]:
     payload = row.get("final", {})
     if not isinstance(payload, dict):
@@ -17,7 +20,7 @@ def _hit_keys(row: dict[str, Any]) -> set[str]:
         hits = retrieval.get("hits", [])
         return {
             str(item.get("source") or item.get("chunk_id"))
-            for item in hits
+            for item in hits[:RECOVERY_K]
             if isinstance(item, dict) and item.get("verdict", "ok") == "ok"
         }
     evidence = payload.get("trusted_evidence")
@@ -25,7 +28,7 @@ def _hit_keys(row: dict[str, Any]) -> set[str]:
         items = evidence.get("items", [])
         return {
             str(item.get("source") or item.get("chunk_id"))
-            for item in items
+            for item in items[:RECOVERY_K]
             if isinstance(item, dict)
         }
     return set()

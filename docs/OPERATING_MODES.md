@@ -103,10 +103,11 @@ never left your disk. Verified by contrast on the same database and query: step 
 with per-hit verdicts, while the identical search with `RECALL_ENV` unset is refused, because
 without production there is no generation for the trust gate to resolve.
 
-⚠️ **The query set takes `{query, answerable}` and nothing else.** Extra keys are rejected —
-`query set entry N requires a non-empty query and boolean answerable`. The bundled
-`recall/eval/queries.json` mixes in supersession-test entries carrying a `trust` key, so filter
-those out before passing it here.
+⚠️ **Each query-set entry requires a non-empty `query` and boolean `answerable`.** Optional
+`relevant_ids` supplies relevance labels; other metadata is ignored. The error `query set entry N
+requires a non-empty query and boolean answerable` concerns those required fields. Filter bundled
+`recall/eval/queries.json` entries that lack them, rather than removing entries just because they
+also carry `trust` or other metadata.
 
 ⚠️ **Promote under `production`, not under development.** Promotion consults the *serving*
 environment (`GenerationManager.certification_required` reads "the SERVING environment, not the
@@ -125,7 +126,9 @@ again.
 embedder of a different dimension fails with `pipeline dimension 64 does not match
 recall_chunks_v1 vector(384)`. Pick the embedder before the schema, or use a separate database.
 
-⚠️ **Re-indexing later means repeating steps 1 to 3**, because adding files means a new generation.
+⚠️ **Re-indexing later means repeating steps 1 to 5**, because adding files means a new generation.
+Create its manifest, build and validate it, publish its certified calibration, then promote it.
+Validation alone leaves the previous generation active; serving sees the new corpus after promotion.
 `recall index` will keep refusing under production, and that refusal is not telling you to change
 `RECALL_TRUST_MODE`. If you want incremental local indexing without generations, that is the
 `Local demo` row of the table above, and its answers are honestly marked `degraded`.

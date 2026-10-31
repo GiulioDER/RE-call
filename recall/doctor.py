@@ -377,7 +377,7 @@ def _chunk_tables(conn: Any) -> dict[str, set[str]]:
         "JOIN pg_namespace n ON n.oid = c.relnamespace "
         "JOIN pg_attribute a ON a.attrelid = c.oid "
         "WHERE c.relkind = 'r' AND n.nspname = ANY(current_schemas(false)) "
-        "AND NOT a.attisdropped AND a.attnum > 0"
+        "AND pg_table_is_visible(c.oid) AND NOT a.attisdropped AND a.attnum > 0"
     ).fetchall()
     columns: dict[str, set[str]] = {}
     for name, attname in rows:
@@ -461,7 +461,7 @@ def _embedding_width(conn: Any, table: str) -> int | None:
         "JOIN pg_namespace n ON n.oid = c.relnamespace "
         "JOIN pg_attribute a ON a.attrelid = c.oid "
         "WHERE c.relname = %s AND n.nspname = ANY(current_schemas(false)) "
-        "AND a.attname = 'embedding' AND NOT a.attisdropped",
+        "AND pg_table_is_visible(c.oid) AND a.attname = 'embedding' AND NOT a.attisdropped",
         (table,),
     ).fetchone()
     return row[0] if row and row[0] and row[0] > 0 else None
@@ -721,16 +721,32 @@ def _claude_code_checks(project_root: Path) -> Iterator[Check]:
     except Exception as exc:  # BROAD-CATCH: fail-open
         yield Check("claude code", "warn", f"{config} could not be parsed: {type(exc).__name__}")
         return
-    project = (document.get("projects") or {}).get(str(project_root)) or {}
-    servers = project.get("mcpServers") or {}
-    recall_servers = sorted(k for k, v in servers.items() if _is_recall_server(v))
+    if not isinstance(document, dict) or not isinstance(document.get("projects", {}), dict):
+        yield Check("claude code", "warn", f"{config} has an invalid document or projects shape")
+        return
+    recall_servers: set[str] = set()
+    invalid = False
+    for key, project in document.get("projects", {}).items():
+        try:
+            matches = Path(key).resolve() == project_root.resolve()
+        except (OSError, ValueError):
+            matches = False
+        if not matches:
+            continue
+        if not isinstance(project, dict) or not isinstance(project.get("mcpServers", {}), dict):
+            yield Check("claude code", "warn", f"{config} has an invalid project or mcpServers shape")
+            invalid = True
+            continue
+        recall_servers.update(
+            k for k, v in project.get("mcpServers", {}).items() if _is_recall_server(v)
+        )
     if recall_servers:
         yield Check(
             "claude code",
             "ok",
-            f"MCP server(s) registered for this project: {', '.join(recall_servers)}",
+            f"MCP server(s) registered for this project: {', '.join(sorted(recall_servers))}",
         )
-    else:
+    elif not invalid:
         yield Check(
             "claude code",
             "warn",
