@@ -135,6 +135,7 @@ EXEMPT: dict[str, str] = {
     "analyze": "ANALYZE is table maintenance, not a read of rows",
     "analyze_if_stale": "ANALYZE is table maintenance, not a read of rows",
     "sparse_row_count": "reads recall_sparse_v1, keyed by chunk table, not the chunk rows",
+    "_has_sparse_rows": "reads recall_sparse_v1, keyed by chunk table, not the chunk rows",
     "table": "returns the table name; sends no statement",
     # ⚠️ Pre-existing and NOT decided: both read every generation of the tenant. The only caller
     # of the first is recall_aml, which passes a plain PgVectorStore; the second reports
