@@ -428,7 +428,12 @@ class ManifestObjectV1:
 
 @dataclass(frozen=True)
 class IndexManifestV1:
-    """Canonical inventory of immutable S3 object versions for one tenant corpus."""
+    """Canonical inventory of one tenant corpus's objects.
+
+    Each object is an immutable S3 object version, or a `file://` object pinned only by its
+    content digest: a local file is not immutable, so for it the inventory detects a divergence
+    rather than preventing one (see `ManifestObjectV1`).
+    """
 
     tenant_id: str
     corpus_version: str

@@ -108,10 +108,16 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     """Build an embedder from a short config string.
 
     Supported spellings:
-    ``hashing``, ``fastembed``, ``fastembed:<model>``, ``st:<model>``,
-    ``st-prompted:<model>`` (published prompts, see `recall.embedding_prompts`), ``sfr-code``, ``voyage``, ``voyage:<model>``, ``voyage-context``,
-    ``voyage-context:<model>``, ``voyage-multimodal``, ``openai``, ``openai:<model>``,
-    ``openrouter`` and ``openrouter:<model>``.
+    ``hashing`` (also ``hashing-64`` and ``hashing:64``; it is always 64 dimensions),
+    ``fastembed``, ``fastembed:<model>``, ``st:<model>``,
+    ``st-prompted:<model>`` (published prompts, see `recall.embedding_prompts`), ``sfr-code``,
+    ``voyage``, ``voyage:<model>``, ``voyage-context``, ``voyage-context:<model>``,
+    ``voyage-multimodal``, ``voyage-multimodal:<model>``, ``openai``, ``openai:<model>``,
+    ``openrouter``, ``gemini-embedding-2`` (the same embedder as ``openrouter``) and
+    ``openrouter:<model>``.
+
+    When ``RECALL_EMBED_PROFILE`` is set it takes precedence: the registered profile chooses the
+    embedder, and `name` must only match that profile's backend.
     """
     source = os.environ if env is None else env
     profile = source.get("RECALL_EMBED_PROFILE", "").strip()
@@ -138,6 +144,12 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
             )
         return resolve_registered_embedder(profile, source)
     if name == "hashing" or name.startswith("hashing-") or name.startswith("hashing:"):
+        # Only one dimension is offered here; a different suffix used to build 64 silently.
+        if name not in ("hashing", "hashing-64", "hashing:64"):
+            raise ValueError(
+                f"unsupported hashing embedder: {name!r} (the hashing embedder is always 64 "
+                "dimensions; use hashing)"
+            )
         return HashingEmbedder(dim=64)
     if name == "fastembed":
         return FastEmbedEmbedder(env=source)
@@ -229,7 +241,7 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         f"unknown embedder: {name!r} (use hashing, fastembed, fastembed:<model>, "
         "st:<model>, st-prompted:<model>, sfr-code, voyage, voyage:<model>, voyage-context, "
         "voyage-context:<model>, voyage-multimodal, openai, openai:<model>, "
-        "openrouter, or openrouter:<model>)"
+        "openrouter, gemini-embedding-2, or openrouter:<model>)"
     )
 
 
@@ -249,9 +261,10 @@ def embedder_is_hosted(embedder: object) -> bool:
     Two signals, because either alone has a measured blind spot:
 
     * a registered profile whose digest is the hosted marker, which is exact when it is present;
-    * the two hosted embedder classes, which covers an embedder built without a registered profile.
+    * the hosted embedder classes in the `isinstance` check below, which covers an embedder built
+      without a registered profile.
 
-    Adding a third hosted backend means adding it here. That is a real maintenance edge, and it is
+    Adding another hosted backend means adding it here. That is a real maintenance edge, and it is
     deliberately preferred to a `hasattr` duck-type, which would silently admit any object that
     happened to grow a matching attribute.
     """

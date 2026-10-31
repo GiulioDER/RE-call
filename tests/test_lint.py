@@ -56,6 +56,19 @@ def test_malformed_validity_date_is_an_error(tmp_path):
     assert issues[0].level == "error"
 
 
+@pytest.mark.parametrize("block", ["valid_until:\n  2020-01-01", 'valid_until: ""', "valid_from:"])
+def test_an_empty_validity_value_is_an_error(tmp_path, block):
+    """DEF-23 (STAKES-003): a validity key with no value must not lint clean.
+
+    Red proof: against `recall/lint.py` before this fix (no empty-value check after
+    `validity_bounds`), the issue set is empty, so the assertion fails; `validity_bounds` reads the
+    empty value as no bound and the memo would never expire.
+    """
+    _write(tmp_path, "empty.md", f"---\n{block}\n---\ntext")
+    issues = lint_corpus(tmp_path)
+    assert "invalid-date" in _codes(issues)
+
+
 def test_version_siblings_without_edge_is_a_warning(tmp_path):
     _write(tmp_path, "policy_v1.md", "old policy")
     _write(tmp_path, "policy_v2.md", "new policy, forgot the frontmatter")

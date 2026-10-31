@@ -335,9 +335,14 @@ def load_source_policy(env: dict[str, str] | None = None) -> SourceSecurityPolic
             raise ValueError(f"source policy rule {index} has unknown keys: {', '.join(unknown)}")
         prefix = raw.get("prefix")
         classification = raw.get("classification", "internal")
-        principals = raw.get("principals", ())
-        purposes = raw.get("purposes", ("retrieval",))
-        redactions = raw.get("redactions", ())
+        # Required, with no default: an omitted `principals` read as empty would admit every
+        # principal, so a rule must spell out all three lists.
+        missing = [key for key in ("principals", "purposes", "redactions") if key not in raw]
+        if missing:
+            raise ValueError(f"source policy rule {index} is missing required keys: {', '.join(missing)}")
+        principals = raw["principals"]
+        purposes = raw["purposes"]
+        redactions = raw["redactions"]
         if not isinstance(prefix, str):
             raise ValueError(f"source policy rule {index} prefix must be a string")
         if classification not in _CLEARANCE_ORDER:
@@ -345,6 +350,9 @@ def load_source_policy(env: dict[str, str] | None = None) -> SourceSecurityPolic
         for name, value in (("principals", principals), ("purposes", purposes), ("redactions", redactions)):
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise ValueError(f"source policy rule {index} {name} must be an array of strings")
+        unknown = sorted(set(redactions) - set(_REDACTIONS))
+        if unknown:
+            raise ValueError(f"source policy rule {index} has unknown redactions: {', '.join(unknown)}")
         rules.append(
             SourceRule(
                 prefix=prefix,

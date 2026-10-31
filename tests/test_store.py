@@ -388,12 +388,15 @@ def test_analyze_if_stale_skips_a_small_change_to_an_analyzed_table():
 
 
 def test_analyze_if_stale_fires_once_the_change_reaches_autovacuums_threshold():
-    # The boundary the rule mirrors: 50 + 0.1 * 1000 = 150.
+    # The boundary the rule mirrors: 50 + 0.1 * 1000 = 150, and autovacuum fires only ABOVE it.
+    # DEF-26 (NUM-004) moved this from 150 to 151; red proof: with the pre-fix `<` comparison in
+    # `PgVectorStore.analyze_if_stale`, `analyze_if_stale(150)` returns True and the first assert
+    # below fails.
     store = _bare_store(_AnalyzeConn(reltuples=1000.0))
-    assert store.analyze_if_stale(149) is False
+    assert store.analyze_if_stale(150) is False
     conn = _AnalyzeConn(reltuples=1000.0)
     store = _bare_store(conn)
-    assert store.analyze_if_stale(150) is True
+    assert store.analyze_if_stale(151) is True
     assert conn.analyzed
 
 

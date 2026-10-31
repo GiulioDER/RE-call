@@ -366,6 +366,13 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
             validity_bounds(meta)
         except ValueError as exc:
             issues.append(LintIssue(rel[f], "error", "invalid-date", str(exc)))
+        # `validity_bounds` reads an empty value as "no bound", so a date written on the next
+        # indented line (which this parser does not read) would silently never expire.
+        for key in ("valid_from", "valid_until"):
+            if key in meta and not str(meta[key]).strip():
+                issues.append(
+                    LintIssue(rel[f], "error", "invalid-date", f"{key} is present but empty")
+                )
         try:
             authority_from_metadata(meta)
         except ValueError as exc:

@@ -6,7 +6,7 @@ a journal beside everything else. Worse, nothing was *counted*, so the questions
 actually asks — how often does it abstain? what fraction of hits are superseded? is p99 latency
 drifting? — had no answer short of reading logs by hand.
 
-Two deliberately small pieces:
+Three deliberately small pieces:
 
 - **`get_logger`** — a standard `logging.Logger` under the `recall` namespace. The library never
   configures handlers itself (that is the application's job, and a library that calls
@@ -16,6 +16,9 @@ Two deliberately small pieces:
   replacement for Prometheus: it is the source those exporters read from, and it makes the
   numbers available in-process (the MCP server surfaces them) without forcing a scrape endpoint
   or a client library on someone who only wants a CLI.
+- **`PerformanceTrace`** — request-local spans and database payload counters (statements,
+  parameter, result and transferred bytes), bound to the current request with
+  `performance_trace_scope` and read back with `current_performance_trace`.
 
 Metrics are deliberately cheap and bounded: counters are ints, and each histogram keeps a capped
 ring of recent samples so a long-running process cannot grow without limit.
@@ -33,6 +36,7 @@ import time
 from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import datetime
 from typing import Any
 
 LOGGER_NAME = "recall"
@@ -117,8 +121,18 @@ def _payload_bytes(value: Any) -> int:
         return sum(_payload_bytes(key) + _payload_bytes(item) for key, item in value.items())
     if isinstance(value, (list, tuple, set, frozenset)):
         return sum(_payload_bytes(item) for item in value)
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float, datetime)):
         return 8
+    # pgvector's parameter types, recognised by shape so this module stays free of pgvector. They
+    # are the largest parameter of every vector query, so counting them as 0 hid most of it.
+    # Sizes are pgvector's binary forms: 4 bytes a dimension, or 8 (index and value) an element.
+    if callable(getattr(value, "indices", None)) and callable(getattr(value, "dimensions", None)):
+        return 8 * len(value.indices())
+    if callable(getattr(value, "to_list", None)) and callable(getattr(value, "dimensions", None)):
+        return 4 * int(value.dimensions())
+    nbytes = getattr(value, "nbytes", None)  # a numpy array passed straight through
+    if isinstance(nbytes, int) and not isinstance(nbytes, bool):
+        return nbytes
     return 0
 
 
@@ -203,8 +217,10 @@ def configure_logging(
     import sys
 
     logger = get_logger()
-    level = (level or os.environ.get("RECALL_LOG_LEVEL") or "INFO").upper()
-    fmt = (fmt or os.environ.get("RECALL_LOG_FORMAT") or "text").lower()
+    # Stripped like every other RECALL_* read: an EnvironmentFile value with trailing whitespace
+    # otherwise reads as an unknown format and falls back to text under a JSON collector.
+    level = (level or os.environ.get("RECALL_LOG_LEVEL", "").strip() or "INFO").upper()
+    fmt = (fmt or os.environ.get("RECALL_LOG_FORMAT", "").strip() or "text").lower()
     for handler in list(logger.handlers):  # idempotent: re-configuring must not double-log
         logger.removeHandler(handler)
     handler = logging.StreamHandler(stream if stream is not None else sys.stderr)
