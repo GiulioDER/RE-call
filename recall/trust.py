@@ -9,12 +9,14 @@ step over `HybridRetriever.search()`:
 - a memory that is superseded or outside its validity window loses even with a top cosine:
   valid hits are ordered first (so a retrieved successor outranks the stale memory it replaced),
   and when NO valid hit remains the result is an explicit abstention with a reason;
-- the abstention threshold comes from an exact v2 generation binding when available; otherwise
-  the default gap threshold is used and the result is flagged ``calibrated=False``.
+- the abstention threshold comes from an exact, certified v2 generation binding. Without one,
+  the default strict policy raises `TrustRefusal` before retrieval; only
+  ``TrustPolicy.development()`` answers instead, marked ``degraded`` and ``calibrated=False``.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from collections.abc import Callable, Mapping
@@ -75,6 +77,7 @@ from recall.supersession import SupersessionGraph, stored_supersession_graph
 from recall.support import calibration_coverage
 from recall.unknown_terms import apply_unknown_term_gate, check_unknown_terms
 from recall.trust_policy import (
+    CalibrationStatus,
     TrustFailureCode,
     TrustPolicy,
     TrustRefusal,
@@ -106,6 +109,59 @@ _WARNED_UNCALIBRATED: set[str] = set()
 #: Store types already warned about for a point-in-time query they can only half-answer. Same
 #: once-per-process, unguarded rationale as `_WARNED_UNCALIBRATED`.
 _WARNED_NO_EDGE_DATES: set[str] = set()
+
+#: What a successor the caller's source policy may not read is replaced with. The same spelling
+#: as `recall.records.WITHHELD`, which withholds the same name in the records API; a test pins
+#: the two together rather than importing across the layers.
+_WITHHELD = "<withheld>"
+
+
+def _without_non_finite_dense(result: RetrievalResult) -> RetrievalResult:
+    """``result`` minus any dense hit whose cosine is not a finite number.
+
+    pgvector returns a NaN distance for a zero-norm vector, and NaN compares False with every
+    threshold, so the gate would read such a hit as having CLEARED it and serve it as ``ok``. A
+    hit with no defined similarity is not a retrieval, so it leaves the pool before any verdict.
+    Only ``dense_cosine`` scores are compared against the threshold, so only they are checked.
+    """
+    kept = [
+        hit
+        for hit in result.hits
+        if getattr(hit, "score_kind", "dense_cosine") != "dense_cosine"
+        or math.isfinite(hit.score)
+    ]
+    if len(kept) == len(result.hits):
+        return result
+    METRICS.increment("recall_non_finite_dense_scores_total", value=len(result.hits) - len(kept))
+    return replace(result, hits=kept)
+
+
+def _withhold_unauthorized_successors(
+    trusted: TrustedResult,
+    security_policy: SourceSecurityPolicy,
+    access_context: AccessContext,
+) -> TrustedResult:
+    """Replace each successor the caller may not read with `_WITHHELD`.
+
+    The supersession graph is the whole tenant's, so a successor can live under a prefix the
+    caller's policy excludes, and its path would reach the caller in ``superseded_by`` and in the
+    abstention reason. The verdict stays ``superseded``: the memory is still not current, and
+    saying so does not need the successor's name.
+    """
+    changed = False
+    hits = []
+    for hit in trusted.hits:
+        successor = hit.validity.superseded_by
+        if successor and not security_policy.decide(successor, access_context).allowed:
+            hit = replace(hit, validity=replace(hit.validity, superseded_by=_WITHHELD))
+            changed = True
+        hits.append(hit)
+    if not changed:
+        return trusted
+    # Abstained means no hit is `ok`, so the reason `evaluate` built from the non-ok hits is
+    # rebuilt from all of them, now carrying the withheld name.
+    reason = abstain_reason(hits) if trusted.abstained else trusted.reason
+    return replace(trusted, hits=hits, reason=reason)
 
 
 class _RequestQueryMemo:
@@ -151,7 +207,12 @@ def _warn_no_edge_dates(store_type: str) -> None:
 
 
 def _warn_uncalibrated(embedder_name: str) -> None:
-    """Say plainly that an untuned constant is about to gate abstention for this model.
+    """Say plainly that this model has no calibration, and that strict mode will refuse it.
+
+    The measurement below dates from when the untuned floor gated abstention. It no longer does:
+    strict mode refuses a missing calibration and development mode voids every verdict, so the
+    floor only reaches the retriever's gap warning. The measurement still explains why no
+    constant can stand in for a calibration.
 
     `DEFAULT_GAP_THRESHOLD` is an ABSOLUTE cosine, and cosine levels are a property of how a model
     was trained, not a comparable quantity across models. Measured over two corpora and three
@@ -175,12 +236,12 @@ def _warn_uncalibrated(embedder_name: str) -> None:
         return
     _WARNED_UNCALIBRATED.add(embedder_name)
     _log.warning(
-        "no calibration found for embedder %r — abstention will use the UNTUNED default cosine "
-        "floor %.2f. That constant is not comparable across embedders (measured: 0th percentile "
-        "of five top-1 distributions, 16th of a sixth), so on some models it never fires and on "
-        "others it discards a sixth of queries as empty retrieval. Run `recall calibration "
-        "calibrate --generation G --queries FILE --publish` for the active tenant generation to "
-        "replace the guess with an exact measurement.",
+        "no calibration found for embedder %r: the strict policy refuses with "
+        "CALIBRATION_MISSING, and development mode returns every hit unverified with no "
+        "abstention. The UNTUNED default cosine floor %.2f only sets the gap warning, and it is "
+        "not comparable across embedders (measured: 0th percentile of five top-1 distributions, "
+        "16th of a sixth). Run `recall calibration calibrate --generation G --queries FILE "
+        "--publish` for the active tenant generation to bind a certified threshold.",
         embedder_name,
         DEFAULT_GAP_THRESHOLD,
     )
@@ -307,7 +368,9 @@ def _trusted_search(
     active_policy = policy or TrustPolicy()
     environment_source = os.environ if env is None else env
     calibration_id: str | None = None
-    calibration_status = "legacy_unbound" if calibration is not None else "missing"
+    calibration_status = (
+        CalibrationStatus.LEGACY_UNBOUND if calibration is not None else CalibrationStatus.MISSING
+    ).value
     query_set_digest: str | None = None
     generation_binding: dict[str, str] | None = None
     configured_dependency_mode = dependency_mode
@@ -315,7 +378,13 @@ def _trusted_search(
         mode_reader = getattr(store, "dependency_invalidation_mode", None)
         configured_dependency_mode = mode_reader() if callable(mode_reader) else None
     if configured_dependency_mode is None:
-        configured_dependency_mode = environment_source.get("RECALL_DEPENDENCY_INVALIDATION", "off")
+        # Normalised like RECALL_ATOMIC_RESCUE_MODE below, and named in the error, because an
+        # operator's `Enforce` would otherwise pass startup and fail every search as a code bug.
+        configured_dependency_mode = (
+            str(environment_source.get("RECALL_DEPENDENCY_INVALIDATION", "off")).strip().lower()
+        )
+        if configured_dependency_mode not in {"off", "enforce"}:
+            raise ValueError("RECALL_DEPENDENCY_INVALIDATION must be 'off' or 'enforce'")
     if configured_dependency_mode not in {"off", "enforce"}:
         raise ValueError("dependency_mode must be 'off' or 'enforce'")
     dependency_projection: DependencyProjection | None = None
@@ -698,6 +767,8 @@ def _trusted_search(
         # context before trust evaluation. The transform sees RetrievalResult, never TrustedResult,
         # so graph expansion cannot accidentally treat untrusted evidence as already cleared.
         result = pre_trust_transform(result)
+    # Last, so a transform cannot add back what this removes.
+    result = _without_non_finite_dense(result)
     trust_started = time.perf_counter()
     trusted = evaluate(
         result,
@@ -725,6 +796,8 @@ def _trusted_search(
             {hit.chunk.id: index for index, hit in enumerate(result.hits)},
             successor_expansion.ordering,
         )
+    if security_policy is not None and access_context is not None:
+        trusted = _withhold_unauthorized_successors(trusted, security_policy, access_context)
     # After every verdict `evaluate` can give and before degradation, which overwrites verdicts:
     # a question naming a term the memory never contained cannot be answered by any hit, whatever
     # its score. A store that cannot answer the vocabulary question is reported, not changed.
@@ -755,6 +828,10 @@ def _trusted_search(
         if len(captured_candidate_traces) != 1:
             raise RuntimeError("candidate trace capture did not produce exactly one trace")
         candidate_trace = captured_candidate_traces[0]
+        # The callback gets the filtered trace too, so its candidate ids match the trust result.
+        candidate_trace = replace(
+            candidate_trace, result=_without_non_finite_dense(candidate_trace.result)
+        )
         candidate_trace_started = time.perf_counter()
         candidate_trusted = evaluate(
             candidate_trace.result,
@@ -772,6 +849,10 @@ def _trusted_search(
             dependency_mode=configured_dependency_mode,
             record_metrics=False,
         )
+        if security_policy is not None and access_context is not None:
+            candidate_trusted = _withhold_unauthorized_successors(
+                candidate_trusted, security_policy, access_context
+            )
         candidate_trusted = apply_unknown_term_gate(candidate_trusted, unknown_term_check)
         if failure_code is not None:
             candidate_trusted = _degraded(
@@ -820,10 +901,20 @@ def trusted_search(
     retrievals — e.g. an eval sweep — can hold this call to the SAME pool, rather than silently
     reverting to the default here.
 
+    `policy` defaults to strict: any failure code (missing, stale or uncertified calibration, a
+    lineage mismatch, no active generation) raises `TrustRefusal` before retrieval runs.
+    ``TrustPolicy.development()`` answers instead, marked ``degraded``.
+
+    `calibration` is an explicit threshold that bypasses the generation's resolver. It is bound
+    to no tenant or generation, so its status is ``legacy_unbound`` and the strict default
+    refuses it with ``CALIBRATION_UNCERTIFIED``. Pass it with ``TrustPolicy.development()``, as
+    benchmarks do, to measure abstention under a chosen threshold.
+
     `security_policy` constrains every retrieval leg to sources authorized for the caller. When
     it is set, `access_context` is required and its tenant must match the serving store. The
     context purpose is normally `retrieval`; indexing and erasure callers use their own purpose
-    when constructing the context.
+    when constructing the context. A successor the policy does not let the caller read is
+    reported as ``<withheld>`` rather than by name.
 
     `ledger` is OFF by default: when a `recall.decision_ledger.DecisionLedger` is passed, the
     call's final outcome — the answered or abstained result, or the strict `TrustRefusal` — is
@@ -838,10 +929,11 @@ def trusted_search(
     if (clock := eval_clock.now() if now is None or known_as_of is None else None) is not None:
         now = now or clock
         known_as_of = known_as_of or clock
-    # ONE argument list, built once. Two verbatim copies of a 17-argument pass-through (plus the
-    # two signatures) meant a new parameter needed four synchronized edits with nothing checking
-    # they agree; a parameter silently dropped from one copy would surface only as the ledger
-    # branch behaving differently from the plain one.
+    # One argument list for both branches below. Two verbatim copies of a 17-argument
+    # pass-through meant a parameter silently dropped from one would surface only as the ledger
+    # branch behaving differently from the plain one. The two signatures, this dict and the
+    # snapshot re-entry in `_trusted_search` still all name every parameter, and mypy cannot
+    # check a `dict[str, object]` spread, so `tests/test_trust_hunt_fixes.py` asserts they agree.
     forwarded: dict[str, object] = dict(
         k=k,
         source=source,

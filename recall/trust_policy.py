@@ -14,7 +14,10 @@ in the payload said the number behind it was invented.
 
 Strict mode refuses instead, and refuses *before* retrieval runs, so a refusal cannot carry corpus
 bytes it never fetched. Development mode still retrieves, but has to say so in band: `trust_state`
-is `degraded`, every hit is `unverified`, and no abstention decision is claimed.
+is `degraded` and the result is never `calibrated`. With no calibration at all, every hit is
+`unverified` and no abstention decision is claimed. With a calibration that is not
+certified-bound (one the caller passed in, or a certified artifact while the dependency graph is
+not ready), the verdicts and any abstention computed under it are kept.
 
 Why the failure codes are an API
 --------------------------------
@@ -54,7 +57,8 @@ class TrustFailureCode(StrEnum):
 
     #: No active generation, or its physical index is not usable.
     INDEX_NOT_READY = "INDEX_NOT_READY"
-    #: The generation's pipeline or corpus fingerprint is not what the artifact was bound to.
+    #: The runtime embedder (model, dimension or profile) is not the one the active generation
+    #: was built with. A fingerprint that drifted from the artifact is `CALIBRATION_STALE`.
     LINEAGE_MISMATCH = "LINEAGE_MISMATCH"
     #: No calibration artifact exists for this tenant and generation.
     CALIBRATION_MISSING = "CALIBRATION_MISSING"
@@ -73,7 +77,8 @@ class TrustState(StrEnum):
 
     #: A certified artifact exactly bound to this generation backed the verdicts.
     TRUSTED = "trusted"
-    #: Development mode returned corpus text with no certified threshold behind it.
+    #: Development mode returned corpus text with no certified, generation-bound threshold behind
+    #: it. Verdicts are voided when no calibration exists, and kept when one was passed in.
     DEGRADED = "degraded"
     #: Strict mode refused. No corpus text was returned.
     REFUSED = "refused"
@@ -120,9 +125,10 @@ _ADVICE: dict[TrustFailureCode, str] = {
         "the trust gate never ran. Build and promote a generation, then retry."
     ),
     TrustFailureCode.LINEAGE_MISMATCH: (
-        "No trustworthy decision was possible: the active generation's pipeline or corpus "
-        "fingerprint does not match what the calibration was bound to, so the trust gate never "
-        "ran. Recalibrate against the current generation."
+        "No trustworthy decision was possible: the runtime embedder (model, dimension or "
+        "profile) is not the one the active generation was built with, so its cosines are not "
+        "comparable to any threshold and the trust gate never ran. Serve with the generation's "
+        "embedder, or build and promote a generation for this one."
     ),
     TrustFailureCode.CALIBRATION_MISSING: (
         "No trustworthy decision was possible: no calibration artifact is bound to this tenant "
@@ -160,6 +166,11 @@ class TrustPolicy:
     """
 
     mode: TrustMode = TrustMode.STRICT
+
+    def __post_init__(self) -> None:
+        # `strict` tests identity, so a plain string mode, even "strict", would otherwise read as
+        # not strict and take the degrading path. Coercing raises on an unknown value instead.
+        object.__setattr__(self, "mode", TrustMode(self.mode))
 
     @property
     def strict(self) -> bool:

@@ -311,7 +311,13 @@ class Calibration:
         )
 
     def confidence(self, cosine: float) -> float:
-        """Monotone cosine -> [0, 1] mapping; exactly 0.5 at the calibrated threshold."""
+        """Monotone cosine -> [0, 1] mapping; exactly 0.5 at the calibrated threshold.
+
+        A NaN cosine (pgvector's distance to a zero-norm vector) carries no similarity, so it maps
+        to 0.0. Left to the clamp below it would read as 1.0, because `min(60.0, nan)` is 60.0.
+        """
+        if math.isnan(cosine):
+            return 0.0
         x = (cosine - self.threshold) / self.scale
         x = max(-60.0, min(60.0, x))  # clamp: math.exp overflows past ~709; ±60 already saturates
         return 1.0 / (1.0 + math.exp(-x))
@@ -381,7 +387,9 @@ def _payload(cal: Calibration) -> dict:
     # number cannot be told apart from a working one.
     payload = {"embedder": cal.embedder, "threshold": cal.threshold, "scale": cal.scale}
     if cal.separability is not None:
-        payload["separability"] = round(cal.separability, 4)
+        # Unrounded: `load_for` recomputes `certified` from this value, and a rounded AUC near the
+        # bar reloads with the opposite verdict to the one written beside it.
+        payload["separability"] = cal.separability
     # Recomputable from (separability, n, n) rather than stored state, but written out because the
     # point estimate is what a reader anchors on and the interval is what the verdict was taken
     # from. A file that records only 0.95 next to `certified: false` reads as a bug.
