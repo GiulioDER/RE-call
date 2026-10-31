@@ -49,10 +49,12 @@ import json
 import os
 import sys
 from collections.abc import Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
 from recall.wizard.corpora import CorpusPlan, CorpusSpec
+from recall.wizard.config_lock import configuration_lock
 
 __all__ = [
     "ServerBlock",
@@ -606,6 +608,27 @@ def register_local_scope(
     if not blocks:
         return LocalScopeRegistration(config_path=target, skipped_reason="no servers to register")
 
+    target = target.resolve()
+    if not target.parent.is_dir():
+        return LocalScopeRegistration(
+            config_path=target, skipped_reason=f"no Claude Code config at {target}"
+        )
+    with ExitStack() as locks:
+        try:
+            locks.enter_context(configuration_lock(target))
+        except OSError as exc:
+            return LocalScopeRegistration(
+                config_path=target, skipped_reason=f"cannot lock Claude Code config at {target}: {exc}"
+            )
+        return _register_local_scope_locked(
+            blocks, project_root=project_root, target=target, interpreter=interpreter
+        )
+
+
+def _register_local_scope_locked(
+    blocks: tuple[ServerBlock, ...], *, project_root: Path, target: Path,
+    interpreter: str | None,
+) -> LocalScopeRegistration:
     try:
         raw = target.read_text(encoding="utf-8")
         document = json.loads(raw)

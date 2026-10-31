@@ -632,7 +632,7 @@ def _volume_source(entry: object) -> str | None:
         if entry.get("type") == "bind":
             # A bind is a bind whatever its source looks like; return something that cannot be a
             # named volume so the caller refuses.
-            return str(source) if isinstance(source, str) else "<bind mount>"
+            return "<bind mount>"
         return str(source) if isinstance(source, str) else None
     if not isinstance(entry, str) or ":" not in entry:
         return None

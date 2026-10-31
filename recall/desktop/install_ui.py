@@ -454,9 +454,10 @@ if QApplication is not None:
 
         def _finished(self, report: Any) -> None:
             self.report = report
+            complete = bool(getattr(report, "ok", True))
             self.progress_bar.setRange(0, 1)
-            self.progress_bar.setValue(1)
-            self.progress_heading.setText("Installed")
+            self.progress_bar.setValue(1 if complete else 0)
+            self.progress_heading.setText("Installed" if complete else "Install incomplete")
             self._append("\n" + _summarise(report))
             self.close_button.setEnabled(True)
 
@@ -544,6 +545,9 @@ def _summarise(report: Any) -> str:
     Defensive about the report's shape on purpose: this is the last thing shown after a long
     install, and an `AttributeError` here would replace the outcome with a stack trace.
     """
+    render = getattr(report, "render", None)
+    if callable(render):
+        return str(render())
     lines: list[str] = []
     corpora = getattr(report, "corpora", None) or ()
     for outcome in corpora:

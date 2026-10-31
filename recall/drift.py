@@ -285,7 +285,7 @@ def _published_calibration(repository: CalibrationRepository) -> CalibrationArti
     Newest published wins, which is the same order `carry_forward` picks a parent by, so the
     calibration this module reports drift for is the one that mechanism would inherit from.
     """
-    for record in repository.list_records():
+    for record in repository.published_records():
         if str(record.get("lifecycle_state")) != "published":
             continue
         try:

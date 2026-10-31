@@ -7,6 +7,7 @@ eyeballed in a compose file.
 
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -395,6 +396,75 @@ def test_every_generated_service_can_pass_the_insecure_dsn_guard(tmp_path: Path)
         )
 
 
+@pytest.mark.parametrize("prefix", ["", "async "], ids=["function", "async-function"])
+def test_codec_guard_keeps_original_calls_and_excludes_generated_variants(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    """The old ast.walk rejects a deliberately unsafe mutant beside a safe original.
+
+    Red proof targets the guard's source traversal, not subprocess decoding.
+    Each node first exercises that false positive through the actual manifest-wide
+    guard, then keeps controls for unsafe originals, unpaired ordinary definitions
+    and a newly declared wheel package. No source assertion or package is skipped.
+    """
+    repository = tmp_path / "codec-repository"
+    (repository / "tests").mkdir(parents=True)
+    for package in ("recall", "extra_package"):
+        (repository / package).mkdir()
+    (repository / "pyproject.toml").write_text(
+        '[tool.hatch.build.targets.wheel]\npackages = ["recall", "extra_package"]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(globals(), "__file__", str(repository / "tests/test_wizard_stack.py"))
+    source = repository / "recall/runner.py"
+    safe = 'subprocess.run(["fixture"], text=True, encoding="utf-8")'
+    unsafe = 'subprocess.run(["fixture"], text=True)'
+    original = f"import subprocess\n{prefix}def x_runner__mutmut_orig():\n    return {safe}\n"
+    variant = f"{prefix}def x_runner__mutmut_1():\n    return {unsafe}\n"
+    source.write_text(original + variant, encoding="utf-8")
+    test_no_subprocess_call_decodes_with_the_platform_codec()
+
+    source.write_text(original.replace(safe, unsafe) + variant, encoding="utf-8")
+    with pytest.raises(AssertionError, match=r"recall[/\\]runner.py:3"):
+        test_no_subprocess_call_decodes_with_the_platform_codec()
+    source.write_text("import subprocess\n" + variant, encoding="utf-8")
+    with pytest.raises(AssertionError, match=r"recall[/\\]runner.py"):
+        test_no_subprocess_call_decodes_with_the_platform_codec()
+    source.write_text(original + variant, encoding="utf-8")
+    (repository / "extra_package/runner.py").write_text(
+        f"import subprocess\ndef run():\n    return {unsafe}\n", encoding="utf-8"
+    )
+    with pytest.raises(AssertionError, match=r"extra_package[/\\]runner.py"):
+        test_no_subprocess_call_decodes_with_the_platform_codec()
+
+
+def _shipped_calls(tree: ast.AST) -> list[ast.Call]:
+    """Keep original bodies and ordinary definitions, excluding paired numbered mutants."""
+    originals = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name.endswith("__mutmut_orig")
+    }
+    pending = [tree]
+    calls = []
+    while pending:
+        node = pending.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            base, marker, number = node.name.rpartition("__mutmut_")
+            if (
+                node.name.startswith(("x_", "xǁ"))
+                and marker
+                and number.isdecimal()
+                and base + "__mutmut_orig" in originals
+            ):
+                continue
+        if isinstance(node, ast.Call):
+            calls.append(node)
+        pending.extend(ast.iter_child_nodes(node))
+    return calls
+
+
 def test_no_subprocess_call_decodes_with_the_platform_codec() -> None:
     """⛔ `text=True` without an explicit `encoding` fails SILENTLY on Windows.
 
@@ -420,7 +490,6 @@ def test_no_subprocess_call_decodes_with_the_platform_codec() -> None:
     actually distributed. Same reasoning as `CLAUDE_CONFIG_SUBPATHS`, where two consumers read one
     list so they cannot drift apart. Gap reported by a peer session reviewing this check.
     """
-    import ast
     import tomllib
 
     repository = Path(__file__).resolve().parent.parent
@@ -438,9 +507,10 @@ def test_no_subprocess_call_decodes_with_the_platform_codec() -> None:
     offenders: list[str] = []
     for source in sources:
         tree = ast.parse(source.read_text(encoding="utf-8"), str(source))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
+        # mutmut places deliberately broken copies beside each original body.
+        # The source contract applies to the original; numbered generated copies
+        # must not make the otherwise clean statistics baseline fail.
+        for node in _shipped_calls(tree):
             target = node.func
             if not (
                 isinstance(target, ast.Attribute)

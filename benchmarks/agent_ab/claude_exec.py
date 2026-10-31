@@ -647,17 +647,34 @@ async def run_claude_case(
     job = WindowsJob() if sys.platform == "win32" else None
     process_options: dict[str, Any] = {} if job is not None else {"start_new_session": True}
     try:
-        process = await asyncio.create_subprocess_exec(
-            *(job.command(command) if job is not None else command),
-            # The Windows wrapper alone reads a release byte. The actual CLI
-            # always receives DEVNULL, avoiding Claude's stdin startup delay.
-            stdin=asyncio.subprocess.PIPE if job is not None else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(config.cwd) if config.cwd else None,
-            env=environment,
-            **process_options,
+        launch = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                *(job.command(command) if job is not None else command),
+                # The Windows wrapper alone reads a release byte. The actual CLI
+                # always receives DEVNULL, avoiding Claude's stdin startup delay.
+                stdin=asyncio.subprocess.PIPE if job is not None else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(config.cwd) if config.cwd else None,
+                env=environment,
+                **process_options,
+            )
         )
+        try:
+            process = await asyncio.shield(launch)
+        except asyncio.CancelledError:
+            # Cancellation can arrive after the OS spawned work but before its
+            # handle is delivered. Retain that handle before propagating it.
+            process = await launch
+            if job is not None:
+                # This wrapper has not been assigned or released yet, so the
+                # empty Windows job cannot terminate it. No CLI has launched.
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            await asyncio.shield(_stop_process_tree(process, job))
+            raise
         if job is not None:
             try:
                 job.assign(process.pid)
