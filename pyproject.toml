@@ -623,6 +623,10 @@ extend-immutable-calls = [
 # alone, and a file sprinkled with 30 `# noqa: S608` markers teaches a reviewer to skim past the
 # one that is load-bearing. The exemption is stated once, here, with the chokepoint named.
 "recall/store.py" = ["S608"]
+# `PgVectorStore` mixins split out of `store.py` (S7d): the same `self._table` identifier, validated
+# in `PgVectorStore.__init__`, and nothing else interpolated.
+"recall/store_mutation.py" = ["S608"]
+"recall/store_supersession.py" = ["S608"]
 "recall/generation_store.py" = ["S608"]
 "recall/generations.py" = ["S608"]
 "recall/schema.py" = ["S608"]
