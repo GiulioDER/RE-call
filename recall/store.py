@@ -4,27 +4,17 @@ import json
 import os
 import re
 import warnings
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import uuid4
-from ipaddress import ip_address
-from urllib.parse import unquote, urlsplit
 
 import psycopg
 from pgvector import SparseVector, Vector
 from pgvector.psycopg import register_vector
-from psycopg.types.json import Jsonb
 
-from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS
-from recall.idempotency_receipts import (
-    ANY_OPERATION,
-    check_receipt_matches,
-    check_result_size,
-    receipt_key_hash,
-)
 from recall.supersession import (  # noqa: F401  # re-exported: public names of this module
     EdgeCandidates,
     SupersessionGraph,
@@ -37,9 +27,7 @@ from recall.supersession import (  # noqa: F401  # re-exported: public names of 
     resolve_supersession_candidates,
 )
 from recall.supersession_records import (
-    PG_RECORD_REVISION_SQL,
     erasure_subjects,
-    pg_delete_removals,
     pg_records,
     records_matching,
 )
@@ -51,31 +39,33 @@ from recall.db_constants import (  # noqa: F401  # re-exported: public names of 
     TENANT_GUC,
     _schema_lock_timeout_ms,
 )
-from recall.lineage import canonical_sha256
 from recall.observability import METRICS, _payload_bytes, current_performance_trace, get_logger
 from recall.scope import Scope, coerce_scope, group_expression
 from recall.types import Chunk, ScoredChunk
+from recall.dsn_security import (  # noqa: F401  # re-exported: public names of this module
+    _DEFAULT_CREDS,
+    _LOCAL_HOSTS,
+    _WARN_ONLY_HOSTS,
+    _ENV_TRUE,
+    INSECURE_DSN_OPT_OUT,
+    _is_local_host,
+    _dsn_passwords,
+    scrub_dsn_secrets,
+    redacted_dsn,
+    warn_if_insecure_dsn,
+    _env_opt_out,
+    require_secure_dsn,
+)
+from recall.store_mutation import SourceMutationMixin, _chunk_identity  # noqa: F401
+from recall.store_receipts import ReceiptsAuditMixin
+from recall.store_supersession import SupersessionMixin
 
 if TYPE_CHECKING:  # the pool extra is optional; the annotation must not require it at runtime
     from psycopg_pool import ConnectionPool
 
     from recall.pool import SharedPool
 
-#: The built-in dev credentials shipped in the default DSN — safe only against a local database.
-_DEFAULT_CREDS = ("recall", "recall")
 _NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
-#: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: urlsplit strips
-#: the brackets. All of 127.0.0.0/8 is handled numerically by `_is_local_host`.
-#: `0.0.0.0` is here as a CONNECT target, not a bind address: as a destination it resolves to
-#: the local host, so a DSN naming it carries the built-in credentials no further than
-#: `localhost` would. S104 is about binding a LISTENER to every interface, which this is not;
-#: the listener default lives in `recall_mcp/server.py` and is `127.0.0.1`.
-_LOCAL_HOSTS = ("", "localhost", "::1", "0.0.0.0")  # noqa: S104
-#: Hosts that get a WARNING but not a refusal. `host.docker.internal` used to sit in
-#: `_LOCAL_HOSTS`, which was wrong in one direction: from inside a container it reaches the
-#: container HOST, which can be a shared, network-reachable machine. It stays out of the
-#: refusal so the compose quickstart keeps working, and the warning says what it reaches.
-_WARN_ONLY_HOSTS = ("host.docker.internal",)
 
 
 class _CountingCursor:
@@ -180,120 +170,6 @@ def _numeric_query_terms(text: str) -> list[str]:
         if normalized not in terms:
             terms.append(normalized)
     return terms
-
-
-def _is_local_host(host: str) -> bool:
-    """True when `host` cannot reach a shared database (loopback, unix socket, or unset)."""
-    if host in _LOCAL_HOSTS or host.startswith(("/", "%2f")):  # %2f: percent-encoded socket dir
-        return True
-    try:
-        return ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-def _dsn_passwords(dsn: str) -> tuple[str, ...]:
-    """Every password this DSN could carry, in either libpq form. Never raises.
-
-    The URI form (`postgresql://u:pw@host/db`) and the keyword form (`host=x password=pw`) are both
-    accepted by libpq, so both are scrubbed. A DSN that parses as neither yields nothing to scrub,
-    which is the honest answer: this is a redaction helper, not a validator, and a malformed DSN is
-    exactly when the caller most needs it to keep working.
-    """
-    found: list[str] = []
-    try:
-        uri_password = urlsplit(dsn).password
-    except ValueError:
-        uri_password = None
-    if uri_password:
-        found.append(uri_password)
-        # ⛔ **The DECODED form too.** `urlsplit` does not percent-decode and libpq does, so a
-        # password containing a reserved character (which MUST be encoded in a URI DSN, making this
-        # the ordinary case rather than an edge one) was scrubbed in a spelling that never appears
-        # in an error message. Measured: `postgresql://u:p%40ss@h/db` scrubbed `p%40ss` while the
-        # text carried `p@ss`. Three auditors found this independently.
-        decoded = unquote(uri_password)
-        if decoded != uri_password:
-            found.append(decoded)
-
-    # The keyword form. libpq allows single-quoted values with backslash escapes, so a password
-    # containing a space or a quote is reachable and must still be matched in full.
-    for match in re.finditer(r"password\s*=\s*(?:'((?:[^'\\]|\\.)*)'|(\S+))", dsn):
-        quoted, bare = match.group(1), match.group(2)
-        value = quoted.replace("\\'", "'").replace("\\\\", "\\") if quoted is not None else bare
-        if value:
-            found.append(value)
-    return tuple(found)
-
-
-def scrub_dsn_secrets(text: str, *dsns: str) -> str:
-    """Remove any of these DSNs' passwords from `text`.
-
-    `redacted_dsn` is not enough on its own, because the password can be inside the EXCEPTION rather
-    than inside a DSN we format. Two measurements, years apart in spirit and days apart in fact:
-
-    * a password containing `%` produced
-      `psycopg.ProgrammingError: invalid percent-encoded token: "S3cr%tPw"`, so wrapping the error
-      with a redacted DSN beside it still printed the secret verbatim;
-    * a MALFORMED dsn produced
-      `ProgrammingError: missing "=" after "not-a-dsn://user:PASSWORD@x" in connection info string`,
-      echoing the entire connection string. That one reached a label in the desktop settings page,
-      which is on screen, in screenshots, and in whatever a user pastes into an issue — and a
-      mistyped DSN is exactly when a person is looking at that label.
-
-    Anything derived from a connection attempt goes through here. Lives beside `redacted_dsn`
-    rather than in one caller, because it was written twice before this: once in
-    `recall/wizard/headless.py` and once, nearly, in the preflight.
-
-    ⚠️ **A password shorter than 4 characters is NOT removed.** A blind `str.replace` of a
-    one-character password rewrote every occurrence of that letter: measured, a password of `a`
-    turned "cannot connect to database at host a" into
-    "c***nnot connect to d***t***b***se ***t host ***". An unreadable error is its own kind of
-    failure, and the callers put this on screen. So the guarantee below has a floor, and it is
-    stated HERE rather than in a comment inside the loop, because a caller who needs an
-    unconditional guarantee must be able to see that this is not one.
-
-    ⛔ **Both DSN forms, because libpq accepts both and the installer's field is free text.**
-    This handled only the URI form: `urlsplit("host=db password=s3cret dbname=recall").password` is
-    `None`, so a keyword/value DSN — which psycopg accepts, and which is what somebody pasting from
-    a hosting provider's console often has — passed through with the password intact, while the
-    caller's docstring promised it had been removed. The parse is hand-rolled rather than delegated
-    to `psycopg.conninfo`, because this function must not fail on a MALFORMED dsn: malformed is the
-    case that produced the second measurement above.
-    """
-    for dsn in dsns:
-        for password in _dsn_passwords(dsn):
-            # ⚠️ **Short passwords are skipped, deliberately.** A blind `str.replace` of a
-            # one-character password rewrote every occurrence of that letter: measured, a password
-            # of `a` turned "cannot connect to database at host a" into
-            # "c***nnot connect to d***t***b***se ***t host ***". An unreadable error is its own
-            # kind of failure, and a password that short is not the secret worth protecting at the
-            # cost of every diagnosis the user needs.
-            if len(password) < 4:
-                continue
-            text = text.replace(password, "***")
-    return text
-
-
-def redacted_dsn(dsn: str) -> str:
-    """`dsn` with any password removed — safe to print to a log or a systemd journal.
-
-    A connection failure is exactly when an operator wants the DSN in the logs, and exactly when
-    printing it verbatim would write the password to disk.
-    """
-    try:
-        parts = urlsplit(dsn)
-        if not parts.hostname:
-            return "<dsn>"
-        userinfo = (
-            f"{parts.username}:***@"
-            if parts.password
-            else (f"{parts.username}@" if parts.username else "")
-        )
-        port = f":{parts.port}" if parts.port else ""
-        return f"{parts.scheme}://{userinfo}{parts.hostname}{port}{parts.path}"
-    except ValueError:  # pragma: no cover - malformed URL
-        return "<dsn>"
 
 
 _T = TypeVar("_T")
@@ -425,47 +301,6 @@ TIMED_PUBLIC_METHODS = (
 _log = get_logger("store")
 
 
-def warn_if_insecure_dsn(dsn: str) -> str | None:
-    """Warn (to stderr) when the built-in ``recall:recall`` credentials target a NON-local host.
-
-    A shared, well-known password is fine against localhost but a footgun the moment the DSN
-    points at a real remote database. This warns loudly and returns the message; it never blocks
-    execution (returns None when there is nothing to warn about).
-    """
-    try:
-        parts = urlsplit(dsn)
-    except ValueError:
-        return None
-    # unquote: urlsplit returns the RAW percent-encoded form, so "recal%6C" is the password
-    # "recall" and must not slip past the comparison
-    if (unquote(parts.username or ""), unquote(parts.password or "")) != _DEFAULT_CREDS:
-        return None
-    host = (parts.hostname or "").lower()
-    if _is_local_host(host):
-        return None
-    if host in _WARN_ONLY_HOSTS:
-        # Warn without returning a message: `require_secure_dsn` raises on any returned
-        # message, and this host must warn rather than block (it is the documented way a
-        # containerised quickstart reaches its database).
-        _log.warning(
-            "recall: WARNING — default 'recall:recall' credentials against %r, which reaches "
-            "the container HOST, not this container. Fine for a local quickstart; set a strong "
-            "password if that machine is shared.",
-            parts.hostname,
-        )
-        return None
-    msg = (
-        f"recall: WARNING — using the default 'recall:recall' credentials against non-local host "
-        f"{parts.hostname!r}. Set a strong password via RECALL_DSN before using a remote database."
-    )
-    _log.warning(msg)
-    return msg
-
-
-#: Opt-out for `require_secure_dsn`. Named so it cannot be set by accident, and so its presence
-#: in a deploy is a visible, greppable decision rather than an oversight.
-INSECURE_DSN_OPT_OUT = "RECALL_ALLOW_INSECURE_DSN"
-
 #: HNSW tuning applied to a filtered `query_dense` call (see issue #11's third checkbox). An HNSW
 #: index walk is filter-blind: it finds the globally nearest neighbours, THEN discards the ones
 #: that fail `WHERE tenant_id = ...` or `WHERE source = ...`, so a selective filter can silently
@@ -551,10 +386,6 @@ DEFAULT_HNSW_EF_SEARCH_MULTIPLIER = 4
 #: value now travels as a bound parameter to `set_config`, so this is no longer an injection
 #: guard; it keeps a typo from surfacing as a query-time error on every filtered search.
 _HNSW_ITERATIVE_SCAN_VALUES = frozenset({"off", "relaxed_order", "strict_order"})
-#: Values that count as "yes" for an opt-OUT of a safety guard. Deliberately an allowlist rather
-#: than a truthiness test: `0`/`false`/`no` must read as "keep the guard", and anything
-#: unrecognised must too, because a typo in a security switch may not grant permission.
-_ENV_TRUE = frozenset({"1", "true", "yes", "on"})
 
 #: `SET LOCAL` statements that take every ORDERED index-scan path off the planner's table for the
 #: rest of the transaction. One property, two consumers: a query whose answer must be EXACT must
@@ -611,39 +442,6 @@ AUTOANALYZE_THRESHOLD = 50
 AUTOANALYZE_SCALE_FACTOR = 0.1
 
 
-def _env_opt_out(name: str) -> bool:
-    """True only when `name` is set to an explicit affirmative (see `_ENV_TRUE`)."""
-    return os.environ.get(name, "").strip().lower() in _ENV_TRUE
-
-
-def require_secure_dsn(dsn: str) -> None:
-    """Raise unless `dsn` is safe to use unattended; the fail-closed form of the warning above.
-
-    `warn_if_insecure_dsn` detects the built-in `recall:recall` credentials against a remote host
-    and then RETURNS, so the process carries on talking to a shared database with a password
-    published in this repository's README. A warning on stderr is not a control: under systemd it
-    lands in a journal nobody reads, and the server comes up looking healthy.
-
-    A server should therefore call this instead. The escape hatch is an explicit environment
-    variable, because the legitimate case (a private network where the operator has genuinely
-    accepted the risk) must be expressible — just not by default and not silently.
-    """
-    # Parsed, not merely truthy. A bare `os.environ.get(...)` reads ANY non-empty string as
-    # "opt out", so `RECALL_ALLOW_INSECURE_DSN=0` — which an operator writes meaning "keep the
-    # guard on" — silently switched the guard OFF, the exact inverse of the intent. Anything
-    # unrecognised keeps the guard: this is a security control, so an ambiguous value must not
-    # be read as permission.
-    if _env_opt_out(INSECURE_DSN_OPT_OUT):
-        return
-    if warn_if_insecure_dsn(dsn) is None:
-        return
-    raise PermissionError(
-        f"refusing to start against {redacted_dsn(dsn)}: the default 'recall:recall' credentials "
-        f"are published in this project's README and this DSN points at a non-local host. Set a "
-        f"real password, or set {INSECURE_DSN_OPT_OUT}=1 to accept the risk deliberately."
-    )
-
-
 def _ef_search_multiplier() -> int:
     """How far past `k` to widen an unfiltered HNSW scan; see DEFAULT_HNSW_EF_SEARCH_MULTIPLIER.
 
@@ -660,31 +458,6 @@ def _ef_search_multiplier() -> int:
     if mult < 1:
         raise ValueError(f"RECALL_HNSW_EF_SEARCH_MULTIPLIER={mult} must be >= 1")
     return mult
-
-
-def _chunk_identity(chunks: list[Chunk]) -> tuple[str | None, list[str]]:
-    """The project and root-relative file names a batch of chunks belongs to.
-
-    `(None, [])` when the chunks declare no project, which is what confines the identity delete to a
-    corpus whose owner declared one: two roots with the same relative layout and no project may be
-    different corpora, and merging them is not a guess this layer may make.
-
-    Also `(None, [])` if a batch ever mixed two projects, rather than guessing which one owns the
-    delete.
-    """
-    projects = {
-        value
-        for chunk in chunks
-        if isinstance(value := chunk.metadata.get("project"), str) and value
-    }
-    if len(projects) != 1:
-        return None, []
-    names: dict[str, None] = {}
-    for chunk in chunks:
-        name = chunk.metadata.get("file")
-        if isinstance(name, str) and name:
-            names.setdefault(name, None)
-    return projects.pop(), list(names)
 
 
 def _prepare_connection(
@@ -711,7 +484,7 @@ def _prepare_connection(
         conn.execute(f"SET statement_timeout = {int(statement_timeout_ms)}")
 
 
-class PgVectorStore:
+class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
     """The single, production-grade vector store: PostgreSQL + pgvector."""
 
     #: Errors that mean the connection itself is broken (dropped socket, server restart, idle
@@ -1462,188 +1235,6 @@ class PgVectorStore:
                     for c, e in zip(chunks, embeddings)
                 ],
             )
-
-    def append_audit_event(
-        self,
-        event_type: str,
-        payload: dict[str, Any],
-        *,
-        generation_id: str | None = None,
-        source_uri: str | None = None,
-        actor: str = "serving",
-        event_id: str | None = None,
-    ) -> str:
-        """Append one event to this tenant's audit ledger (``recall_audit_events``).
-
-        The write side (generation and calibration lifecycle) has appended to that table since
-        migration 0008 through its own repositories; this is the read side's pen, used by
-        `recall.decision_ledger` to witness search decisions. It runs on the store's own
-        tenant-scoped connections, so the row satisfies the table's RLS policy exactly when
-        every other statement here does. Append is the ONLY verb on this surface — no update or
-        delete exists, because a ledger that can be edited in place is a draft, not a record.
-
-        ``ON CONFLICT DO NOTHING`` makes the append idempotent PER EVENT ID, which is not a
-        loophole in append-only (nothing is ever updated) but the honest answer to the
-        indeterminate-commit window: `_with_retry` re-runs the INSERT when the connection dies
-        after the server committed but before the client heard, and the pre-generated id means
-        the collision can only be this call's own earlier success. Without it, that window
-        reported a failure for a row that exists, so the failure counter disagreed with the
-        table. A caller passing an explicit ``event_id`` twice gets one row and two successes,
-        by the same rule.
-
-        The write inherits the store's single reconnect-retry, so under a degraded connection
-        it can cost the caller up to two attempts of latency before failing — a deliberate
-        trade for a best-effort caller that shares the search path's connection anyway.
-
-        Raises on failure (a schema predating 0008, a connection dead after the retry): whether
-        the write is load-bearing is the CALLER's decision, and `DecisionLedger` decides it is
-        not by catching here.
-        """
-        if not isinstance(event_type, str) or not event_type:
-            raise ValueError("event_type must be a non-empty str")
-        event_id = event_id or f"evt_{uuid4().hex}"
-
-        def _op(conn: "psycopg.Connection") -> None:
-            conn.execute(
-                "INSERT INTO recall_audit_events "
-                "(tenant_id, event_id, event_type, actor, generation_id, source_uri, payload) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
-                "ON CONFLICT (tenant_id, event_id) DO NOTHING",
-                (
-                    self._tenant,
-                    event_id,
-                    event_type,
-                    actor,
-                    generation_id,
-                    source_uri,
-                    Jsonb(dict(payload)),
-                ),
-            )
-
-        self._with_retry(_op)
-        return event_id
-
-    def recorded_memo_journals(self, sources: Sequence[str]) -> set[str]:
-        """The `sources` a forget recorded deleting as assistant memos (`forget_memo_journal`)."""
-        if not sources:
-            return set()
-
-        def _op(conn: "psycopg.Connection") -> set[str]:
-            rows = conn.execute(
-                "SELECT DISTINCT source_uri FROM recall_audit_events WHERE tenant_id = %s "
-                "AND event_type = 'forget_memo_journal' AND source_uri = ANY(%s)",
-                (self._tenant, list(sources)),
-            ).fetchall()
-            return {str(source) for (source,) in rows if source}
-
-        return self._with_retry(_op)
-
-    def forgotten_source_aliases(self, sources: Sequence[str]) -> set[str]:
-        """Recover card names recorded before these exact sources were forgotten."""
-        if not sources:
-            return set()
-
-        def _op(conn: "psycopg.Connection") -> set[str]:
-            rows = conn.execute(
-                "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
-                "AND event_type = 'forget_source_aliases' AND source_uri = ANY(%s)",
-                (self._tenant, list(sources)),
-            ).fetchall()
-            return {name for (payload,) in rows for name in payload.get("aliases", ())
-                    if isinstance(name, str)}
-
-        return self._with_retry(_op)
-
-    @staticmethod
-    def _operation_receipt_event_id(idempotency_key: str, operation: str = ANY_OPERATION) -> str:
-        """Derive one bounded, nonrevealing audit identity from the request key.
-
-        Kept for existing callers; the rule is `recall.idempotency_receipts.receipt_key_hash`,
-        which the lite store uses too.
-        """
-        return receipt_key_hash(idempotency_key, operation)
-
-    def get_operation_receipt(
-        self,
-        idempotency_key: str,
-        *,
-        operation: str = ANY_OPERATION,
-        request_fingerprint: str | None = None,
-    ) -> str | None:
-        """Return the durable response for an idempotent operation, when one exists."""
-        event_id = self._operation_receipt_event_id(idempotency_key, operation)
-
-        def _op(conn: "psycopg.Connection") -> str | None:
-            row = conn.execute(
-                "SELECT result, operation, request_fingerprint "
-                "FROM recall_idempotency_receipts "
-                "WHERE tenant_id = %s AND idempotency_key_hash = %s "
-                "AND expires_at > clock_timestamp()",
-                (self._tenant, event_id),
-            ).fetchone()
-            if not row or row[0] is None:
-                return None
-            check_receipt_matches(
-                row[1], row[2], operation=operation, request_fingerprint=request_fingerprint
-            )
-            return str(row[0])
-
-        return self._with_retry(_op)
-
-    @contextmanager
-    def operation_lock(self, key: str) -> "Iterator[None]":
-        """Serialize one named operation across processes using a PostgreSQL advisory lock."""
-        if not isinstance(key, str) or not key:
-            raise ValueError("operation lock key must be a non-empty string")
-        digest = canonical_sha256({"tenant": self._tenant, "operation_key": key})
-        lock_id = int(digest[:16], 16)
-        if lock_id >= 2**63:
-            lock_id -= 2**64
-        with self._borrowed() as conn:
-            conn.execute("SELECT pg_advisory_lock(%s)", (lock_id,))
-            try:
-                yield
-            finally:
-                row = conn.execute("SELECT pg_advisory_unlock(%s)", (lock_id,)).fetchone()
-                if not row or row[0] is not True:
-                    _log.error("PostgreSQL reported a hosted operation lock was not held")
-
-    def record_operation_receipt(
-        self,
-        idempotency_key: str,
-        result: str,
-        *,
-        operation: str = ANY_OPERATION,
-        request_fingerprint: str | None = None,
-    ) -> None:
-        """Persist a completed mutation response before any cache response is attempted."""
-        if request_fingerprint is None:
-            request_fingerprint = ""
-        check_result_size(result)
-        key_hash = self._operation_receipt_event_id(idempotency_key, operation)
-
-        def _op(conn: "psycopg.Connection") -> None:
-            conn.execute(
-                "DELETE FROM recall_idempotency_receipts "
-                "WHERE tenant_id = %s AND expires_at <= clock_timestamp()",
-                (self._tenant,),
-            )
-            conn.execute(
-                "INSERT INTO recall_idempotency_receipts "
-                "(tenant_id, idempotency_key_hash, operation, request_fingerprint, result, expires_at) "
-                "VALUES (%s, %s, %s, %s, %s, clock_timestamp() + (%s * interval '1 second')) "
-                "ON CONFLICT (tenant_id, idempotency_key_hash) DO NOTHING",
-                (
-                    self._tenant,
-                    key_hash,
-                    operation,
-                    request_fingerprint,
-                    result,
-                    IDEMPOTENCY_RECEIPT_RETENTION_SECONDS,
-                ),
-            )
-
-        self._with_retry(_op)
 
     def analyze(self) -> bool:
         """Refresh the planner's statistics for this table. Best-effort; never raises.
@@ -2602,471 +2193,11 @@ class PgVectorStore:
         rows = self._with_retry(_op)
         return self._rows_to_hits(rows)
 
-    def replace_sources(
-        self, sources: list[str], chunks: list[Chunk], embeddings: list[list[float]]
-    ) -> int:
-        """Atomically replace every row of `sources` with the given chunks.
-
-        ⛔ **A second delete, by `(project, root-relative file)`, reaches what `sources` cannot.**
-        Deleting by absolute path alone left the previous rows in place whenever the same file was
-        re-indexed from a different root, so the new chunks landed BESIDE the old ones rather than
-        over them. Measured on a live corpus: 452 duplicate rows in one project and 615 in another.
-        The two keys are ORed, never substituted, so this can only remove more, never less.
-
-        The identity is derived from `chunks` rather than passed in. Two reasons, and the second is
-        the one that changed the design: the rows deleted and the rows inserted then cannot describe
-        different files, because they come from one list; and a keyword argument here broke five
-        test doubles in three files, which is what an interface implemented in many places does when
-        it grows a parameter the callee could work out for itself.
-
-        Delete + insert run in ONE transaction: a failure (or a concurrent reader) never
-        observes the sources deleted without their replacement rows. Callers must compute
-        `embeddings` BEFORE calling — an embedding failure then leaves the old rows intact.
-        """
-        if len(chunks) != len(embeddings):
-            raise ValueError("chunks and embeddings length mismatch")
-        self._supersession_cache = None
-
-        def _op(conn: "psycopg.Connection") -> int:
-            with conn.transaction():
-                # `first_indexed_at` has to survive the DELETE. `ON CONFLICT ... LEAST` in
-                # `_upsert_in` cannot help here: the row is gone by the time the insert runs, so
-                # there is no conflict and the re-inserted chunk would claim it was first written
-                # now. That is the whole re-index defect, and this is the path that causes it.
-                preserved: dict[str, datetime] = {}
-                removed_ids: set[str] = set()
-                if sources:
-                    # COALESCE to the row's OWN `indexed_at`, not `now()`. Two bugs deep here.
-                    # First: a NULL key was still PRESENT, so the restore wrote that NULL back
-                    # over the timestamp `_upsert_in` had just written, and the row could never
-                    # acquire a first write at all. Filtering the NULL fixed that but stamped
-                    # `now()` — so a memo written in January, migrated, then re-indexed once in
-                    # August claimed August as its first write, and a replay of March said it had
-                    # never existed. Its real `indexed_at` was sitting on the same row, and it is
-                    # exactly what BOTH read paths COALESCE to. The write path now agrees with
-                    # them: migrated rows keep their last-known write as their first, and freeze.
-                    preserved = {
-                        cid: first
-                        for cid, first in conn.execute(
-                            f"SELECT id, COALESCE(first_indexed_at, indexed_at) "
-                            f"FROM {self._table} "
-                            f"WHERE tenant_id = %s AND source = ANY(%s)",
-                            (self._tenant, sources),
-                        ).fetchall()
-                        if first is not None
-                    }
-                    removed_ids.update(
-                        row[0]
-                        for row in conn.execute(
-                            f"DELETE FROM {self._table} "
-                            f"WHERE tenant_id = %s AND source = ANY(%s) RETURNING id",
-                            (self._tenant, sources),
-                        ).fetchall()
-                    )
-                identity_project, identity_files = _chunk_identity(chunks)
-                if identity_project and identity_files:
-                    # Same transaction as the insert below, so a reader never sees the old rows
-                    # gone without their replacement. The project is a scalar because one index run
-                    # carries one project; PostgreSQL also refuses an anonymous composite as a
-                    # bound parameter, so the pair was never an option.
-                    removed_ids.update(
-                        row[0]
-                        for row in conn.execute(
-                            f"DELETE FROM {self._table} "
-                            f"WHERE tenant_id = %s AND metadata->>'project' = %s "
-                            f"AND metadata->>'file' = ANY(%s) RETURNING id",
-                            (self._tenant, identity_project, identity_files),
-                        ).fetchall()
-                    )
-                # Before the upsert: a re-inserted chunk id's old sparse vector is stale for the
-                # new text anyway, and the indexer's sparse hook re-encodes in the same run when
-                # an encoder is configured. Re-indexing WITHOUT an encoder therefore shrinks
-                # sidecar coverage, and `assert_sparse_coverage` refuses loudly (undercount)
-                # instead of silently serving stale vectors for changed text — the intended
-                # direction.
-                self._scrub_sparse_rows(conn, self._table, sorted(removed_ids))
-                if chunks:
-                    self._upsert_in(conn, chunks, embeddings)  # savepoint, same commit
-                    restore = [
-                        (preserved[c.id], self._tenant, c.id) for c in chunks if c.id in preserved
-                    ]
-                    if restore:
-                        # executemany, matching `_upsert_in`: psycopg3 pipelines it. A chunk id
-                        # absent from `preserved` is genuinely new and keeps its now().
-                        with conn.cursor() as cur:
-                            cur.executemany(
-                                # LEAST(..., now()) mirrors `_upsert_in`. Without it the two
-                                # write paths disagreed on exactly the input the upsert comment
-                                # names: a stored date in the FUTURE (clock skew, a restore) was
-                                # clamped by upsert and preserved verbatim here — on the ONLY
-                                # path `recall index` takes, leaving the row permanently
-                                # invisible to every as-of replay.
-                                f"UPDATE {self._table} SET first_indexed_at = LEAST(%s, now()) "
-                                f"WHERE tenant_id = %s AND id = %s",
-                                restore,
-                            )
-            return len(chunks)
-
-        self._with_retry(_op)
-        return len(chunks)
-
-    def delete_sources(self, sources: list[str], *, withdraw: bool = False) -> int:
-        """Delete every chunk belonging to the given `source` values; returns rows removed.
-
-        Standalone removal API (the Indexer uses the atomic `replace_sources` instead).
-
-        A memo that declared `supersedes:` leaves a `SupersessionRecord` in the same transaction
-        (`recall.supersession_records`): a forget keeps retired what it retired, and `withdraw`
-        gives that back instead and splices its chain. `withdraw` also covers a source with no
-        rows left that a record stands in for.
-
-        ⚠️ The returned count can UNDERCOUNT after a reconnect-retry. The delete and its sidecar
-        scrub now share a transaction whose COMMIT runs inside the retried op, so a connection
-        lost at commit time has an indeterminate outcome: the retry re-runs, finds the rows
-        already gone, and returns 0 for an erasure that in fact happened. On the right-to-erasure
-        path the deletion is still real; only the receipt may say fewer rows than it removed.
-        """
-        if not sources:
-            return 0
-        self._supersession_cache = None
-
-        # An explicit transaction, where a single statement used to suffice: the chunk delete
-        # and the sidecar scrub MUST share one commit, or a failure between them leaves term
-        # weights for text the caller was told is gone. The row count is computed inside the
-        # borrow for the reason the old comment gave: in pooled mode `_with_retry` returns from
-        # within `with self._pool.connection()`, so nothing from the cursor may escape it.
-        def _op(conn: "psycopg.Connection") -> int:
-            with conn.transaction():
-                ids = pg_delete_removals(conn, self._tenant, self._table, sources, withdraw=withdraw)
-                self._scrub_sparse_rows(conn, self._table, ids)
-                return len(ids)
-
-        return self._with_retry(_op)
-
-    def delete_sources_across(
-        self, tables: list[str], sources: list[str], *, withdraw: bool = False
-    ) -> int:
-        """Atomically erase tenant sources from active and shadow generation tables.
-
-        Each table keeps its own `SupersessionRecord`s, as `delete_sources` does.
-        """
-        if not sources:
-            return 0
-        from recall.sql_identifiers import validate_table_name
-
-        unique_tables = list(dict.fromkeys(tables))
-        if not unique_tables:
-            raise ValueError("at least one generation table is required")
-        # The SAME allowlist the control plane validates registry rows with, not a second,
-        # weaker one. This method interpolates every name into a DELETE, and it used to accept
-        # anything `str.isidentifier()` liked: non-ASCII, uppercase that PostgreSQL folds to
-        # something else, and names past the truncation point. It does NOT refuse unquoted SQL
-        # keywords such as `select`; those are a syntax error at query time, not an injection.
-        for table in unique_tables:
-            validate_table_name(table)
-        self._supersession_cache = None
-
-        def _op(conn: "psycopg.Connection") -> int:
-            removed = 0
-            with conn.transaction():
-                for table in unique_tables:
-                    ids = pg_delete_removals(conn, self._tenant, table, sources, withdraw=withdraw)
-                    # Under THAT table's name: the sidecar keys shadow-table rows by the
-                    # chunk_table column, so each table scrubs its own.
-                    self._scrub_sparse_rows(conn, table, ids)
-                    removed += len(ids)
-            return removed
-
-        return self._with_retry(_op)
-
-    def touch_files(self, files: list[str]) -> int:
-        """Reset ``indexed_at`` to now(), carrying ``first_indexed_at`` across, for every chunk
-        whose metadata file name matches.
-
-        A timestamp-only touch — text and embeddings are untouched by construction, so it is
-        the honest way to simulate a re-sync (the eval's recency arm uses it; re-indexing
-        identical text would also re-embed, which is only a no-op for deterministic
-        embedders). Matches on the ``file`` metadata key (basename), so it works for nested
-        corpora too. Returns rows updated.
-
-        **`first_indexed_at` is carried across the touch.** A row predating that column holds NULL
-        there, and both read paths COALESCE the NULL to `indexed_at` — so `indexed_at` IS that
-        row's only evidence of age. Overwriting it alone destroyed the evidence, and the next
-        re-index then COALESCEd the TOUCH instant into `first_indexed_at` and froze it, so a memo
-        written in January permanently claimed it was first seen the moment someone simulated a
-        re-sync. A timestamp-only touch is supposed to change what a staleness check sees, not
-        rewrite when the corpus was acquired.
-
-        Clamped with `LEAST(..., now())` like the other two writers. This is the THIRD path that
-        writes `first_indexed_at`, and it was the only one that did not clamp: a migrated row
-        whose `indexed_at` sat in the future (clock skew, a restore) went from visible to
-        permanently `not_yet_known` after a touch, and no further touch repaired it. A rule
-        enforced on two paths out of three is not a rule.
-
-        Captured in the SAME statement, because Postgres evaluates every `SET` expression against
-        the OLD tuple: the COALESCE reads the pre-touch `indexed_at`, not `now()`. Two statements
-        would race, and the ordering that writes `indexed_at` first would capture the value it had
-        just destroyed. A row that already has a first write IN THE PAST is unaffected: COALESCE returns
-        it and LEAST keeps it. One in the FUTURE is clamped to now() like everywhere else, so
-        "unaffected" was too strong once the clamp landed.
-
-        ⚠️ `LEAST` does not propagate NULL, so a row with BOTH time columns NULL is stamped with
-        the touch instant rather than staying unknown. Unreachable through a store-created table,
-        where `indexed_at` is NOT NULL; reachable only by pointing `ensure_schema` at a
-        hand-rolled table whose `indexed_at` is nullable, which the shape check does not forbid.
-        """
-        if not files:
-            return 0
-        # rowcount read inside the borrow — see `delete_sources` for why.
-        return self._with_retry(
-            lambda conn: (
-                conn.execute(
-                    f"UPDATE {self._table} SET "
-                    f"first_indexed_at = LEAST(COALESCE(first_indexed_at, indexed_at), now()), "
-                    f"indexed_at = now() "
-                    f"WHERE tenant_id = %s AND metadata->>'file' = ANY(%s)",
-                    (self._tenant, files),
-                ).rowcount
-                or 0
-            )
-        )
-
-    def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
-        """The supersession relation: ``(edges, unresolved)``.
-
-        `edges` maps superseded file -> superseding file. Both are root-relative, except a path
-        that two roots hold, which is keyed by its absolute source so the two stay two documents
-        (`SupersessionGraph.collided`). `unresolved` names the files an edge pointed at but could
-        not identify, so the read path can fail closed on them rather than serve them as healthy.
-        These edges carry no validity windows; the window rule needs `supersession_graph()`.
-
-        A ``supersedes:`` reference is matched by the rule `recall.supersession._resolve_rows`
-        states (changed 2026-10-21): a reference naming a folder by its folded path, any
-        reference by its folded stem, the claimant never its own candidate. An AMBIGUOUS target
-        (several candidates) is skipped rather than mis-mapped, so a stray sibling can never be
-        silently marked superseded; `recall lint`'s ``ambiguous-supersedes-target`` still flags
-        by stem alone, so it can flag a reference this resolves by path. Only the ambiguous case
-        is skipped. A DANGLING target (no such file in the corpus) is instead kept, as an edge
-        keyed on the raw name it was written as: harmless, because that key matches no indexed
-        file, and dropping it would silently discard a valid supersession claim (e.g. a memo
-        superseding a doc since removed).
-
-        The result is cached, but the cache is VALIDATED against the table on every call rather
-        than trusted. It previously was not: it was invalidated only by this instance's own
-        writes, so a long-lived reader (an MCP server holds one store for its lifetime) never saw
-        an edge written by a separate `recall index` run. It kept serving the superseded memory as
-        `ok` until someone restarted the process — the trust layer returning exactly the wrong
-        answer, silently, which is the failure it exists to prevent.
-
-        Freshness is established by a cheap fingerprint — `(max(indexed_at), count(*))` for this
-        tenant — and the expensive grouped scan runs only when that fingerprint moves. Both
-        halves are needed: `max(indexed_at)` alone cannot see a DELETE, and deleting a superseding
-        document must stop its edge from applying, or the reader keeps demoting a memory that is
-        current again.
-
-        Measured on a 50k-row table: fingerprint ~12 ms, full scan ~80 ms. So this is cheaper than
-        rescanning on every call and, unlike caching indefinitely, it is correct.
-
-        Fingerprint and scan share ONE connection, so they cannot straddle a concurrent write and
-        cache a result under a fingerprint that never described it.
-        """
-
-        edges, unresolved, _dates = self.supersession_all()  # already copies
-        return edges, unresolved
-
-    def supersession_all(
-        self,
-    ) -> tuple[dict[str, str], frozenset[str], EdgeCandidates]:
-        """``(edges, unresolved, candidates)`` behind one validated cache and one scan.
-
-        `candidates` maps a superseded file to EVERY document claiming to supersede it, each with
-        when that claim was first written: `min(indexed_at)` over the claiming chunks, since a
-        chunk existing implies its `supersedes:` frontmatter existed and the earliest is the
-        conservative reading.
-
-        **A list, not a winner, and that is the point.** `edges` keeps one superseder per target,
-        chosen by scan order, which is a time-independent rule and therefore answers a different
-        question. Where `b1.md` (Monday) and `b2.md` (Wednesday) both supersede `a.md`, only
-        `b2.md` survived, so a replay of Tuesday saw a single edge dated Wednesday, dropped it,
-        and answered `ok` when `a.md` was in fact superseded by `b1.md`. Renaming the two files
-        flipped the answer, which is what showed the axis was wrong. `resolve_successor` now picks
-        the claim that was live at the instant. `edges` is still last-row-wins over the scan, so
-        a caller who never replays sees the scan-order winner; which file a reference matches is
-        `_resolve_rows`' rule, changed 2026-10-21 (folded paths, a self-claim dropped, roots kept
-        apart).
-
-        This is the only accessor. A second one returning just the dates existed briefly and had
-        to warn, in its own docstring, that pairing it with `supersession()` reintroduced the
-        two-validation race this exists to close.
-
-        `ORDER BY` is load-bearing, not tidiness. `edges` resolves fan-in by
-        last-row-wins, so an unordered scan lets the
-        winner change between runs. The predecessor query was `SELECT DISTINCT`, and swapping it
-        for `GROUP BY` preserves the row SET but not the row ORDER, which would have re-rolled
-        that winner for existing `supersession()` callers who never asked for any of this.
-        The ordering is the DATABASE's text collation, so the winner is stable within a
-        deployment but not guaranteed identical across one with a different `lc_collate`. That
-        residue is deliberately left rather than pinned with `COLLATE "C"`: `ORDER BY 1 COLLATE
-        "C"` does not mean what it looks like. An ORDER BY ordinal is only read as an output
-        column when it is a bare integer constant, so adding `COLLATE` turns it into the integer
-        literal 1, and integers have no collation. It was written that way here and broke 51 tests
-        on the first CI run that touched a real database, with nothing catching it locally because
-        no test executes this SQL without Postgres.
-
-        The winner is also stable rather than necessarily IDENTICAL to what `SELECT DISTINCT`
-        produced: under a Sort+Unique plan it is the same one, under HashAggregate the old one was
-        bucket order.
-
-        Dates come from `first_indexed_at` rather than `indexed_at`. The distinction is the
-        whole reason the column exists: `indexed_at` records the LAST write, so `replace_sources`
-        re-inserting an edited document moved its edge forward and a replay before the edit
-        dropped a claim that had been continuously true. `first_indexed_at` is preserved on
-        conflict with `LEAST`, and captured and restored across `replace_sources`' delete, which
-        `ON CONFLICT` alone cannot cover because the row is gone before the insert runs.
-        """
-
-        return self.supersession_graph().parts()
-
-    def supersession_graph(self) -> SupersessionGraph:
-        """The resolved graph behind `supersession_all()`, with each claimant's validity window.
-
-        The same validated cache and the same single scan, so the windows and the edges always
-        describe one corpus state; `recall.trust` reads this, and the three-part accessors are
-        projections of it. A copy, for the reason `supersession_all` gives.
-        """
-
-        def _op(conn: "psycopg.Connection") -> SupersessionGraph:
-            # The record revision rides in the same statement: a withdrawal of a memo already gone
-            # writes a record and deletes no row, so the table's own fingerprint would not move.
-            fingerprint = conn.execute(
-                f"SELECT max(indexed_at), count(*), ({PG_RECORD_REVISION_SQL}) "
-                f"FROM {self._table} WHERE tenant_id = %s",
-                (self._tenant, self._tenant),
-            ).fetchone()
-            cached = self._supersession_cache
-            if cached is not None and cached[0] == fingerprint:
-                graph: SupersessionGraph = cached[1]
-                return graph
-            rows = conn.execute(
-                supersession_rows_sql(self._table, source_column="source", scope="c.tenant_id = %s"),
-                (self._tenant,),
-            ).fetchall()
-            self._supersession_scans += 1
-            METRICS.increment("recall_supersession_scans_total")
-            graph = resolve_supersession_graph(
-                rows, pg_records(conn, self._tenant, self.record_scope), self._tenant
-            )
-            self._supersession_cache = (fingerprint, graph)
-            return graph
-
-        # COPIES. This is public, and the cache is process-wide and validated by fingerprint
-        # rather than rebuilt, so handing out the live structures would let one caller's mutation
-        # survive every later cache hit and redirect other callers' supersession verdicts. The
-        # candidate LISTS are copied too, because a shallow `dict()` would still share them.
-        return self._with_retry(_op).copy()
 
     # `supersession_dates()` deliberately does NOT exist. It was a second accessor onto the same
     # cache, and its own docstring had to warn that pairing it with `supersession()` reintroduced
     # the two-validation race `supersession_all()` was written to close. An API whose
     # documentation is a warning against using it is better deleted; it had no callers.
-
-    def dependency_projection(
-        self,
-        as_of: datetime | None = None,
-        known_as_of: datetime | None = None,
-    ) -> Any:
-        """Return the ready generation's dependency invalidation projection.
-
-        The persisted marker is checked before rebuilding the time-sensitive closure. This keeps
-        enforce mode generation bound: a legacy generation or a generation whose transactional
-        projection failed validation cannot silently become enforceable merely because its chunks
-        happen to contain dependency metadata.
-        """
-        from recall.current_state import project_current_state
-
-        generation_reader = getattr(self, "_generation_id", None)
-        generation_id = (
-            str(generation_reader()) if callable(generation_reader) else self.generation_id
-        )
-        instant = as_of.isoformat() if as_of is not None else None
-        known_instant = known_as_of.isoformat() if known_as_of is not None else None
-        cached = getattr(self, "_dependency_projection_cache", None)
-        if cached is not None:
-            cached_key = cached[0]
-            if (
-                cached_key[0] == generation_id
-                and cached_key[2] == instant
-                and cached_key[3] == known_instant
-            ):
-                return cached[-1]
-
-        def _load_persisted(
-            conn: "psycopg.Connection",
-        ) -> tuple[Any, tuple[str, ...], tuple[str, ...]]:
-            row = conn.execute(
-                "SELECT validation_summary FROM recall_generations "
-                "WHERE tenant_id = %s AND generation_id = %s",
-                (self._tenant, generation_id),
-            ).fetchone()
-            summary = row[0] if row and isinstance(row[0], Mapping) else {}
-            edge_rows = conn.execute(
-                "SELECT edge_id FROM recall_dependency_edges_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s ORDER BY edge_id",
-                (self._tenant, generation_id),
-            ).fetchall()
-            diagnostic_rows = conn.execute(
-                "SELECT diagnostic_id FROM recall_dependency_diagnostics_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s ORDER BY diagnostic_id",
-                (self._tenant, generation_id),
-            ).fetchall()
-            return (
-                summary,
-                tuple(str(item[0]) for item in edge_rows),
-                tuple(str(item[0]) for item in diagnostic_rows),
-            )
-
-        summary, persisted_edge_ids, persisted_diagnostic_ids = self._with_retry(_load_persisted)
-        marker = summary.get("dependency_projection")
-        if not isinstance(marker, Mapping) or marker.get("ready") is not True:
-            return None
-        cache_key = (
-            generation_id,
-            str(marker.get("projection_id", "")),
-            instant,
-            known_instant,
-            persisted_edge_ids,
-            persisted_diagnostic_ids,
-        )
-        projection = project_current_state(
-            self, as_of=as_of, known_as_of=known_as_of
-        ).dependency_projection
-        if projection is None:
-            return None
-        computed_edge_ids = tuple(edge.id for edge in projection.edges)
-        computed_diagnostic_ids = tuple(
-            sorted(
-                "depdiag_"
-                + canonical_sha256(
-                    {
-                        "kind": diagnostic.kind,
-                        "source": diagnostic.source,
-                        "dependency": diagnostic.dependency,
-                    }
-                )[:24]
-                for diagnostic in projection.diagnostics
-            )
-        )
-        if (
-            computed_edge_ids != persisted_edge_ids
-            or computed_diagnostic_ids != persisted_diagnostic_ids
-        ):
-            _log.error(
-                "dependency projection rows do not match generation marker for %s",
-                generation_id,
-            )
-            return None
-        self._dependency_projection_cache = (cache_key, projection)
-        return projection
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve caller-facing identifiers to the DB `source` value(s) to delete, this tenant only.
@@ -3215,10 +2346,6 @@ class PgVectorStore:
             ).fetchall()
         )
         return {source: content_hash for source, content_hash in rows}
-
-    def supersession_map(self) -> dict[str, str]:
-        """Resolvable supersession edges only — convenience view of `supersession`."""
-        return self.supersession()[0]
 
     def newest_indexed_at(self) -> datetime | None:
         """Newest `indexed_at` for this tenant. Timed: `HybridRetriever` calls it EVERY search.
