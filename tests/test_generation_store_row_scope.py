@@ -21,7 +21,9 @@ Red proof, recorded per the repository rule (each mutation restored afterwards):
   `GenerationStore._row_scope`/`_row_scope_args` were mutated to return no predicate, and failed
   for `count` alone when `{scope}` was deleted from `PgVectorStore.count`'s statement.
 * `test_every_inherited_chunk_table_read_is_checked_or_exempt` failed naming `probe_rows` when a
-  method `probe_rows` reading `self._table` was added to `PgVectorStore`.
+  method `probe_rows` reading `self._table` was added to `PgVectorStore`, and (after S7d split the
+  store into mixins) failed the same way when `probe_mixin_rows` was added to
+  `recall.store_supersession.SupersessionMixin` instead.
 """
 
 from __future__ import annotations

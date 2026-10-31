@@ -6,7 +6,7 @@ A mixin of `recall.store.PgVectorStore` (architecture step S7d); its caches live
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -70,6 +70,13 @@ class SupersessionMixin:
 
         @property
         def generation_id(self) -> str: ...
+
+        # `dependency_projection` hands the store itself to `project_current_state`, whose
+        # `StateStore` protocol also needs these two.
+        @property
+        def tenant(self) -> str: ...
+
+        def iter_chunks(self, batch_size: int = 1000) -> "Iterator[Chunk]": ...
 
     def supersession(self) -> tuple[dict[str, str], frozenset[str]]:
         """The supersession relation: ``(edges, unresolved)``.
