@@ -76,12 +76,13 @@ def _tenant_uploads_root(tenant: str) -> Path:
 
 
 def delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
-    """Unlink staged upload files whose database rows were just erased."""
+    """Unlink staged files after erasure; report any failed unlink after trying the rest."""
     from urllib.parse import urlsplit
     from urllib.request import url2pathname
 
     uploads_root = _tenant_uploads_root(tenant)
     removed = 0
+    failed = False
     touched_dirs: set[Path] = set()
     for source in sources:
         raw = str(source)
@@ -99,6 +100,7 @@ def delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
             continue
         except OSError:
             _LOG.warning("could not remove staged file for a forgotten source: %s", path)
+            failed = True
             continue
         removed += 1
         touched_dirs.add(path.parent)
@@ -107,4 +109,6 @@ def delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
             directory.rmdir()
         except OSError:
             pass
+    if failed:
+        raise OSError("staged upload cleanup incomplete")
     return removed

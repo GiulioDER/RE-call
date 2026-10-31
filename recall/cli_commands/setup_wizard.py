@@ -37,8 +37,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "threshold against your own corpus, and offers to register the MCP server and session "
             "hooks with Claude Code. Writes a local .env with the answers; every step that touches "
             "something outside this directory is asked for first. Run `recall doctor` afterwards "
-            "to check the result. If you want this scripted rather than asked, `recall wizard` "
-            "runs the same engine from a JSON config."
+            "to check the result. To build and promote a calibrated generation, use the separate "
+            "`recall wizard` pipeline, interactively or from a saved JSON config."
         ),
     )
     p_setup.set_defaults(
@@ -82,10 +82,10 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         # does, because a reader at this prompt has already seen both names and is choosing.
         description=(
             "Install recall as a repeatable pipeline: provision the database stack, build and "
-            "calibrate every corpus, promote a generation, and register the MCP servers. Same "
-            "engine as `recall setup`; the difference is that the answers become a JSON config "
-            "which is what actually runs, so the install can be replayed and driven headlessly by "
-            "CI. Prefer `recall setup` if you are installing this once, by hand, for yourself."
+            "calibrate every corpus, publish its calibration, promote a generation, and register "
+            "the MCP servers. Answers become a JSON config that can be replayed or driven "
+            "headlessly by CI. `recall setup` configures the installation and offers legacy "
+            "calibration; it does not build or promote a generation."
         ),
     )
     p_wizard.set_defaults(_opens_db=True, func=_cmd_wizard)
