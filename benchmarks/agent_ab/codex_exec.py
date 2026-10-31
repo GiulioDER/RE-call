@@ -3,6 +3,10 @@
 The adapter consumes the JSONL stream emitted by ``codex exec --json``. It does not decide how
 RE-call is configured. Callers provide separate environments or Codex configuration directories
 for the two variants, so the benchmark can keep the only intended difference explicit.
+
+Prior work: the existing paired runner and record contracts in
+``benchmarks/agent_ab/runner.py`` and ``benchmarks/agent_ab/schema.py``;
+this module adapts Codex JSONL output to those contracts.
 """
 
 from __future__ import annotations

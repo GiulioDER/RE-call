@@ -1,4 +1,8 @@
-"""Dependency free summaries for paired benchmark records."""
+"""Dependency free summaries for paired benchmark records.
+
+Prior work: the existing paired records in ``benchmarks/agent_ab/schema.py``;
+this module summarizes their metrics and task/variant pairs.
+"""
 
 from __future__ import annotations
 
