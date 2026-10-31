@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Upgrade note for calibration import (#1095): `recall calibration import` now authenticates a
+  v2 bundle, which its unkeyed checksums never did. It needs your own labelled query set
+  (`--labels FILE`, the set the bundle was fitted on; its digest must equal the bundle's) and the
+  embedder that wrote the generation's vectors (`--embedder`). Those queries are scored again on
+  the named generation, one embedding call each, so a hosted embedder needs its credentials at
+  import time. The bundle is refused if any recorded score differs from the fresh one by more
+  than 0.01, if its certification does not hold on the fresh scores, or if your labels repeat a
+  query. A carried bundle is judged at an error bound no looser than the default 10%, so a carry
+  made with a looser `--max-error` still serves where it was made but no longer imports. A v2
+  import without `--labels` or a matching `--embedder` is refused. In the library,
+  `CalibrationRepository.import_bundle(path)` needs `labels=` and `embedder` (or `make_embedder=`)
+  for a v2 bundle. Legacy files need neither and still import unbound. The lite fit now also
+  refuses a labelled set that repeats a query.
 - AML Add response budgets now include parsing admission, body reads, request fingerprinting and
   receipt lookup. Expiry releases request admission while an already started Add keeps running.
 - AML forget ledger identities include the Add request id, preserving earlier suppression context
