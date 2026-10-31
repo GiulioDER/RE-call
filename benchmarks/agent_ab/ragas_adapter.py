@@ -1,4 +1,8 @@
-"""Optional conversion of session records into Ragas evaluation samples."""
+"""Optional conversion of session records into Ragas evaluation samples.
+
+Prior work: the existing paired `SessionRecord` schema in this package and the
+separate scorer environment documented in `scripts/agent_ab_score_ragas.py`.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +23,8 @@ def _imports() -> tuple[Any, ...]:
         from ragas.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
     except ImportError as error:
         raise RagasUnavailable(
-            "Install the optional dependency with `pip install recall-rag[ragas]`."
+            "Install Ragas in a separate interpreter using the pinned setup in "
+            "scripts/agent_ab_score_ragas.py; recall-rag has no ragas extra."
         ) from error
     return (
         EvaluationDataset,

@@ -22,6 +22,9 @@ would inherit the very defect it is scoring. `run_bounded` kills the whole proce
 Neither fix is optional and neither is decorative: without the first the harness cannot run a
 shell task at all, and without the second one naive submission can hold a checker for the length
 of whatever it spawned.
+
+Prior work: shared bounded transport for the existing task-success framework in
+`benchmarks/agent_ab/tasksuccess.py` and its executable artifact checkers.
 """
 
 from __future__ import annotations
@@ -78,8 +81,6 @@ def kill_tree(process: subprocess.Popen) -> None:
     direct child alone, which is exactly the hole this module exists to close.
     """
 
-    if process.poll() is not None:
-        return
     # `sys.platform`, not `os.name`, and the difference is not stylistic: mypy narrows on
     # `sys.platform` and so drops the POSIX branch when checking for Windows and the Windows
     # branch when checking for Linux. With `os.name` it checks both everywhere and reports
@@ -87,6 +88,8 @@ def kill_tree(process: subprocess.Popen) -> None:
     # unfixable by an ignore comment: `warn_unused_ignores` would then fail the CI run, which
     # type-checks on ubuntu where those attributes exist.
     if sys.platform == "win32":
+        if process.poll() is not None:
+            return
         subprocess.run(  # noqa: S603,S607 - argv list, no shell
             ["taskkill", "/T", "/F", "/PID", str(process.pid)],
             capture_output=True,
@@ -96,7 +99,7 @@ def kill_tree(process: subprocess.Popen) -> None:
         import signal
 
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
     try:
@@ -144,6 +147,7 @@ def run_bounded(
         encoding="utf-8",
         errors="replace",
         creationflags=creation_flags,
+        start_new_session=sys.platform != "win32",
     )
     timed_out = False
     try:

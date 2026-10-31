@@ -84,7 +84,11 @@ def success_by_task(
             }
         )
     if not rows:
-        return {"tasks": [], "n_tasks": 0, "note": "no tasks"}
+        return {
+            "tasks": [], "n_tasks": 0, "note": "no tasks",
+            "improved": 0, "worsened": 0, "unchanged": 0,
+            "mean_delta": None, "cluster_ci": None, "sign_test_p": None,
+        }
 
     deltas = [row["delta"] for row in rows]
     improved = sum(1 for d in deltas if d > 0)
@@ -185,6 +189,10 @@ def cost_pairs(records: Sequence[SessionRecord], field: str, loci: set[str]):
     return pairs
 
 
+def _number(value: float | None, spec: str) -> str:
+    return "n/a" if value is None else format(value, spec)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
@@ -222,7 +230,7 @@ def main() -> int:
         f"\n  per-task (headline): {per_task['improved']} improved, {per_task['worsened']} worse, "
         f"{per_task['unchanged']} unchanged, over {per_task['n_tasks']} tasks"
     )
-    print(f"  mean delta {per_task['mean_delta']:+.3f}", end="")
+    print(f"  mean delta {_number(per_task['mean_delta'], '+.3f')}", end="")
     if ci:
         print(f", cluster CI [{ci[0]:+.3f}, {ci[1]:+.3f}]", end="")
     p = per_task.get("sign_test_p")
@@ -232,8 +240,8 @@ def main() -> int:
     per_pair = compare_binary("task_success", flat)
     print(
         f"\n  per-pair (consistency check, OVERSTATES confidence): n={per_pair.n_pairs}, "
-        f"off {per_pair.off_mean:.3f} on {per_pair.on_mean:.3f}, "
-        f"delta {per_pair.delta_mean:+.3f}, p={per_pair.p_value}"
+        f"off {_number(per_pair.off_mean, '.3f')} on {_number(per_pair.on_mean, '.3f')}, "
+        f"delta {_number(per_pair.delta_mean, '+.3f')}, p={per_pair.p_value}; {per_pair.note}"
     )
 
     print("\n" + "=" * 78)
@@ -243,8 +251,9 @@ def main() -> int:
     if control_flat:
         control = compare_binary("control_success", control_flat)
         print(
-            f"  n={control.n_pairs}, off {control.off_mean:.3f} on {control.on_mean:.3f}, "
-            f"delta {control.delta_mean:+.3f}, p={control.p_value}"
+            f"  n={control.n_pairs}, off {_number(control.off_mean, '.3f')} "
+            f"on {_number(control.on_mean, '.3f')}, "
+            f"delta {_number(control.delta_mean, '+.3f')}, p={control.p_value}; {control.note}"
         )
         for task, pairs in sorted(control_pairs.items()):
             on_rate = sum(1 for on, _ in pairs if on) / len(pairs)
@@ -286,8 +295,8 @@ def main() -> int:
         result = compare_continuous(field, pairs)
         costs[field] = result.to_dict()
         print(
-            f"  {field:<15} n={result.n_pairs:<3} mean {result.delta_mean:+12.1f}  "
-            f"median {result.delta_median:+12.1f}  p={result.p_value}"
+            f"  {field:<15} n={result.n_pairs:<3} mean {_number(result.delta_mean, '+12.1f')}  "
+            f"median {_number(result.delta_median, '+12.1f')}  p={result.p_value}; {result.note}"
         )
 
     payload = {

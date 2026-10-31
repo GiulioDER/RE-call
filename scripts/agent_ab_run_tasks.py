@@ -43,6 +43,7 @@ import re
 import subprocess
 import sys
 from dataclasses import replace
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -322,6 +323,11 @@ def environment_capture(
 
 
 async def main() -> int:
+    with ExitStack() as resources:
+        return await _main(resources)
+
+
+async def _main(resources: ExitStack) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--dsn", default=DEFAULT_DSN)
@@ -451,7 +457,7 @@ async def main() -> int:
     agent_env = openrouter_env()
     await preflight(agent_env, args.model, args.driver)
 
-    spec = StdioRecallSpec(dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant)
+    spec = resources.enter_context(StdioRecallSpec(dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant))
     check = await spec.check()
     print(
         f"RE-call ready: {check['handshake_ms']} ms handshake, {check['tool_count']} tools, "

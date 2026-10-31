@@ -18,6 +18,9 @@ tasks, an arm that never triggers a trap gives 0/20, and `recall/eval/metrics.py
 already records what a percentile bootstrap does with that: it resamples all-False every time and
 returns `[0.00, 0.00]`, reporting CERTAINTY from twenty observations that happened to agree. Every
 function here returns `None` rather than a number it cannot support, and says why in `note`.
+
+Prior work: the paired endpoint design documented in `benchmarks/agent_ab/README.md`
+and the existing statistical contracts in `tests/test_agent_ab_stats.py`.
 """
 
 from __future__ import annotations
@@ -112,7 +115,9 @@ def _exact_binomial_two_sided(successes: int, trials: int) -> float:
     total = 2**trials
     lower = sum(math.comb(trials, k) for k in range(0, successes + 1))
     upper = sum(math.comb(trials, k) for k in range(successes, trials + 1))
-    tail = 2.0 * float(min(lower, upper)) / float(total)
+    # Divide integers directly: either count can exceed binary64's range even
+    # though their probability ratio is finite.
+    tail = float((2 * min(lower, upper)) / total)
     return min(1.0, tail)
 
 
