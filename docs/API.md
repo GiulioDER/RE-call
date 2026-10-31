@@ -66,7 +66,7 @@ removal.
 | Command | Purpose |
 |---|---|
 | `recall setup` | Guided local setup: embedder and reranker choices, optional per-corpus calibration, and optional CLAUDE.md/memory scaffolding. |
-| `recall wizard` | The same install as a scriptable pipeline: `--headless --config` drives every corpus to a calibrated, promoted generation ([WIZARD.md](WIZARD.md)). |
+| `recall wizard` | Build, calibrate, publish, and promote a generation, interactively or from a saved config with `--headless --config` ([WIZARD.md](WIZARD.md)). Ordinary `recall setup` configures the installation and offers legacy calibration without this generation lifecycle. |
 | `recall uninstall` | Remove what setup installed: MCP registrations, hooks, and optionally the database stack. |
 | `recall doctor` | Diagnose an install end to end and change nothing: interpreter, package, console scripts on PATH, embedder backend, Docker, database, pgvector, schema, whether the configured table and tenant actually hold chunks, calibration, and the Claude Code registration. Prints the repair command for each problem. `--json` for machines. Exits non-zero only when something is blocked, so a missing calibration does not fail a script. |
 | `recall quickstart` | From a fresh `pip install` to a real answer: start a throwaway PostgreSQL, index the bundled 22-document demo corpus into `quickstart_chunks`/`quickstart`, answer three queries, and print the values the Claude Code plugin asks for. `--remove` destroys it. Calibrates nothing and registers nothing. |
