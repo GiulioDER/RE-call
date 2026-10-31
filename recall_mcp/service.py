@@ -396,126 +396,18 @@ from recall_mcp.factories import make_embedder, make_profile_embedder  # noqa: E
 #: quadrupled every query's latency to improve a benchmark would be choosing for the operator.
 #: Worth enabling when a human is waiting on the answer; leave it off for high-volume automated
 #: retrieval or constrained hardware.
-_RERANK_TRUE = frozenset({"1", "true", "yes", "on"})
-_RERANK_FALSE = frozenset({"", "0", "false", "no", "off"})
-
-
 def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str | None] | None:
-    """`(model, revision)` for the configured reranker, or None when it is off.
-
-    `revision` is None for a cloud model, which has no Hub reference to pin. That is a real
-    difference in guarantee, not a missing value, and the type says so rather than hiding it
-    behind an empty string.
-
-    Returns a spec rather than an instance so the decision can be tested without importing torch.
-
-    `ms-marco-MiniLM-L-6-v2` is the default because it was *measured* to be the right choice, not
-    because it was already there: `bge-reranker-base`, with 12x the parameters and four years newer,
-    is statistically indistinguishable at **6.3x** the per-query cost. Reranker selection here is
-    about task match — short query against short passage — not model size.
-
-    An unparseable flag is REFUSED rather than read as "off". An operator who asked for reranking
-    and silently got an unreranked server would have no way to notice: the failure is fast, quiet
-    and looks exactly like success.
-    """
-    source = env if env is not None else runtime_environment()
-    raw = source.get("RECALL_RERANK", "").strip().lower()
-    if raw in _RERANK_FALSE:
-        return None
-    if raw not in _RERANK_TRUE:
-        raise ValueError(
-            f"RECALL_RERANK={raw!r} is not a boolean. Use one of {sorted(_RERANK_TRUE)} to enable "
-            f"or leave it unset. Refused rather than treated as off, because a server that quietly "
-            f"ignored the flag would look identical to one that honoured it."
-        )
-
-    model = source.get("RECALL_RERANK_MODEL")
-    if not model:
-        return (DEFAULT_RERANKER_MODEL, DEFAULT_RERANKER_REVISION)
-    model = RERANKER_MODEL_ALIASES.get(model, model)
-    revision = source.get("RECALL_RERANK_REVISION")
-
-    # A cloud model has no Hub reference, so it has no revision to pin. The requirement below is a
-    # Hub property, and applying it here would make the Voyage reranker unselectable while looking
-    # like a safety check.
-    #
-    # ⚠️ The guarantee genuinely differs and is not being papered over. `rerank-2.5` is a name
-    # resolved on Voyage's side: its weights can change under us in a way a pinned Hub revision
-    # cannot. That is a real, smaller guarantee, recorded here so a reader comparing the two
-    # rerankers can see it. It is a reason to know what you are choosing, not a reason to refuse.
-    if model == "voyage" or model.startswith("voyage:"):
-        if revision:
-            raise ValueError(
-                f"RECALL_RERANK_MODEL={model!r} has no Hub revision to pin, so "
-                f"RECALL_RERANK_REVISION={revision!r} cannot be honoured. Accepting it would put a "
-                "pin in every trace that pins nothing, which asserts a guarantee that does not "
-                "exist. Unset RECALL_RERANK_REVISION for a cloud reranker."
-            )
-        return (model, None)
-
-    if not revision:
-        revision = KNOWN_RERANKER_REVISIONS.get(model)
-        if not revision:
-            raise ValueError(
-                "RECALL_RERANK_MODEL requires RECALL_RERANK_REVISION unless it names a built-in "
-                "pinned reranker. An unpinned Hub reference is mutable, and the shipped revision "
-                "pin belongs to the shipped weights only — reusing it would name the wrong "
-                "artifact in every trace."
-            )
-    return (model, revision)
+    """Resolve through the production owner, using this service's settings snapshot."""
+    return _factories.resolve_reranker(env if env is not None else dict(runtime_environment()))
 
 
-def _positive_env(values: dict[str, str], name: str, default: int) -> int:
-    raw = values.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        parsed = int(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-    if parsed < 1:
-        raise ValueError(f"{name} must be positive")
-    return parsed
-
-
-def _remote_model_code_enabled(values: dict[str, str]) -> bool:
-    return values.get(REMOTE_MODEL_CODE_OPT_IN, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _require_remote_model_code_enabled(values: dict[str, str], model: str) -> None:
-    if not _remote_model_code_enabled(values):
-        raise ValueError(
-            f"{model} requires {REMOTE_MODEL_CODE_OPT_IN}=1 because its Transformers loader "
-            "executes model repository code"
-        )
-
-
-def _validate_quality_reranker_config(values: dict[str, str]) -> tuple[str, str]:
-    """`(model_path, digest)` for the quality profile, or raise. No model is loaded.
-
-    The digest must EQUAL the pin. Accepting whatever the operator typed would make the
-    `local_files_only` verification self-referential: it would prove the tree matches the hash of
-    itself, which every tree does. The check that means something compares it against a value
-    chosen elsewhere.
-    """
-    from recall.rerank import PINNED_RERANKER_SHA256
-
-    # Normalise ONCE, compare the normalised value, and return the normalised value. Validating
-    # one string and handing the loader a different one re-opens the hole this check closed:
-    # `verify_artifact` rejects on LENGTH before it lowercases, so a digest that is correct
-    # except for a trailing newline (what a dotenv literal block or a padded `.env` line
-    # produces) passed startup and then raised on the first search.
-    model_path = values.get("RECALL_RERANK_PATH", "").strip()
-    digest = values.get("RECALL_RERANK_SHA256", "").strip().lower()
-    if not model_path or not digest:
-        raise ValueError("quality profile requires RECALL_RERANK_PATH and RECALL_RERANK_SHA256")
-    if digest != PINNED_RERANKER_SHA256:
-        raise ValueError(
-            f"RECALL_RERANK_SHA256 does not match the reranker pinned to the quality profile "
-            f"(expected {PINNED_RERANKER_SHA256}). A different artifact tree is a different "
-            f"model and needs its own registered experiment, not a reused profile."
-        )
-    return model_path, digest
+# Compatibility exports share the factory policy used by the actual reranker builder.
+from recall_mcp.factories import (  # noqa: E402
+    _positive_env,
+    _remote_model_code_enabled,
+    _require_remote_model_code_enabled,
+    _validate_quality_reranker_config,
+)
 
 
 def _new_reranker(

@@ -1054,17 +1054,15 @@ class GenerationStore(PgVectorStore):
             raise ValueError(f"seed chunk not found: {seed_chunk_id!r}")
         seed_id, seed_source, seed_text, seed_metadata = seed_row
         seed_metadata = seed_metadata if isinstance(seed_metadata, dict) else json.loads(seed_metadata)
-        seed_file = seed_metadata.get("file") or seed_source
         seed_ord = seed_metadata.get("ord")
 
-        file_match = "(metadata->>'file' = %s OR (NOT (metadata ? 'file') AND source_uri = %s))"
+        source_match = "source_uri = %s"
         if relation == "source":
-            where = file_match
+            where = source_match
             params: tuple[object, ...] = (
                 self._tenant,
                 generation_id,
-                seed_file,
-                seed_file,
+                seed_source,
                 seed_id,
                 max_items,
             )
@@ -1079,15 +1077,14 @@ class GenerationStore(PgVectorStore):
                     [],
                 )
             where = (
-                f"{file_match} AND (metadata->>'ord') ~ '^[0-9]+$' "
+                f"{source_match} AND (metadata->>'ord') ~ '^[0-9]+$' "
                 "AND abs((metadata->>'ord')::int - %s) <= 2"
             )
             order = "abs((metadata->>'ord')::int - %s), chunk_id"
             params = (
                 self._tenant,
                 generation_id,
-                seed_file,
-                seed_file,
+                seed_source,
                 seed_ord,
                 seed_id,
                 seed_ord,

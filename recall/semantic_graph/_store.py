@@ -274,39 +274,45 @@ def _load_relation_rows(
 
 def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> SemanticGraphProjection | None:
     """Load a generation graph, returning ``None`` when no graph has been built."""
-    # One transaction, so the four reads observe one snapshot: a concurrent forget() commits
-    # between its statements, and four autocommit SELECTs would each see a different state.
-    with conn.transaction():
-        generation_row = conn.execute(
-            "SELECT pipeline_fingerprint, corpus_fingerprint, validation_summary "
-            "FROM recall_generations WHERE tenant_id = %s AND generation_id = %s",
-            (tenant_id, generation_id),
-        ).fetchone()
-        entity_rows = conn.execute(
-            "SELECT entity_id, canonical_name, normalized_name, entity_kind, aliases, "
-            "extraction_method, confidence, metadata FROM recall_graph_entities_v1 "
-            "WHERE tenant_id = %s AND generation_id = %s ORDER BY entity_id",
-            (tenant_id, generation_id),
-        ).fetchall()
-        mention_rows = conn.execute(
-            "SELECT mention_id, entity_id, chunk_id, mention_text, extraction_method, "
-            "confidence, metadata FROM recall_graph_mentions_v1 "
-            "WHERE tenant_id = %s AND generation_id = %s ORDER BY mention_id",
-            (tenant_id, generation_id),
-        ).fetchall()
-        relation_rows = conn.execute(
-            "SELECT r.relation_id, r.subject_id, r.object_id, r.relation, r.extraction_method, "
-            "r.confidence, r.status, r.uncertainty, r.pipeline_fingerprint, r.corpus_fingerprint, "
-            "r.metadata, array_agg(e.chunk_id ORDER BY e.chunk_id) "
-            "FROM recall_graph_relations_v1 r LEFT JOIN recall_graph_relation_evidence_v1 e "
-            "ON e.tenant_id = r.tenant_id AND e.generation_id = r.generation_id "
-            "AND e.relation_id = r.relation_id WHERE r.tenant_id = %s AND r.generation_id = %s "
-            "GROUP BY r.relation_id, r.subject_id, r.object_id, r.relation, "
-            "r.extraction_method, r.confidence, r.status, r.uncertainty, "
-            "r.pipeline_fingerprint, r.corpus_fingerprint, r.metadata "
-            "ORDER BY r.relation_id",
-            (tenant_id, generation_id),
-        ).fetchall()
+    # One statement gives every member and the marker the same PostgreSQL snapshot,
+    # including when the caller already has a READ COMMITTED transaction open.
+    generation_row, entity_rows, mention_rows, relation_rows = conn.execute(
+        """
+        SELECT
+          (SELECT jsonb_build_array(pipeline_fingerprint, corpus_fingerprint, validation_summary)
+           FROM recall_generations
+           WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s),
+          COALESCE((SELECT jsonb_agg(jsonb_build_array(
+              entity_id, canonical_name, normalized_name, entity_kind, aliases,
+              extraction_method, confidence, metadata) ORDER BY entity_id)
+           FROM recall_graph_entities_v1
+           WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s), '[]'::jsonb),
+          COALESCE((SELECT jsonb_agg(jsonb_build_array(
+              mention_id, entity_id, chunk_id, mention_text, extraction_method,
+              confidence, metadata) ORDER BY mention_id)
+           FROM recall_graph_mentions_v1
+           WHERE tenant_id = %(tenant)s AND generation_id = %(generation)s), '[]'::jsonb),
+          COALESCE((SELECT jsonb_agg(jsonb_build_array(
+              relation_id, subject_id, object_id, relation, extraction_method,
+              confidence, status, uncertainty, pipeline_fingerprint,
+              corpus_fingerprint, metadata, evidence) ORDER BY relation_id)
+           FROM (
+             SELECT r.relation_id, r.subject_id, r.object_id, r.relation,
+                    r.extraction_method, r.confidence, r.status, r.uncertainty,
+                    r.pipeline_fingerprint, r.corpus_fingerprint, r.metadata,
+                    array_agg(e.chunk_id ORDER BY e.chunk_id) AS evidence
+             FROM recall_graph_relations_v1 r
+             LEFT JOIN recall_graph_relation_evidence_v1 e
+               ON e.tenant_id = r.tenant_id AND e.generation_id = r.generation_id
+               AND e.relation_id = r.relation_id
+             WHERE r.tenant_id = %(tenant)s AND r.generation_id = %(generation)s
+             GROUP BY r.relation_id, r.subject_id, r.object_id, r.relation,
+                      r.extraction_method, r.confidence, r.status, r.uncertainty,
+                      r.pipeline_fingerprint, r.corpus_fingerprint, r.metadata
+           ) AS relation_rows), '[]'::jsonb)
+        """,
+        {"tenant": tenant_id, "generation": generation_id},
+    ).fetchone()
     marker = generation_row[2].get("semantic_graph") if generation_row and isinstance(generation_row[2], dict) else None
     if not entity_rows and not mention_rows and not relation_rows and not isinstance(marker, dict):
         return None
