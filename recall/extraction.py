@@ -140,7 +140,10 @@ MAX_EXTRACTED_CHARACTERS = 5_000_000
 MAX_EPUB_MEMBERS = 10_000
 MAX_EPUB_MEMBER_BYTES = MAX_EXTRACTED_CHARACTERS * 4
 MAX_EPUB_TOTAL_BYTES = MAX_EXTRACTED_CHARACTERS * 4
-STRUCTURED_DOCUMENT_VERSION = "table-row-groups-v1"
+#: v2 (2026-10-31): `numeric_values` reads thousands grouping (`1,500` is `1500`, not `1.500`).
+#: Bumped because that list is persisted in chunk metadata, so an unchanged file must be
+#: re-extracted, and this value is in every file fingerprint and the generation chunker identity.
+STRUCTURED_DOCUMENT_VERSION = "table-row-groups-v2"
 
 _MEDIA_TYPE_SUFFIXES = {
     "text/plain": ".txt",
@@ -969,12 +972,20 @@ def _table_header_values(line: str) -> list[str]:
     return [value.strip() for value in line.strip("|").split("|") if value.strip()]
 
 
+_NUMERIC_TOKEN = re.compile(
+    r"(?<![\w.])[+-]?(?:[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?|\d+(?:[.,]\d+)?)%?(?![\w.])"
+)
+_GROUPED_NUMBER = re.compile(r"[+-]?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?%?")
+
+
 def _table_numeric_values(rows: list[str]) -> list[str]:
     values: list[str] = []
     for row in rows:
         for cell in row.strip("|").split("|"):
-            for match in re.findall(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])", cell):
-                normalized = match.replace(",", ".")
+            # The query side's rule (`recall.store._normalize_numeric`), copied because this
+            # module must not import the store: thousands grouping dropped, a decimal comma a point.
+            for match in _NUMERIC_TOKEN.findall(cell):
+                normalized = match.replace(",", "" if _GROUPED_NUMBER.fullmatch(match) else ".")
                 if normalized not in values:
                     values.append(normalized)
     return values

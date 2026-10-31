@@ -84,7 +84,10 @@ ENGLISH_STOP_WORDS = frozenset(
     so than too very s t can will just don should now""".split()
 )
 _TERM = re.compile(r"\w+", re.UNICODE)
-_NUMERIC_TOKEN = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
+_NUMERIC_TOKEN = re.compile(
+    r"(?<![\w.])[+-]?(?:[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?|\d+(?:[.,]\d+)?)%?(?![\w.])"
+)
+_GROUPED_NUMBER = re.compile(r"[+-]?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?%?")
 _TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%f+00:00"
 #: The same expressions as the `chunks_project_file` index, so the planner can use it.
 _DELETE_PROJECT_FILES = (
@@ -136,7 +139,8 @@ def _numeric_terms(text: str) -> list[str]:
     """`recall.store._numeric_query_terms`, copied (that module loads psycopg); a test pins the two."""
     terms: list[str] = []
     for value in _NUMERIC_TOKEN.findall(text):
-        normalized = value.replace(",", ".")
+        # Thousands grouping is dropped, a decimal comma becomes a point (`_normalize_numeric`).
+        normalized = value.replace(",", "" if _GROUPED_NUMBER.fullmatch(value) else ".")
         if normalized not in terms:
             terms.append(normalized)
     return terms
