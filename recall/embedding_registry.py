@@ -31,7 +31,7 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Mapping
+from typing import Literal, Mapping, Sequence
 
 from recall.embeddings import (
     HOSTED_UNVERIFIED_DIGEST,
@@ -827,8 +827,23 @@ _HOSTED_PROFILES: tuple[RegisteredProfile, ...] = (
     ),
 )
 
+def _unique_profiles(entries: Sequence[RegisteredProfile]) -> dict[str, RegisteredProfile]:
+    """Key the registry by profile id, refusing a repeated id instead of keeping the last one.
+
+    A dict comprehension kept the LAST entry for a repeated id, so an entry copied from a
+    neighbour with its id left unchanged replaced the original silently, and every corpus recorded
+    under that id would be queried by the copy's model (CCA CODE-005).
+    """
+    registry: dict[str, RegisteredProfile] = {}
+    for entry in entries:
+        if entry.profile_id in registry:
+            raise ValueError(f"embedding profile {entry.profile_id!r} is registered twice")
+        registry[entry.profile_id] = entry
+    return registry
+
+
 REGISTERED_PROFILES: Mapping[str, RegisteredProfile] = MappingProxyType(
-    {entry.profile_id: entry for entry in _PROFILES + _HOSTED_PROFILES}
+    _unique_profiles(_PROFILES + _HOSTED_PROFILES)
 )
 
 

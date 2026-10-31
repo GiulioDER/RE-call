@@ -14,6 +14,7 @@ from recall.embedding_core import (
     LEGACY_UNVERIFIED_DIGEST,
     EmbeddingProfile,
     _package_version,
+    artifact_digest_for_path,
     verify_artifact,
 )
 from recall.observability import get_logger
@@ -376,13 +377,15 @@ class FastEmbedEmbedder:
         # fastembed's version and nothing else. A fingerprint fix that skips the registered path
         # is not a fix.
         #
-        # ⚠️ SCOPE, stated precisely because an earlier version of this comment overstated it:
-        # what this reaches is the v1 profile-fingerprint binding (`calibration.load_for_profile`)
-        # and the embedding cache key (`recall/cache.py`). It does NOT reach the CERTIFIED v2
-        # binding, which stores `recall.lineage.EmbedderIdentity` — provider, model, dimension,
-        # revision, artifact_digest — and has no `dependencies` field at all. A CPU-fit certified
-        # calibration therefore still binds cleanly to a CUDA-served pipeline. Closing that needs
-        # the providers added to `EmbedderIdentity`, which is a separate change.
+        # ⚠️ SCOPE, stated precisely because earlier versions of this comment got it wrong twice:
+        # this reaches the v1 profile-fingerprint binding (`calibration.load_for_profile`), the
+        # embedding cache key (`recall/cache.py`) and, through the profile fingerprint, the
+        # CERTIFIED v2 binding too. `recall.lineage.EmbedderIdentity` has no `dependencies` field,
+        # but it records `profile_fingerprint` (`recall.generation_build`), which hashes these
+        # entries, and `recall.calibration_v2._require_runtime_embedder` refuses a mismatch. Only
+        # a generation recorded without a profile fingerprint (before that field existed, or for
+        # an embedder with no profile) still binds on model and dimension alone. 🔁 Corrected
+        # 2026-10-31 (CCA DOC-003): this said the v2 binding never sees the providers.
         self._profile = (
             _with_provider_dependency(identity, self.session_providers)
             if identity
@@ -513,6 +516,17 @@ def _require_remote_model_code_opt_in(source: Mapping[str, str], model: str) -> 
         )
 
 
+def _sentence_transformer_digest(model: str, revision: str | None) -> str | None:
+    """The artifact identity of an `st:` model, or None when nothing pins its bytes."""
+    local = Path(model)
+    if local.is_dir():
+        digest = artifact_digest_for_path(local.resolve())
+        return f"sha256:{digest}" if digest is not None else None
+    if revision is not None and len(revision) == 40 and all(c in "0123456789abcdef" for c in revision.lower()):
+        return f"hf-revision:{revision.lower()}"
+    return None
+
+
 class SentenceTransformerEmbedder:
     """Any `sentence-transformers` model by name or local path — including one fine-tuned here.
 
@@ -548,10 +562,22 @@ class SentenceTransformerEmbedder:
         self._name = name or f"st:{model}"
         self._batch_size = batch_size
         self._dim = int(self._model.get_sentence_embedding_dimension())
+        self._artifact_digest = _sentence_transformer_digest(model, revision)
 
     @property
     def dim(self) -> int:
         return self._dim
+
+    @property
+    def observed_artifact(self) -> str | None:
+        """What identifies the weights: a local directory's tree hash, or a pinned commit.
+
+        None for a hub id with no commit pinned, which stays honestly unverified. Read by
+        `recall.embedding_core.legacy_embedding_profile`, so a model retrained into the same
+        directory (the `finetune/model` workflow above) changes its fingerprint, and with it the
+        embedding cache key and the index skip guard (CCA DAT-002).
+        """
+        return self._artifact_digest
 
     @property
     def name(self) -> str:

@@ -1,4 +1,10 @@
-"""Read only store view pinned to one tenant's active immutable generation."""
+"""Store view pinned to one tenant's active immutable generation.
+
+Chunk rows are never written through it: every chunk mutation raises `ImmutableGenerationError`.
+It is not read-only, though. `delete_sources` is erasure (`GenerationManager.forget`, one
+transaction per source: irreversible, and tombstoned against every future build), and the graph
+projection is written and deleted here.
+"""
 
 from __future__ import annotations
 
@@ -91,6 +97,12 @@ class ImmutableGenerationError(RuntimeError, RecallError):
 #: per object exactly so an erasure issued mid-build lands.
 LIVE_MANIFEST_STATES = ("building", "validating", "ready", "active", "retired")
 
+#: The generation states whose rows may be READ: served, pinned, fixed for a benchmark, reused by
+#: a build, or dated by one. One list for the same reason as `LIVE_MANIFEST_STATES`: it was written
+#: out as an SQL literal five times across this module and `recall.generations`, so a change to
+#: whether `retired` rows are readable could reach the pin and miss the reuse (CCA CODE-007).
+READABLE_GENERATION_STATES = ("ready", "active", "retired")
+
 #: How long a resolved calibration verdict may be served without re-reading the database, in
 #: seconds. The cache key already retires an entry when the active generation changes, so this
 #: bound only covers the rarer event of the SAME generation being recalibrated in place by an
@@ -141,6 +153,13 @@ class GenerationStore(PgVectorStore):
         if not migration_target.isidentifier():
             raise ValueError("migration_target must be a valid SQL identifier")
         self._migration_target = migration_target
+        self._init_generation_state()
+
+    def _init_generation_state(self) -> None:
+        """Every tenant-derived pin and cache, fresh: the one list both construction and
+        `_reset_tenant_state` use. It was written out twice, so a cache added to `__init__` alone
+        would have let a `for_tenant` view inherit the source tenant's entry (CCA CODE-006).
+        """
         self._pinned_generation: ContextVar[str | None] = ContextVar(
             f"recall_generation_{uuid.uuid4().hex}", default=None
         )
@@ -148,6 +167,8 @@ class GenerationStore(PgVectorStore):
             f"recall_generation_corpus_{uuid.uuid4().hex}", default=None
         )
         self._fixed_generation: str | None = None
+        # The cached calibration resolution is tenant derived too; the key would catch a stale
+        # entry anyway, but a view should never start life holding another tenant's verdict.
         self._calibration_resolution: (
             tuple[tuple[str, str, str], "CalibrationResolution", float] | None
         ) = None
@@ -192,20 +213,7 @@ class GenerationStore(PgVectorStore):
         wrong-generation result that reads like an honest answer.
         """
         super()._reset_tenant_state()
-        self._pinned_generation = ContextVar(
-            f"recall_generation_{uuid.uuid4().hex}", default=None
-        )
-        self._pinned_corpus = ContextVar(
-            f"recall_generation_corpus_{uuid.uuid4().hex}", default=None
-        )
-        self._fixed_generation = None
-        # The cached calibration resolution is tenant derived too; the key would catch a stale
-        # entry anyway, but a view should never start life holding another tenant's verdict.
-        self._calibration_resolution = None
-        self._graph_readiness_cache = None
-        self._binding_cache = None
-        self._newest_indexed_at_cache = None
-        self._coverage_cache = {}
+        self._init_generation_state()
 
     def check_schema(self) -> None:
         from recall.schema import check_schema
@@ -314,7 +322,7 @@ class GenerationStore(PgVectorStore):
         return self._generation_id()
 
     def set_fixed_generation(self, generation_id: str) -> None:
-        """Pin this read-only store to one immutable generation for its whole process.
+        """Pin this store's reads to one immutable generation for its whole process.
 
         This is intentionally separate from ``pin_generation``: that context manager pins one
         read (a calibration, or one read-time fact check), while a benchmark server needs every
@@ -328,8 +336,8 @@ class GenerationStore(PgVectorStore):
         row = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT 1 FROM recall_generations WHERE tenant_id = %s "
-                "AND generation_id = %s AND state IN ('ready', 'active', 'retired')",
-                (self._tenant, generation_id),
+                "AND generation_id = %s AND state = ANY(%s)",
+                (self._tenant, generation_id, list(READABLE_GENERATION_STATES)),
             ).fetchone()
         )
         if row is None:
@@ -354,8 +362,8 @@ class GenerationStore(PgVectorStore):
         row = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT corpus_fingerprint FROM recall_generations WHERE tenant_id = %s "
-                "AND generation_id = %s AND state IN ('ready', 'active', 'retired')",
-                (self._tenant, generation_id),
+                "AND generation_id = %s AND state = ANY(%s)",
+                (self._tenant, generation_id, list(READABLE_GENERATION_STATES)),
             ).fetchone()
         )
         if row is None:

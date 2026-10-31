@@ -256,7 +256,10 @@ class VoyageContextualizedEmbedder:
                     extra={"model": self._model, "bound": "utf8-bytes"},
                 )
                 counter = _utf8_token_bound
-                self._counter_identity = "utf8-bytes-plus-2-v1"
+                # Derived from the constant the bound adds, because this identity enters the
+                # profile fingerprint: a literal would keep reading "plus-2" after the constant
+                # moved, and parts split differently would reuse the old vectors (CCA CODE-004).
+                self._counter_identity = f"utf8-bytes-plus-{_FALLBACK_SPECIAL_TOKENS_PER_CHUNK}-v1"
             elif isinstance(counter, _IdentifiedTokenCounter):
                 self._counter_identity = counter.identity
             self._token_counter = counter

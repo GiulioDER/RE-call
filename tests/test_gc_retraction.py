@@ -192,3 +192,25 @@ def test_g4_gc_never_retracts_a_fact_from_a_generation_it_did_not_collect(three:
 
     _gc(manager)
     assert "17" in _bare_current(manager), "gc retracted a fact it did not remove the evidence of"
+
+
+def test_g5_a_memo_held_under_a_shifted_name_keeps_its_fact(manager: Any) -> None:
+    """Node tests/test_gc_retraction.py::test_g5_a_memo_held_under_a_shifted_name_keeps_its_fact.
+
+    CCA STAKES-002. A card names its memo by `file`, which is relative to its generation's
+    manifest common directory. Generation 1 holds only `a/`, so the door memo is `door.md`; the
+    later generations also hold `b/`, so the same memo is `a/door.md`. gc collects generation 1
+    and must still see the memo as held. Red against `6eee13d87` (pre-fix
+    `GenerationManager.retract_collected_facts`, exact-name `held`): fails on "gc retracted a fact
+    whose memo a remaining generation holds under another name".
+    """
+    first = _promote(manager, {"a/door.md": DOOR_MEMO, "a/other.md": OTHER_MEMO}, "corpus-v1")
+    _apply_door(manager, first)
+    _promote(manager, {"a/door.md": DOOR_MEMO, "b/other.md": OTHER_MEMO}, "corpus-v2")
+    _promote(manager, {"a/door.md": DOOR_MEMO, "b/other.md": OTHER_MEMO + b" again"}, "corpus-v3")
+
+    assert _gc(manager) == (first,)
+    assert _bare_current(manager) == ["4512"], (
+        "gc retracted a fact whose memo a remaining generation holds under another name"
+    )
+    assert manager.last_gc_facts_retracted == 0

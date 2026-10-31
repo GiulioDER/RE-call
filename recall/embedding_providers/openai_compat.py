@@ -1,4 +1,4 @@
-"""The embedder for any OpenAI-compatible ``/embeddings`` endpoint.
+"""The embedder for an approved OpenAI-compatible ``/embeddings`` endpoint.
 """
 
 from __future__ import annotations
@@ -37,7 +37,12 @@ _OPENAI_COMPAT_MAX_PATH_SEGMENTS = 8
 
 
 class OpenAICompatEmbedder:
-    """OpenAI-compatible cloud embeddings via any ``base_url`` (OpenRouter, OpenAI, Azure, vLLM).
+    """OpenAI-compatible embeddings from OpenRouter, OpenAI, or a loopback server.
+
+    The ``base_url`` is allowlisted, not free: ``https://openrouter.ai/api/v1``,
+    ``https://api.openai.com/v1``, or a server on ``localhost``, ``127.0.0.1`` or ``::1`` (a local
+    vLLM, for example). Every other host, Azure and a remote vLLM included, is refused at
+    construction, so a configured URL cannot send document text to an arbitrary endpoint.
 
     Defaults to OpenRouter so the exact ``openai/text-embedding-3-small`` model is reachable on the
     same key the benchmark already uses for its generator and judge — no separate OpenAI billing,
