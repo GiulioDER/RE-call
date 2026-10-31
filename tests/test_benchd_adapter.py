@@ -8,24 +8,35 @@ first, without needing a database or the harness runtime:
 2. Item isolation: after ``reset()`` and before the next ``ingest()``, ``recall()`` returns
    the empty string, so no question can be answered from a corpus its item did not ingest.
 
-The harness package is an optional test dependency; without it the module skips.
+The harness base class is stubbed when absent; these unit tests exercise the adapter without its runtime.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import sys
+import types
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
-pytest.importorskip("benchd_harness")
 
 _ADAPTER_PATH = Path(__file__).resolve().parents[1] / "benchmarks" / "benchd" / "recall_adapter.py"
 _spec = importlib.util.spec_from_file_location("benchd_recall_adapter", _ADAPTER_PATH)
 adapter_module = importlib.util.module_from_spec(_spec)
 sys.modules.setdefault("benchd_recall_adapter", adapter_module)
-_spec.loader.exec_module(adapter_module)
+# Only BaseAdapter is needed to define the adapter; no harness behavior is exercised here.
+with pytest.MonkeyPatch.context() as _imports:
+    try:
+        import benchd_harness.adapters.base  # noqa: F401
+    except ImportError:
+        _base = types.ModuleType("benchd_harness.adapters.base")
+        _base.BaseAdapter = object
+        _imports.setitem(sys.modules, "benchd_harness", types.ModuleType("benchd_harness"))
+        _imports.setitem(sys.modules, "benchd_harness.adapters", types.ModuleType("benchd_harness.adapters"))
+        _imports.setitem(sys.modules, "benchd_harness.adapters.base", _base)
+    _spec.loader.exec_module(adapter_module)
 
 RecallAdapter = adapter_module.RecallAdapter
 
@@ -61,32 +72,89 @@ def test_has_answer_never_reaches_documents(monkeypatch, granularity):
     assert not any("has_answer" in doc for doc in with_flag)
 
 
-def test_has_answer_never_reaches_the_cache_key():
-    """The ingest cache hashes turn content and session metadata; flipping the oracle flag
-    must not change the digest, or the flag would leak into which corpora get rebuilt."""
-    import hashlib
-    import json
+@pytest.fixture
+def ingest_adapter(monkeypatch, tmp_path):
+    """Use real ingest/cache logic with only storage and indexing replaced."""
+    import recall.index
 
-    def digest(turns):
-        blob = json.dumps(
-            [
-                {
-                    "role": t.get("role"),
-                    "content": t.get("content"),
-                    "session_index": (t.get("metadata") or {}).get("session_index"),
-                    "session_date_time": (t.get("metadata") or {}).get("session_date_time"),
-                    "speaker": (t.get("metadata") or {}).get("speaker"),
-                }
-                for t in turns
-            ],
-            sort_keys=True,
-        )
-        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    calls = []
+    deleted = []
 
-    assert digest(_turns(True)) == digest(_turns(False))
-    # And the adapter source builds its digest from exactly these fields.
-    src = _ADAPTER_PATH.read_text(encoding="utf-8")
-    assert '"has_answer"' not in src.replace("# it is LongMemEval's oracle flag", "")
+    class Store:
+        rows = ()
+
+        def close(self):
+            pass
+
+        def iter_chunks(self):
+            return iter(self.rows)
+
+        def delete_sources(self, sources):
+            deleted.extend(sources)
+            self.rows = ()
+
+    class Indexer:
+        def __init__(self, store, embedder):
+            self.store = store
+
+        def index_path(self, workspace, *, files):
+            calls.append(tuple(files))
+            self.store.rows = tuple(SimpleNamespace(source=str(path)) for path in files)
+
+    monkeypatch.setattr(recall.index, "Indexer", Indexer)
+    adapter = RecallAdapter()
+    adapter._workspace = tmp_path
+    monkeypatch.setattr(adapter, "_open_store", lambda digest: Store())
+    return adapter, calls, deleted
+
+
+def test_has_answer_never_reaches_the_cache_key(ingest_adapter):
+    """CODE-001: real ingest must reuse a corpus when only its oracle flag changes.
+
+    Red proof: serialize the complete metadata mapping in RecallAdapter.ingest.
+    This exact test must fail its active-digest assertion on that production mutation.
+    """
+    adapter, calls, _ = ingest_adapter
+    adapter.ingest(_turns(True))
+    original = adapter._active
+    adapter.reset()
+    adapter.ingest(_turns(False))
+    assert adapter._active == original
+    assert len(calls) == 1
+
+
+def test_disabled_ingest_cache_rebuilds_after_reset(ingest_adapter):
+    """BUG-001: baseline 882bd50c2 reuses A after reset with cache disabled.
+
+    Red proof targets RecallAdapter.ingest: the exact test fails len(calls) == 2.
+    """
+    adapter, calls, deleted = ingest_adapter
+    adapter._cache = False
+    adapter.reset()
+    adapter.ingest(_turns(True))
+    adapter.reset()
+    adapter.ingest(_turns(True))
+    assert len(calls) == 2
+    adapter.reset()
+    other = _turns(True)
+    other[0]["content"] = "A different conversation."
+    adapter.ingest(other)
+    assert len(calls) == 3
+    assert len(adapter._tenants) == len(adapter._stores) == 1
+    assert deleted
+
+
+def test_changed_content_builds_a_distinct_corpus(ingest_adapter):
+    """Control: cache reuse must still depend on conversation content."""
+    adapter, calls, _ = ingest_adapter
+    adapter.ingest(_turns(True))
+    original = adapter._active
+    other = _turns(True)
+    other[0]["content"] = "A different conversation."
+    adapter.reset()
+    adapter.ingest(other)
+    assert adapter._active != original
+    assert len(calls) == 2
 
 
 def test_session_dates_reach_session_documents():

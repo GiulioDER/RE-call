@@ -95,7 +95,8 @@ def cmd_manifest(args: argparse.Namespace) -> int:
     ans_in = ans_out = jud_in = jud_out = 0
     recall_tokens = []
     for t in traces:
-        recall_tokens.append(count(t.get("raw_recall", "")))
+        # BMI uses the harness's fixed estimator, independently of the cost tokenizer.
+        recall_tokens.append(len(t.get("raw_recall", "").split()) * 4 // 3)
         ans_in += CHAT_OVERHEAD_TOKENS + count(
             ANSWERER_PROMPT.format(
                 retrieved_memories=t.get("raw_recall", ""),

@@ -194,8 +194,8 @@ def _isolate_xdist_worker(dsn: str) -> str:
     3. `recall_rls_probe`, provisioned by `unprivileged_dsn`. A role is CLUSTER-wide, so a
        check-then-create in two workers at once raises `DuplicateObject` in one of them.
 
-    A database per worker removes all three at once, rather than fixing them one at a time and
-    waiting to discover the fourth. It is cheap: `CREATE DATABASE` off the empty template, with
+    A database per worker removes the first two; `unprivileged_dsn` also uses a worker-specific
+    cluster role to avoid the third. It is cheap: `CREATE DATABASE` off the empty template, with
     `CREATE EXTENSION IF NOT EXISTS vector` arriving in migration 0001 like everywhere else.
 
     ⚠️ **`RECALL_TEST_DSN` is rewritten in the environment too, not just here.** ~30 tests spawn a
@@ -251,9 +251,10 @@ def _isolate_xdist_worker(dsn: str) -> str:
             f"point RECALL_TEST_DSN at a role with CREATEDB."
         ) from exc
     except psycopg.OperationalError:
-        # No database reachable at all. Hand back the DSN unchanged and let `require_db` skip with
-        # its own message, which names the reason; failing here would replace it with a worse one.
-        return dsn
+        # Keep the worker-specific destination even if provisioning could not connect. A later
+        # successful probe must never enable destructive tests against the shared base database.
+        # If this worker database is unavailable, require_db still reports that failure as a skip.
+        pass
 
     isolated = urlunsplit(split._replace(path=f"/{isolated_db}"))
     os.environ["RECALL_TEST_DSN"] = isolated
@@ -403,7 +404,8 @@ def require_db() -> None:
 DB_BACKED_FIXTURES = ("cli_table", "make_store", "unprivileged_dsn")
 
 #: Role provisioned by `unprivileged_dsn` when `TEST_DSN` turns out to be privileged.
-UNPRIVILEGED_ROLE = "recall_rls_probe"
+_probe_worker = "".join(c for c in os.environ.get("PYTEST_XDIST_WORKER", "") if c.isalnum())[:16]
+UNPRIVILEGED_ROLE = "recall_rls_probe" + (f"_{_probe_worker}" if _probe_worker else "")
 _UNPRIVILEGED_PASSWORD = "recall_rls_probe"  # noqa: S105 - throwaway local test role
 
 
@@ -440,7 +442,8 @@ def unprivileged_dsn() -> str:
     Two paths, and the caller cannot tell them apart:
 
     - `RECALL_TEST_DSN` already points at an unprivileged role. Use it as is.
-    - It points at a privileged one. Provision `recall_rls_probe` (`NOSUPERUSER NOBYPASSRLS`),
+    - It points at a privileged one. Provision `recall_rls_probe` (with a worker suffix under
+      xdist, `NOSUPERUSER NOBYPASSRLS`),
       grant it the connected role's privileges so it can reach objects that role already owns,
       and hand back a DSN for it.
 
