@@ -699,7 +699,7 @@ half the corpus, aborts** and reports that the candidate set does not describe t
    versioned API whose version is unbumped, plus several `!= "trusted"` comparisons that would
    silently downgrade.
 5. **The strict gate is binary on `CERTIFIED`.** `code_for_status` returns a failure code for
-   everything else via a fail closed default (`recall/trust_policy.py:117`), so a new
+   everything else via a fail closed default (`recall/trust_policy.py:122`), so a new
    `CalibrationStatus.PROVISIONAL` is silently classified `CALIBRATION_UNCERTIFIED` and strict
    refuses it. "Search works in strict mode with `trust_state: provisional`" is unreachable without
    changing that, and `code_for_status`'s return type is part of a documented stable API.
