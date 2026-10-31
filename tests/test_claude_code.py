@@ -525,9 +525,9 @@ def test_server_env_carries_the_embedder_and_a_non_default_table() -> None:
     against each other's rows and nothing raised, because pgvector computes a cosine between any
     two same-width vectors happily.
 
-    The second half pins the DELIBERATE omission. `RECALL_TABLE` is emitted only when it differs
-    from the default, so an existing registration is byte-identical to before this change; without
-    an assertion that says so, "absent because default" and "absent because broken" look the same.
+    ENV-001: the owner selected an explicit default table over byte-identical registrations.
+    The default must override any different table inherited from the client environment.
+    Red proof: the unchanged default-value assertion fails against the old server_env omission.
     """
     from recall.store import DEFAULT_TABLE
 
@@ -544,9 +544,9 @@ def test_server_env_carries_the_embedder_and_a_non_default_table() -> None:
     plain = claude_code.server_env(
         dsn="postgresql://example/recall", tenant="acme", trust_mode="strict"
     )
-    assert "RECALL_TABLE" not in plain, "the default table must not be written into the env block"
+    assert plain.get("RECALL_TABLE") == DEFAULT_TABLE
     assert "RECALL_EMBEDDER" not in plain
-    assert set(plain) == {"RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_TRUST_MODE"}
+    assert set(plain) == {"RECALL_SERVING_DSN", "RECALL_TENANT", "RECALL_TRUST_MODE", "RECALL_TABLE"}
     assert DEFAULT_TABLE == "chunks"
 
 
@@ -696,3 +696,21 @@ def test_registration_actually_reaches_the_config_file(tmp_path: Path, monkeypat
     )
     after = json.loads((config_dir / ".claude.json").read_text(encoding="utf-8"))
     assert not any(e.get("mcpServers") for e in after["projects"].values())
+
+
+def test_registered_default_table_overrides_inherited_client_table(monkeypatch: Any) -> None:
+    """ENV-001 red proof: old registration lets Settings select inherited_chunks.
+
+    This drives the real registration block and client configuration renderer,
+    merges the block over a client environment, then reads it with server Settings.
+    The same test must fail its table assertion before the fix and pass afterwards.
+    """
+    from recall.store import DEFAULT_TABLE
+    from recall.wizard.wiring import mcp_config
+    from recall_mcp.settings import Settings
+
+    seen, _ = _capture(monkeypatch, _Registration(registered=("recall",)))
+    rendered = mcp_config(seen[0][0], project_root=Path.cwd())
+    configured = rendered["mcpServers"]["recall"]["env"]
+    merged = {"RECALL_TABLE": "inherited_chunks", **configured}
+    assert Settings.from_env(merged).table == DEFAULT_TABLE

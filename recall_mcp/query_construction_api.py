@@ -332,7 +332,9 @@ def query_construction_challenge(
 
     expanded_results: list[TrustedResult] = []
     failures: list[str] = []
+    retrieval_calls = 1
     for proposal in validation.accepted:
+        retrieval_calls += 1
         try:
             if security_policy is None and access_context is None:
                 candidate = _retrieve_trusted_fn(
@@ -444,7 +446,7 @@ def query_construction_challenge(
             for proposal, reason in validation.rejected
         ],
         "diagnostics": {
-            "retrieval_calls": 1 + len(expanded_results),
+            "retrieval_calls": retrieval_calls,
             "challenge_issued": needs_followup,
             "candidate_count": len(proposals),
             "accepted_candidate_count": len(validation.accepted),
