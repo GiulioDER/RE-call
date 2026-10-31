@@ -237,10 +237,12 @@ def embedder_is_hosted(embedder: object) -> bool:
     """Whether a provider's API produced this embedder's vectors, rather than local weights.
 
     🔑 **Asked of the LIVE embedder, never of a provider string, and that is not a stylistic
-    preference.** `BuildRequest.provider` defaults to `_DEFAULT_PROVIDER`, which is the literal
-    ``"fastembed"``, and the ingest path passes no override — so a `voyage:voyage-4` upload records
-    ``provider="fastembed"`` and a string check would answer "local" for the exact case this
-    function exists to admit. The generation that this repository's own memory corpus is served
+    preference.** When this was written, `BuildRequest.provider` defaulted to `_DEFAULT_PROVIDER`,
+    the literal ``"fastembed"``, and the ingest path passed no override, so a `voyage:voyage-4`
+    upload recorded ``provider="fastembed"`` and a string check answered "local" for the exact case
+    this function exists to admit. The default is now None, and `recall.generation_build` resolves
+    a hosted embedder's provider by calling this function, so the live embedder stays the one
+    authoritative signal: a provider string is derived from it, never the reverse. The generation that this repository's own memory corpus is served
     from stores ``profile_id: null`` as well, so keying on the registered profile alone would miss
     it too. Verified against that record on 2026-08-26 before this was written.
 

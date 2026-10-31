@@ -61,7 +61,14 @@ def test_policy_rejects_duplicate_normalized_prefixes() -> None:
         SourceSecurityPolicy((SourceRule("docs"), SourceRule("/docs/")))
 
 
-def test_policy_digest_is_independent_of_rule_and_redaction_order() -> None:
+def test_policy_digest_is_independent_of_rule_and_set_order() -> None:
+    """Rule order, principals and purposes do not move the digest.
+
+    Changed by DAT-002 (CCA hunt 20261031T190444Z): this test used to assert that REDACTION order
+    did not move it either, which pinned the defect. Redactions apply in order and overlapping
+    patterns give different text, so their order is now part of the digest
+    (`tests/test_cca_hunt_storage_core.py::test_redaction_order_is_part_of_both_policy_digests`).
+    """
     first = SourceRule(
         "docs",
         redactions=("phone", "email"),
@@ -84,7 +91,7 @@ def test_policy_digest_is_independent_of_rule_and_redaction_order() -> None:
             ),
             SourceRule(
                 "docs",
-                redactions=("email", "phone"),
+                redactions=("phone", "email"),
                 principals=frozenset({"bob", "alice"}),
                 purposes=frozenset({"indexing", "retrieval"}),
             ),
