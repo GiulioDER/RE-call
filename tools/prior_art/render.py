@@ -76,10 +76,24 @@ def _combination_status(values: list[str]) -> str:
     return "unverified_combination"
 
 
+def _admitted_claims(dataset: dict[str, Any]) -> list[dict[str, Any]]:
+    """Admit only accepted claims with an accepting review for that exact claim."""
+
+    reviews = {review["review_id"]: review for review in dataset["reviews"]}
+    return [
+        claim
+        for claim in dataset["claims"]
+        if claim.get("review_status") == "accepted"
+        and (review := reviews.get(claim.get("review_id"))) is not None
+        and review.get("claim_id") == claim["claim_id"]
+        and review.get("decision") == "accepted"
+    ]
+
+
 def _combination_rows(dataset: dict[str, Any]) -> list[dict[str, Any]]:
     target = _target_hypothesis(dataset)
     claims_by_cell: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for claim in dataset["claims"]:
+    for claim in _admitted_claims(dataset):
         claims_by_cell[(claim["system_id"], claim["capability_id"])].append(claim)
 
     rows: list[dict[str, Any]] = []
@@ -110,12 +124,13 @@ def _combination_rows(dataset: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _incomplete_claims(dataset: dict[str, Any]) -> list[dict[str, Any]]:
+    admitted_ids = {claim["claim_id"] for claim in _admitted_claims(dataset)}
     return sorted(
         [
             claim
             for claim in dataset["claims"]
             if claim["value"] in {"unknown", "not_evidenced"}
-            or claim.get("review_status") != "accepted"
+            or claim["claim_id"] not in admitted_ids
         ],
         key=lambda claim: claim["claim_id"],
     )
@@ -142,7 +157,7 @@ def render_matrix(dataset: dict[str, Any]) -> str:
     systems = sorted(dataset["systems"], key=lambda item: item["system_id"])
     sources = {source["source_id"]: source for source in dataset["sources"]}
     claims_by_cell: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    for claim in dataset["claims"]:
+    for claim in _admitted_claims(dataset):
         claims_by_cell[(claim["system_id"], claim["capability_id"])].append(claim)
 
     lines = [
@@ -249,7 +264,7 @@ def _gap_classification(values: list[str]) -> str:
 def render_gap_report(dataset: dict[str, Any]) -> str:
     capabilities = _capabilities(dataset)
     claims_by_capability: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for claim in dataset["claims"]:
+    for claim in _admitted_claims(dataset):
         claims_by_capability[claim["capability_id"]].append(claim)
     lines = [
         "# RE-call prior art gap report",
@@ -315,7 +330,7 @@ def render_gap_report(dataset: dict[str, Any]) -> str:
 
 def render_summary(dataset: dict[str, Any]) -> str:
     claims_by_capability: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for claim in dataset["claims"]:
+    for claim in _admitted_claims(dataset):
         claims_by_capability[claim["capability_id"]].append(claim)
     capability_status: dict[str, str] = {}
     for _, capability in _capabilities(dataset):
@@ -324,8 +339,7 @@ def render_summary(dataset: dict[str, Any]) -> str:
         capability_status[capability_id] = _gap_classification(values)
     unresolved_claim_ids = sorted(
         claim["claim_id"]
-        for claim in dataset["claims"]
-        if claim["value"] in {"unknown", "not_evidenced"}
+        for claim in _incomplete_claims(dataset)
     )
     combination = {
         row["system_id"]: {
