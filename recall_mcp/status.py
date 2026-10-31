@@ -95,14 +95,7 @@ def calibration_status(store: PgVectorStore) -> dict[str, object]:
     # Only the active generation's rows: the tenant's full history grows with every fit.
     records = repository.list_records(generation_id)
     resolution = manager.calibration_status_for(generation_id)
-    matching = [
-        item
-        for item in records
-        if str(item.get("generation_id")) == generation_id
-        and item.get("lifecycle_state") == "published"
-    ]
-    if not matching:
-        matching = [item for item in records if str(item.get("generation_id")) == generation_id]
+    matching = [item for item in records if item.get("lifecycle_state") == "published"] or records
     record = repository.show_record(str(matching[0]["calibration_id"])) if matching else {}
     message = str(record.get("certification_reason", ""))
     coverage: dict[str, object] = {}

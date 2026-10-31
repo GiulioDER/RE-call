@@ -861,9 +861,11 @@ def require_distinct_scored_queries(labels: Sequence[Mapping[str, Any]]) -> None
     per class would clear the certification sample floor on two queries' evidence, and one query
     labelled both ways is evidence nobody should fit on.
 
-    Applied where a NEW set enters a fit, not inside `canonical_query_set`, which also
-    re-canonicalises sets already stored: refusing there would turn a stored set into a
-    resolution error on the serving path instead of a refused fit.
+    Applied in `calibrate`, whatever the set's origin: a new one, or a stored one when drift's
+    unattended refit passes the parent's set back in, which then ends `failed` with this reason.
+    It is not applied inside `canonical_query_set`, which also re-canonicalises stored sets on
+    the serving path (`resolve_within`), where refusing would be a resolution error instead of
+    a refused fit.
     """
     seen: dict[str, bool] = {}
     for item in labels:
@@ -991,7 +993,7 @@ class CalibrationRepository:
                 yield conn
             except (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn) as exc:
                 raise SchemaTooOld(
-                    f"the calibration tables are older than this package expects "
+                    f"the database schema is older than this package expects "
                     f"({exc.diag.message_primary or exc}); run `recall schema apply`"
                 ) from exc
 
@@ -1238,6 +1240,7 @@ class CalibrationRepository:
 
     def _new_artifact(
         self,
+        *,
         generation_id: str,
         pipeline: PipelineIdentity,
         lineage: _GenerationLineage,
@@ -1245,7 +1248,6 @@ class CalibrationRepository:
         runtime: Calibration,
         answerable: Sequence[float],
         unanswerable: Sequence[float],
-        *,
         certified: bool,
         reason: str,
         carry_forward: Mapping[str, Any] | None = None,
@@ -1324,13 +1326,13 @@ class CalibrationRepository:
         answerable, unanswerable = self.score_query_set(generation_id, embedder, labels)
         runtime = from_samples(embedder.name, answerable, unanswerable)
         artifact, payload, checksum = self._new_artifact(
-            generation_id,
-            pipeline,
-            lineage,
-            query_digest,
-            runtime,
-            answerable,
-            unanswerable,
+            generation_id=generation_id,
+            pipeline=pipeline,
+            lineage=lineage,
+            query_digest=query_digest,
+            runtime=runtime,
+            answerable=answerable,
+            unanswerable=unanswerable,
             certified=runtime.certified is True,
             reason=runtime.certification_reason,
         )
@@ -1574,13 +1576,13 @@ class CalibrationRepository:
             "cumulative_corpus_delta": cumulative,
         }
         artifact, payload, checksum = self._new_artifact(
-            generation_id,
-            pipeline,
-            lineage,
-            query_digest,
-            runtime,
-            answerable,
-            unanswerable,
+            generation_id=generation_id,
+            pipeline=pipeline,
+            lineage=lineage,
+            query_digest=query_digest,
+            runtime=runtime,
+            answerable=answerable,
+            unanswerable=unanswerable,
             certified=certified,
             reason=reason,
             carry_forward=provenance,
@@ -1936,7 +1938,8 @@ class CalibrationRepository:
         `rejected` otherwise, so it serves nothing until `publish`.
 
         ⛔ None of that authenticates the bundle: see `_require_scores_support_certification`.
-        Every refusal is a `CalibrationError`, so the CLI names it.
+        Every refusal of the bundle itself is a `CalibrationError`; a database that has not been
+        migrated raises `recall.schema.SchemaTooOld` instead. The CLI names both.
         """
         try:
             raw = Path(path).read_bytes()
@@ -1987,12 +1990,9 @@ class CalibrationRepository:
             if key not in optional_keys and key not in artifact_raw:
                 raise CalibrationBindingError(f"bundle is malformed: missing {key!r}")
         values = {key: artifact_raw[key] for key in immutable_keys if key in artifact_raw}
-        try:
-            values["separability_ci"] = tuple(values["separability_ci"])
-        except TypeError:
-            raise CalibrationBindingError(
-                "bundle is malformed: separability_ci must be a pair of bounds"
-            ) from None
+        # A list of two floats by now: `_require_bundle_field_types` checked its shape and the
+        # loop above its presence.
+        values["separability_ci"] = tuple(values["separability_ci"])
         values["lifecycle_state"] = (
             LifecycleState.DRAFT.value if values.get("certified") else LifecycleState.REJECTED.value
         )

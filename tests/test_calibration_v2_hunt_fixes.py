@@ -1,13 +1,19 @@
 """Regression tests for the 2026-10-31 hunt audit of `recall/calibration_v2.py`.
 
-None of these needs a database. Each replaces the connection with a fake that either answers
-the one query under test or fails the test if it is reached, so the property pinned is where a
-refusal happens, not what PostgreSQL would have done with the input.
+None of these needs a database. A test that reaches the repository's connection replaces it
+with a fake that either answers the one query under test or fails the test if it is reached, so
+the property pinned is where a refusal happens, not what PostgreSQL would have done with the
+input. The others fail before any connection is opened, on the pre-fix code as on this one.
 
-Red proof (the project rule): every test below was run against the pre-fix module (the CCA
-snapshot of `recall/calibration_v2.py` at master 7b1ef2aa8) or, where the pre-fix module lacks
-the symbol, against a mutation of the new line, and failed in its own assertion. The baseline
-or mutation, the target and the failure are in each docstring.
+Red proof (the project rule): every behaviour test below was run against the pre-fix module (the
+CCA snapshot of `recall/calibration_v2.py` at master 7b1ef2aa8) or, where the pre-fix module
+lacks the symbol, against a mutation of the new line, and failed. Most failed in their own
+assertion (a sentinel `AssertionError`, `DID NOT RAISE`, or an assert); the import-error tests
+failed because the defect's raw exception (`FileNotFoundError`, `UnicodeDecodeError`, `TypeError`,
+`AttributeError`) escaped `pytest.raises(CalibrationBindingError)`, which is the defect itself.
+The tests and parameters marked as controls are nonbehavioural: they pass on the snapshot by
+design, to show a fix did not refuse what it should accept. The baseline or mutation, the
+target and the failure are in each docstring.
 """
 
 from __future__ import annotations
@@ -273,9 +279,11 @@ def test_a_field_that_would_not_survive_storage_is_refused_before_the_database(
     """BUG-001 (shapes) and BUG-103 (numbers spelled as the column will not return them).
 
     Red: the snapshot accepted every one of these up to the generation lookup, failing this
-    test's `AssertionError("reached the database ...")`. Downstream, the shapes crashed
-    `verify_checksum` with a bare TypeError, and the numbers stored a row whose checksum fails on
-    every read once DOUBLE PRECISION or INTEGER hands back the other spelling (1 -> 1.0).
+    test's `AssertionError("reached the database ...")`. Downstream, a list `scores` or
+    `embedder_identity` crashed `verify_checksum` with a bare TypeError (a list `carry_forward`
+    was refused by name, but only after the database read), and the numbers stored a row whose
+    checksum fails on every read once DOUBLE PRECISION or INTEGER hands back the other spelling
+    (1 -> 1.0).
     Target: `_require_bundle_field_types`.
     """
     repository = _repository()
