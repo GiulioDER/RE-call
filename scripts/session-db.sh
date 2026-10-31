@@ -414,31 +414,40 @@ INSPECT_BATCH=100
 # report, which is worse than the slowness this replaced.
 _inspect_batch() {
     local -a batch=()
-    local id
+    local id failed=0
     for id in "$@"; do
         batch+=("$id")
         if [ "${#batch[@]}" -ge "$INSPECT_BATCH" ]; then
-            docker inspect "${batch[@]}" --format "$INSPECT_FORMAT" 2>/dev/null || true
+            docker inspect "${batch[@]}" --format "$INSPECT_FORMAT" 2>/dev/null || failed=1
             batch=()
         fi
     done
     if [ "${#batch[@]}" -gt 0 ]; then
-        docker inspect "${batch[@]}" --format "$INSPECT_FORMAT" 2>/dev/null || true
+        docker inspect "${batch[@]}" --format "$INSPECT_FORMAT" 2>/dev/null || failed=1
     fi
+    return "$failed"
 }
 
 # Every candidate id, both populations, deduplicated. A container carrying both labels is this
 # script's own container inside a checkout that also runs a compose stack, which is the normal
 # case here, not an edge one.
 _orphan_candidates() {
-    local filter
+    local filter output candidates="" failed=0
     for filter in "label=${LABEL_KEY}" "label=com.docker.compose.project.working_dir"; do
-        docker ps -aq --filter "$filter" 2>/dev/null || true
-    done | awk 'NF && !seen[$0]++'
+        if output="$(docker ps -aq --filter "$filter" 2>/dev/null)"; then
+            :
+        else
+            failed=1
+        fi
+        candidates+="$output"$'\n'
+    done
+    printf '%s' "$candidates" | awk 'NF && !seen[$0]++' || failed=1
+    return "$failed"
 }
 
 cmd_orphans() {
-    local found=0 unsure=0 record line checkout compose_dir labelled reason name
+    local found=0 unsure=0 incomplete=0 record line checkout compose_dir labelled reason name
+    local candidates records
     local -a ids=()
 
     # A daemon that does not answer produces an empty container list, and an empty list is
@@ -455,11 +464,24 @@ cmd_orphans() {
         return 2
     fi
 
+    # Capture both output and status: process substitution discards the producer's failure.
+    if candidates="$(_orphan_candidates)"; then
+        :
+    else
+        incomplete=1
+    fi
     while read -r line; do
         [ -n "$line" ] && ids+=("$line")
-    done < <(_orphan_candidates)
+    done <<< "$candidates"
 
     if [ "${#ids[@]}" -gt 0 ]; then
+        if records="$(_inspect_batch "${ids[@]}")"; then
+            :
+        else
+            incomplete=1
+        fi
+        # An inspect may return valid rows and still fail for a concurrently removed id.
+        # Classify those rows, but keep the inventory's incompleteness visible.
         while read -r record; do
             [ -z "$record" ] && continue
             checkout="$(_field "${record%%|*}")"
@@ -482,12 +504,12 @@ cmd_orphans() {
                     found=1
                     ;;
             esac
-        done < <(_inspect_batch "${ids[@]}")
+        done <<< "$records"
     fi
 
-    if [ "$found" -eq 0 ]; then
+    if [ "$found" -eq 0 ] && [ "$incomplete" -eq 0 ]; then
         echo "session-db: no orphaned containers"
-    else
+    elif [ "$found" -ne 0 ]; then
         echo
         echo "Remove them with: docker rm -f <name>"
         echo "A compose stack is five containers; the whole project goes at once with:"
@@ -495,6 +517,10 @@ cmd_orphans() {
     fi
     if [ "$unsure" -ne 0 ]; then
         echo "session-db: a CHECK line is not a verdict. Look at the path yourself before removing."
+    fi
+    if [ "$incomplete" -ne 0 ]; then
+        echo "session-db: incomplete orphan inventory; a Docker listing or inspection failed" >&2
+        return 2
     fi
 }
 

@@ -862,11 +862,35 @@ def test_an_unusable_engine_fails_the_selftest_rather_than_being_mentioned(
 
     from recall.desktop import main as desktop_main
 
-    def unusable(name: str):
-        raise RuntimeError("the ONNX runtime data files are not in this bundle")
+    # BUG-003 now probes the offline SDK directly. Keep real offscreen widgets,
+    # but replace the actual engine boundary rather than the obsolete resolver.
+    # The usable control proves no unrelated missing native dependency can make
+    # the failure assertion pass. Exact-node mutation proof removes the cached
+    # engine failure append in _selftest, making the final assertion go red.
+    import sys
+    from types import ModuleType
 
-    monkeypatch.setattr(desktop_main, "_model_cache_exists", lambda: True)
-    monkeypatch.setattr("recall.embeddings.resolve_embedder", unusable)
+    state = {"broken": False}
+    constructions = []
+
+    class Engine:
+        def __init__(self, **kwargs):
+            constructions.append(kwargs)
+            if state["broken"]:
+                raise RuntimeError("the ONNX runtime data files are not in this bundle")
+
+        def embed(self, texts):
+            return [[0.0] * 384 for _ in texts]
+
+    for name in ("fastembed", "onnxruntime", "tokenizers"):
+        module = ModuleType(name)
+        if name == "fastembed":
+            module.TextEmbedding = Engine
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(desktop_main, "_model_cache_root", lambda: tmp_path)
+    assert desktop_main._selftest() == 0, "the usable control must have no unrelated failure"
+    assert constructions[-1]["local_files_only"] is True
+    state["broken"] = True
 
     assert desktop_main._selftest() == 1, (
         "a cache that is present and unusable is a BUNDLE problem, because the bundle supplies the "

@@ -461,7 +461,10 @@ def _cmd_uninstall(args: argparse.Namespace) -> None:
         answer = input("\nProceed? [y/N]: ").strip().lower()
         if answer not in {"y", "yes"}:
             raise SystemExit("cancelled; nothing was removed")
-    uninstall_report = execute(plan, purge_data=args.purge_data)
+    try:
+        uninstall_report = execute(plan, purge_data=args.purge_data)
+    except (UninstallRefusal, OSError) as exc:
+        raise SystemExit(str(exc)) from exc
     print(uninstall_report.render())
 
 

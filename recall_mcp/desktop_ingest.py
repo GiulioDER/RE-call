@@ -49,6 +49,14 @@ _log = _get_logger("mcp.service")
 
 _DESKTOP_CORPUS_PREFIX = "desktop-"
 
+#: Unattended calibration must not materialize an unbounded accumulated corpus.
+#: Both limits apply to the complete generation, including empty text rows. They
+#: bound resource use, not calibration quality: below them the full corpus still
+#: reaches the existing query-set validation. Larger generations remain READY
+#: for explicit calibration instead of being sampled or discarded.
+_AUTO_CALIBRATION_MAX_TEXT_BYTES = 64 * 1024 * 1024
+_AUTO_CALIBRATION_MAX_CHUNKS = 100_000
+
 
 def _local_path(uri: str) -> Path | None:
     from recall.manifest import ObjectNotAllowed, local_path_for
@@ -154,11 +162,35 @@ def _certify_upload(
 
     with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
         conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
-        rows = conn.execute(
-            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
-            "ORDER BY chunk_id",
-            (tenant, generation_id),
-        ).fetchall()
+        with conn.transaction():
+            # Check and fetch one snapshot, so the measured budget also bounds the
+            # text materialized below if another writer changes the generation.
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            totals = conn.execute(
+                "SELECT count(*), COALESCE(sum(octet_length(text)), 0) "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+                (tenant, generation_id),
+            ).fetchone()
+            if totals is None:
+                return "automatic calibration could not read the corpus budget; calibrate explicitly before promotion"
+            chunk_count, text_bytes = int(totals[0]), int(totals[1])
+            if (
+                chunk_count > _AUTO_CALIBRATION_MAX_CHUNKS
+                or text_bytes > _AUTO_CALIBRATION_MAX_TEXT_BYTES
+            ):
+                return (
+                    "automatic calibration budget exceeded: the accumulated generation contains "
+                    f"{chunk_count} chunks and {text_bytes} stored text bytes; automatic limits "
+                    f"are {_AUTO_CALIBRATION_MAX_CHUNKS} chunks and "
+                    f"{_AUTO_CALIBRATION_MAX_TEXT_BYTES} bytes. Calibrate explicitly with "
+                    f"`recall calibration calibrate --generation {generation_id} "
+                    "--queries FILE --publish`."
+                )
+            rows = conn.execute(
+                "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s "
+                "ORDER BY chunk_id",
+                (tenant, generation_id),
+            ).fetchall()
     chunks = [str(row[0]) for row in rows if str(row[0]).strip()]
     entries, last = _query_set_for(chunks)
     if entries is None:

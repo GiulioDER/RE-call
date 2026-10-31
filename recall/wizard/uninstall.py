@@ -32,8 +32,8 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
+import tempfile
 from contextlib import suppress
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -42,6 +42,8 @@ from typing import Literal
 
 from recall.wizard.stack import COMPOSE_NAME, DB_VOLUME, DOCKERFILE_NAME
 from recall.errors import RecallError
+from recall.atomic_write import atomic_write_bytes
+from recall.wizard.config_lock import configuration_lock
 
 __all__ = [
     "Removable",
@@ -109,6 +111,7 @@ class UninstallPlan:
     #: the item list: a plan that purges but finds every declared volume `external` legitimately
     #: lists none, and inferring intent from that emptiness refused the whole uninstall.
     purge_data: bool = False
+    compose_content: bytes | None = field(default=None, repr=False)
 
     def removing(self, kind: RemovableKind | None = None) -> tuple[Removable, ...]:
         return tuple(
@@ -184,7 +187,7 @@ def _run(command: Sequence[str], *, timeout: float = 60.0) -> tuple[int, str]:
 
 
 def _compose_project(
-    compose_path: Path,
+    compose_path: Path, content: bytes | None = None,
 ) -> tuple[str, tuple[str, ...], tuple[str, ...], bool]:
     """The project name, service names and DECLARED VOLUMES recorded in the stack file.
 
@@ -193,7 +196,7 @@ def _compose_project(
     disagreement would present as an uninstall that removed nothing while reporting success.
     """
     try:
-        document = json.loads(compose_path.read_text(encoding="utf-8"))
+        document = json.loads(content if content is not None else compose_path.read_bytes())
     except (OSError, ValueError) as exc:
         raise UninstallRefusal(
             f"cannot read the stack file at {compose_path}: {exc}. That file names the containers "
@@ -395,7 +398,13 @@ def plan_uninstall(
             "the data folder chosen during installation; it is recorded in that install's "
             "wizard.json."
         )
-    project_name, services, declared_volumes, declares_volumes = _compose_project(compose_path)
+    try:
+        compose_content = compose_path.read_bytes()
+    except OSError as exc:
+        raise UninstallRefusal(f"cannot read the stack file at {compose_path}: {exc}") from exc
+    project_name, services, declared_volumes, declares_volumes = _compose_project(
+        compose_path, compose_content
+    )
 
     items: list[Removable] = []
 
@@ -473,6 +482,7 @@ def plan_uninstall(
         items=tuple(items),
         project_root=project_root,
         purge_data=purge_data,
+        compose_content=compose_content,
     )
 
 
@@ -524,6 +534,8 @@ def execute(
     # promising that a partial uninstall never aborts partway.
     compose_failed = False
     if compose_path.exists():
+        if plan.compose_content is None or compose_path.read_bytes() != plan.compose_content:
+            raise UninstallRefusal("the stack configuration changed; review a new uninstall plan")
         command = [
             "docker",
             "compose",
@@ -538,7 +550,23 @@ def execute(
             # `-v` removes the named volume compose declares. Only here: without `--purge-data`
             # the indexes are kept deliberately.
             command.append("-v")
-        status, output = run(command)
+        # Docker reads the reviewed bytes, even if the original changes after the check.
+        descriptor, snapshot_name = tempfile.mkstemp(
+            dir=compose_path.parent, prefix=".recall-uninstall-", suffix=".json"
+        )
+        try:
+            try:
+                snapshot = os.fdopen(descriptor, "wb")
+            except BaseException:
+                os.close(descriptor)
+                raise
+            with snapshot:
+                snapshot.write(plan.compose_content)
+            command[3] = snapshot_name
+            status, output = run(command)
+        finally:
+            with suppress(OSError):
+                os.unlink(snapshot_name)
         # ⛔ **The teardown status is captured HERE, not inferred from the container items.** It used
         # to be recorded only by looping over `plan.removing("container")`, and the sibling fix that
         # stopped reporting an unqueryable docker as a removal sets `removing=False` on exactly that
@@ -650,6 +678,15 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
     everywhere else here. A partial write to `~/.claude.json` costs the user every project entry it
     holds, not just recall's.
     """
+    config_path = config_path.resolve()
+    try:
+        with configuration_lock(config_path):
+            return _unregister_locked(names, project_root, config_path)
+    except OSError as exc:
+        return f"cannot lock {config_path}: {exc}"
+
+
+def _unregister_locked(names: Sequence[str], project_root: Path, config_path: Path) -> str | None:
     from recall.wizard.wiring import _written_by_this_project
 
     try:
@@ -674,7 +711,6 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
             if name in wanted and _written_by_this_project(servers[name], project_root):
                 del servers[name]
 
-    temporary = config_path.with_name(config_path.name + ".tmp")
     try:
         # ⛔ **A backup first, and it must NOT clobber the install-time one.** `register_local_scope`
         # writes `<name>.recall-backup` before its own atomic replace, so copying that fixed name
@@ -722,12 +758,7 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
                 "Refusing to rewrite it, because that file carries access tokens and the backup is "
                 "the only way back. Nothing was changed."
             )
-        temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
-        # `replace` installs a fresh inode at the umask default, discarding a 0600 the user or the
-        # client may have set on a file that carries bearer tokens. Copy the mode across first.
-        with suppress(OSError, NotImplementedError):
-            shutil.copymode(config_path, temporary)
-        temporary.replace(config_path)
+        atomic_write_bytes(config_path, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
     except OSError as exc:
         return f"cannot write {config_path}: {exc}"
     return None

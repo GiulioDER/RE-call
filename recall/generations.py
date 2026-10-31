@@ -2061,11 +2061,16 @@ class GenerationManager:
         return str(row[0])
 
     def servable_manifest(self) -> IndexManifestV1:
-        """Return the newest READY or ACTIVE manifest for carry-forward builds."""
+        """Continue a pending build or the active corpus, never a rolled-back generation.
+
+        Rollback leaves its outgoing generation READY for recovery. Its activation
+        timestamp distinguishes it from a pending build that has never served.
+        """
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT manifest FROM recall_generations "
-                "WHERE tenant_id = %s AND state IN ('ready', 'active') "
+                "WHERE tenant_id = %s AND (state = 'active' "
+                "OR (state = 'ready' AND activated_at IS NULL)) "
                 "ORDER BY created_at DESC, generation_id DESC LIMIT 1",
                 (self.tenant_id,),
             ).fetchone()

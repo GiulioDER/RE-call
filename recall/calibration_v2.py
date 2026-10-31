@@ -1027,6 +1027,21 @@ class CalibrationRepository:
             return CalibrationResolution(CalibrationStatus.UNCERTIFIED)
         return CalibrationResolution(CalibrationStatus.CERTIFIED, artifact)
 
+    def published_records(self) -> list[dict[str, Any]]:
+        """Published artifact IDs, latest publication first, then latest creation.
+
+        Kept separate from `list_records`, whose creation order describes fit history. Consumers
+        still load each artifact through `get` to verify its checksum and certification status.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT calibration_id FROM recall_calibrations "
+                "WHERE tenant_id = %s AND lifecycle_state = 'published' "
+                "ORDER BY published_at DESC, created_at DESC, calibration_id",
+                (self.tenant_id,),
+            ).fetchall()
+        return [{"calibration_id": str(row[0]), "lifecycle_state": "published"} for row in rows]
+
     def list_records(self, generation_id: str | None = None) -> list[dict[str, Any]]:
         """Every calibration row of the tenant, newest first, or only one generation's.
 

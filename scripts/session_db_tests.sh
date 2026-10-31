@@ -64,6 +64,12 @@ case "${1:-}" in
                     [ -n "$(_line "$id" 2)" ] && echo "$id" ;;
             esac
         done
+        # BUG-002: a successful empty docker ps exits zero. The old stub leaked
+        # its last false label test as status 1. With failure propagation fixed,
+        # that correctly reports an incomplete inventory instead of a clean one.
+        # Red proof: fixed session-db.sh plus the original stub failed the clean
+        # machine assertion (19/20) on the remote test runner; that assertion is unchanged.
+        exit 0
         ;;
     inspect)
         # Batched: docker takes many ids and prints one line each, in argument order, SKIPPING the
