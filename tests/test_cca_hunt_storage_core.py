@@ -236,6 +236,9 @@ def test_secret_redaction_is_no_narrower_than_before_the_hunt(text: str) -> None
         ("password':a}token =xq", "xq"),
         ("secret:_password=btokenx", "btokenx"),
         ("Bearer sk-proj-abc123def456ghi789", "abc123def456ghi789"),
+        # Long credential names: fourteen prefix segments, and a fifty two character segment.
+        ("A_B_C_D_E_F_G_H_I_J_K_L_M_DB_PASSWORD=xq9", "xq9"),
+        ("SUPERCALIFRAGILISTICEXPIALIDOCIOUSLYLONGSERVICENAMEX_TOKEN=xq9", "xq9"),
     ],
 )
 def test_secret_redaction_closes_the_remaining_gaps(text: str, leaked: str) -> None:
@@ -247,7 +250,8 @@ def test_secret_redaction_closes_the_remaining_gaps(text: str, leaked: str) -> N
     redacted` fails. `password=abc&token=xyz` is a control: the old run already took it whole.
     `secret:_password=btokenx` and `Bearer sk-proj-...` are controls too, red against this
     change's first draft (a value stop that disagreed with `\b` on `_`, and a narrower bare bearer
-    rule), which the regression review caught before commit.
+    rule), which the regression review caught before commit. The two long names are red on
+    fbffb0726, whose starting match bounded the prefix (found by the commit-time security review).
     Production lines: `_CREDENTIAL_NAME` and `_VALUE_CHAR` in `recall/security_policy.py`.
     """
     policy = SourceSecurityPolicy((SourceRule("notes", redactions=("secret",)),))

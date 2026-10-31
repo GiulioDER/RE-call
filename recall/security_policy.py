@@ -77,11 +77,14 @@ _CREDENTIAL_WORD = r"(?:api[_ -]?key|token|secret|password)"
 #: straight after secret (`CLIENT_SECRET_ID`). So a setting such as `token_count: 5`,
 #: `token_id: 12` or `password_auth: enabled` stays readable. Bounded, so the check below,
 #: which runs at every character of a value, stays linear.
-_CREDENTIAL_NAME = (
-    r"(?:[a-z0-9]{1,48}_){0,12}" + _CREDENTIAL_WORD
-    + r"(?:(?:_(?:access|private|signing|client|session|refresh|auth)){0,4}_(?:key|token|secret|value)"
-    + r"|(?<=secret)_id)?"
+_CREDENTIAL_SUFFIX = (
+    r"(?:(?:_(?:access|private|signing|client|session|refresh|auth)){0,4}_(?:key|token|secret|value)"
+    r"|(?<=secret)_id)?"
 )
+_CREDENTIAL_NAME = r"(?:[a-z0-9]{1,48}_){0,12}" + _CREDENTIAL_WORD + _CREDENTIAL_SUFFIX
+#: Where a match STARTS the prefix is unbounded, as it always was: the `\b` before it sits only
+#: at the start of a word run, so that scan is linear. Only the stop check below is bounded.
+_CREDENTIAL_NAME_START = r"(?:[a-z0-9]+_)*" + _CREDENTIAL_WORD + _CREDENTIAL_SUFFIX
 #: Where a value must stop: at the start of another credential assignment glued to it
 #: (`password=abc&token=xyz`, `password':a}token =x`), so that one is matched on its own and
 #: its value is redacted too, instead of being swallowed as part of the first value.
@@ -90,7 +93,7 @@ _CREDENTIAL_NAME = (
 _VALUE_CHAR = r"(?:(?!(?<!\w)" + _CREDENTIAL_NAME + r"[\"']?\s*[:=])[^\s,;])"
 _QUOTED = r"(?:\"[^\"\n]*\"|'[^'\n]*')"
 _SECRET_PATTERN = (
-    r"(?i)(?:\b" + _CREDENTIAL_NAME + r"[\"']?\s*[:=]\s*"
+    r"(?i)(?:\b" + _CREDENTIAL_NAME_START + r"[\"']?\s*[:=]\s*"
     # A value that STARTS with a quote is a run of closed quoted segments and ordinary
     # characters (`TOKEN="abc"'def'` is abcdef to a shell). Any other value is the old unquoted
     # run: a quote after it is the closing quote of the string it sits in
