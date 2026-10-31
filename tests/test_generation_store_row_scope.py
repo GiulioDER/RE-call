@@ -146,7 +146,14 @@ def _inherited_chunk_table_methods() -> set[str]:
     def methods(module: object, name: str) -> dict[str, ast.FunctionDef]:
         tree = ast.parse(Path(inspect.getfile(module)).read_text(encoding="utf-8"))  # type: ignore[arg-type]
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == name)
-        return {n.name: n for n in cls.body if isinstance(n, ast.FunctionDef)}
+        # Under mutation testing the file is mutmut's rewrite: each method keeps its name and its
+        # real body, and its mutants sit beside it as `xǁClassǁname__mutmut_N`. Those are not
+        # methods of the class's design, and counting them failed the job's clean stats run.
+        return {
+            n.name: n
+            for n in cls.body
+            if isinstance(n, ast.FunctionDef) and "__mutmut_" not in n.name
+        }
 
     base = methods(store_mod, "PgVectorStore")
     overridden = set(methods(generation_store_mod, "GenerationStore"))
