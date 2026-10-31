@@ -98,13 +98,17 @@
 
   <div class="terminal terminal--command">
     <div class="terminal-bar"><span class="terminal-label">Python</span><button class="copy-button" type="button">Copy</button></div>
-    <div class="terminal-body"><pre><span class="line">from claude_agent_sdk import query</span>
+    <div class="terminal-body"><pre><span class="line">import anyio</span>
+<span class="line">from claude_agent_sdk import query</span>
 <span class="line">from recall_agent import RecallAgentMemory</span>
 <span class="line"></span>
-<span class="line">with RecallAgentMemory.from_env() as memory:</span>
-<span class="line">    options = memory.options(model="claude-sonnet-5")</span>
-<span class="line">    async for message in query(prompt="What do we already know about X?", options=options):</span>
-<span class="line">        print(message)</span></pre></div>
+<span class="line">async def main():</span>
+<span class="line">    with RecallAgentMemory.from_env() as memory:</span>
+<span class="line">        options = memory.options(model="claude-sonnet-5")</span>
+<span class="line">        async for message in query(prompt="What do we already know about X?", options=options):</span>
+<span class="line">            print(message)</span>
+<span class="line"></span>
+<span class="line">anyio.run(main)</span></pre></div>
   </div>
 
   <p><code>options()</code> assembles a <code>ClaudeAgentOptions</code> carrying the in-process server, the fully qualified tool names and a <code>SessionStart</code> hook that injects a short memory digest. It merges with anything you pass rather than replacing it: your own servers, tools and hooks survive. Configuration comes from the same environment variables the MCP server reads (<code>RECALL_SERVING_DSN</code>, <code>RECALL_EMBEDDER</code>, <code>RECALL_TRUST_MODE</code>, <code>RECALL_TENANT</code>, <code>RECALL_TABLE</code>), so pointing both surfaces at one corpus needs no extra configuration.</p>

@@ -140,27 +140,29 @@ def terms_fingerprint(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def write_cache(path: Path, rewrites: dict) -> None:
+def write_cache(path: Path, rewrites: dict, source_hashes: dict[str, str] | None = None) -> None:
     """Persist the resume cache atomically, stamped with the terms that produced it.
 
     `write_text` truncates in place, and this runs once per completed memo, so an interrupt
     during a write left unparseable JSON: the cache existed to survive exactly that interrupt.
     """
 
-    payload = {"terms": terms_fingerprint(), "rewrites": rewrites}
+    payload = {"terms": terms_fingerprint(), "rewrites": rewrites,
+               "source_hashes": source_hashes or {}}
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(payload, indent=2) + "\n")
     os.replace(tmp, path)
 
 
-def load_cache(path: Path) -> dict:
+def load_cache(path: Path, source_hashes: dict[str, str] | None = None) -> dict:
     """Return the cached rewrites, or an empty dict when the cache cannot be trusted.
 
     Three ways it cannot: it is torn (an interrupted write), it predates the stamped format, or
     it was produced under different generation terms. None of those is fatal, because the only
     cost of discarding a cache is re-buying the generations it held; silently REUSING one is what
-    would corrupt the audit record.
+    would corrupt the audit record. When the caller supplies current input hashes, only entries
+    carrying the same input digest are reusable; legacy entries without provenance are discarded.
     """
 
     if not path.is_file():
@@ -174,7 +176,15 @@ def load_cache(path: Path) -> dict:
         print("  resume cache was written under different generation terms; discarding it")
         return {}
     cached = payload.get("rewrites")
-    return cached if isinstance(cached, dict) else {}
+    if not isinstance(cached, dict):
+        return {}
+    if source_hashes is None:
+        return cached
+    recorded = payload.get("source_hashes")
+    if not isinstance(recorded, dict):
+        return {}
+    return {name: rewrite for name, rewrite in cached.items()
+            if name in source_hashes and recorded.get(name) == source_hashes[name]}
 
 
 def reconstruction_is_trustworthy(*, reproduced: int, verified: int) -> tuple[bool, str]:
@@ -419,13 +429,17 @@ def main() -> int:
         (dirs["control"] / name).write_bytes(data)
 
     memos = sorted(p for p in dirs["control"].glob("*.md") if p.name not in INDEX_FILES)
+    # Hash and generate from the same captured input, even if a file changes during the run.
+    memo_inputs = {p.name: p.read_text(encoding="utf-8") for p in memos}
+    source_hashes = {name: sha256_bytes(text.encode("utf-8"))
+                     for name, text in memo_inputs.items()}
 
     # Resume cache: two runs have already died mid-pass (a malformed response, then a network
     # drop), and at temperature 0 a finished triple never changes FOR THE SAME TERMS, so completed
     # memos are kept across runs rather than re-bought. `load_cache` enforces the "same terms"
     # half, which the first version of this cache did not.
     partial = out / "rewrites.partial.json"
-    rewrites: dict[str, dict] = load_cache(partial)
+    rewrites: dict[str, dict] = load_cache(partial, source_hashes)
     if rewrites:
         print(f"resuming: {len(rewrites)} rewrites already generated under the current terms")
     todo = [p for p in memos if p.name not in rewrites]
@@ -436,7 +450,7 @@ def main() -> int:
 
     def one(path: Path) -> tuple[str, dict]:
         try:
-            rewrite = generate_rewrite(path.read_text(encoding="utf-8"), key)
+            rewrite = generate_rewrite(memo_inputs[path.name], key)
         except Exception as error:
             raise GenerationError(f"{path.name}: {error}") from error
         return path.name, rewrite
@@ -454,7 +468,7 @@ def main() -> int:
                 print(f"  [{index}/{len(todo)}] FAILED {error}")
                 continue
             rewrites[name] = rewrite
-            write_cache(partial, rewrites)
+            write_cache(partial, rewrites, source_hashes)
             print(f"  [{index}/{len(todo)}] {name}: {rewrite['title'][:70]}")
     if failures:
         raise SystemExit(
@@ -501,6 +515,7 @@ def main() -> int:
         "rewrite_reasoning": REWRITE_REASONING,
         "rewrite_input_chars": REWRITE_INPUT_CHARS,
         "terms_fingerprint": terms_fingerprint(),
+        "source_hashes": source_hashes,
         "truncated_sources": sorted(
             p.name
             for p in memos
