@@ -564,7 +564,7 @@ They are observations, not automatic failures.
 | `recall.doctor` | 12 | 152 |
 | `recall.document` | 2 | 15 |
 | `recall.drift` | 6 | 104 |
-| `recall.dsn_security` | 3 | 19 |
+| `recall.dsn_security` | 1 | 1 |
 | `recall.embedding_core` | 2 | 12 |
 | `recall.embedding_prompts` | 0 | 0 |
 | `recall.embedding_providers` | 0 | 0 |
@@ -727,9 +727,9 @@ They are observations, not automatic failures.
 | `recall.state_dir` | 0 | 0 |
 | `recall.stated_facts` | 12 | 102 |
 | `recall.store` | 12 | 36 |
-| `recall.store_mutation` | 6 | 25 |
-| `recall.store_receipts` | 7 | 25 |
-| `recall.store_supersession` | 7 | 26 |
+| `recall.store_mutation` | 4 | 24 |
+| `recall.store_receipts` | 5 | 19 |
+| `recall.store_supersession` | 6 | 25 |
 | `recall.supersession` | 2 | 17 |
 | `recall.supersession_arbiter` | 4 | 20 |
 | `recall.supersession_cues` | 0 | 0 |
