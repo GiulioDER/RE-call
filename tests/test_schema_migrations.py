@@ -801,3 +801,41 @@ def test_serving_grants_cover_every_table_the_migrator_manages():
     assert any("GRANT SELECT, UPDATE ON recall_fact_materialization_outbox" in s for s in grants)
     assert any("REVOKE INSERT, DELETE ON recall_fact_materialization_outbox" in s for s in grants)
     assert any("GRANT EXECUTE ON FUNCTION recall_append_fact_materialization" in s for s in grants)
+
+
+@requires_db
+@pytest.mark.parametrize(
+    ("drift", "undo"),
+    [
+        (
+            "ALTER TABLE recall_fact_current NO FORCE ROW LEVEL SECURITY",
+            "ALTER TABLE recall_fact_current FORCE ROW LEVEL SECURITY",
+        ),
+        (
+            "ALTER TABLE recall_audit_events DISABLE TRIGGER recall_supersession_revision_insert",
+            "ALTER TABLE recall_audit_events ENABLE TRIGGER recall_supersession_revision_insert",
+        ),
+    ],
+    ids=["fact-current-rls", "supersession-revision-trigger"],
+)
+def test_serving_check_refuses_fact_state_drift(drift, undo):
+    """CCA DAT-003: the fact and supersession tables are validated like every other table.
+
+    Red against `6eee13d87` (pre-fix `recall.schema._validate_current_schema`, which never looked
+    at 0029, 0030 or 0034): both parameter nodes of
+    tests/test_schema_migrations.py::test_serving_check_refuses_fact_state_drift fail on
+    "DID NOT RAISE SchemaIncompatible".
+    """
+    with _target() as table:
+        apply_migrations(TEST_DSN, table=table, dim=DIM)
+        with PgVectorStore(TEST_DSN, dim=DIM, table=table) as store:
+            store.check_schema()
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute(drift)
+            try:
+                with pytest.raises(SchemaIncompatible, match="fact state"):
+                    store.check_schema()
+            finally:
+                with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                    conn.execute(undo)
+            store.check_schema()

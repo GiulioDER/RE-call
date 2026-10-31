@@ -585,9 +585,18 @@ def _check_declared_width(identity: EmbeddingProfile | None, actual_dim: int, wh
 
 
 def legacy_embedding_profile(embedder: Embedder) -> EmbeddingProfile:
-    """Describe a legacy embedder without changing its public protocol."""
+    """Describe a legacy embedder without changing its public protocol.
+
+    An embedder that can observe the bytes it loaded names them through `observed_artifact`, and
+    that name enters the fingerprint as a dependency. It does not replace the unverified artifact
+    digest: nothing compared it against a declared expectation, so the profile stays unpinned and
+    keeps the legacy exemptions. Without it, a model retrained into the same path kept its
+    fingerprint, so the embedding cache and the index skip guard served the old weights' vectors
+    beside the new weights' queries (CCA DAT-002).
+    """
     name = getattr(embedder, "name", type(embedder).__name__)
     dim = int(getattr(embedder, "dim"))
+    observed = getattr(embedder, "observed_artifact", None)
     return EmbeddingProfile(
         profile_id=str(name),
         model_name=str(name),
@@ -596,6 +605,9 @@ def legacy_embedding_profile(embedder: Embedder) -> EmbeddingProfile:
         query_mode="legacy",
         passage_mode="legacy",
         normalization="embedder-defined",
+        dependencies=(
+            (("observed-artifact", observed),) if isinstance(observed, str) and observed else ()
+        ),
     )
 
 
@@ -871,6 +883,11 @@ def embedder_artifact_digest(embedder: object) -> str | None:
     path = embedder_artifact_path(embedder)
     if path is None:
         return None
+    return artifact_digest_for_path(path)
+
+
+def artifact_digest_for_path(path: Path) -> str | None:
+    """`embedder_artifact_digest` for a known weights directory, cached on its signature."""
     key = str(path)
     signature = _artifact_signature(path)
     cached = _ARTIFACT_DIGESTS.get(key)

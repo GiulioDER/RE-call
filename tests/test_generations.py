@@ -2811,8 +2811,11 @@ def test_a_source_s_chunks_reach_the_database_as_one_batch() -> None:
 
     assert written == 3
     # One lookup per SOURCE, not per chunk: the `first_indexed_at` carry
-    # (`_first_indexed_by_ordinal`). A per-chunk loop would make this 3.
-    assert executes == [("a" * 64, "tenant-a", "s3://b/memo.md", "tenant-a")]
+    # (`_first_indexed_by_ordinal`). A per-chunk loop would make this 3. The readable states are
+    # bound as a parameter since CCA CODE-007 (one named list instead of an SQL literal).
+    assert executes == [
+        ("a" * 64, "tenant-a", "s3://b/memo.md", "tenant-a", ["ready", "active", "retired"])
+    ]
     assert len(batches) == 1
     assert [row[2] for row in batches[0]] == ["c0", "c1", "c2"]
     assert [row[6] for row in batches[0]] == [0, 1, 2]
@@ -3045,3 +3048,101 @@ def test_a_chunk_built_under_a_security_policy_is_not_reused_without_one(manager
 
     assert stats.reused_objects == 0, "a chunk built under another policy must not be reused"
     assert must_run.calls == 1
+
+
+@requires_db
+def test_validate_on_a_building_generation_leaves_the_build_alone(manager) -> None:
+    """CCA STAKES-001: a call in the wrong state says nothing about the generation.
+
+    Red against `6eee13d87` (pre-fix `GenerationManager.validate`, which fails the generation on
+    any exception): node
+    tests/test_generations.py::test_validate_on_a_building_generation_leaves_the_build_alone
+    fails on "validate failed a build it was called too early on".
+    """
+    data = b"---\nstatus: current\n---\na memo still being built"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = manager.create(manifest, _pipeline("model-a"))
+    with pytest.raises(InvalidGenerationTransition, match="validate requires validating state"):
+        manager.validate(generation.generation_id)
+    assert manager.get(generation.generation_id).state == GenerationState.BUILDING, (
+        "validate failed a build it was called too early on"
+    )
+    manager.build(generation.generation_id, _reader(manifest, data), _Embedder(1), lambda text: [text])
+    assert manager.validate(generation.generation_id).state == GenerationState.READY
+
+
+@requires_db
+def test_a_context_group_is_reused_or_encoded_whole(manager) -> None:
+    """CCA BUG-001: one member that cannot be reused takes its whole group back to the encoder.
+
+    Generation 1 encodes the group [a, b]. Generation 1's rows for b are then made unreusable (its
+    `file` no longer matches, as when a manifest's common directory moves for one member), so a is
+    reusable and b is not. Red against `6eee13d87` (pre-fix `GenerationManager.build`, per-source
+    reuse): node tests/test_generations.py::test_a_context_group_is_reused_or_encoded_whole fails
+    on "a group was encoded without its reused member", the encoder seeing [b] alone.
+    """
+    manifest, reader = _context_group_inputs(manager.tenant_id)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _ContextGroupEmbedder())
+    with manager._connect() as conn:
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET metadata = metadata || '{\"file\": \"elsewhere.md\"}' "
+            "WHERE tenant_id = %s AND generation_id = %s AND source_uri = %s",
+            (manager.tenant_id, first, manifest.objects[1].uri),
+        )
+    second = manager.create(manifest, pipeline)
+    embedder = _ContextGroupEmbedder()
+    stats = manager.build(second.generation_id, reader, embedder, lambda text: [text])
+    assert embedder.groups == [[["first group member", "second group member"]]], (
+        "a group was encoded without its reused member"
+    )
+    assert stats.reused_objects == 0
+    assert manager.validate(second.generation_id).state == GenerationState.READY
+    with manager._connect() as conn:
+        widths = conn.execute(
+            "SELECT DISTINCT (embedding::real[])[1] FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (manager.tenant_id, second.generation_id),
+        ).fetchall()
+    assert widths == [(2.0,)], f"a stored vector was not encoded with the whole group: {widths}"
+
+
+@requires_db
+def test_a_member_with_no_chunks_does_not_send_its_group_back(manager) -> None:
+    """CCA BUG-001, the repair L5.5 asked for: only a member that contributes text breaks reuse.
+
+    A member that chunks to nothing has no rows to copy on any build, and the group encoding never
+    saw it, so its siblings stay reusable. Red by mutation of `GenerationManager.build`: the
+    whole-group block moved back above the empty-source check (marking the group unreused as soon
+    as `_reuse_source` returns 0), node
+    tests/test_generations.py::test_a_member_with_no_chunks_does_not_send_its_group_back fails on
+    "an empty member re-embedded its whole group".
+    """
+    bodies = {"a": b"first group member", "b": b"second group member", "c": b"   "}
+    tenant = manager.tenant_id
+    objects = tuple(
+        ManifestObjectV1(
+            f"s3://approved/corpora/{tenant}/{name}.md", "v1", "text/markdown",
+            len(body), hashlib.sha256(body).hexdigest(), "conversation",
+        )
+        for name, body in bodies.items()
+    )
+    manifest = IndexManifestV1(tenant, "context-group-empty-v1", objects)
+    reader = S3ObjectReader(
+        _S3({("approved", f"corpora/{tenant}/{name}.md", "v1"): body for name, body in bodies.items()}),
+        S3Allowlist.parse("approved/corpora/"),
+    )
+
+    def chunker(text: str) -> list[str]:
+        return [text] if text.strip() else []
+
+    pipeline = _pipeline("model-a")
+    first = manager.create(manifest, pipeline)
+    manager.build(first.generation_id, reader, _ContextGroupEmbedder(), chunker)
+    manager.validate(first.generation_id)
+    second = manager.create(manifest, pipeline)
+    embedder = _ContextGroupEmbedder()
+    stats = manager.build(second.generation_id, reader, embedder, chunker)
+    assert embedder.groups == [], "an empty member re-embedded its whole group"
+    assert stats.reused_objects == 2
+    assert manager.validate(second.generation_id).state == GenerationState.READY

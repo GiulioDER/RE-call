@@ -11,7 +11,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
-from typing import Any, cast
+from typing import Any, cast, get_args
 from urllib.parse import unquote, urlsplit
 
 import psycopg
@@ -24,6 +24,7 @@ from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
 from recall.dependency_invalidation import build_dependency_projection, write_dependency_projection, dependency_key
 from recall.records import admit_record
+from recall.embedding_registry import CONTEXT_POLICY_VERSION, context_version_for
 from recall.embeddings import (
     Embedder,
     EmbeddingProfile,
@@ -31,6 +32,7 @@ from recall.embeddings import (
     embedding_profile,
     embedding_profile_id,
 )
+from recall.generation_store import READABLE_GENERATION_STATES
 from recall.generation_types import (  # noqa: F401  # re-exported: public names of this module
     BuildStats,
     ConcurrentIngest,
@@ -86,15 +88,18 @@ CHUNK_STATISTICS_SQL = "ANALYZE recall_chunks_v1 (tenant_id, generation_id)"
 def _context_policy_for_pipeline(pipeline: PipelineIdentity) -> ContextPolicy:
     """Resolve and validate the contextual passage policy recorded in a pipeline."""
     mode = pipeline.embedder.context_mode
-    if mode not in {"none", "document", "section", "neighbor"}:
+    # The registry's own vocabulary and derivation, not a copy: this was the last inline copy of
+    # `context_version_for` (the Indexer's was removed for the same reason), so a bump of
+    # `CONTEXT_POLICY_VERSION` would have refused every context-profile build here (CCA CODE-001).
+    if mode not in get_args(ContextMode):
         raise GenerationError(f"pipeline context mode is unsupported: {mode!r}")
-    expected = "raw-v1" if mode == "none" else f"context-{mode}-v1"
+    expected = context_version_for(cast(ContextMode, mode))
     if pipeline.embedder.context_version != expected:
         raise GenerationError(
             f"pipeline context version {pipeline.embedder.context_version!r} does not match "
             f"context mode {mode!r}"
         )
-    return ContextPolicy(mode=cast(ContextMode, mode))
+    return ContextPolicy(mode=cast(ContextMode, mode), version=CONTEXT_POLICY_VERSION)
 
 
 def _context_source(uri: str) -> str:
@@ -316,6 +321,16 @@ def _body_rule_changed(media_type: str, text: str) -> bool:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
+
+
+class _StepPrecondition(InvalidGenerationTransition):
+    """A build or validate called on a generation in the wrong state.
+
+    It says nothing about the generation, only about the call, so it must not fail the
+    generation. It used to: `validate` on a generation another process was still building moved
+    that build to `failed`, and the build then died at `_mark_validating` with its embedding spend
+    lost; `build` on a VALIDATING generation discarded the finished build (CCA STAKES-001).
+    """
 
 
 def _failure(exc: BaseException) -> str:
@@ -707,7 +722,7 @@ class GenerationManager:
             "AND (%s::text IS NULL OR c.metadata ->> %s = %s) "
             "AND (NOT %s OR c.metadata -> 'code_anchor' ->> 'repo' "
             "IS NOT DISTINCT FROM %s::text) "
-            "AND g.pipeline_fingerprint = %s AND g.state IN ('active', 'ready', 'retired') "
+            "AND g.pipeline_fingerprint = %s AND g.state = ANY(%s) "
             "ORDER BY g.activated_at DESC NULLS LAST, g.created_at DESC LIMIT 1",
             (
                 self.tenant_id,
@@ -732,6 +747,7 @@ class GenerationManager:
                 require_code_anchor_repo,
                 code_anchor_repo,
                 pipeline_fingerprint,
+                list(READABLE_GENERATION_STATES),
             ),
         ).fetchone()
         if source is None:
@@ -805,8 +821,8 @@ class GenerationManager:
                     for row in conn.execute(
                         "SELECT generation_id FROM recall_generations "
                         "WHERE tenant_id = %s AND pipeline_fingerprint = %s "
-                        "AND state IN ('active', 'ready', 'retired')",
-                        (self.tenant_id, pipeline_fingerprint),
+                        "AND state = ANY(%s)",
+                        (self.tenant_id, pipeline_fingerprint, list(READABLE_GENERATION_STATES)),
                     ).fetchall()
                 ]
                 rows = (
@@ -887,9 +903,12 @@ class GenerationManager:
             "FROM recall_chunks_v1 "
             "WHERE tenant_id = %s AND source_uri = %s AND generation_id = ANY(ARRAY("
             "SELECT generation_id FROM recall_generations WHERE tenant_id = %s "
-            "AND state IN ('active', 'ready', 'retired'))) "
+            "AND state = ANY(%s))) "
             "GROUP BY chunk_ordinal",
-            (source_sha256, self.tenant_id, source_uri, self.tenant_id),
+            (
+                source_sha256, self.tenant_id, source_uri, self.tenant_id,
+                list(READABLE_GENERATION_STATES),
+            ),
         ).fetchall():
             if first is not None:
                 by_ordinal[int(ordinal)] = first
@@ -1302,7 +1321,7 @@ class GenerationManager:
             with self._connect() as conn:
                 record = self._require_generation(conn, generation_id)
                 if record.state != GenerationState.BUILDING:
-                    raise InvalidGenerationTransition(
+                    raise _StepPrecondition(
                         f"build requires building state, found {record.state.value}"
                     )
                 manifest, pipeline = self._load_identity(conn, generation_id)
@@ -1354,7 +1373,19 @@ class GenerationManager:
                 group_keys=group_keys,
                 group_fingerprints=group_fingerprints,
             )
-            for done, entry in enumerate(manifest.objects):
+            # A context group is reused or encoded WHOLE. Reuse is decided per source, but a
+            # grouped vector depends on every member encoded beside it, so a group whose members
+            # split (one copied from an older generation, another re-encoded alone) stored
+            # vectors stamped with the full group's fingerprint that no full-group encoding
+            # produced, and later builds reused them as such (CCA BUG-001). Once one member
+            # cannot be reused, the members already copied are taken back out and queued again,
+            # and no later member of the group is reused: one more embedding call rather than a
+            # mixed group, as the Indexer already decides (`recall.index`, "complete_context_groups").
+            manifest_order = {entry.uri: position for position, entry in enumerate(manifest.objects)}
+            work = list(enumerate(manifest.objects))
+            unreused_groups: set[str] = set()
+            reused_members: dict[str, list[tuple[int, Any, int]]] = {}
+            for done, entry in work:
                 if progress is not None:
                     progress.update(_counters(done), stage="reading", current=entry.uri)
                 relative_source = relative_paths.get(entry.uri, entry.uri)
@@ -1399,34 +1430,40 @@ class GenerationManager:
                     body_rule_changed = not extract_after_reuse and _body_rule_changed(
                         entry.media_type, text
                     )
-                    reused = self._reuse_source(
-                        conn,
-                        generation_id,
-                        pipeline.fingerprint,
-                        entry.uri,
-                        entry.sha256,
-                        entry.version_id,
-                        expected_file=relative_source,
-                        require_body_rule_version=(
-                            _BODY_RULE_VERSION if body_rule_changed else None
-                        ),
-                        accepted_metadata_rules=_metadata_rules_accepted(
-                            entry.media_type, None if extract_after_reuse else text
-                        ),
-                        security_policy_digest=security_policy_digest,
-                        context_group_fingerprint=(
-                            group_fingerprints[group_keys[entry.uri]]
-                            if grouped_passages
-                            else None
-                        ),
-                        require_code_anchor_repo=anchored_python,
-                        code_anchor_repo=(provenance or {}).get("project"),
-                    )
+                    reused = 0
+                    if not (grouped_passages and group_keys[entry.uri] in unreused_groups):
+                        reused = self._reuse_source(
+                            conn,
+                            generation_id,
+                            pipeline.fingerprint,
+                            entry.uri,
+                            entry.sha256,
+                            entry.version_id,
+                            expected_file=relative_source,
+                            require_body_rule_version=(
+                                _BODY_RULE_VERSION if body_rule_changed else None
+                            ),
+                            accepted_metadata_rules=_metadata_rules_accepted(
+                                entry.media_type, None if extract_after_reuse else text
+                            ),
+                            security_policy_digest=security_policy_digest,
+                            context_group_fingerprint=(
+                                group_fingerprints[group_keys[entry.uri]]
+                                if grouped_passages
+                                else None
+                            ),
+                            require_code_anchor_repo=anchored_python,
+                            code_anchor_repo=(provenance or {}).get("project"),
+                        )
                     if reused:
                         reused_objects += 1
                         reused_chunks += reused
                         chunks_written += reused
                         indexed_sources.append(entry.uri)
+                        if grouped_passages:
+                            reused_members.setdefault(group_keys[entry.uri], []).append(
+                                (done, entry, reused)
+                            )
                         continue
 
                 if extract_after_reuse:
@@ -1460,6 +1497,26 @@ class GenerationManager:
                 # range, and silently retrieves worse. Falls back to `embed` for an embedder
                 # that only implements the symmetric interface.
                 if grouped_passages:
+                    # Only a member that contributes text breaks its group's reuse: one that
+                    # chunks to nothing has no rows to copy on any build, and the group encoding
+                    # never saw it either, so it must not send its siblings back every time.
+                    member_group = group_keys[entry.uri]
+                    unreused_groups.add(member_group)
+                    taken_back = reused_members.pop(member_group, [])
+                    if taken_back:
+                        with self._connect() as conn, conn.transaction():
+                            for position, sibling, copied in taken_back:
+                                self._source_lock(conn, self.tenant_id, sibling.uri)
+                                conn.execute(
+                                    "DELETE FROM recall_chunks_v1 WHERE tenant_id = %s "
+                                    "AND generation_id = %s AND source_uri = %s",
+                                    (self.tenant_id, generation_id, sibling.uri),
+                                )
+                                reused_objects -= 1
+                                reused_chunks -= copied
+                                chunks_written -= copied
+                                indexed_sources.remove(sibling.uri)
+                                work.append((position, sibling))
                     pending_grouped.setdefault(group_keys[entry.uri], []).append(
                         _PreparedSource(entry, chunks, embedding_texts, group_keys[entry.uri])
                     )
@@ -1490,7 +1547,12 @@ class GenerationManager:
 
             group_count = len(pending_grouped)
             for group_number, group_key in enumerate(tuple(pending_grouped), start=1):
-                prepared_sources = pending_grouped.pop(group_key)
+                # Members queued again by the whole-group rule arrive late; encode in manifest
+                # order, which is the order a group with no reused member is encoded in.
+                prepared_sources = sorted(
+                    pending_grouped.pop(group_key),
+                    key=lambda prepared: manifest_order[prepared.entry.uri],
+                )
                 if progress is not None:
                     progress.update(
                         _counters(total_objects),
@@ -1576,6 +1638,8 @@ class GenerationManager:
                 tombstoned,
                 empty,
             )
+        except _StepPrecondition:
+            raise
         except BaseException as exc:
             try:
                 self.fail(generation_id, _failure(exc))
@@ -1715,7 +1779,7 @@ class GenerationManager:
         with self._connect() as conn, conn.transaction():
             current = self._require_generation(conn, generation_id, lock=True)
             if current.state != GenerationState.VALIDATING:
-                raise InvalidGenerationTransition(
+                raise _StepPrecondition(
                     f"validate requires validating state, found {current.state.value}"
                 )
             row = conn.execute(
@@ -1795,6 +1859,8 @@ class GenerationManager:
     def validate(self, generation_id: str) -> ValidationResult:
         try:
             return self._validate(generation_id)
+        except _StepPrecondition:
+            raise
         except BaseException as exc:
             try:
                 self.fail(generation_id, _failure(exc))
@@ -2382,19 +2448,37 @@ class GenerationManager:
                 }
             if not collected:
                 return 0
+            # Every memo the remaining generations hold, by each of its names and its bytes. A
+            # card names its memo by `file`, which is relative to ITS generation's manifest
+            # common directory, so the same memo carries another name in a generation whose
+            # manifest spans more or fewer directories. Matching the name exactly read that memo
+            # as gone and retracted its facts for good while it was still served (CCA STAKES-002).
             rows = conn.execute(
-                "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND (metadata->>'file' = ANY(%s) OR source_uri = ANY(%s))",
-                (self.tenant_id, names, names),
+                "SELECT DISTINCT source_uri, metadata->>'file', metadata->>'content_hash' "
+                "FROM recall_chunks_v1 WHERE tenant_id = %s",
+                (self.tenant_id,),
             ).fetchall()
-        held = {str(value) for row in rows for value in row if value is not None}
+        held = {str(value) for row in rows for value in row[:2] if value is not None}
+        held_digests = {str(row[2]) for row in rows if row[2] is not None}
+        held_paths = tuple(sorted(held))
         known = set(names)
         removed = set(collected)
+
+        def still_held(card: EvidenceCard) -> bool:
+            # Conservative on purpose, because a retraction cannot be undone: the same bytes
+            # anywhere, or a remaining name that is the card's name under a longer or a shorter
+            # common directory (one path a suffix of the other), counts as held.
+            if card.source in held or card.source_digest in held_digests:
+                return True
+            suffix = "/" + card.source
+            return any(
+                path.endswith(suffix) or card.source.endswith("/" + path) for path in held_paths
+            )
 
         def gone(card: EvidenceCard) -> bool:
             # GC cannot establish the absence of evidence outside the generations it collected
             # (legacy tables can still hold it), so that evidence conservatively survives.
-            return card.generation_id in removed and card.source in known and card.source not in held
+            return card.generation_id in removed and card.source in known and not still_held(card)
 
         def touched(card: EvidenceCard) -> bool:
             return card.generation_id in removed

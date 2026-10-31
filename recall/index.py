@@ -89,10 +89,12 @@ MAX_BATCH_CHUNKS = DEFAULT_BATCH_CHUNKS
 #: Machine-wide override for the above, read per-Indexer so a host can bound EVERY embedding run
 #: on it without every caller having to pass the argument.
 #:
-#: ⛔ This is the knob that exists. `RECALL_FASTEMBED_BATCH` is named as the fix in more than one
-#: operational note on this project and is read NOWHERE in this package: exporting it is a no-op,
-#: and the run it was supposed to protect died anyway. The default of 64 keeps the outer batch
-#: bounded before fastembed performs its own batching and pads to the LONGEST member. Measured
+#: Two bounds, and both are read. This one caps the OUTER batch the Indexer hands the embedder.
+#: `RECALL_FASTEMBED_BATCH` caps fastembed's INNER batch, the one it pads to the LONGEST member
+#: (`recall.embedding_providers.local._batch_size_from_env`). 🔁 Corrected 2026-10-31 (CCA DOC-001):
+#: this comment said `RECALL_FASTEMBED_BATCH` was read nowhere and exporting it was a no-op, which
+#: stopped being true when its reader landed on 2026-08-22. The default of 64 keeps the outer
+#: batch bounded before fastembed performs its own batching. Measured
 #: 2026-08-22 on this project's memory corpus: the 987-memo store died at a 2.44 GB request while
 #: the 211-memo one completed, and 64 chunks per batch survived the longest documents in the
 #: corpus.
@@ -592,6 +594,34 @@ def _safe_default_file(root: Path, path: Path, glob: str) -> bool:
     )
 
 
+def _safe_link_target(root: Path, path: Path, glob: str) -> bool:
+    """Whether the file a link in the walk READS passes the default scan's own file rules.
+
+    The walk lists a file symlink under the link's name, and every rule above judges that name,
+    while the read follows the link. So `notes.md -> .env` passed as `notes.md` and indexed the
+    `.env` it points at, searchable under the innocent name (CCA SEC-001). The single-file branch
+    of `candidate_files` already judges the resolved file; this holds the walk to the same rule.
+
+    The target's name and suffix, and the tool directories, are checked; a plain dot-directory
+    above the target is not, because an in-root link into one is a supported layout (the lite
+    refresh keys such a memo by the link: `tests/test_lite_refresh.py`).
+    """
+    if glob != DEFAULT_INDEX_GLOB:
+        return True
+    target = path.resolve()
+    if target == path:
+        return True
+    relative = target.relative_to(root)
+    if any(part in _DEFAULT_INDEX_EXCLUDED_DIRS for part in relative.parts[:-1]):
+        return False
+    return (
+        not target.name.startswith(".")
+        and target.name.casefold() not in _DEFAULT_INDEX_EXCLUDED_NAMES
+        and target.suffix.lower() not in _DEFAULT_INDEX_EXCLUDED_SUFFIXES
+        and target.suffix.lower() in DOCUMENT_EXTENSIONS
+    )
+
+
 def _directory_candidates(root: Path, glob: str) -> list[tuple[Path, os.stat_result]]:
     """The directory branch of `candidate_files`, each path with the stat its check took."""
     paths = _default_walk(root) if glob == DEFAULT_INDEX_GLOB else root.glob(glob)
@@ -600,6 +630,7 @@ def _directory_candidates(root: Path, glob: str) -> list[tuple[Path, os.stat_res
             (p, found) for p, found in _confined_with_stats(root, paths)
             if (glob != DEFAULT_INDEX_GLOB or p.suffix.lower() in DOCUMENT_EXTENSIONS)
             and _safe_default_file(root, p, glob)
+            and _safe_link_target(root, p, glob)
         ),
         key=lambda pair: pair[0],
     )
@@ -1034,10 +1065,32 @@ class Indexer:
 
         if self._security_policy is not None:
             assert self._security_context is not None
-            for relative in rel.values():
+            base = Path(key_root).resolve() if key_root is not None else root
+            for f, relative in rel.items():
                 decision = self._security_policy.decide(relative, self._security_context)
                 if not decision.allowed:
                     raise PermissionError(f"source {relative!r} denied: {decision.reason}")
+                # The policy judges the link's path but the read follows the link, so a link
+                # under an allowed prefix could index a denied file, or one with other
+                # redactions, under the allowed rule (CCA SEC-001). The target's own decision
+                # must allow it and must be the same rule's.
+                target = f.resolve()
+                if target == f or not root_is_dir or not target.is_relative_to(base):
+                    continue
+                target_relative = target.relative_to(base).as_posix()
+                target_decision = self._security_policy.decide(target_relative, self._security_context)
+                if not target_decision.allowed:
+                    raise PermissionError(
+                        f"source {relative!r} links to {target_relative!r}, which is denied: "
+                        f"{target_decision.reason}"
+                    )
+                if (target_decision.classification, target_decision.redactions) != (
+                    decision.classification, decision.redactions
+                ):
+                    raise PermissionError(
+                        f"source {relative!r} links to {target_relative!r}, which a different "
+                        "source policy rule governs; index the target under its own path"
+                    )
 
         known = self._store.source_content_hashes()
         # ⛔ **A second, machine-independent view of the same question.** `known` keys on the
@@ -1311,6 +1364,33 @@ class Indexer:
                     )
                 else:
                     shadow_embedding_texts = raw_chunks
+
+            def piece_metadata(
+                i: int, extra_metadata: Mapping[str, object], fingerprint: str,
+                embedder: Embedder, policy: ContextPolicy, piece: StructuredChunk | None,
+            ) -> dict[str, object]:
+                # One key list for the active and the shadow rows; only the identity terms
+                # differ. They were two hand-kept copies, so a key added to one would have
+                # left the shadow generation, the one promoted at cutover, without it
+                # (CCA CODE-002).
+                return {
+                    "file": rel[f], "ord": i, "content_hash": content_hash,
+                    # Same derivation the skip guard used above, so the value stored here is
+                    # the value the next run compares against.
+                    "index_fingerprint": fingerprint,
+                    "embedding_profile": embedding_profile_id(embedder),
+                    "context_mode": policy.mode,
+                    "context_version": policy.version,
+                    "context_group_id": context_group_id,
+                    **({"security_policy_digest": self._security_policy.digest}
+                       if self._security_policy is not None else {}),
+                    "text_start": piece.start if piece is not None else None,
+                    "text_end": piece.end if piece is not None else None,
+                    "heading_hierarchy": list(piece.headings) if piece is not None else [],
+                    **extra_metadata,
+                    **self.apply_provenance(meta),
+                }
+
             for i, ct in enumerate(raw_chunks):
                 structured_chunk = structured[i] if content_blocks is None else None
                 embedding_text = embedding_texts[i]
@@ -1321,60 +1401,25 @@ class Indexer:
                         id=cid,
                         source=str(f),
                         text=ct,
-                        metadata={
-                            "file": rel[f], "ord": i, "content_hash": content_hash,
-                            "index_fingerprint": index_fingerprint,
-                            "embedding_profile": embedding_profile_id(self._embedder),
-                            "context_mode": self._context_policy.mode,
-                            "context_version": self._context_policy.version,
-                            "context_group_id": context_group_id,
-                            **({"security_policy_digest": self._security_policy.digest}
-                               if self._security_policy is not None else {}),
-                            "text_start": (
-                                structured_chunk.start if structured_chunk is not None else None
-                            ),
-                            "text_end": (
-                                structured_chunk.end if structured_chunk is not None else None
-                            ),
-                            "heading_hierarchy": (
-                                list(structured_chunk.headings) if structured_chunk is not None else []
-                            ),
-                            **extra_metadata,
-                            **self.apply_provenance(meta),
-                        },
+                        metadata=piece_metadata(
+                            i, extra_metadata, index_fingerprint, self._embedder,
+                            self._context_policy, structured_chunk,
+                        ),
                     )
                 )
                 pending_embedding_texts.append(embedding_text)
                 if self._shadow is not None:
+                    assert shadow_fingerprint is not None
                     shadow_piece = shadow_structured[i] if content_blocks is None else None
                     pending_shadow_chunks.append(
                         Chunk(
                             id=cid,
                             source=str(f),
                             text=ct,
-                            metadata={
-                                "file": rel[f], "ord": i, "content_hash": content_hash,
-                                # Same derivation the skip guard used above, so the value stored
-                                # here is the value the next run compares against.
-                                "index_fingerprint": shadow_fingerprint,
-                                "embedding_profile": embedding_profile_id(self._shadow.embedder),
-                                "context_mode": self._shadow.context_policy.mode,
-                                "context_version": self._shadow.context_policy.version,
-                                "context_group_id": context_group_id,
-                                **({"security_policy_digest": self._security_policy.digest}
-                                   if self._security_policy is not None else {}),
-                                "text_start": (
-                                    shadow_piece.start if shadow_piece is not None else None
-                                ),
-                                "text_end": (
-                                    shadow_piece.end if shadow_piece is not None else None
-                                ),
-                                "heading_hierarchy": (
-                                    list(shadow_piece.headings) if shadow_piece is not None else []
-                                ),
-                                **extra_metadata,
-                                **self.apply_provenance(meta),
-                            },
+                            metadata=piece_metadata(
+                                i, extra_metadata, shadow_fingerprint, self._shadow.embedder,
+                                self._shadow.context_policy, shadow_piece,
+                            ),
                         )
                     )
                     pending_shadow_texts.append(shadow_embedding_texts[i])

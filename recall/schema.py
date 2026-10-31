@@ -490,20 +490,9 @@ def _validate_current_schema(conn: Connection, table: str, dim: int) -> None:
     if missing := sorted({"tenant_id", "first_indexed_at"} - present):
         raise SchemaIncompatible(f"table {table!r} schema drift: missing columns {missing}")
 
-    policy = f"{table}_tenant_isolation"
-    state = conn.execute(
-        "SELECT c.relrowsecurity, c.relforcerowsecurity, p.polname IS NOT NULL, "
-        "pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid), "
-        "p.polroles = '{0}'::oid[], p.polcmd "
-        "FROM pg_class c LEFT JOIN pg_policy p "
-        "ON p.polrelid = c.oid AND p.polname = %s WHERE c.oid = %s::regclass",
-        (policy, table),
-    ).fetchone()
-    want = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
-    if not state or state != (True, True, True, want, want, True, "*"):
-        raise SchemaIncompatible(
-            f"table {table!r} row-level-security policy drift; run a new reviewed migration"
-        )
+    _require_tenant_isolation(
+        conn, table, f"table {table!r} row-level-security policy drift; run a new reviewed migration"
+    )
 
     expected_indexes = {
         f"{table}_tsv_idx",
@@ -525,6 +514,27 @@ def _validate_current_schema(conn: Connection, table: str, dim: int) -> None:
         )
     _validate_generation_schema(conn, dim, enforce_dimension=table == DEFAULT_TABLE)
     _validate_idempotency_receipt_schema(conn)
+    _validate_fact_state_schema(conn)
+
+
+def _require_tenant_isolation(conn: Connection, table: str, message: str) -> None:
+    """Refuse `table` unless it enforces the one tenant-isolation policy every table here uses.
+
+    One copy of the catalog query and of the expected shape (CCA CODE-003): it was written out
+    three times, so a reviewed change to the policy had three places to land and a missed one
+    would check one class of tables against a different invariant than the rest.
+    """
+    state = conn.execute(
+        "SELECT c.relrowsecurity, c.relforcerowsecurity, p.polname IS NOT NULL, "
+        "pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid), "
+        "p.polroles = '{0}'::oid[], p.polcmd "
+        "FROM pg_class c LEFT JOIN pg_policy p "
+        "ON p.polrelid = c.oid AND p.polname = %s WHERE c.oid = %s::regclass",
+        (f"{table}_tenant_isolation", table),
+    ).fetchone()
+    want = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
+    if not state or state != (True, True, True, want, want, True, "*"):
+        raise SchemaIncompatible(message)
 
 
 def _validate_idempotency_receipt_schema(conn: Connection) -> None:
@@ -532,18 +542,56 @@ def _validate_idempotency_receipt_schema(conn: Connection) -> None:
     for table in IDEMPOTENCY_RECEIPT_TABLES:
         if not (row := conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()) or not row[0]:
             raise SchemaIncompatible(f"idempotency receipt schema drift: missing table {table}")
-        policy = f"{table}_tenant_isolation"
-        want = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
-        state = conn.execute(
-            "SELECT c.relrowsecurity, c.relforcerowsecurity, p.polname IS NOT NULL, "
-            "pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid), "
-            "p.polroles = '{0}'::oid[], p.polcmd "
-            "FROM pg_class c LEFT JOIN pg_policy p "
-            "ON p.polrelid = c.oid AND p.polname = %s WHERE c.oid = %s::regclass",
-            (policy, table),
-        ).fetchone()
-        if not state or state != (True, True, True, want, want, True, "*"):
-            raise SchemaIncompatible(f"idempotency receipt table {table!r} row-level-security policy drift")
+        _require_tenant_isolation(
+            conn, table, f"idempotency receipt table {table!r} row-level-security policy drift"
+        )
+
+
+#: What 0029, 0030 and 0034 create that the fact and supersession state depends on: tenant-isolated
+#: tables, and triggers with the table each fires on. The revision trigger is what moves
+#: `GenerationStore.supersession_graph`'s cache key on a withdrawal; without it a stale supersession
+#: graph keeps being served.
+_FACT_STATE_OBJECTS: dict[str, tuple[tuple[str, ...], tuple[tuple[str, str], ...]]] = {
+    "0029": (FACT_REDACTION_TABLES, (("recall_fact_redactions_no_update", "recall_fact_redactions"),)),
+    "0030": (FACT_CURRENT_TABLES, ()),
+    "0034": (
+        SUPERSESSION_REVISION_TABLES,
+        (("recall_supersession_revision_insert", "recall_audit_events"),),
+    ),
+}
+
+
+def _validate_fact_state_schema(conn: Connection) -> None:
+    """Validate the tenant-isolated fact and supersession tables (0029, 0030 and 0034) and triggers.
+
+    These stay out of `GENERATION_TABLES` so that list's grants are not demanded of a database
+    at an earlier migration. This runs only once every PACKAGED migration is applied
+    (`check_schema` raises `SchemaTooOld` first), so each object is required exactly when the
+    package ships the migration that creates it. Until this existed, a dropped table, a dropped
+    policy, NO FORCE ROW LEVEL SECURITY or a dropped trigger on them reported compatible and
+    served (CCA DAT-003).
+    """
+    packaged = {migration.version for migration in load_migrations()}
+    for version, (tables, triggers) in _FACT_STATE_OBJECTS.items():
+        if version not in packaged:
+            continue
+        for table in tables:
+            row = conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()
+            if not row or not row[0]:
+                raise SchemaIncompatible(f"fact state schema drift: missing table {table}")
+            _require_tenant_isolation(
+                conn, table, f"fact state table {table!r} row-level-security policy drift"
+            )
+        for trigger, table in triggers:
+            enabled = conn.execute(
+                "SELECT t.tgenabled FROM pg_trigger t WHERE t.tgrelid = %s::regclass "
+                "AND t.tgname = %s AND NOT t.tgisinternal",
+                (table, trigger),
+            ).fetchone()
+            if not enabled or enabled[0] == "D":
+                raise SchemaIncompatible(
+                    f"fact state schema drift: trigger {trigger} on {table} is missing or disabled"
+                )
 
 
 def _validate_generation_schema(conn: Connection, dim: int, *, enforce_dimension: bool) -> None:
@@ -556,19 +604,10 @@ def _validate_generation_schema(conn: Connection, dim: int, *, enforce_dimension
     if missing_tables:
         raise SchemaIncompatible(f"generation schema drift: missing tables {missing_tables}")
 
-    want = f"(tenant_id = current_setting('{TENANT_GUC}'::text, true))"
     for table in GENERATION_TABLES:
-        policy = f"{table}_tenant_isolation"
-        state = conn.execute(
-            "SELECT c.relrowsecurity, c.relforcerowsecurity, p.polname IS NOT NULL, "
-            "pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid), "
-            "p.polroles = '{0}'::oid[], p.polcmd "
-            "FROM pg_class c LEFT JOIN pg_policy p "
-            "ON p.polrelid = c.oid AND p.polname = %s WHERE c.oid = %s::regclass",
-            (policy, table),
-        ).fetchone()
-        if not state or state != (True, True, True, want, want, True, "*"):
-            raise SchemaIncompatible(f"generation table {table!r} row-level-security policy drift")
+        _require_tenant_isolation(
+            conn, table, f"generation table {table!r} row-level-security policy drift"
+        )
 
     rows = conn.execute(
         "SELECT c.relname, i.indisvalid FROM pg_index i "
