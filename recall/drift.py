@@ -75,6 +75,7 @@ from recall.calibration_v2 import (
     CalibrationStatus,
     corpus_delta,
     threshold_error_rates,
+    within_error_bound,
 )
 from recall.embeddings import Embedder
 from recall.observability import get_logger
@@ -349,10 +350,7 @@ def _probe(
         "separability_ci": list(ci) if ci is not None else None,
         "still_certified": frozen.certified is True,
         "max_error": max(errors["false_abstain_rate"], errors["false_confirm_rate"]),
-        "within_error": (
-            errors["false_abstain_rate"] <= max_error
-            and errors["false_confirm_rate"] <= max_error
-        ),
+        "within_error": within_error_bound(errors, max_error),
         **errors,
     }
 
