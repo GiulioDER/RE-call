@@ -1577,3 +1577,82 @@ def test_the_probe_constant_is_set() -> None:
     node id tests/test_auditor_brief_hook.py::test_the_probe_constant_is_set; failed on
     `assert False is True` at the assertion below."""
     assert auditor_brief.FILE_LEVEL_RANKS_AS_FILE_ONLY is True
+
+
+# --- CCA's memory holdout (Task 2c) ------------------------------------------------------------
+#
+# Invariant: a launch inside a CCA run whose `memory-arm.json` names arm `holdout` gets no block,
+# even with the empty prompt the Codex bridge sends; every other state (arm `brief`, no open run,
+# an unreadable arm file) is briefed exactly as before. The failure caught: RE-call handing a
+# holdout run's auditors the very records CCA withheld, which voids the comparison.
+
+
+def _cca_run(root: Path, run_id: str = "r1", arm: str | None = "holdout", raw: str | None = None) -> None:
+    """CCA's on-disk state for an open run `run_id` at `root`, and its arm file unless `arm` and
+    `raw` are both None. `raw`, when given, is the arm file's whole text."""
+    audits = root / ".claude" / "audits"
+    audits.mkdir(parents=True, exist_ok=True)
+    (audits / "run-state.json").write_text(json.dumps({"run_id": run_id, "tier": "STANDARD"}), encoding="utf-8")
+    if arm is None and raw is None:
+        return
+    run = audits / "runs" / run_id
+    run.mkdir(parents=True, exist_ok=True)
+    text = raw if raw is not None else json.dumps({"run_id": run_id, "arm": arm, "rule": "r"})
+    (run / "memory-arm.json").write_text(text, encoding="utf-8")
+
+
+def test_holdout_arm_skips_the_block(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2), like the three below: against
+    origin/master `9a9fd195b` (no holdout check), node id
+    tests/test_auditor_brief_hook.py::test_holdout_arm_skips_the_block failed on "a holdout run's
+    auditor was briefed". Targets `cca_holdout_run` and its use in `pre_agent`."""
+    _cca_run(repo, arm="holdout")
+    assert _run(_payload(repo, prompt=""), monkeypatch, capsys) is None, "a holdout run's auditor was briefed"
+    assert "CCA run r1 is in the memory holdout arm" in env.read_text(encoding="utf-8")
+
+
+def test_brief_arm_is_unchanged(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31: mutation of `cca_holdout_run` to return the run id for any
+    readable arm file (the `arm.get("arm") == CCA_HOLDOUT_ARM` clause removed); node id
+    tests/test_auditor_brief_hook.py::test_brief_arm_is_unchanged failed on "the hook printed
+    nothing"."""
+    _cca_run(repo, arm="brief")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+def test_no_open_run_is_unchanged(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31: mutation of `cca_holdout_run`'s fail-open handler to
+    answer `"?"` instead of None (so a missing state file reads as a holdout); node id
+    tests/test_auditor_brief_hook.py::test_no_open_run_is_unchanged failed on "the hook printed
+    nothing"."""
+    assert not (repo / ".claude").exists()
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+def test_unreadable_arm_fails_open(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31: the same mutation as `test_no_open_run_is_unchanged` (the
+    fail-open handler answers `"?"`), so invalid JSON reads as a holdout; node id
+    tests/test_auditor_brief_hook.py::test_unreadable_arm_fails_open failed on "the hook printed
+    nothing"."""
+    _cca_run(repo, raw="{not json")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))

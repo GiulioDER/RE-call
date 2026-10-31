@@ -36,7 +36,9 @@ What it reads, and what it does not:
    stops waiting for, so even a source that hangs cannot hold the launch.
 4. **It is quiet for everything else.** A subagent type outside the auditor list, or a prompt that
    already carries one of CCA's brief headings or this hook's marker, passes untouched, so no
-   auditor sees the context twice.
+   auditor sees the context twice. So is a launch inside a CCA run whose `memory-arm.json` names
+   the `holdout` arm (`cca_holdout_run`): CCA withheld its brief from that run on purpose, and the
+   Codex bridge sends an empty prompt, so the heading check alone cannot see it.
 
 The block's benefit is unmeasured; it ships as context, and no benefit is claimed until a
 pre-registered comparison supports one.
@@ -980,6 +982,54 @@ def build_block(cwd: str, prompt: str, *, deadline: float, now: datetime | None 
     return render(entries, now=instant, retraction_files=retractions, unnamed_files=unnamed)
 
 
+# --- CCA's memory holdout ----------------------------------------------------------------------
+
+
+#: Where CCA keeps the open run's state and each run's memory arm, relative to the project root.
+#: Read from CCA's on-disk layout, never by importing CCA: `cca_gate_core.state_file`
+#: (`.claude/audits/run-state.json`, key `run_id`), `deferred.runs_dir` and `holdout.ARM_FILE`.
+CCA_STATE = (".claude", "audits", "run-state.json")
+CCA_RUNS = (".claude", "audits", "runs")
+CCA_ARM_FILE = "memory-arm.json"
+CCA_HOLDOUT_ARM = "holdout"
+#: CCA's own run id pattern (`pipeline_state._RUN_ID`), so a state file cannot name a path.
+_CCA_RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def cca_holdout_run(cwd: str, *, deadline: float) -> str | None:
+    """The id of the CCA run open at `cwd`'s project root when its `memory-arm.json` names the
+    `holdout` arm, else None. Never raises.
+
+    CCA withholds its prior-bugs brief from about one DIFF run in three to measure what memory
+    adds; briefing that run's auditors here would hand them the records CCA withheld. The project
+    root is git's top level for `cwd`, or `cwd` itself when git cannot say. Everything else (no
+    state, no run id, no arm file, unreadable JSON, an arm file naming another run, any other arm)
+    answers None, so the brief is delivered as before.
+    """
+    try:
+        root = Path(cwd)
+        try:
+            process = _start_git(cwd, "rev-parse", "--show-toplevel")
+            try:
+                top = _finish_git(process, deadline).decode("utf-8", "replace").strip()
+            finally:
+                _stop([process])
+            if top:
+                root = Path(top)
+        except (OSError, subprocess.SubprocessError):
+            pass  # not a git work tree, or git is slow: the root is `cwd` itself
+        state = json.loads(root.joinpath(*CCA_STATE).read_text(encoding="utf-8"))
+        run_id = state.get("run_id") if isinstance(state, dict) else None
+        if not isinstance(run_id, str) or not _CCA_RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
+            return None
+        arm = json.loads(root.joinpath(*CCA_RUNS, run_id, CCA_ARM_FILE).read_text(encoding="utf-8"))
+        if isinstance(arm, dict) and arm.get("run_id") == run_id and arm.get("arm") == CCA_HOLDOUT_ARM:
+            return run_id
+    except Exception:  # BROAD-CATCH: fail-open  (an unreadable run is not a holdout)
+        return None
+    return None
+
+
 # --- the event ---------------------------------------------------------------------------------
 
 
@@ -1016,10 +1066,15 @@ def pre_agent(payload: dict[str, Any]) -> int:
             _log(f"{agent_type}: the event carries no cwd; prompt left unchanged")
             return 0
         budget = _budget()
+        deadline = started + budget - INNER_MARGIN
+        # Beside the block rather than before it, so its git call costs the launch no extra time.
+        holdout: _Background[str | None] = _Background(
+            lambda: cca_holdout_run(cwd, deadline=deadline), "recall-auditor-brief-holdout"
+        )
         # The inner bounds fire first, so a slow stage is logged by name; the wait below is the
         # backstop for a stage nothing inside bounds.
         worker: _Background[str] = _Background(
-            lambda: build_block(cwd, prompt, deadline=started + budget - INNER_MARGIN), "recall-auditor-brief"
+            lambda: build_block(cwd, prompt, deadline=deadline), "recall-auditor-brief"
         )
         if not worker.wait(started + budget - time.monotonic()):
             _log(f"{agent_type}: budget of {budget:.2f}s exceeded; prompt left unchanged")
@@ -1030,6 +1085,11 @@ def pre_agent(payload: dict[str, Any]) -> int:
             _log(f"{agent_type}: {type(error).__name__}: {error}; prompt left unchanged")
             return 0
         if not block:
+            return 0
+        if not holdout.wait(started + budget - time.monotonic()):
+            _log(f"{agent_type}: the CCA holdout check did not finish within the budget; brief delivered")
+        elif (run_id := holdout.value()) is not None:
+            _log(f"{agent_type}: CCA run {run_id} is in the memory holdout arm; prompt left unchanged")
             return 0
         updated = {**tool_input, "prompt": f"{prompt.rstrip()}\n\n{block}\n"}
         # `ensure_ascii` left at its default: memo text is full of non-ASCII and stdout may be cp1252.
@@ -1078,6 +1138,7 @@ __all__ = [
     "auditor_types",
     "build_block",
     "cache_path",
+    "cca_holdout_run",
     "changed_lines",
     "finish_scope",
     "log_path",
