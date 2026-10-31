@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import os
 import sys
 from pathlib import Path
@@ -60,11 +59,6 @@ PROBE_TASK = {
         "one sentence. If a memory search tool is available to you, use it first."
     ),
 }
-
-
-@contextlib.contextmanager
-def _null_context():
-    yield
 
 
 def _ok(label: str, detail: str = "") -> None:
@@ -100,14 +94,12 @@ async def main() -> int:
         source: StdioRecallSpec | WarmRecallServer = StdioRecallSpec(
             dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant
         )
-        context: object = _null_context()
     else:
         source = WarmRecallServer(
             dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant, port=args.port
         )
-        context = source
 
-    with context:  # type: ignore[attr-defined]
+    with source:
         try:
             report = await source.check()
         except Exception as error:  # noqa: BLE001 - the report is the point of this script

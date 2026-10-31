@@ -134,11 +134,11 @@ class OidcTokenVerifier:
         )
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        if not self._throttle.allow():
+        if not self._throttle.reserve():
             # Gated here, unlike the static path, because validation is EXPENSIVE — a JWKS
             # fetch and an RSA verify — and capping that work is what stops a forgery wave
             # from driving the CPU and the provider round-trips. The cost of the gate is that
-            # during a sustained storm a VALID OIDC token is refused too: `allow()` cannot
+            # during a sustained storm a VALID OIDC token is refused too: admission cannot
             # tell it from garbage without doing the very work the gate defers. That is a
             # deliberate availability-for-integrity trade on this path, not a property the
             # throttle can avoid; the per-source ASGI middleware named in FailedAuthThrottle
@@ -155,6 +155,7 @@ class OidcTokenVerifier:
             # verification is ~2ms of uninterruptible loop time on every authenticated request.
             principal = await _to_thread(lambda: self._validator.validate(token))
         except IdentityProviderUnavailable as exc:
+            self._throttle.refund()
             # Distinct message, deliberately: this is an outage on our side of the trust
             # relationship, and reading it as a wave of forgeries would send an operator hunting
             # an attacker while the IdP stays down.
@@ -164,10 +165,8 @@ class OidcTokenVerifier:
             )
             return None
         except TokenRejected as exc:
-            # Debited here and in the validator_error branch, NOT for an IdP outage above: an
-            # unreachable provider is our failure, and letting it close the gate would slow
-            # every rejection during exactly the window an operator is debugging.
-            self._throttle.record_failure()
+            # Keep the reservation for rejected tokens. Provider outages return it above:
+            # an unreachable provider must not spend the failed-authentication budget.
             # `exc.reason` is a stable slug and never contains token material; the exception's
             # detail is deliberately not logged, and neither is the token.
             _log.warning("rejected a bearer token (reason=%s)", exc.reason)
@@ -177,9 +176,9 @@ class OidcTokenVerifier:
             # resolves to a TokenRejected, but this is the boundary where a breach of it turns a
             # 401 into a 500: the SDK does not wrap `verify_token`. A failure to authenticate
             # must fail CLOSED as a refusal, never as a stack trace.
-            self._throttle.record_failure()
             _log.warning("rejected a bearer token (reason=validator_error)", exc_info=True)
             return None
+        self._throttle.refund()
         return AccessToken(
             token=token,
             client_id=principal.name,

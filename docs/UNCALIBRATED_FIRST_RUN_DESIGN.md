@@ -269,7 +269,7 @@ checksum covered schema change. **Resolved in decision 10.**
 question sets.**
 
 Writing `recall_chunks_v1` rows from `chunks` rows would fabricate `source_sha256` and
-`object_version_id`, which is what `recall/lineage.py:378` refuses for `file://` objects. The escape
+`object_version_id`, which is what `recall/lineage.py:397` refuses for `file://` objects. The escape
 is that the legacy metadata was written at embed time and can be checked against the world now.
 
 `recall generation adopt --from-chunks` proceeds per source:
@@ -289,7 +289,7 @@ is that the legacy metadata was written at embed time and can be checked against
    the rows adoption reads. Neither stored field may gate adoption. The check is the
    attestation sample below.
 5. Only then copy the vector, setting `source_sha256 = content_hash` and
-   `object_version_id = content_hash`, the rule `recall/lineage.py:378` enforces for local files.
+   `object_version_id = content_hash`, the rule `recall/lineage.py:397` enforces for local files.
 
 Two properties this gives, stated as the `file://` comment states its own:
 
@@ -456,7 +456,7 @@ source not adoptable.
 | v1 column | Origin | Note |
 |---|---|---|
 | `source_uri` | `file://` + the absolute resolved path | Root comes from the project's recorded index root, not guessed |
-| `object_version_id` | `metadata->>'content_hash'` | The `file://` rule: version_id **is** the digest (`recall/lineage.py:378`) |
+| `object_version_id` | `metadata->>'content_hash'` | The `file://` rule: version_id **is** the digest (`recall/lineage.py:397`) |
 | `source_sha256` | `metadata->>'content_hash'` | Verified against disk first |
 | `chunk_ordinal` | `int(metadata->>'ord')` | **Required alongside `content_hash` in step 1**; absent means not adoptable, matching `GenerationManager._write_source` (in `recall/generations.py`) |
 | `text`, `embedding`, `metadata` | copied | The vectors are the whole point |

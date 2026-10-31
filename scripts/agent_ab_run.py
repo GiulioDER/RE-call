@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import os
 import platform
@@ -189,7 +188,7 @@ async def main() -> int:
         source: StdioRecallSpec | WarmRecallServer = StdioRecallSpec(
             dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant
         )
-        context: Any = contextlib.nullcontext()
+        context: Any = source
     else:
         source = WarmRecallServer(
             dsn=args.dsn, cwd=REPO_ROOT, tenant=args.tenant, port=args.port

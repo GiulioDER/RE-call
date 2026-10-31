@@ -507,7 +507,7 @@ class ForgetResult(BaseModel):
     staged_files_removed: int = Field(
         default=0,
         description="Staged upload files removed from the tenant upload tree after erasure. "
-        "-1 means cleanup failed and must be retried before re-indexing.",
+        "-1 means cleanup failed; surviving staged files must be removed before re-indexing.",
     )
     facts_retracted: int = Field(
         default=0,

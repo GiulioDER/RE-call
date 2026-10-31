@@ -106,7 +106,7 @@ the file every run and puts a clock inside the digest.
 
 ### Digest over structure, not bytes
 
-`digest:` is `canonical_sha256` (`recall/lineage.py:135`) over `{"v": 1, "entries": [...]}`.
+`digest:` is `canonical_sha256` (`recall/lineage.py:81`) over `{"v": 1, "entries": [...]}`.
 
 Hashing raw bytes would report every CRLF checkout as tampered, and this repo reads `utf-8-sig` and
 tolerates a BOM precisely because it lives on both Windows and Linux. The version lives inside the

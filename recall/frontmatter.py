@@ -19,7 +19,7 @@ import json
 import re
 from datetime import datetime, time, timezone
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from recall.errors import RecallError
 
@@ -41,12 +41,11 @@ Authority = Literal[
     "model_inference",
     "unknown",
 ]
-AUTHORITY_VALUES: tuple[Authority, ...] = (
-    "policy",
-    "user_confirmed_decision",
-    "tool_observation",
-    "model_inference",
-    "unknown",
+AUTHORITY_VALUES: tuple[Authority, ...] = get_args(Authority)
+#: The tiers an author may write. `unknown` is what an absent authority reads as, never a value,
+#: and it is excluded by name so the order of the Literal cannot change what is accepted.
+_AUTHORED_AUTHORITY_VALUES: tuple[Authority, ...] = tuple(
+    value for value in AUTHORITY_VALUES if value != "unknown"
 )
 
 
@@ -67,9 +66,9 @@ def authority_from_metadata(metadata: Mapping[str, Any]) -> Authority:
     if graph is None or "authority" not in graph:
         return "unknown"
     value = graph["authority"]
-    if not isinstance(value, str) or value not in AUTHORITY_VALUES[:-1]:
+    if not isinstance(value, str) or value not in _AUTHORED_AUTHORITY_VALUES:
         raise ValueError(
-            "recall_graph.authority must be one of: " + ", ".join(AUTHORITY_VALUES[:-1])
+            "recall_graph.authority must be one of: " + ", ".join(_AUTHORED_AUTHORITY_VALUES)
         )
     return value
 
@@ -345,9 +344,11 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
                 value = value.strip()
                 try:
                     parsed = json.loads(value)
-                except json.JSONDecodeError:
+                except (ValueError, RecursionError):
                     # Keep malformed graph metadata visible to the derived graph builder. It can
                     # report a sanitized diagnostic without making ordinary retrieval fail.
+                    # RecursionError too, as for `recall_record` below: one line nested thousands
+                    # deep must not stop the index run or the generation build.
                     meta[key] = {"__parse_error__": "recall_graph must be one-line JSON"}
                 else:
                     meta[key] = parsed

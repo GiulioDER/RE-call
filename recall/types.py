@@ -279,7 +279,8 @@ class EvidenceCard:
 
 
 #: The keys a redacted card keeps (`recall.fact_redaction`): its identity, its memo's name, and
-#: which redaction erased the rest. Migration 0029's triggers admit exactly this shape.
+#: which redaction erased the rest. Migration 0029's triggers admit exactly this shape, and
+#: `tests/test_cca_hunt_storage_core.py` pins both constants to that migration and to every writer.
 REDACTED_CARD_KEYS = ("card_id", "generation_id", "redacted", "redaction_id", "source", "tenant_id")
 #: The keys a redacted fact payload keeps: the fresh fact id its events pair on, and the redaction.
 REDACTED_FACT_KEYS = ("fact_id", "redacted", "redaction_id")
@@ -306,7 +307,7 @@ class RedactedEvidenceCard(EvidenceCard):
             raise ValueError("a redacted evidence card needs its id and its redaction id")
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        values = {
             "card_id": self.card_id,
             "generation_id": self.generation_id,
             "redacted": True,
@@ -314,6 +315,9 @@ class RedactedEvidenceCard(EvidenceCard):
             "source": self.source,
             "tenant_id": self.tenant_id,
         }
+        # Keyed by the constant, so the payload always has the shape migration 0029's triggers
+        # admit: a key the constant names and this card lacks raises KeyError here, at once.
+        return {key: values[key] for key in REDACTED_CARD_KEYS}
 
     @classmethod
     def from_marker(cls, payload: Mapping[str, Any]) -> RedactedEvidenceCard:

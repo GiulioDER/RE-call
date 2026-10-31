@@ -34,7 +34,7 @@ See [the Codex integration guide](../docs/CODEX_RECALL_INTEGRATION.md) for manua
 verification, and the shared durable memo contract.
 
 ```bash
-pip install "recall-rag[fastembed]"
+pip install "recall-rag[mcp,fastembed]"
 recall quickstart
 ```
 

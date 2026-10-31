@@ -19,6 +19,9 @@ is correct and non-negotiable, so this writes a short-lived static token file in
 temporary directory and removes it on exit. The token never enters the repository, and the MCP
 config is written as a **file** rather than passed inline so the bearer token never appears in a
 command line that gets recorded into a session artifact.
+
+Prior work: the paired arm configuration in `benchmarks/agent_ab/arms.py` and the
+existing RE-call MCP server; this module supplies benchmark launch and readiness.
 """
 
 from __future__ import annotations
@@ -318,6 +321,8 @@ STDIO_PASSTHROUGH_ENV: tuple[str, ...] = (
 class StdioRecallSpec:
     """A per-session stdio RE-call server, which is the only way to serve a CALIBRATED corpus.
 
+    Use as a context manager, or call close(), to remove private live MCP configurations.
+
     RE-call reads generations only under `RECALL_ENV=production` (`recall_mcp/server.py`), and
     `build_auth` refuses a static bearer token under production because such a token has no
     expiry, issuer or revocation path. Those two rules together mean the warm HTTP server above
@@ -386,26 +391,38 @@ class StdioRecallSpec:
         return f"mcp__{self.server_name}__"
 
     def write_mcp_config(self, destination: str | Path) -> Path:
+        """Retain a redacted recipe and return a private, temporary live config."""
         target = Path(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        self.server_name: {
-                            "command": self.python,
-                            "args": ["-m", "recall_mcp.server"],
-                            "cwd": str(self.cwd),
-                            "env": self.env(),
-                        }
-                    }
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-        self._state_dir = target.parent
-        return target
+        if self._state_dir is None:
+            self._state_dir = Path(tempfile.mkdtemp(prefix="recall-agent-ab-stdio-"))
+        payload: dict[str, Any] = {"mcpServers": {self.server_name: {
+            "command": self.python,
+            "args": ["-m", "recall_mcp.server"],
+            "cwd": str(self.cwd),
+            "env": self.env(),
+        }}}
+        # mkstemp creates mode 0600 before any sensitive byte is written. Its
+        # enclosing directory is created privately by mkdtemp (0700 on POSIX).
+        fd, name = tempfile.mkstemp(suffix=".json", dir=self._state_dir)
+        live = Path(name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        payload["mcpServers"][self.server_name]["env"]["RECALL_DSN"] = "<redacted>"
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return live
+
+    def __enter__(self) -> "StdioRecallSpec":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        """Remove only this spec's private live configuration directory."""
+        if self._state_dir is not None:
+            shutil.rmtree(self._state_dir)
+            self._state_dir = None
 
     async def check(self, query: str = "how do I limit the number of CPU threads the embedder uses") -> dict[str, Any]:
         """Drive one stdio server directly, and report what the strict trust policy decided."""

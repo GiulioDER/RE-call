@@ -4,10 +4,11 @@ This page describes the PostgreSQL installer. For local SQLite memory without a 
 use [RE-call Lite](LITE.md). `recall setup --lite` is a separate noninteractive path and does not
 run the PostgreSQL wizard or its automatic Codex integration.
 
-> **When to prefer this page:** the canonical interactive install is `recall setup` (the README's
-> "full install"). This page is for the scriptable form of the same install — CI, provisioning,
-> or a config you want to review before it runs. For the manual command-by-command path instead,
-> see [FIRST_CALIBRATION.md](FIRST_CALIBRATION.md).
+> **When to prefer this page:** use `recall wizard` for a calibrated, promoted generation. It can
+> ask questions interactively or run a saved config with `--headless --config` for CI and
+> provisioning. `recall setup` configures the installation and offers legacy calibration; it
+> does not build or promote a generation. For the manual command-by-command path, see
+> [FIRST_CALIBRATION.md](FIRST_CALIBRATION.md).
 
 `recall wizard` takes a JSON config and drives every corpus from a directory to a calibrated,
 promoted generation, then writes the MCP servers that serve them. It exists because the calibrated
