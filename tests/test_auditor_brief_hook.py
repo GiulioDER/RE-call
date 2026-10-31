@@ -220,8 +220,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from collections.abc import Callable
@@ -1757,3 +1759,90 @@ def test_an_arm_file_naming_another_run_is_not_this_runs_arm(
     failed on "the hook printed nothing"."""
     _cca_run(repo, run_id="r1", raw=json.dumps({"run_id": "r9", "arm": "holdout", "rule": "r"}))
     assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+# Fix round 2 (review of f5552899f). Invariants and the failure each catches:
+# - a `worktree` line that is not a plain absolute local path (UNC by either separator, relative,
+#   or on Windows a colon past the drive) is refused before any filesystem call, because
+#   `_unlinked_lstat` does not check its root and a UNC lookup makes Windows authenticate;
+# - a git that cannot be started leaves `cwd` itself as the root, so a holdout there still holds.
+
+_UNC_LINES = b"worktree //attacker.invalid/share/wt\n\nworktree \\\\attacker.invalid\\share\\wt2\n\n"
+
+
+def test_a_unc_worktree_line_is_never_looked_up(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `f5552899f` (every
+    porcelain path used as a root), node id
+    tests/test_auditor_brief_hook.py::test_a_unc_worktree_line_is_never_looked_up failed on "a
+    UNC worktree root was looked up". Targets `_worktree_root` and its use in `_cca_roots`."""
+    real_finish, real_lstat = auditor_brief._finish_git, os.lstat
+    touched: list[str] = []
+
+    def finish(process: Any, deadline: float, data: bytes | None = None) -> bytes:
+        out = real_finish(process, deadline, data)
+        return out + _UNC_LINES if "worktree" in process.args else out
+
+    def lstat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if "attacker.invalid" in os.fspath(path):
+            touched.append(os.fspath(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(auditor_brief, "_finish_git", finish)
+    monkeypatch.setattr(os, "lstat", lstat)
+    _cca_run(repo, arm="brief")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    assert not touched, "a UNC worktree root was looked up"
+
+
+@pytest.mark.parametrize(
+    ("text", "windows", "kept"),
+    [
+        ("/home/u/wt", False, True),
+        ("//host/share/wt", False, False),
+        ("\\\\host\\share\\wt", False, False),
+        ("relative/wt", False, False),
+        ("C:/Users/u/wt", True, True),
+        ("C:\\Users\\u\\wt", True, True),
+        ("//host/share/wt", True, False),
+        ("\\\\host\\share\\wt", True, False),
+        ("\\\\?\\C:\\wt", True, False),
+        ("\\Users\\u\\wt", True, False),
+        ("C:/Users/u/wt:stream", True, False),
+        ("wt", True, False),
+    ],
+)
+def test_worktree_root_accepts_only_plain_absolute_paths(text: str, windows: bool, kept: bool) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): mutation of `_worktree_root` to
+    `return Path(text)` before its checks; node id
+    tests/test_auditor_brief_hook.py::test_worktree_root_accepts_only_plain_absolute_paths failed
+    on the `is not None` equality for every refused case."""
+    assert (auditor_brief._worktree_root(text, windows=windows) is not None) is kept
+
+
+def test_a_missing_git_still_honours_a_holdout_at_cwd(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `f5552899f` (the `OSError`
+    from starting git reached `cca_holdout_run`'s broad catch), node id
+    tests/test_auditor_brief_hook.py::test_a_missing_git_still_honours_a_holdout_at_cwd failed on
+    "a holdout run at cwd was briefed without git". Git fails to start only on the holdout check's
+    thread, so the block itself is still built."""
+    real_start = auditor_brief._start_git
+
+    def start(cwd: str, *args: str, stdin: bool = False) -> Any:
+        if threading.current_thread().name == "recall-auditor-brief-holdout":
+            raise FileNotFoundError("git")
+        return real_start(cwd, *args, stdin=stdin)
+
+    monkeypatch.setattr(auditor_brief, "_start_git", start)
+    _cca_run(repo, arm="holdout")
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "a holdout run at cwd was briefed without git"

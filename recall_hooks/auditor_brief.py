@@ -1012,15 +1012,41 @@ def _read_repo_json(root: Path, parts: tuple[str, ...]) -> Any:
         return None
 
 
+_WINDOWS_ROOT_RE = re.compile(r"[A-Za-z]:/")
+
+
+def _worktree_root(text: str, *, windows: bool = os.name == "nt") -> Path | None:
+    """`text`, a `worktree` line of `git worktree list --porcelain`, as a root, or None when it is
+    not a plain absolute local path. Decided on the string alone, before any filesystem call:
+    `_unlinked_lstat` never checks its root, and a crafted `.git/worktrees/*/gitdir` can make git
+    print a UNC path, which Windows would authenticate to on the first lookup. Refused: a path
+    that is not absolute, one starting with two separators (either kind), and on Windows one with a
+    colon anywhere but after the drive letter."""
+    normal = text.replace("\\", "/")
+    if not text or "\x00" in text or normal.startswith("//"):
+        return None
+    if windows:
+        if not _WINDOWS_ROOT_RE.match(normal) or ":" in normal[2:]:
+            return None
+    elif not normal.startswith("/"):
+        return None
+    return Path(text)
+
+
 def _cca_roots(cwd: str, deadline: float) -> list[Path]:
     """The roots a CCA run for `cwd` may be open in: git's top level for `cwd` (else `cwd`
-    itself), then every worktree of that repository. Codex starts an auditor in the main checkout
-    while CCA runs in a linked worktree, so the top level alone misses most Codex runs."""
+    itself), then every worktree of that repository (`_worktree_root` refuses a line that is not a
+    plain local path). Codex starts an auditor in the main checkout while CCA runs in a linked
+    worktree, so the top level alone misses most Codex runs. Without git (it cannot be started)
+    the only root is `cwd`."""
     roots = [Path(cwd)]
     processes: list[subprocess.Popen[bytes]] = []
     try:
-        processes.append(_start_git(cwd, "rev-parse", "--show-toplevel"))
-        processes.append(_start_git(cwd, "worktree", "list", "--porcelain"))
+        try:
+            processes.append(_start_git(cwd, "rev-parse", "--show-toplevel"))
+            processes.append(_start_git(cwd, "worktree", "list", "--porcelain"))
+        except OSError:
+            return roots  # no git to ask: `cwd` itself, as before worktrees were read
         try:
             top = _finish_git(processes[0], deadline).decode("utf-8", "replace").strip()
             if top:
@@ -1031,7 +1057,9 @@ def _cca_roots(cwd: str, deadline: float) -> list[Path]:
             listing = _finish_git(processes[1], deadline).decode("utf-8", "replace")
         except subprocess.SubprocessError:
             listing = ""
-        roots += [Path(line[len("worktree "):]) for line in listing.splitlines() if line.startswith("worktree ")]
+        for line in listing.splitlines():
+            if line.startswith("worktree ") and (root := _worktree_root(line[len("worktree "):])) is not None:
+                roots.append(root)
     finally:
         _stop(processes)
     unique: dict[str, Path] = {}
