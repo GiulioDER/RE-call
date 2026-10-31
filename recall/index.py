@@ -38,7 +38,7 @@ from recall.observability import get_logger
 from recall.records import admit_record
 from recall.sparse import SparseEncoderProtocol, store_sparse_vectors
 from recall.store import PgVectorStore
-from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
 from recall.types import Chunk
 from recall.errors import RecallError
 
@@ -622,6 +622,20 @@ def _safe_link_target(root: Path, path: Path, glob: str) -> bool:
     )
 
 
+def _governing_rule(policy: SourceSecurityPolicy, source: str) -> SourceRule | None:
+    """The rule that decides `source`: the longest matching prefix, as `SourceSecurityPolicy.decide`.
+
+    Two paths under one rule share its principals, purposes, egress and redactions, which is the
+    only condition under which a link may store one file under the other's path (CCA SEC-001).
+    """
+    normalized = source.replace("\\", "/").strip("/")
+    matches = [
+        rule for rule in policy.rules
+        if normalized == rule.prefix or normalized.startswith(rule.prefix + "/")
+    ]
+    return max(matches, key=lambda rule: (len(rule.prefix), rule.prefix), default=None)
+
+
 def _directory_candidates(root: Path, glob: str) -> list[tuple[Path, os.stat_result]]:
     """The directory branch of `candidate_files`, each path with the stat its check took."""
     paths = _default_walk(root) if glob == DEFAULT_INDEX_GLOB else root.glob(glob)
@@ -1070,13 +1084,15 @@ class Indexer:
                 decision = self._security_policy.decide(relative, self._security_context)
                 if not decision.allowed:
                     raise PermissionError(f"source {relative!r} denied: {decision.reason}")
-                # The policy judges the link's path but the read follows the link, so a link
-                # under an allowed prefix could index a denied file, or one with other
-                # redactions, under the allowed rule (CCA SEC-001). The target's own decision
-                # must allow it and must be the same rule's.
+                # The policy judges the link's path but the read follows the link, and the row is
+                # stored, scoped and served under the link's path (CCA SEC-001). So the target's
+                # own decision must allow it, and the SAME rule must govern both paths: comparing
+                # the two decisions' classification and redactions was not enough, because two
+                # rules can agree on both and still differ in who may read them.
                 target = f.resolve()
-                if target == f or not root_is_dir or not target.is_relative_to(base):
+                if target == f or not root_is_dir:
                     continue
+                # `_confined_to` keeps only targets under `root`, which is under `base`.
                 target_relative = target.relative_to(base).as_posix()
                 target_decision = self._security_policy.decide(target_relative, self._security_context)
                 if not target_decision.allowed:
@@ -1084,8 +1100,8 @@ class Indexer:
                         f"source {relative!r} links to {target_relative!r}, which is denied: "
                         f"{target_decision.reason}"
                     )
-                if (target_decision.classification, target_decision.redactions) != (
-                    decision.classification, decision.redactions
+                if _governing_rule(self._security_policy, target_relative) != _governing_rule(
+                    self._security_policy, relative
                 ):
                     raise PermissionError(
                         f"source {relative!r} links to {target_relative!r}, which a different "

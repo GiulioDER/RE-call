@@ -205,3 +205,57 @@ def test_indexer_refuses_a_link_that_relabels_a_file_under_another_rule(tmp_path
     with pytest.raises(PermissionError, match="different source policy rule"):
         indexer.index_path(root)
     assert not store.chunks
+
+
+def test_indexer_refuses_a_link_between_rules_that_agree_on_classification(tmp_path: Path) -> None:
+    """CCA SEC-001, the gap the commit security review found in the first fix.
+
+    Two rules with the same classification and no redactions, readable by different principals:
+    a link under `team-b/` to a file under `team-a/` would be stored and served under team B's
+    rule. Red against `d8179b678` (the first fix, which compared classification and redactions
+    only): node
+    tests/test_hunt_index_embedding_identity.py::test_indexer_refuses_a_link_between_rules_that_agree_on_classification
+    fails on "DID NOT RAISE PermissionError".
+    """
+    root = tmp_path / "corpus"
+    (root / "team-a").mkdir(parents=True)
+    (root / "team-b").mkdir()
+    target = root / "team-a" / "plan.md"
+    target.write_text("team a roadmap", encoding="utf-8")
+    _link(root / "team-b" / "plan.md", target)
+    policy = SourceSecurityPolicy(
+        (
+            SourceRule("team-a", classification="internal", principals=frozenset({"alice"})),
+            SourceRule("team-b", classification="internal", principals=frozenset({"alice", "bob"})),
+        )
+    )
+    store = _Store()
+    indexer = Indexer(
+        store, HashingEmbedder(dim=64), security_policy=policy,
+        security_context=AccessContext("alice", "tenant", clearance="internal"),
+    )
+    with pytest.raises(PermissionError, match="different source policy rule"):
+        indexer.index_path(root)
+    assert not store.chunks
+
+
+def test_a_link_within_one_rule_still_indexes(tmp_path: Path) -> None:
+    """CCA STAKES-001 (gap-fix run): only a link between rules is refused, not every link.
+
+    `public/latest.md` links to `public/2026-10-31.md`; one rule governs both, so the link is
+    indexed as before. Red by mutation of `Indexer._index_path` to the blanket refusal this run
+    replaced (the rule comparison forced true, so any link to another path raises): node
+    tests/test_hunt_index_embedding_identity.py::test_a_link_within_one_rule_still_indexes fails
+    with PermissionError "which a different source policy rule governs".
+    """
+    root = tmp_path / "corpus"
+    (root / "public").mkdir(parents=True)
+    target = root / "public" / "2026-10-31.md"
+    target.write_text("the current plan", encoding="utf-8")
+    _link(root / "public" / "latest.md", target)
+    store = _Store()
+    Indexer(
+        store, HashingEmbedder(dim=64), security_policy=_policy(),
+        security_context=AccessContext("alice", "tenant", clearance="confidential"),
+    ).index_path(root)
+    assert {Path(chunk.source).name for chunk in store.chunks} == {"2026-10-31.md", "latest.md"}
