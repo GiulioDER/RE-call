@@ -209,9 +209,9 @@ def test_secret_redaction_is_no_narrower_than_before_the_hunt(text: str) -> None
     """SEC-001 invariant: every span the pre-hunt pattern matched lies inside a new match.
 
     Checked on spans, not on the output: a narrower match can consume the key, and the pre-hunt
-    pattern cannot find a leftover value whose key is gone. Known exception, not covered: a value
-    glued to a later key and then a spaced separator (`password':a}token =x`, found by fuzzing
-    random strings), where the widened earlier match swallows that later key.
+    pattern cannot find a leftover value whose key is gone. A value glued to a later credential
+    assignment now stops there, so that assignment is matched on its own
+    (`test_secret_redaction_closes_the_remaining_gaps`).
     Red proof: on 11b14582e `TOKEN="abc"'def'` and `password="ab"cd"ef"` ended at the second
     quote, inside the pre-hunt span. Production line: the value group of `_REDACTIONS["secret"]`.
     """
@@ -225,12 +225,52 @@ def test_secret_redaction_is_no_narrower_than_before_the_hunt(text: str) -> None
 
 
 @pytest.mark.parametrize(
+    ("text", "leaked"),
+    [
+        # The credential word is not the last part of the name.
+        ("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI", "wJalrXUtnFEMI"),
+        ("CLIENT_SECRET_ID: abc999", "abc999"),
+        ("export STRIPE_SECRET_KEY=sk_live_1", "sk_live_1"),
+        # A value glued to a later credential assignment.
+        ("password=abc&token=xyz", "xyz"),
+        ("password':a}token =xq", "xq"),
+        ("secret:_password=btokenx", "btokenx"),
+        ("Bearer sk-proj-abc123def456ghi789", "abc123def456ghi789"),
+    ],
+)
+def test_secret_redaction_closes_the_remaining_gaps(text: str, leaked: str) -> None:
+    """SEC-001 residuals the hunt left open, closed after PR 1108.
+
+    Red proof (run 2026-10-31 on the remote test host): on 8f67f5c70 (PR 1108 merged) the three
+    suffixed names matched no credential name, and in `password':a}token =xq` the later key was
+    swallowed into the first value with its own value left after it, so `leaked not in
+    redacted` fails. `password=abc&token=xyz` is a control: the old run already took it whole.
+    `secret:_password=btokenx` and `Bearer sk-proj-...` are controls too, red against this
+    change's first draft (a value stop that disagreed with `\b` on `_`, and a narrower bare bearer
+    rule), which the regression review caught before commit.
+    Production lines: `_CREDENTIAL_NAME` and `_VALUE_CHAR` in `recall/security_policy.py`.
+    """
+    policy = SourceSecurityPolicy((SourceRule("notes", redactions=("secret",)),))
+    redacted, _ = policy.redact("notes/a.md", text, AccessContext("alice", "t"))
+    assert leaked not in redacted
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "the secret garden",
         "tokenizer settings",
         "my_secretary: bob",
         "a password policy",
+        # Settings whose names merely contain a credential word, and must stay readable.
+        "token_count: 5",
+        "password_min_length: 8",
+        "max_tokens=500",
+        "token_id: 12",
+        "password_auth: enabled",
+        "TOKEN_ACCESS: read",
+        "client_secret_hash: sha256",
+        "token_key_id = kid-1",
         # The first version of the fix redacted these; the regression review caught it.
         "The bearer of bad news arrived.",
         "a bearer bond is a thing",
@@ -240,7 +280,12 @@ def test_secret_redaction_is_no_narrower_than_before_the_hunt(text: str) -> None
     ],
 )
 def test_secret_redaction_leaves_prose_alone(text: str) -> None:
-    """SEC-001 control: words that merely contain a key name are not redacted."""
+    """SEC-001 control: words that merely contain a key name are not redacted.
+
+    The five settings with a credential word inside their name were redacted by the first
+    draft of the suffix list (an open list) before the regression review; they pin that the
+    list stays closed. Production line: `_CREDENTIAL_NAME`.
+    """
     policy = SourceSecurityPolicy((SourceRule("notes", redactions=("secret",)),))
     redacted, _ = policy.redact("notes/a.md", text, AccessContext("alice", "t"))
     assert redacted == text
@@ -451,3 +496,51 @@ def test_learned_sparse_query_probes_existence_not_a_full_count() -> None:
 
     with pytest.raises(LookupError, match="not indexed for learned sparse"):
         _Probe()._query_learned_sparse({1: 0.5}, 5, "p")
+
+
+# --- NUM-001: a thousands separator is not a decimal comma ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "terms"),
+    [
+        ("growth of 1,500 units", ["1500"]),
+        ("revenue of 1,234,567 in 2023", ["1234567", "2023"]),
+        ("1,500.25 and -2,000", ["1500.25", "-2000"]),
+        ("a rate of 1,5% and 3.25", ["1.5%", "3.25"]),
+        ("1,2345 is not grouped", ["1.2345"]),
+        ("0,500 and -0,750 are decimals", ["0.500", "-0.750"]),
+    ],
+)
+def test_numeric_terms_read_thousands_grouping(text: str, terms: list[str]) -> None:
+    """NUM-001: `1,500` is fifteen hundred, and `1,234,567` is one number, not two.
+
+    Red proof: on 8f67f5c70 every comma became a decimal point, so `1,500` gave `1.500` (and
+    boosted a cell holding one and a half) and `1,234,567` gave `['1.234', '567']`; the
+    equality fails. Production line: `recall.store._normalize_numeric` and `_NUMERIC_TOKEN_RE`.
+    """
+    from recall.store import _numeric_query_terms
+
+    assert _numeric_query_terms(text) == terms
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["growth of 1,500 units", "1,234,567 and 1,5", "1,500.25 -2,000 +3", "v1.2 3,50 4", "none"],
+)
+def test_the_index_query_and_lite_sides_normalise_alike(text: str) -> None:
+    """NUM-001: the boost matches only when the table side and the query side agree.
+
+    Red proof (mutation, run 2026-10-31 on the remote test host): reverting
+    `recall.extraction._table_numeric_values` alone to `replace(",", ".")` failed 3 of 5 cases
+    (`['1.500'] == ['1500']`), and restoring it passed. On 8f67f5c70 it passes, because all three
+    copies were wrong alike; `test_numeric_terms_read_thousands_grouping` is the red one there.
+    Production lines: the three copies of the rule.
+    """
+    from recall import store as pg
+    from recall.extraction import _table_numeric_values
+    from recall.lite import store as lite
+
+    query = pg._numeric_query_terms(text)
+    assert lite._numeric_terms(text) == query
+    assert _table_numeric_values([f"| {text} |"]) == query

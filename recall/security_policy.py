@@ -69,26 +69,49 @@ _CLEARANCE_ORDER: dict[Classification, int] = {
     "confidential": 2,
     "restricted": 3,
 }
+#: The word that makes a name a credential.
+_CREDENTIAL_WORD = r"(?:api[_ -]?key|token|secret|password)"
+#: A credential name: the word with an optional prefix (`OPENAI_API_KEY`, `DB_PASSWORD`: `_` is a
+#: word character, so a bare `\b` never matched inside one) and an optional suffix from a closed
+#: list that must END in key, token, secret or value (`AWS_SECRET_ACCESS_KEY`), or `_id`
+#: straight after secret (`CLIENT_SECRET_ID`). So a setting such as `token_count: 5`,
+#: `token_id: 12` or `password_auth: enabled` stays readable. Bounded, so the check below,
+#: which runs at every character of a value, stays linear.
+_CREDENTIAL_NAME = (
+    r"(?:[a-z0-9]{1,48}_){0,12}" + _CREDENTIAL_WORD
+    + r"(?:(?:_(?:access|private|signing|client|session|refresh|auth)){0,4}_(?:key|token|secret|value)"
+    + r"|(?<=secret)_id)?"
+)
+#: Where a value must stop: at the start of another credential assignment glued to it
+#: (`password=abc&token=xyz`, `password':a}token =x`), so that one is matched on its own and
+#: its value is redacted too, instead of being swallowed as part of the first value.
+#: `(?<!\w)` mirrors the `\b` a credential name starts at, so a value stops only where a
+#: match of its own can begin.
+_VALUE_CHAR = r"(?:(?!(?<!\w)" + _CREDENTIAL_NAME + r"[\"']?\s*[:=])[^\s,;])"
+_QUOTED = r"(?:\"[^\"\n]*\"|'[^'\n]*')"
+_SECRET_PATTERN = (
+    r"(?i)(?:\b" + _CREDENTIAL_NAME + r"[\"']?\s*[:=]\s*"
+    # A value that STARTS with a quote is a run of closed quoted segments and ordinary
+    # characters (`TOKEN="abc"'def'` is abcdef to a shell). Any other value is the old unquoted
+    # run: a quote after it is the closing quote of the string it sits in
+    # (`"content": "set TOKEN=abc",`), and pairing that with the next field's quote would erase
+    # the fields that follow.
+    + r"(?:" + _QUOTED + r"(?:" + _QUOTED + r"|(?![\"'])" + _VALUE_CHAR + r")*" + _VALUE_CHAR + r"*"
+    + r"|" + _VALUE_CHAR + r"+)"
+    # A bearer header names no key at all, so it is matched as a header, quoted or not.
+    + r"|\bauthorization[\"']?\s*[:=]\s*[\"']?bearer\s+[^\s,;\"']+"
+    # A bare bearer value is redacted only when it is token shaped: 16 or more token characters,
+    # at least one a digit. "The bearer of bad news" is prose, and a redaction cannot be undone
+    # in the stored text. Accepted: a 16+ character hyphenated phrase with a digit after
+    # "bearer" ("bearer 2024-annual-report-x") is redacted too. Narrowing that away also missed
+    # real keys (`sk-proj-...`, `sk-ant-...`) and a few percent of random tokens.
+    + r"|\bbearer\s+(?=[a-z0-9._~+/=-]*[0-9])"
+    + r"[a-z0-9._~+/=-]{16,})"
+)
 _REDACTIONS: dict[str, re.Pattern[str]] = {
     "email": re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"),
     "phone": re.compile(r"\b(?:\+?\d[\d ()-]{7,}\d)\b"),
-    # A credential name may carry a prefix (`OPENAI_API_KEY`, `DB_PASSWORD`: `_` is a word
-    # character, so a bare `\b` never matched inside one) and a closing quote (`"password": ...`),
-    # and a bearer header names no key at all. A bearer value is redacted inside an Authorization
-    # header (quoted or not), or bare when it is token shaped: 16 or more token characters,
-    # at least one a digit (a hyphen alone is not enough: "bearer self-identification" is prose).
-    # "The bearer of bad news" is prose, and a redaction cannot be undone in the stored text.
-    "secret": re.compile(
-        # A value that STARTS with a quote is a run of closed quoted segments and ordinary
-        # characters (`TOKEN="abc"'def'` is abcdef to a shell), then whatever the old unquoted run
-        # would still take. Any other value is the old unquoted run `[^\s,;]+`, unchanged: a quote
-        # after it is the closing quote of the string it sits in (`"content": "set TOKEN=abc",`),
-        # and pairing that with the next field's quote would erase the fields that follow.
-        r"(?i)(?:\b(?:[a-z0-9]+_)*(?:api[_ -]?key|token|secret|password)[\"']?\s*[:=]\s*"
-        r"(?:(?:\"[^\"\n]*\"|'[^'\n]*')(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s,;\"'])*[^\s,;]*|[^\s,;]+)"
-        r"|\bauthorization[\"']?\s*[:=]\s*[\"']?bearer\s+[^\s,;\"']+"
-        r"|\bbearer\s+(?=[a-z0-9._~+/=-]*[0-9])[a-z0-9._~+/=-]{16,})"
-    ),
+    "secret": re.compile(_SECRET_PATTERN),
 }
 #: The only keys a policy file may use. An unknown key is refused rather than ignored, because
 #: every rule default is the permissive one: a misspelled `classification` silently became

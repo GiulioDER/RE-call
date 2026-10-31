@@ -730,9 +730,9 @@ reaches a **weaker** conclusion on purpose.
 
 Markdown body derivation is pure Python inside this repository, so a chunker mismatch is
 diagnosable: the code that would differ is versioned by the repo. Extraction is not.
-`extract_document` (`recall/extraction.py:169`) dispatches to **six third party libraries** and, for
+`extract_document` (`recall/extraction.py:172`) dispatches to **six third party libraries** and, for
 five suffixes, to an **external LibreOffice binary** (`_extract_with_libreoffice`,
-`recall/extraction.py:768`). Those libraries
+`recall/extraction.py:771`). Those libraries
 are declared with open lower bounds in an optional extra (`pdfplumber>=0.11` and friends), and
 LibreOffice is not a Python dependency at all.
 
@@ -757,7 +757,7 @@ The precedent is already in the tree and is deliberate. `EmbeddingProfile.depend
 docstring says a `fastembed` upgrade costs a re embed on purpose, "because ONNX runtime changes are
 free to move the last bits of a vector and a cache cannot tell". **The identical argument applies to
 `pdfplumber` and to LibreOffice**, and extraction has no equivalent:
-`STRUCTURED_DOCUMENT_VERSION` (`recall/extraction.py:143`) versions recall's own block shape and
+`STRUCTURED_DOCUMENT_VERSION` (`recall/extraction.py:146`) versions recall's own block shape and
 says nothing about the libraries.
 
 So record, per extracted source:
@@ -819,7 +819,7 @@ there for the same reason. Naming it here so the trade is chosen rather than inh
 
 ### A defect found while measuring
 
-`.msg` appears in the LibreOffice branch at `recall/extraction.py:184` but is **unreachable**:
+`.msg` appears in the LibreOffice branch at `recall/extraction.py:187` but is **unreachable**:
 `extract_document` matches `.msg` earlier at `:176`. A deployment without `python-oxmsg` therefore
 gets an extraction error where the code appears to offer a fallback. Filed separately; it is not
 part of this design.

@@ -73,7 +73,12 @@ _INDEX_CONNECTIONS: ContextVar[Mapping[PgVectorStore, psycopg.Connection] | None
     "recall_index_connections", default=None
 )
 
-_NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
+#: A figure in a query or a table cell: a thousands-grouped number (`1,234,567.5`) first, so it
+#: is read whole, else a plain one with an optional decimal point or comma.
+_NUMERIC_TOKEN_RE = re.compile(
+    r"(?<![\w.])[+-]?(?:[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?|\d+(?:[.,]\d+)?)%?(?![\w.])"
+)
+_GROUPED_NUMBER_RE = re.compile(r"[+-]?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?%?")
 
 
 class _CountingCursor:
@@ -170,11 +175,24 @@ def _observed_db_call(connection: Any, operation: Callable[[Any], _T]) -> _T:
     return operation(_CountingConnection(connection, trace))
 
 
+def _normalize_numeric(value: str) -> str:
+    """One figure as the boost compares it: `1,500` and `1,234,567.5` are grouped, `1,5` decimal.
+
+    A comma after a nonzero lead of one to three digits and followed by groups of exactly three
+    digits is a thousands separator and is dropped (`0,500` stays the decimal `0.500`); any other
+    comma is a decimal comma and becomes a point. `recall.extraction` and
+    `recall.lite.store` copy this rule, because the index side and the query side must agree.
+    """
+    if _GROUPED_NUMBER_RE.fullmatch(value):
+        return value.replace(",", "")
+    return value.replace(",", ".")
+
+
 def _numeric_query_terms(text: str) -> list[str]:
     """Return normalized numeric terms for the table exact-match boost."""
     terms: list[str] = []
     for value in _NUMERIC_TOKEN_RE.findall(text):
-        normalized = value.replace(",", ".")
+        normalized = _normalize_numeric(value)
         if normalized not in terms:
             terms.append(normalized)
     return terms
