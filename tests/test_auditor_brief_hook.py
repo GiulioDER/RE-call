@@ -220,8 +220,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from collections.abc import Callable
@@ -1577,3 +1579,418 @@ def test_the_probe_constant_is_set() -> None:
     node id tests/test_auditor_brief_hook.py::test_the_probe_constant_is_set; failed on
     `assert False is True` at the assertion below."""
     assert auditor_brief.FILE_LEVEL_RANKS_AS_FILE_ONLY is True
+
+
+# --- CCA's memory holdout (Task 2c) ------------------------------------------------------------
+#
+# Invariant: a launch inside a CCA run whose `memory-arm.json` names arm `holdout` gets no block,
+# even with the empty prompt the Codex bridge sends; every other state (arm `brief`, no open run,
+# an unreadable arm file) is briefed exactly as before. The failure caught: RE-call handing a
+# holdout run's auditors the very records CCA withheld, which voids the comparison.
+
+
+def _cca_run(
+    root: Path,
+    run_id: str = "r1",
+    arm: str | None = "holdout",
+    raw: str | None = None,
+    *,
+    mode: str | None = None,
+    layers: dict[str, Any] | None = None,
+) -> None:
+    """CCA's on-disk state for an open run `run_id` at `root`, and its arm file unless `arm` and
+    `raw` are both None. `raw`, when given, is the arm file's whole text. `mode` and `layers` are
+    written into the state only when given (CCA reads a missing mode as DIFF)."""
+    audits = root / ".claude" / "audits"
+    audits.mkdir(parents=True, exist_ok=True)
+    state: dict[str, Any] = {"run_id": run_id, "tier": "STANDARD"}
+    if mode is not None:
+        state["mode"] = mode
+    if layers is not None:
+        state["layers"] = layers
+    (audits / "run-state.json").write_text(json.dumps(state), encoding="utf-8")
+    if arm is None and raw is None:
+        return
+    run = audits / "runs" / run_id
+    run.mkdir(parents=True, exist_ok=True)
+    text = raw if raw is not None else json.dumps({"run_id": run_id, "arm": arm, "rule": "r"})
+    (run / "memory-arm.json").write_text(text, encoding="utf-8")
+
+
+def test_holdout_arm_skips_the_block(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host, like the three below: against
+    origin/master `9a9fd195b` (no holdout check), node id
+    tests/test_auditor_brief_hook.py::test_holdout_arm_skips_the_block failed on "a holdout run's
+    auditor was briefed". Targets `cca_holdout_run` and its use in `pre_agent`."""
+    _cca_run(repo, arm="holdout")
+    assert _run(_payload(repo, prompt=""), monkeypatch, capsys) is None, "a holdout run's auditor was briefed"
+    assert "CCA run r1 is in the memory holdout arm" in env.read_text(encoding="utf-8")
+
+
+def test_brief_arm_is_unchanged(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31: mutation of `cca_holdout_run` to return the run id for any
+    readable arm file (the `arm.get("arm") == CCA_HOLDOUT_ARM` clause removed); node id
+    tests/test_auditor_brief_hook.py::test_brief_arm_is_unchanged failed on "the hook printed
+    nothing"."""
+    _cca_run(repo, arm="brief")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+def test_no_open_run_is_unchanged(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31: mutation of `cca_holdout_run`'s fail-open handler to
+    answer `"?"` instead of None (so a missing state file reads as a holdout); node id
+    tests/test_auditor_brief_hook.py::test_no_open_run_is_unchanged failed on "the hook printed
+    nothing"."""
+    assert not (repo / ".claude").exists()
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+def test_unreadable_arm_fails_open(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31: the same mutation as `test_no_open_run_is_unchanged` (the
+    fail-open handler answers `"?"`), so invalid JSON reads as a holdout; node id
+    tests/test_auditor_brief_hook.py::test_unreadable_arm_fails_open failed on "the hook printed
+    nothing"."""
+    _cca_run(repo, raw="{not json")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+# Fix round 1 (review of ad6bf0e9e). Invariants and the failure each catches:
+# - a state file reached through a link is never read (SEC-002): a committed link to a UNC path
+#   would make Windows authenticate to that host on every launch;
+# - a run open in a linked worktree is seen from the main checkout, where Codex starts auditors;
+# - open runs that disagree on the arm fail open with an "ambiguous" log; open runs that agree on
+#   holdout withhold the block;
+# - an arm file naming another run is not this run's arm.
+
+
+def _worktree(repo: Path, name: str) -> Path:
+    """A linked worktree of `repo` beside it, on a new branch."""
+    path = repo.parent / name
+    _git(repo, "worktree", "add", "-q", "-b", name, str(path))
+    return path
+
+
+def test_a_linked_state_file_is_never_read(
+    repo: Path,
+    env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: against `ad6bf0e9e` (`read_text`
+    follows the link), node id tests/test_auditor_brief_hook.py::test_a_linked_state_file_is_never_read
+    failed on "the hook printed nothing": the linked state was read and named a holdout run.
+    Targets `_read_repo_json`'s `_unlinked_lstat` check."""
+    _cca_run(repo, arm="holdout")
+    outside = tmp_path / "outside-state.json"
+    state = repo / ".claude" / "audits" / "run-state.json"
+    outside.write_text(state.read_text(encoding="utf-8"), encoding="utf-8")
+    state.unlink()
+    try:
+        state.symlink_to(outside)
+    except OSError:
+        pytest.skip("no symlink privilege on this platform")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+def test_holdout_in_a_linked_worktree_is_seen_from_the_main_checkout(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: against `ad6bf0e9e` (the cwd's top
+    level only), node id
+    tests/test_auditor_brief_hook.py::test_holdout_in_a_linked_worktree_is_seen_from_the_main_checkout
+    failed on "a holdout run in a worktree was briefed". Targets `_cca_roots`."""
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout")
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "a holdout run in a worktree was briefed"
+
+
+def test_open_runs_that_disagree_fail_open(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: mutation of `cca_holdout_run` to
+    answer the holdout run whenever any open run is in the holdout arm (the disagreement branch
+    replaced by `if False:` and the arm test by `CCA_HOLDOUT_ARM in arms.values()`); node id
+    tests/test_auditor_brief_hook.py::test_open_runs_that_disagree_fail_open failed on "the hook
+    printed nothing"."""
+    _cca_run(repo, run_id="r1", arm="brief")
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    assert "ambiguous" in env.read_text(encoding="utf-8")
+
+
+def test_open_runs_that_agree_on_holdout_skip_the_block(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: mutation of the disagreement check
+    to `len(arms) > 1` (any two open runs counted as ambiguous); node id
+    tests/test_auditor_brief_hook.py::test_open_runs_that_agree_on_holdout_skip_the_block failed
+    on "two holdout runs were briefed"."""
+    _cca_run(repo, run_id="r1", arm="holdout")
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout")
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "two holdout runs were briefed"
+
+
+def test_an_arm_file_naming_another_run_is_not_this_runs_arm(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: the `arm.get("run_id") == run_id`
+    clause deleted from `cca_holdout_run`; node id
+    tests/test_auditor_brief_hook.py::test_an_arm_file_naming_another_run_is_not_this_runs_arm
+    failed on "the hook printed nothing"."""
+    _cca_run(repo, run_id="r1", raw=json.dumps({"run_id": "r9", "arm": "holdout", "rule": "r"}))
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+# Fix round 2 (review of f5552899f). Invariants and the failure each catches:
+# - a `worktree` line that is not a plain absolute local path (UNC by either separator, relative,
+#   or on Windows a colon past the drive) is refused before any filesystem call, because
+#   `_unlinked_lstat` does not check its root and a UNC lookup makes Windows authenticate;
+# - a git that cannot be started leaves `cwd` itself as the root, so a holdout there still holds.
+
+_UNC_LINES = b"worktree //attacker.invalid/share/wt\n\nworktree \\\\attacker.invalid\\share\\wt2\n\n"
+
+
+def test_a_unc_worktree_line_is_never_looked_up(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: against `f5552899f` (every
+    porcelain path used as a root), node id
+    tests/test_auditor_brief_hook.py::test_a_unc_worktree_line_is_never_looked_up failed on "a
+    UNC worktree root was looked up". Targets `_worktree_root` and its use in `_cca_roots`."""
+    real_finish, real_lstat = auditor_brief._finish_git, os.lstat
+    touched: list[str] = []
+
+    def finish(process: Any, deadline: float, data: bytes | None = None) -> bytes:
+        out = real_finish(process, deadline, data)
+        return out + _UNC_LINES if "worktree" in process.args else out
+
+    def lstat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if "attacker.invalid" in os.fspath(path):
+            touched.append(os.fspath(path))
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(auditor_brief, "_finish_git", finish)
+    monkeypatch.setattr(os, "lstat", lstat)
+    _cca_run(repo, arm="brief")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    assert not touched, "a UNC worktree root was looked up"
+
+
+@pytest.mark.parametrize(
+    ("text", "windows", "kept"),
+    [
+        ("/home/u/wt", False, True),
+        ("//host/share/wt", False, False),
+        ("\\\\host\\share\\wt", False, False),
+        ("relative/wt", False, False),
+        ("C:/Users/u/wt", True, True),
+        ("C:\\Users\\u\\wt", True, True),
+        ("//host/share/wt", True, False),
+        ("\\\\host\\share\\wt", True, False),
+        ("\\\\?\\C:\\wt", True, False),
+        ("\\Users\\u\\wt", True, False),
+        ("C:/Users/u/wt:stream", True, False),
+        ("wt", True, False),
+    ],
+)
+def test_worktree_root_accepts_only_plain_absolute_paths(text: str, windows: bool, kept: bool) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: mutation of `_worktree_root` to
+    `return Path(text)` before its checks; node id
+    tests/test_auditor_brief_hook.py::test_worktree_root_accepts_only_plain_absolute_paths failed
+    on the `is not None` equality for every refused case."""
+    assert (auditor_brief._worktree_root(text, windows=windows) is not None) is kept
+
+
+def test_a_missing_git_still_honours_a_holdout_at_cwd(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: against `f5552899f` (the `OSError`
+    from starting git reached `cca_holdout_run`'s broad catch), node id
+    tests/test_auditor_brief_hook.py::test_a_missing_git_still_honours_a_holdout_at_cwd failed on
+    "a holdout run at cwd was briefed without git". Git fails to start only on the holdout check's
+    thread, so the block itself is still built."""
+    real_start = auditor_brief._start_git
+
+    def start(cwd: str, *args: str, stdin: bool = False) -> Any:
+        if threading.current_thread().name == "recall-auditor-brief-holdout":
+            raise FileNotFoundError("git")
+        return real_start(cwd, *args, stdin=stdin)
+
+    monkeypatch.setattr(auditor_brief, "_start_git", start)
+    _cca_run(repo, arm="holdout")
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "a holdout run at cwd was briefed without git"
+
+
+# Final review fixes (review of 03cbc2df2). Invariants and the failure each catches:
+# - I1: only a run that can be launching L1 auditors votes on the arm, that is a DIFF run (a
+#   missing mode is DIFF) whose `layers` holds no `L1`. Caught: an open HUNT run, or a DIFF run
+#   past L1, both of which CCA records with arm `brief`, outvoting the holdout run that is
+#   actually dispatching, so the hook logs "ambiguous" and briefs a held-out run.
+# - I2: each silent fail-open in the holdout check (a failed `git worktree list`, the deadline
+#   cut in the root loop) is logged with the cwd. Caught: a holdout skipped with no trace.
+# - M2: the outer "did not finish within the budget" line names the cwd.
+
+
+def test_an_open_hunt_run_does_not_outvote_a_diff_holdout(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (every open run
+    votes), node id
+    tests/test_auditor_brief_hook.py::test_an_open_hunt_run_does_not_outvote_a_diff_holdout failed
+    on "a holdout run was briefed beside an open HUNT run". Targets the mode check in
+    `_may_launch_l1` and its use in `cca_holdout_run`."""
+    _cca_run(repo, run_id="r1", arm="brief", mode="HUNT", layers={})
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout", mode="DIFF", layers={})
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "a holdout run was briefed beside an open HUNT run"
+    assert "CCA run r2 is in the memory holdout arm" in env.read_text(encoding="utf-8")
+
+
+def test_an_open_run_past_l1_does_not_outvote_a_diff_holdout(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (every open run
+    votes), node id
+    tests/test_auditor_brief_hook.py::test_an_open_run_past_l1_does_not_outvote_a_diff_holdout
+    failed on "a holdout run was briefed beside a run past L1". Targets the layers check in
+    `_may_launch_l1`; the entries have the shape CCA's `record` stores (keyed by layer name)."""
+    past = {"L0": {"seq": 1, "source": "orchestrator"}, "L1": {"seq": 2, "source": "orchestrator"}}
+    _cca_run(repo, run_id="r1", arm="brief", mode="DIFF", layers=past)
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout")
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "a holdout run was briefed beside a run past L1"
+
+
+def test_two_diff_runs_before_l1_that_disagree_stay_ambiguous(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: mutation of `_may_launch_l1` to
+    `return False` (no run votes), node id
+    tests/test_auditor_brief_hook.py::test_two_diff_runs_before_l1_that_disagree_stay_ambiguous
+    failed on "a disagreement was not logged". Targets the voting filter, which must keep both
+    pre-L1 DIFF runs (one with a lower-case mode, which CCA upper-cases)."""
+    _cca_run(repo, run_id="r1", arm="brief", mode="DIFF", layers={"L0": {"seq": 1}})
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout", mode="diff", layers={})
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    assert "ambiguous" in _log_text(env), "a disagreement was not logged"
+
+
+def test_a_failed_worktree_listing_is_logged_with_the_cwd(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (the failure
+    swallowed into an empty listing), node id
+    tests/test_auditor_brief_hook.py::test_a_failed_worktree_listing_is_logged_with_the_cwd failed
+    on "a failed git worktree list left no trace". Targets the `listing = ""` branch of
+    `_cca_roots`."""
+    real_finish = auditor_brief._finish_git
+
+    def finish(process: Any, deadline: float, data: bytes | None = None) -> bytes:
+        out = real_finish(process, deadline, data)
+        if "worktree" in process.args:
+            raise subprocess.TimeoutExpired(process.args, 1.0)
+        return out
+
+    monkeypatch.setattr(auditor_brief, "_finish_git", finish)
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    log = _log_text(env)
+    assert f"cwd {repo}: git worktree list failed (TimeoutExpired)" in log, (
+        f"a failed git worktree list left no trace: {log!r}"
+    )
+
+
+def test_the_deadline_cut_in_the_root_loop_is_logged_with_the_cwd(env: Path, repo: Path) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (a bare
+    `break`), node id
+    tests/test_auditor_brief_hook.py::test_the_deadline_cut_in_the_root_loop_is_logged_with_the_cwd
+    failed on "the deadline cut left no trace". Targets the deadline `break` in
+    `cca_holdout_run`. A deadline already past still lets git answer (`MIN_GIT_WAIT_SECONDS`), so
+    the loop is reached and cut on its first root."""
+    _cca_run(repo, arm="holdout")
+    assert auditor_brief.cca_holdout_run(str(repo), deadline=time.monotonic() - 1.0) is None
+    log = _log_text(env)
+    assert f"cwd {repo}: the CCA holdout check reached its deadline" in log, (
+        f"the deadline cut left no trace: {log!r}"
+    )
+
+
+def test_the_outer_holdout_timeout_names_the_cwd(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (the line named
+    the agent type only), node id
+    tests/test_auditor_brief_hook.py::test_the_outer_holdout_timeout_names_the_cwd failed on "the
+    holdout timeout line does not name the cwd". Targets the `holdout.wait` log line in
+    `pre_agent`. The brief is still delivered: a slow check never blocks or alters a launch."""
+    release = threading.Event()
+
+    def slow(cwd: str, *, deadline: float) -> str | None:
+        release.wait(10.0)
+        return None
+
+    monkeypatch.setattr(auditor_brief, "cca_holdout_run", slow)
+    monkeypatch.setenv("RECALL_AUDITOR_BRIEF_BUDGET", "2")
+    try:
+        assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    finally:
+        release.set()
+    log = _log_text(env)
+    assert f"bug-auditor: cwd {repo}: the CCA holdout check did not finish" in log, (
+        f"the holdout timeout line does not name the cwd: {log!r}"
+    )

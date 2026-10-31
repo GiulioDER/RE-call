@@ -1,4 +1,8 @@
-"""Dependency free summaries for paired benchmark records."""
+"""Dependency free summaries for paired benchmark records.
+
+Prior work: the existing paired records in ``benchmarks/agent_ab/schema.py``;
+this module summarizes their metrics and task/variant pairs.
+"""
 
 from __future__ import annotations
 
@@ -102,11 +106,16 @@ def summarize_recall_overhead(records: list[SessionRecord]) -> dict[str, Any]:
 
 
 def summarize_pairs(records: list[SessionRecord]) -> dict[str, Any]:
-    """Summarize complete paired records and preserve incomplete task IDs."""
+    """Summarize complete pairs, preserving incomplete IDs and refusing duplicate arms."""
 
     by_task: dict[str, dict[str, SessionRecord]] = defaultdict(dict)
     for record in records:
-        by_task[record.task_id][record.variant] = record
+        arms = by_task[record.task_id]
+        if record.variant in arms:
+            raise ValueError(
+                f"duplicate record for task {record.task_id!r}, variant {record.variant!r}"
+            )
+        arms[record.variant] = record
 
     pairs: list[tuple[SessionRecord, SessionRecord]] = []
     incomplete: list[str] = []

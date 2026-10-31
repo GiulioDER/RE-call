@@ -4545,6 +4545,7 @@ desktop = [
     { name = "fastembed" },
     { name = "keyring" },
     { name = "mcp" },
+    { name = "psycopg-pool" },
     { name = "pyside6" },
 ]
 dev = [
@@ -4678,6 +4679,7 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'hosted'", specifier = ">=10" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
     { name = "psycopg-pool", marker = "extra == 'agent'", specifier = ">=3.2" },
+    { name = "psycopg-pool", marker = "extra == 'desktop'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'dev'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'hosted'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'mcp'", specifier = ">=3.2" },

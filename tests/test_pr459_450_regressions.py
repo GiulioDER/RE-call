@@ -98,6 +98,33 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _survivors(pids: list[int], within_s: float = 2.0) -> dict[int, str]:
+    """The recorded processes still alive after `within_s`, each with its /proc state.
+
+    A single check made the instant the adapter returns failed intermittently in CI (3 of 4
+    cases on 2026-10-31, none in 100 runs on an idle host nor in a later CI run). The likely
+    cause, not proven, is that SIGKILL is delivered asynchronously and a killed process can
+    still look alive for a moment after its pipes close. Polling for a bounded time keeps the
+    invariant: without the process group kill the fixture's child sleeps 5 s and is reported.
+    """
+    deadline = time.monotonic() + within_s
+    alive = [pid for pid in pids if _alive(pid)]
+    while alive and time.monotonic() < deadline:
+        time.sleep(0.02)
+        alive = [pid for pid in alive if _alive(pid)]
+    return {pid: _diagnose(pid) for pid in alive}
+
+
+def _diagnose(pid: int) -> str:
+    """The process state, parent, group and command of a survivor, for the failure message."""
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()[:80]
+        return f"state={fields[0]} ppid={fields[1]} pgid={fields[2]} cmd={cmd}"
+    except OSError as error:
+        return f"unreadable: {error}"
+
+
 def _kill_recorded(path: Path) -> None:
     if not path.exists():
         return
@@ -111,7 +138,14 @@ def _kill_recorded(path: Path) -> None:
 @POSIX
 @pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "cancellation"])
 def test_claude_adapter_reaps_spawned_work(tmp_path, monkeypatch, cancel):
-    """BUG-004: baseline waits on descendant pipes or leaves a cancelled CLI alive."""
+    """BUG-004: baseline waits on descendant pipes or leaves a cancelled CLI alive.
+
+    Red proof for the bounded poll in `_survivors`, recorded 2026-10-31 on the test host: in
+    `_stop_process_tree`, `os.killpg` replaced by `process.kill()` (parent only) and the drain
+    timeout cut from 5 to 0.1 s, so the adapter returns at once with the fixture's child alive.
+    Both cases failed on "timeout/cancellation must reap the CLI tree", naming the child
+    (state=S, ppid=1). Removing `killpg` alone fails the elapsed assertion instead.
+    """
     from benchmarks.agent_ab import claude_exec
     from benchmarks.agent_ab.schema import RECALL_ON
 
@@ -149,7 +183,8 @@ def test_claude_adapter_reaps_spawned_work(tmp_path, monkeypatch, cancel):
         elapsed = time.monotonic() - started
         recorded = json.loads(pids.read_text())
         assert elapsed < 3, "a timeout must not wait for surviving descendant pipes"
-        assert not any(_alive(pid) for pid in recorded), "timeout/cancellation must reap the CLI tree"
+        survivors = _survivors(recorded)
+        assert not survivors, f"timeout/cancellation must reap the CLI tree: {survivors}"
     finally:
         _kill_recorded(pids)
 

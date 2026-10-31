@@ -36,7 +36,9 @@ What it reads, and what it does not:
    stops waiting for, so even a source that hangs cannot hold the launch.
 4. **It is quiet for everything else.** A subagent type outside the auditor list, or a prompt that
    already carries one of CCA's brief headings or this hook's marker, passes untouched, so no
-   auditor sees the context twice.
+   auditor sees the context twice. So is a launch inside a CCA run whose `memory-arm.json` names
+   the `holdout` arm (`cca_holdout_run`): CCA withheld its brief from that run on purpose, and the
+   Codex bridge sends an empty prompt, so the heading check alone cannot see it.
 
 The block's benefit is unmeasured; it ships as context, and no benefit is claimed until a
 pre-registered comparison supports one.
@@ -980,6 +982,149 @@ def build_block(cwd: str, prompt: str, *, deadline: float, now: datetime | None 
     return render(entries, now=instant, retraction_files=retractions, unnamed_files=unnamed)
 
 
+# --- CCA's memory holdout ----------------------------------------------------------------------
+
+
+#: Where CCA keeps the open run's state and each run's memory arm, relative to the project root.
+#: Read from CCA's on-disk layout, never by importing CCA: `cca_gate_core.state_file`
+#: (`.claude/audits/run-state.json`, key `run_id`), `deferred.runs_dir` and `holdout.ARM_FILE`.
+CCA_STATE = (".claude", "audits", "run-state.json")
+CCA_RUNS = (".claude", "audits", "runs")
+CCA_ARM_FILE = "memory-arm.json"
+CCA_HOLDOUT_ARM = "holdout"
+#: CCA's own run id pattern (`pipeline_state._RUN_ID`), so a state file cannot name a path.
+_CCA_RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+#: At most this many candidate roots are read, so a repository with hundreds of worktrees cannot
+#: spend the budget on them.
+MAX_CCA_ROOTS = 256
+
+
+def _read_repo_json(root: Path, parts: tuple[str, ...]) -> Any:
+    """The JSON at `root` joined with `parts`, or None when it is missing, unreadable, over
+    `MAX_FILE_BYTES`, not a regular file, or reached through a link (`_unlinked_lstat`, SEC-002):
+    these files sit inside the audited repository, which can commit a link to a UNC path."""
+    result = _unlinked_lstat(root, list(parts))
+    if result is None or not stat.S_ISREG(result.st_mode) or result.st_size > MAX_FILE_BYTES:
+        return None
+    try:
+        return json.loads(root.joinpath(*parts).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+_WINDOWS_ROOT_RE = re.compile(r"[A-Za-z]:/")
+
+
+def _worktree_root(text: str, *, windows: bool = os.name == "nt") -> Path | None:
+    """`text`, a `worktree` line of `git worktree list --porcelain`, as a root, or None when it is
+    not a plain absolute local path. Decided on the string alone, before any filesystem call:
+    `_unlinked_lstat` never checks its root, and a crafted `.git/worktrees/*/gitdir` can make git
+    print a UNC path, which Windows would authenticate to on the first lookup. Refused: a path
+    that is not absolute, one starting with two separators (either kind), and on Windows one with a
+    colon anywhere but after the drive letter."""
+    normal = text.replace("\\", "/")
+    if not text or "\x00" in text or normal.startswith("//"):
+        return None
+    if windows:
+        if not _WINDOWS_ROOT_RE.match(normal) or ":" in normal[2:]:
+            return None
+    elif not normal.startswith("/"):
+        return None
+    return Path(text)
+
+
+def _cca_roots(cwd: str, deadline: float) -> list[Path]:
+    """The roots a CCA run for `cwd` may be open in: git's top level for `cwd` (else `cwd`
+    itself), then every worktree of that repository (`_worktree_root` refuses a line that is not a
+    plain local path). Codex starts an auditor in the main checkout while CCA runs in a linked
+    worktree, so the top level alone misses most Codex runs. Without git (it cannot be started)
+    the only root is `cwd`."""
+    roots = [Path(cwd)]
+    processes: list[subprocess.Popen[bytes]] = []
+    try:
+        try:
+            processes.append(_start_git(cwd, "rev-parse", "--show-toplevel"))
+            processes.append(_start_git(cwd, "worktree", "list", "--porcelain"))
+        except OSError:
+            return roots  # no git to ask: `cwd` itself, as before worktrees were read
+        try:
+            top = _finish_git(processes[0], deadline).decode("utf-8", "replace").strip()
+            if top:
+                roots = [Path(top)]
+        except subprocess.SubprocessError:
+            pass  # not a git work tree, or git is slow: the root is `cwd` itself
+        try:
+            listing = _finish_git(processes[1], deadline).decode("utf-8", "replace")
+        except subprocess.SubprocessError as error:
+            _log(
+                f"cwd {cwd}: git worktree list failed ({type(error).__name__}); "
+                "CCA runs in other worktrees are not checked"
+            )
+            listing = ""
+        for line in listing.splitlines():
+            if line.startswith("worktree ") and (root := _worktree_root(line[len("worktree "):])) is not None:
+                roots.append(root)
+    finally:
+        _stop(processes)
+    unique: dict[str, Path] = {}
+    for root in roots:
+        unique.setdefault(os.path.normcase(os.path.abspath(root)), root)
+    return list(unique.values())[:MAX_CCA_ROOTS]
+
+
+def _may_launch_l1(state: dict[str, Any]) -> bool:
+    """True when the CCA run state `state` can still be dispatching L1 auditors: its `mode` is
+    DIFF (a missing mode is DIFF, as `PipelineState.from_json` reads it) and its `layers`, the
+    object keyed by recorded layer name, holds no `L1`. A `layers` that is missing or not an
+    object is read as no layer recorded, so the run still votes."""
+    if str(state.get("mode", "DIFF")).upper() != "DIFF":
+        return False
+    layers = state.get("layers")
+    return not (isinstance(layers, dict) and "L1" in layers)
+
+
+def cca_holdout_run(cwd: str, *, deadline: float) -> str | None:
+    """The id of the CCA run open for `cwd` when its `memory-arm.json` names the `holdout` arm,
+    else None. Never raises.
+
+    CCA withholds its prior-bugs brief from about one DIFF run in three to measure what memory
+    adds; briefing that run's auditors here would hand them the records CCA withheld. A run is open
+    at a candidate root (`_cca_roots`) when its state names a valid run id and that run's arm file
+    names the same run id. Only a run that can be launching L1 auditors votes (`_may_launch_l1`):
+    a HUNT run or one past L1 is open in some worktree for hours and must not outvote the run
+    actually dispatching. When every voting run is in the holdout arm, the answer is their ids;
+    when voting runs disagree, the arm is ambiguous, which is logged and answers None. Everything
+    else (no open run, unreadable JSON, a link, any other arm) answers None, so the brief is
+    delivered as before.
+    """
+    try:
+        arms: dict[str, str] = {}
+        for root in _cca_roots(cwd, deadline):
+            if time.monotonic() > deadline:
+                _log(f"cwd {cwd}: the CCA holdout check reached its deadline before reading every worktree")
+                break
+            state = _read_repo_json(root, CCA_STATE)
+            run_id = state.get("run_id") if isinstance(state, dict) else None
+            if not isinstance(run_id, str) or not _CCA_RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
+                continue
+            if not _may_launch_l1(state):
+                continue
+            arm = _read_repo_json(root, (*CCA_RUNS, run_id, CCA_ARM_FILE))
+            if isinstance(arm, dict) and arm.get("run_id") == run_id:
+                arms[run_id] = str(arm.get("arm"))
+        if not arms:
+            return None
+        if len(set(arms.values())) > 1:
+            listed = ", ".join(f"{run_id} {arm}" for run_id, arm in sorted(arms.items()))
+            _log(f"CCA open runs disagree on the memory arm ({listed}): ambiguous, so no holdout is applied")
+            return None
+        if next(iter(arms.values())) == CCA_HOLDOUT_ARM:
+            return ", ".join(sorted(arms))
+    except Exception:  # BROAD-CATCH: fail-open  (an unreadable run is not a holdout)
+        return None
+    return None
+
+
 # --- the event ---------------------------------------------------------------------------------
 
 
@@ -1016,10 +1161,15 @@ def pre_agent(payload: dict[str, Any]) -> int:
             _log(f"{agent_type}: the event carries no cwd; prompt left unchanged")
             return 0
         budget = _budget()
+        deadline = started + budget - INNER_MARGIN
+        # Beside the block rather than before it, so its git call costs the launch no extra time.
+        holdout: _Background[str | None] = _Background(
+            lambda: cca_holdout_run(cwd, deadline=deadline), "recall-auditor-brief-holdout"
+        )
         # The inner bounds fire first, so a slow stage is logged by name; the wait below is the
         # backstop for a stage nothing inside bounds.
         worker: _Background[str] = _Background(
-            lambda: build_block(cwd, prompt, deadline=started + budget - INNER_MARGIN), "recall-auditor-brief"
+            lambda: build_block(cwd, prompt, deadline=deadline), "recall-auditor-brief"
         )
         if not worker.wait(started + budget - time.monotonic()):
             _log(f"{agent_type}: budget of {budget:.2f}s exceeded; prompt left unchanged")
@@ -1030,6 +1180,11 @@ def pre_agent(payload: dict[str, Any]) -> int:
             _log(f"{agent_type}: {type(error).__name__}: {error}; prompt left unchanged")
             return 0
         if not block:
+            return 0
+        if not holdout.wait(started + budget - time.monotonic()):
+            _log(f"{agent_type}: cwd {cwd}: the CCA holdout check did not finish within the budget; brief delivered")
+        elif (run_id := holdout.value()) is not None:
+            _log(f"{agent_type}: CCA run {run_id} is in the memory holdout arm; prompt left unchanged")
             return 0
         updated = {**tool_input, "prompt": f"{prompt.rstrip()}\n\n{block}\n"}
         # `ensure_ascii` left at its default: memo text is full of non-ASCII and stdout may be cp1252.
@@ -1078,6 +1233,7 @@ __all__ = [
     "auditor_types",
     "build_block",
     "cache_path",
+    "cca_holdout_run",
     "changed_lines",
     "finish_scope",
     "log_path",

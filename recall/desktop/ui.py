@@ -1172,7 +1172,7 @@ if QApplication is not None:
             # database that is merely unreachable takes its whole timeout to say so — on the GUI
             # thread that is the window freezing with no way to tell it apart from a crash.
             self._run(
-                lambda: probe_database(dsn),
+                lambda: probe_database(dsn, require_create=False),
                 self._database_tested,
                 self._database_test_failed,
             )
@@ -1199,7 +1199,7 @@ if QApplication is not None:
             # serve from is the silent-nothing failure with an extra step: the app restarts, the
             # runtime fails, and the setting that caused it looks like the one the user chose.
             self._run(
-                lambda: probe_database(dsn),
+                lambda: probe_database(dsn, require_create=False),
                 lambda report: self._save_checked(report, mode, dsn),
                 self._database_save_failed,
             )

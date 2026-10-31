@@ -60,6 +60,7 @@ import shutil
 import sys
 
 from recall.db_constants import DEFAULT_TABLE
+from recall.dsn_security import redacted_dsn
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -156,15 +157,8 @@ def settings_path() -> Path:
 
 
 def _redacted(dsn: str) -> str:
-    """A DSN safe to print. The password is the only part worth hiding and the only part shown."""
-    if "://" not in dsn:
-        return dsn
-    scheme, _, rest = dsn.partition("://")
-    if "@" not in rest:
-        return dsn
-    userinfo, _, host = rest.rpartition("@")
-    user, sep, _password = userinfo.partition(":")
-    return f"{scheme}://{user}{':***' if sep else ''}@{host}"
+    """Use the shared safe presentation for URI and keyword connection strings."""
+    return redacted_dsn(dsn)
 
 
 # --------------------------------------------------------------------------------------------
@@ -452,7 +446,7 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                     {
                         "type": "command",
                         "command": python_executable,
-                        "args": ["-m", HOOK_MODULE, "session-start"],
+                        "args": ["-P", "-m", HOOK_MODULE, "session-start"],
                         "timeout": SESSION_START_TIMEOUT_SECONDS,
                         "statusMessage": "Recalling project memory",
                     }
@@ -472,7 +466,7 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                     {
                         "type": "command",
                         "command": python_executable,
-                        "args": ["-m", HOOK_MODULE, "pre-compact"],
+                        "args": ["-P", "-m", HOOK_MODULE, "pre-compact"],
                         # Async, and never blocking. Exit code 2 on this event BLOCKS compaction,
                         # which would let a memory tool wedge a session whose context window is
                         # already full. Async also means a cold embedder cannot delay the
@@ -510,7 +504,7 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                     {
                         "type": "command",
                         "command": python_executable,
-                        "args": ["-m", HOOK_MODULE, "pre-tool-use"],
+                        "args": ["-P", "-m", HOOK_MODULE, "pre-tool-use"],
                         "timeout": PRE_TOOL_USE_TIMEOUT_SECONDS,
                     }
                 ],
@@ -529,7 +523,7 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                     {
                         "type": "command",
                         "command": python_executable,
-                        "args": ["-m", HOOK_MODULE, "post-tool-use-failure"],
+                        "args": ["-P", "-m", HOOK_MODULE, "post-tool-use-failure"],
                         "timeout": POST_TOOL_USE_FAILURE_TIMEOUT_SECONDS,
                     }
                 ],
@@ -569,7 +563,7 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                     {
                         "type": "command",
                         "command": python_executable,
-                        "args": ["-m", HOOK_MODULE, "session-end"],
+                        "args": ["-P", "-m", HOOK_MODULE, "session-end"],
                         # SessionEnd cannot block termination, so a synchronous index is a promise
                         # the client is not obliged to keep. Async says so honestly, and the next
                         # session's start reconciles anything that was cut short.
@@ -628,6 +622,7 @@ def install_hooks(
     *,
     dsn: str,
     tenant: str = "default",
+    table: str = DEFAULT_TABLE,
     embedder: str = "fastembed",
     write_time: bool = True,
     write_time_connection_mode: str = "relay",
@@ -668,6 +663,7 @@ def install_hooks(
     _write_hook_config(
         dsn=dsn,
         tenant=tenant,
+        table=table,
         embedder=embedder,
         write_time=write_time,
         write_time_connection_mode=write_time_connection_mode,

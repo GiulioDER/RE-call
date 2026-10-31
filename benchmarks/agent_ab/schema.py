@@ -164,10 +164,17 @@ class SessionRecord:
     def from_mapping(cls, value: Mapping[str, Any]) -> "SessionRecord":
         """Construct a record from a runner result or a JSON object."""
 
+        success = value["success"]
+        abstained = value.get("abstained", False)
+        if not isinstance(success, bool):
+            raise TypeError("success must be a bool")
+        if not isinstance(abstained, bool):
+            raise TypeError("abstained must be a bool")
+
         return cls(
             task_id=str(value["task_id"]),
             variant=str(value["variant"]),
-            success=bool(value["success"]),
+            success=success,
             user_input=str(value.get("user_input", "")),
             response=str(value.get("response", "")),
             reference=value.get("reference"),
@@ -190,7 +197,7 @@ class SessionRecord:
             wall_time_ms=value.get("wall_time_ms"),
             system_cost_usd=value.get("system_cost_usd"),
             evaluator_cost_usd=value.get("evaluator_cost_usd"),
-            abstained=bool(value.get("abstained", False)),
+            abstained=abstained,
             trust_verdicts=_tuple_of_strings(value.get("trust_verdicts"), "trust_verdicts"),
             error=value.get("error"),
             metadata=value.get("metadata", {}),

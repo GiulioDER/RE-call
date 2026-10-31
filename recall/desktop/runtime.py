@@ -6,9 +6,12 @@ import asyncio
 import base64
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 from abc import ABC, abstractmethod
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -52,50 +55,107 @@ class SdkMcpGateway:
         #: `RECALL_TENANT` differs between two servers reading the same database.
         self.env = env
         self._closed = False
+        self._lock = threading.Lock()
+        self._requests: queue.Queue[tuple[str, dict[str, Any], Future[Any]] | None] = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._task: asyncio.Task[Any] | None = None
+        self._wake: asyncio.Event | None = None
+        self._pending: set[Future[Any]] = set()
+        self._failure: BaseException | None = None
 
     def call(self, name: str, arguments: dict[str, Any]) -> Any:
-        if self._closed:
-            raise RuntimeErrorBase("MCP session is closed")
-        return asyncio.run(self._call(name, arguments))
+        with self._lock:
+            if self._closed:
+                raise RuntimeErrorBase("MCP session is closed")
+            if self.command is None:
+                remote = True
+            else:
+                remote = False
+                if self._failure is not None:
+                    raise RuntimeErrorBase(_legible(self._failure)) from self._failure
+                request: Future[Any] = Future()
+                self._pending.add(request)
+                self._requests.put((name, arguments, request))
+                if self._thread is None:
+                    self._thread = threading.Thread(target=self._run_stdio, daemon=True)
+                    self._thread.start()
+                elif self._loop is not None and self._wake is not None:
+                    self._loop.call_soon_threadsafe(self._wake.set)
+        if remote:
+            return asyncio.run(self._call(name, arguments))
+        return request.result()
+
+    def _run_stdio(self) -> None:
+        error: BaseException = RuntimeErrorBase("MCP session is closed")
+        try:
+            asyncio.run(self._serve_stdio())
+        except BaseException as exc:  # BROAD-CATCH: error-translation
+            # Cancellation is a BaseException too. Every waiting caller must receive an
+            # outcome when startup or the transport fails, rather than waiting on a dead thread.
+            error = exc
+        finally:
+            with self._lock:
+                self._failure = error
+                failure = RuntimeErrorBase("MCP session is closed" if self._closed else _legible(error))
+                # Account from submission, including requests removed from the queue before
+                # cancellation reached the owner. No handoff may orphan a waiting caller.
+                for future in self._pending:
+                    if not future.done():
+                        future.set_exception(failure)
+                self._pending.clear()
+                while True:
+                    try:
+                        self._requests.get_nowait()
+                    except queue.Empty:
+                        break
+
+    async def _serve_stdio(self) -> None:
+        """One task owns the SDK contexts for the complete lifetime of this gateway."""
+        from mcp.client.session import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        with self._lock:
+            if self._closed:
+                return
+            self._loop = asyncio.get_running_loop()
+            self._task = asyncio.current_task()
+            wake = self._wake = asyncio.Event()
+        assert self.command is not None
+        environment = os.environ.copy()
+        environment.update(self.env or {})
+        params = StdioServerParameters(command=self.command[0], args=self.command[1:], env=environment)
+        # Leave stderr with the SDK's default descriptor. Capturing it previously lost or
+        # truncated the startup diagnostic; the owned task changes session lifetime only.
+        async with stdio_client(params) as streams:
+            async with ClientSession(*streams) as session:
+                await session.initialize()
+                while True:
+                    # Queue inspection and wake reset share the producer lock, so a request
+                    # cannot arrive between an empty read and clearing its notification.
+                    with self._lock:
+                        if self._closed:
+                            return
+                        try:
+                            pending = self._requests.get_nowait()
+                        except queue.Empty:
+                            wake.clear()
+                            pending = None
+                    if pending is None:
+                        await wake.wait()
+                        continue
+                    name, arguments, future = pending
+                    try:
+                        future.set_result(_tool_result(await session.call_tool(name, arguments)))
+                    except Exception as exc:  # BROAD-CATCH: error-translation
+                        future.set_exception(exc)
+                    finally:
+                        if future.done():
+                            with self._lock:
+                                self._pending.discard(future)
 
     async def _call(self, name: str, arguments: dict[str, Any]) -> Any:
         from mcp.client.session import ClientSession
-
-        if self.command is not None:
-            from mcp.client.stdio import StdioServerParameters, stdio_client
-
-            environment = os.environ.copy()
-            environment.update(self.env or {})
-            params = StdioServerParameters(
-                command=self.command[0], args=self.command[1:], env=environment
-            )
-            # ⚠️ **Capture the child's stderr, or a server that dies at startup says nothing.**
-            # `stdio_client` defaults `errlog` to this process's stderr, so when the server exits
-            # during initialize the client sees only a closed pipe and raises "Connection closed".
-            # Measured against a real database whose `chunks` table was `vector(64)` while the
-            # embedder wanted 384: the server printed `SchemaIncompatible: table 'chunks' uses
-            # vector(64), requested dimension is 384` and the caller was told "Connection closed".
-            # ⚠️ **The server's stderr is NOT captured here, and that was tried.**
-            # `stdio_client` takes an `errlog`, so a dying server's traceback looks capturable, and
-            # the useful line really is in there: measured against a database whose `chunks` table
-            # was `vector(64)` while the embedder wanted 384, the child printed
-            # `SchemaIncompatible: table 'chunks' uses vector(64), requested dimension is 384`.
-            #
-            # Three attempts, none reliable. `io.StringIO` raises `UnsupportedOperation: fileno`,
-            # because the spawner needs a real descriptor. A `TemporaryFile` read inside the
-            # `except` catches the child mid-write and yields frames without the message. Polling
-            # until the size settles still returned output truncated mid-line, because a Python
-            # text wrapper and a child writing to the same descriptor buffer independently.
-            #
-            # So it is left to `errlog`'s default, this process's stderr, where the whole traceback
-            # lands intact and a user can be asked for it. `start()` runs `probe_database` first,
-            # which turns the reachable, pgvector and privilege cases into sentences with advice
-            # before any server is launched — those are the cases worth rescuing, and they are.
-            async with stdio_client(params) as streams:
-                async with ClientSession(*streams) as session:
-                    await session.initialize()
-                    result = await session.call_tool(name, arguments)
-                    return _tool_result(result)
 
         from mcp.client.streamable_http import streamable_http_client
 
@@ -118,7 +178,23 @@ class SdkMcpGateway:
                 return _tool_result(result)
 
     def close(self) -> None:
-        self._closed = True
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._requests.put(None)
+            thread, loop, task = self._thread, self._loop, self._task
+        if thread is not None:
+            # Cancel in the owning task. Idle waiting uses asyncio, never an executor that
+            # could block asyncio.run's shutdown before the pending replies are settled.
+            if loop is not None and task is not None:
+                try:
+                    loop.call_soon_threadsafe(task.cancel)
+                except RuntimeError:
+                    pass  # The worker already completed its context cleanup.
+            thread.join(timeout=5)
+            if thread.is_alive():
+                raise RuntimeErrorBase("MCP session did not close within five seconds")
 
 
 def _tool_result(result: Any) -> Any:
@@ -303,9 +379,9 @@ class LocalDatabaseRuntime(RuntimeManager):
             raise RuntimeErrorBase("this profile has no database to connect to")
 
         # Cheap, read-only, and it turns the three commonest first-run conditions — unreachable,
-        # no pgvector, a role that cannot create objects — into a sentence with advice attached,
+        # no pgvector — into a sentence with advice attached,
         # before a server is started at all.
-        report = probe_database(self.profile.dsn)
+        report = probe_database(self.profile.dsn, require_create=False)
         if not report.usable:
             raise RuntimeErrorBase(
                 "this database cannot serve recall yet.\n" + report.render()
@@ -364,7 +440,11 @@ class LocalDatabaseRuntime(RuntimeManager):
         promoted, decided at install time by `wiring.server_blocks`, and a runtime that asserted it
         from a profile would either relax a gate the corpus has not earned or refuse one it has.
         """
-        return {"RECALL_DSN": self.profile.dsn or "", "RECALL_TENANT": tenant}
+        return {
+            "RECALL_SERVING_DSN": self.profile.dsn or "",
+            "RECALL_DSN": self.profile.dsn or "",
+            "RECALL_TENANT": tenant,
+        }
 
     def _call_for(self, tenant: str, name: str, arguments: dict[str, Any]) -> Any:
         return self._gateway_for(tenant).call(name, arguments)

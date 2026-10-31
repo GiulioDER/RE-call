@@ -283,7 +283,7 @@ def test_the_text_chunker_records_its_name_version_and_both_parameters(
     assert dict(chunker.configuration) == {
         "max_chars": 200,
         "overlap": 20,
-        "document_blocks": "table-row-groups-v1",
+        "document_blocks": "table-row-groups-v2",
     }
 
 
@@ -406,7 +406,7 @@ def test_the_cli_defaults_and_the_request_defaults_describe_the_same_pipeline(
     assert dict(from_cli.configuration) == {
         "max_chars": 800,
         "overlap": 80,
-        "document_blocks": "table-row-groups-v1",
+        "document_blocks": "table-row-groups-v2",
     }
     assert from_cli.algorithm == "recall.chunk_text"
 
@@ -467,7 +467,7 @@ def test_the_cli_accepts_the_smallest_valid_chunking(
     assert dict(chunker.configuration) == {
         "max_chars": 1,
         "overlap": 0,
-        "document_blocks": "table-row-groups-v1",
+        "document_blocks": "table-row-groups-v2",
     }
 
 

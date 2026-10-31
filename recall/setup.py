@@ -1472,6 +1472,7 @@ def run_setup_wizard(
                 dsn=dsn,
                 embedder_name=embedder.value,
                 plan=seed_plan,
+                table=table,
                 env=cloud_keys,
                 print_fn=print_fn,
             )
@@ -1480,16 +1481,23 @@ def run_setup_wizard(
 
     def _run_claude_wiring() -> None:
         try:
-            register_mcp_server(
+            registration = register_mcp_server(
                 dsn=dsn,
                 embedder=embedder.value,
                 table=table or DEFAULT_TABLE,
                 project_root=project_root,
                 print_fn=print_fn,
             )
+            if registration in ("skipped", "already-registered"):
+                print_fn(
+                    "Claude Code wiring is incomplete because MCP registration was refused. "
+                    "Existing hooks were left unchanged."
+                )
+                return
             install_hooks(
                 dsn=dsn,
                 embedder=embedder.value,
+                table=table or DEFAULT_TABLE,
                 write_time=write_time_requested,
                 prompt_time=prompt_time_requested,
                 project_root=project_root,
