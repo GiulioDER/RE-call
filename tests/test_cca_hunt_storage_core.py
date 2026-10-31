@@ -141,6 +141,8 @@ def test_secret_redaction_covers_prefixed_quoted_and_bearer_forms(text: str, lea
         ('token: "a\'b c"', "b c"),
         ("secret='x\"y'", "y"),
         ('token="abc"def', "def"),
+        ("TOKEN=\"abc\"'def'", "def"),
+        ('password="ab"cd"ef"', "ef"),
     ],
 )
 def test_secret_redaction_takes_a_value_containing_quotes_whole(text: str, leaked: str) -> None:
@@ -149,13 +151,77 @@ def test_secret_redaction_takes_a_value_containing_quotes_whole(text: str, leake
     Red proof: on 3daf7cf (this PR's first commit) the value stopped at the first quote, so
     `password=it'sx` came back as `[REDACTED:secret]'sx` and `leaked not in redacted` failed.
     The pre-hunt pattern (`[^\\s,;]+`) redacted these whole. Found by the post-commit security
-    review; the last case (text glued after the closing quote) by the regression review of the
-    first follow-up, against which it was red too. Production line: the value group of
-    `_REDACTIONS["secret"]`.
+    review; `token="abc"def` by the regression review of the first follow-up, and the two
+    multi-segment cases by the security review of 11b14582e, against which each was red too.
+    Production line: the value group of `_REDACTIONS["secret"]`.
     """
     policy = SourceSecurityPolicy((SourceRule("notes", redactions=("secret",)),))
     redacted, _ = policy.redact("notes/a.md", text, AccessContext("alice", "t"))
     assert leaked not in redacted
+
+
+@pytest.mark.parametrize(
+    ("text", "kept"),
+    [
+        ('{"content": "set TOKEN=abc", "ts": "2026-10-31", "note": "public"}', '"ts": "2026-10-31"'),
+        ('{"text": "password=hunter2", "author": "bob", "tags": ["a"]}', '"author": "bob"'),
+        ("print('token=abc', 'the rest is public')", "'the rest is public'"),
+        ('["token=x", "y"]', '"y"]'),
+        ("password=it's a lovely day, isn't it", "a lovely day, isn't it"),
+    ],
+)
+def test_secret_redaction_stops_at_the_end_of_the_value(text: str, kept: str) -> None:
+    """SEC-001 upper bound: the text after a secret inside a JSON or code string survives.
+
+    Red proof: on the second follow-up as first drafted (quoted segments allowed after an
+    unquoted value) the closing quote of the string paired with the next field's quote and the
+    following fields were erased; the regression review caught it before commit. Production line:
+    the value group of `_REDACTIONS["secret"]`.
+    """
+    policy = SourceSecurityPolicy((SourceRule("notes", redactions=("secret",)),))
+    redacted, _ = policy.redact("notes/a.md", text, AccessContext("alice", "t"))
+    assert kept in redacted
+    assert "[REDACTED:secret]" in redacted
+
+
+#: The `secret` pattern as it stood before this hunt, kept only to assert the new one is no
+#: narrower.
+_PRE_HUNT_SECRET = re.compile(r"(?i)\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*[^\s,;]+")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password=it'sx",
+        'token="abc"def',
+        "TOKEN=\"abc\"'def'",
+        'password="ab"cd"ef"',
+        "token: \"unterminated value here",
+        "secret='x\"y' tail",
+        "api_key=a}b]c",
+        'token: "line1\nline2"',
+        "password=\"a b\"'c,d'e;f",
+        "token=''",
+        "the password: please",
+    ],
+)
+def test_secret_redaction_is_no_narrower_than_before_the_hunt(text: str) -> None:
+    """SEC-001 invariant: every span the pre-hunt pattern matched lies inside a new match.
+
+    Checked on spans, not on the output: a narrower match can consume the key, and the pre-hunt
+    pattern cannot find a leftover value whose key is gone. Known exception, not covered: a value
+    glued to a later key and then a spaced separator (`password':a}token =x`, found by fuzzing
+    random strings), where the widened earlier match swallows that later key.
+    Red proof: on 11b14582e `TOKEN="abc"'def'` and `password="ab"cd"ef"` ended at the second
+    quote, inside the pre-hunt span. Production line: the value group of `_REDACTIONS["secret"]`.
+    """
+    from recall.security_policy import _REDACTIONS
+
+    new_spans = [m.span() for m in _REDACTIONS["secret"].finditer(text)]
+    for old in _PRE_HUNT_SECRET.finditer(text):
+        assert any(start <= old.start() and old.end() <= end for start, end in new_spans), (
+            f"pre-hunt span {old.span()} {old.group()!r} is no longer redacted whole in {text!r}"
+        )
 
 
 @pytest.mark.parametrize(

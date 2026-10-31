@@ -79,11 +79,13 @@ _REDACTIONS: dict[str, re.Pattern[str]] = {
     # at least one a digit (a hyphen alone is not enough: "bearer self-identification" is prose).
     # "The bearer of bad news" is prose, and a redaction cannot be undone in the stored text.
     "secret": re.compile(
-        # A quoted value is taken whole, to its closing quote and on through anything glued to it
-        # (`TOKEN="abc"def` is abcdef to a shell); an unquoted one runs to whitespace, a comma or a
-        # semicolon, as it always did, so `password=it'sx` is redacted entirely.
+        # A value that STARTS with a quote is a run of closed quoted segments and ordinary
+        # characters (`TOKEN="abc"'def'` is abcdef to a shell), then whatever the old unquoted run
+        # would still take. Any other value is the old unquoted run `[^\s,;]+`, unchanged: a quote
+        # after it is the closing quote of the string it sits in (`"content": "set TOKEN=abc",`),
+        # and pairing that with the next field's quote would erase the fields that follow.
         r"(?i)(?:\b(?:[a-z0-9]+_)*(?:api[_ -]?key|token|secret|password)[\"']?\s*[:=]\s*"
-        r"(?:(?:\"[^\"\n]*\"|'[^'\n]*')[^\s,;\"'}\]]*|[^\s,;]+)"
+        r"(?:(?:\"[^\"\n]*\"|'[^'\n]*')(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s,;\"'])*[^\s,;]*|[^\s,;]+)"
         r"|\bauthorization[\"']?\s*[:=]\s*[\"']?bearer\s+[^\s,;\"']+"
         r"|\bbearer\s+(?=[a-z0-9._~+/=-]*[0-9])[a-z0-9._~+/=-]{16,})"
     ),
