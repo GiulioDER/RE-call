@@ -994,37 +994,84 @@ CCA_ARM_FILE = "memory-arm.json"
 CCA_HOLDOUT_ARM = "holdout"
 #: CCA's own run id pattern (`pipeline_state._RUN_ID`), so a state file cannot name a path.
 _CCA_RUN_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
+#: At most this many candidate roots are read, so a repository with hundreds of worktrees cannot
+#: spend the budget on them.
+MAX_CCA_ROOTS = 256
+
+
+def _read_repo_json(root: Path, parts: tuple[str, ...]) -> Any:
+    """The JSON at `root` joined with `parts`, or None when it is missing, unreadable, over
+    `MAX_FILE_BYTES`, not a regular file, or reached through a link (`_unlinked_lstat`, SEC-002):
+    these files sit inside the audited repository, which can commit a link to a UNC path."""
+    result = _unlinked_lstat(root, list(parts))
+    if result is None or not stat.S_ISREG(result.st_mode) or result.st_size > MAX_FILE_BYTES:
+        return None
+    try:
+        return json.loads(root.joinpath(*parts).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _cca_roots(cwd: str, deadline: float) -> list[Path]:
+    """The roots a CCA run for `cwd` may be open in: git's top level for `cwd` (else `cwd`
+    itself), then every worktree of that repository. Codex starts an auditor in the main checkout
+    while CCA runs in a linked worktree, so the top level alone misses most Codex runs."""
+    roots = [Path(cwd)]
+    processes: list[subprocess.Popen[bytes]] = []
+    try:
+        processes.append(_start_git(cwd, "rev-parse", "--show-toplevel"))
+        processes.append(_start_git(cwd, "worktree", "list", "--porcelain"))
+        try:
+            top = _finish_git(processes[0], deadline).decode("utf-8", "replace").strip()
+            if top:
+                roots = [Path(top)]
+        except subprocess.SubprocessError:
+            pass  # not a git work tree, or git is slow: the root is `cwd` itself
+        try:
+            listing = _finish_git(processes[1], deadline).decode("utf-8", "replace")
+        except subprocess.SubprocessError:
+            listing = ""
+        roots += [Path(line[len("worktree "):]) for line in listing.splitlines() if line.startswith("worktree ")]
+    finally:
+        _stop(processes)
+    unique: dict[str, Path] = {}
+    for root in roots:
+        unique.setdefault(os.path.normcase(os.path.abspath(root)), root)
+    return list(unique.values())[:MAX_CCA_ROOTS]
 
 
 def cca_holdout_run(cwd: str, *, deadline: float) -> str | None:
-    """The id of the CCA run open at `cwd`'s project root when its `memory-arm.json` names the
-    `holdout` arm, else None. Never raises.
+    """The id of the CCA run open for `cwd` when its `memory-arm.json` names the `holdout` arm,
+    else None. Never raises.
 
     CCA withholds its prior-bugs brief from about one DIFF run in three to measure what memory
-    adds; briefing that run's auditors here would hand them the records CCA withheld. The project
-    root is git's top level for `cwd`, or `cwd` itself when git cannot say. Everything else (no
-    state, no run id, no arm file, unreadable JSON, an arm file naming another run, any other arm)
-    answers None, so the brief is delivered as before.
+    adds; briefing that run's auditors here would hand them the records CCA withheld. A run is open
+    at a candidate root (`_cca_roots`) when its state names a valid run id and that run's arm file
+    names the same run id. When every open run is in the holdout arm, the answer is their ids;
+    when open runs disagree, the arm is ambiguous, which is logged and answers None. Everything
+    else (no open run, unreadable JSON, a link, any other arm) answers None, so the brief is
+    delivered as before.
     """
     try:
-        root = Path(cwd)
-        try:
-            process = _start_git(cwd, "rev-parse", "--show-toplevel")
-            try:
-                top = _finish_git(process, deadline).decode("utf-8", "replace").strip()
-            finally:
-                _stop([process])
-            if top:
-                root = Path(top)
-        except (OSError, subprocess.SubprocessError):
-            pass  # not a git work tree, or git is slow: the root is `cwd` itself
-        state = json.loads(root.joinpath(*CCA_STATE).read_text(encoding="utf-8"))
-        run_id = state.get("run_id") if isinstance(state, dict) else None
-        if not isinstance(run_id, str) or not _CCA_RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
+        arms: dict[str, str] = {}
+        for root in _cca_roots(cwd, deadline):
+            if time.monotonic() > deadline:
+                break
+            state = _read_repo_json(root, CCA_STATE)
+            run_id = state.get("run_id") if isinstance(state, dict) else None
+            if not isinstance(run_id, str) or not _CCA_RUN_ID_RE.fullmatch(run_id) or run_id in (".", ".."):
+                continue
+            arm = _read_repo_json(root, (*CCA_RUNS, run_id, CCA_ARM_FILE))
+            if isinstance(arm, dict) and arm.get("run_id") == run_id:
+                arms[run_id] = str(arm.get("arm"))
+        if not arms:
             return None
-        arm = json.loads(root.joinpath(*CCA_RUNS, run_id, CCA_ARM_FILE).read_text(encoding="utf-8"))
-        if isinstance(arm, dict) and arm.get("run_id") == run_id and arm.get("arm") == CCA_HOLDOUT_ARM:
-            return run_id
+        if len(set(arms.values())) > 1:
+            listed = ", ".join(f"{run_id} {arm}" for run_id, arm in sorted(arms.items()))
+            _log(f"CCA open runs disagree on the memory arm ({listed}): ambiguous, so no holdout is applied")
+            return None
+        if next(iter(arms.values())) == CCA_HOLDOUT_ARM:
+            return ", ".join(sorted(arms))
     except Exception:  # BROAD-CATCH: fail-open  (an unreadable run is not a holdout)
         return None
     return None

@@ -1656,3 +1656,104 @@ def test_unreadable_arm_fails_open(
     nothing"."""
     _cca_run(repo, raw="{not json")
     assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+# Fix round 1 (review of ad6bf0e9e). Invariants and the failure each catches:
+# - a state file reached through a link is never read (SEC-002): a committed link to a UNC path
+#   would make Windows authenticate to that host on every launch;
+# - a run open in a linked worktree is seen from the main checkout, where Codex starts auditors;
+# - open runs that disagree on the arm fail open with an "ambiguous" log; open runs that agree on
+#   holdout withhold the block;
+# - an arm file naming another run is not this run's arm.
+
+
+def _worktree(repo: Path, name: str) -> Path:
+    """A linked worktree of `repo` beside it, on a new branch."""
+    path = repo.parent / name
+    _git(repo, "worktree", "add", "-q", "-b", name, str(path))
+    return path
+
+
+def test_a_linked_state_file_is_never_read(
+    repo: Path,
+    env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `ad6bf0e9e` (`read_text`
+    follows the link), node id tests/test_auditor_brief_hook.py::test_a_linked_state_file_is_never_read
+    failed on "the hook printed nothing": the linked state was read and named a holdout run.
+    Targets `_read_repo_json`'s `_unlinked_lstat` check."""
+    _cca_run(repo, arm="holdout")
+    outside = tmp_path / "outside-state.json"
+    state = repo / ".claude" / "audits" / "run-state.json"
+    outside.write_text(state.read_text(encoding="utf-8"), encoding="utf-8")
+    state.unlink()
+    try:
+        state.symlink_to(outside)
+    except OSError:
+        pytest.skip("no symlink privilege on this platform")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+
+
+def test_holdout_in_a_linked_worktree_is_seen_from_the_main_checkout(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `ad6bf0e9e` (the cwd's top
+    level only), node id
+    tests/test_auditor_brief_hook.py::test_holdout_in_a_linked_worktree_is_seen_from_the_main_checkout
+    failed on "a holdout run in a worktree was briefed". Targets `_cca_roots`."""
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout")
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "a holdout run in a worktree was briefed"
+
+
+def test_open_runs_that_disagree_fail_open(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): mutation of `cca_holdout_run` to
+    answer the holdout run whenever any open run is in the holdout arm (the disagreement branch
+    replaced by `if False:` and the arm test by `CCA_HOLDOUT_ARM in arms.values()`); node id
+    tests/test_auditor_brief_hook.py::test_open_runs_that_disagree_fail_open failed on "the hook
+    printed nothing"."""
+    _cca_run(repo, run_id="r1", arm="brief")
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout")
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
+    assert "ambiguous" in env.read_text(encoding="utf-8")
+
+
+def test_open_runs_that_agree_on_holdout_skip_the_block(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): mutation of the disagreement check
+    to `len(arms) > 1` (any two open runs counted as ambiguous); node id
+    tests/test_auditor_brief_hook.py::test_open_runs_that_agree_on_holdout_skip_the_block failed
+    on "two holdout runs were briefed"."""
+    _cca_run(repo, run_id="r1", arm="holdout")
+    _cca_run(_worktree(repo, "wt-holdout"), run_id="r2", arm="holdout")
+    output = _run(_payload(repo, prompt=""), monkeypatch, capsys)
+    assert output is None, "two holdout runs were briefed"
+
+
+def test_an_arm_file_naming_another_run_is_not_this_runs_arm(
+    repo: Path,
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Red proof, recorded 2026-10-31 on the test host (VPS2): the `arm.get("run_id") == run_id`
+    clause deleted from `cca_holdout_run`; node id
+    tests/test_auditor_brief_hook.py::test_an_arm_file_naming_another_run_is_not_this_runs_arm
+    failed on "the hook printed nothing"."""
+    _cca_run(repo, run_id="r1", raw=json.dumps({"run_id": "r9", "arm": "holdout", "rule": "r"}))
+    assert _bug(1)["id"] in _block(_run(_payload(repo, prompt=""), monkeypatch, capsys))
