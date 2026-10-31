@@ -465,7 +465,15 @@ def build_dependency_projection(
             )
         return None
 
+    # Healthy DAG subgraphs are independent of the incoming path. Depth remains part of the
+    # key so reuse cannot bypass the traversal limit. Cyclic paths are context dependent, and
+    # failure reasons carry the caller's path, so neither is memoized here.
+    healthy_dag_states: set[tuple[str, int]] = set()
+
     def walk(source: str, path: tuple[str, ...], depth: int) -> InvalidationReason | None:
+        key = (source, depth)
+        if not cycle_members and key in healthy_dag_states:
+            return None
         if depth > MAX_INVALIDATION_DEPTH:
             return InvalidationReason(
                 source,
@@ -493,7 +501,7 @@ def build_dependency_projection(
             if prerequisite in path:
                 cycle = set(path[path.index(prerequisite) :])
                 if all(authorities.get(member, "unknown") == "model_inference" for member in cycle):
-                    return None
+                    continue
                 return InvalidationReason(
                     prerequisite,
                     "cycle",
@@ -508,6 +516,8 @@ def build_dependency_projection(
                 if not reason.path or reason.path[0] != source:
                     reason = replace(reason, path=(source,) + reason.path)
                 return reason
+        if not cycle_members:
+            healthy_dag_states.add(key)
         return None
 
     for source in sorted(known_sources):

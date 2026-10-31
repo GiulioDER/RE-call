@@ -794,10 +794,6 @@ class PgVectorStore:
         #: Count of full supersession scans actually performed (cache misses). Surfaced so a
         #: test can prove the cache still works, and so a rescan storm is visible as a metric.
         self._supersession_scans = 0
-        #: `(generation, marker, as_of, known_as_of, edge_ids, diagnostic_ids, projection)`.
-        #: The marker and persisted row identities are part of the cache key. A generation is
-        #: immutable, but the time-sensitive closure is not, so replay instants remain separate.
-        self._dependency_projection_cache: tuple | None = None
         self._closed = False
         #: Third connection mode, and the one a multi-tenant server should use. When set, this
         #: store owns no connections at all: every operation borrows from a process-wide pool and
@@ -1049,7 +1045,6 @@ class PgVectorStore:
         """
         self._supersession_cache = None
         self._supersession_scans = 0
-        self._dependency_projection_cache = None
 
     @property
     def table(self) -> str:
@@ -2942,7 +2937,9 @@ class PgVectorStore:
         The persisted marker is checked before rebuilding the time-sensitive closure. This keeps
         enforce mode generation bound: a legacy generation or a generation whose transactional
         projection failed validation cannot silently become enforceable merely because its chunks
-        happen to contain dependency metadata.
+        happen to contain dependency metadata. The closure is recomputed for every request:
+        omitted times mean the current instant, and even an explicit historical time cannot make
+        a prior readiness marker or a same-generation corpus survive erasure.
         """
         from recall.current_state import project_current_state
 
@@ -2950,17 +2947,6 @@ class PgVectorStore:
         generation_id = (
             str(generation_reader()) if callable(generation_reader) else self.generation_id
         )
-        instant = as_of.isoformat() if as_of is not None else None
-        known_instant = known_as_of.isoformat() if known_as_of is not None else None
-        cached = getattr(self, "_dependency_projection_cache", None)
-        if cached is not None:
-            cached_key = cached[0]
-            if (
-                cached_key[0] == generation_id
-                and cached_key[2] == instant
-                and cached_key[3] == known_instant
-            ):
-                return cached[-1]
 
         def _load_persisted(
             conn: "psycopg.Connection",
@@ -2991,14 +2977,6 @@ class PgVectorStore:
         marker = summary.get("dependency_projection")
         if not isinstance(marker, Mapping) or marker.get("ready") is not True:
             return None
-        cache_key = (
-            generation_id,
-            str(marker.get("projection_id", "")),
-            instant,
-            known_instant,
-            persisted_edge_ids,
-            persisted_diagnostic_ids,
-        )
         projection = project_current_state(
             self, as_of=as_of, known_as_of=known_as_of
         ).dependency_projection
@@ -3027,7 +3005,6 @@ class PgVectorStore:
                 generation_id,
             )
             return None
-        self._dependency_projection_cache = (cache_key, projection)
         return projection
 
     def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:

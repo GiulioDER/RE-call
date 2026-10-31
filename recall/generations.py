@@ -679,6 +679,7 @@ class GenerationManager:
         source_sha256: str,
         object_version_id: str,
         *,
+        expected_file: str,
         require_body_rule_version: str | None = None,
         accepted_metadata_rules: Sequence[str] = (_METADATA_RULE_VERSION,),
         security_policy_digest: str | None = None,
@@ -691,6 +692,13 @@ class GenerationManager:
             "JOIN recall_generations g "
             "ON g.tenant_id = c.tenant_id AND g.generation_id = c.generation_id "
             "WHERE c.tenant_id = %s AND c.source_uri = %s AND c.source_sha256 = %s "
+            # A manifest's common root can change while this source's bytes and pipeline do
+            # not. Every copied chunk must carry the current derived identity, including when
+            # an older generation contains inconsistent file metadata within one source.
+            "AND NOT EXISTS (SELECT 1 FROM recall_chunks_v1 prior "
+            "WHERE prior.tenant_id = c.tenant_id AND prior.generation_id = c.generation_id "
+            "AND prior.source_uri = c.source_uri "
+            "AND prior.metadata ->> 'file' IS DISTINCT FROM %s) "
             "AND ((%s::text IS NULL AND c.metadata ->> %s IS NULL) "
             "OR (%s::text IS NOT NULL AND c.metadata ->> %s = %s)) "
             "AND c.metadata ->> %s = ANY(%s) "
@@ -705,6 +713,7 @@ class GenerationManager:
                 self.tenant_id,
                 source_uri,
                 source_sha256,
+                expected_file,
                 require_body_rule_version,
                 _BODY_RULE_VERSION_KEY,
                 require_body_rule_version,
@@ -766,9 +775,10 @@ class GenerationManager:
 
         Read-only, one connection, and bounded by the generation index: it reads only the
         generations that already carry this pipeline fingerprint, which is the first thing
-        `_reuse_source` requires. It then applies the other reuse conditions per object, all
-        except the markdown body rule and the narrowed metadata rule (which need each document's
-        text: a memo declaring `recall_record` or `supersedes` is counted reusable under the rule
+        `_reuse_source` requires. It then applies the other reuse conditions per object, except
+        the current manifest file identity and the markdown body and narrowed metadata rules.
+        Those rules need each document's text: a memo declaring `recall_record` or `supersedes`
+        is counted reusable under the rule
         before them, which `_reuse_source` refuses), so the count is an upper bound.
 
         Best-effort by design: a failure is reported in the plan and never fails the build,
@@ -1396,6 +1406,7 @@ class GenerationManager:
                         entry.uri,
                         entry.sha256,
                         entry.version_id,
+                        expected_file=relative_source,
                         require_body_rule_version=(
                             _BODY_RULE_VERSION if body_rule_changed else None
                         ),

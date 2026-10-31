@@ -5,10 +5,11 @@ notes", because nearness has no place to put that. This module is the place: a `
 region of the corpus by structure rather than by meaning, and every leg of retrieval applies the
 same predicate to it.
 
-**The folder dimension needs no re-index.** The indexer already records a root-relative posix path
-per chunk (`recall/index.py`, ``metadata["file"]``), so a folder is a prefix of a value that is
-already in the row. Adding folders to a corpus is `mkdir` plus a re-index of the moved files, not
-a schema change. The FACET dimension is different and the difference is worth stating plainly: it
+**Folder filters require root-relative file metadata.** The legacy indexer already records that
+path per chunk (`recall/index.py`, ``metadata["file"]``), so those corpora need no rebuild merely
+to enable folder filters. Generation-backed corpora built before the production path correction
+stored basenames and need one rebuild. Adding folders is `mkdir` plus re-indexing the moved files,
+not a schema change. The FACET dimension is different and the difference is worth stating plainly: it
 is read from frontmatter at index time, so it lands only on the next generation build. Until then
 a facet filter matches nothing, which is why `Scope.facet` is refused against a corpus with no
 facet rows rather than returning an empty result that reads like "no match".

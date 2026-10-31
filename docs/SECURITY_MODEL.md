@@ -21,6 +21,11 @@ array. The policy is enforced by legacy and generation CLI paths as well as MCP 
 reasoning, inventory, indexing, ingest, and forget operations. Enterprise operators must set the
 policy before serving; malformed booleans and non string arrays are refused at load time.
 
+`recall scopes` currently refuses whenever a source policy is configured, on PostgreSQL,
+generation and Lite backends. Its aggregate inventory cannot apply source authorization before
+counting labels, so it must not disclose an unrestricted listing. An invalid or unreadable policy
+also refuses before inventory metadata is read.
+
 A forget or withdraw is decided on the names it was given AND on every name the rows it would
 remove are authorized by: a row's root-relative `file`, or its `source` without one, and for a
 withdrawal the same two names in the record of a memo forgotten earlier. One denied name refuses
