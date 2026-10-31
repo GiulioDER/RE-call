@@ -21,7 +21,9 @@ from recall.embeddings import Embedder
 from recall.lineage import PipelineIdentity, canonical_json, canonical_sha256
 from recall.observability import get_logger
 
-from recall.calibration_v2_artifact import (  # noqa: F401  # re-exported: public names of this module
+# Every name of the two split-out modules is re-exported, the underscore ones included, because
+# this module's own code and its tests reach several of those private helpers through here.
+from recall.calibration_v2_artifact import (  # noqa: F401  # re-exported, see above
     ARTIFACT_VERSION,
     CalibrationStatus,
     CalibrationError,
@@ -43,7 +45,7 @@ from recall.calibration_v2_artifact import (  # noqa: F401  # re-exported: publi
     CalibrationArtifactV2,
     CalibrationResolution,
 )
-from recall.calibration_v2_bounds import (  # noqa: F401  # re-exported: public names of this module
+from recall.calibration_v2_bounds import (  # noqa: F401  # re-exported, see above
     DEFAULT_MAX_CORPUS_DELTA,
     DEFAULT_MAX_CARRY_FORWARD_ERROR,
     ThresholdErrors,
