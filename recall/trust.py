@@ -4,8 +4,9 @@ Semantic similarity answers "which memory looks most like the query"; it cannot 
 this memory still be believed". This module adds that second judgment as a pure post-processing
 step over `HybridRetriever.search()`:
 
-- every hit gets a verdict — ``ok``, ``superseded``, ``expired``, ``not_yet_valid`` or
-  ``low_confidence`` — plus a calibrated confidence, provenance, and its validity window;
+- every hit gets a verdict (one of `recall.types.Verdict`, for example ``ok``, ``superseded``,
+  ``expired`` or ``low_confidence``) plus a calibrated confidence, provenance, and its validity
+  window;
 - a memory that is superseded or outside its validity window loses even with a top cosine:
   valid hits are ordered first (so a retrieved successor outranks the stale memory it replaced),
   and when NO valid hit remains the result is an explicit abstention with a reason;
@@ -115,6 +116,9 @@ _WARNED_NO_EDGE_DATES: set[str] = set()
 #: the two together rather than importing across the layers.
 _WITHHELD = "<withheld>"
 
+#: The dependency invalidation modes, from an argument, the store, or RECALL_DEPENDENCY_INVALIDATION.
+_DEPENDENCY_MODES = frozenset({"off", "enforce"})
+
 
 def _without_non_finite_dense(result: RetrievalResult) -> RetrievalResult:
     """``result`` minus any dense hit whose cosine is not a finite number.
@@ -136,25 +140,52 @@ def _without_non_finite_dense(result: RetrievalResult) -> RetrievalResult:
     return replace(result, hits=kept)
 
 
-def _withhold_unauthorized_successors(
+def _withhold_unauthorized_names(
     trusted: TrustedResult,
     security_policy: SourceSecurityPolicy,
     access_context: AccessContext,
+    collided: frozenset[str] = frozenset(),
 ) -> TrustedResult:
-    """Replace each successor the caller may not read with `_WITHHELD`.
+    """Replace each successor or dependency the caller may not read with `_WITHHELD`.
 
-    The supersession graph is the whole tenant's, so a successor can live under a prefix the
-    caller's policy excludes, and its path would reach the caller in ``superseded_by`` and in the
-    abstention reason. The verdict stays ``superseded``: the memory is still not current, and
-    saying so does not need the successor's name.
+    The supersession graph and the dependency projection are the whole tenant's, so a successor
+    or a (possibly transitive) dependency can live under a prefix the caller's policy excludes,
+    and its name would reach the caller in ``superseded_by``, in ``invalidation`` and in the
+    abstention reason. The verdicts stay as they are: the memory is still not current, and saying
+    so does not need the other document's name.
+
+    The policy decides on the root-relative file, as `recall.records` does. A path two roots hold
+    is keyed in the supersession graph by its absolute source, which no rule is written against;
+    such a key is mapped back through the hits' own sources, and withheld when it cannot be.
     """
+    file_of_source = {
+        hit.chunk.source: str(hit.chunk.metadata.get("file") or hit.chunk.source)
+        for hit in trusted.hits
+    }
+
+    def denied(key: str) -> bool:
+        file: str | None = key
+        mapped = file_of_source.get(key)
+        if mapped is not None and mapped in collided:
+            file = mapped
+        elif any(key.replace("\\", "/").endswith("/" + name.replace("\\", "/")) for name in collided):
+            file = None  # a collided source this result holds no chunk of: cannot be placed
+        return file is None or not security_policy.decide(file, access_context).allowed
+
     changed = False
     hits = []
     for hit in trusted.hits:
         successor = hit.validity.superseded_by
-        if successor and not security_policy.decide(successor, access_context).allowed:
+        if successor and denied(successor):
             hit = replace(hit, validity=replace(hit.validity, superseded_by=_WITHHELD))
             changed = True
+        invalidation = hit.invalidation
+        if invalidation is not None:
+            dependency = _WITHHELD if denied(invalidation.dependency) else invalidation.dependency
+            path = tuple(_WITHHELD if denied(node) else node for node in invalidation.path)
+            if dependency != invalidation.dependency or path != invalidation.path:
+                hit = replace(hit, invalidation=replace(invalidation, dependency=dependency, path=path))
+                changed = True
         hits.append(hit)
     if not changed:
         return trusted
@@ -383,9 +414,9 @@ def _trusted_search(
         configured_dependency_mode = (
             str(environment_source.get("RECALL_DEPENDENCY_INVALIDATION", "off")).strip().lower()
         )
-        if configured_dependency_mode not in {"off", "enforce"}:
+        if configured_dependency_mode not in _DEPENDENCY_MODES:
             raise ValueError("RECALL_DEPENDENCY_INVALIDATION must be 'off' or 'enforce'")
-    if configured_dependency_mode not in {"off", "enforce"}:
+    elif configured_dependency_mode not in _DEPENDENCY_MODES:
         raise ValueError("dependency_mode must be 'off' or 'enforce'")
     dependency_projection: DependencyProjection | None = None
     dependency_failure: TrustFailureCode | None = None
@@ -569,12 +600,17 @@ def _trusted_search(
     )
     if atomic_placement not in ATOMIC_RESCUE_PLACEMENTS:
         raise AtomicRescueArtifactError("RECALL_ATOMIC_RESCUE_PLACEMENT is invalid")
-    atomic_scope_is_empty = (
-        effective.source is None
-        and effective.folder is None
+    # A scope a bare `source=` can express: the retrieval dispatch below and the atomic rescue
+    # gate must agree on this, so it is written once.
+    source_only_scope = (
+        effective.folder is None
         and effective.facet is None
         and effective.source_prefixes is None
         and effective.security_policy_digest is None
+    )
+    atomic_scope_is_empty = (
+        source_only_scope
+        and effective.source is None
         and security_policy is None
         and access_context is None
     )
@@ -679,32 +715,14 @@ def _trusted_search(
     # `HybridRetriever._retrieve_legs` gives about stores: a retriever here is DUCK-TYPED, several
     # test doubles and downstream adapters implement `search(query, k, source)`, and sending a new
     # keyword on every unscoped query would break them all for callers who asked for nothing.
+    # Keys are added only when they carry something, for the same reason.
     captured_candidate_traces: list[RetrievalCandidateTrace] = []
-    if (
-        effective.folder is None
-        and effective.facet is None
-        and effective.source_prefixes is None
-        and effective.security_policy_digest is None
-    ):
-        if candidate_trace_callback is None:
-            result = retriever.search(query, k=k, source=effective.source)
-        else:
-            result = retriever.search(
-                query,
-                k=k,
-                source=effective.source,
-                candidate_trace_callback=captured_candidate_traces.append,
-            )
-    else:
-        if candidate_trace_callback is None:
-            result = retriever.search(query, k=k, scope=effective)
-        else:
-            result = retriever.search(
-                query,
-                k=k,
-                scope=effective,
-                candidate_trace_callback=captured_candidate_traces.append,
-            )
+    search_kwargs: dict[str, Any] = (
+        {"source": effective.source} if source_only_scope else {"scope": effective}
+    )
+    if candidate_trace_callback is not None:
+        search_kwargs["candidate_trace_callback"] = captured_candidate_traces.append
+    result = retriever.search(query, k=k, **search_kwargs)
     # The expansions below hand `retriever.search` a SOURCE and no scope, which looks like a leak
     # and is not: each one re-queries inside a document the scoped search already returned, so it
     # is strictly narrower than the scope rather than outside it. Re-applying the folder there
@@ -726,17 +744,23 @@ def _trusted_search(
     unresolved: frozenset[str] = frozenset()
     edge_candidates: EdgeCandidates | None = None
     evaluation_now = now or datetime.now(UTC)
-    if result.hits:
+
+    def _read_edges() -> tuple[dict[str, str] | SupersessionGraph, frozenset[str], EdgeCandidates | None]:
         graph = stored_supersession_graph(store)
         fetch_all = getattr(store, "supersession_all", None) if known_as_of is not None else None
         if graph is not None:
-            supersession = graph
-        elif fetch_all is not None:
-            supersession, unresolved, edge_candidates = fetch_all()
-        else:
-            if known_as_of is not None:
-                _warn_no_edge_dates(type(store).__name__)
-            supersession, unresolved = store.supersession()
+            return graph, frozenset(), None
+        if fetch_all is not None:
+            return fetch_all()  # type: ignore[no-any-return]
+        if known_as_of is not None:
+            _warn_no_edge_dates(type(store).__name__)
+        edges, unresolved_files = store.supersession()
+        return edges, unresolved_files, None
+
+    edges_read = False
+    if result.hits:
+        supersession, unresolved, edge_candidates = _read_edges()
+        edges_read = True
     if successor_expansion is not None:
         # AFTER the edges are read and BEFORE `evaluate`, which is the only window where both
         # facts are in hand: the supersession map already says which hits are about to be demoted,
@@ -769,23 +793,32 @@ def _trusted_search(
         result = pre_trust_transform(result)
     # Last, so a transform cannot add back what this removes.
     result = _without_non_finite_dense(result)
-    trust_started = time.perf_counter()
-    trusted = evaluate(
-        result,
-        supersession,
-        calibration,
-        evaluation_now,
-        unresolved,
-        known_as_of,
-        edge_candidates,
-        calibration_id,
-        calibration_status,
-        generation_binding,
-        query_set_digest,
+    if result.hits and not edges_read:
+        # Retrieval found nothing, so no edges were read, and the transform supplied the pool:
+        # without them every hit it added would be judged as never superseded.
+        supersession, unresolved, edge_candidates = _read_edges()
+    # One set of verdict inputs for the served pool and the candidate trace below, so the two
+    # can never be judged under different rules.
+    verdict_inputs: dict[str, Any] = dict(
+        supersession=supersession,
+        calibration=calibration,
+        now=evaluation_now,
+        unresolved=unresolved,
+        known_as_of=known_as_of,
+        edge_candidates=edge_candidates,
+        calibration_id=calibration_id,
+        calibration_status=calibration_status,
+        generation_binding=generation_binding,
+        query_set_digest=query_set_digest,
         dependency_projection=dependency_projection,
         dependency_mode=configured_dependency_mode,
         record_metrics=False,
     )
+    collided = frozenset(getattr(supersession, "collided", ())) | frozenset(
+        getattr(dependency_projection, "collided", ())
+    )
+    trust_started = time.perf_counter()
+    trusted = evaluate(result, **verdict_inputs)
     trusted = replace(trusted, calibration_coverage=calibration_coverage(store, calibration_id))
     trusted = _with_stage_ms(trusted, "trust_evaluation", trust_started)
     if successor_expansion is not None and successor_expansion.ordering != "pool":
@@ -797,11 +830,11 @@ def _trusted_search(
             successor_expansion.ordering,
         )
     if security_policy is not None and access_context is not None:
-        trusted = _withhold_unauthorized_successors(trusted, security_policy, access_context)
+        trusted = _withhold_unauthorized_names(trusted, security_policy, access_context, collided)
     # After every verdict `evaluate` can give and before degradation, which overwrites verdicts:
     # a question naming a term the memory never contained cannot be answered by any hit, whatever
     # its score. A store that cannot answer the vocabulary question is reported, not changed.
-    unknown_term_check = check_unknown_terms(store, query, environment_source, scope=coerce_scope(scope, source))
+    unknown_term_check = check_unknown_terms(store, query, environment_source, scope=effective)
     trusted = apply_unknown_term_gate(trusted, unknown_term_check)
     # Preserve evaluate's counting semantics, but count the vocabulary-adjusted decision
     # once. The existing development degradation below remains outside those counters.
@@ -833,25 +866,10 @@ def _trusted_search(
             candidate_trace, result=_without_non_finite_dense(candidate_trace.result)
         )
         candidate_trace_started = time.perf_counter()
-        candidate_trusted = evaluate(
-            candidate_trace.result,
-            supersession,
-            calibration,
-            evaluation_now,
-            unresolved,
-            known_as_of,
-            edge_candidates,
-            calibration_id,
-            calibration_status,
-            generation_binding,
-            query_set_digest,
-            dependency_projection=dependency_projection,
-            dependency_mode=configured_dependency_mode,
-            record_metrics=False,
-        )
+        candidate_trusted = evaluate(candidate_trace.result, **verdict_inputs)
         if security_policy is not None and access_context is not None:
-            candidate_trusted = _withhold_unauthorized_successors(
-                candidate_trusted, security_policy, access_context
+            candidate_trusted = _withhold_unauthorized_names(
+                candidate_trusted, security_policy, access_context, collided
             )
         candidate_trusted = apply_unknown_term_gate(candidate_trusted, unknown_term_check)
         if failure_code is not None:
@@ -903,7 +921,9 @@ def trusted_search(
 
     `policy` defaults to strict: any failure code (missing, stale or uncertified calibration, a
     lineage mismatch, no active generation) raises `TrustRefusal` before retrieval runs.
-    ``TrustPolicy.development()`` answers instead, marked ``degraded``.
+    ``TrustPolicy.development()`` answers instead, marked ``degraded``. A dependency the gate
+    needs being unreachable raises ``DEPENDENCY_UNAVAILABLE`` under every policy, development
+    included.
 
     `calibration` is an explicit threshold that bypasses the generation's resolver. It is bound
     to no tenant or generation, so its status is ``legacy_unbound`` and the strict default
@@ -914,7 +934,7 @@ def trusted_search(
     it is set, `access_context` is required and its tenant must match the serving store. The
     context purpose is normally `retrieval`; indexing and erasure callers use their own purpose
     when constructing the context. A successor the policy does not let the caller read is
-    reported as ``<withheld>`` rather than by name.
+    reported as ``<withheld>`` rather than by name, and so is a dependency it may not read.
 
     `ledger` is OFF by default: when a `recall.decision_ledger.DecisionLedger` is passed, the
     call's final outcome — the answered or abstained result, or the strict `TrustRefusal` — is
@@ -929,7 +949,7 @@ def trusted_search(
     if (clock := eval_clock.now() if now is None or known_as_of is None else None) is not None:
         now = now or clock
         known_as_of = known_as_of or clock
-    # One argument list for both branches below. Two verbatim copies of a 17-argument
+    # One argument list for both branches below. Two verbatim copies of a long keyword
     # pass-through meant a parameter silently dropped from one would surface only as the ledger
     # branch behaving differently from the plain one. The two signatures, this dict and the
     # snapshot re-entry in `_trusted_search` still all name every parameter, and mypy cannot
@@ -962,9 +982,9 @@ def trusted_search(
     try:
         result = _trusted_search(store, embedder, query, **forwarded)  # type: ignore[arg-type]
     except TrustRefusal as refusal:
-        # The refusal is recorded and then propagates UNCHANGED. Recording before the raise
-        # completes would be the witness inserting itself into the enforcement path; recording
-        # instead of re-raising would be the witness overruling it.
+        # The refusal is recorded and then propagates UNCHANGED. The ledger runs only after the
+        # gate has already raised, so it cannot sit in the enforcement path; re-raising rather
+        # than returning keeps the witness from overruling it.
         ledger.record_refusal(refusal, query=query, k=k, known_as_of=known_as_of)
         raise
     ledger.record_decision(result, k=k, valid_time=now, known_as_of=known_as_of)

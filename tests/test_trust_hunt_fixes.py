@@ -365,3 +365,182 @@ def test_the_candidate_trace_callback_sees_the_pool_trust_judged():
     [(raw, trusted)] = traces
     assert [hit.chunk.id for hit in raw.result.hits] == [hit.chunk.id for hit in trusted.hits]
     assert "dense-a" not in [hit.chunk.id for hit in raw.result.hits]
+
+
+# Second hunt (run 20261031T204801Z) over the same files.
+
+
+def test_a_nan_calibration_sample_is_refused_not_fitted():
+    """STAKES-102: a NaN sample must not move the fitted threshold and still certify.
+
+    Red proof: against the pre-fix `best_threshold` (recall/calibration.py, no finiteness check),
+    `sorted()` leaves the NaN in place, the q95 ceiling is read from an unsorted list, and
+    `from_samples` returns a certified calibration at 0.55 instead of raising, failing the
+    `pytest.raises` assertion.
+    """
+    from recall.calibration import from_samples
+
+    with pytest.raises(ValueError, match="finite"):
+        from_samples("e", [0.8] * 40, [0.75] * 4 + [float("nan")] + [0.3] * 36)
+    # Control: the same data without the NaN still fits.
+    assert from_samples("e", [0.8] * 40, [0.75] * 4 + [0.3] * 36).threshold == pytest.approx(0.775)
+
+
+def test_a_corrupt_calibration_file_falls_back_instead_of_raising(tmp_path):
+    """DAT-101: an oversized integer or a deeply nested file is malformed, not a crash.
+
+    Red proof: against the pre-fix `load_for` (recall/calibration.py, except tuples without
+    OverflowError and RecursionError), the 400-digit threshold raises OverflowError from
+    `float()`, failing the test with that exception.
+    """
+    from recall.calibration import load_for
+
+    digits = "1" * 400
+    huge = tmp_path / "huge.json"
+    huge.write_text('{"embedder": "e", "threshold": %s, "scale": 0.05}' % digits, encoding="utf-8")
+    assert load_for("e", huge) is None
+    deep = tmp_path / "deep.json"
+    deep.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
+    assert load_for("e", deep) is None
+    sep = tmp_path / "sep.json"
+    sep.write_text(
+        '{"embedder": "e", "threshold": 0.5, "scale": 0.05, "separability": %s}' % digits,
+        encoding="utf-8",
+    )
+    loaded = load_for("e", sep)
+    assert loaded is not None and loaded.separability is None
+
+
+def test_a_dependency_the_caller_may_not_read_is_withheld(monkeypatch):
+    """SEC-101: a transitive dependency under a denied prefix must not be named to the caller.
+
+    Red proof: against the pre-fix `_trusted_search` (recall/trust.py, which withheld only
+    `superseded_by`), the abstention reason names `hr/z.md`, failing the first assertion.
+    """
+    from recall.trust import trusted_search
+    from recall.types import InvalidationReason
+
+    reason = InvalidationReason(
+        dependency="hr/z.md", cause="superseded", path=("a/x.md", "a/y.md", "hr/z.md")
+    )
+    projection = SimpleNamespace(
+        edges=(),
+        diagnostics=(),
+        reason_for=lambda node: reason if node == "a/x.md" else None,
+    )
+    store = _CertifiedStore()
+    store.dependency_projection = lambda as_of=None, known_as_of=None: projection
+    _fake_retriever(monkeypatch, [_hit("c1", "a/x.md", 0.9)])
+    policy, context = _policy_for_prefix_a()
+
+    result = trusted_search(
+        store,
+        object(),
+        "q",
+        k=1,
+        now=NOW,
+        dependency_mode="enforce",
+        security_policy=policy,
+        access_context=context,
+    )
+
+    [hit] = result.hits
+    assert "hr/z.md" not in result.reason
+    assert hit.verdict == "dependency_invalidated"
+    assert hit.invalidation is not None
+    assert hit.invalidation.dependency == "<withheld>"
+    assert hit.invalidation.path == ("a/x.md", "a/y.md", "<withheld>")
+
+
+def test_a_readable_collided_successor_is_named(monkeypatch):
+    """BUG-101 (+SEC-102): the policy decides on the root-relative file, not the absolute key.
+
+    Red proof: against the pre-fix `_withhold_unauthorized_successors` (recall/trust.py, which
+    asked the policy about the graph key `/two/README.md`), no rule matches the absolute path and
+    the readable successor is reported as `<withheld>`, failing the assertion.
+    """
+    from recall.security_policy import AccessContext, SourceRule, SourceSecurityPolicy
+    from recall.supersession import SupersessionGraph
+    from recall.trust import trusted_search
+
+    one = ScoredChunk(Chunk("r1", "/one/README.md", "old", {"file": "README.md"}), 0.9, NOW)
+    two = ScoredChunk(Chunk("r2", "/two/README.md", "new", {"file": "README.md"}), 0.8, NOW)
+    _fake_retriever(monkeypatch, [one, two])
+    store = _CertifiedStore()
+    graph = SupersessionGraph(
+        edges={"/one/README.md": "/two/README.md"}, collided=frozenset({"README.md"})
+    )
+    store.supersession_graph = lambda: graph
+
+    result = trusted_search(
+        store,
+        object(),
+        "q",
+        k=2,
+        now=NOW,
+        security_policy=SourceSecurityPolicy((SourceRule("README.md"),)),
+        access_context=AccessContext("analyst", "tenant-a"),
+    )
+
+    by_id = {hit.chunk.id: hit for hit in result.hits}
+    assert by_id["r1"].validity.superseded_by == "/two/README.md"
+
+
+def test_a_transform_that_fills_an_empty_pool_is_still_judged_against_the_edges(monkeypatch):
+    """STAKES-101: edges must be read for the pool `evaluate` judges, not only for retrieval's.
+
+    Red proof: against the pre-fix `_trusted_search` (recall/trust.py, edges read only under
+    `if result.hits:` before `pre_trust_transform`), the superseded `old.md` the transform adds is
+    verdicted `ok`, failing the first assertion.
+    """
+    from recall.trust import trusted_search
+    from recall.trust_policy import TrustPolicy
+
+    _fake_retriever(monkeypatch, [])
+    store = SimpleNamespace(supersession=lambda: ({"old.md": "new.md"}, frozenset()))
+
+    result = trusted_search(
+        store,
+        object(),
+        "q",
+        k=1,
+        now=NOW,
+        calibration=CAL,
+        policy=TrustPolicy.development(),
+        pre_trust_transform=lambda raw: _result([_hit("c1", "old.md", 0.9)]),
+    )
+
+    assert [(hit.chunk.id, hit.verdict) for hit in result.hits] == [("c1", "superseded")]
+    assert result.abstained is True
+
+
+def test_an_unrecognised_trust_mode_is_strict_and_says_so(caplog):
+    """ENV-101: a misspelt RECALL_TRUST_MODE stays strict, and a warning names the variable.
+
+    Red proof: against the pre-fix `TrustPolicy.from_env` (recall/trust_policy.py, silent
+    fallback), no warning is logged, failing the second assertion.
+    """
+    import logging
+
+    from recall.trust_policy import TrustPolicy
+
+    with caplog.at_level(logging.WARNING, logger="recall.trust_policy"):
+        policy = TrustPolicy.from_env({"RECALL_TRUST_MODE": "developmnet"})
+    assert policy.strict is True
+    assert any("RECALL_TRUST_MODE" in record.getMessage() for record in caplog.records)
+    assert "developmnet" not in caplog.text
+    # Control: the two real values and an empty value log nothing.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="recall.trust_policy"):
+        TrustPolicy.from_env({"RECALL_TRUST_MODE": "Development"})
+        TrustPolicy.from_env({"RECALL_TRUST_MODE": "strict"})
+        TrustPolicy.from_env({})
+    assert not caplog.records
+
+
+def test_the_empty_sample_threshold_matches_the_uncalibrated_floor():
+    """Nonbehavioral pin for CODE-108: `best_threshold([], [])` and the uncalibrated floor agree."""
+    from recall.calibration import best_threshold
+    from recall.guards import DEFAULT_GAP_THRESHOLD
+
+    assert best_threshold([], []) == DEFAULT_GAP_THRESHOLD

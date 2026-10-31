@@ -155,6 +155,19 @@ def _upper_quantile(sorted_values: list[float], q: float) -> float:
     return sorted_values[max(0, n - 1 - int((1 - q) * n))]
 
 
+#: Fitted thresholds lie on this grid, so a stored threshold reads the same everywhere it is shown.
+_GRID_STEP = 0.001
+#: The threshold for an empty sample set. The same value as `recall.guards.DEFAULT_GAP_THRESHOLD`,
+#: the uncalibrated floor, written here rather than imported to keep this module's imports as
+#: they are; `tests/test_trust_hunt_fixes.py` pins the two together.
+_NO_SAMPLES_THRESHOLD = 0.5
+
+
+def _floor_to_grid(value: float) -> float:
+    """``value`` rounded down to the 0.001 threshold grid."""
+    return math.floor(value * 1000) / 1000
+
+
 def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
     """Threshold placed in the MIDDLE of the observed gap between the two distributions.
 
@@ -184,28 +197,37 @@ def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
     margin at any size — that part always holds — but a small calibration set buys margin, not
     stability. Calibrate against a few hundred labelled queries if the threshold matters.
 
-    Degenerate inputs fall back rather than invent a boundary: with no unanswerable samples there
-    is no gap to bisect, so the answerable floor is used; with neither class, the module default.
+    Degenerate inputs fall back rather than invent a boundary: with neither class, 0.5 (the value
+    of `recall.guards.DEFAULT_GAP_THRESHOLD`); with only answerable samples, their floor; with
+    only unanswerable samples, one grid step above their ceiling, capped at 1.0. Every result
+    lies on the 0.001 grid, rounded down.
+
+    Raises ValueError on a non-finite sample: `sorted()` cannot order a NaN, so the quantiles
+    would be read from an unsorted list and the fit would still certify.
     """
+    if not all(math.isfinite(v) for v in (*answerable, *unanswerable)):
+        raise ValueError(
+            "calibration samples must be finite cosines; a NaN usually means a zero-norm "
+            "query vector"
+        )
     if not answerable and not unanswerable:
-        return 0.5
+        return _NO_SAMPLES_THRESHOLD
     a = sorted(answerable)
     u = sorted(unanswerable)
     if not a:
-        # Only negatives: one 0.001 grid step strictly ABOVE their ceiling (clamped to 1.0).
-        # Serving confirms at score >= threshold (see recall.trust), so a threshold placed ON
-        # the ceiling would confirm every sample sitting exactly there.
-        return min(1.0, math.floor(_upper_quantile(u, UNANSWERABLE_CEILING_Q) * 1000) / 1000
-                   + 0.001)
+        # Only negatives: one grid step strictly ABOVE their ceiling (clamped to 1.0).
+        # Serving confirms at score >= threshold (see recall.trust_gate), so a threshold placed
+        # ON the ceiling would confirm every sample sitting exactly there.
+        return min(1.0, _floor_to_grid(_upper_quantile(u, UNANSWERABLE_CEILING_Q)) + _GRID_STEP)
     floor = _quantile(a, ANSWERABLE_FLOOR_Q)
     if not u:
-        return math.floor(floor * 1000) / 1000
+        return _floor_to_grid(floor)
     ceiling = _upper_quantile(u, UNANSWERABLE_CEILING_Q)
     # Overlapping distributions still bisect: the midpoint splits the overlap instead of
     # collapsing onto one class, which is the least-bad boundary when no clean gap exists.
     # Round DOWN so rounding can only ever make the guard more permissive, never silently
     # abstain on a calibration sample that sat exactly on the boundary.
-    return math.floor((floor + ceiling) / 2 * 1000) / 1000
+    return _floor_to_grid((floor + ceiling) / 2)
 
 
 @dataclass(frozen=True)
@@ -443,18 +465,19 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
     except FileNotFoundError:
         return None  # never calibrated: the ordinary case, not worth a warning
     except OSError:
-        # Warned once per failure rather than once per call: this runs on EVERY query, so a file
-        # that is present but unreadable would otherwise log at query rate.
+        # Warned once per failure rather than once per call, so a caller that loads repeatedly
+        # does not repeat the warning.
         if _LOAD_CACHE.get(key, (b"", None))[0] != _UNREADABLE:
             _log.warning("ignoring unreadable calibration file %s (uncalibrated fallback)", p)
         _LOAD_CACHE[key] = (_UNREADABLE, None)
         return None
     # Cached by (path, embedder) and invalidated on a digest of the file's CONTENT.
-    # `trusted_search` calls this on EVERY query, so an uncached load would put a JSON parse and
-    # full validation in the hot retrieval path of a library whose measured advantage is latency
-    # (median 77 ms against a competitor's 104 ms). The digest skips that while still picking up
-    # a re-calibration written by a concurrent `recall calibrate`, which a load-once cache would
-    # miss until restart.
+    # `trusted_search` does not call this (legacy JSON is never auto-loaded, see `recall.trust`);
+    # its callers are the lint, doctor and enterprise readiness checks, the MCP server's startup
+    # probe and `load_for_profile`. The cache saves a repeated parse in one process, and the
+    # digest still picks up a re-calibration written by a concurrent `recall calibrate`, which a
+    # load-once cache would miss until restart. The comment below was written when this ran on
+    # every query; its measurements still describe what the digest costs.
     #
     # This used to be invalidated on `st_mtime_ns` and that was WRONG, not merely imprecise: an
     # mtime is a timestamp, not a version. Effective timestamp granularity is ~1 ms — the smallest
@@ -489,7 +512,10 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
             return None
         threshold = float(data["threshold"])
         scale = float(data["scale"])
-    except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
+    # OverflowError: a JSON integer too large for a float. RecursionError: nesting deeper than
+    # the parser's stack. Both are malformed files and must fall back, not raise on every call.
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError,
+            OverflowError, RecursionError):
         _log.warning("ignoring unreadable calibration file %s (uncalibrated fallback)", p)
         _LOAD_CACHE[key] = (digest, None)
         return None
@@ -512,7 +538,7 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
         sep = float(sep) if sep is not None else None
         if sep is not None and not (math.isfinite(sep) and 0.0 <= sep <= 1.0):
             sep = None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         sep = None
 
     def _count(key: str) -> int | None:
