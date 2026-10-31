@@ -15,24 +15,13 @@ import json
 import os
 import signal
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from benchmarks.agent_ab import claude_exec
 from benchmarks.agent_ab.schema import RECALL_ON
-
-
-def _alive(pid: int) -> bool:
-    try:
-        status = Path(f"/proc/{pid}/stat")
-        if status.is_file() and status.read_text().split()[2] == "Z":
-            return False
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+from tests.test_pr459_450_regressions import _survivors
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group ownership")
@@ -82,9 +71,11 @@ def test_cancellation_during_launch_reaps_the_real_process_tree(tmp_path, monkey
 
     try:
         asyncio.run(exercise())
-        assert not any(_alive(pid) for pid in json.loads(pids.read_text())), (
-            "cancellation during launch must terminate the owned CLI and its child"
-        )
+        # Reuse the upstream bounded SIGKILL observation: a signalled process
+        # can still appear live briefly after its pipes close. The broken CLI
+        # sleeps twenty seconds, so this one-second grace cannot hide its leak.
+        remaining = _survivors(json.loads(pids.read_text()), within_s=1.0)
+        assert not remaining, f"cancellation during launch left owned work alive: {remaining}"
     finally:
         if pids.exists():
             for pid in json.loads(pids.read_text()):
