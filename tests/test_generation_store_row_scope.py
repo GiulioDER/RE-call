@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 import inspect
 import re
+import sys
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
@@ -37,7 +38,6 @@ from typing import Any
 import pytest
 
 from recall import generation_store as generation_store_mod
-from recall import store as store_mod
 from recall.generation_store import GenerationStore
 from recall.store import PgVectorStore
 
@@ -155,7 +155,12 @@ def _inherited_chunk_table_methods() -> set[str]:
             if isinstance(n, ast.FunctionDef) and "__mutmut_" not in n.name
         }
 
-    base = methods(store_mod, "PgVectorStore")
+    # Every class PgVectorStore is assembled from, not only its own body: a chunk-table read moved
+    # into a mixin (S7d) is inherited by GenerationStore all the same.
+    base: dict[str, ast.FunctionDef] = {}
+    for klass in reversed(PgVectorStore.__mro__):
+        if klass.__module__.startswith("recall"):
+            base.update(methods(sys.modules[klass.__module__], klass.__name__))
     overridden = set(methods(generation_store_mod, "GenerationStore"))
     touching = {name for name, fn in base.items() if "self._table" in ast.unparse(fn)}
     return touching - overridden
