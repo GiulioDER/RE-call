@@ -8,16 +8,16 @@ design violation.
 ## Scope
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
-Modules: 346
-Cross package edges: 373
+Modules: 348
+Cross package edges: 374
 
 ## Highest fan in modules
 
 | Upstream modules | Module |
 |---:|---|
 | 199 | `recall.cli_commands.calibration_cmd` |
-| 189 | `recall_mcp.codex_server` |
-| 188 | `recall_mcp.server` |
+| 191 | `recall_mcp.codex_server` |
+| 190 | `recall_mcp.server` |
 | 173 | `recall_mcp.service` |
 | 167 | `recall.cli_commands.setup_wizard` |
 | 162 | `recall.desktop.main` |
@@ -60,7 +60,7 @@ Cross package edges: 373
 
 | Direct imports | Module |
 |---:|---|
-| 59 | `recall_mcp.server` |
+| 60 | `recall_mcp.server` |
 | 59 | `recall_mcp.service` |
 | 29 | `recall.cli_commands.index_search` |
 | 24 | `recall.generations` |
@@ -415,6 +415,7 @@ They are observations, not automatic failures.
 | `recall_mcp.server` | `recall.stale_reports` |
 | `recall_mcp.server` | `recall.store` |
 | `recall_mcp.server` | `recall.trust_policy` |
+| `recall_mcp.server_auth` | `recall.observability` |
 | `recall_mcp.service` | `recall.answer_provider` |
 | `recall_mcp.service` | `recall.atomic_rescue` |
 | `recall_mcp.service` | `recall.calibration` |
@@ -796,7 +797,7 @@ They are observations, not automatic failures.
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.assistant` | 12 | 127 |
 | `recall_mcp.auth` | 3 | 33 |
-| `recall_mcp.codex_server` | 1 | 189 |
+| `recall_mcp.codex_server` | 1 | 191 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.config_report` | 1 | 114 |
 | `recall_mcp.desktop_ingest` | 13 | 116 |
@@ -823,12 +824,14 @@ They are observations, not automatic failures.
 | `recall_mcp.related_api` | 9 | 123 |
 | `recall_mcp.retrieval` | 23 | 122 |
 | `recall_mcp.semantic_graph_cache` | 16 | 119 |
-| `recall_mcp.server` | 59 | 188 |
+| `recall_mcp.server` | 60 | 190 |
+| `recall_mcp.server_auth` | 5 | 37 |
 | `recall_mcp.service` | 59 | 173 |
 | `recall_mcp.settings` | 9 | 113 |
 | `recall_mcp.stale_reports_api` | 3 | 124 |
 | `recall_mcp.status` | 8 | 99 |
 | `recall_mcp.stores` | 7 | 100 |
+| `recall_mcp.threads` | 0 | 0 |
 | `recall_mcp.tool_surface` | 1 | 1 |
 | `recall_mcp.translation` | 3 | 8 |
 | `recall_mcp.use_reports_api` | 1 | 1 |
