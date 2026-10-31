@@ -569,6 +569,31 @@ def _decode_explicit_relation(
             reference=chunk.id,
             message=str(exc),
         )
+    uncertainty = raw.get("uncertainty", ())
+    if (
+        not isinstance(uncertainty, Sequence)
+        or isinstance(uncertainty, (str, bytes, bytearray))
+        or not all(isinstance(item, str) for item in uncertainty)
+    ):
+        return SemanticGraphDiagnostic(
+            id=_identity(
+                "diagnostic",
+                {
+                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+                    "tenant_id": tenant_id,
+                    "generation_id": generation_id,
+                    "kind": "invalid_relation",
+                    "reference": chunk.id,
+                    "field": "uncertainty",
+                    "value": repr(uncertainty),
+                },
+            ),
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            kind="invalid_relation",
+            reference=chunk.id,
+            message="relation uncertainty must be a sequence of strings",
+        )
     structural_type = raw.get("structural_type")
     relation_id = _identity(
         "relation",
@@ -597,7 +622,7 @@ def _decode_explicit_relation(
         extraction_method="explicit_relation",
         confidence=float(confidence_value),
         status="authored",
-        uncertainty=tuple(item for item in raw.get("uncertainty", ()) if isinstance(item, str)),
+        uncertainty=tuple(uncertainty),
         pipeline_fingerprint=pipeline_fingerprint,
         corpus_fingerprint=corpus_fingerprint,
         metadata={

@@ -82,8 +82,30 @@ def default_scan_roots(home: str | Path | None = None) -> tuple[Path, ...]:
     return tuple(result)
 
 
-def _is_claude_root(root: Path) -> bool:
-    return root.name.casefold() == "claude" or ".claude" in {part.casefold() for part in root.parts}
+def _resolved(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except OSError:
+        return path.absolute()
+
+
+def _claude_config_directories(root: Path) -> tuple[Path, ...]:
+    """Actual user configuration prefixes, plus an explicitly selected config root.
+
+    An ordinary project beneath a repository's .claude/worktrees is not a config
+    root. Explicitly selecting a .claude folder still restricts that folder, as
+    the desktop source picker has always promised.
+    """
+    home = Path.home()
+    candidates: tuple[Path, ...] = (
+        home / ".claude",
+        home / ".config" / "claude",
+        home / "AppData" / "Roaming" / "Claude",
+        home / "AppData" / "Local" / "Claude",
+    )
+    if root.name.casefold() == ".claude":
+        candidates = (*candidates, root)
+    return tuple(_resolved(candidate) for candidate in candidates)
 
 
 def _is_claude_memory_file(path: Path, root: Path) -> bool:
@@ -113,7 +135,7 @@ def scan_files(
         root = Path(raw_root).expanduser()
         if not root.is_dir():
             continue
-        claude_root = _is_claude_root(root)
+        config_directories = _claude_config_directories(root)
         for current, directories, filenames in os.walk(root, topdown=True, onerror=lambda _error: None):
             directories[:] = sorted(
                 directory
@@ -124,12 +146,14 @@ def scan_files(
                 path = Path(current) / filename
                 if path.suffix.casefold() not in allowed:
                     continue
-                if claude_root and not _is_claude_memory_file(path, root):
+                resolved = _resolved(path)
+                config_base = next(
+                    (base for base in config_directories if resolved == base or base in resolved.parents),
+                    None,
+                )
+                if config_base is not None and not _is_claude_memory_file(resolved, config_base):
                     continue
-                try:
-                    key = str(path.resolve()).casefold()
-                except OSError:
-                    key = str(path.absolute()).casefold()
+                key = str(resolved).casefold()
                 if key in seen:
                     continue
                 seen.add(key)

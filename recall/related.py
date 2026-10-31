@@ -228,10 +228,9 @@ def trusted_related(
         if not security_policy.decide(seed_file, access_context).allowed:
             raise PermissionError("related seed is outside the authorized source scope")
     seed_ord = _ordinal(seed)
-    graph = SupersessionGraph()
+    graph = store_supersession_graph(store)
     linked: frozenset[str] = frozenset()
     if relation == "supersession":
-        graph = store_supersession_graph(store)
         # The only files the supersession match below can accept. When there are none, no chunk
         # can match, so the full-corpus scan the store falls back to is skipped: the common case,
         # since most documents are neither superseded nor superseding.
@@ -242,9 +241,6 @@ def trusted_related(
     # was caused by, and the records the seed's fix caused. A seed with no record has neither.
     seed_record, seed_causes = _record_edges(seed)
     if relation == "caused_by":
-        # Audit records are superseded and retracted like any memo, so the trust gate needs the
-        # graph here too: with an empty one, a retracted record came back as current evidence.
-        graph = store_supersession_graph(store)
         if seed_record is None:
             candidates_iter = ()
         elif candidates_iter is None:
@@ -257,7 +253,7 @@ def trusted_related(
             continue
         file = _file_of(chunk)
         ordinal = _ordinal(chunk)
-        same_source = file == seed_file
+        same_source = chunk.source == seed.source
         adjacent = (
             seed_ord is not None and ordinal is not None and abs(ordinal - seed_ord) <= 2
         )

@@ -104,6 +104,8 @@ def truncate_evidence_context(
         raise ValueError("evidence budget must be a positive int")
     def rendered(value: str) -> str:
         return f"{prefix}{value}{suffix}"
+    if tokenizer.count_tokens(rendered("")) > budget:
+        raise ValueError("evidence budget cannot contain the rendered wrapper")
     if tokenizer.count_tokens(rendered(context)) <= budget:
         return context
     truncator = getattr(tokenizer, "truncate_text", None)

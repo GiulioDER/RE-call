@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import gc
+import sys
 import time
 from typing import Any, Callable
 
@@ -52,7 +53,7 @@ def _rss_bytes() -> int | None:
         if not callable(getrusage) or usage_self is None:
             return None
         value = int(getrusage(usage_self).ru_maxrss)
-        return value * (1024 if value < 10_000_000 else 1)
+        return value if sys.platform == "darwin" else value * 1024
     except (ImportError, AttributeError, OSError):
         return None
 

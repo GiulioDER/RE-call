@@ -408,7 +408,7 @@ def run_deepseek_answers(
     complete = completion or _deepseek_completion
     resolved_model = model or (
         "deepseek/deepseek-chat"
-        if os.environ.get("OPENROUTER_API_KEY") and not os.environ.get("DEEPSEEK_API_KEY")
+        if os.environ.get("OPENROUTER_API_KEY", "").strip() and not os.environ.get("DEEPSEEK_API_KEY", "").strip()
         else "deepseek-chat"
     )
     results: list[DeepSeekAnswer] = []
