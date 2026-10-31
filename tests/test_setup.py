@@ -2589,3 +2589,49 @@ def test_quote_env_escapes_newlines_so_a_value_cannot_span_lines(tmp_path, monke
     finally:
         os.environ.pop("RECALL_REASONING_MODEL", None)
         os.environ.pop("RECALL_SERVING_DSN", None)
+
+
+@pytest.mark.parametrize("selected_table", [None, "custom_memory"])
+def test_setup_registration_preserves_selected_table(tmp_path, monkeypatch, selected_table):
+    """ENV-002: the wizard's selected corpus must reach the actual settings reader.
+
+    Red proof uses the explicit-default implementation with the old wiring call:
+    the custom case fails its table assertion, while the default control passes.
+    The same test then passes after forwarding the selected table.
+    """
+    from types import SimpleNamespace
+
+    from recall.store import DEFAULT_TABLE
+    from recall.wizard import wiring
+    from recall_mcp.settings import Settings
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("recall.setup.probe_hardware", _no_extras_probe)
+    monkeypatch.setattr("recall.setup._module_available", lambda name: True)
+    monkeypatch.setattr("recall.setup._prepare_schema_for_embedder", lambda **kwargs: None)
+    monkeypatch.setattr("recall.setup.claude_code_detected", lambda: True)
+    monkeypatch.setattr("recall.setup.install_hooks", lambda **kwargs: None)
+    registered = []
+
+    def capture(blocks, **kwargs):
+        registered.extend(blocks)
+        return SimpleNamespace(
+            skipped_reason="", registered=("recall",), conflicts=(),
+            project_keys=(str(tmp_path),), config_path=tmp_path / "client.json",
+        )
+
+    monkeypatch.setattr(wiring, "register_local_scope", capture)
+    answers = iter(["y", "2", "1", "1", "n", "n", "y", "n", "n", "n"])
+    run_setup_wizard(
+        dsn="postgresql://example/recall",
+        table=selected_table,
+        env_path=tmp_path / ".env",
+        input_fn=lambda _prompt="": next(answers),
+        print_fn=lambda *args, **kwargs: None,
+    )
+    assert len(registered) == 1
+    rendered = wiring.mcp_config(tuple(registered), project_root=tmp_path)
+    configured = rendered["mcpServers"]["recall"]["env"]
+    inherited = selected_table or "client_other"
+    settings = Settings.from_env({"RECALL_TABLE": inherited, **configured})
+    assert settings.table == (selected_table or DEFAULT_TABLE)

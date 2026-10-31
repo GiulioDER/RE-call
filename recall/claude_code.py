@@ -198,9 +198,10 @@ def server_env(
     """The environment the MCP server is launched with.
 
     `RECALL_TRUST_MODE` is not optional at install time and leaving it out is the single most
-    likely way for a correct installation to look broken. A stdio server started with an explicit
-    `env` block does not inherit exported shell variables, and a fresh corpus is uncalibrated and
-    bound to no generation, which a strict server correctly refuses with `INDEX_NOT_READY`. The
+    likely way for a correct installation to look broken. A client merges this block over its own
+    environment, so the selected table and trust mode must be explicit. A fresh corpus is
+    uncalibrated and bound to no generation, which a strict server correctly refuses with
+    `INDEX_NOT_READY`. The
     user's first search would return nothing and they would conclude the product does not work.
     Set it, and say so in the UI: an uncalibrated corpus is the honest starting state and
     calibration is the upgrade, not a footnote.
@@ -209,6 +210,7 @@ def server_env(
         "RECALL_SERVING_DSN": dsn,
         "RECALL_TENANT": tenant,
         "RECALL_TRUST_MODE": trust_mode,
+        "RECALL_TABLE": table or DEFAULT_TABLE,
     }
     # ⚠️ **Emitted because three writers of this one server's env disagreed, and none was a
     # superset.** `recall/wizard/wiring.py` wrote DSN/EMBEDDER/TENANT, this function wrote
@@ -217,8 +219,6 @@ def server_env(
     # that carries none — and `recall_mcp.server` never calls `load_dotenv`, so it silently falls
     # back to fastembed. A width mismatch raises into a log the client does not show; a same-width
     # different model does not raise at all, which is this project's documented worst case.
-    if table and table != DEFAULT_TABLE:
-        env["RECALL_TABLE"] = table
     if embedder:
         env["RECALL_EMBEDDER"] = embedder
     return env

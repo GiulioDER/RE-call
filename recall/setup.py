@@ -1483,6 +1483,7 @@ def run_setup_wizard(
             register_mcp_server(
                 dsn=dsn,
                 embedder=embedder.value,
+                table=table or DEFAULT_TABLE,
                 project_root=project_root,
                 print_fn=print_fn,
             )
