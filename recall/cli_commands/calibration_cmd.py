@@ -81,7 +81,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         default=None,
         help=f"reject if the inherited threshold misclassifies more than this fraction of either "
         f"labelled class on the new generation (default {DEFAULT_MAX_CARRY_FORWARD_ERROR}). This "
-        f"is the check separability cannot make",
+        f"is the check separability cannot make. A looser value serves here, but an export of "
+        f"the result will not import elsewhere: import judges at no more than the default",
     )
     p_cal_carry.add_argument("--publish", action="store_true")
 
@@ -200,8 +201,19 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_cal_export = calibration_sub.add_parser("export")
     p_cal_export.add_argument("calibration_id")
     p_cal_export.add_argument("--output", required=True)
-    p_cal_import = calibration_sub.add_parser("import")
+    p_cal_import = calibration_sub.add_parser(
+        "import",
+        help="store a calibration bundle after re-scoring YOUR labelled queries on its generation "
+        "with --embedder (one embedding call per query); a legacy file is stored unbound",
+    )
     p_cal_import.add_argument("path")
+    p_cal_import.add_argument(
+        "--labels",
+        dest="labels_file",
+        default=None,
+        help="your labelled query set (the one the bundle was fitted on, digest checked); "
+        "required for a v2 bundle, whose own labels are not evidence",
+    )
 
 
 #: The `recall calibration` subcommands a lite store serves. The rest are bound to PostgreSQL
@@ -312,7 +324,17 @@ def _cmd_calibration(args: argparse.Namespace) -> None:
         elif args.calibration_cmd == "export":
             print(repository.export_bundle(args.calibration_id, args.output))
         elif args.calibration_cmd == "import":
-            print(repository.import_bundle(args.path))
+            # The operator's labels, scored by the generation's embedder, are what authenticate
+            # an import. The embedder is built only once the bundle has passed every cheaper
+            # check, and never for a legacy file, which needs none.
+            labels = load_query_set(args.labels_file)[0] if args.labels_file else None
+            print(
+                repository.import_bundle(
+                    args.path,
+                    labels=labels,
+                    make_embedder=lambda: _make_embedder(args.embedder),
+                )
+            )
         elif args.calibration_cmd == "near-miss":
             _cmd_near_miss(args, repository)
         elif args.calibration_cmd == "served-gap":

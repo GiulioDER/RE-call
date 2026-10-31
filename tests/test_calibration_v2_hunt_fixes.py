@@ -294,12 +294,16 @@ def test_a_field_that_would_not_survive_storage_is_refused_before_the_database(
 
 
 def test_a_canonically_typed_bundle_still_reaches_the_database(tmp_path: Path) -> None:
-    """Control for BUG-001 and BUG-103: an export's own types pass the field check."""
+    """Control for BUG-001 and BUG-103: an export's own types pass the field check.
+
+    Passes the operator's labels since import requires them (SEC-001 of the import re-score
+    audit); without them the import is refused before the database, which is a different check.
+    """
     repository = _repository()
     _forbid_database(repository, "reached the database")
     path = _sealed(tmp_path / "b.json", _bundle_artifact(), QUERIES)
     with pytest.raises(AssertionError, match="reached the database"):
-        repository.import_bundle(path)
+        repository.import_bundle(path, labels=QUERIES)
 
 
 # DEPLOY-001 ---------------------------------------------------------------------------------

@@ -376,7 +376,7 @@ def test_a_carried_artifact_round_trips_through_export_and_import(carry_tenant, 
             (tenant, carried.calibration_id),
         )
 
-    imported_id = repository.import_bundle(bundle)
+    imported_id = repository.import_bundle(bundle, embedder, labels=_labels())
     imported = repository.get(imported_id)  # raises on a checksum mismatch
     assert imported.carry_forward is not None
     assert dict(imported.carry_forward) == dict(carried.carry_forward or {})

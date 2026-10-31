@@ -70,6 +70,7 @@ from recall.calibration_v2 import (
     canonical_query_set,
     corpus_delta,
     judge_inherited_threshold,
+    require_distinct_scored_queries,
     write_calibration_bundle,
 )
 from recall.embedding_core import embed_query
@@ -428,6 +429,10 @@ def auto_calibrate(
             f"chunk(s) now ({why}). Add a few more memos.",
         )
     labels, query_digest = canonical_query_set(entries)
+    # The PostgreSQL fit's rule too: one query twice is one cosine counted twice. The generated set
+    # is deduplicated by query already (`recall.wizard.queryset.canonicalize`), so this refuses only
+    # a supplied set, at the same point `canonical_query_set` refuses an identical entry.
+    require_distinct_scored_queries(labels)
     recorder = _RecordingEmbedder(embedder)
     # Duck-typed as everywhere else: the scorer needs only `top_cosine`, which the snapshot has.
     answerable, unanswerable = measure_top_cosines(cast("Any", snapshot), cast("Any", recorder), list(labels))
