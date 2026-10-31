@@ -150,6 +150,7 @@ def validate_dataset(dataset: dict[str, Any], today: date | None = None) -> list
     review_ids = _ids(reviews, "review_id", "review", errors)
 
     source_by_id = {record.get("source_id"): record for record in sources}
+    review_by_id = {record.get("review_id"): record for record in reviews}
     review_by_claim: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for index, source in enumerate(sources):
@@ -230,6 +231,8 @@ def validate_dataset(dataset: dict[str, Any], today: date | None = None) -> list
         review_id = claim.get("review_id")
         if review_id not in review_ids:
             errors.append(f"{prefix}.review_id references a missing review")
+        elif review_by_id[review_id].get("claim_id") != claim_id:
+            errors.append(f"{prefix}.review_id does not match claim {claim_id}")
         claims_by_cell[(claim.get("system_id"), capability_id)].append(claim)
 
     for index, review in enumerate(reviews):
