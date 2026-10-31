@@ -1,4 +1,8 @@
-"""Optional conversion of session records into Ragas evaluation samples."""
+"""Optional conversion of session records into Ragas evaluation samples.
+
+Prior work: the existing paired `SessionRecord` schema in this package and the
+separate scorer environment documented in `scripts/agent_ab_score_ragas.py`.
+"""
 
 from __future__ import annotations
 

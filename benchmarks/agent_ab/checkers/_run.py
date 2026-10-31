@@ -22,6 +22,9 @@ would inherit the very defect it is scoring. `run_bounded` kills the whole proce
 Neither fix is optional and neither is decorative: without the first the harness cannot run a
 shell task at all, and without the second one naive submission can hold a checker for the length
 of whatever it spawned.
+
+Prior work: shared bounded transport for the existing task-success framework in
+`benchmarks/agent_ab/tasksuccess.py` and its executable artifact checkers.
 """
 
 from __future__ import annotations

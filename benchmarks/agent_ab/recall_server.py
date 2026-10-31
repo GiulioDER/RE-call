@@ -19,6 +19,9 @@ is correct and non-negotiable, so this writes a short-lived static token file in
 temporary directory and removes it on exit. The token never enters the repository, and the MCP
 config is written as a **file** rather than passed inline so the bearer token never appears in a
 command line that gets recorded into a session artifact.
+
+Prior work: the paired arm configuration in `benchmarks/agent_ab/arms.py` and the
+existing RE-call MCP server; this module supplies benchmark launch and readiness.
 """
 
 from __future__ import annotations

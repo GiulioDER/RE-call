@@ -18,6 +18,9 @@ tasks, an arm that never triggers a trap gives 0/20, and `recall/eval/metrics.py
 already records what a percentile bootstrap does with that: it resamples all-False every time and
 returns `[0.00, 0.00]`, reporting CERTAINTY from twenty observations that happened to agree. Every
 function here returns `None` rather than a number it cannot support, and says why in `note`.
+
+Prior work: the paired endpoint design documented in `benchmarks/agent_ab/README.md`
+and the existing statistical contracts in `tests/test_agent_ab_stats.py`.
 """
 
 from __future__ import annotations

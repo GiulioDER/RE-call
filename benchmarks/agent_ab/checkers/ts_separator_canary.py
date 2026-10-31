@@ -18,6 +18,9 @@ Both runs are required and they are required in opposite directions:
 
 The existing tests do not touch U+2028, so they stay green under the mutation. A failure in the
 second run therefore comes from the test the agent added, and from nothing else.
+
+Prior work: the existing executable task-success framework in
+`benchmarks/agent_ab/tasksuccess.py` and its separator-normalization mutation task.
 """
 
 from __future__ import annotations

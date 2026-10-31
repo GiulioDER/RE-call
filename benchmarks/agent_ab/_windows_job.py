@@ -4,6 +4,9 @@ The wrapper reads a release byte before starting the CLI. Its parent assigns it
 to a job first, so every later descendant inherits that job. Closing the last
 job handle kills its members, including descendants of an already exited CLI.
 
+Prior work: extends the existing `claude_exec.py` subprocess boundary, using the
+Windows API references below for benchmark process ownership.
+
 https://learn.microsoft.com/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject
 https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-jobobject_basic_limit_information
 """
