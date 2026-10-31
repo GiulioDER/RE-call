@@ -267,7 +267,11 @@ def test_the_injected_text_warns_that_most_hits_are_irrelevant():
 
 
 def test_the_installer_entry_never_carries_a_permission_decision():
-    """The settings the installer writes are what the client actually runs."""
+    """The installed handler stays safe without making a permission decision.
+
+    SEC-001: removing -P from PreToolUse fails the argv assertion below;
+    restoring the safe-path argument passes while permission checks remain intact.
+    """
 
     from recall.claude_code import hook_entries
 
@@ -277,7 +281,7 @@ def test_the_installer_entry_never_carries_a_permission_decision():
     # `PowerShell` is matched for general knowledge; write time itself reads `Bash` commands only.
     assert group["matcher"] == "Write|Edit|MultiEdit|NotebookEdit|Bash|BashOutput|PowerShell"
     handler = group["hooks"][0]
-    assert handler["args"] == ["-m", "recall_hooks", "pre-tool-use"]
+    assert handler["args"] == ["-P", "-m", "recall_hooks", "pre-tool-use"]
     # Synchronous by necessity: additionalContext delivered after the tool ran is context the
     # model never saw, so an `async: True` here would silently make the feature inert.
     assert handler.get("async") is not True

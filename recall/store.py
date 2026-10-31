@@ -4,8 +4,9 @@ import json
 import os
 import re
 import warnings
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -65,7 +66,19 @@ if TYPE_CHECKING:  # the pool extra is optional; the annotation must not require
 
     from recall.pool import SharedPool
 
-_NUMERIC_TOKEN_RE = re.compile(r"(?<![\w.])[+-]?\d+(?:[.,]\d+)?%?(?![\w.])")
+# An indexing operation must write on the session holding its advisory lock. A
+# context-local map supports nested stores without sharing bindings with tenant
+# views or unrelated threads. Each context installs a new map, never mutating it.
+_INDEX_CONNECTIONS: ContextVar[Mapping[PgVectorStore, psycopg.Connection] | None] = ContextVar(
+    "recall_index_connections", default=None
+)
+
+#: A figure in a query or a table cell: a thousands-grouped number (`1,234,567.5`) first, so it
+#: is read whole, else a plain one with an optional decimal point or comma.
+_NUMERIC_TOKEN_RE = re.compile(
+    r"(?<![\w.])[+-]?(?:[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?|\d+(?:[.,]\d+)?)%?(?![\w.])"
+)
+_GROUPED_NUMBER_RE = re.compile(r"[+-]?[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?%?")
 
 
 class _CountingCursor:
@@ -162,11 +175,24 @@ def _observed_db_call(connection: Any, operation: Callable[[Any], _T]) -> _T:
     return operation(_CountingConnection(connection, trace))
 
 
+def _normalize_numeric(value: str) -> str:
+    """One figure as the boost compares it: `1,500` and `1,234,567.5` are grouped, `1,5` decimal.
+
+    A comma after a nonzero lead of one to three digits and followed by groups of exactly three
+    digits is a thousands separator and is dropped (`0,500` stays the decimal `0.500`); any other
+    comma is a decimal comma and becomes a point. `recall.extraction` and
+    `recall.lite.store` copy this rule, because the index side and the query side must agree.
+    """
+    if _GROUPED_NUMBER_RE.fullmatch(value):
+        return value.replace(",", "")
+    return value.replace(",", ".")
+
+
 def _numeric_query_terms(text: str) -> list[str]:
     """Return normalized numeric terms for the table exact-match boost."""
     terms: list[str] = []
     for value in _NUMERIC_TOKEN_RE.findall(text):
-        normalized = value.replace(",", ".")
+        normalized = _normalize_numeric(value)
         if normalized not in terms:
             terms.append(normalized)
     return terms
@@ -229,8 +255,16 @@ def sparse_ef_search(k: int) -> int:
     """`hnsw.ef_search` for a learned sparse query returning `k` rows.
 
     Raise-only: never below pgvector's own default, and capped at what pgvector accepts rather
-    than raising on a `k` that is otherwise legal.
+    than raising on a `k` that is otherwise legal. A `k` above that cap is refused, exactly as
+    `_bounded_ef_search` refuses it for the dense leg: no legal scan can then return `k` rows, and the caller would
+    never learn of the truncation.
     """
+    if k > _HNSW_EF_SEARCH_MAX:
+        raise ValueError(
+            f"k={k} exceeds pgvector's maximum hnsw.ef_search of {_HNSW_EF_SEARCH_MAX}, so the "
+            "learned sparse HNSW scan cannot return k rows and would silently truncate. "
+            "Ask for fewer candidates."
+        )
     widened = k * SPARSE_EF_SEARCH_MULTIPLIER
     return max(_PGVECTOR_DEFAULT_EF_SEARCH, min(widened, _HNSW_EF_SEARCH_MAX))
 
@@ -322,7 +356,8 @@ _log = get_logger("store")
 #: its tenant predicate is always present.
 #:
 #: Both are read at CALL time (not import time) via `os.environ`, matching how
-#: `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` are read in `recall_mcp/service.py`, so a
+#: `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` are read in
+#: `recall.index_budget.budget_from_env`, so a
 #: test can `monkeypatch.setenv` per-case and a long-lived process can pick up a changed value
 #: without restarting.
 DEFAULT_HNSW_EF_SEARCH_FILTERED = 200
@@ -334,10 +369,10 @@ DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED = "relaxed_order"
 #: query starts silently returning fewer rows than it asked for.
 #:
 #: An HNSW scan cannot return more rows than it examined, so `LIMIT k` with `k > ef_search`
-#: yields ef_search rows — no error, no warning, no way for the caller to tell. The comment on
-#: DEFAULT_HNSW_EF_SEARCH_FILTERED above says the unfiltered arm needs no tuning because it
-#: "already measures recall 1.000 at ef_search's default". That measurement was taken at k=10;
-#: it holds for k <= ef_search and does not generalise past it, which is the gap this closes.
+#: yields ef_search rows — no error, no warning, no way for the caller to tell. An earlier
+#: version of the comment on DEFAULT_HNSW_EF_SEARCH_FILTERED said the unfiltered arm needed no
+#: tuning because it measured recall 1.000 at ef_search's default. That measurement was taken at
+#: k=10; it holds for k <= ef_search and does not generalise past it, which is the gap this closes.
 #:
 #: Measured on 72,151 chunks (FinanceBench, dim 1024): `query_dense(k=50)` returned exactly 40
 #: rows for 150 of 150 queries, so a `HybridRetriever(candidate_k=50)` was really running at 40
@@ -442,6 +477,17 @@ AUTOANALYZE_THRESHOLD = 50
 AUTOANALYZE_SCALE_FACTOR = 0.1
 
 
+def _env_setting(name: str, default: str) -> str:
+    """One HNSW setting, read at call time. Blank or whitespace means UNSET, so the default applies.
+
+    The generated environment template lists these keys with an empty value, and a systemd
+    `EnvironmentFile` can carry `NAME=`: either used to reach `int("")` or the vocabulary check
+    and fail every filtered dense search, naming a value nobody meant to set.
+    """
+    value = os.environ.get(name, "").strip()
+    return value or default
+
+
 def _ef_search_multiplier() -> int:
     """How far past `k` to widen an unfiltered HNSW scan; see DEFAULT_HNSW_EF_SEARCH_MULTIPLIER.
 
@@ -450,7 +496,7 @@ def _ef_search_multiplier() -> int:
     restart. Values below 1 are refused rather than clamped: a 0 would silently disable the
     widening and reintroduce the truncation this exists to prevent.
     """
-    raw = os.environ.get("RECALL_HNSW_EF_SEARCH_MULTIPLIER", str(DEFAULT_HNSW_EF_SEARCH_MULTIPLIER))
+    raw = _env_setting("RECALL_HNSW_EF_SEARCH_MULTIPLIER", str(DEFAULT_HNSW_EF_SEARCH_MULTIPLIER))
     try:
         mult = int(raw)
     except ValueError:
@@ -458,6 +504,47 @@ def _ef_search_multiplier() -> int:
     if mult < 1:
         raise ValueError(f"RECALL_HNSW_EF_SEARCH_MULTIPLIER={mult} must be >= 1")
     return mult
+
+
+def _bounded_ef_search(k: int, *, scan: str, stacklevel: int) -> int:
+    """`k` times the multiplier, within pgvector's 1..1000; the dense arms' one derivation.
+
+    `k` past the maximum is refused, because no legal scan then returns k rows and the caller
+    would never learn of the truncation. Past the maximum only the over-fetch margin gives way,
+    with a warning. `scan` names the arm in the refusal ("a filtered", "an unfiltered").
+    `stacklevel` is passed through to `warnings.warn` as each arm had it, plus one for this frame.
+    For the unfiltered arm it reaches the caller of `query_dense`: at a lower level the warning
+    names this module's own line, so a `-W` filter keyed on the caller stops selecting it and every
+    call site collapses onto one `__warningregistry__` entry. The filtered arm sits one frame
+    deeper and still names `query_dense`, as it did before the two derivations were merged.
+    """
+    if k > _HNSW_EF_SEARCH_MAX:
+        raise ValueError(
+            f"k={k} exceeds pgvector's maximum hnsw.ef_search of {_HNSW_EF_SEARCH_MAX}, "
+            f"so {scan} HNSW scan cannot be widened far enough to return k rows and "
+            "would silently truncate. Ask for fewer candidates."
+        )
+    multiplier = _ef_search_multiplier()
+    desired_ef = k * multiplier
+    if desired_ef > _HNSW_EF_SEARCH_MAX:
+        warnings.warn(
+            f"hnsw.ef_search capped at {_HNSW_EF_SEARCH_MAX}: k={k} x multiplier "
+            f"{multiplier} = {desired_ef}, above pgvector's maximum. The "
+            f"scan still covers k={k}, so only the over-fetch margin is reduced.",
+            RuntimeWarning,
+            stacklevel=stacklevel,
+        )
+    return min(desired_ef, _HNSW_EF_SEARCH_MAX)
+
+
+#: Raise `hnsw.ef_search` to `want_ef` for this transaction, never lower it: an operator who
+#: already raised it (per database, per role, in postgresql.conf) keeps their value. Bound
+#: parameters, so the value can be GREATEST(current, wanted) rather than a literal SET LOCAL.
+_RAISE_ONLY_EF_SEARCH_SQL = (
+    "SELECT set_config('hnsw.ef_search', GREATEST("
+    "COALESCE(NULLIF(current_setting('hnsw.ef_search', true), ''), %(default_ef)s)"
+    "::int, %(want_ef)s)::text, true)"
+)
 
 
 def _first_write_sql(alias: str = "") -> str:
@@ -487,7 +574,19 @@ def _prepare_connection(
     Both values a connection needs are fixed at construction, so capturing them costs nothing and
     keeps the pool from pinning the store.
     """
-    register_vector(conn)
+    try:
+        register_vector(conn)
+    except psycopg.ProgrammingError as exc:
+        # pgvector's own wording when the extension is absent: the database has not had even the
+        # first migration, which is what `check_schema` would report if it got the chance.
+        if "vector type not found" not in str(exc):
+            raise
+        from recall.schema import SchemaTooOld
+
+        raise SchemaTooOld(
+            "the database has no `vector` type: the pgvector extension and RE-call's schema "
+            "migrations have not been applied. Run `recall schema apply`."
+        ) from exc
     # Per-connection tenant for the RLS policy. Safe to set once at connection setup because a
     # store is bound to ONE tenant: the pool belongs to the store, so no connection is ever shared
     # between tenants. A server handling many tenants opens a store per tenant.
@@ -679,6 +778,31 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             pass
         self._conn = self._connect()
 
+    @contextmanager
+    def _indexing_session(self, conn: "psycopg.Connection") -> Iterator[None]:
+        """Use the lock-owning session for this indexing call, without reconnecting."""
+        token = _INDEX_CONNECTIONS.set({**(_INDEX_CONNECTIONS.get() or {}), self: conn})
+        try:
+            yield
+        finally:
+            _INDEX_CONNECTIONS.reset(token)
+
+    def _index_connection(self) -> "psycopg.Connection":
+        """Open a dedicated guard/write session with the normal store policy."""
+        if self._closed:
+            raise RuntimeError("store is closed")
+        if self._shared is None:
+            return self._connect()
+        conn = self._shared._connect_dedicated()
+        try:
+            # The shared pool's timeout and transport settings remain authoritative.
+            # This session is dedicated to one tenant and is never returned to it.
+            conn.execute("SELECT set_config(%s, %s, false)", (TENANT_GUC, self._tenant))
+        except Exception:  # BROAD-CATCH: fail-closed
+            conn.close()
+            raise
+        return conn
+
     def _with_retry(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
         """Run ``op(conn)``; on a broken-connection error, reconnect once and retry.
 
@@ -700,6 +824,10 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         """
         if self._closed:
             raise RuntimeError("store is closed")
+        pinned = (_INDEX_CONNECTIONS.get() or {}).get(self)
+        if pinned is not None:
+            # Reconnecting here would resume writes after losing the writer lock.
+            return _observed_db_call(pinned, op)
         if self._shared is not None:
             return self._with_retry_shared(op)
         if self._pool is not None:
@@ -1139,8 +1267,8 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
     def check_rls_effective(self) -> bool:
         """True when row-level security actually constrains THIS connection's role.
 
-        Returns False for a superuser or a `BYPASSRLS` role — for whom the policy created above
-        is inert. Exposed rather than merely documented because "we enabled RLS" is the kind of
+        Returns False for a superuser or a `BYPASSRLS` role — for whom the RLS policy the schema
+        migrations create is inert. Exposed rather than merely documented because "we enabled RLS" is the kind of
         claim that gets believed without being true, and the difference is invisible until a
         tenant reads another tenant's memory.
         """
@@ -1310,7 +1438,8 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             # never-analyzed so the ANALYZE below is what reports the problem, rather than this
             # method inventing a diagnosis from a catalog miss.
             reltuples = float(row[0]) if row and row[0] is not None else -1.0
-            if reltuples >= 0 and modified < AUTOANALYZE_THRESHOLD + (
+            # Autovacuum analyzes only when the change EXCEEDS its threshold, so equality skips.
+            if reltuples >= 0 and modified <= AUTOANALYZE_THRESHOLD + (
                 AUTOANALYZE_SCALE_FACTOR * reltuples
             ):
                 return False
@@ -1367,9 +1496,7 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         floor, because the over-fetch multiplier is a correctness margin rather than a reason to
         narrow an operator's explicit setting.
         """
-        raw_ef = os.environ.get(
-            "RECALL_HNSW_EF_SEARCH_FILTERED", str(DEFAULT_HNSW_EF_SEARCH_FILTERED)
-        )
+        raw_ef = _env_setting("RECALL_HNSW_EF_SEARCH_FILTERED", str(DEFAULT_HNSW_EF_SEARCH_FILTERED))
         try:
             ef_search = int(raw_ef)
         except ValueError:
@@ -1384,34 +1511,16 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                 f"RECALL_HNSW_EF_SEARCH_FILTERED={ef_search} is out of range; "
                 f"pgvector accepts 1..{_HNSW_EF_SEARCH_MAX}"
             )
-        iterative_scan = os.environ.get(
+        iterative_scan = _env_setting(
             "RECALL_HNSW_ITERATIVE_SCAN_FILTERED", DEFAULT_HNSW_ITERATIVE_SCAN_FILTERED
-        )
+        ).lower()
         if iterative_scan not in _HNSW_ITERATIVE_SCAN_VALUES:
             raise ValueError(
                 f"RECALL_HNSW_ITERATIVE_SCAN_FILTERED={iterative_scan!r} is not one of "
                 f"{sorted(_HNSW_ITERATIVE_SCAN_VALUES)}"
             )
         if k is not None:
-            if k > _HNSW_EF_SEARCH_MAX:
-                raise ValueError(
-                    f"k={k} exceeds pgvector's maximum hnsw.ef_search of {_HNSW_EF_SEARCH_MAX}, "
-                    "so a filtered HNSW scan cannot be widened far enough to return k rows and "
-                    "would silently truncate. Ask for fewer candidates."
-                )
-            desired_ef = k * _ef_search_multiplier()
-            if desired_ef > _HNSW_EF_SEARCH_MAX:
-                warnings.warn(
-                    f"hnsw.ef_search capped at {_HNSW_EF_SEARCH_MAX}: k={k} x multiplier "
-                    f"{_ef_search_multiplier()} = {desired_ef}, above pgvector's maximum. The "
-                    f"scan still covers k={k}, so only the over-fetch margin is reduced.",
-                    RuntimeWarning,
-                    stacklevel=3,
-                )
-            ef_search = max(
-                ef_search,
-                min(desired_ef, _HNSW_EF_SEARCH_MAX),
-            )
+            ef_search = max(ef_search, _bounded_ef_search(k, scan="a filtered", stacklevel=4))
         return ef_search, iterative_scan
 
     def query_dense(
@@ -1543,11 +1652,6 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             # there the scan is already at least this wide, so opening a transaction and issuing
             # the extra statement would buy nothing. That keeps the original rationale for leaving
             # the unfiltered arm alone intact over the range where it was actually correct.
-            widen = (
-                "SELECT set_config('hnsw.ef_search', GREATEST("
-                "COALESCE(NULLIF(current_setting('hnsw.ef_search', true), ''), %(default_ef)s)"
-                "::int, %(k)s)::text, true)"
-            )
             # Bound the DERIVED value the way the filtered path bounds its configured one.
             #
             # `k * multiplier` is over-fetch margin, not a requirement: correctness needs only
@@ -1559,29 +1663,11 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             # failed the query with a message naming `hnsw.ef_search` — a knob the caller never
             # set — instead of the `k` they did. The filtered arm has validated this since it was
             # written; the unfiltered arm computes the same quantity and checked nothing: one
-            # derivation with the guard on only one of its two paths.
-            desired_ef = k * _ef_search_multiplier()
-            if k > _HNSW_EF_SEARCH_MAX:
-                raise ValueError(
-                    f"k={k} exceeds pgvector's maximum hnsw.ef_search of {_HNSW_EF_SEARCH_MAX}, "
-                    f"so an unfiltered HNSW scan cannot be widened far enough to return k rows "
-                    f"and would silently truncate. Ask for fewer candidates."
-                )
-            if desired_ef > _HNSW_EF_SEARCH_MAX:
-                warnings.warn(
-                    f"hnsw.ef_search capped at {_HNSW_EF_SEARCH_MAX}: k={k} x multiplier "
-                    f"{_ef_search_multiplier()} = {desired_ef}, above pgvector's maximum. The "
-                    f"scan still covers k={k}, so only the over-fetch margin is reduced.",
-                    RuntimeWarning,
-                    # 3, not 2: the timed `query_dense` wrapper sits between this frame and the
-                    # caller. At 2 the warning names this module's own line, so a `-W` filter
-                    # keyed on the caller stops selecting it and every call site collapses onto
-                    # one `__warningregistry__` entry under the default once-per-location action.
-                    stacklevel=3,
-                )
+            # derivation with the guard on only one of its two paths. Both now share
+            # `_bounded_ef_search`, so the guard cannot be on one path only again.
             widen_params = {
                 "default_ef": str(_PGVECTOR_DEFAULT_EF_SEARCH),
-                "k": min(desired_ef, _HNSW_EF_SEARCH_MAX),
+                "want_ef": _bounded_ef_search(k, scan="an unfiltered", stacklevel=4),
             }
 
             def _op_unfiltered(conn: "psycopg.Connection") -> list[tuple]:
@@ -1589,7 +1675,7 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                 # store's connections are autocommit, so the transaction is opened explicitly —
                 # same shape as the filtered arm above, same reason.
                 with conn.transaction():
-                    conn.execute(widen, widen_params)
+                    conn.execute(_RAISE_ONLY_EF_SEARCH_SQL, widen_params)
                     return conn.execute(sql, params).fetchall()
 
             rows = self._with_retry(_op_unfiltered)
@@ -1909,10 +1995,10 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                     WHERE c.tenant_id = %(tenant)s
                       AND c.tsv @@ q.tsq
                     {where}
-                    ORDER BY rank DESC
+                    ORDER BY rank DESC, c.id
                     LIMIT %(k)s
                 ) top_k
-                ORDER BY rank DESC
+                ORDER BY rank DESC, id
             """
         else:
             sql = f"""
@@ -1923,7 +2009,7 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                 WHERE c.tenant_id = %(tenant)s
                   AND c.tsv @@ q.tsq
                 {where}
-                ORDER BY score DESC
+                ORDER BY score DESC, c.id
                 LIMIT %(k)s
             """
         params: dict = {
@@ -2034,11 +2120,29 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                 (self._tenant, self._table, profile_id),
             ).fetchone()
             # `count(*)` always returns a row, so the None branch is unreachable in practice. It
-            # is still written, because the ONE caller uses this number to decide whether to
+            # is still written, because a caller may use this number to decide whether to
             # REFUSE, and an unchecked `[0]` would turn an impossible state into a TypeError
-            # raised from inside a retry wrapper. 0 is the fail-CLOSED answer: it makes the query
+            # raised from inside a retry wrapper. 0 is the fail-CLOSED answer: it makes a caller
             # refuse rather than proceed on a count nobody established.
             return int(row[0]) if row is not None else 0
+
+        return self._with_retry(_op)
+
+    def _has_sparse_rows(self, profile_id: str) -> bool:
+        """Whether any chunk of THIS table is encoded under `profile_id`: one index descent.
+
+        `_query_learned_sparse` asks this on every query and needs only zero or not, so it must
+        not pay `sparse_row_count`'s scan over every encoded row of the corpus.
+        """
+
+        def _op(conn: "psycopg.Connection") -> bool:
+            row = conn.execute(
+                f"SELECT EXISTS (SELECT 1 FROM {SPARSE_TABLE} "
+                f"WHERE tenant_id = %s AND chunk_table = %s AND profile_id = %s)",
+                (self._tenant, self._table, profile_id),
+            ).fetchone()
+            # False when no row comes back, the fail-CLOSED answer, as in `sparse_row_count`.
+            return bool(row[0]) if row is not None else False
 
         return self._with_retry(_op)
 
@@ -2134,7 +2238,7 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         vec: list[float] | None = None,
         scope: Scope | None = None,
     ) -> list[ScoredChunk]:
-        if self.sparse_row_count(profile_id) == 0:
+        if not self._has_sparse_rows(profile_id):
             raise LookupError(
                 f"table {self._table!r} is not indexed for learned sparse profile "
                 f"{profile_id!r} (0 rows in {SPARSE_TABLE}). Encode the corpus first; refusing "
@@ -2185,16 +2289,11 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         # rather than a literal SET so the value can be GREATEST(current, wanted): an operator who
         # already raised ef_search must not have it LOWERED here.
         ef_search = sparse_ef_search(k)
-        widen = (
-            "SELECT set_config('hnsw.ef_search', GREATEST("
-            "COALESCE(NULLIF(current_setting('hnsw.ef_search', true), ''), %(default_ef)s)"
-            "::int, %(want_ef)s)::text, true)"
-        )
         widen_params = {"default_ef": str(_PGVECTOR_DEFAULT_EF_SEARCH), "want_ef": ef_search}
 
         def _op(conn: "psycopg.Connection") -> list[tuple]:
             with conn.transaction():
-                conn.execute(widen, widen_params)
+                conn.execute(_RAISE_ONLY_EF_SEARCH_SQL, widen_params)
                 return conn.execute(sql, params).fetchall()
 
         rows = self._with_retry(_op)
@@ -2441,7 +2540,10 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         """
         if self._closed:
             raise RuntimeError("store is closed")
-        if self._shared is not None:
+        pinned = (_INDEX_CONNECTIONS.get() or {}).get(self)
+        if pinned is not None:
+            yield pinned
+        elif self._shared is not None:
             # One transaction spanning the whole iteration, deliberately. A server-side cursor
             # lives in the transaction that declared it, so the tenant `SET LOCAL` and the cursor
             # have exactly the same lifetime here — which is what a streaming read needs, and is

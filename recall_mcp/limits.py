@@ -217,6 +217,11 @@ class _Bucket:
         self._refill(now)
         self._tokens = max(0.0, self._tokens - cost)
 
+    def refund(self, cost: float, now: float) -> None:
+        """Return reserved work without exceeding the configured capacity."""
+        self._refill(now)
+        self._tokens = min(self._rate.capacity, self._tokens + cost)
+
 
 class RateLimiter:
     """Per-(tenant, key) token buckets behind one lock.
@@ -783,8 +788,9 @@ class FailedAuthThrottle:
     the SDK's bearer middleware is the way to narrow it, and it is not built yet. Revisit
     before serving a fleet.
 
-    `allow()` reports the level without debiting; `record_failure()` debits one, saturating
-    at zero (never raising, even under a sub-1 per-minute configuration).
+    `reserve()` debits before asynchronous OIDC validation can yield; `refund()` returns
+    that reservation after success or a provider outage. `allow()` remains a nondebiting
+    level check; the cheap static-token path uses `record_failure()` to debit afterwards.
     """
 
     def __init__(self, rate: Rate | None, *, clock: Callable[[], float] = time.monotonic) -> None:
@@ -810,6 +816,27 @@ class FailedAuthThrottle:
             if self._bucket is None:
                 self._bucket = _Bucket(self._rate, now)
             self._bucket.drain(1.0, now)
+
+    def reserve(self) -> bool:
+        """Atomically admit one validation and reserve its potential failure cost."""
+        if self._rate is None:
+            return True
+        with self._lock:
+            now = self._clock()
+            if self._bucket is None:
+                self._bucket = _Bucket(self._rate, now)
+            if self._bucket.level(now) < 1.0:
+                return False
+            self._bucket.drain(1.0, now)
+            return True
+
+    def refund(self) -> None:
+        """Return one admitted validation's reservation when it was not a failure."""
+        if self._rate is None:
+            return
+        with self._lock:
+            if self._bucket is not None:
+                self._bucket.refund(1.0, self._clock())
 
 
 def failed_auth_throttle_from_env(env: Mapping[str, str] | None = None) -> FailedAuthThrottle:

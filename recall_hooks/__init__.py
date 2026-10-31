@@ -394,7 +394,26 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     dsn = config.get("dsn")
     if not dsn:
         return 0
-    memory_dir = Path(str(cwd)) / "memory"
+    configured = config.get("project_root")
+    if not isinstance(configured, str) or not isinstance(cwd, str):
+        return 0
+    try:
+        root_path = Path(configured).expanduser()
+        event_path = Path(cwd).expanduser()
+        if not root_path.is_absolute() or not event_path.is_absolute():
+            return 0
+        root = root_path.resolve(strict=True)
+        event_root = event_path.resolve(strict=True)
+        memory_dir = (event_root / "memory").resolve()
+        if (
+            not root.is_dir()
+            or not event_root.is_dir()
+            or not event_root.is_relative_to(root)
+            or not memory_dir.is_relative_to(root)
+        ):
+            return 0
+    except (OSError, RuntimeError, ValueError):
+        return 0
     if memory_dir.is_dir():
         try:
             from recall.memory_index import index_memory_directory

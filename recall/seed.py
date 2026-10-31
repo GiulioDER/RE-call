@@ -37,6 +37,8 @@ did not deliberately write down.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from recall.dsn_security import redacted_dsn, scrub_dsn_secrets
+
 from pathlib import Path
 from typing import Callable
 
@@ -225,7 +227,6 @@ def seed_corpus(
         # long before anyone has agreed to seed anything. A caller that only wants `plan_seed`, to
         # show the user what WOULD happen, should pay nothing for the machinery that does it.
         from recall.embeddings import resolve_embedder
-        from recall.store import redacted_dsn
         from recall.cache import default_cache
         from recall.index import Indexer, chunk_text
         from recall.store import DEFAULT_TABLE, DEFAULT_TENANT, PgVectorStore
@@ -242,17 +243,10 @@ def seed_corpus(
                 indexer = Indexer(store, embedder, chunker=chunk_text, cache=cache)
                 stats = indexer.index_path(plan.root, files=list(plan.files))
     except Exception as exc:  # BROAD-CATCH: fail-open
-        # ⚠️ The exception text can carry the DSN verbatim, password included. A MALFORMED dsn
-        # makes psycopg echo the whole connection string back: `missing "=" after
-        # "postgresql://user:PASSWORD@host" in connection info string`. The three WELL-FORMED
-        # failures (unreachable port, bad host, wrong password) are all clean, which is exactly
-        # what makes it easy to miss. Found by the wizard session in its own preflight.
-        #
-        # Replacing the known DSN handles the echo, which is the observed leak. It is not a
-        # general scrubber: `recall.store.scrub_dsn_secrets` is that, and it lands with #434, at
-        # which point this should call it instead.
+        # Keep whole-DSN masking too: token scrubbing intentionally skips short passwords.
+        message = str(exc).replace(dsn, redacted_dsn(dsn))
         print_fn(
-            f"Could not seed the corpus: {str(exc).replace(dsn, redacted_dsn(dsn))} — run "
+            f"Could not seed the corpus: {scrub_dsn_secrets(message, dsn)}. Run "
             f"'python -m recall.cli index {plan.root}' once the schema is applied for this "
             "embedder's dimension."
         )

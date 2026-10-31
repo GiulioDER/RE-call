@@ -1,8 +1,9 @@
 # Your first calibrated corpus
 
-> **When to prefer this page:** the canonical install is `recall setup`, which runs every step
-> below for you; `recall wizard --headless` is its scriptable form ([WIZARD.md](WIZARD.md)). This
-> page is the manual path, for anyone who wants to run and understand each command themselves.
+> **When to prefer this page:** use `recall wizard` to build, calibrate, publish, and promote a
+> generation, interactively or with `--headless --config` ([WIZARD.md](WIZARD.md)). This page is
+> the manual path. `recall setup` configures the installation and can fit a legacy calibration
+> file; it does not build or promote a calibrated generation.
 
 `docs/CALIBRATION.md` is the reference. This is the walkthrough: everything between "I have a
 folder of markdown" and "the server answers and says `trusted`", with the traps named at the point

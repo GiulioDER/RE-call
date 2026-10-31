@@ -237,9 +237,11 @@ def stage_uploads(
             seen.add(collision_key)
             # Refuse an oversized entry before materialising it: base64 encodes 3
             # bytes into 4 characters, so the encoded length bounds the decoded
-            # size without decoding. The post-decode check below stays as the
-            # exact enforcement.
-            if (len(encoded) // 4) * 3 > _MAX_TOTAL_BYTES - total:
+            # size without decoding. Valid trailing padding represents no decoded
+            # bytes. The post-decode check below stays as the exact enforcement,
+            # including malformed encodings that do not have canonical padding.
+            padding = 2 if encoded.endswith("==") else int(encoded.endswith("="))
+            if (len(encoded) // 4) * 3 - padding > _MAX_TOTAL_BYTES - total:
                 raise UploadError(_OVERSIZE_MSG)
             try:
                 data = base64.b64decode(encoded, validate=True)

@@ -27,6 +27,7 @@ from recall.embeddings import Embedder
 from recall.rerank import Reranker
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
+from recall.errors import RecallError
 
 #: Questions sampled by default. Deterministic (the first N of the caller's list, no RNG), so a
 #: preflight verdict is reproducible for a given slice.
@@ -35,11 +36,11 @@ DEFAULT_SAMPLE = 25
 METRIC_CLASSES = ("set", "ranked")
 
 
-class InertArmError(RuntimeError):
+class InertArmError(RuntimeError, RecallError):
     """The arm under test does not differ from the arm with its mechanism disabled."""
 
 
-class EmptySampleError(RuntimeError):
+class EmptySampleError(RuntimeError, RecallError):
     """`_compare` was asked to compare a mechanism over zero questions.
 
     Kept distinct from `InertArmError` on purpose: with no questions, the comparison never ran,

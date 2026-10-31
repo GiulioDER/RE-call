@@ -203,6 +203,8 @@ def admit_pairs(
     `arms_share_recall` is a stated REASON, not a flag, for the design where both arms are the same
     arm. A boolean would be indistinguishable from switching the gate off, so the caller writes the
     sentence and the runner records it in the artifact.
+
+    Duplicate task/variant records are refused before admission can discard an observation.
     """
 
     if arms_share_recall is not None and not arms_share_recall.strip():
@@ -217,7 +219,12 @@ def admit_pairs(
     for record in records:
         if record.task_id not in by_task:
             ordered_tasks.append(record.task_id)
-        by_task[record.task_id][record.variant] = record
+        arms = by_task[record.task_id]
+        if record.variant in arms:
+            raise ValueError(
+                f"duplicate record for task {record.task_id!r}, variant {record.variant!r}"
+            )
+        arms[record.variant] = record
 
     admitted: list[SessionRecord] = []
     verdicts: list[AdmissionVerdict] = []

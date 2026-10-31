@@ -60,6 +60,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from recall.errors import RecallError
+
 # A session id becomes a filename. The ids come out of a downloaded file, so joining one onto a
 # path without checking is an arbitrary-write primitive: `../../.ssh/authorized_keys` is a
 # perfectly good JSON string. Anything outside this class is refused loudly rather than
@@ -72,7 +74,7 @@ _SAFE_SESSION_ID = re.compile(r"\A[A-Za-z0-9._-]+\Z")
 _ABSTENTION_SUFFIX = "_abs"
 
 
-class ConversionError(ValueError):
+class ConversionError(ValueError, RecallError):
     """The dataset does not have the shape this converter can score."""
 
 

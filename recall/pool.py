@@ -150,6 +150,26 @@ class SharedPool:
     def max_size(self) -> int:
         return self._max_size
 
+    def _connect_dedicated(self) -> "psycopg.Connection":
+        """Open a caller-owned session with this pool's connection policy.
+
+        Indexing holds a session lock across operations, so it cannot borrow a
+        different pooled connection for each one. This session never returns to
+        the pool; its caller must close it and provide the tenant context.
+        """
+        import psycopg
+
+        if self._is_closed:
+            raise RuntimeError("pool is closed")
+        kwargs = {**self._connect_kwargs, "autocommit": True}
+        conn = psycopg.connect(self._dsn, **kwargs)
+        try:
+            self._configure(conn)
+        except Exception:  # BROAD-CATCH: fail-closed
+            conn.close()
+            raise
+        return conn
+
     def _configure(self, conn: "psycopg.Connection") -> None:
         """Per-connection setup. Deliberately does NOT set a tenant.
 

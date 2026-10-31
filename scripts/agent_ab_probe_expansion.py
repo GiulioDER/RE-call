@@ -122,7 +122,16 @@ async def retrieve(spec: StdioRecallSpec, queries: list[str]) -> dict[str, list[
                     payload = json.loads(text)
                 except json.JSONDecodeError:
                     raise SystemExit(f"recall_search was refused for {query!r}: {text[:300]}") from None
-                hits = payload.get("hits") or payload.get("results") or []
+                if (
+                    result.isError
+                    or not isinstance(payload, dict)
+                    or payload.get("error")
+                    or payload.get("trust_state") == "refused"
+                ):
+                    raise SystemExit(f"recall_search was refused for {query!r}")
+                hits = payload.get("hits", payload.get("results"))
+                if not isinstance(hits, list) or not all(isinstance(h, dict) for h in hits):
+                    raise SystemExit(f"recall_search returned malformed hits for {query!r}")
                 answers[query] = [
                     Path(str(h.get("source") or h.get("source_id") or h.get("path") or "")).name
                     for h in hits[:TOP_K]

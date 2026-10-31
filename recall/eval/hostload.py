@@ -16,6 +16,8 @@ import os
 from collections.abc import Callable
 from typing import cast
 
+from recall.errors import RecallError
+
 _log = logging.getLogger(__name__)
 
 #: Default ceiling, in load average per core. This is a JUDGEMENT CALL, not a measurement: it
@@ -37,7 +39,7 @@ _log = logging.getLogger(__name__)
 DEFAULT_MAX_LOAD_PER_CORE = 0.30
 
 
-class HostTooBusyError(RuntimeError):
+class HostTooBusyError(RuntimeError, RecallError):
     """The host is under load that would be indistinguishable from the cost being measured."""
 
     def __init__(self, message: str, *, load: float) -> None:

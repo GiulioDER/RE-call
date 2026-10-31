@@ -445,7 +445,7 @@ def _forget_memory_unlocked(
     if staged_files_removed < 0:
         message += (
             " WARNING: the chunk deletion succeeded but staged upload cleanup failed; "
-            "re-run this forget before the next index or the text may be restored."
+            "remove the surviving staged files before the next index or the text may be restored."
         )
     elif staged_files_removed:
         message += f" Removed {staged_files_removed} staged upload file(s)."

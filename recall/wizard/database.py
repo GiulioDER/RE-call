@@ -115,12 +115,17 @@ def is_local_host(dsn: str) -> bool:
     return (host or "") in LOCAL_HOSTS
 
 
-def probe_database(dsn: str, *, expected_dimension: int | None = None) -> DatabaseReport:
+def probe_database(
+    dsn: str, *, expected_dimension: int | None = None, require_create: bool = True,
+) -> DatabaseReport:
     """Check an existing database, read-only, and report what would go wrong.
 
     `expected_dimension` is the embedder's vector width. Passing it is what turns the most
     expensive failure in this list — a schema whose vector column does not match the chosen
     embedder — from an insert error minutes into a build into a sentence before anything is built.
+
+    `require_create=False` checks an existing serving installation without requiring migration
+    privileges. The server's health check still establishes access to its actual schema.
     """
     remote = not is_local_host(dsn)
     findings: list[Finding] = []
@@ -187,7 +192,8 @@ def probe_database(dsn: str, *, expected_dimension: int | None = None) -> Databa
             findings.append(Finding(name="server", ok=None, detail="version not reported"))
 
         findings.append(_check_vector(connection))
-        findings.append(_check_create_privilege(connection))
+        if require_create:
+            findings.append(_check_create_privilege(connection))
         dimension, dimension_finding = _check_dimension(connection, expected_dimension)
         findings.append(dimension_finding)
 
@@ -254,13 +260,13 @@ def _check_vector(connection: object) -> Finding:
 def _check_create_privilege(connection: object) -> Finding:
     """Can this role create the objects the schema needs?
 
-    Asked of the CURRENT database rather than assumed from the role name. A read-only user is a
+    Asked of the current schema rather than assumed from the role name. A read-only user is a
     perfectly ordinary thing to have in a connection string, and discovering it during migration
     means discovering it after the user has been told the install started.
     """
     allowed = _scalar(
         connection,
-        "SELECT has_database_privilege(current_user, current_database(), 'CREATE')",
+        "SELECT has_schema_privilege(current_user, current_schema(), 'CREATE')",
     )
     role = _scalar(connection, "SELECT current_user") or "this role"
     if allowed is True:
@@ -269,10 +275,10 @@ def _check_create_privilege(connection: object) -> Finding:
         return Finding(
             name="privileges",
             ok=False,
-            detail=f"{role} may not create objects in this database",
+            detail=f"{role} may not create objects in the current schema",
             blocking=True,
             advice=(
-                f"grant it: `GRANT CREATE ON DATABASE <db> TO {role};`, or supply a separate "
+                f"grant it: `GRANT USAGE, CREATE ON SCHEMA <schema> TO {role};`, or supply a separate "
                 "migration DSN whose role owns the schema"
             ),
         )

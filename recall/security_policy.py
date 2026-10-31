@@ -23,6 +23,8 @@ class AccessContext:
     tenant: str
     purpose: str = "retrieval"
     clearance: Classification = "internal"
+    #: Whether this caller may receive content that leaves the host. It matters only for a source
+    #: whose rule sets `SourceRule.allow_egress`.
     egress_allowed: bool = False
 
 
@@ -32,9 +34,16 @@ class SourceRule:
 
     prefix: str
     classification: Classification = "internal"
+    #: The principals admitted. EMPTY ADMITS EVERY PRINCIPAL: it is the open-rule form the policy
+    #: file uses (`"principals": []`), and the opposite of `purposes`, where empty admits none.
     principals: frozenset[str] = field(default_factory=frozenset)
     purposes: frozenset[str] = field(default_factory=lambda: frozenset({"retrieval"}))
+    #: Applied in this order, which can change the output when two patterns overlap, so the
+    #: order is part of both policy digests.
     redactions: tuple[str, ...] = ()
+    #: Despite the name, True RESTRICTS the source: reading it then requires a caller whose
+    #: `AccessContext.egress_allowed` is True. False leaves egress unchecked for this source.
+    #: docs/SECURITY_MODEL.md calls this "whether egress requires explicit permission".
     allow_egress: bool = False
 
     def __post_init__(self) -> None:
@@ -60,11 +69,60 @@ _CLEARANCE_ORDER: dict[Classification, int] = {
     "confidential": 2,
     "restricted": 3,
 }
+#: The word that makes a name a credential.
+_CREDENTIAL_WORD = r"(?:api[_ -]?key|token|secret|password)"
+#: A credential name: the word with an optional prefix (`OPENAI_API_KEY`, `DB_PASSWORD`: `_` is a
+#: word character, so a bare `\b` never matched inside one) and an optional suffix from a closed
+#: list that must END in key, token, secret or value (`AWS_SECRET_ACCESS_KEY`), or `_id`
+#: straight after secret (`CLIENT_SECRET_ID`). So a setting such as `token_count: 5`,
+#: `token_id: 12` or `password_auth: enabled` stays readable. Bounded, so the check below,
+#: which runs at every character of a value, stays linear.
+_CREDENTIAL_SUFFIX = (
+    r"(?:(?:_(?:access|private|signing|client|session|refresh|auth)){0,4}_(?:key|token|secret|value)"
+    r"|(?<=secret)_id)?"
+)
+_CREDENTIAL_NAME = r"(?:[a-z0-9]{1,48}_){0,12}" + _CREDENTIAL_WORD + _CREDENTIAL_SUFFIX
+#: Where a match STARTS the prefix is unbounded, as it always was: the `\b` before it sits only
+#: at the start of a word run, so that scan is linear. Only the stop check below is bounded.
+_CREDENTIAL_NAME_START = r"(?:[a-z0-9]+_)*" + _CREDENTIAL_WORD + _CREDENTIAL_SUFFIX
+#: Where a value must stop: at the start of another credential assignment glued to it
+#: (`password=abc&token=xyz`, `password':a}token =x`), so that one is matched on its own and
+#: its value is redacted too, instead of being swallowed as part of the first value.
+#: `(?<!\w)` mirrors the `\b` a credential name starts at, so a value stops only where a
+#: match of its own can begin.
+_VALUE_CHAR = r"(?:(?!(?<!\w)" + _CREDENTIAL_NAME + r"[\"']?\s*[:=])[^\s,;])"
+_QUOTED = r"(?:\"[^\"\n]*\"|'[^'\n]*')"
+_SECRET_PATTERN = (
+    r"(?i)(?:\b" + _CREDENTIAL_NAME_START + r"[\"']?\s*[:=]\s*"
+    # A value that STARTS with a quote is a run of closed quoted segments and ordinary
+    # characters (`TOKEN="abc"'def'` is abcdef to a shell). Any other value is the old unquoted
+    # run: a quote after it is the closing quote of the string it sits in
+    # (`"content": "set TOKEN=abc",`), and pairing that with the next field's quote would erase
+    # the fields that follow.
+    + r"(?:" + _QUOTED + r"(?:" + _QUOTED + r"|(?![\"'])" + _VALUE_CHAR + r")*" + _VALUE_CHAR + r"*"
+    + r"|" + _VALUE_CHAR + r"+)"
+    # A bearer header names no key at all, so it is matched as a header, quoted or not.
+    + r"|\bauthorization[\"']?\s*[:=]\s*[\"']?bearer\s+[^\s,;\"']+"
+    # A bare bearer value is redacted only when it is token shaped: 16 or more token characters,
+    # at least one a digit. "The bearer of bad news" is prose, and a redaction cannot be undone
+    # in the stored text. Accepted: a 16+ character hyphenated phrase with a digit after
+    # "bearer" ("bearer 2024-annual-report-x") is redacted too. Narrowing that away also missed
+    # real keys (`sk-proj-...`, `sk-ant-...`) and a few percent of random tokens.
+    + r"|\bbearer\s+(?=[a-z0-9._~+/=-]*[0-9])"
+    + r"[a-z0-9._~+/=-]{16,})"
+)
 _REDACTIONS: dict[str, re.Pattern[str]] = {
     "email": re.compile(r"\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b"),
     "phone": re.compile(r"\b(?:\+?\d[\d ()-]{7,}\d)\b"),
-    "secret": re.compile(r"(?i)\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*[^\s,;]+"),
+    "secret": re.compile(_SECRET_PATTERN),
 }
+#: The only keys a policy file may use. An unknown key is refused rather than ignored, because
+#: every rule default is the permissive one: a misspelled `classification` silently became
+#: `internal`, and a misspelled `allow_egress` silently dropped the egress requirement.
+_POLICY_KEYS = frozenset({"default_deny", "rules"})
+_RULE_KEYS = frozenset(
+    {"prefix", "classification", "principals", "purposes", "redactions", "allow_egress"}
+)
 
 
 def _strict_bool(raw: object, *, field_name: str) -> bool:
@@ -115,7 +173,10 @@ class SourceSecurityPolicy:
                     "classification": rule.classification,
                     "principals": sorted(rule.principals),
                     "purposes": sorted(rule.purposes),
-                    "redactions": sorted(rule.redactions),
+                    # Authored order, not sorted: `redact_with_decision` applies them in this
+                    # order and overlapping patterns give different text, so a reorder must
+                    # change the digest the generation build reuses chunks on.
+                    "redactions": list(rule.redactions),
                     "allow_egress": rule.allow_egress,
                 }
                 for rule in self._rules
@@ -124,9 +185,11 @@ class SourceSecurityPolicy:
         self.digest = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        #: What the stored text depends on (prefixes and redactions), folded into the indexer's
+        #: per-file fingerprint (`recall.index`), so a change re-indexes the files it affects.
         content_payload = {
             "rules": [
-                {"prefix": rule.prefix, "redactions": sorted(rule.redactions)}
+                {"prefix": rule.prefix, "redactions": list(rule.redactions)}
                 for rule in self._rules
             ]
         }
@@ -147,6 +210,12 @@ class SourceSecurityPolicy:
         )
 
     def decide(self, source: str, context: AccessContext) -> PolicyDecision:
+        """Decide one source by its LONGEST matching prefix; no match denies.
+
+        The rule admits when the principal is listed (or the list is empty, which admits
+        everyone), the purpose is listed, the clearance reaches the classification, and egress is
+        allowed or the rule does not require it. `AccessContext.tenant` is not consulted.
+        """
         matches = self._matching(source)
         if not matches:
             return PolicyDecision(
@@ -179,6 +248,7 @@ class SourceSecurityPolicy:
         return self.redact_with_decision(text, decision)
 
     def redact_with_decision(self, text: str, decision: PolicyDecision) -> tuple[str, PolicyDecision]:
+        """Apply the decision's redactions in order; raise PermissionError when it denies."""
         if not decision.allowed:
             raise PermissionError(f"source {decision.source!r} denied: {decision.reason}")
         redacted = text
@@ -210,6 +280,7 @@ class SourceSecurityPolicy:
         return Scope(source_prefixes=tuple(dict.fromkeys(allowed)), security_policy_digest=self.digest)
 
     def constrain_scope(self, scope: Scope | None, context: AccessContext) -> Scope:
+        """Intersect a caller's scope with `scope_for`; a scope from another policy raises."""
         security_scope = self.scope_for(context)
         if scope is None:
             return security_scope
@@ -249,6 +320,9 @@ def load_source_policy(env: dict[str, str] | None = None) -> SourceSecurityPolic
         payload = json.load(handle)
     if not isinstance(payload, dict):
         raise ValueError("source policy must be a JSON object")
+    unknown = sorted(set(payload) - _POLICY_KEYS)
+    if unknown:
+        raise ValueError(f"source policy has unknown keys: {', '.join(unknown)}")
     raw_rules = payload.get("rules")
     if not isinstance(raw_rules, list):
         raise ValueError("source policy rules must be a JSON array")
@@ -256,11 +330,19 @@ def load_source_policy(env: dict[str, str] | None = None) -> SourceSecurityPolic
     for index, raw in enumerate(raw_rules):
         if not isinstance(raw, dict):
             raise ValueError(f"source policy rule {index} must be an object")
+        unknown = sorted(set(raw) - _RULE_KEYS)
+        if unknown:
+            raise ValueError(f"source policy rule {index} has unknown keys: {', '.join(unknown)}")
         prefix = raw.get("prefix")
         classification = raw.get("classification", "internal")
-        principals = raw.get("principals", ())
-        purposes = raw.get("purposes", ("retrieval",))
-        redactions = raw.get("redactions", ())
+        # Required, with no default: an omitted `principals` read as empty would admit every
+        # principal, so a rule must spell out all three lists.
+        missing = [key for key in ("principals", "purposes", "redactions") if key not in raw]
+        if missing:
+            raise ValueError(f"source policy rule {index} is missing required keys: {', '.join(missing)}")
+        principals = raw["principals"]
+        purposes = raw["purposes"]
+        redactions = raw["redactions"]
         if not isinstance(prefix, str):
             raise ValueError(f"source policy rule {index} prefix must be a string")
         if classification not in _CLEARANCE_ORDER:
@@ -268,6 +350,9 @@ def load_source_policy(env: dict[str, str] | None = None) -> SourceSecurityPolic
         for name, value in (("principals", principals), ("purposes", purposes), ("redactions", redactions)):
             if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
                 raise ValueError(f"source policy rule {index} {name} must be an array of strings")
+        unknown = sorted(set(redactions) - set(_REDACTIONS))
+        if unknown:
+            raise ValueError(f"source policy rule {index} has unknown redactions: {', '.join(unknown)}")
         rules.append(
             SourceRule(
                 prefix=prefix,

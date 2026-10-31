@@ -4,7 +4,9 @@ A document may begin with a ``---`` line, followed by ``key: value`` lines, clos
 Only VALIDITY_KEYS and the namespaced ``recall_graph`` JSON object are meaningful to recall;
 the graph object may additionally carry an authored ``authority`` tier and exact source
 ``depends_on`` references. An audit record, ``recall_record``, is one more one-line JSON object,
-returned as written (see `recall.records`), and RECORD_LABEL_KEYS (``name``, ``description``) are kept only beside one. Unknown keys are ignored and the returned body always excludes the block. Dates are ISO
+returned as written (see `recall.records`), and RECORD_LABEL_KEYS (``name``, ``description``)
+are kept only beside one. FACET_KEYS (``type``) is kept as a retrieval facet when it is 1 to 64
+characters. Unknown keys are ignored and the returned body always excludes the block. Dates are ISO
 ``YYYY-MM-DD``, interpreted in UTC: ``valid_from`` starts at 00:00:00 (inclusive),
 ``valid_until`` ends at 23:59:59.999999 (inclusive end of day). ``recall_graph`` must be a
 single line of JSON so this deliberately small parser does not pretend to be a YAML parser.
@@ -19,7 +21,7 @@ import json
 import re
 from datetime import datetime, time, timezone
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from recall.errors import RecallError
 
@@ -41,12 +43,11 @@ Authority = Literal[
     "model_inference",
     "unknown",
 ]
-AUTHORITY_VALUES: tuple[Authority, ...] = (
-    "policy",
-    "user_confirmed_decision",
-    "tool_observation",
-    "model_inference",
-    "unknown",
+AUTHORITY_VALUES: tuple[Authority, ...] = get_args(Authority)
+#: The tiers an author may write. `unknown` is what an absent authority reads as, never a value,
+#: and it is excluded by name so the order of the Literal cannot change what is accepted.
+_AUTHORED_AUTHORITY_VALUES: tuple[Authority, ...] = tuple(
+    value for value in AUTHORITY_VALUES if value != "unknown"
 )
 
 
@@ -67,9 +68,9 @@ def authority_from_metadata(metadata: Mapping[str, Any]) -> Authority:
     if graph is None or "authority" not in graph:
         return "unknown"
     value = graph["authority"]
-    if not isinstance(value, str) or value not in AUTHORITY_VALUES[:-1]:
+    if not isinstance(value, str) or value not in _AUTHORED_AUTHORITY_VALUES:
         raise ValueError(
-            "recall_graph.authority must be one of: " + ", ".join(AUTHORITY_VALUES[:-1])
+            "recall_graph.authority must be one of: " + ", ".join(_AUTHORED_AUTHORITY_VALUES)
         )
     return value
 
@@ -140,12 +141,12 @@ _EXPLICIT_KEY = re.compile(r"[?:](\s|$)")
 #: list following a bare rule has no key to belong to.
 _SEQUENCE_ITEM = re.compile(r"-(\s|$)")
 
-#: The closing bracket of a flow collection written across several lines, at column 0. Same
-#: ordering argument as `_SEQUENCE_ITEM`: it belongs to the key that opened the collection.
 #: One item of a block sequence, at any indent: ``  - name.md``. Used only for `supersedes`,
 #: right after its key line, so a bullet anywhere else is never read as a reference.
 _BLOCK_ITEM = re.compile(r"^\s*-\s+(\S.*?)\s*$")
 
+#: The closing bracket of a flow collection written across several lines, at column 0. Same
+#: ordering argument as `_SEQUENCE_ITEM`: it belongs to the key that opened the collection.
 _FLOW_CLOSER = re.compile(r"[\]}],?\s*$")
 
 #: The line separators `str.splitlines` honours and ``split("\n")`` does not. `document_title`
@@ -345,9 +346,11 @@ def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
                 value = value.strip()
                 try:
                     parsed = json.loads(value)
-                except json.JSONDecodeError:
+                except (ValueError, RecursionError):
                     # Keep malformed graph metadata visible to the derived graph builder. It can
                     # report a sanitized diagnostic without making ordinary retrieval fail.
+                    # RecursionError too, as for `recall_record` below: one line nested thousands
+                    # deep must not stop the index run or the generation build.
                     meta[key] = {"__parse_error__": "recall_graph must be one-line JSON"}
                 else:
                     meta[key] = parsed
@@ -463,9 +466,9 @@ def supersedes_targets(value: object) -> tuple[str, ...]:
 # where a BOM ends. Sharing the definitions is the only version of that fix which stays fixed.
 #
 # `recall/fix.py` is reached from `recall lint --fix`, which `recall/cli.py` documents as a "pure
-# filesystem check — no embedder, no DB". This module imports nothing but `datetime`, so it can be
-# the shared home; `recall/rewrite.py` cannot, because it pulls in `recall.trust` and with it the
-# whole retrieval stack.
+# filesystem check — no embedder, no DB". This module imports only the standard library and
+# `recall.errors`, so it can be the shared home; `recall/rewrite.py` cannot, because it pulls in
+# `recall.trust` and with it the whole retrieval stack.
 
 BOM = b"\xef\xbb\xbf"
 
@@ -639,11 +642,7 @@ def add_supersedes_target(raw: bytes, target: str) -> bytes | None:
     text_lines = text.split("\n")
     lines = split_lines(body)
     newline = dominant_newline(body)
-    key_lines = [
-        index
-        for index in range(1, span)
-        if ":" in text_lines[index] and text_lines[index].partition(":")[0].strip() == SUPERSEDES
-    ]
+    key_lines = _key_lines(text_lines, span, SUPERSEDES)
     last = key_lines[-1]
     terminator = line_terminator(lines[last], newline)
     indent = text_lines[last][: len(text_lines[last]) - len(text_lines[last].lstrip())]
@@ -651,14 +650,11 @@ def add_supersedes_target(raw: bytes, target: str) -> bytes | None:
         entry = f"{indent}{SUPERSEDES}: {target}".encode("utf-8") + terminator
         return bom + b"".join(lines[: last + 1] + [entry] + lines[last + 1 :])
 
-    end = last + 1
+    end = _key_extent(text_lines, span, last)
     item_indent = indent + "  "
-    if not text_lines[last].partition(":")[2].strip():
-        while end < span and _BLOCK_ITEM.match(text_lines[end]):
-            end += 1
-        if end > last + 1:
-            first_item = text_lines[last + 1]
-            item_indent = first_item[: len(first_item) - len(first_item.lstrip())]
+    if end > last + 1:
+        first_item = text_lines[last + 1]
+        item_indent = first_item[: len(first_item) - len(first_item.lstrip())]
     rewritten = [f"{indent}{SUPERSEDES}:".encode("utf-8") + terminator] + [
         f"{item_indent}- {item}".encode("utf-8") + terminator for item in (*existing, target)
     ]
