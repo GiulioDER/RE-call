@@ -105,14 +105,14 @@ class EmbedderIdentity:
     #: ⛔ **Deliberately absent from `to_dict`, and therefore from the fingerprint.** Adding a field
     #: to the serialized shape re-partitions every pipeline identity in existence, which would hand
     #: each live corpus a new `pipeline_fingerprint` and strand it from its own calibration history
-    #: the moment this shipped. This value answers a question asked at BUILD time about a live
-    #: embedder ("may this back a production generation?"), not a question asked later about a
-    #: stored record, so it need not survive serialization and must not disturb it.
+    #: the moment this shipped. Default serialization therefore continues to omit this flag;
+    #: the fingerprint always uses that default. Storage retains the classification separately
+    #: so a hosted identity without a profile or unverified reason can be reloaded for a build.
     #:
-    #: The consequence, stated rather than left to be discovered: an identity round-tripped through
-    #: `from_dict` comes back `hosted=False`. That is correct for every current caller, because
-    #: `GenerationManager.create` is the only gate and it is always handed a freshly built pipeline.
-    #: `production_admissible` is documented as a build-time question for exactly this reason.
+    #: `PipelineIdentity.to_dict(for_storage=True)` adds the flag only to the stored record.
+    #: Known registered hosted profiles also recover it when reading older records. A default
+    #: fingerprint payload alone need not retain it; generation persistence uses the storage form.
+    #: `production_admissible` remains the creation gate for a freshly built pipeline.
     hosted: bool = False
 
     def __post_init__(self) -> None:
@@ -143,6 +143,11 @@ class EmbedderIdentity:
                 "a hosted embedder identity cannot pin an artifact digest: the provider serves "
                 "weights it may replace behind this model name, so the digest would be a claim "
                 "nothing can check"
+            )
+        if self.hosted and self.revision is not None:
+            raise LineageError(
+                "a hosted embedder identity cannot pin a revision: provider release names "
+                "do not attest immutable model bytes"
             )
         # A hosted identity is exempt, and the exemption is the point of this field. It is not
         # missing a reason: its reason is permanent and structural rather than a developer's
@@ -271,13 +276,17 @@ class PipelineIdentity:
                 "artifact digest, or a hosted provider endpoint"
             )
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, *, for_storage: bool = False) -> dict[str, Any]:
+        """Keep fingerprint bytes stable; storage also retains hosted classification for reload."""
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "embedder": self.embedder.to_dict(),
             "chunker": self.chunker.to_dict(),
             "fts_configuration": _thaw_json(self.fts_configuration),
         }
+        if for_storage and self.embedder.hosted:
+            payload["embedder"]["hosted"] = True
+        return payload
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "PipelineIdentity":

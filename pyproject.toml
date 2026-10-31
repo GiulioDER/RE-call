@@ -184,7 +184,7 @@ llamaindex = []
 # `ClaudeAgentOptions` surface this package relies on (`setting_sources`, `extra_args`,
 # `cli_path`, SDK in-process servers in `mcp_servers`) is the 0.2 line's; `<1` because the SDK
 # is pre-1.0 and `recall_agent/_sdk.py` is deliberately the only module exposed to its churn.
-agent = ["claude-agent-sdk>=0.2,<1"]
+agent = ["claude-agent-sdk>=0.2,<1", "psycopg-pool>=3.2"]
 # Benchmark extra is deliberate and excluded from `dev`.
 bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.14.0"]
 dev = [

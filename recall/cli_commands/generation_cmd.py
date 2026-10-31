@@ -21,7 +21,7 @@ from recall.security_policy import access_context_from_environment, load_source_
 
 def _verify_local_manifest(
     path: str, *, sha256: str | None, size: int | None, environment: str
-) -> None:
+) -> bytes:
     """Hold a `file://` manifest to the integrity the `s3://` path already gets.
 
     ⛔ **`--manifest-sha256` and `--manifest-size` were ACCEPTED AND IGNORED on the local path.**
@@ -63,8 +63,6 @@ def _verify_local_manifest(
                 "a local manifest in production requires --manifest-sha256 and --manifest-size, "
                 "so the manifest is verified rather than merely parsed"
             )
-    if sha256 is None and size is None:
-        return
     try:
         data = Path(path).read_bytes()
     except OSError as exc:
@@ -78,6 +76,7 @@ def _verify_local_manifest(
                 f"manifest checksum mismatch for {path}: expected {sha256}, read {digest}. "
                 "The manifest changed after its digest was taken."
             )
+    return data
 
 
 def _non_negative_int(value: str) -> int:
@@ -309,7 +308,6 @@ def _cmd_generation(args: argparse.Namespace) -> None:
         ExtractingS3ObjectReader,
         ObjectReader,
         S3ObjectReader,
-        load_manifest,
         reader_for_manifest,
     )
 
@@ -340,13 +338,13 @@ def _cmd_generation(args: argparse.Namespace) -> None:
         manifest = IndexManifestV1.from_json(base_reader.fetch(reference).data)
         reader = ExtractingS3ObjectReader(base_reader)
     else:
-        _verify_local_manifest(
+        manifest_data = _verify_local_manifest(
             args.manifest,
             sha256=args.manifest_sha256,
             size=args.manifest_size,
             environment=environment,
         )
-        manifest = load_manifest(args.manifest)
+        manifest = IndexManifestV1.from_json(manifest_data)
     if reader is None:
         reader = reader_for_manifest(manifest)
     embedder = _make_embedder(args.embedder)

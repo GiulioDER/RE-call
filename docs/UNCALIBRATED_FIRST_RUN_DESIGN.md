@@ -131,9 +131,11 @@ step a first-run wizard has to remove". It is not wired into the CLI.
    enterprise` and therefore also encodes the control plane interaction.
 4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:443`). <!-- cite-anchor: wants_learned -->
 5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`GenerationManager.promote`, in `recall/generations.py`). 🔁 Updated 2026-08-20.
-6. **Generation creation.** Production requires a verified pipeline identity and refuses
-   `allow_unverified` (`GenerationManager.create`, in `recall/generations.py`), which an adopted generation cannot satisfy with
-   an unpinned default embedder.
+6. **Generation creation.** Production admits pinned local identities and hosted endpoints.
+   It refuses `allow_unverified` for local identities (`GenerationManager.create`, in
+   `recall/generations.py`), which an adopted generation cannot satisfy with an unpinned local
+   embedder. 🔁 Corrected 2026-10-31: PR #522 admitted hosted endpoints while preserving their
+   `verified: false` status.
 
 Policies 1, 2 and 4 are genuinely process wide: they are about what this deployment is allowed to
 touch. Policies 3, 5 and 6 are not. Whether a *tenant* has a generation worth serving, and whether a
@@ -482,10 +484,13 @@ sides derive from the same verified digest, so validation confirms the copy is *
 consistent*, not that the bytes were re-checked. The disk check in step 3 is the evidence; this is
 an integrity check on the copy.
 
-⛔ **Constraint this surfaces:** `create()` refuses `allow_unverified` in production
+⛔ **Constraint this surfaces:** `create()` refuses `allow_unverified` for local identities in production
 (`GenerationManager.create`), and an adopted generation is unverified by construction. **Adoption
 is therefore development-only under the current gate**, which is policy 6 in section 2 and is a
 second reason that gate should move off the environment. The first-run design depends on it.
+
+🔁 Corrected 2026-10-31: this restriction concerns the unpinned local identity in this adoption
+proposal. Hosted endpoints are production-admissible without claiming that their bytes are pinned.
 
 ### 8. One transaction, and failure uses the existing compensating path
 

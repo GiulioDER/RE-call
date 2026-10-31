@@ -48,8 +48,11 @@ avail_mb() {
     fi
     if command -v vm_stat >/dev/null 2>&1; then
         vm_stat 2>/dev/null | awk '
+            /page size of [0-9]+ bytes/ {
+                for (i=1; i<NF; i++) if ($i == "of") page_size=$(i+1)
+            }
             /Pages free|Pages inactive/ {gsub("\\.",""); pages+=$NF}
-            END {if (pages) print int(pages*4096/1048576)}'
+            END {if (pages && page_size > 0) print int(pages*page_size/1048576)}'
     fi
 }
 

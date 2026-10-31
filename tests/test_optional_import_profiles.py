@@ -35,3 +35,22 @@ def test_llamaindex_profile_checks_the_guarded_external_host(checker) -> None:
     failures = checker.verify_profile("llamaindex")
     if failures:
         assert all("llama-index-core" in failure for failure in failures), failures
+
+
+def test_agent_profile_checks_its_default_pool_dependency(checker, monkeypatch) -> None:
+    """DEPLOY-001: a minimal agent install must detect the default pool dependency.
+
+    Red proof: the pre-fix checker reports no failures when psycopg_pool alone
+    is missing, so the final assertion fails. Other optional imports are inert
+    fixtures; this checks the missing-dependency signal rather than the SDK.
+    """
+    from types import SimpleNamespace
+
+    def import_module(name):
+        if name == "psycopg_pool":
+            raise ModuleNotFoundError("No module named 'psycopg_pool'")
+        return SimpleNamespace(_import_sdk=lambda: None)
+
+    monkeypatch.setattr(checker.importlib, "import_module", import_module)
+    failures = checker.verify_profile("agent")
+    assert any("psycopg_pool" in failure for failure in failures), failures
