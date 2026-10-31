@@ -237,8 +237,16 @@ def sparse_ef_search(k: int) -> int:
     """`hnsw.ef_search` for a learned sparse query returning `k` rows.
 
     Raise-only: never below pgvector's own default, and capped at what pgvector accepts rather
-    than raising on a `k` that is otherwise legal.
+    than raising on a `k` that is otherwise legal. A `k` above that cap is refused, exactly as
+    `_bounded_ef_search` refuses it for the dense leg: no legal scan can then return `k` rows, and the caller would
+    never learn of the truncation.
     """
+    if k > _HNSW_EF_SEARCH_MAX:
+        raise ValueError(
+            f"k={k} exceeds pgvector's maximum hnsw.ef_search of {_HNSW_EF_SEARCH_MAX}, so the "
+            "learned sparse HNSW scan cannot return k rows and would silently truncate. "
+            "Ask for fewer candidates."
+        )
     widened = k * SPARSE_EF_SEARCH_MULTIPLIER
     return max(_PGVECTOR_DEFAULT_EF_SEARCH, min(widened, _HNSW_EF_SEARCH_MAX))
 
@@ -330,7 +338,8 @@ _log = get_logger("store")
 #: its tenant predicate is always present.
 #:
 #: Both are read at CALL time (not import time) via `os.environ`, matching how
-#: `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` are read in `recall_mcp/service.py`, so a
+#: `RECALL_INDEX_MAX_FILES` / `RECALL_INDEX_MAX_BYTES` are read in
+#: `recall.index_budget.budget_from_env`, so a
 #: test can `monkeypatch.setenv` per-case and a long-lived process can pick up a changed value
 #: without restarting.
 DEFAULT_HNSW_EF_SEARCH_FILTERED = 200
@@ -547,7 +556,19 @@ def _prepare_connection(
     Both values a connection needs are fixed at construction, so capturing them costs nothing and
     keeps the pool from pinning the store.
     """
-    register_vector(conn)
+    try:
+        register_vector(conn)
+    except psycopg.ProgrammingError as exc:
+        # pgvector's own wording when the extension is absent: the database has not had even the
+        # first migration, which is what `check_schema` would report if it got the chance.
+        if "vector type not found" not in str(exc):
+            raise
+        from recall.schema import SchemaTooOld
+
+        raise SchemaTooOld(
+            "the database has no `vector` type: the pgvector extension and RE-call's schema "
+            "migrations have not been applied. Run `recall schema apply`."
+        ) from exc
     # Per-connection tenant for the RLS policy. Safe to set once at connection setup because a
     # store is bound to ONE tenant: the pool belongs to the store, so no connection is ever shared
     # between tenants. A server handling many tenants opens a store per tenant.
@@ -1228,8 +1249,8 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
     def check_rls_effective(self) -> bool:
         """True when row-level security actually constrains THIS connection's role.
 
-        Returns False for a superuser or a `BYPASSRLS` role — for whom the policy created above
-        is inert. Exposed rather than merely documented because "we enabled RLS" is the kind of
+        Returns False for a superuser or a `BYPASSRLS` role — for whom the RLS policy the schema
+        migrations create is inert. Exposed rather than merely documented because "we enabled RLS" is the kind of
         claim that gets believed without being true, and the difference is invisible until a
         tenant reads another tenant's memory.
         """
@@ -1399,7 +1420,8 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             # never-analyzed so the ANALYZE below is what reports the problem, rather than this
             # method inventing a diagnosis from a catalog miss.
             reltuples = float(row[0]) if row and row[0] is not None else -1.0
-            if reltuples >= 0 and modified < AUTOANALYZE_THRESHOLD + (
+            # Autovacuum analyzes only when the change EXCEEDS its threshold, so equality skips.
+            if reltuples >= 0 and modified <= AUTOANALYZE_THRESHOLD + (
                 AUTOANALYZE_SCALE_FACTOR * reltuples
             ):
                 return False
@@ -1955,10 +1977,10 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                     WHERE c.tenant_id = %(tenant)s
                       AND c.tsv @@ q.tsq
                     {where}
-                    ORDER BY rank DESC
+                    ORDER BY rank DESC, c.id
                     LIMIT %(k)s
                 ) top_k
-                ORDER BY rank DESC
+                ORDER BY rank DESC, id
             """
         else:
             sql = f"""
@@ -1969,7 +1991,7 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                 WHERE c.tenant_id = %(tenant)s
                   AND c.tsv @@ q.tsq
                 {where}
-                ORDER BY score DESC
+                ORDER BY score DESC, c.id
                 LIMIT %(k)s
             """
         params: dict = {

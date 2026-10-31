@@ -43,8 +43,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from recall.errors import RecallError
 
-class LedgerCorrupted(ValueError):
+
+class LedgerCorrupted(ValueError, RecallError):
     """A malformed line that is NOT the last line of its file.
 
     Distinct from a truncated trailing write, which is expected and recoverable. This one means

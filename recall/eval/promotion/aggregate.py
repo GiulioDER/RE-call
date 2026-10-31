@@ -57,6 +57,7 @@ from recall.promotion import (
     SafetyMetrics,
     evaluate_retrieval_promotion,
 )
+from recall.errors import RecallError
 
 #: The primary metric's cutoff. hit@5 and MRR are what the gate reads; everything in
 #: `SECONDARY_CUTOFFS` is recorded beside the decision and read by nobody automatic.
@@ -76,11 +77,11 @@ _STALE = frozenset({"superseded", "expired"})
 _DEGRADED = "unverified"
 
 
-class UnpairedArms(ValueError):
+class UnpairedArms(ValueError, RecallError):
     """The two arms do not cover the same frozen questions, so no paired test is available."""
 
 
-class VacuousArm(ValueError):
+class VacuousArm(ValueError, RecallError):
     """An arm hit NOTHING on any answerable question.
 
     Almost always a label-space mismatch rather than a retriever that found nothing: the labels

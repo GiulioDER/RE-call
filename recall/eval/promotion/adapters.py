@@ -46,9 +46,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from recall.eval.promotion.manifest import FrozenQuestion, file_digest, question_input_hash
+from recall.errors import RecallError
 
 
-class CorpusUnavailable(RuntimeError):
+class CorpusUnavailable(RuntimeError, RecallError):
     """The adapter's source data is not present, named rather than skipped."""
 
 
