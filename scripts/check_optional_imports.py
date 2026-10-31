@@ -32,7 +32,7 @@ PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
     "bench": ("mem0", "openai", "pyarrow", "numpy", "tiktoken"),
     "fastembed": ("fastembed", "onnxruntime", "tokenizers", "recall.embeddings"),
     "mcp": ("mcp", "anyio", "psycopg_pool", "jwt", "httpx2", "recall_mcp.server"),
-    "agent": ("claude_agent_sdk", "recall_agent._sdk"),
+    "agent": ("claude_agent_sdk", "psycopg_pool", "recall_agent._sdk"),
     "dev": (
         "pytest",
         "pytest_timeout",

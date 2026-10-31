@@ -142,6 +142,9 @@ class RecallAgentMemory:
         self._owns_store = store is None
         self._closed = False
         self._lock = asyncio.Lock()
+        # Cancellation releases the async lock while to_thread keeps running. The worker lock
+        # preserves serialization until that synchronous operation has actually finished.
+        self._worker_lock = threading.Lock()
         # A THREAD lock, not the asyncio one: the `embedder` property is reachable from a host
         # thread while a tool call is resolving the same embedder in a worker, and two fastembed
         # model loads for one object is a real cost even though either result would be correct.
@@ -292,8 +295,12 @@ class RecallAgentMemory:
         return self._store
 
     async def _call(self, fn: Any) -> Any:
+        def run() -> Any:
+            with self._worker_lock:
+                return fn()
+
         async with self._lock:
-            return await asyncio.to_thread(fn)
+            return await asyncio.to_thread(run)
 
     # -- tool implementations (plain async callables; the SDK wrapping lives in _sdk) ----------
 
@@ -376,7 +383,9 @@ class RecallAgentMemory:
             return render_tool_error(f"{type(error).__name__}: {error}")
 
         def run() -> Any:
-            return index_memory(self._store_or_create(), self._embedder_or_create(), path)
+            return index_memory(
+                self._store_or_create(), self._embedder_or_create(), path, env=self._env
+            )
 
         return render_result(await self._call(run))
 

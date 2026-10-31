@@ -560,7 +560,7 @@ class GenerationManager:
                 (
                     self.tenant_id,
                     generation_id,
-                    Jsonb(pipeline.to_dict()),
+                    Jsonb(pipeline.to_dict(for_storage=True)),
                     pipeline.fingerprint,
                     corpus_fingerprint,
                     Jsonb(manifest.to_dict()),

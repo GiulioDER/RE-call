@@ -4510,6 +4510,7 @@ dependencies = [
 [package.optional-dependencies]
 agent = [
     { name = "claude-agent-sdk" },
+    { name = "psycopg-pool" },
 ]
 agent-ab = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -4676,6 +4677,7 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'dev'", specifier = ">=10" },
     { name = "pillow", marker = "extra == 'hosted'", specifier = ">=10" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
+    { name = "psycopg-pool", marker = "extra == 'agent'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'dev'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'hosted'", specifier = ">=3.2" },
     { name = "psycopg-pool", marker = "extra == 'mcp'", specifier = ">=3.2" },
