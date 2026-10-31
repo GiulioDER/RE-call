@@ -662,6 +662,18 @@ def _ef_search_multiplier() -> int:
     return mult
 
 
+def _first_write_sql(alias: str = "") -> str:
+    """SQL for a row's first write: `first_indexed_at`, or `indexed_at` where it is NULL.
+
+    The one definition both chunk tables read that date through when they need the fallback:
+    `recall.generation_store` imports it, and the iterator the two stores share uses it. A
+    generation row's `indexed_at` is the build that wrote or copied it, so a read that served it in
+    place of `first_indexed_at` dated the whole corpus to the last rebuild (#835); one definition
+    keeps a new read path from doing that again.
+    """
+    return f"COALESCE({alias}first_indexed_at, {alias}indexed_at)"
+
+
 def _chunk_identity(chunks: list[Chunk]) -> tuple[str | None, list[str]]:
     """The project and root-relative file names a batch of chunks belongs to.
 
@@ -3388,7 +3400,7 @@ class PgVectorStore:
                     cur.itersize = batch_size
                     cur.execute(
                         f"SELECT {self._ID_COL}, {self._SOURCE_COL}, {text_column}, metadata, "
-                        f"COALESCE(first_indexed_at, indexed_at) FROM {self._table} "
+                        f"{_first_write_sql()} FROM {self._table} "
                         f"WHERE tenant_id = %s{scope} ORDER BY {self._ID_COL}",
                         (self._tenant, *scope_args),
                     )
