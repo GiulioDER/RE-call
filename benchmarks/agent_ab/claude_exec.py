@@ -38,6 +38,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -47,6 +49,7 @@ from typing import Any
 
 from .runner import Runner
 from .schema import SessionRecord, VARIANTS
+from ._windows_job import WindowsJob
 
 #: Every Claude Code MCP tool is named ``mcp__<server>__<tool>``, so one prefix identifies a
 #: server's whole tool surface without enumerating it.
@@ -599,6 +602,26 @@ def build_record(
     )
 
 
+async def _stop_process_tree(
+    process: asyncio.subprocess.Process, job: WindowsJob | None = None
+) -> None:
+    """Terminate the owned tree and bound the final pipe drain."""
+    if sys.platform == "win32":
+        if job is None:
+            raise ClaudeTranscriptError("Windows session has no owned process job")
+        job.terminate()
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    try:
+        await asyncio.wait_for(process.communicate(), timeout=5)
+    except asyncio.TimeoutError:
+        if process.returncode is None:
+            process.kill()
+
+
 async def run_claude_case(
     row: Mapping[str, Any], variant: str, config: ClaudeExecConfig
 ) -> SessionRecord:
@@ -621,24 +644,52 @@ async def run_claude_case(
         environment["CLAUDE_CONFIG_DIR"] = str(config.config_dir)
 
     started = time.perf_counter()
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        # Claude Code waits 3s for stdin before giving up and warning. Closing it returns that
-        # 3 seconds on every session in the run.
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(config.cwd) if config.cwd else None,
-        env=environment,
-    )
+    job = WindowsJob() if sys.platform == "win32" else None
+    process_options: dict[str, Any] = {} if job is not None else {"start_new_session": True}
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=config.timeout_s)
-    except asyncio.TimeoutError:
-        process.kill()
-        await process.wait()
-        raise ClaudeTranscriptError(
-            f"claude exceeded timeout_s={config.timeout_s} for task {row.get('task_id')!r}"
-        ) from None
+        process = await asyncio.create_subprocess_exec(
+            *(job.command(command) if job is not None else command),
+            # The Windows wrapper alone reads a release byte. The actual CLI
+            # always receives DEVNULL, avoiding Claude's stdin startup delay.
+            stdin=asyncio.subprocess.PIPE if job is not None else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(config.cwd) if config.cwd else None,
+            env=environment,
+            **process_options,
+        )
+        if job is not None:
+            try:
+                job.assign(process.pid)
+                assert process.stdin is not None
+                process.stdin.write(b"1")
+                await process.stdin.drain()
+                process.stdin.close()
+            except BaseException:
+                # Assignment can fail under an incompatible enclosing job.
+                # The wrapper has not been released, so no CLI was launched.
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                job.terminate()
+                try:
+                    await asyncio.wait_for(process.communicate(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
+                raise
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=config.timeout_s)
+        except (asyncio.TimeoutError, asyncio.CancelledError) as error:
+            await asyncio.shield(_stop_process_tree(process, job))
+            if isinstance(error, asyncio.CancelledError):
+                raise
+            raise ClaudeTranscriptError(
+                f"claude exceeded timeout_s={config.timeout_s} for task {row.get('task_id')!r}"
+            ) from None
+    finally:
+        if job is not None:
+            job.close()
     wall_time_ms = (time.perf_counter() - started) * 1000.0
     stream = stdout.decode("utf-8", errors="replace")
 

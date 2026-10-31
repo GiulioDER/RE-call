@@ -104,11 +104,9 @@ by the session runner. Ragas evaluator usage is a separate cost surface.
 
 ## Ragas integration
 
-Ragas is optional. Install it with:
-
-```text
-pip install recall-rag[ragas]
-```
+Ragas is optional and runs in a separate interpreter. Follow the pinned installation in
+[the scorer's setup instructions](../../scripts/agent_ab_score_ragas.py). The `recall-rag`
+package deliberately has no `ragas` extra.
 
 The adapter converts single turn records to `SingleTurnSample` objects and structured conversations
 to `MultiTurnSample` objects. Use Ragas for answer quality, faithfulness, goal completion, and tool

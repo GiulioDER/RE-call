@@ -13,7 +13,7 @@ those and nothing else. Prose is retrieved, never interpreted.
 
 Two further keys are recognised by the parser and are deliberately NOT truth claims, so the
 sentence above stays true as the parser grows. `recall_graph` carries authored graph metadata, and
-`type` (`recall/frontmatter.py:106`) carries the retrieval FACET that `recall.scope` filters on. A
+`type` (`recall/frontmatter.py:105`) carries the retrieval FACET that `recall.scope` filters on. A
 facet says what kind of document this is; it never says whether the document should be believed,
 and nothing in the trust layer reads it.
 

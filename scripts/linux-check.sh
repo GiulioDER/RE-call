@@ -20,19 +20,56 @@
 set -euo pipefail
 
 IMAGE="python:3.11-slim"
-VENV_VOLUME="recall-venv311-linux"
 # (no user-defined network: the test container joins the DB container's namespace instead)
-DB_NAME="recall-linux-db"
 # `pwd -W` gives `C:/...` under Git Bash, which is what docker needs. Plain `pwd` gives `/c/...`,
 # which docker reads as a RELATIVE path and silently appends to the cwd, producing a mount error
 # naming a path that does not exist. Keep the two apart.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && { pwd -W 2>/dev/null || pwd; })"
+CHECKOUT_ID=$(printf '%s' "$REPO" | sha256sum | cut -c1-12)
+DEPS_ID=$({ printf '%s\n' "$IMAGE" 'dev,mcp,documents;lowest-direct'; cat "$REPO/pyproject.toml"; } | sha256sum | cut -c1-12)
+DB_NAME="recall-linux-$CHECKOUT_ID"
+VENV_VOLUME="recall-venv311-$CHECKOUT_ID-$DEPS_ID"
+LOCK_DIR="$(git -C "$REPO" rev-parse --absolute-git-dir)/linux-check.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo "linux-check: this checkout already has an active run ($LOCK_DIR)" >&2
+  exit 2
+fi
+
+owned_database() {
+  local owner
+  owner=$(docker inspect --format '{{index .Config.Labels "recall.checkout"}}' "$DB_NAME")
+  if [ "$owner" != "$REPO" ]; then
+    echo "linux-check: refusing foreign database $DB_NAME" >&2
+    return 1
+  fi
+}
+DB_CREATED=0
+cleanup() {
+  local result=$?
+  if [ "$DB_CREATED" = 1 ]; then
+    if owned_database; then
+      docker rm -f "$DB_NAME" >/dev/null || result=1
+    else
+      result=1
+    fi
+  fi
+  rmdir "$LOCK_DIR" || true
+  return "$result"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 WANT_DB=0
 if [ "${1:-}" = "--down" ]; then
-  # Only ever this script's OWN resources, named as constants above. Never a `session-db.sh`
-  # container and never another checkout's: one of those belongs to somebody's running suite.
-  docker rm -f "$DB_NAME" >/dev/null 2>&1 && echo "removed $DB_NAME" || echo "no $DB_NAME"
+  if docker inspect "$DB_NAME" >/dev/null 2>&1; then
+    owned_database
+    docker rm -f "$DB_NAME" >/dev/null
+    echo "removed $DB_NAME"
+  else
+    echo "no $DB_NAME"
+  fi
   echo "kept volume $VENV_VOLUME (delete with: docker volume rm $VENV_VOLUME)"
   exit 0
 fi
@@ -42,7 +79,8 @@ if [ "${1:-}" = "--db" ]; then WANT_DB=1; shift; fi
 # The venv lives in a named volume, not in the repo: a Linux venv inside a Windows-mounted tree
 # would collide with the host's own .venv, and building it into the mount writes root-owned
 # artefacts onto the host filesystem.
-if ! docker volume inspect "$VENV_VOLUME" >/dev/null 2>&1; then
+if ! docker volume inspect "$VENV_VOLUME" >/dev/null 2>&1 ||
+   ! MSYS_NO_PATHCONV=1 docker run --rm -v "$VENV_VOLUME:/venv" "$IMAGE" bash -c 'test -f /venv/.linux-check-ready'; then
   echo "linux-check: building $VENV_VOLUME (once, a few minutes)" >&2
   docker volume create "$VENV_VOLUME" >/dev/null
   # Dependency SPECS only, never `pip install -e .`: building the project would write *.egg-info
@@ -59,11 +97,12 @@ for extra in ("dev", "mcp", "documents"):
     specs += p["optional-dependencies"][extra]
 print("\n".join(s for s in specs if not s.strip().lower().startswith("recall")))
 PY
-    uv venv /venv --python /usr/local/bin/python3.11 >/dev/null
+    uv venv /venv --allow-existing --python /usr/local/bin/python3.11 >/dev/null
     # `--resolution lowest-direct` is what CI floor uses: the oldest version of each DIRECT
     # dependency, transitives resolved normally. Plain `lowest` would test other projects
     # constraint hygiene rather than this one.
     uv pip install --python /venv/bin/python --resolution lowest-direct -r /tmp/deps.txt
+    touch /venv/.linux-check-ready
   ' >&2
 fi
 
@@ -71,14 +110,19 @@ DOCKER_ARGS=(--rm -v "$REPO:/w:ro" -v "$VENV_VOLUME:/venv" -w /w
              -e PYTHONPATH=/w -e PYTHONDONTWRITEBYTECODE=1)
 
 if [ "$WANT_DB" = "1" ]; then
-  if ! docker ps --format '{{.Names}}' | grep -qx "$DB_NAME"; then
-    docker rm -f "$DB_NAME" >/dev/null 2>&1 || true
+  if docker inspect "$DB_NAME" >/dev/null 2>&1; then
+    owned_database
+    echo "linux-check: database already exists; use --down before starting a new run" >&2
+    exit 1
+  fi
     echo "linux-check: starting $DB_NAME" >&2
     # No published port. The test container joins this container's network namespace, so nothing
     # needs to be exposed to the host — and nothing can collide with a `session-db.sh` container.
     docker run -d --name "$DB_NAME" \
+      --label "recall.checkout=$REPO" \
       -e POSTGRES_USER=recall -e POSTGRES_PASSWORD=recall -e POSTGRES_DB=recall \
       pgvector/pgvector:pg16 >/dev/null
+    DB_CREATED=1
     # ⚠️ **The timeout FAILS, it does not fall through.** `cmd && break` is exempt from `set -e`
     # (verified: the loop survives a failing probe, which is what makes the wait work at all), so a
     # database that never comes up would leave this loop quietly and hand pytest a dead DSN. Every
@@ -94,7 +138,6 @@ if [ "$WANT_DB" = "1" ]; then
       docker logs --tail 20 "$DB_NAME" >&2 || true
       exit 1
     fi
-  fi
   # ⛔ **The database is reached as `127.0.0.1`, and that is a correctness requirement, not a
   # style choice.** Sharing the DB container's network namespace makes its port genuinely local to
   # the test process, which is also exactly how CI reaches it (a service on localhost:5432).
@@ -112,5 +155,5 @@ if [ "$WANT_DB" = "1" ]; then
 fi
 
 # `-p no:cacheprovider`: the tree is mounted READ-ONLY, so pytest must not try to write .pytest_cache.
-MSYS_NO_PATHCONV=1 exec docker run "${DOCKER_ARGS[@]}" "$IMAGE" \
+MSYS_NO_PATHCONV=1 docker run "${DOCKER_ARGS[@]}" "$IMAGE" \
   /venv/bin/python -m pytest -p no:cacheprovider "$@"

@@ -23,6 +23,13 @@ DEFAULT_FTS_CONFIGURATION: Mapping[str, FrozenJson] = MappingProxyType(
 )
 
 
+#: The context identity of a raw generation. `EmbedderIdentity.to_dict` omits both when they
+#: hold these values, which keeps every raw pipeline fingerprint as it was; the field defaults,
+#: that omission test and `from_dict` must agree, so all three read these names.
+DEFAULT_CONTEXT_MODE = "none"
+DEFAULT_CONTEXT_VERSION = "raw-v1"
+
+
 class LineageError(ValueError, RecallError):
     """An identity is mutable, malformed, or cannot be canonicalised safely."""
 
@@ -98,8 +105,8 @@ class EmbedderIdentity:
     profile_fingerprint: str | None = None
     #: Context identity is optional for backward compatible raw generations. A contextual profile
     #: records both values so a generation cannot reuse a raw pipeline fingerprint accidentally.
-    context_mode: str = "none"
-    context_version: str = "raw-v1"
+    context_mode: str = DEFAULT_CONTEXT_MODE
+    context_version: str = DEFAULT_CONTEXT_VERSION
     #: Whether a provider's API produced these vectors rather than a local artifact tree.
     #:
     #: ⛔ **Deliberately absent from `to_dict`, and therefore from the fingerprint.** Adding a field
@@ -205,7 +212,10 @@ class EmbedderIdentity:
             payload["profile_id"] = self.profile_id
         if self.profile_fingerprint is not None:
             payload["profile_fingerprint"] = self.profile_fingerprint
-        if self.context_mode != "none" or self.context_version != "raw-v1":
+        if (
+            self.context_mode != DEFAULT_CONTEXT_MODE
+            or self.context_version != DEFAULT_CONTEXT_VERSION
+        ):
             payload["context_mode"] = self.context_mode
             payload["context_version"] = self.context_version
         return payload
@@ -337,8 +347,8 @@ class PipelineIdentity:
                     if embedder.get("profile_fingerprint")
                     else None
                 ),
-                context_mode=str(embedder.get("context_mode", "none")),
-                context_version=str(embedder.get("context_version", "raw-v1")),
+                context_mode=str(embedder.get("context_mode", DEFAULT_CONTEXT_MODE)),
+                context_version=str(embedder.get("context_version", DEFAULT_CONTEXT_VERSION)),
                 hosted=hosted,
             ),
             chunker=ChunkerIdentity(
