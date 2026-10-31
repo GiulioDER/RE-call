@@ -1623,7 +1623,7 @@ def test_holdout_arm_skips_the_block(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2), like the three below: against
+    """Red proof, recorded 2026-10-31 on the test host, like the three below: against
     origin/master `9a9fd195b` (no holdout check), node id
     tests/test_auditor_brief_hook.py::test_holdout_arm_skips_the_block failed on "a holdout run's
     auditor was briefed". Targets `cca_holdout_run` and its use in `pre_agent`."""
@@ -1697,7 +1697,7 @@ def test_a_linked_state_file_is_never_read(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `ad6bf0e9e` (`read_text`
+    """Red proof, recorded 2026-10-31 on the test host: against `ad6bf0e9e` (`read_text`
     follows the link), node id tests/test_auditor_brief_hook.py::test_a_linked_state_file_is_never_read
     failed on "the hook printed nothing": the linked state was read and named a holdout run.
     Targets `_read_repo_json`'s `_unlinked_lstat` check."""
@@ -1719,7 +1719,7 @@ def test_holdout_in_a_linked_worktree_is_seen_from_the_main_checkout(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `ad6bf0e9e` (the cwd's top
+    """Red proof, recorded 2026-10-31 on the test host: against `ad6bf0e9e` (the cwd's top
     level only), node id
     tests/test_auditor_brief_hook.py::test_holdout_in_a_linked_worktree_is_seen_from_the_main_checkout
     failed on "a holdout run in a worktree was briefed". Targets `_cca_roots`."""
@@ -1734,7 +1734,7 @@ def test_open_runs_that_disagree_fail_open(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): mutation of `cca_holdout_run` to
+    """Red proof, recorded 2026-10-31 on the test host: mutation of `cca_holdout_run` to
     answer the holdout run whenever any open run is in the holdout arm (the disagreement branch
     replaced by `if False:` and the arm test by `CCA_HOLDOUT_ARM in arms.values()`); node id
     tests/test_auditor_brief_hook.py::test_open_runs_that_disagree_fail_open failed on "the hook
@@ -1751,7 +1751,7 @@ def test_open_runs_that_agree_on_holdout_skip_the_block(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): mutation of the disagreement check
+    """Red proof, recorded 2026-10-31 on the test host: mutation of the disagreement check
     to `len(arms) > 1` (any two open runs counted as ambiguous); node id
     tests/test_auditor_brief_hook.py::test_open_runs_that_agree_on_holdout_skip_the_block failed
     on "two holdout runs were briefed"."""
@@ -1767,7 +1767,7 @@ def test_an_arm_file_naming_another_run_is_not_this_runs_arm(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): the `arm.get("run_id") == run_id`
+    """Red proof, recorded 2026-10-31 on the test host: the `arm.get("run_id") == run_id`
     clause deleted from `cca_holdout_run`; node id
     tests/test_auditor_brief_hook.py::test_an_arm_file_naming_another_run_is_not_this_runs_arm
     failed on "the hook printed nothing"."""
@@ -1790,7 +1790,7 @@ def test_a_unc_worktree_line_is_never_looked_up(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `f5552899f` (every
+    """Red proof, recorded 2026-10-31 on the test host: against `f5552899f` (every
     porcelain path used as a root), node id
     tests/test_auditor_brief_hook.py::test_a_unc_worktree_line_is_never_looked_up failed on "a
     UNC worktree root was looked up". Targets `_worktree_root` and its use in `_cca_roots`."""
@@ -1831,7 +1831,7 @@ def test_a_unc_worktree_line_is_never_looked_up(
     ],
 )
 def test_worktree_root_accepts_only_plain_absolute_paths(text: str, windows: bool, kept: bool) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): mutation of `_worktree_root` to
+    """Red proof, recorded 2026-10-31 on the test host: mutation of `_worktree_root` to
     `return Path(text)` before its checks; node id
     tests/test_auditor_brief_hook.py::test_worktree_root_accepts_only_plain_absolute_paths failed
     on the `is not None` equality for every refused case."""
@@ -1844,7 +1844,7 @@ def test_a_missing_git_still_honours_a_holdout_at_cwd(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `f5552899f` (the `OSError`
+    """Red proof, recorded 2026-10-31 on the test host: against `f5552899f` (the `OSError`
     from starting git reached `cca_holdout_run`'s broad catch), node id
     tests/test_auditor_brief_hook.py::test_a_missing_git_still_honours_a_holdout_at_cwd failed on
     "a holdout run at cwd was briefed without git". Git fails to start only on the holdout check's
@@ -1878,7 +1878,7 @@ def test_an_open_hunt_run_does_not_outvote_a_diff_holdout(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (every open run
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (every open run
     votes), node id
     tests/test_auditor_brief_hook.py::test_an_open_hunt_run_does_not_outvote_a_diff_holdout failed
     on "a holdout run was briefed beside an open HUNT run". Targets the mode check in
@@ -1896,7 +1896,7 @@ def test_an_open_run_past_l1_does_not_outvote_a_diff_holdout(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (every open run
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (every open run
     votes), node id
     tests/test_auditor_brief_hook.py::test_an_open_run_past_l1_does_not_outvote_a_diff_holdout
     failed on "a holdout run was briefed beside a run past L1". Targets the layers check in
@@ -1914,7 +1914,7 @@ def test_two_diff_runs_before_l1_that_disagree_stay_ambiguous(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): mutation of `_may_launch_l1` to
+    """Red proof, recorded 2026-10-31 on the test host: mutation of `_may_launch_l1` to
     `return False` (no run votes), node id
     tests/test_auditor_brief_hook.py::test_two_diff_runs_before_l1_that_disagree_stay_ambiguous
     failed on "a disagreement was not logged". Targets the voting filter, which must keep both
@@ -1931,7 +1931,7 @@ def test_a_failed_worktree_listing_is_logged_with_the_cwd(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (the failure
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (the failure
     swallowed into an empty listing), node id
     tests/test_auditor_brief_hook.py::test_a_failed_worktree_listing_is_logged_with_the_cwd failed
     on "a failed git worktree list left no trace". Targets the `listing = ""` branch of
@@ -1953,7 +1953,7 @@ def test_a_failed_worktree_listing_is_logged_with_the_cwd(
 
 
 def test_the_deadline_cut_in_the_root_loop_is_logged_with_the_cwd(env: Path, repo: Path) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (a bare
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (a bare
     `break`), node id
     tests/test_auditor_brief_hook.py::test_the_deadline_cut_in_the_root_loop_is_logged_with_the_cwd
     failed on "the deadline cut left no trace". Targets the deadline `break` in
@@ -1973,7 +1973,7 @@ def test_the_outer_holdout_timeout_names_the_cwd(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Red proof, recorded 2026-10-31 on the test host (VPS2): against `03cbc2df2` (the line named
+    """Red proof, recorded 2026-10-31 on the test host: against `03cbc2df2` (the line named
     the agent type only), node id
     tests/test_auditor_brief_hook.py::test_the_outer_holdout_timeout_names_the_cwd failed on "the
     holdout timeout line does not name the cwd". Targets the `holdout.wait` log line in
