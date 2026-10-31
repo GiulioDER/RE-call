@@ -197,10 +197,10 @@ OPENROUTER_API_KEY=
 #                                                      # this variable explicitly.
 # RECALL_REASONING_ANSWER_COST_PER_1K_TOKENS=          # optional; unset records a NULL cost
 #                                                      # rather than claiming the call was free.
-#                                                      # Per THOUSAND tokens; a per-MILLION
-#                                                      # figure (what OpenRouter publishes) is
-#                                                      # refused rather than silently recorded
-#                                                      # as a 1000x understatement.
+#                                                      # USD per THOUSAND tokens. Divide a
+#                                                      # per-MILLION quote by 1000 first.
+#                                                      # Units cannot be inferred from a number;
+#                                                      # pasting it unchanged overstates cost 1000x.
 #                                                      # REFUSED under PROVIDER=ollama, where
 #                                                      # inference is local and cost is 0.0.
 # RECALL_REASONING_ANSWER_PROFILE=dated                # dated (default) | plain | dated-premise.

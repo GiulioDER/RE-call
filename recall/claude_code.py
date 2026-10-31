@@ -553,7 +553,7 @@ def hook_entries(python_executable: str | None = None) -> dict[str, list[dict[st
                     {
                         "type": "command",
                         "command": python_executable,
-                        "args": ["-m", HOOK_MODULE, "user-prompt-submit"],
+                        "args": ["-P", "-m", HOOK_MODULE, "user-prompt-submit"],
                         # Synchronous, like PreToolUse and for the same reason: additionalContext
                         # that arrives after the turn has started is context the model never saw.
                         "timeout": USER_PROMPT_SUBMIT_TIMEOUT_SECONDS,
