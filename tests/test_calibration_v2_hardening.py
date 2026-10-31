@@ -125,7 +125,7 @@ def test_a_bundle_whose_scores_do_not_support_its_separability_is_refused(
     path = tmp_path / "forged.json"
     path.write_text(json.dumps(forged), encoding="utf-8")
     with pytest.raises(CalibrationBindingError, match="separability"):
-        repository.import_bundle(path)
+        repository.import_bundle(path, embedder, labels=_labels())
 
 
 @requires_db
@@ -151,7 +151,7 @@ def test_a_bundle_whose_certified_flag_its_scores_do_not_earn_is_refused(
     path = tmp_path / "forged.json"
     path.write_text(json.dumps(forged), encoding="utf-8")
     with pytest.raises(CalibrationBindingError, match="certified=True"):
-        repository.import_bundle(path)
+        repository.import_bundle(path, embedder, labels=_labels(2))
 
 
 @requires_db
@@ -183,7 +183,7 @@ def test_a_bundle_whose_threshold_its_own_scores_do_not_fit_is_refused(
     path = tmp_path / "forged-threshold.json"
     path.write_text(json.dumps(forged), encoding="utf-8")
     with pytest.raises(CalibrationBindingError, match="threshold"):
-        repository.import_bundle(path)
+        repository.import_bundle(path, embedder, labels=_labels(2))
 
 
 @requires_db
@@ -197,7 +197,7 @@ def test_an_untampered_bundle_still_round_trips(hardening_tenant, tmp_path: Path
     path = repository.export_bundle(honest.calibration_id, tmp_path / "honest.json")
     _delete_calibration(tenant, honest.calibration_id)
 
-    imported_id = repository.import_bundle(path)
+    imported_id = repository.import_bundle(path, embedder, labels=_labels(2))
 
     assert imported_id == honest.calibration_id
     restored = repository.get(imported_id)
@@ -225,7 +225,7 @@ def test_a_bundle_whose_counts_disagree_with_its_scores_is_refused(
     path = tmp_path / "forged.json"
     path.write_text(json.dumps(forged), encoding="utf-8")
     with pytest.raises(CalibrationBindingError, match="sample counts disagree"):
-        repository.import_bundle(path)
+        repository.import_bundle(path, embedder, labels=_labels())
 
 
 # --------------------------------------------------------------------------------------------
@@ -343,7 +343,7 @@ def test_a_bundle_missing_a_required_key_is_named_not_crashed(
         path = tmp_path / "broken.json"
         path.write_text(json.dumps(broken), encoding="utf-8")
         with pytest.raises(CalibrationBindingError, match=f"missing '{missing}'"):
-            repository.import_bundle(path)
+            repository.import_bundle(path, embedder, labels=_labels())
 
 
 @requires_db
@@ -359,7 +359,7 @@ def test_reimporting_an_existing_calibration_is_named_not_a_unique_violation(
 
     # The row is still stored, so the import collides on the primary key.
     with pytest.raises(CalibrationBindingError, match="already imported"):
-        repository.import_bundle(bundle)
+        repository.import_bundle(bundle, embedder, labels=_labels())
 
 
 @requires_db

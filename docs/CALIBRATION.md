@@ -326,13 +326,26 @@ does not exist is holding up fine.
 recall --tenant acme calibration list
 recall --tenant acme calibration show cal_...
 recall --tenant acme calibration export cal_... --output calibration-v2.json
-recall --tenant acme calibration import calibration-v2.json
+recall --tenant acme --embedder <the generation's embedder> calibration import calibration-v2.json \
+  --labels my-labels.json
 ```
 
 Exports include the versioned artifact, reusable labels, artifact checksum, and a checksum over the
 whole bundle. Import verifies both checksums, the tenant, generation lineage, embedder identity, and
-query-set digest. An imported v2 artifact returns to `draft` or `rejected`; import never publishes
-it automatically.
+query-set digest. None of that authenticates a bundle (the checksums are unkeyed), so import also:
+
+- requires **your own labelled query set** with `--labels`, which must be the set the bundle was
+  fitted on (its digest is checked). A bundle's labels are not evidence: whoever wrote it chose
+  which queries count as answerable.
+- **scores those queries again** on the named generation with `--embedder`, which must be the
+  embedder that wrote the generation's vectors. That is one embedding call per labelled query, so
+  a hosted embedder needs its credentials at import time.
+- refuses a bundle whose recorded scores differ from the fresh ones by more than 0.01 on any query,
+  or whose certification the fresh scores do not earn. A carried bundle is judged at an error bound
+  no looser than the default 10%, whatever bound it recorded.
+
+An imported v2 artifact returns to `draft` or `rejected`; import never publishes it automatically.
+A legacy file needs neither `--labels` nor a working embedder.
 
 On a lite store (a `sqlite:///` DSN), `list`, `show` and `export` work and the rest are refused by
 name: a lite store calibrates itself when it is indexed, on questions it generates and keeps only

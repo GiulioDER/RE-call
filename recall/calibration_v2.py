@@ -111,6 +111,13 @@ _FALLBACK_EMBEDDER = "bound-v2"
 #: ones `calibrate` used), so this absorbs only representation noise, never a different fit.
 _REDERIVE_TOLERANCE = 1e-9
 
+#: How far a re-scored query's best cosine may sit from the score a bundle recorded for it, on
+#: import. Not a float-noise bound: embedding the same query again is not deterministic on a hosted
+#: model, measured moving a best cosine by up to 0.0051 between calls (`recall.served_gap`), so
+#: an honest bundle re-scores within about that. It is also the price of the check: a forger who
+#: must stay within it can move each score, and so a fitted threshold, by at most this much.
+_RESCORE_TOLERANCE = 0.01
+
 #: Tolerance on the cumulative carry-forward delta. The chain total is a sum of floats, and a
 #: chain that is exactly at the bound can sum a few ulps above it (25 steps of 0.01 sum to
 #: 0.25000000000000006), which refused a chain the bound is documented to allow.
@@ -480,6 +487,137 @@ def _require_bundle_field_types(artifact_raw: Mapping[str, Any]) -> None:
         raise CalibrationBindingError("bundle is malformed: carry_forward must be an object")
 
 
+def _bundle_scores(artifact: CalibrationArtifactV2) -> tuple[list[float], list[float]]:
+    """An artifact's recorded answerable and unanswerable scores, as floats, or a named refusal."""
+    try:
+        answerable = [float(v) for v in artifact.scores.get("answerable", ())]
+        unanswerable = [float(v) for v in artifact.scores.get("unanswerable", ())]
+    except (TypeError, ValueError) as exc:
+        raise CalibrationBindingError(f"bundle scores are malformed: {exc}") from exc
+    return answerable, unanswerable
+
+
+def _import_error_bound(carry_forward: Mapping[str, Any]) -> float:
+    """The per-class error bound a CARRIED bundle is judged at on import.
+
+    The bundle's recorded `max_carry_forward_error`, never looser than the default: the bound is
+    read from the bundle, so a bundle that recorded 1.0 would certify ANY inherited threshold. A
+    carry made locally with a looser `max_error` still serves where it was made; it is only
+    refused as an import.
+    """
+    try:
+        recorded = float(
+            carry_forward.get("max_carry_forward_error", DEFAULT_MAX_CARRY_FORWARD_ERROR)
+        )
+    except (TypeError, ValueError) as exc:
+        raise CalibrationBindingError(
+            f"carry-forward max_carry_forward_error is not a number: {exc}"
+        ) from exc
+    if not math.isfinite(recorded) or not 0.0 <= recorded <= 1.0:
+        raise CalibrationBindingError(
+            "carry-forward max_carry_forward_error must be a fraction in [0, 1]"
+        )
+    return min(recorded, DEFAULT_MAX_CARRY_FORWARD_ERROR)
+
+
+def _imported_verdict(
+    artifact: CalibrationArtifactV2, answerable: Sequence[float], unanswerable: Sequence[float]
+) -> tuple[bool, str]:
+    """Whether the artifact's threshold certifies on these scores, and why not when it does not.
+
+    The rule `calibrate` and `carry_forward` apply: the separability certification bar, and for a
+    CARRIED artifact also both classes decided within `_import_error_bound`. Import applies it
+    twice, to the recorded scores (is the bundle consistent?) and to the fresh ones (does this
+    generation, on the operator's labels, support it?).
+    """
+    measured = separability(list(answerable), list(unanswerable))
+    if measured is None:
+        raise CalibrationBindingError(
+            "the scores lack a labelled class, so certification cannot be re-derived"
+        )
+    check = Calibration(
+        embedder=artifact.embedder_model,
+        threshold=artifact.threshold,
+        scale=artifact.scale,
+        separability=measured,
+        n_answerable=len(answerable),
+        n_unanswerable=len(unanswerable),
+    )
+    certified, reason = check.certified is True, check.certification_reason
+    if artifact.carry_forward is not None:
+        bound = _import_error_bound(artifact.carry_forward)
+        errors = threshold_error_rates(answerable, unanswerable, artifact.threshold)
+        if certified and not within_error_bound(errors, bound):
+            certified = False
+            reason = (
+                f"the carried threshold {artifact.threshold:.4f} misclassifies "
+                f"{errors['false_abstain_rate']:.1%} of the answerable and "
+                f"{errors['false_confirm_rate']:.1%} of the unanswerable queries, beyond the "
+                f"{bound:.0%} a carried import is judged at (never looser than the default "
+                f"{DEFAULT_MAX_CARRY_FORWARD_ERROR:.0%})"
+            )
+    return certified, reason
+
+
+def _require_scores_reproduce(
+    artifact: CalibrationArtifactV2, answerable: Sequence[float], unanswerable: Sequence[float]
+) -> None:
+    """Refuse a bundle whose recorded scores the named generation does not reproduce.
+
+    The scores are measured again, here, on this database's copy of the generation, from the
+    operator's own labelled set, and must agree query by query within `_RESCORE_TOLERANCE`. Both
+    lists are in the canonical query set's order, which is the order `calibrate` scored and
+    stored them in. Agreeing within the tolerance is not agreeing exactly, so the certification
+    is then judged on the fresh scores too (`_require_fresh_certification`).
+    """
+    recorded_answerable, recorded_unanswerable = _bundle_scores(artifact)
+    for name, stored, fresh in (
+        ("answerable", recorded_answerable, answerable),
+        ("unanswerable", recorded_unanswerable, unanswerable),
+    ):
+        if len(stored) != len(fresh):
+            raise CalibrationBindingError(
+                f"bundle records {len(stored)} {name} scores, but its query set re-scores to "
+                f"{len(fresh)} on this generation"
+            )
+        # Before the comparison, because NaN fails it open: `max()` either skips a NaN or
+        # returns it, and `nan > tolerance` is False, so the query would go unchecked.
+        if not all(math.isfinite(value) for value in fresh):
+            raise CalibrationBindingError(
+                f"this generation re-scored a {name} query to a non-finite cosine, so the "
+                f"bundle cannot be checked against it; recalibrate here instead"
+            )
+        worst = max((abs(a - b) for a, b in zip(stored, fresh, strict=True)), default=0.0)
+        if worst > _RESCORE_TOLERANCE:
+            raise CalibrationBindingError(
+                f"bundle {name} scores are not what this generation measures: the largest "
+                f"difference is {worst:.4f}, beyond {_RESCORE_TOLERANCE}. The bundle was not "
+                f"fitted on this corpus, or it was edited; recalibrate here instead"
+            )
+
+
+def _require_fresh_certification(
+    artifact: CalibrationArtifactV2, answerable: Sequence[float], unanswerable: Sequence[float]
+) -> None:
+    """Refuse a certified bundle whose certification this generation's own scores do not earn.
+
+    The recorded scores may each sit up to `_RESCORE_TOLERANCE` from the fresh ones, and that is
+    enough to move every near-threshold score across the line: overlapping fresh classes whose
+    interval misses the bar can be recorded perfectly separated. So the verdict is re-derived on
+    the FRESH scores, by `_imported_verdict`, and a bundle that certifies only on its own copy is
+    refused. An uncertified bundle is stored as `rejected` whatever it re-scores to, so it is
+    not judged again.
+    """
+    if not artifact.certified:
+        return
+    certified, reason = _imported_verdict(artifact, answerable, unanswerable)
+    if not certified:
+        raise CalibrationBindingError(
+            f"bundle claims certification its scores on this generation do not earn: {reason}. "
+            f"Recalibrate here instead"
+        )
+
+
 def _rederived_matches(stored: float, derived: float) -> bool:
     return math.isclose(
         stored, derived, rel_tol=_REDERIVE_TOLERANCE, abs_tol=_REDERIVE_TOLERANCE
@@ -501,24 +639,20 @@ def _require_scores_support_certification(artifact: CalibrationArtifactV2) -> No
     and scale are re-derived too, from `from_samples` over the bundle's own scores, which is
     exact for a legitimate round trip because `calibrate` sets them from `from_samples` over
     those same scores. A CARRIED artifact's threshold is inherited rather than fitted, so
-    re-deriving it would refuse every legitimate carried bundle; it is checked only against the
-    recorded error-rate bound over the bundle's scores.
+    re-deriving it would refuse every legitimate carried bundle; it is checked against its
+    recorded error-rate bound over the bundle's scores, capped at the default
+    (`_import_error_bound`).
 
     ⛔ **No bundle is AUTHENTICATED by this check, fitted or carried.** Every input it reads is
-    in the bundle, and a forger chooses the scores as freely as the threshold: `from_samples`
-    places the threshold between the classes, so scores clustered either side of any value
-    re-derive exactly that value, certified. Consistency is all this proves. Authenticating a
-    bundle needs something this function cannot do: re-scoring the stored query set against the
-    named generation, or a keyed signature. Treat any bundle from an untrusted source as
-    unverified, and do not `publish` one you did not export yourself.
+    in the bundle, and a forger chooses the scores and the labels as freely as the threshold:
+    `from_samples` places the threshold between the classes, so scores clustered either side of
+    any value re-derive exactly that value, certified. Consistency is all this proves.
+    `import_bundle` authenticates separately: it requires the operator's own labelled set, scores
+    it on the named generation, and requires the recorded scores to reproduce
+    (`_require_scores_reproduce`) and the certification to hold on the fresh scores
+    (`_require_fresh_certification`).
     """
-    try:
-        answerable = [float(v) for v in artifact.scores.get("answerable", ())]
-        unanswerable = [float(v) for v in artifact.scores.get("unanswerable", ())]
-    except (TypeError, ValueError) as exc:
-        raise CalibrationBindingError(
-            f"bundle scores are malformed: {exc}"
-        ) from exc
+    answerable, unanswerable = _bundle_scores(artifact)
     if len(answerable) != artifact.n_answerable or len(unanswerable) != artifact.n_unanswerable:
         raise CalibrationBindingError(
             f"bundle sample counts disagree with its own scores: recorded "
@@ -570,27 +704,13 @@ def _require_scores_support_certification(artifact: CalibrationArtifactV2) -> No
                     f"bundle {name} {stored} disagrees with the value re-derived from its own "
                     f"scores ({derived})"
                 )
-    verdict = check.certified is True
-    if artifact.carry_forward is not None:
-        # A carried artifact is certified under a SECOND condition too: the inherited threshold
-        # must still decide the fresh scores within the recorded error bound. Re-deriving the
-        # verdict without it would refuse every legitimately carried bundle.
-        try:
-            max_error = float(
-                artifact.carry_forward.get(
-                    "max_carry_forward_error", DEFAULT_MAX_CARRY_FORWARD_ERROR
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            raise CalibrationBindingError(
-                f"carry-forward max_carry_forward_error is not a number: {exc}"
-            ) from exc
-        errors = threshold_error_rates(answerable, unanswerable, artifact.threshold)
-        verdict = verdict and within_error_bound(errors, max_error)
+    # A carried artifact is certified under a SECOND condition too, inside `_imported_verdict`:
+    # the inherited threshold must decide both classes within the (capped) recorded error bound.
+    verdict, reason = _imported_verdict(artifact, answerable, unanswerable)
     if artifact.certified != verdict:
         raise CalibrationBindingError(
             f"bundle claims certified={artifact.certified} but its own scores re-derive "
-            f"certified={verdict}: {check.certification_reason}"
+            f"certified={verdict}: {reason}"
         )
 
 
@@ -861,8 +981,9 @@ def require_distinct_scored_queries(labels: Sequence[Mapping[str, Any]]) -> None
     per class would clear the certification sample floor on two queries' evidence, and one query
     labelled both ways is evidence nobody should fit on.
 
-    Applied in `calibrate`, whatever the set's origin: a new one, or a stored one when drift's
-    unattended refit passes the parent's set back in, which then ends `failed` with this reason.
+    Applied in `calibrate` and in the lite fit (`recall.lite.calibration.auto_calibrate`),
+    whatever the set's origin: a new one, or a stored one when drift's unattended refit passes
+    the parent's set back in, which then ends `failed` with this reason.
     It is not applied inside `canonical_query_set`, which also re-canonicalises stored sets on
     the serving path (`resolve_within`), where refusing would be a resolution error instead of
     a refused fit.
@@ -1085,6 +1206,17 @@ class CalibrationRepository:
         "carry_forward",
     )
     _COLUMNS = ", ".join(_COLUMN_NAMES)
+    #: The one INSERT of a v2 artifact row: every column `_COLUMN_NAMES` decodes, with `tenant_id`
+    #: first. `_insert_payload_row` and `import_bundle` bind different VALUES (the import takes
+    #: the rebound generation, the verified digest and the generation's embedder), but one column
+    #: list, so a column added to one can no longer be missing from the other.
+    _INSERT_ARTIFACT = (
+        "INSERT INTO recall_calibrations (tenant_id, "
+        + ", ".join(name for name in _COLUMN_NAMES if name != "tenant_id")
+        + ") VALUES ("
+        + ", ".join(["%s"] * len(_COLUMN_NAMES))
+        + ")"
+    )
 
     @classmethod
     def _artifact(cls, row: tuple[Any, ...]) -> CalibrationArtifactV2:
@@ -1205,13 +1337,7 @@ class CalibrationRepository:
         query-set digest and the embedder from the bundle identity, not the payload's.
         """
         conn.execute(
-            "INSERT INTO recall_calibrations "
-            "(tenant_id, calibration_id, generation_id, embedder_identity, "
-            "pipeline_fingerprint, corpus_fingerprint, query_set_digest, threshold, scale, "
-            "separability, ci_low, ci_high, n_answerable, n_unanswerable, certified, "
-            "certification_reason, lifecycle_state, scores, created_at, created_by, "
-            "artifact_checksum, carry_forward) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, "
-            "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            self._INSERT_ARTIFACT,
             (
                 self.tenant_id,
                 payload["calibration_id"],
@@ -1923,7 +2049,14 @@ class CalibrationRepository:
             raise CalibrationBindingError("calibration query set is missing")
         return write_calibration_bundle({"artifact": artifact.to_dict(), "query_set": rows}, path)
 
-    def import_bundle(self, path: str | Path) -> str:
+    def import_bundle(
+        self,
+        path: str | Path,
+        embedder: Embedder | None = None,
+        *,
+        labels: Sequence[Mapping[str, Any]] | None = None,
+        make_embedder: Callable[[], Embedder] | None = None,
+    ) -> str:
         """Store a calibration from a bundle file, and return its calibration id.
 
         Two input forms. A v2 bundle (`export_bundle`'s output: an `artifact` and its
@@ -1937,7 +2070,19 @@ class CalibrationRepository:
         database. Its lifecycle is NOT imported: it arrives as `draft` when certified and
         `rejected` otherwise, so it serves nothing until `publish`.
 
-        ⛔ None of that authenticates the bundle: see `_require_scores_support_certification`.
+        **Authentication.** The checks above prove only that the bundle agrees with itself, and
+        its checksums are unkeyed. A forger can choose the queries and which of them count as
+        answerable, so the labels are the operator's, not the bundle's: `labels` is the
+        operator's own labelled set, whose digest must equal the bundle's, and which may not
+        repeat a query. It is then scored on the named generation with the embedder that wrote
+        its vectors (`embedder`, or `make_embedder()`, built only once every cheaper check has
+        passed), the recorded scores must agree query by query (`_require_scores_reproduce`),
+        and a certified bundle must certify on the fresh scores too
+        (`_require_fresh_certification`). That costs one embedding call per labelled query. A
+        carried bundle is accepted on the same evidence a local `carry_forward` requires; its
+        parent may live in the exporting database and is not looked up. A legacy file needs no
+        labels and no embedder, because nothing it holds can reach serving.
+
         Every refusal of the bundle itself is a `CalibrationError`; a database that has not been
         migrated raises `recall.schema.SchemaTooOld` instead. The CLI names both.
         """
@@ -1967,9 +2112,24 @@ class CalibrationRepository:
         if type(version) is not int or version != ARTIFACT_VERSION:
             raise CalibrationBindingError("unsupported calibration artifact version")
         _require_bundle_field_types(artifact_raw)
-        labels, digest = canonical_query_set(query_raw)
+        _bundle_labels, digest = canonical_query_set(query_raw)
         if digest != artifact_raw.get("query_set_digest"):
             raise CalibrationBindingError("imported query set digest does not match artifact")
+        # Before any connection or embedding call, so a bundle whose labels the operator did not
+        # supply costs nothing.
+        if labels is None:
+            raise CalibrationBindingError(
+                "importing a calibration needs your own labelled query set (`--labels FILE`): a "
+                "bundle's labels are not evidence, because whoever wrote it chose which queries "
+                "count as answerable"
+            )
+        operator_labels, operator_digest = canonical_query_set(labels)
+        if operator_digest != digest:
+            raise CalibrationBindingError(
+                f"your labelled query set ({operator_digest}) is not the one this bundle was "
+                f"fitted on ({digest}); import only a calibration fitted on labels you hold"
+            )
+        require_distinct_scored_queries(operator_labels)
         if artifact_raw.get("tenant_id") != self.tenant_id:
             raise CalibrationBindingError("imported calibration belongs to another tenant")
         generation_id = str(artifact_raw.get("generation_id", ""))
@@ -2010,27 +2170,42 @@ class CalibrationRepository:
             artifact.embedder_identity
         ) != canonical_sha256(generation_embedder):
             raise CalibrationBindingError("imported calibration embedder identity does not match")
+        # Last, because it is the one check that costs embedding calls: everything cheaper has
+        # already refused what it can.
+        if embedder is None and make_embedder is not None:
+            embedder = make_embedder()
+        if embedder is None:
+            raise CalibrationBindingError(
+                "importing a calibration re-scores its labelled queries on the named generation, "
+                "so it needs that generation's embedder (`recall --embedder <spec> calibration "
+                "import ...`)"
+            )
+        _require_runtime_embedder(PipelineIdentity.from_dict(identity), embedder)
+        fresh_answerable, fresh_unanswerable = self.score_query_set(
+            generation_id, embedder, operator_labels
+        )
+        _require_scores_reproduce(artifact, fresh_answerable, fresh_unanswerable)
+        _require_fresh_certification(artifact, fresh_answerable, fresh_unanswerable)
         with self._connect() as conn, conn.transaction():
             conn.execute(
                 "INSERT INTO recall_calibration_query_sets "
                 "(tenant_id, query_set_digest, queries, sample_count, created_by) "
                 "VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                (self.tenant_id, digest, Jsonb(list(labels)), len(labels), self.actor),
+                (
+                    self.tenant_id,
+                    digest,
+                    Jsonb(list(operator_labels)),
+                    len(operator_labels),
+                    self.actor,
+                ),
             )
             try:
                 conn.execute(
-                    "INSERT INTO recall_calibrations "
-                    "(tenant_id, calibration_id, generation_id, embedder_identity, "
-                    "pipeline_fingerprint, corpus_fingerprint, query_set_digest, threshold, "
-                    "scale, "
-                    "separability, ci_low, ci_high, n_answerable, n_unanswerable, certified, "
-                    # `carry_forward` is written here for the same reason it is checksummed: it
-                    # is part of the immutable payload, so an import that dropped it would store
-                    # a row whose checksum can never verify again, and the artifact would come
-                    # back from `get` as a corruption rather than as an import.
-                    "certification_reason, lifecycle_state, scores, created_at, created_by, "
-                    "artifact_checksum, carry_forward) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    # `_INSERT_ARTIFACT` writes `carry_forward` for the same reason it is
+                    # checksummed: it is part of the immutable payload, so an import that dropped
+                    # it would store a row whose checksum can never verify again, and the
+                    # artifact would come back from `get` as a corruption rather than an import.
+                    self._INSERT_ARTIFACT,
                     (
                         self.tenant_id,
                         artifact.calibration_id,

@@ -146,7 +146,7 @@ def test_cross_tenant_access_and_import_are_rejected(calibration_tenant, tmp_pat
     with pytest.raises(CalibrationNotFound):
         other.get(artifact.calibration_id)
     with pytest.raises(CalibrationBindingError, match="another tenant"):
-        other.import_bundle(bundle)
+        other.import_bundle(bundle, embedder, labels=_labels())
 
 
 @requires_db
@@ -308,7 +308,7 @@ def test_export_import_is_checksum_verified_and_imported_history_is_not_active(
             "DELETE FROM recall_calibrations WHERE tenant_id = %s AND calibration_id = %s",
             (tenant, artifact.calibration_id),
         )
-    imported_id = repository.import_bundle(bundle)
+    imported_id = repository.import_bundle(bundle, embedder, labels=_labels())
     imported = repository.get(imported_id)
     assert imported.lifecycle_state == "draft"
     assert repository.resolve(generation_id).status == CalibrationStatus.DRAFT
@@ -320,7 +320,7 @@ def test_export_import_is_checksum_verified_and_imported_history_is_not_active(
     corrupt_path = tmp_path / "corrupt.json"
     corrupt_path.write_text(json.dumps(corrupted), encoding="utf-8")
     with pytest.raises(CalibrationBindingError, match="bundle checksum"):
-        repository.import_bundle(corrupt_path)
+        repository.import_bundle(corrupt_path, embedder, labels=_labels())
 
 
 @requires_db
@@ -534,7 +534,7 @@ def test_a_bundle_whose_timestamp_is_not_canonical_utc_is_refused_at_import(
         forged = tmp_path / "forged.json"
         forged.write_text(json.dumps(rebuilt), encoding="utf-8")
         with pytest.raises(CalibrationBindingError, match="created_at"):
-            repository.import_bundle(forged)
+            repository.import_bundle(forged, embedder, labels=_labels())
 
 
 @requires_db
