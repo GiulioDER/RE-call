@@ -727,6 +727,11 @@ class PgVectorStore:
     #: AttributeError on the very first branch and mask whatever the test was actually asserting.
     _shared = None
     _owns_shared = False
+    #: The chunk table's identifier and source columns. `GenerationStore`'s table names them
+    #: `chunk_id` and `source_uri`; every read the two classes share names its columns through
+    #: these and confines its rows through `_row_scope`, so one statement serves both tables.
+    _ID_COL = "id"
+    _SOURCE_COL = "source"
 
     def __init__(
         self,
@@ -1098,11 +1103,12 @@ class PgVectorStore:
             raise ValueError("chunk_ids must contain only non-empty strings")
         if not wanted:
             return {}
+        scope, scope_args = self._row_scope_args()
         rows = self._with_retry(
             lambda conn: conn.execute(
-                f"SELECT id, source, text, metadata FROM {self._table} "
-                "WHERE tenant_id = %s AND id = ANY(%s)",
-                (self._tenant, wanted),
+                f"SELECT {self._ID_COL}, {self._SOURCE_COL}, text, metadata FROM {self._table} "
+                f"WHERE tenant_id = %s{scope} AND {self._ID_COL} = ANY(%s)",
+                (self._tenant, *scope_args, wanted),
             ).fetchall()
         )
         found = {
@@ -1120,11 +1126,12 @@ class PgVectorStore:
             raise ValueError("chunk_ids must contain only non-empty strings")
         if not wanted:
             return {}
+        scope, scope_args = self._row_scope_args()
         rows = self._with_retry(
             lambda conn: conn.execute(
-                f"SELECT id, source, metadata FROM {self._table} "
-                "WHERE tenant_id = %s AND id = ANY(%s)",
-                (self._tenant, wanted),
+                f"SELECT {self._ID_COL}, {self._SOURCE_COL}, metadata FROM {self._table} "
+                f"WHERE tenant_id = %s{scope} AND {self._ID_COL} = ANY(%s)",
+                (self._tenant, *scope_args, wanted),
             ).fetchall()
         )
         found = {
@@ -1713,6 +1720,24 @@ class PgVectorStore:
             _log.warning("could not refresh planner statistics for %s: %s", self._table, exc)
             return False
 
+    def _row_scope(self, alias: str = "") -> tuple[str, dict[str, Any]]:
+        """The predicate, beyond the tenant, that confines a read to the rows this store serves.
+
+        Empty here: this table holds one copy of a tenant's corpus. `GenerationStore` returns its
+        pinned generation, because its table holds every generation the tenant has built and a
+        read without the predicate would mix them. SQL beginning with ` AND `, with NAMED
+        parameters; `_row_scope_args` is the positional form, spliced right after the tenant.
+        """
+        return "", {}
+
+    def _row_scope_args(self, alias: str = "") -> tuple[str, tuple[Any, ...]]:
+        """`_row_scope` for a statement with positional parameters."""
+        return "", ()
+
+    def _hit_first_write(self, alias: str = "") -> str:
+        """The expression a scored hit reads `first_indexed_at` from."""
+        return f"{alias}first_indexed_at"
+
     def _rows_to_hits(self, rows: list[tuple]) -> list[ScoredChunk]:
         hits: list[ScoredChunk] = []
         for cid, source, text, metadata, indexed_at, first_indexed_at, score in rows:
@@ -1827,20 +1852,23 @@ class PgVectorStore:
     ) -> list[ScoredChunk]:
         t = self._table
         effective = coerce_scope(scope, source)
-        where, scope_params = effective.predicate("c")
+        where, scope_params = effective.predicate("c", source_column=self._SOURCE_COL)
+        rows_scope, rows_params = self._row_scope("c.")
         sql = f"""
-            SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
+            SELECT c.{self._ID_COL}, c.{self._SOURCE_COL}, c.text, c.metadata, c.indexed_at,
+                   {self._hit_first_write("c.")},
                    1 - (c.embedding <=> %(vec)s) AS score
             FROM {t} c
-            WHERE c.tenant_id = %(tenant)s {where}
+            WHERE c.tenant_id = %(tenant)s{rows_scope} {where}
             ORDER BY c.embedding <=> %(vec)s,
                      COALESCE(c.metadata->>'source_session_id', '') COLLATE "C",
                      CASE WHEN (c.metadata->>'segment') ~ '^[0-9]+$'
                           THEN (c.metadata->>'segment')::bigint ELSE 0 END,
-                     c.id
+                     c.{self._ID_COL}
             LIMIT %(k)s
         """
         params: dict = {"vec": Vector(vector), "k": k, "tenant": self._tenant}
+        params.update(rows_params)
         params.update(scope_params)
 
         def _op(conn: "psycopg.Connection") -> list[tuple]:
@@ -1867,16 +1895,19 @@ class PgVectorStore:
         # filter passed back from a hit must resolve against `file`, falling back to `source` for
         # legacy rows (no `file` metadata) and absolute-path callers. Same rule as recall_forget.
         effective = coerce_scope(scope, source)
-        where, scope_params = effective.predicate("c")
+        where, scope_params = effective.predicate("c", source_column=self._SOURCE_COL)
+        rows_scope, rows_params = self._row_scope("c.")
         sql = f"""
-            SELECT c.id, c.source, c.text, c.metadata, c.indexed_at, c.first_indexed_at,
+            SELECT c.{self._ID_COL}, c.{self._SOURCE_COL}, c.text, c.metadata, c.indexed_at,
+                   {self._hit_first_write("c.")},
                    1 - (c.embedding <=> %(vec)s) AS score
             FROM {t} c
-            WHERE c.tenant_id = %(tenant)s {where}
+            WHERE c.tenant_id = %(tenant)s{rows_scope} {where}
             ORDER BY c.embedding <=> %(vec)s
             LIMIT %(k)s
         """
         params: dict = {"vec": Vector(vector), "k": k, "tenant": self._tenant}
+        params.update(rows_params)
         params.update(scope_params)
 
         if self._tenant or not effective.is_empty:
@@ -2068,6 +2099,8 @@ class PgVectorStore:
         `GenerationStore`'s override silently drops the series for the third time.
         """
 
+        rows_scope, rows_params = self._row_scope()
+
         def _op(conn: "psycopg.Connection") -> "tuple[Any, ...] | None":
             # SET LOCAL needs a transaction block, and this store's connections are autocommit —
             # same shape, same reason as the tuned arms of `_query_dense`.
@@ -2076,8 +2109,8 @@ class PgVectorStore:
                     conn.execute(guard)
                 return conn.execute(
                     f"SELECT 1 - min(embedding <=> %(vec)s) FROM {self._table} "
-                    "WHERE tenant_id = %(tenant)s",
-                    {"vec": Vector(vector), "tenant": self._tenant},
+                    f"WHERE tenant_id = %(tenant)s{rows_scope}",
+                    {"vec": Vector(vector), "tenant": self._tenant, **rows_params},
                 ).fetchone()
 
         row = self._with_retry(_op)
@@ -2101,16 +2134,18 @@ class PgVectorStore:
         """
         t = self._table
         value_sql = group_expression(dimension, "c")
+        rows_scope, rows_params = self._row_scope("c.")
         sql = f"""
             SELECT {value_sql} AS scope_value,
                    count(*) AS chunks,
-                   count(DISTINCT COALESCE(c.metadata->>'file', c.source)) AS documents
+                   count(DISTINCT COALESCE(c.metadata->>'file', c.{self._SOURCE_COL})) AS documents
             FROM {t} c
-            WHERE c.tenant_id = %(tenant)s AND {value_sql} IS NOT NULL
+            WHERE c.tenant_id = %(tenant)s{rows_scope} AND {value_sql} IS NOT NULL
             GROUP BY {value_sql}
             ORDER BY chunks DESC, scope_value
         """
-        rows = self._with_retry(lambda conn: conn.execute(sql, {"tenant": self._tenant}).fetchall())
+        params = {"tenant": self._tenant, **rows_params}
+        rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         return [(str(value), int(chunks), int(documents)) for value, chunks, documents in rows]
 
     def scope_undeclared_count(self, dimension: str = "folder") -> int:
@@ -2124,11 +2159,13 @@ class PgVectorStore:
         """
         t = self._table
         value_sql = group_expression(dimension, "c")
+        rows_scope, rows_params = self._row_scope("c.")
         sql = f"""
             SELECT count(*) FROM {t} c
-            WHERE c.tenant_id = %(tenant)s AND {value_sql} IS NULL
+            WHERE c.tenant_id = %(tenant)s{rows_scope} AND {value_sql} IS NULL
         """
-        row = self._with_retry(lambda conn: conn.execute(sql, {"tenant": self._tenant}).fetchone())
+        params = {"tenant": self._tenant, **rows_params}
+        row = self._with_retry(lambda conn: conn.execute(sql, params).fetchone())
         return 0 if row is None else int(row[0])
 
     def scope_centroids(
@@ -2157,15 +2194,16 @@ class PgVectorStore:
         # `group_expression` looks the dimension up in a fixed table and raises on anything else,
         # so no caller string reaches the statement. The tenant travels as a bound parameter.
         value_sql = group_expression(dimension, "c")
+        rows_scope, rows_params = self._row_scope("c.")
         sql = f"""
             SELECT {value_sql} AS scope_value, count(*) AS n, AVG(c.embedding) AS centroid
             FROM {t} c
-            WHERE c.tenant_id = %(tenant)s AND {value_sql} IS NOT NULL
+            WHERE c.tenant_id = %(tenant)s{rows_scope} AND {value_sql} IS NOT NULL
             GROUP BY {value_sql}
             HAVING count(*) >= %(min_chunks)s
             ORDER BY n DESC
         """
-        params = {"tenant": self._tenant, "min_chunks": min_chunks}
+        params = {"tenant": self._tenant, **rows_params, "min_chunks": min_chunks}
         rows = self._with_retry(lambda conn: conn.execute(sql, params).fetchall())
         # `AVG(vector)` comes back as a pgvector `Vector` here and as a numpy array where
         # `register_vector` has been applied to the connection. Neither is a plain list and only
@@ -3203,21 +3241,24 @@ class PgVectorStore:
         # without reaching for a set (which would make the query non-deterministic to read).
         wanted = list(dict.fromkeys(str(i) for i in ids))
 
+        scope, scope_args = self._row_scope_args()
+
         def _op(conn: "psycopg.Connection") -> list[tuple]:
             return conn.execute(
-                f"SELECT id, 1 - (embedding <=> %s) FROM {self._table} "
-                f"WHERE tenant_id = %s AND id = ANY(%s)",
-                (Vector(vec), self._tenant, wanted),
+                f"SELECT {self._ID_COL}, 1 - (embedding <=> %s) FROM {self._table} "
+                f"WHERE tenant_id = %s{scope} AND {self._ID_COL} = ANY(%s)",
+                (Vector(vec), self._tenant, *scope_args, wanted),
             ).fetchall()
 
         rows = self._with_retry(_op)
         return {str(row[0]): float(row[1]) for row in rows}
 
     def count(self) -> int:
+        scope, scope_args = self._row_scope_args()
         row = self._with_retry(
             lambda conn: conn.execute(
-                f"SELECT count(*) FROM {self._table} WHERE tenant_id = %s",
-                (self._tenant,),
+                f"SELECT count(*) FROM {self._table} WHERE tenant_id = %s{scope}",
+                (self._tenant, *scope_args),
             ).fetchone()
         )
         return int(row[0]) if row else 0
@@ -3278,6 +3319,7 @@ class PgVectorStore:
         # would restart it from the top on the new session and yield the earlier rows a second
         # time; a caller building an index over the result would silently double-count. A lost
         # connection raises here instead, which is the honest outcome.
+        scope, scope_args = self._row_scope_args()
         with self._borrowed() as conn:
             # An explicit transaction even though the connection is autocommit: a server-side
             # cursor is transaction-scoped, and under autocommit each FETCH would otherwise land
@@ -3286,9 +3328,10 @@ class PgVectorStore:
                 with conn.cursor(name=f"recall_iter_{uuid4().hex[:12]}") as cur:
                     cur.itersize = batch_size
                     cur.execute(
-                        f"SELECT id, source, text, metadata FROM {self._table} "
-                        "WHERE tenant_id = %s ORDER BY id",
-                        (self._tenant,),
+                        f"SELECT {self._ID_COL}, {self._SOURCE_COL}, text, metadata "
+                        f"FROM {self._table} "
+                        f"WHERE tenant_id = %s{scope} ORDER BY {self._ID_COL}",
+                        (self._tenant, *scope_args),
                     )
                     for cid, source, text, metadata in cur:
                         yield Chunk(id=cid, source=source, text=text, metadata=metadata or {})
@@ -3315,15 +3358,16 @@ class PgVectorStore:
         if not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive int")
         text_column = "text" if include_text else "''"
+        scope, scope_args = self._row_scope_args()
         with self._borrowed() as conn:
             with conn.transaction():
                 with conn.cursor(name=f"recall_iter_times_{uuid4().hex[:12]}") as cur:
                     cur.itersize = batch_size
                     cur.execute(
-                        f"SELECT id, source, {text_column}, metadata, "
+                        f"SELECT {self._ID_COL}, {self._SOURCE_COL}, {text_column}, metadata, "
                         f"COALESCE(first_indexed_at, indexed_at) FROM {self._table} "
-                        "WHERE tenant_id = %s ORDER BY id",
-                        (self._tenant,),
+                        f"WHERE tenant_id = %s{scope} ORDER BY {self._ID_COL}",
+                        (self._tenant, *scope_args),
                     )
                     for cid, source, text, metadata, first_indexed_at in cur:
                         yield (
