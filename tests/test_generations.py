@@ -377,6 +377,37 @@ def test_exact_pipeline_and_source_hash_reuses_chunks_without_embedding(manager)
 
 
 @requires_db
+@pytest.mark.parametrize("prior", [None, {"project": "old", "indexed_commit": "oldcommit"}])
+def test_reused_chunks_receive_current_build_provenance(manager, prior) -> None:
+    """DAT-001: baseline 61b428432 fails persisted project/commit after source reuse."""
+    data = b"unchanged source"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = manager.create(manifest, pipeline)
+    manager.build(first.generation_id, reader, _Embedder(1), lambda text: [text], provenance=prior)
+    manager.validate(first.generation_id)
+    manager.promote(first.generation_id, unsafe_development=True)
+    original_times = _chunk_times(manager.tenant_id, first.generation_id)
+    requested = {"project": "current", "indexed_commit": "newcommit"}
+    second = manager.create(manifest, pipeline)
+    embedder = _Embedder(9)
+    stats = manager.build(
+        second.generation_id, reader, embedder, lambda text: [text], provenance=requested,
+    )
+    assert stats.reused_objects == 1
+    assert embedder.calls == 0
+    with manager._connect() as conn:
+        metadata = conn.execute(
+            "SELECT metadata FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+            (manager.tenant_id, second.generation_id),
+        ).fetchone()[0]
+    assert {key: metadata.get(key) for key in requested} == requested
+    assert metadata["reused_from_generation"] == first.generation_id
+    assert _chunk_times(manager.tenant_id, second.generation_id)[0][0] == original_times[0][0]
+
+
+@requires_db
 def test_a_fingerprint_change_that_leaves_the_text_identical_re_embeds_nothing(
     manager, monkeypatch, tmp_path
 ) -> None:

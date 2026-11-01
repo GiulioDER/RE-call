@@ -212,6 +212,20 @@ def test_generated_entries_are_canonical_and_balanced() -> None:
     assert all(set(e) <= {"query", "answerable", "relevant_ids"} for e in entries)
 
 
+@pytest.mark.parametrize("class_name", ["answerable", "unanswerable"])
+@pytest.mark.parametrize("malformed", ["question", 7, ["question"], [7]])
+def test_generated_class_shapes_raise_queryset_error(class_name, malformed) -> None:
+    """BUG-001: baseline 61b428432 fails the exception-type assertion on unchecked JSON."""
+    payload = _payload(["answer"], ["unrelated question"])
+    payload[class_name] = malformed
+    error = None
+    try:
+        L.generate_llm(CORPUS, client=_FakeClient([payload]), per_class=1)
+    except Exception as exc:
+        error = exc
+    assert isinstance(error, QuerySetError), repr(error)
+
+
 def test_the_prompt_carries_real_chunks_not_a_summary() -> None:
     """A question written without seeing the corpus is not grounded in it."""
     client = _FakeClient([_payload(["a", "b", "c"], ["x", "y", "z"])])

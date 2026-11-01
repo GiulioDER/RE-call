@@ -195,13 +195,16 @@ def _artifact_digest(directory: Path) -> str:
             files.append(candidate)
     if not files:
         raise _ArtifactRefusal(f"model artifact has no files: {directory}")
-    digest = hashlib.sha256()
+    # Versioned framing separates file contents from the next filename.
+    digest = hashlib.sha256(b"recall-hf-artifact-v2\x00")
     for file in files:
         digest.update(file.relative_to(directory).as_posix().encode("utf-8"))
         digest.update(b"\x00")
+        content_digest = hashlib.sha256()
         with file.open("rb") as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b""):  # noqa: B023
-                digest.update(block)
+                content_digest.update(block)
+        digest.update(content_digest.digest())
     return digest.hexdigest()
 
 

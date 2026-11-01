@@ -154,6 +154,18 @@ def test_the_digest_changes_when_the_weights_change(artifact: Path) -> None:
     assert before.artifact_digest != after.artifact_digest
 
 
+def test_artifact_digest_separates_file_content_from_the_next_filename(tmp_path: Path) -> None:
+    """SEC-001: baseline 61b428432 hashes both trees as a-NUL-b-NUL-X."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "a").write_bytes(b"b\x00X")
+    (second / "a").write_bytes(b"")
+    (second / "b").write_bytes(b"X")
+    assert _artifact_digest(first) != _artifact_digest(second)
+
+
 # --------------------------------------------------------------------------------------
 # Refusals and the never-raises rule
 # --------------------------------------------------------------------------------------
@@ -317,11 +329,11 @@ def test_the_digest_ordering_is_the_same_on_every_platform(tmp_path: Path) -> No
     # so changing the module's ordering changed nothing the test looked at and the guard could not
     # fail. Comparing against a digest computed here from a fixed, platform-independent order is
     # what makes a different ordering in the module show up.
-    expected = _h.sha256()
+    expected = _h.sha256(b"recall-hf-artifact-v2\x00")
     for n in sorted(names):  # plain str sort == the POSIX-relative-path order the module uses
         expected.update(n.encode("utf-8"))
         expected.update(b"\x00")
-        expected.update((d / n).read_bytes())
+        expected.update(_h.sha256((d / n).read_bytes()).digest())
 
     assert _artifact_digest(d) == expected.hexdigest()
 

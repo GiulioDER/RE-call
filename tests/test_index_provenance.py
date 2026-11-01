@@ -93,3 +93,15 @@ def test_head_commit_is_read_from_the_repo_not_invented() -> None:
     sha = head_commit(here)
     assert sha and len(sha) >= 7 and all(c in "0123456789abcdef" for c in sha)
     assert head_commit(pathlib.Path(pathlib.Path(here.anchor))) is None
+
+
+def test_single_file_has_the_same_commit_provenance_as_its_directory() -> None:
+    """BUG-002: baseline 61b428432 returns None because git -C receives this file."""
+    from pathlib import Path
+
+    from recall.index import head_commit
+
+    source = Path(__file__).resolve()
+    expected = head_commit(source.parent)
+    assert expected is not None
+    assert head_commit(source) == expected
