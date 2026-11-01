@@ -159,6 +159,7 @@ def rejudge_outcomes(
             continue
 
         n_judged += 1
+        new_record.pop("rejudge_failed", None)
         new_record["correct"] = new
         records.append(new_record)
 

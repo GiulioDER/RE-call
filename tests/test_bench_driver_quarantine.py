@@ -915,6 +915,30 @@ def test_a_clean_rejudge_reports_an_unmixed_aggregate() -> None:
     assert payload["aggregate_mixed_verdicts"]["question_ids"] == []
 
 
+def test_a_successful_rejudge_clears_a_previous_failure() -> None:
+    """BUG-001: recovered rows must agree with the current failure counts.
+
+    Red proof on 5863bf657: this exact node fails the rejudge_failed assertion
+    because rejudge_outcomes copies the old flag without clearing it on success.
+    """
+    def unavailable(system: str, user: str) -> str:
+        raise EmptyCompletion("no text.")
+
+    doc = {"outcomes": [_record("a")], "aggregate": {}, "config": {"model": "old/judge"}}
+    failed = rejudge_document(doc, unavailable, "failed/judge", "src.json")
+    assert failed["outcomes"][0]["rejudge_failed"] is True
+    assert failed["aggregate_mixed_verdicts"]["n"] == 1
+
+    recovered = rejudge_document(failed, lambda s, u: "NO", "new/judge", "failed.json")
+
+    assert recovered["outcomes"][0]["correct"] is False
+    assert not recovered["outcomes"][0].get("rejudge_failed", False)
+    assert recovered["rejudge"]["agreement"]["n_failed"] == 0
+    assert recovered["aggregate_mixed_verdicts"]["n"] == 0
+    assert recovered["aggregate_mixed_verdicts"]["question_ids"] == []
+    assert failed["outcomes"][0]["rejudge_failed"] is True, "the input remains unchanged"
+
+
 def test_a_terminal_error_aborts_the_rejudge_run() -> None:
     def judge(system: str, user: str) -> str:
         raise _out_of_credits()
