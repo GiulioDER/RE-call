@@ -63,15 +63,15 @@ Cross package edges: 374
 | 60 | `recall_mcp.server` |
 | 59 | `recall_mcp.service` |
 | 29 | `recall.cli_commands.index_search` |
-| 25 | `recall.generations` |
+| 26 | `recall.generations` |
 | 23 | `recall_mcp.retrieval` |
 | 22 | `recall.trust` |
 | 22 | `recall_mcp.reasoning_engine` |
 | 21 | `recall` |
 | 20 | `recall.rewrite` |
 | 20 | `recall_mcp.indexing` |
+| 19 | `recall.index` |
 | 19 | `recall_mcp.provenance` |
-| 18 | `recall.index` |
 | 17 | `recall.cli_commands.calibration_cmd` |
 | 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall.generation_store` |
@@ -628,11 +628,11 @@ They are observations, not automatic failures.
 | `recall.generation_build` | 8 | 105 |
 | `recall.generation_store` | 16 | 104 |
 | `recall.generation_types` | 2 | 13 |
-| `recall.generations` | 25 | 104 |
+| `recall.generations` | 26 | 104 |
 | `recall.graph_first` | 2 | 29 |
 | `recall.guards` | 1 | 5 |
 | `recall.idempotency_receipts` | 3 | 14 |
-| `recall.index` | 18 | 104 |
+| `recall.index` | 19 | 104 |
 | `recall.index_budget` | 0 | 0 |
 | `recall.index_lock` | 3 | 37 |
 | `recall.integrations` | 1 | 5 |

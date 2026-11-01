@@ -9,6 +9,11 @@ RE-call with the original EnterpriseRAG document id preserved in metadata, retri
 per question, then writes an answer file plus a run manifest. Generation is optional: the default
 `extractive` mode spends no model calls and is useful for validating ingestion, retrieval, and file
 format before paying for a full answer run.
+
+
+Prior work: RE-call project memory and the existing release-file loaders in this module
+and scripts/enterprise_rag_build_eval_cache.py were checked. This maintenance change
+preserves the dataset schema and repairs object parsing; it adds no new experiment.
 """
 
 from __future__ import annotations
@@ -153,12 +158,17 @@ def _json_text_rows(text: str, *, label: str) -> Iterator[Mapping[str, Any]]:
             if isinstance(item, Mapping):
                 yield item
         return
-    if stripped.startswith("{") and "\n" not in stripped:
-        payload = json.loads(stripped)
-        if isinstance(payload, Mapping):
-            yield payload
-            return
-        raise ValueError(f"{label}: expected a JSON object")
+    if stripped.startswith("{"):
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            if "\n" not in stripped:
+                raise
+        else:
+            if isinstance(payload, Mapping):
+                yield payload
+                return
+            raise ValueError(f"{label}: expected a JSON object")
     for i, line in enumerate(stripped.splitlines(), start=1):
         if not line.strip():
             continue

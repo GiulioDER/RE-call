@@ -22,6 +22,7 @@ from recall.context import ContextMode, ContextPolicy, StructuredChunk, contextu
 from recall.build_progress import BuildCounters, BuildPlan, BuildProgressSink
 from recall.cache import embed_with_cache, open_default_cache
 from recall.document import parse_document
+from recall.derived_block import has_legacy_derived_block
 from recall.dependency_invalidation import build_dependency_projection, write_dependency_projection, dependency_key
 from recall.records import admit_record
 from recall.embedding_registry import CONTEXT_POLICY_VERSION, context_version_for
@@ -230,7 +231,7 @@ def _context_groups(
 #: arrived, so the frontmatter pairing rule cannot have moved its body.
 _MARKDOWN_MEDIA_TYPES = frozenset({"text/markdown", "text/x-markdown"})
 _BODY_RULE_VERSION_KEY = "body_rule_version"
-_BODY_RULE_VERSION = "frontmatter-pairing-2026-08-11"
+_BODY_RULE_VERSION = "body-evidence-2026-11-01"
 _METADATA_RULE_VERSION_KEY = "metadata_rule_version"
 #: Bump whenever the code that derives chunk metadata from a document changes, so sources whose
 #: bytes are unchanged are re-derived instead of reused. "recall-record-2026-10-21": the parser
@@ -321,7 +322,9 @@ def _body_rule_changed(media_type: str, text: str) -> bool:
     every corpus, or by a body rule column on the reuse path, which would be a schema change; only
     objects that actually contain the defect pay one rebuild.
     """
-    return media_type in _MARKDOWN_MEDIA_TYPES and legacy_pairing_differs(text)
+    return media_type in _MARKDOWN_MEDIA_TYPES and (
+        legacy_pairing_differs(text) or has_legacy_derived_block(text)
+    )
 
 
 def _new_id(prefix: str) -> str:

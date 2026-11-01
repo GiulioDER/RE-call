@@ -33,7 +33,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
-from recall.frontmatter import supersedes_key
+from recall.frontmatter import has_line_break, supersedes_key
 from recall.lineage import canonical_sha256
 from recall.errors import RecallError
 
@@ -41,6 +41,7 @@ from recall.errors import RecallError
 #: the read path errs toward stripping MORE, never less.
 OPEN_FENCE = "<!-- recall:derived v1 -->"
 CLOSE_FENCE = "<!-- /recall:derived -->"
+LEGACY_OPEN_FENCE = "<!-- recall:derived -->"
 
 
 @dataclass(frozen=True)
@@ -55,10 +56,17 @@ class DerivedSplit:
 def _first_fence_offset(body: str) -> int | None:
     cursor = 0
     for line in body.splitlines(keepends=True):
-        if line.strip() == OPEN_FENCE:
+        if line.strip() in (OPEN_FENCE, LEGACY_OPEN_FENCE):
             return cursor
         cursor += len(line)
     return None
+
+
+def has_legacy_derived_block(body: str) -> bool:
+    """Whether an existing rewrite block needs its evidence re-derived once."""
+    return LEGACY_OPEN_FENCE in body and any(
+        line.strip() == LEGACY_OPEN_FENCE for line in body.splitlines()
+    )
 
 
 def split_derived_block(body: str) -> DerivedSplit:
@@ -172,7 +180,7 @@ def _validate_entry(entry: DerivedEntry) -> None:
         # Refuse the wikilink, do NOT unwrap it. `supersedes_key` exists to normalise what a
         # HUMAN wrote (`recall/frontmatter.py:63`); a machine writing its own file has no excuse.
         raise DerivedBlockError(f"value {entry.value!r} is not a bare document stem")
-    if not _HEX64.match(entry.proposal):
+    if not _HEX64.fullmatch(entry.proposal):
         raise DerivedBlockError("proposal must be 64 lowercase hex characters")
     if not _is_utc_instant(entry.at):
         raise DerivedBlockError("at must be a Z-suffixed UTC ISO-8601 instant")
@@ -184,7 +192,7 @@ def _validate_entry(entry: DerivedEntry) -> None:
         ("value", entry.value), ("provider", entry.provider),
         ("reviewer", entry.reviewer), ("note", entry.note),
     ):
-        if "\n" in text:
+        if has_line_break(text):
             raise DerivedBlockError(f"{name} must be a single line")
 
 

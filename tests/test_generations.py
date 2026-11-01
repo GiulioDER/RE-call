@@ -2005,6 +2005,42 @@ def test_an_ordinary_markdown_object_still_reuses() -> None:
     assert _body_rule_changed("text/markdown", "# Title\n\nbody\n") is False
 
 
+@requires_db
+def test_legacy_derived_evidence_is_rebuilt_once_before_generation_reuse(manager) -> None:
+    """FIX-001: d8d0bc04c fails reused_objects == 0 after a pre-fix chunk set is seeded.
+
+    The unchanged source and pipeline must not carry an old contaminated chunk into a new
+    generation. The repaired generation must then be reusable without embedding again.
+    """
+    data = b"# Memo\n\nAuthored evidence.\n\n<!-- recall:derived -->\nstatus: adopted\n<!-- /recall:derived -->\n"
+    manifest = _manifest(manager.tenant_id, data)
+    reader = _reader(manifest, data)
+    pipeline = _pipeline("model-a")
+    first = _ready(manager, manifest, pipeline, reader, _Embedder(1))
+    manager.promote(first, unsafe_development=True)
+    with manager._connect() as conn, conn.transaction():
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET text = %s, metadata = metadata - %s "
+            "WHERE tenant_id = %s AND generation_id = %s",
+            (data.decode(), "body_rule_version", manager.tenant_id, first),
+        )
+    second = manager.create(manifest, pipeline)
+    stats = manager.build(second.generation_id, reader, _Embedder(9), lambda text: [text])
+    assert stats.reused_objects == 0, "pre-fix machine evidence was reused"
+    with manager._connect() as conn:
+        texts = conn.execute(
+            "SELECT text FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+            (manager.tenant_id, second.generation_id),
+        ).fetchall()
+    assert texts and all("recall:derived" not in row[0] for row in texts)
+    manager.validate(second.generation_id)
+    manager.promote(second.generation_id, unsafe_development=True)
+    third = manager.create(manifest, pipeline)
+    embedder = _Embedder(11)
+    assert manager.build(third.generation_id, reader, embedder, lambda text: [text]).reused_objects == 1
+    assert embedder.calls == 0
+
+
 def test_a_non_markdown_object_is_never_reparsed_so_it_always_reuses() -> None:
     # `parse_frontmatter` is only applied to markdown media types, so a text/plain object
     # carrying the same bytes never had a frontmatter block to lose.
