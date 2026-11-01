@@ -1146,7 +1146,7 @@ def _memory_md_starter(today: date | None = None) -> str:
     return (
         "# Memory index\n"
         "\n"
-        "This file is the always-loaded index. Each fact below lives in its own file under "
+        "This file is the project's memory index. Each fact below lives in its own file under "
         "`memory/`, with frontmatter:\n"
         "\n"
         "```markdown\n"
