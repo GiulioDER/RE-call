@@ -103,6 +103,9 @@ def _source_claims(graph: ReasoningGraphProjection) -> Mapping[str, EvidenceClai
         file = node.file
         assert file is not None
         chunk_nodes = chunks.get(file, ())
+        # Proposal endpoints name files, so a path held by different sources is ambiguous.
+        if len({chunk.source for chunk in chunk_nodes}) > 1:
+            continue
         valid_from = _earliest_datetime(
             chunk.validity.get("valid_from") for chunk in chunk_nodes if chunk.validity
         )
@@ -331,7 +334,7 @@ def _make_proposal(
 def deterministic_inference_proposals(
     graph: ReasoningGraphProjection, *, pipeline_id: str | None = None
 ) -> tuple[InferenceProposal, ...]:
-    """Return high precision deterministic proposals without mutating the graph."""
+    """Return deterministic proposals, omitting ambiguous file paths, without mutating the graph."""
     context = _context(
         graph,
         pipeline_id=pipeline_id,
@@ -519,12 +522,13 @@ def _direct_reference_proposals(
     # reads it: such a reference is skipped. Keeping the last file seen proposed an edge onto
     # whichever one happened to sort last.
     by_key: dict[str, list[str]] = defaultdict(list)
-    for file in claims:
-        by_key[supersedes_key(file)].append(file)
+    for node in _source_nodes(graph):
+        assert node.file is not None
+        by_key[supersedes_key(node.file)].append(node.file)
 
     def unique(reference: str) -> str | None:
         files = by_key.get(supersedes_key(reference), [])
-        return files[0] if len(files) == 1 else None
+        return files[0] if len(files) == 1 and files[0] in claims else None
 
     proposals: list[InferenceProposal] = []
     for file, claim in sorted(claims.items()):

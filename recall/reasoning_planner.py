@@ -412,14 +412,10 @@ def plan_multi_hop_evidence(
             _seed_initial_evidence(state, trusted_hits, indexes)
         for hit in rejected_hits:
             _reject_hit(state, hit, "retrieval verdict is not trusted")
-        if (
-            not state.failed_closed
-            and direct_nodes is not None
-            and not _budget_allows(state, include_step=False)
-        ):
-            _fail_closed(state, "budget_exhausted", "reasoning budget exhausted")
         if not state.failed_closed and direct_nodes is None:
             _run_operations(state, indexes)
+        if not state.failed_closed and not _budget_allows(state, include_step=False):
+            _fail_closed(state, "budget_exhausted", "reasoning budget exhausted")
 
     accepted = tuple(
         EvidenceDecision(
@@ -510,7 +506,8 @@ def _direct_evidence_nodes(
             nodes_by_identity.setdefault((node.chunk_id, node.source, node.file), []).append(node)
     matches: list[ReasoningGraphNode] = []
     for hit in hits:
-        candidates = nodes_by_identity.get((hit.chunk.id, hit.chunk.source, hit.provenance.file), [])
+        identity = (hit.chunk.id, hit.chunk.source, hit.provenance.file or hit.chunk.source)
+        candidates = nodes_by_identity.get(identity, [])
         if len(candidates) != 1:
             return None
         matches.append(candidates[0])
@@ -742,7 +739,7 @@ def _seed_initial_evidence(
     state: _PlannerState, hits: Sequence[TrustedHit], indexes: _PlannerIndexes
 ) -> None:
     for hit in hits:
-        identity = (hit.chunk.id, hit.chunk.source, hit.provenance.file)
+        identity = (hit.chunk.id, hit.chunk.source, hit.provenance.file or hit.chunk.source)
         matches = indexes.chunks_by_retrieval_identity.get(identity, ())
         if not matches:
             state.gaps.append(
