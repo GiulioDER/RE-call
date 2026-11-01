@@ -114,9 +114,10 @@ def tenant_for(project: str, kind: CorpusKind) -> str:
     # The tenant becomes a compose SERVICE name (`recall-{tenant}`), and Docker restricts those.
     # Refused here rather than at `docker compose up`, where the error names a generated file the
     # user never wrote.
-    if not all(char.isalnum() or char in "-_." for char in scope):
+    if not all((char.isascii() and char.isalnum()) or char in "-_." for char in scope):
         raise ValueError(
-            f"project {scope!r} may contain only letters, digits, hyphen, underscore and dot: it "
+            f"project {scope!r} may contain only letters, digits, hyphen, underscore and dot "
+            "(ASCII only): it "
             "becomes a Docker Compose service name"
         )
     return f"{scope}-{kind}"

@@ -60,11 +60,14 @@ from recall.wizard.corpora import (
 from recall.wizard.pipeline import CorpusOutcome, PipelineRefusal, run_corpus
 from recall.wizard.stack import (
     COMPOSE_NAME as _COMPOSE_NAME,
+    DOCKERFILE_NAME,
+    _versioned_dockerfile_name,
     StackSpec,
     bring_up,
     choose_port,
     compose_document,
     existing_port,
+    existing_tenants,
     host_dsn,
     wait_for_database,
     write_compose,
@@ -1074,7 +1077,9 @@ def compose_project_for(data_root: Path, project: str) -> str:
 
     digest = hashlib.sha256(data_root.as_posix().encode("utf-8")).hexdigest()[:8]
     # Compose restricts project names to lowercase alphanumerics, hyphen and underscore.
-    scope = "".join(char for char in project.lower() if char.isalnum() or char in "-_") or "recall"
+    scope = "".join(
+        char for char in project.lower() if (char.isascii() and char.isalnum()) or char in "-_"
+    ) or "recall"
     return f"recall-{scope}-{digest}"
 
 
@@ -1128,6 +1133,53 @@ def _check_existing_database_storage(compose_path: Path, replacement: dict[str, 
         )
 
 
+def _write_stack(
+    compose_path: Path,
+    spec: StackSpec,
+    *,
+    provisional: bool,
+    managed_tenants: tuple[str, ...] = (),
+) -> None:
+    """Update this run's services while retaining other projects and stack settings.
+
+    A provisional environment is for new services only. Replacing an existing
+    production environment before readiness would persist a different serving route
+    if the run failed. Final outcomes replace only the tenants this run manages.
+    """
+    document = compose_document(spec)
+    _check_existing_database_storage(compose_path, document)
+    dockerfile_name = DOCKERFILE_NAME
+    if compose_path.exists():
+        try:
+            existing = json.loads(compose_path.read_text(encoding="utf-8"))
+            services = existing["services"]
+            if not isinstance(existing, dict) or not isinstance(services, dict) or "db" not in services:
+                raise ValueError("the existing stack has no service mapping with a database")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ConfigRefusal(
+                f"cannot preserve the existing stack at {compose_path}: {exc}", ("data_root",)
+            ) from exc
+        generated = document["services"]
+        assert isinstance(generated, dict)
+        # Existing services may still build an older image from the shared recipe.
+        # Keep that recipe intact, including when readiness or preparation fails.
+        dockerfile_name = _versioned_dockerfile_name(spec.recall_image)
+        for name, service in generated.items():
+            if name != "db" and isinstance(service, dict):
+                build = service.get("build")
+                assert isinstance(build, dict)
+                build["dockerfile"] = dockerfile_name
+        if not provisional:
+            for tenant in managed_tenants:
+                services.pop(f"recall-{tenant}", None)
+        for name, service in generated.items():
+            if name == "db" or (provisional and name in services):
+                continue
+            services[name] = service
+        document = {**document, **existing, "services": services}
+    write_compose(compose_path, document, dockerfile_name=dockerfile_name)
+
+
 def _provision(
     config: HeadlessConfig,
     plan: CorpusPlan,
@@ -1145,6 +1197,16 @@ def _provision(
     if config.data_root is None:
         return config
 
+    if config.embedder not in {"hashing", "hashing-64", "hashing:64", "fastembed"} and not (
+        config.embedder.startswith("fastembed:")
+    ):
+        raise ConfigRefusal(
+            f"embedder {config.embedder!r} is not supported by the managed Docker image. "
+            "Use hashing or fastembed (optionally fastembed:<model>), or supply dsn for an "
+            "existing database whose host environment provides the backend and credentials.",
+            ("embedder", "data_root"),
+        )
+
     compose_path = config.data_root / COMPOSE_NAME
     compose_project = compose_project_for(config.data_root, config.project)
     port = existing_port(compose_path) or choose_port()
@@ -1157,17 +1219,17 @@ def _provision(
         # `data_root`. See `compose_document` for the measured reason. Naming the data root here as
         # if it held the database would be a claim the code stopped creating.
         progress(f"stack: {config.data_root}, database on volume, port {port}")
-    document = compose_document(
+    _write_stack(
+        compose_path,
         StackSpec(
             data_root=config.data_root,
             port=port,
             tenants=tenants,
             env=_provisional_env(tenants, dsn=dsn, embedder=config.embedder),
             project_name=compose_project,
-        )
+        ),
+        provisional=True,
     )
-    _check_existing_database_storage(compose_path, document)
-    write_compose(compose_path, document)
     # `db` only. The recall image is built later and the store must not wait for it.
     try:
         bring_up(compose_path, project_name=compose_project, services=("db",))
@@ -1243,6 +1305,12 @@ def run_headless(
         # PATH, and the operator needs to be told which config key holds it.
         raise ConfigRefusal(f"the corpus plan is not buildable from this config: {exc}") from exc
 
+    # Remember what existed before provisioning adds temporary service entries.
+    # A caught rebuild failure cannot establish that an installed scope stopped serving.
+    preexisting_tenants = (
+        frozenset(existing_tenants(config.data_root / COMPOSE_NAME))
+        if config.data_root is not None else frozenset()
+    )
     # The database, at the user's chosen location, before anything tries to reach one.
     config = _provision(config, plan, progress)
 
@@ -1381,16 +1449,22 @@ def run_headless(
         compose_project = compose_project_for(config.data_root, config.project)
         try:
             port = existing_port(compose_path) or choose_port()
-            write_compose(
+            failed_tenants = {entry.tenant for entry in refused} | {
+                entry.tenant for entry in failures
+            }
+            preserve_failed = preexisting_tenants & failed_tenants
+            _write_stack(
                 compose_path,
-                compose_document(
-                    StackSpec(
-                        data_root=config.data_root,
-                        port=port,
-                        tenants=tuple(block.tenant for block in blocks),
-                        env={block.tenant: dict(block.env) for block in blocks},
-                        project_name=compose_project,
-                    )
+                StackSpec(
+                    data_root=config.data_root,
+                    port=port,
+                    tenants=tuple(block.tenant for block in blocks),
+                    env={block.tenant: dict(block.env) for block in blocks},
+                    project_name=compose_project,
+                ),
+                provisional=False,
+                managed_tenants=tuple(
+                    spec.tenant for spec in plan.corpora if spec.tenant not in preserve_failed
                 ),
             )
             profile_written = write_runtime_profile(

@@ -1771,6 +1771,7 @@ if QApplication is not None:
         def _scope_changed(self, index: int) -> None:
             data = self.scope.itemData(index)
             if isinstance(data, dict) and data.get("action") == "add":
+                previous_scope_index = self._last_scope_index
                 name, accepted = QInputDialog.getText(self, "Add project", "Project name")
                 clean_name = _project_name(name) if accepted else ""
                 if clean_name:
@@ -1788,7 +1789,8 @@ if QApplication is not None:
                         # would be an affirmative false claim about the live write target, and the
                         # next drop would ingest into the default corpus.
                         self.scope.blockSignals(True)
-                        self.scope.setCurrentIndex(self._last_scope_index)
+                        self.scope.setCurrentIndex(previous_scope_index)
+                        self._last_scope_index = previous_scope_index
                         self.scope.blockSignals(False)
                         self.status.setText(
                             f"{clean_name!r} is reserved for the shared scope, which is already "

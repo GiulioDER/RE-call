@@ -55,17 +55,39 @@ one you can re-run in CI.
 
 | Key | Required | What it decides |
 |---|---|---|
-| `dsn` | yes | the serving connection: where chunks are written and read |
-| `migration_dsn` | yes | the DDL owner, which applies migrations and issues GRANTs |
+| `dsn` | one of `dsn` or `data_root` | the serving connection to an existing database |
+| `data_root` | one of `dsn` or `data_root` | absolute directory for a managed Docker stack; its database uses a named volume |
+| `migration_dsn` | no | the DDL owner; defaults to `dsn` for an existing database and cannot be set with `data_root` |
 | `embedder` | yes | the vector dimension, which is welded to the table |
 | `corpus_version` | yes | stamped on every chunk; the convention is an ISO date |
 | `docs_root`, `code_root`, `memory_root` | yes | the three corpora. **Absolute paths only** |
 | `project_root` | no | the `cwd` each MCP server runs from, and where `.env` and `CLAUDE.md` are written |
-| `project` | no | a label stamped on every chunk, so a hit can say where it came from |
+| `project` | no | the tenant namespace and chunk provenance label; defaults to `default` |
 | `serving_role` | conditionally | see the two-role case below |
 
 Every root must be absolute. A relative root resolves against the wizard's own working directory, so
 the commit stamped on each chunk would be the wizard's rather than the corpus's.
+
+Set exactly one of `dsn` and `data_root`. For a managed Docker install, omit both DSN keys:
+
+```json
+{
+  "data_root": "C:/projects/myapp/recall-stack",
+  "embedder": "fastembed",
+  "corpus_version": "2026-08-18",
+  "docs_root": "C:/projects/myapp/docs",
+  "code_root": "C:/projects/myapp/src",
+  "memory_root": "C:/projects/myapp/memory",
+  "project_root": "C:/projects/myapp",
+  "project": "myapp"
+}
+```
+
+The managed image supports `hashing` and `fastembed` (including `fastembed:<model>`). Other
+embedders require an existing database via `dsn` and a host environment with their dependencies
+and credentials. A managed install refuses those backends before creating the stack or building
+corpora. Project names use ASCII letters, digits, hyphens, underscores and dots; they cannot end
+in `-docs`, `-code` or `-memory`.
 
 **`project_root` is the one root the wizard creates, and only its last directory.** A project
 directory that does not exist yet is an ordinary first install, so it is made before `.env` and
@@ -92,9 +114,12 @@ on the deployment the two keys exist for. See `docs/MIGRATIONS.md` for the role 
 
 | Tenant | Calibrated | Served as | Why |
 |---|---|---|---|
-| `docs` | yes | `RECALL_ENV=production`, strict trust | prose separates well, so it can certify |
-| `code` | yes | `RECALL_ENV=production`, strict trust | same, measured: separability 0.999 on this repo |
-| `memory` | **no** | development trust, no `RECALL_ENV` | writable after install, and a fresh directory cannot meet the certification floor |
+| `{project}-docs` | yes | `RECALL_ENV=production`, strict trust | prose separates well, so it can certify |
+| `{project}-code` | yes | `RECALL_ENV=production`, strict trust | same, measured: separability 0.999 on this repo |
+| `{project}-memory` | **no** | development trust, no `RECALL_ENV` | writable after install, and a fresh directory cannot meet the certification floor |
+
+For the example above these are `myapp-docs`, `myapp-code` and `myapp-memory`. Omitting
+`project` produces `default-docs`, `default-code` and `default-memory`.
 
 `memory` is deliberately never calibrated. Certification needs at least 20 answerable and 20
 unanswerable questions, a fresh memory directory holds one file, and a calibrated memory tenant would
