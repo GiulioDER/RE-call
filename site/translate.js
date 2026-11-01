@@ -94,16 +94,20 @@
     }
   }
 
-  function requestWithTimeout(url, options, signal) {
+  async function requestWithTimeout(url, options, signal) {
     const controller = new AbortController();
     const abort = () => controller.abort();
     if (signal?.aborted) controller.abort();
     else signal?.addEventListener("abort", abort, { once: true });
     const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    return fetch(url, { ...options, signal: controller.signal }).finally(() => {
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      if (!response.ok) throw new Error("translation provider unavailable");
+      return await response.json();
+    } finally {
       window.clearTimeout(timeout);
       signal?.removeEventListener("abort", abort);
-    });
+    }
   }
 
   async function translateWithGoogle(texts, locale, signal) {
@@ -115,9 +119,7 @@
       dt: "t",
       q: texts.join(SEPARATOR),
     });
-    const response = await requestWithTimeout(url, { headers: { Accept: "application/json" } }, signal);
-    if (!response.ok) throw new Error("fallback translation unavailable");
-    const payload = await response.json();
+    const payload = await requestWithTimeout(url, { headers: { Accept: "application/json" } }, signal);
     const combined = payload?.[0]
       ?.filter((segment) => Array.isArray(segment) && typeof segment[0] === "string")
       .map((segment) => segment[0])
@@ -132,7 +134,7 @@
   async function translateBatch(texts, locale, signal) {
     try {
       const body = new URLSearchParams({ to: locale, text: JSON.stringify(texts) });
-      const response = await requestWithTimeout(
+      const payload = await requestWithTimeout(
         TRANSLATION_ENDPOINT,
         {
           method: "POST",
@@ -144,8 +146,6 @@
         },
         signal,
       );
-      if (!response.ok) throw new Error("translation provider unavailable");
-      const payload = await response.json();
       if (
         payload?.result === 1 &&
         Array.isArray(payload.text) &&
