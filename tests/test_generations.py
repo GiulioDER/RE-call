@@ -3146,3 +3146,25 @@ def test_a_member_with_no_chunks_does_not_send_its_group_back(manager) -> None:
     assert embedder.groups == [], "an empty member re-embedded its whole group"
     assert stats.reused_objects == 2
     assert manager.validate(second.generation_id).state == GenerationState.READY
+
+
+@requires_db
+def test_a_fixed_generation_stops_serving_once_abandoned(manager) -> None:
+    """DEF-7 (CCA DAT-005): a store fixed to a generation re-checks it is still readable.
+
+    Red against `beb08a605` (the fixed branch of `snapshot` reads the fingerprint with no state
+    filter): node
+    tests/test_generations.py::test_a_fixed_generation_stops_serving_once_abandoned fails on
+    "DID NOT RAISE NoActiveGeneration".
+    """
+    data = b"---\nstatus: current\n---\na memo pinned for a benchmark"
+    manifest = _manifest(manager.tenant_id, data)
+    generation_id = _ready(manager, manifest, _pipeline("model-a"), _reader(manifest, data), _Embedder(1))
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        store.set_fixed_generation(generation_id)
+        with store.snapshot() as pinned:
+            assert pinned == generation_id
+        manager.abandon(generation_id, "superseded benchmark snapshot")
+        with pytest.raises(NoActiveGeneration):
+            with store.snapshot():
+                pass

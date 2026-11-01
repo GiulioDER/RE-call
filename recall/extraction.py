@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Literal
 from xml.etree import ElementTree
 from recall.errors import RecallError
+from recall.frontmatter import MARKDOWN_SUFFIXES
 
 
 class DocumentExtractionError(ValueError, RecallError):
@@ -203,7 +204,7 @@ def extract_document(path: Path, data: bytes) -> ExtractedDocument:
     text = _decode_text(data)
     return _document(
         text,
-        "text/markdown" if suffix in {".md", ".markdown", ".mdx"} else "text/plain",
+        "text/markdown" if suffix in MARKDOWN_SUFFIXES else "text/plain",
         {"source_format": suffix.removeprefix("."), "extraction": "text"},
     )
 

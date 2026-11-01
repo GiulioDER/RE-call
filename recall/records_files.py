@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from recall.document import parse_document
-from recall.frontmatter import RECORD_KEY, supersedes_targets, validity_bounds
+from recall.frontmatter import MARKDOWN_SUFFIXES, RECORD_KEY, supersedes_targets, validity_bounds
 from recall.records import (
     RecordCandidate,
     admit_record,
@@ -52,7 +52,7 @@ from recall.records import (
 from recall.supersession import SupersessionGraph, resolve_supersession_graph
 
 #: The suffixes the indexer reads as markdown documents.
-_MEMO_SUFFIXES = frozenset({".md", ".markdown", ".mdx"})
+_MEMO_SUFFIXES = MARKDOWN_SUFFIXES
 
 
 @dataclass(frozen=True)

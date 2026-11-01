@@ -248,12 +248,20 @@ class GenerationStore(PgVectorStore):
             raise NoActiveGeneration(f"tenant {self._tenant!r} has no active generation")
         return str(row[0]), str(row[1])
 
-    def _read_corpus_fingerprint(self, generation_id: str) -> str:
+    def _read_corpus_fingerprint(self, generation_id: str, *, readable_only: bool = False) -> str:
+        """The generation's corpus fingerprint; with `readable_only`, only while it is readable.
+
+        The fixed-generation path asks with `readable_only`, because `set_fixed_generation`
+        checked the state once: a READY generation abandoned to `failed` afterwards kept being
+        served by every later snapshot until gc deleted it (CCA DAT-005).
+        """
+        states = list(READABLE_GENERATION_STATES)
         row = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT corpus_fingerprint FROM recall_generations "
-                "WHERE tenant_id = %s AND generation_id = %s",
-                (self._tenant, generation_id),
+                "WHERE tenant_id = %s AND generation_id = %s "
+                "AND (NOT %s OR state = ANY(%s))",
+                (self._tenant, generation_id, readable_only, states),
             ).fetchone()
         )
         if row is None:
@@ -296,7 +304,7 @@ class GenerationStore(PgVectorStore):
         # enters this context manager and silently replaces the pin with the active generation.
         if self._fixed_generation:
             generation_id = self._fixed_generation
-            fingerprint = self._read_corpus_fingerprint(generation_id)
+            fingerprint = self._read_corpus_fingerprint(generation_id, readable_only=True)
         else:
             generation_id, fingerprint = self._active_generation_state()
         token = self._pinned_generation.set(generation_id)

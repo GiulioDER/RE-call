@@ -385,11 +385,14 @@ def refresh(
     passes it; a person running `recall lite refresh` is not bound by it (CCA SEC-002).
 
     `security_policy` and `security_context` are the operator's source policy, applied exactly as
-    `recall_index` applies it: a file the policy denies is not indexed (and counted in `denied`),
-    and the indexer redacts the rest before storing. Without them a refresh would store what the
-    policy refuses, and rewrite rows indexed under it without their policy digest, so search would
-    stop returning them (CCA SEC-001). `allow_prune` is for a person who has confirmed a large
-    deletion (`recall lite refresh --allow-prune`); the server never passes it.
+    `recall_index` applies it: a file the policy denies by its own path is not indexed (and counted
+    in `denied`), and the indexer redacts the rest before storing. A symlinked memo is judged by
+    its target too: a link whose target the policy denies, or whose target a different rule
+    governs, is refused by the indexer and fails the whole refresh instead of being counted.
+    Without them a refresh would store what the policy refuses, and rewrite rows indexed under it
+    without their policy digest, so search would stop returning them (CCA SEC-001).
+    `allow_prune` is for a person who has confirmed a large deletion
+    (`recall lite refresh --allow-prune`); the server never passes it.
     """
     if security_policy is not None and security_context is None:
         raise ValueError("security_context is required when security_policy is configured")

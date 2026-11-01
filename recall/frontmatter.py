@@ -51,6 +51,12 @@ _AUTHORED_AUTHORITY_VALUES: tuple[Authority, ...] = tuple(
 )
 
 
+#: The suffixes every reader treats as markdown: extraction labels them text/markdown, the indexer
+#: parses their frontmatter, record admission and supersession read them as memos. One set, because
+#: four copies let a new suffix be markdown to one and plain text to another (CCA CODE-021).
+MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".mdx"})
+
+
 def _recall_graph_metadata(metadata: Mapping[str, Any]) -> Mapping[str, Any] | None:
     value = metadata.get(GRAPH_KEY)
     if value is None:
@@ -155,6 +161,24 @@ _FLOW_CLOSER = re.compile(r"[\]}],?\s*$")
 #: lines. A lone ``\r`` is absent: every production reader uses universal newlines, which
 #: translates it before this code sees it.
 _EXOTIC_BREAKS = ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029")
+
+
+def with_provenance(metadata: dict, provenance: dict) -> dict:
+    """Frontmatter first, provenance LAST, and never mutating the input.
+
+    Provenance overrides because a document must not be able to relabel its own origin: if
+    frontmatter won, any indexed file could claim to come from another project and provenance would
+    be an assertion made by the data rather than a record made by the builder.
+
+    A copy, not an update in place: the caller reuses one `metadata` dict across every chunk of a
+    document, so mutating it would accumulate across chunks and leak between documents.
+
+    The one implementation for both build paths (`recall.generations` and `recall.index`), which
+    each kept their own copy of this security rule (CCA CODE-024).
+    """
+    if not provenance:
+        return metadata
+    return {**metadata, **provenance}
 
 
 def frontmatter_span(text: str) -> int | None:

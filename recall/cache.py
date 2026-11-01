@@ -124,12 +124,16 @@ def open_default_cache() -> "EmbeddingCache | None":
     failure is logged rather than swallowed, because a cache that is silently never warm looks
     exactly like a cache that is working and expensive.
     """
-    path = default_cache_path()
-    if path is None:
-        return None
+    path = None
     try:
+        # Inside the try: `Path.home()` raises RuntimeError for a uid with no home directory
+        # (a scrubbed service environment), which would otherwise abort the run the cache only
+        # speeds up (CCA DEPLOY-002).
+        path = default_cache_path()
+        if path is None:
+            return None
         return EmbeddingCache(path)
-    except (sqlite3.Error, OSError) as exc:
+    except (sqlite3.Error, OSError, RuntimeError) as exc:
         _log.warning("embedding cache unavailable at %s (%s); continuing without it", path, exc)
         return None
 
@@ -164,9 +168,10 @@ class EmbeddingCache:
 
     - **Bounded.** Vector bytes are capped (`RECALL_EMBED_CACHE_MAX_MB`, default 512 MB) and the
       least recently used entries are evicted past it.
-    - **Never fatal.** Any `sqlite3.Error` after construction degrades this object to a permanent
-      no-op (every read a miss, every write dropped) with one warning, rather than failing a run
-      that would otherwise have succeeded at the cost of embedding.
+    - **Never fatal.** A failed read degrades this object to a permanent no-op (every read a miss,
+      every write dropped), and a failed write only stops writing, so a cache on a read-only mount
+      keeps serving hits. Either logs one warning rather than failing a run that would otherwise
+      have succeeded at the cost of embedding.
     """
 
     def __init__(self, path: str | Path, *, max_bytes: int | None = None) -> None:
@@ -344,20 +349,27 @@ class EmbeddingCache:
             return {}
         unique = list(dict.fromkeys(keys))
         found: dict[str, list[float]] = {}
+        stale: list[str] = []
+        stale_before = time.time() - _RECENCY_REWRITE_SECONDS
         try:
             for key in unique:
                 row = self._conn.execute(
-                    "SELECT vec FROM embeddings WHERE key = ?", (key,)
+                    "SELECT vec, used_at FROM embeddings WHERE key = ?", (key,)
                 ).fetchone()
                 if row is None:
                     continue
                 vec = self._decode(row[0])
                 if vec is not None:
                     found[key] = vec
+                    if row[1] is None or row[1] < stale_before:
+                        stale.append(key)
         except sqlite3.Error as exc:
             self._degrade(exc)
             return {}
-        self._touch(list(found))
+        # Only stale stamps are rewritten: an UPDATE takes the file's single write lock even when
+        # it matches nothing, so touching every hit made each warm lookup queue behind any writer
+        # for up to the busy timeout (CCA PERF-002).
+        self._touch(stale)
         self.hits += len(found)
         self.misses += len(unique) - len(found)
         return found
@@ -376,6 +388,11 @@ class EmbeddingCache:
             )
             self._conn.commit()
         except sqlite3.Error as exc:
+            # A failed statement leaves sqlite3's implicit transaction open; without the rollback
+            # the connection holds a read snapshot for life, serving stale misses and blocking
+            # every process's WAL checkpoint (CCA BUG-002).
+            with suppress(sqlite3.Error):
+                self._conn.rollback()
             self._stop_writing(exc)
 
     def put(self, key: str, vec: list[float]) -> None:
@@ -426,6 +443,8 @@ class EmbeddingCache:
             try:
                 self._evict_over_cap()
             except sqlite3.Error as exc:
+                with suppress(sqlite3.Error):
+                    self._conn.rollback()
                 self._stop_writing(exc)
 
     def _sweep_interval(self) -> int:
@@ -456,10 +475,12 @@ class EmbeddingCache:
             return
         target = int(self._max_bytes * 0.9)
         victims: list[str] = []
-        # A lazy cursor: only as many rows as it takes to free the overage are ever read, which
-        # matters because this runs precisely when the cache is large.
+        # A lazy cursor over the `used_at` index: only as many rows as it takes to free the
+        # overage are read, which matters because this runs precisely when the cache is large. It
+        # ordered by `COALESCE(used_at, 0)`, which no index serves, so SQLite sorted the whole
+        # table first (CCA PERF-003). NULL already sorts first in ascending order.
         cursor = self._conn.execute(
-            "SELECT key, length(vec) FROM embeddings ORDER BY COALESCE(used_at, 0) ASC, key ASC"
+            "SELECT key, length(vec) FROM embeddings ORDER BY used_at ASC, rowid ASC"
         )
         for key, size in cursor:
             victims.append(str(key))
@@ -494,7 +515,10 @@ def embed_with_cache(
 
     Misses are deduplicated and embedded in a SINGLE batched call (order preserved) and written
     back, so a re-index of a corpus where most chunks are unchanged only pays to embed what
-    actually changed. With ``cache=None`` this is exactly ``embedder.embed(texts)``.
+    actually changed. With ``cache=None`` nothing is read or written, and the texts go to the
+    encoder ``purpose`` selects: ``embed_query`` per text, ``embed_passages``, or
+    ``embedder.embed`` for the legacy default. A grouped (contextualized) embedder is refused for
+    passages whatever cache is passed.
     """
     if purpose == "passage" and callable(getattr(embedder, "embed_document_groups", None)):
         raise ValueError(

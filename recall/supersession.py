@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import cast
 
-from recall.frontmatter import supersedes_key, supersedes_targets, validity_bounds
+from recall.frontmatter import MARKDOWN_SUFFIXES, supersedes_key, supersedes_targets, validity_bounds
 from recall.uploads import in_upload_staging, source_location
 
 
@@ -242,7 +242,8 @@ SupersessionRow = Sequence[object]
 #: Extensions a reference may omit, compared case-insensitively. Only the markdown family the
 #: indexer reads as documents: stripping every extension would make `foo` name both `foo.md` and
 #: `foo.py` in a code corpus, and `release-1.2` would lose its `.2`.
-_DOCUMENT_EXTENSIONS = (".markdown", ".mdx", ".md")
+#: Longest first, so `foo.markdown` is not read as `foo.markdown` minus `.md`.
+_DOCUMENT_EXTENSIONS = tuple(sorted(MARKDOWN_SUFFIXES, key=len, reverse=True))
 
 
 def parse_window(valid_from: object, valid_until: object) -> Window | None:
