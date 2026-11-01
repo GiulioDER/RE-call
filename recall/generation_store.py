@@ -728,12 +728,12 @@ class GenerationStore(PgVectorStore):
                 FROM recall_chunks_v1 c, q
                 WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
                   AND c.tsv @@ q.tsq {source_filter}
-                ORDER BY rank DESC
+                ORDER BY rank DESC, chunk_id
                 LIMIT %(k)s
             )
             SELECT chunk_id, source_uri, text, metadata, indexed_at, first_indexed_at,
                    {score} AS score
-            FROM top_k ORDER BY rank DESC
+            FROM top_k ORDER BY rank DESC, chunk_id
         """
         params: dict[str, Any] = {
             "q": text,

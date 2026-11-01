@@ -99,6 +99,16 @@ your corpus and nothing else, and **keep the token file outside it** (`/etc/reca
 as docs/AUTH.md's deployment example shows — not the relative path in its quickstart snippet).
 Prefer `token_sha256` over `token` so there is no recoverable credential on disk at all.
 
+**Whoever can write under the corpus root is trusted.** The source policy judges each file by its
+path, and the indexer also requires a symbolic link's target to be allowed under the same rule as
+the link (CCA SEC-001). Two cases are outside the threat model, because only a writer of the root
+can create them: a **hard link**, which gives one file a second path that a different rule may
+govern and which no path comparison can detect, and a **check-then-read swap**, where a file is
+replaced after its path was judged and before its bytes are read. Neither is refused. The indexer
+logs a warning naming every file it indexes with more than one hard link, so such a link can be
+found afterwards. If a writer of the root is not trusted, the policy cannot protect what the root
+holds: keep that writer out of `RECALL_INDEX_ROOT`.
+
 ## Retrieved memory reaches an instruction channel
 
 *This section is what this project has instead of a "prompt injection" heading. The term is not

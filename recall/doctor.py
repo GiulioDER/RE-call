@@ -313,6 +313,8 @@ def _database_checks(dsn: str, conn: Any) -> Iterator[Check]:
     real password out of the reader's scrollback, and a connection object cannot be asked for the
     string that made it without recovering the password with it.
     """
+    from recall.schema import PGVECTOR_MIN_VERSION, pgvector_version_problem
+
     version = conn.execute("SELECT version()").fetchone()
     assert version is not None
     yield Check("database", "ok", f"{version[0].split(',')[0]} at {redacted_dsn(dsn)}")
@@ -342,6 +344,14 @@ def _database_checks(dsn: str, conn: Any) -> Iterator[Check]:
                 "pgvector/pgvector:pg18, then `CREATE EXTENSION vector;`. On a managed or remote "
                 "server this is a job for whoever administers it."
             ),
+        )
+    elif problem := pgvector_version_problem(str(installed[0])):
+        yield Check(
+            "pgvector",
+            "fail",
+            problem,
+            f"install a pgvector package of {'.'.join(map(str, PGVECTOR_MIN_VERSION))} or newer "
+            "for this PostgreSQL, then run `ALTER EXTENSION vector UPDATE;` in this database",
         )
     else:
         yield Check("pgvector", "ok", f"extension version {installed[0]}")
@@ -665,7 +675,7 @@ def _migration_check(dsn: str, *, table: str, dim: int | None) -> Check:
 
     `schema_status` is SELECT-only, so this costs one connection and can never change anything.
     """
-    from recall.schema import SchemaError, schema_status
+    from recall.schema import MigrationChecksumMismatch, SchemaError, schema_status
 
     if dim is None:
         return Check(
@@ -677,14 +687,23 @@ def _migration_check(dsn: str, *, table: str, dim: int | None) -> Check:
     try:
         status = schema_status(dsn, table=table, dim=dim)
     except SchemaError as exc:
-        # SchemaTooNew and MigrationChecksumMismatch both land here, and both mean the install and
-        # the database disagree about who is ahead. Reporting the exception verbatim is more useful
-        # than any summary this function could write.
+        # SchemaTooNew and MigrationChecksumMismatch both land here. The first means the install
+        # and the database disagree about who is ahead; the second has its own repair below.
+        # Reporting the exception verbatim is more useful than any summary this function could
+        # write.
         return Check(
             "migrations",
             "fail",
             f"{type(exc).__name__}: {scrub_dsn_secrets(str(exc), dsn)}",
-            "upgrade or downgrade recall so it matches this database, then re-run",
+            (
+                # Another recall version would not help: the applied migration and this
+                # install's file of the same number disagree about their bytes.
+                "a migration file changed after this database applied it, or the database was "
+                "edited by hand; find which before changing anything, and never re-stamp the "
+                "checksum over a schema that may differ"
+                if isinstance(exc, MigrationChecksumMismatch)
+                else "upgrade or downgrade recall so it matches this database, then re-run"
+            ),
         )
     except Exception as exc:  # BROAD-CATCH: fail-open
         return Check(

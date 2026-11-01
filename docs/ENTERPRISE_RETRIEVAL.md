@@ -175,8 +175,9 @@ nothing in this repository derives it.
   migration role must not be elevated to do this. It must be **extension** version `0.8.0` or later:
   migration 0012 needs `sparsevec` (0.7), and every tenant-filtered dense search sets
   `hnsw.iterative_scan`, which `0.8.0` introduced (`recall/store.py`, `_HNSW_FILTERED_TUNING_SQL`).
-  Nothing checks the version at startup, so an older server migrates and starts cleanly and then
-  fails those searches. Check with `select extversion from pg_extension where extname = 'vector'`. ⚠️ Do not confuse this with the
+  `recall schema apply` refuses an older extension before migrating anything, and `recall doctor`
+  reports it as `fail`; the server itself does not check at startup, so an extension downgraded
+  after migration still starts cleanly and then fails those searches. Check with `select extversion from pg_extension where extname = 'vector'`. ⚠️ Do not confuse this with the
   `pgvector` **Python client**, whose declared floor is 0.4.0: two independent version series share
   one name.
 * **Model artifacts present and verified locally**, with their digests recorded. Recompute rather

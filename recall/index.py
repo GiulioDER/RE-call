@@ -1210,6 +1210,11 @@ class Indexer:
                     source_bytes = raw.encode("utf-8")
                 else:
                     source_bytes = f.read_bytes()
+                # A hard link gives these bytes a second path that another policy rule may
+                # govern, and no path check can see it. The root's writers are trusted
+                # (docs/SECURITY_MODEL.md), so this is reported, not refused.
+                if f.stat().st_nlink > 1:
+                    _log.warning("indexing %s, which has more than one hard link", f)
             except (FileNotFoundError, NotADirectoryError) as exc:
                 # A file that DISAPPEARED between the walk and this read must not take the rest
                 # of the run down with it: the caller may already have debited a byte budget for
