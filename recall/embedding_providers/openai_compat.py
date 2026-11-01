@@ -220,8 +220,8 @@ class OpenAICompatEmbedder:
             )
         # The API does not promise response order; each item's `index` names its input. A
         # provider that omits it is taken in response order, as before.
-        indices = [getattr(item, "index", None) for item in data]
-        if all(isinstance(index, int) for index in indices):
+        indices = [index for item in data if isinstance(index := getattr(item, "index", None), int)]
+        if len(indices) == len(data):
             if sorted(indices) != list(range(len(batch))):
                 raise RuntimeError(
                     f"embedder returned indices {indices} for {len(batch)} texts; refusing to "
