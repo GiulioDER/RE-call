@@ -60,8 +60,9 @@ Budget accordingly. Measured on the same 12 core box:
 | 1,080 files, 8,671 chunks | bge-large, local CPU | about 10 hours | 11.7 GB |
 | 573 files, 6,487 chunks | voyage-code-3, hosted API | 7 minutes | 807 MB |
 
-A hosted model was roughly 35 times faster here and used almost no memory, because the embedding
-happens on the provider's hardware. A local model is free per call and costs you CPU and RAM.
+These runs used different corpora, so their times are budgeting examples, not a controlled
+model-speed comparison. Hosted embedding runs on the provider's hardware; local embedding
+costs you CPU and RAM instead of a per-call fee.
 
 ⛔ **Do not hand-write rows into `recall_chunks_v1` to skip the re-embed.** The schema gap is only
 five columns and the vectors already exist, so it is tempting. It also fabricates the provenance a
