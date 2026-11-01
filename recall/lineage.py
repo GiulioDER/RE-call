@@ -412,6 +412,13 @@ class ManifestObjectV1:
         if self.context_group_id is not None and not self.context_group_id.strip():
             raise LineageError("manifest object context_group_id must be non-empty when supplied")
         object.__setattr__(self, "sha256", _sha256(self.sha256, field_name="sha256"))
+        if parsed.scheme == "file":
+            # The version IS the digest for a local file, so it is stored in the digest's own
+            # canonical form. Kept as written, an uppercase entry gave the same bytes a different
+            # manifest digest, and so a different corpus fingerprint than a tool-written one.
+            # Every writer here already emits lowercase (`hashlib...hexdigest()`), so this changes
+            # no digest a tool produced.
+            object.__setattr__(self, "version_id", self.sha256)
 
     def to_dict(self) -> dict[str, Any]:
         payload = {

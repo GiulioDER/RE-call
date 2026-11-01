@@ -124,3 +124,19 @@ def test_manifest_rejects_mutable_or_ambiguous_object_references() -> None:
             "s3://corpus/a.md", "v2", "text/markdown", 2, "b" * 64
         )
         IndexManifestV1("tenant", "v1", (first, second))
+
+
+def test_a_file_manifest_entry_digests_alike_whatever_the_case_of_its_hex() -> None:
+    """DEF-29: the same local bytes give one manifest digest, uppercase hex or not.
+
+    For a `file://` object the version id IS the content digest, and `sha256` was already
+    lowercased while `version_id` was kept as written, so a hand-written uppercase entry gave the
+    same corpus a different `IndexManifestV1.digest` (and corpus fingerprint) than a tool-written
+    one. Red proof: on 414d56f95 the two digests differ. Production line: the `file` branch at the
+    end of `ManifestObjectV1.__post_init__` in `recall/lineage.py`.
+    """
+    digest = "ab" * 32
+    lower = ManifestObjectV1("file:///corpus/a.md", digest, "text/markdown", 3, digest)
+    upper = ManifestObjectV1("file:///corpus/a.md", digest.upper(), "text/markdown", 3, digest.upper())
+    assert upper.version_id == lower.version_id == digest
+    assert IndexManifestV1("t", "v1", (upper,)).digest == IndexManifestV1("t", "v1", (lower,)).digest
