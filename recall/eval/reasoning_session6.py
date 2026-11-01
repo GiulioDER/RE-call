@@ -315,11 +315,11 @@ def _proposal_scores(
     cases: tuple[ReasoningBenchmarkCase, ...], system: ReasoningSystem
 ) -> tuple[float | None, float | None]:
     expected: set[tuple[str, tuple[str, str]]] = set()
-    proposed: list[tuple[str, tuple[str, str]]] = []
+    proposed: set[tuple[str, tuple[str, str]]] = set()
     for case in cases:
         expected.update((case.id, edge) for edge in case.expected_proposals)
         obs = next(item for item in case.observations if item.system == system)
-        proposed.extend((case.id, edge) for edge in obs.proposed_edges)
+        proposed.update((case.id, edge) for edge in obs.proposed_edges)
     true_positive = sum(edge in expected for edge in proposed)
     precision = true_positive / len(proposed) if proposed else None
     recall = sum(edge in proposed for edge in expected) / len(expected) if expected else None

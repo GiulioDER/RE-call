@@ -624,6 +624,54 @@ def test_an_ambiguous_target_stem_proposes_nothing() -> None:
     ]) == []
 
 
+@pytest.mark.parametrize("cue_root", ["one", "two"])
+def test_proposals_do_not_merge_documents_with_colliding_file_paths(cue_root: str) -> None:
+    """DAT-001: a cue must not be attributed to another root's copy of the file.
+
+    Red proof at 9590150c3: both cases failed the no-proposals assertion because
+    _source_claims merged the two bodies and kept only one source evidence id.
+    Unique documents in the same projection must still yield their ordinary relation.
+    """
+    chunks = [
+        Chunk(root, f"/{root}/shared.md", "This supersedes target.md." if root == cue_root else "Unrelated memo.", {"file": "shared.md"})
+        for root in ("one", "two")
+    ]
+    chunks.extend([
+        _chunk("target", "target.md", "Original policy."),
+        _chunk("old-control", "control_v1.md", "Original independent policy."),
+        _chunk("new-control", "control_v2.md", "This supersedes control_v1.md."),
+    ])
+    graph = build_reasoning_graph(
+        chunks, tenant_id="acme", generation_id="gen_1", pipeline_fingerprint="pipe-a", include_text=True
+    )
+
+    proposals = deterministic_inference_proposals(graph)
+
+    assert not [p for p in proposals if "shared.md" in (p.subject_id, p.object_id)]
+    assert any((p.subject_id, p.object_id) == ("control_v1.md", "control_v2.md") for p in proposals)
+
+
+@pytest.mark.parametrize("text", ["This supersedes old.md.", "old.md supersedes target.md."])
+def test_omitted_colliding_files_preserve_reference_ambiguity(text: str) -> None:
+    """DAT-001 repair: omitted claims still make short references ambiguous.
+
+    Red proof: the initial collision-omission fix resolved old.md to b/old.md;
+    both cases failed this refusal assertion. The original implementation refused
+    these references too, so this guards behavior the repair must preserve.
+    """
+    chunks = [
+        Chunk(root, f"/{root}/a/old.md", "A root's old policy.", {"file": "a/old.md"})
+        for root in ("one", "two")
+    ]
+    chunks.extend([
+        _chunk("other-old", "b/old.md", "Another old policy."),
+        _chunk("target", "target.md", "The target policy."),
+        _chunk("new", "new.md", text),
+    ])
+
+    assert _direct(chunks) == []
+
+
 def test_a_plain_direct_reference_is_unchanged() -> None:
     """The ordinary case keeps its proposal, status and id inputs.
 

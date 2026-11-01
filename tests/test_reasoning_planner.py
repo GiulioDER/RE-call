@@ -377,6 +377,54 @@ def test_planner_enforces_wall_time_budget() -> None:
     assert plan.stop_reason == "budget_exhausted"
 
 
+@pytest.mark.parametrize("elapsed, outcome", [(0.2, "failed_closed"), (0.09, "completed")])
+def test_planner_checks_wall_budget_after_final_operation(elapsed: float, outcome: str) -> None:
+    """BUG-001: terminal temporal work must respect wall time, even at the step limit.
+
+    Red proof at 9590150c3: the 0.2 case returned completed at the outcome assertion.
+    The 0.09 control must still complete after exactly one permitted step.
+    """
+    chunk = _chunk("dated", "dated.md", "the owner is Ada")
+    graph = build_reasoning_graph([chunk], tenant_id="acme", generation_id="gen_1")
+    ticks = iter((0.0, 0.0, 0.0))
+
+    plan = plan_multi_hop_evidence(
+        _result(_trusted_hit(chunk)), graph,
+        budget=ReasoningBudget(max_wall_time_ms=100, max_steps=1),
+        clock=lambda: next(ticks, elapsed),
+    )
+
+    assert plan.outcome == outcome
+    assert plan.budget_used.steps == 1
+    assert plan.stop_reason == ("budget_exhausted" if outcome == "failed_closed" else "complete")
+
+
+@pytest.mark.parametrize("temporal", [False, True])
+@pytest.mark.parametrize("file", [None, ""])
+def test_planner_matches_graph_fallback_without_file_metadata(temporal: bool, file: str | None) -> None:
+    """BUG-002: direct and indexed lookup must share graph projection's source fallback.
+
+    Red proof at 9590150c3: all four cases failed the completed outcome assertion
+    with unsupported_evidence, despite the same trusted chunk being in the graph.
+    """
+    original = _chunk("fact", "fact.md", "the owner is Ada")
+    hit = _trusted_hit(original)
+    metadata: dict[str, Any] = {"valid_from": "2026-01-01"} if temporal else {}
+    if file is not None:
+        metadata["file"] = file
+    chunk = replace(original, metadata=metadata)
+    hit = replace(hit, chunk=chunk, provenance=replace(hit.provenance, file=file))
+    graph = build_reasoning_graph([chunk], tenant_id="acme", generation_id="gen_1")
+
+    plan = plan_multi_hop_evidence(_result(hit), graph)
+
+    assert plan.outcome == "completed"
+    assert [decision.chunk_id for decision in plan.trace.evidence_accepted] == ["fact"]
+    assert bool(plan.trace.expansion_steps) == temporal
+    other = replace(hit, chunk=replace(chunk, source="/different/fact.md"))
+    assert plan_multi_hop_evidence(_result(other), graph).outcome == "failed_closed"
+
+
 def test_planner_fails_closed_on_unsupported_proposal_citation() -> None:
     old = _chunk("old", "cache_v1.md", "cache ttl is 30")
     new = _chunk("new", "cache_v2.md", "cache ttl is 60")

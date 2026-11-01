@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
+from hypothesis import given, strategies as st
 import pytest
 
 from recall.eval.reasoning_session6 import (
@@ -237,6 +239,34 @@ def test_reasoning_session6_proposal_precision_is_case_scoped(tmp_path: Path) ->
     fixture = load_fixture(path)
     metrics = reasoning_session6_metrics(fixture)["metrics"]["retrieval_full_planner"]
 
+    assert metrics["proposal_precision"] == 0.5
+    assert metrics["proposal_recall"] == 1.0
+
+
+@given(copies=st.integers(min_value=2, max_value=20))
+def test_reasoning_session6_precision_ignores_duplicate_relations(copies: int) -> None:
+    """NUM-001: repeating a correct relation must not inflate pair-set precision.
+
+    Red proof at 9590150c3: copies=2 failed the precision assertion with 2/3
+    rather than 1/2. This exercises the public evaluator with a valid frozen fixture.
+    """
+    fixture = load_fixture()
+    cases = []
+    for case in fixture.cases:
+        predictions: tuple[tuple[str, str], ...] = ()
+        if case.expected_proposals:
+            correct = case.expected_proposals[0]
+            wrong = (correct[1], correct[0])
+            predictions = (correct,) * copies + (wrong,)
+        observations = tuple(
+            replace(obs, proposed_edges=predictions)
+            if obs.system == "retrieval_full_planner" else obs
+            for obs in case.observations
+        )
+        cases.append(replace(case, observations=observations))
+
+    result = reasoning_session6_metrics(replace(fixture, cases=tuple(cases)))
+    metrics = result["metrics"]["retrieval_full_planner"]
     assert metrics["proposal_precision"] == 0.5
     assert metrics["proposal_recall"] == 1.0
 
