@@ -70,9 +70,11 @@ semantics.
 
 ## Structural expansion and answer slots
 
-`StructuralExpansionPolicy` adds ordinal neighbors around retrieved sections and the highest ordinal
-section in each selected document. The terminal section is useful for exception and outcome cases,
-but this is still bounded retrieval structure, not heading aware parsing.
+`StructuralExpansionPolicy` filters each bounded, source-scoped retrieval pool for ordinal neighbors
+around the original retrieved sections and the greatest ordinal among those candidates. It does not
+guarantee retrieval of every neighbor or the document's actual final section: either may be absent
+from the relevance-ranked candidate pool. This is bounded retrieval structure, not heading aware
+parsing.
 
 `AnswerSlot` provides a deterministic lexical requirement for a bundle. Supplying slots selects a
 representative trusted chunk for each requirement and abstains when a required slot is absent. It

@@ -350,6 +350,55 @@ def test_run_headless_provisions_from_data_root_and_reuses_the_port(
     assert existing_port(compose) == first_port, "a re-run must reuse the port it already published"
 
 
+@pytest.mark.parametrize("storage", ["bind", "volume-name", "project-name", "unreadable"])
+def test_reprovision_refuses_to_change_existing_database_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, storage: str
+) -> None:
+    """DAT-001: refuse before writes or Docker can switch the served database.
+
+    Red proof: beb08a605 _provision overwrote each incompatible compose file
+    and invoked bring_up instead of returning ConfigRefusal.
+    """
+    import recall.wizard.headless as H
+    from recall.wizard.corpora import default_plan
+    from tests.test_wizard_state import _config
+
+    root = tmp_path / "existing-stack"
+    root.mkdir()
+    config = _config(tmp_path, dsn=None, migration_dsn=None, data_root=str(root))
+    document = compose_document(_spec(tmp_path, data_root=root,
+                                      project_name=H.compose_project_for(root, config.project)))
+    if storage == "bind":
+        document["services"]["db"]["volumes"] = ["./database:/var/lib/postgresql/data"]
+    elif storage == "volume-name":
+        document["volumes"] = {"pgdata": {"name": "existing-database"}}
+    elif storage == "project-name":
+        document["name"] = "previous-project"
+    compose = root / H.COMPOSE_NAME
+    compose.write_text("unreadable" if storage == "unreadable" else json.dumps(document),
+                       encoding="utf-8")
+    dockerfile = root / DOCKERFILE_NAME
+    dockerfile.write_text("existing dockerfile", encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in (compose, dockerfile)}
+    started: list[object] = []
+    monkeypatch.setattr(H, "bring_up", lambda *args, **kwargs: started.append(args))
+    monkeypatch.setattr(H, "wait_for_database", lambda *args, **kwargs: None)
+    plan = default_plan(embedder="hashing", docs_root=config.docs_root,
+                        code_root=config.code_root, memory_root=config.memory_root,
+                        project=config.project)
+
+    refusal = None
+    try:
+        H._provision(config, plan, None)
+    except H.ConfigRefusal as exc:
+        refusal = exc
+
+    assert refusal is not None, "reprovisioning must not silently replace database storage"
+    assert "storage" in str(refusal).lower()
+    assert not started, "Docker must not start before the storage refusal"
+    assert {p.name: p.read_bytes() for p in (compose, dockerfile)} == before
+
+
 def test_choose_port_steps_past_a_busy_one() -> None:
     """The allow path for the search, so it cannot be satisfied by always returning the preferred."""
     import socket

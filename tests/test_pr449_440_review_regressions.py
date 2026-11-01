@@ -89,7 +89,13 @@ def test_uninstall_execution_failures_are_visible_before_destructive_commands(
 
 
 def test_registration_lock_failure_preserves_skip_report_and_body_errors(tmp_path, monkeypatch):
-    """DAT-002 mutation: direct unhandled lock entry raises before the historical skip result."""
+    """DAT-002 mutation: direct unhandled lock entry raises before the historical skip result.
+
+    SEC-001 writer adaptation: inject at backup publication rather than the old
+    Path.write_text transport. Red proof: the first private-writer fix caught
+    OSError and failed the unchanged expected-exception assertion; propagation
+    restores the original protected-body contract.
+    """
     missing = tmp_path / "missing-client.json"
     blocks = (ServerBlock("recall-docs", "docs", {}, "fixture"),)
     original_open = os.open
@@ -112,13 +118,13 @@ def test_registration_lock_failure_preserves_skip_report_and_body_errors(tmp_pat
     monkeypatch.setattr(os, "open", original_open)
     config = tmp_path / "client.json"
     config.write_text(json.dumps({"projects": {}}), encoding="utf-8")
-    original_write = Path.write_text
+    original_replace = os.replace
 
-    def broken_backup(path, *args, **kwargs):
-        if path.name.endswith(".recall-backup"):
+    def broken_backup(source, destination, *args, **kwargs):
+        if Path(destination).name.endswith(".recall-backup"):
             raise OSError("existing body write failure")
-        return original_write(path, *args, **kwargs)
+        return original_replace(source, destination, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "write_text", broken_backup)
+    monkeypatch.setattr(os, "replace", broken_backup)
     with pytest.raises(OSError, match="existing body write failure"):
         register_local_scope(blocks, project_root=tmp_path, config_path=config)

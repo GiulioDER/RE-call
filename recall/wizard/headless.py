@@ -282,7 +282,9 @@ class HeadlessReport:
         this project's recurring failure and the reason the exit code has to carry it.
         """
         raised = any(s.error for s in self.smoke)
-        unregistered = self.registration is not None and not self.registration.recorded
+        unregistered = self.registration is not None and (
+            not self.registration.recorded or bool(self.registration.conflicts)
+        )
         return not (self.refused or self.failures or self.unserved or raised or unregistered)
 
     @property
@@ -448,6 +450,8 @@ class HeadlessReport:
 
         if self.ok:
             head = "install complete"
+        elif self.registration is not None and self.registration.conflicts:
+            head = "install incomplete: some MCP servers were not registered"
         elif (
             self.registration is not None
             and not self.registration.recorded
@@ -1093,6 +1097,37 @@ def _provisional_env(tenants: tuple[str, ...], *, dsn: str, embedder: str) -> di
     }
 
 
+def _check_existing_database_storage(compose_path: Path, replacement: dict[str, object]) -> None:
+    """Refuse a rewrite that could serve a different database at the existing endpoint."""
+    try:
+        original = json.loads(compose_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as exc:
+        raise ConfigRefusal(
+            f"cannot verify database storage in {compose_path}; refusing to overwrite it: {exc}",
+            keys=("data_root",),
+        ) from exc
+
+    def storage(document: object) -> tuple[object, object, object]:
+        if not isinstance(document, dict):
+            raise ValueError("compose is not an object")
+        return (document["name"], document["services"]["db"]["volumes"],
+                document["volumes"]["pgdata"])
+
+    try:
+        compatible = storage(original) == storage(replacement)
+    except (KeyError, TypeError, ValueError):
+        compatible = False
+    if not compatible:
+        raise ConfigRefusal(
+            f"database storage in {compose_path} differs from this install. Nothing was changed. "
+            "Back up the existing database and explicitly migrate its storage before re-provisioning; "
+            "an ordinary rerun cannot move it safely.",
+            keys=("data_root",),
+        )
+
+
 def _provision(
     config: HeadlessConfig,
     plan: CorpusPlan,
@@ -1122,18 +1157,17 @@ def _provision(
         # `data_root`. See `compose_document` for the measured reason. Naming the data root here as
         # if it held the database would be a claim the code stopped creating.
         progress(f"stack: {config.data_root}, database on volume, port {port}")
-    write_compose(
-        compose_path,
-        compose_document(
-            StackSpec(
-                data_root=config.data_root,
-                port=port,
-                tenants=tenants,
-                env=_provisional_env(tenants, dsn=dsn, embedder=config.embedder),
-                project_name=compose_project,
-            )
-        ),
+    document = compose_document(
+        StackSpec(
+            data_root=config.data_root,
+            port=port,
+            tenants=tenants,
+            env=_provisional_env(tenants, dsn=dsn, embedder=config.embedder),
+            project_name=compose_project,
+        )
     )
+    _check_existing_database_storage(compose_path, document)
+    write_compose(compose_path, document)
     # `db` only. The recall image is built later and the store must not wait for it.
     try:
         bring_up(compose_path, project_name=compose_project, services=("db",))

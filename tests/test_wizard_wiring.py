@@ -421,6 +421,70 @@ def test_the_written_file_has_no_temporary_left_behind_and_lf_endings(tmp_path: 
     assert b"\r\n" not in client.read_bytes(), "CRLF would rewrite every line on every platform"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+@pytest.mark.parametrize("copy", ["target", "backup"])
+def test_registration_configuration_copies_are_private(tmp_path: Path, copy: str) -> None:
+    """SEC-001: credential bytes must be private at creation and after publication.
+
+    Red proof: beb08a605 _register_local_scope_locked created both final target
+    and backup at 0644 under umask 022, failing the group/other mode assertion.
+    """
+    import stat
+
+    client = _client(tmp_path)
+    client.chmod(0o600)
+    previous = os.umask(0o022)
+    try:
+        registration = register_local_scope(_blocks(tmp_path), project_root=tmp_path,
+                                            config_path=client)
+    finally:
+        os.umask(previous)
+    assert registration.recorded
+    path = client if copy == "target" else client.with_name(client.name + ".recall-backup")
+    assert stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, "configuration copy exposed credentials"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+def test_registration_refuses_a_symlink_backup_without_writing(tmp_path: Path) -> None:
+    """SEC-001: a planted backup must not receive the client's unrelated secrets.
+
+    Red proof: beb08a605 followed the sibling symlink and returned recorded=True.
+    """
+    client = _client(tmp_path)
+    before = client.read_bytes()
+    victim = tmp_path / "unrelated.json"
+    victim.write_text("unrelated", encoding="utf-8")
+    backup = client.with_name(client.name + ".recall-backup")
+    backup.symlink_to(victim)
+
+    result = register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+
+    assert not result.recorded, "unsafe backup paths must refuse registration"
+    assert result.skipped_reason
+    assert victim.read_text(encoding="utf-8") == "unrelated"
+    assert client.read_bytes() == before
+
+
+def test_partial_registration_is_an_incomplete_install(tmp_path: Path) -> None:
+    """BUG-002: a successful subset must not hide required names being withheld.
+
+    Red proof: beb08a605 HeadlessReport.ok returned True with a docs conflict.
+    """
+    from recall.wizard.headless import HeadlessReport
+
+    client = _client(tmp_path)
+    foreign = {"cwd": str(tmp_path / "elsewhere"), "type": "stdio"}
+    client.write_text(json.dumps({"projects": {str(tmp_path): {
+        "mcpServers": {"default-docs": foreign}}}}), encoding="utf-8")
+    registration = register_local_scope(_blocks(tmp_path), project_root=tmp_path, config_path=client)
+    report = HeadlessReport(registration=registration)
+
+    assert not report.ok, "a partial registration is not a complete install"
+    assert report.render().splitlines()[0] == "install incomplete: some MCP servers were not registered"
+    assert set(registration.registered) == {"default-code", "default-memory"}
+    assert _registered(client, tmp_path)["default-docs"] == foreign
+
+
 def test_the_server_command_launches_the_real_module_from_the_project_root(tmp_path: Path) -> None:
     """A `cwd` or module name that is wrong produces a server that never starts, silently."""
     blocks, _ = server_blocks(

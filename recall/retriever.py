@@ -65,7 +65,7 @@ class DocumentExpansionPolicy:
 
 @dataclass(frozen=True)
 class StructuralExpansionPolicy:
-    """Bounded expansion around retrieved sections and each document conclusion."""
+    """Filter source-scoped candidates by seed neighbors and greatest retrieved ordinal."""
 
     enabled: bool = False
     max_sources: int = 2
@@ -170,7 +170,11 @@ def expand_retrieval_by_structure(
     search: Callable[[str, int, str | None], RetrievalResult],
     policy: StructuralExpansionPolicy,
 ) -> RetrievalResult:
-    """Add bounded ordinal neighbors and the terminal section of retrieved documents."""
+    """Add seed neighbors and the greatest ordinal in each bounded source-scoped pool.
+
+    Candidates come from relevance-ranked retrieval; the document's actual final
+    section and every ordinal neighbor are not guaranteed to be in that pool.
+    """
     if not policy.enabled or not result.hits:
         return result
     if policy.relational_query_only and not _needs_document_expansion(result.query):
@@ -182,14 +186,13 @@ def expand_retrieval_by_structure(
     for hit in result.hits:
         source = _document_key(hit)
         if source not in seen_sources:
+            if len(sources) >= policy.max_sources:
+                continue
             seen_sources.add(source)
             sources.append(source)
         ordinal = hit.chunk.metadata.get("ord")
         if isinstance(ordinal, int):
             seed_ordinals.setdefault(source, []).append(ordinal)
-        if len(sources) >= policy.max_sources:
-            break
-
     started = time.perf_counter()
     expanded: list[ScoredChunk] = []
     reranking_ran = result.diagnostics.reranking_ran
