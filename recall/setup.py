@@ -342,24 +342,6 @@ def _schema_dim_conflict(dsn: str, expected_dim: int, table: str | None = None) 
     return None
 
 
-def _table_row_count(dsn: str, table: str | None = None) -> int | None:
-    """Return the number of rows in `table`, or None when it cannot be read safely here."""
-    try:
-        from psycopg import sql
-        from recall.schema import _connect
-        from recall.store import DEFAULT_TABLE
-    except Exception:  # BROAD-CATCH: fail-open
-        return None
-    try:
-        with _connect(dsn) as conn:
-            ident = sql.Identifier(table or DEFAULT_TABLE)
-            query = sql.SQL("SELECT count(*) FROM {}").format(ident)
-            row = conn.execute(query).fetchone()
-    except Exception:  # BROAD-CATCH: fail-open
-        return None
-    return int(row[0]) if row else 0
-
-
 def _schema_prepare_state(
     dsn: str,
     expected_dim: int,
@@ -383,54 +365,6 @@ def _schema_prepare_state(
     return "compatible", None
 
 
-def _table_row_counts(dsn: str, tables: Sequence[str]) -> dict[str, int] | None:
-    """Return row counts for the named tables, treating absent tables as zero rows."""
-    try:
-        from psycopg import sql
-        from recall.schema import _connect
-    except Exception:  # BROAD-CATCH: fail-open
-        return None
-    counts: dict[str, int] = {}
-    try:
-        with _connect(dsn) as conn:
-            for table in tables:
-                exists = conn.execute("SELECT to_regclass(%s)", (table,)).fetchone()
-                if not exists or exists[0] is None:
-                    counts[table] = 0
-                    continue
-                query = sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(table))
-                row = conn.execute(query).fetchone()
-                counts[table] = int(row[0]) if row else 0
-    except Exception:  # BROAD-CATCH: fail-open
-        return None
-    return counts
-
-
-def _drop_default_schema_family(migration_dsn: str) -> None:
-    """Drop the default serving table plus the global generation tables and migration ledger."""
-    from psycopg import sql
-    from recall.schema import (
-        GENERATION_TABLES,
-        GLOBAL_MIGRATION_TARGET,
-        IDEMPOTENCY_RECEIPT_TABLES,
-        LEDGER_TABLE,
-        _connect,
-    )
-    from recall.store import DEFAULT_TABLE, PgVectorStore
-
-    with PgVectorStore(migration_dsn, dim=1, table=DEFAULT_TABLE) as store:
-        store.drop_table()
-    with _connect(migration_dsn) as conn:
-        for table in (*GENERATION_TABLES, *IDEMPOTENCY_RECEIPT_TABLES):
-            conn.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(sql.Identifier(table)))
-        ledger = conn.execute("SELECT to_regclass(%s)", (LEDGER_TABLE,)).fetchone()
-        if ledger and ledger[0]:
-            conn.execute(
-                sql.SQL("DELETE FROM {} WHERE target_table = %s").format(sql.Identifier(LEDGER_TABLE)),
-                (GLOBAL_MIGRATION_TARGET,),
-            )
-
-
 def _prepare_schema_for_embedder(
     *,
     dsn: str,
@@ -442,8 +376,8 @@ def _prepare_schema_for_embedder(
     """Make the selected embedder usable now, or stop with a message the user can act on."""
     if embedder.dim is None:
         return
-    from recall.schema import GENERATION_TABLES, apply_migrations
-    from recall.store import DEFAULT_TABLE, PgVectorStore
+    from recall.schema import apply_migrations
+    from recall.store import DEFAULT_TABLE
 
     ddl_dsn = migration_dsn or dsn
     state, detail = _schema_prepare_state(dsn, embedder.dim, table)
@@ -477,73 +411,14 @@ def _prepare_schema_for_embedder(
 
     if detail:
         print_fn(detail)
-    if target_table == DEFAULT_TABLE:
-        counts = _table_row_counts(ddl_dsn, (DEFAULT_TABLE, *GENERATION_TABLES))
-        if counts is None:
-            raise SystemExit(
-                "The wizard could see that the default schema does not match the selected "
-                "embedder, but it could not safely inspect whether the default tables are empty. "
-                "Check the database manually, then rerun setup."
-            )
-        non_empty = {name: count for name, count in counts.items() if count > 0}
-        if non_empty:
-            details = ", ".join(f"{name}={count}" for name, count in sorted(non_empty.items()))
-            raise SystemExit(
-                f"The selected embedder needs vector({embedder.dim}), but the default schema "
-                f"already contains data: {details}. I will not rebuild those tables "
-                "automatically. Use an embedder matching the existing schema, or point setup at a "
-                "fresh table name or database."
-            )
-        print_fn(
-            f"The selected embedder needs vector({embedder.dim}). The default schema is empty, so "
-            "the wizard will rebuild it now."
-        )
-        try:
-            _drop_default_schema_family(ddl_dsn)
-            applied = apply_migrations(ddl_dsn, table=target_table, dim=embedder.dim)
-        except Exception as exc:  # BROAD-CATCH: error-translation
-            raise SystemExit(
-                "The wizard could not rebuild the default schema automatically. Verify that the "
-                "chosen role can drop and create the RE-call tables, or pass --migration-dsn with "
-                f"the owner role. Original error: {_safe_error(exc, ddl_dsn)}"
-            ) from exc
-        if applied:
-            print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
-        else:
-            print_fn(f"Verified {target_table!r} for {embedder.dim} dimensions.")
-        return
-
-    rows = _table_row_count(ddl_dsn, target_table)
-    if rows is None:
-        raise SystemExit(
-            "The wizard could see that this table does not match the selected embedder, but it "
-            "could not safely inspect whether the table is empty. Check the table manually, then "
-            "rerun setup."
-        )
-    if rows > 0:
-        raise SystemExit(
-            f"The selected embedder needs vector({embedder.dim}), but this table already holds "
-            f"{rows} row(s). I will not rebuild a populated table automatically. Use an embedder "
-            "matching the existing table, or point setup at a fresh table name."
-        )
-    print_fn(
-        f"The selected embedder needs vector({embedder.dim}). The current table is empty, so the "
-        "wizard will rebuild it now."
+    # A count cannot authorize DROP: concurrent writes and FORCE RLS can make
+    # populated tables appear empty, and replacement also discards serving grants.
+    raise SystemExit(
+        f"The selected embedder needs vector({embedder.dim}), but the existing schema for "
+        f"{target_table!r} is incompatible. The wizard will not rebuild existing tables "
+        "automatically. Use an embedder matching the existing schema, or point setup at a "
+        "fresh table name or database."
     )
-    try:
-        with PgVectorStore(ddl_dsn, dim=embedder.dim, table=target_table) as store:
-            store.drop_table()
-        applied = apply_migrations(ddl_dsn, table=target_table, dim=embedder.dim)
-    except Exception as exc:  # BROAD-CATCH: error-translation
-        raise SystemExit(
-            "The wizard could not rebuild the selected table automatically. Verify that the "
-            "chosen role can drop and create the RE-call table, or pass --migration-dsn with the "
-            f"owner role. Original error: {_safe_error(exc, ddl_dsn)}"
-        ) from exc
-    if applied:
-        print_fn(f"Prepared {target_table!r} for {embedder.dim} dimensions.")
-    else:
-        print_fn(f"Verified {target_table!r} for {embedder.dim} dimensions.")
 
 
 def _why_unavailable(probe: HardwareProbe, *, needs_cuda: bool = False) -> str:
