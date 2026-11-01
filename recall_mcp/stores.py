@@ -251,7 +251,13 @@ class StoreRegistry:
             )
             try:
                 if self._control_plane is None:
-                    store.ensure_schema()
+                    # Read-only, as at single-store startup: serving never runs DDL. A pending
+                    # migration surfaces here as SchemaTooOld, naming `recall schema apply`.
+                    # `ensure_schema` used to run here, with the serving DSN, on a tenant's first
+                    # request: under a least-privilege role that failed the request with a
+                    # permission error, and under a privileged one it migrated the live database
+                    # mid-request, past the `--with-migrations` discipline.
+                    store.check_schema()
                 else:
                     # Enterprise tables are created by the dedicated migration role.
                     # The runtime role has DML privileges only, so opening a routed store
