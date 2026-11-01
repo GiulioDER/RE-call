@@ -537,13 +537,15 @@ def _import_assertion(extras: str) -> str:
     return f"RUN {body}\n{trailer}"
 
 
-def write_dockerfile(directory: Path, version: str | None = None) -> Path:
+def write_dockerfile(
+    directory: Path, version: str | None = None, *, name: str = DOCKERFILE_NAME
+) -> Path:
     """Write the Dockerfile the compose file's build stanza points at.
 
     Always beside the compose file, because a compose document referencing a Dockerfile that is not
     there is broken by construction. `write_compose` calls this for exactly that reason.
     """
-    target = directory / DOCKERFILE_NAME
+    target = directory / name
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(target.name + ".tmp")
     temporary.write_text(dockerfile_text(version), encoding="utf-8", newline="\n")
@@ -562,6 +564,14 @@ def _image_version(image: str) -> str | None:
     if prefix != "recall-wizard" or not separator or not version:
         return None
     return version
+
+
+def _versioned_dockerfile_name(image: str) -> str:
+    """A stable recipe name that cannot collide across installed image tags."""
+    import hashlib
+
+    digest = hashlib.sha256(image.encode("utf-8")).hexdigest()[:12]
+    return f"{DOCKERFILE_NAME}.recall-{digest}"
 
 
 def _stack_image(services: dict[str, object]) -> str | None:
@@ -756,7 +766,8 @@ def _service_name(tenant: str) -> str:
 
 
 def write_compose(
-    path: Path, document: dict[str, object], *, dockerfile_version: str | None = None
+    path: Path, document: dict[str, object], *, dockerfile_version: str | None = None,
+    dockerfile_name: str = DOCKERFILE_NAME,
 ) -> None:
     """Write the compose file atomically, as JSON, with LF endings.
 
@@ -779,12 +790,42 @@ def write_compose(
     docstring records, reintroduced through the inheritance that was meant to prevent it.
 
     The tag is the thing that decides what actually runs, so the Dockerfile follows the tag.
+    `dockerfile_name` lets a rerun publish a new image's recipe without replacing
+    the recipe still used by preserved services. Such a recipe is written before
+    publishing the Compose reference to it.
     """
     from recall.atomic_write import atomic_write_bytes
+    from copy import deepcopy
+
+    from recall import __version__
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Add project can revisit a stack whose projects now run different releases.
+    # Move references away before replacing a shared recipe for another release.
+    document = deepcopy(document)
+    services = document.get("services")
+    recipe_version = dockerfile_version or __version__
+    if isinstance(services, dict):
+        for service in services.values():
+            if not isinstance(service, dict):
+                continue
+            image = service.get("image")
+            build = service.get("build")
+            if not isinstance(image, str) or not isinstance(build, dict):
+                continue
+            pinned = _image_version(image)
+            if (
+                pinned and pinned != recipe_version and build.get("context") == "."
+                and build.get("dockerfile", DOCKERFILE_NAME) == dockerfile_name
+            ):
+                alternate = _versioned_dockerfile_name(image)
+                write_dockerfile(path.parent, pinned, name=alternate)
+                build["dockerfile"] = alternate
+    if dockerfile_name != DOCKERFILE_NAME:
+        write_dockerfile(path.parent, dockerfile_version, name=dockerfile_name)
     atomic_write_bytes(path, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
-    write_dockerfile(path.parent, dockerfile_version)
+    if dockerfile_name == DOCKERFILE_NAME:
+        write_dockerfile(path.parent, dockerfile_version)
 
 
 def wait_for_database(dsn: str, *, timeout: float = 120.0, interval: float = 2.0) -> None:
