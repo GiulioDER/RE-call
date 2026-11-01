@@ -4623,6 +4623,8 @@ pool = [
 ]
 rerank = [
     { name = "sentence-transformers" },
+    { name = "torch" },
+    { name = "transformers" },
 ]
 s3 = [
     { name = "boto3" },
@@ -4668,10 +4670,10 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'eval'" },
     { name = "numpy", marker = "extra == 'finetune'" },
     { name = "onnxruntime", marker = "extra == 'fastembed'", specifier = ">=1.17,<2" },
-    { name = "openai", marker = "extra == 'bench'", specifier = ">=1.0" },
-    { name = "openai", marker = "extra == 'extract'", specifier = ">=1.0" },
-    { name = "openai", marker = "extra == 'hosted'", specifier = ">=1.0" },
-    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.0" },
+    { name = "openai", marker = "extra == 'bench'", specifier = ">=1.10" },
+    { name = "openai", marker = "extra == 'extract'", specifier = ">=1.10" },
+    { name = "openai", marker = "extra == 'hosted'", specifier = ">=1.10" },
+    { name = "openai", marker = "extra == 'openai'", specifier = ">=1.10" },
     { name = "openpyxl", marker = "extra == 'documents'", specifier = ">=3.1" },
     { name = "pdfplumber", marker = "extra == 'documents'", specifier = ">=0.11" },
     { name = "pgvector", specifier = ">=0.4" },
@@ -4712,7 +4714,9 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'bench'", specifier = "==0.14.0" },
     { name = "tiktoken", marker = "extra == 'dev'", specifier = "==0.14.0" },
     { name = "tokenizers", marker = "extra == 'fastembed'", specifier = ">=0.13,<1" },
+    { name = "torch", marker = "extra == 'rerank'", specifier = ">=2.4,<3" },
     { name = "torch", marker = "extra == 'sparse'", specifier = ">=2.0,<3" },
+    { name = "transformers", marker = "extra == 'rerank'", specifier = ">=5.6,<6" },
     { name = "transformers", marker = "extra == 'sparse'", specifier = ">=4.40,<6" },
     { name = "uvicorn", marker = "extra == 'hosted'", specifier = ">=0.30,<1" },
     { name = "voyageai", marker = "extra == 'hosted'", specifier = ">=0.3.0" },

@@ -337,8 +337,8 @@ def _new_reranker(
         )
     if profile.name == "code":
         rerank_values = dict(values)
-        rerank_values.setdefault("RECALL_RERANK", "1")
-        rerank_values.setdefault("RECALL_RERANK_MODEL", "coreb-code")
+        rerank_values["RECALL_RERANK"] = rerank_values.get("RECALL_RERANK", "").strip() or "1"
+        rerank_values["RECALL_RERANK_MODEL"] = rerank_values.get("RECALL_RERANK_MODEL") or "coreb-code"
         spec = resolve_reranker(rerank_values)
         assert spec is not None
         model, revision = spec

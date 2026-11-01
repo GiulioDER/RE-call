@@ -29,6 +29,7 @@ const BATCH_SIZE = 24;
 const MAX_README_MARKDOWN_CHARS = 400_000;
 const MAX_RENDERED_HTML_CHARS = 5_000_000;
 const MAX_TRANSLATION_RESPONSE_CHARS = 2_000_000;
+const README_REQUEST_TIMEOUT_MS = 5_000;
 const TRANSLATION_TIMEOUT_MS = 3_000;
 const TRANSLATION_ATTEMPTS = 2;
 const TRANSLATION_TOTAL_TIMEOUT_MS = 15_000;
@@ -67,21 +68,28 @@ function saveLanguage(locale) {
 
 async function fetchText(url) {
   const source = typeof url === "object" ? url : { url };
-  const response = await fetch(source.url, {
-    headers: { Accept: "text/plain", ...source.headers },
-  });
-  if (!response.ok) {
-    throw new Error("README source unavailable");
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), README_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(source.url, {
+      headers: { Accept: "text/plain", ...source.headers },
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error("README source unavailable");
+    }
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > MAX_README_MARKDOWN_CHARS) {
+      throw new Error("README source is too large");
+    }
+    const text = await response.text();
+    if (text.length > MAX_README_MARKDOWN_CHARS) {
+      throw new Error("README source is too large");
+    }
+    return text;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > MAX_README_MARKDOWN_CHARS) {
-    throw new Error("README source is too large");
-  }
-  const text = await response.text();
-  if (text.length > MAX_README_MARKDOWN_CHARS) {
-    throw new Error("README source is too large");
-  }
-  return text;
 }
 
 async function loadMarkdown() {
@@ -97,22 +105,29 @@ async function loadMarkdown() {
 }
 
 async function renderMarkdown(markdown) {
-  const response = await fetch(MARKDOWN_RENDERER, {
-    method: "POST",
-    headers: {
-      Accept: "text/html",
-      "Content-Type": "text/plain; charset=utf-8",
-    },
-    body: markdown,
-  });
-  if (!response.ok) {
-    throw new Error("README renderer unavailable");
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), README_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(MARKDOWN_RENDERER, {
+      method: "POST",
+      headers: {
+        Accept: "text/html",
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+      body: markdown,
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error("README renderer unavailable");
+    }
+    const text = await response.text();
+    if (text.length > MAX_RENDERED_HTML_CHARS) {
+      throw new Error("Rendered README is too large");
+    }
+    return text;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  const text = await response.text();
-  if (text.length > MAX_RENDERED_HTML_CHARS) {
-    throw new Error("Rendered README is too large");
-  }
-  return text;
 }
 
 function textNodes() {
@@ -360,12 +375,27 @@ async function selectLanguage(locale) {
   }
 }
 
+function resolveReadmeResources() {
+  for (const [selector, attribute, base] of [
+    ["a[href]", "href", "https://github.com/GiulioDER/RE-call/blob/master/"],
+    ["img[src]", "src", "https://raw.githubusercontent.com/GiulioDER/RE-call/master/"],
+  ]) {
+    for (const node of content.querySelectorAll(selector)) {
+      const value = node.getAttribute(attribute);
+      if (value && !/^(?:#|\/|[a-z][a-z\d+.-]*:)/i.test(value)) {
+        node.setAttribute(attribute, new URL(value, base).href);
+      }
+    }
+  }
+}
+
 async function start() {
   try {
     const markdown = await loadMarkdown();
     const html = await renderMarkdown(markdown);
     content.innerHTML = html;
-    state.englishHtml = html;
+    resolveReadmeResources();
+    state.englishHtml = content.innerHTML;
     const saved = savedLanguage();
     const initial = [...language.options].some((option) => option.value === saved) ? saved : ENGLISH;
     language.value = initial;

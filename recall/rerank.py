@@ -259,11 +259,16 @@ class QwenYesNoReranker:
             except ImportError:  # pragma: no cover
                 pass
         if tokenizer is None or causal_lm is None:
+            if model == COREB_CODE_RERANKER_MODEL and Path(model).exists():
+                raise ValueError(
+                    f"a local path named {model!r} would shadow the pinned hub revision; "
+                    "move or rename that path before loading coreb-code"
+                )
             try:
                 from transformers import AutoModelForCausalLM, AutoTokenizer
             except ImportError as exc:  # pragma: no cover
                 raise ImportError(
-                    'QwenYesNoReranker requires: pip install "transformers" "torch"'
+                    'QwenYesNoReranker requires: pip install "recall-rag[rerank]"'
                 ) from exc
             tokenizer = AutoTokenizer.from_pretrained(
                 model, revision=revision, trust_remote_code=trust_remote_code
