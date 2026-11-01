@@ -388,15 +388,37 @@ def _ledger_exists(conn: Connection) -> bool:
 
 def _read_applied(
     conn: Connection, table: str
-) -> dict[str, tuple[str, str, str | None, str | None]]:
+) -> dict[str, tuple[str, str, str | None, str | None, str | None]]:
+    """Each applied version's (checksum, state, applied_at, error, filename) from the ledger."""
     if not _ledger_exists(conn):
         return {}
     rows = conn.execute(
-        f"SELECT version, checksum, state, applied_at::text, error "
+        f"SELECT version, checksum, state, applied_at::text, error, filename "
         f"FROM {LEDGER_TABLE} WHERE target_table = %s ORDER BY version",
         (table,),
     ).fetchall()
-    return {str(r[0]): (str(r[1]), str(r[2]), r[3], r[4]) for r in rows}
+    return {
+        str(r[0]): (str(r[1]), str(r[2]), r[3], r[4], None if r[5] is None else str(r[5]))
+        for r in rows
+    }
+
+
+def _checksum_mismatch(
+    migration: Migration, applied_filename: str | None, drift: str
+) -> MigrationChecksumMismatch:
+    """The refusal for an applied version whose checksum differs from the package's.
+
+    When the ledger recorded another FILE under the same version, two branches each shipped a
+    migration with that number and the database ran the other one. Reporting that as checksum
+    drift named only the package's file and invited re-stamping the checksum over a schema that
+    really is different (CCA DEPLOY-003).
+    """
+    if applied_filename is not None and applied_filename != migration.filename:
+        return MigrationChecksumMismatch(
+            f"migration number collision at {migration.version}: the database applied "
+            f"{applied_filename}, this package ships {migration.filename}"
+        )
+    return MigrationChecksumMismatch(drift)
 
 
 def schema_status(dsn: str, *, table: str = DEFAULT_TABLE, dim: int) -> SchemaStatus:
@@ -421,11 +443,12 @@ def schema_status(dsn: str, *, table: str = DEFAULT_TABLE, dim: int) -> SchemaSt
                 MigrationState(migration.version, migration.filename, migration.checksum, "pending")
             )
             continue
-        checksum, state, applied_at, error = row
+        checksum, state, applied_at, error, applied_filename = row
         if checksum != migration.checksum:
-            raise MigrationChecksumMismatch(
+            raise _checksum_mismatch(
+                migration, applied_filename,
                 f"applied migration {migration.filename} has checksum {checksum}, "
-                f"package has {migration.checksum}"
+                f"package has {migration.checksum}",
             )
         if state not in {"running", "failed", "applied"}:
             raise SchemaError(f"migration {migration.version} has invalid ledger state {state!r}")
@@ -440,11 +463,17 @@ def schema_status(dsn: str, *, table: str = DEFAULT_TABLE, dim: int) -> SchemaSt
             )
         )
     current = next((m.version for m in reversed(states) if m.state == "applied"), None)
+    compatible = all(m.state == "applied" for m in states)
+    if compatible:
+        # The checks `check_schema` runs once the ledger is current, so `compatible` cannot say
+        # yes for a database the serving gate refuses for drift (CCA DAT-004). SELECTs only.
+        with _connect(dsn) as conn:
+            _validate_current_schema(conn, table, dim)
     return SchemaStatus(
         table=table,
         current_version=current,
         required_version=migrations[-1].version,
-        compatible=all(m.state == "applied" for m in states),
+        compatible=compatible,
         migrations=tuple(states),
     )
 
@@ -799,10 +828,11 @@ def apply_migrations(
                 )
                 row = existing.get(migration.version)
                 if row is not None:
-                    checksum, state, _applied_at, _error = row
+                    checksum, state, _applied_at, _error, applied_filename = row
                     if checksum != migration.checksum:
-                        raise MigrationChecksumMismatch(
-                            f"applied migration {migration.filename} checksum drift"
+                        raise _checksum_mismatch(
+                            migration, applied_filename,
+                            f"applied migration {migration.filename} checksum drift",
                         )
                     if state == "applied":
                         continue
@@ -854,8 +884,9 @@ def check_schema(conn: Connection, *, table: str = DEFAULT_TABLE, dim: int) -> N
             pending.append(migration.version)
             continue
         if row[0] != migration.checksum:
-            raise MigrationChecksumMismatch(
-                f"migration {migration.filename} checksum does not match the running package"
+            raise _checksum_mismatch(
+                migration, row[4],
+                f"migration {migration.filename} checksum does not match the running package",
             )
     if pending:
         raise SchemaTooOld(

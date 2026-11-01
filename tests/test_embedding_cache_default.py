@@ -370,11 +370,15 @@ def test_a_cache_that_cannot_be_written_still_serves_its_reads(tmp_path: Path) -
     emb.embedded.clear()
 
     assert embed_with_cache(emb, ["alpha"], cache) == [[5.0, 1.0]]
-    assert emb.embedded == []  # served from cache despite the write failing
-    assert cache._writes_disabled and not cache._degraded
+    assert emb.embedded == []  # served from cache by a read-only file
+    # A fresh hit no longer rewrites its stamp (CCA PERF-002, DEF-9 of the 2026-10-31 deferred
+    # pass), so the first failed write is the miss's write-back below, not this lookup.
+    assert not cache._degraded
 
     assert embed_with_cache(emb, ["beta"], cache) == [[4.0, 1.0]]
     assert emb.embedded == ["beta"]  # a miss is still computed, just not written back
+    assert cache._writes_disabled and not cache._degraded
+    assert embed_with_cache(emb, ["alpha"], cache) == [[5.0, 1.0]]  # and reads still serve
 
 
 class _MeetAfterSchemaRead(sqlite3.Connection):

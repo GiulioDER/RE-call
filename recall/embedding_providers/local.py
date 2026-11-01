@@ -37,20 +37,33 @@ def resolve_thread_budget(
     other one.
 
     Junk is ignored rather than raised: a typo'd variable must not kill hour eight of a long run.
+    It is not ignored silently, though: one warning per bad value says the cap is off, as
+    `RECALL_FASTEMBED_BATCH` already does (CCA ENV-003).
     """
-    import os as _os
-
-    raw = (env if env is not None else _os.environ).get("RECALL_EMBED_THREADS")
+    raw = (env if env is not None else os.environ).get("RECALL_EMBED_THREADS")
     if not raw:
         return None
     try:
         want = int(raw)
     except ValueError:
+        _warn_thread_budget(raw, "is not an integer")
         return None
     if want < 1:
+        _warn_thread_budget(raw, "is not positive")
         return None
-    ceiling = cpu_count if cpu_count is not None else (_os.cpu_count() or want)
+    ceiling = cpu_count if cpu_count is not None else (os.cpu_count() or want)
     return min(want, ceiling)
+
+
+_WARNED_THREAD_VALUES: set[str] = set()
+
+
+def _warn_thread_budget(raw: str, problem: str) -> None:
+    """Warn once per bad `RECALL_EMBED_THREADS` value; the budget is resolved per embedder."""
+    if raw in _WARNED_THREAD_VALUES:
+        return
+    _WARNED_THREAD_VALUES.add(raw)
+    _log.warning("RECALL_EMBED_THREADS=%r %s; running without a thread cap", raw, problem)
 
 
 #: What `_session_providers` returns when fastembed's internals do not expose a session. It is a
@@ -190,11 +203,12 @@ def _fallback_profile_id(model_name: str, dimension: int, asymmetric: bool) -> s
 
     Why the id and not just the fingerprint. `EmbeddingProfile.fingerprint` already covers
     `model_name` and `dimension`, so the embedding cache (`recall/cache.py`) never confused the
-    two models. `recall.index._index_fingerprint` does not: it hashes `embedding_profile_id`
-    alone, so under the unconditional literal a bge-small corpus and a bge-large corpus produced
-    the SAME index fingerprint for the same file, and the incremental skip guard treated a model
-    swap as a no-op. Verified by execution: the 384-dimension and 1024-dimension fingerprints were
-    equal.
+    two models. `recall.index._index_fingerprint` did not until 2026-08: it hashed
+    `embedding_profile_id` alone, so under the unconditional literal a bge-small corpus and a
+    bge-large corpus produced the SAME index fingerprint for the same file, and the incremental
+    skip guard treated a model swap as a no-op (verified by execution then). It now hashes the full
+    `EmbeddingProfile.fingerprint()`, and the id is kept honest so that readiness, lineage and
+    calibration, which still match on it, cannot confuse the two models either.
 
     The comparison covers `model_name` and `dimension` only. The encoder modes cannot disagree
     here: the legacy id is looked up BY ``asymmetric``, and both the registry pair and this
@@ -734,6 +748,8 @@ class Qwen3EmbeddingEmbedder:
             dimension = identity.dimension
         if dimension != 384:
             raise ValueError("the registered Qwen3 experiment is fixed at 384 dimensions")
+        if identity is None and context_version != "raw-v1":
+            raise ValueError("the registered Qwen3 experiment has no context mode")
         local = verify_artifact(model_path, artifact_sha256)
         try:
             from sentence_transformers import SentenceTransformer
@@ -751,17 +767,19 @@ class Qwen3EmbeddingEmbedder:
         )
         self._dim = dimension
         self._batch_size = batch_size
-        self._profile = identity or EmbeddingProfile(
-            profile_id="qwen3-embedding-0.6b-384-v1",
-            model_name="Qwen/Qwen3-Embedding-0.6B",
-            artifact_digest=artifact_sha256,
-            dimension=dimension,
-            query_mode="instruction-v1",
-            passage_mode="document",
-            instruction_version="retrieval-v1",
-            context_version=context_version,
-            dependencies=(("sentence-transformers", _package_version("sentence-transformers")),),
-        )
+        if identity is None:
+            # The registry is the only constructor of a registered profile's identity. This was a
+            # second copy of its fields, so a revised registry entry and a direct construction
+            # could mint two identities under one profile id (CCA CODE-014).
+            from recall.embedding_registry import registered_profile
+
+            identity = registered_profile("qwen3-embedding-0.6b-384-v1").identity(
+                artifact_digest=artifact_sha256,
+                dependencies=(
+                    ("sentence-transformers", _package_version("sentence-transformers")),
+                ),
+            )
+        self._profile = identity
 
     @property
     def dim(self) -> int:

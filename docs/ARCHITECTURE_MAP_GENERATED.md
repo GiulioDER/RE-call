@@ -553,17 +553,17 @@ They are observations, not automatic failures.
 | `recall.dependency_invalidation` | 5 | 22 |
 | `recall.derived_block` | 3 | 14 |
 | `recall.desktop` | 1 | 1 |
-| `recall.desktop.github` | 3 | 4 |
+| `recall.desktop.github` | 3 | 5 |
 | `recall.desktop.install_ui` | 7 | 161 |
 | `recall.desktop.jobs` | 0 | 0 |
 | `recall.desktop.main` | 8 | 169 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
 | `recall.desktop.runtime` | 5 | 42 |
-| `recall.desktop.sources` | 2 | 3 |
+| `recall.desktop.sources` | 2 | 4 |
 | `recall.desktop.ui` | 11 | 159 |
 | `recall.desktop.updates` | 2 | 2 |
-| `recall.desktop.uploads` | 3 | 16 |
+| `recall.desktop.uploads` | 3 | 17 |
 | `recall.doctor` | 12 | 155 |
 | `recall.document` | 2 | 15 |
 | `recall.drift` | 6 | 106 |
@@ -574,7 +574,7 @@ They are observations, not automatic failures.
 | `recall.embedding_providers.local` | 5 | 12 |
 | `recall.embedding_providers.openai_compat` | 1 | 12 |
 | `recall.embedding_providers.voyage` | 3 | 12 |
-| `recall.embedding_registry` | 2 | 12 |
+| `recall.embedding_registry` | 3 | 12 |
 | `recall.embeddings` | 7 | 12 |
 | `recall.enterprise_cli` | 7 | 110 |
 | `recall.errors` | 0 | 0 |
@@ -617,7 +617,7 @@ They are observations, not automatic failures.
 | `recall.eval_clock` | 1 | 1 |
 | `recall.evidence` | 2 | 6 |
 | `recall.explanations` | 1 | 5 |
-| `recall.extraction` | 1 | 1 |
+| `recall.extraction` | 2 | 2 |
 | `recall.fact_current` | 4 | 27 |
 | `recall.fact_ledger` | 5 | 27 |
 | `recall.fact_redaction` | 10 | 104 |
@@ -651,7 +651,7 @@ They are observations, not automatic failures.
 | `recall.lite.setup` | 10 | 129 |
 | `recall.lite.store` | 13 | 104 |
 | `recall.lite.writer_lock` | 1 | 104 |
-| `recall.manifest` | 3 | 14 |
+| `recall.manifest` | 3 | 15 |
 | `recall.memory_index` | 6 | 105 |
 | `recall.migration` | 1 | 37 |
 | `recall.migrations` | 0 | 0 |
@@ -755,7 +755,7 @@ They are observations, not automatic failures.
 | `recall.truth_extraction.types` | 1 | 1 |
 | `recall.types` | 3 | 4 |
 | `recall.unknown_terms` | 3 | 42 |
-| `recall.uploads` | 2 | 15 |
+| `recall.uploads` | 2 | 16 |
 | `recall.version` | 0 | 0 |
 | `recall.wizard` | 0 | 0 |
 | `recall.wizard.config_lock` | 0 | 0 |

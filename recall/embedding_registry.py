@@ -45,6 +45,11 @@ from recall.embeddings import (
     VoyageContextualizedEmbedder,
     _package_version,
 )
+from recall.embedding_providers.voyage import (
+    VOYAGE_CONTEXT_MAX_CHARS,
+    VOYAGE_CONTEXT_MAX_CHUNKS,
+    VOYAGE_CONTEXT_MAX_INPUTS,
+)
 
 #: How much of a document's surroundings is folded into a chunk's embedding text. Defined here
 #: rather than in `recall.context` so the registry stays the root of the identity dependency
@@ -403,14 +408,15 @@ class RegisteredProfile:
                 api_key=api_key,
                 identity=identity,
                 max_parallel_requests=_voyage_parallel_requests(env),
+                timeout=_voyage_timeout(env),
             )
         if self.backend == "voyage-context":
             return VoyageContextualizedEmbedder(
                 api_key=api_key,
                 output_dimension=self.output_dimensions or self.dimension,
-                max_request_inputs=self.request_limit_inputs or 1000,
-                max_request_chunks=self.request_limit_chunks or 16_000,
-                max_request_chars=self.request_limit_chars or 60_000,
+                max_request_inputs=self.request_limit_inputs or VOYAGE_CONTEXT_MAX_INPUTS,
+                max_request_chunks=self.request_limit_chunks or VOYAGE_CONTEXT_MAX_CHUNKS,
+                max_request_chars=self.request_limit_chars or VOYAGE_CONTEXT_MAX_CHARS,
                 max_request_tokens=self.request_limit_tokens or VOYAGE_CONTEXT_WINDOW_TOKENS,
                 timeout=_voyage_timeout(env),
                 identity=identity,
@@ -423,7 +429,10 @@ class RegisteredProfile:
                 api_key=api_key,
                 identity=identity,
             )
-        assert self.base_url is not None  # enforced for every hosted profile in __post_init__
+        # Not checked at registration: __post_init__ only refuses a base_url on a local profile.
+        # Every registered openai-compat profile declares one, and this assert is the only
+        # thing that fails if one does not.
+        assert self.base_url is not None
         return OpenAICompatEmbedder(
             api_key=api_key,
             base_url=self.base_url,
@@ -538,10 +547,11 @@ _PROFILES: tuple[RegisteredProfile, ...] = (
     #:
     #: Registering is deliberately preferred over letting `make_embedder` fall through to
     #: `resolve_embedder`. That fallback was written, audited and rejected: a resolver-built
-    #: fastembed embedder carries no identity, so `embeddings.py:794-801` stamps EVERY fastembed
-    #: model with `bge-small-symmetric-v1`, and two models of the same width become
-    #: indistinguishable to readiness, lineage and calibration alike. `build()` passes a real
-    #: identity, so each of these carries its own id and its own fingerprint.
+    #: fastembed embedder carries no registered identity. It was once stamped
+    #: `bge-small-symmetric-v1` whatever its model, and even now it gets only a derived fallback id
+    #: (`recall.embedding_providers.local._fallback_profile_id`), not a registered one that
+    #: readiness, lineage and calibration can match. `build()` passes a real identity, so each of
+    #: these carries its own id and its own fingerprint.
     #:
     #: `context_mode="none"` and symmetric `embed` match how these corpora are indexed by
     #: default; the asymmetric and context-carrying variants are separate profiles for each model
@@ -766,12 +776,12 @@ _HOSTED_PROFILES: tuple[RegisteredProfile, ...] = (
         output_dimensions=1024,
         api_key_env="VOYAGE_API_KEY",
         grouping_policy="voyage-context-document-v1",
-        request_limit_inputs=1000,
+        request_limit_inputs=VOYAGE_CONTEXT_MAX_INPUTS,
         # Prechunked requests disable provider auto chunking, so the per request token ceiling is
         # the model's 32K context window. The larger 120K limit applies only with auto chunking.
         request_limit_tokens=32_000,
-        request_limit_chunks=16_000,
-        request_limit_chars=60_000,
+        request_limit_chunks=VOYAGE_CONTEXT_MAX_CHUNKS,
+        request_limit_chars=VOYAGE_CONTEXT_MAX_CHARS,
     ),
     RegisteredProfile(
         profile_id="voyage-multimodal-3.5-v1",

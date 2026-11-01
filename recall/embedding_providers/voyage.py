@@ -57,6 +57,15 @@ VOYAGE_CONTEXT_WINDOW_TOKENS = 32_000
 VOYAGE_CONTEXT_TOKEN_HEADROOM = 0.9
 
 
+#: Voyage Context's per-request limits on documents, chunks and characters. One spelling for the
+#: class defaults, the registry's fallbacks and the registered profile, because the profile records
+#: them as fingerprint material and a copy that drifted would change splits under an unchanged
+#: fingerprint (CCA CODE-015).
+VOYAGE_CONTEXT_MAX_INPUTS = 1000
+VOYAGE_CONTEXT_MAX_CHUNKS = 16_000
+VOYAGE_CONTEXT_MAX_CHARS = 60_000
+
+
 #: Tokens allowed per chunk for special tokens when the tokenizer is unavailable (see below).
 _FALLBACK_SPECIAL_TOKENS_PER_CHUNK = 2
 
@@ -140,9 +149,9 @@ class VoyageContextualizedEmbedder:
         api_key: str | None = None,
         *,
         output_dimension: int = 1024,
-        max_request_inputs: int = 1000,
-        max_request_chunks: int = 16_000,
-        max_request_chars: int = 60_000,
+        max_request_inputs: int = VOYAGE_CONTEXT_MAX_INPUTS,
+        max_request_chunks: int = VOYAGE_CONTEXT_MAX_CHUNKS,
+        max_request_chars: int = VOYAGE_CONTEXT_MAX_CHARS,
         max_request_tokens: int = VOYAGE_CONTEXT_WINDOW_TOKENS,
         token_counter: TokenCounter | None = None,
         token_counter_identity: str | None = None,
@@ -422,6 +431,7 @@ class VoyageEmbedder:
         max_retries: int = 3,
         identity: EmbeddingProfile | None = None,
         max_parallel_requests: int = 1,
+        timeout: float | None = None,
     ) -> None:
         """Build a Voyage client, optionally under a registered profile's immutable identity.
 
@@ -432,10 +442,16 @@ class VoyageEmbedder:
         runtime and the corpus could not be served. When it is supplied, the identity's model name
         is what gets sent to the provider, so the registry decides the request rather than
         describing it.
+
+        ``timeout`` defaults to ``RECALL_VOYAGE_TIMEOUT_SECONDS`` from the process environment; the
+        registry passes the value from the mapping it was given, as it already does for the
+        contextualized backend, so one profile does not mix two sources (CCA BUG-005).
         """
         key = api_key or os.environ.get("VOYAGE_API_KEY")
         if not key:
             raise RuntimeError("VoyageEmbedder needs VOYAGE_API_KEY (env) or an explicit api_key")
+        if max_retries < 1:
+            raise ValueError("Voyage max_retries must be at least 1")
         client_class = _voyage_client_class("VoyageEmbedder")
         # `max_retries=0` pins the single-owner retry policy `OpenAICompatEmbedder` needs too:
         # `retry_with_backoff` in `embed` below is the only thing that resends. The timeout is
@@ -443,7 +459,8 @@ class VoyageEmbedder:
         from recall.embedding_registry import _voyage_timeout
 
         self._client = client_class(
-            api_key=key, max_retries=0, timeout=_voyage_timeout(os.environ)
+            api_key=key, max_retries=0,
+            timeout=_voyage_timeout(os.environ) if timeout is None else timeout,
         )
         self._model = identity.model_name if identity is not None else model
         self._name = f"voyage:{self._model}"
@@ -452,7 +469,12 @@ class VoyageEmbedder:
         if max_parallel_requests < 1:
             raise ValueError("Voyage parallel requests must be positive")
         self._max_parallel_requests = max_parallel_requests
-        self._dim = len(self._client.embed(["probe"], model=self._model).embeddings[0])
+        # Through the retry policy like every other hosted probe: the client never resends, so a
+        # single transient 429 or 5xx at startup failed construction outright (CCA BUG-004).
+        probe = retry_with_backoff(
+            lambda: self._client.embed(["probe"], model=self._model), attempts=self._max_retries
+        )
+        self._dim = len(probe.embeddings[0])
         _check_declared_width(identity, self._dim, "the Voyage endpoint")
         self._profile = identity
 

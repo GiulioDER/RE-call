@@ -52,7 +52,13 @@ from recall.extraction import (
     chunk_extracted_document,
     strip_nul_from_blocks,
 )
-from recall.frontmatter import RECORD_KEY, SUPERSEDES, legacy_pairing_differs, validity_bounds
+from recall.frontmatter import (  # noqa: F401  # with_provenance re-exported
+    RECORD_KEY,
+    SUPERSEDES,
+    legacy_pairing_differs,
+    validity_bounds,
+    with_provenance,
+)
 from recall.lineage import (
     GenerationState,
     IndexManifestV1,
@@ -311,10 +317,9 @@ def _body_rule_changed(media_type: str, text: str) -> bool:
     only for this affected subset, so the first post-fix rebuild runs once and later generations
     can reuse that repaired source.
 
-    Accepted rather than fixed: the cost falls only on objects that actually contain the defect,
-    and removing it means either a new term in `PipelineIdentity`, which re-embeds every corpus,
-    or a body rule column threaded through `_write_source` and `_reuse_source`'s SELECT, which
-    is a schema change to a reuse path. Recorded as a follow up.
+    Fixed by that marker rather than by a new term in `PipelineIdentity`, which would re-embed
+    every corpus, or by a body rule column on the reuse path, which would be a schema change; only
+    objects that actually contain the defect pay one rebuild.
     """
     return media_type in _MARKDOWN_MEDIA_TYPES and legacy_pairing_differs(text)
 
@@ -398,21 +403,6 @@ _GENERATION_COLUMNS = (
 )
 
 
-def with_provenance(metadata: dict, provenance: dict) -> dict:
-    """Frontmatter first, provenance LAST, and never mutating the input.
-
-    Provenance overrides because a document must not be able to relabel its own origin: if
-    frontmatter won, any indexed file could claim to come from another project and provenance would
-    be an assertion made by the data rather than a record made by the builder.
-
-    A copy, not an update in place: the caller reuses one `metadata` dict across every chunk of a
-    document, so mutating it would accumulate across chunks and leak between documents.
-    """
-    if not provenance:
-        return metadata
-    return {**metadata, **provenance}
-
-
 class GenerationManager:
     """Tenant-scoped generation administration over the versioned v1 tables."""
 
@@ -439,12 +429,23 @@ class GenerationManager:
         #: Records the last successful promotion committed for memos the outgoing generation held
         #: and the promoted one leaves out (`_record_omitted_supersession`).
         self.last_omitted_records = 0
-        self.environment = (environment or os.environ.get("RECALL_ENV", "development")).lower()
+        # Stripped, as `recall.runtime_route` strips it: a padded "production " was production to
+        # the serving route and an unnamed error here (CCA ENV-006). An empty value stays refused,
+        # as the route refuses it: reading it as development would switch off certification on
+        # promote.
+        raw_environment = environment or os.environ.get("RECALL_ENV", "development")
+        self.environment = raw_environment.strip().lower()
         if self.environment not in {"development", "test", "production"}:
-            raise ValueError("environment must be development, test, or production")
-        self.serving_environment = (serving_environment or self.environment).lower()
+            raise ValueError(
+                f"environment (RECALL_ENV) must be development, test, or production, "
+                f"got {raw_environment!r}"
+            )
+        self.serving_environment = (serving_environment or self.environment).strip().lower()
         if self.serving_environment not in {"development", "test", "production"}:
-            raise ValueError("serving_environment must be development, test, or production")
+            raise ValueError(
+                f"serving_environment must be development, test, or production, "
+                f"got {serving_environment!r}"
+            )
 
     @property
     def certification_required(self) -> bool:
@@ -485,6 +486,37 @@ class GenerationManager:
             ),
         )
         return event_id
+
+    def _lock_tenant_state(self, conn: psycopg.Connection) -> tuple[Any, ...] | None:
+        """Lock and read this tenant's (active, previous) generation pointers.
+
+        One statement for abandon, promote, rollback, forget and gc, because the row lock is what
+        keeps the active and previous generations from being abandoned or collected while a
+        promotion or rollback moves them; a copy that lost FOR UPDATE would reopen that race
+        (CCA CODE-020).
+        """
+        return conn.execute(
+            "SELECT active_generation_id, previous_generation_id "
+            "FROM recall_tenant_state WHERE tenant_id = %s FOR UPDATE",
+            (self.tenant_id,),
+        ).fetchone()
+
+    def _generation_chunks(self, conn: psycopg.Connection, generation_id: str) -> list[Chunk]:
+        """Every chunk of one generation, in chunk-id order, as the graph builders read them.
+
+        One read for the build's graph step, validation and a graph rebuild: validation compares
+        its graph's fingerprint with the build's, so two copies of this read that decoded rows
+        differently would fail validation for nothing (CCA CODE-016).
+        """
+        rows = conn.execute(
+            "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
+            "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
+            (self.tenant_id, generation_id),
+        ).fetchall()
+        return [
+            Chunk(str(row[0]), str(row[1]), str(row[2]), row[3] if isinstance(row[3], dict) else {})
+            for row in rows
+        ]
 
     def _require_generation(
         self, conn: psycopg.Connection, generation_id: str, *, lock: bool = False
@@ -1035,8 +1067,9 @@ class GenerationManager:
         body = text
         if entry.media_type in _MARKDOWN_MEDIA_TYPES:
             # Not optional. `recall index` is refused under RECALL_ENV=production
-            # (`recall/cli.py:1209`), so hooking only the index path would leave the one
-            # build path that runs in production reading derived blocks as evidence.
+            # (`resolve_runtime_route` forces the generation route there, which `_cmd_index` in
+            # `recall.cli_commands.index_search` refuses), so hooking only the index path would
+            # leave the one build path that runs in production reading derived blocks as evidence.
             document = parse_document(text)
             metadata = {**metadata, **admit_record(document.meta, entry.uri)}
             body = document.human_body
@@ -1213,20 +1246,7 @@ class GenerationManager:
         with self._connect() as conn, conn.transaction():
             graph_started = time.perf_counter()
             current = self._require_generation(conn, generation_id)
-            rows = conn.execute(
-                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
-                (self.tenant_id, generation_id),
-            ).fetchall()
-            graph_chunks = [
-                Chunk(
-                    str(row[0]),
-                    str(row[1]),
-                    str(row[2]),
-                    row[3] if isinstance(row[3], dict) else {},
-                )
-                for row in rows
-            ]
+            graph_chunks = self._generation_chunks(conn, generation_id)
             try:
                 semantic_graph = build_semantic_graph(
                     graph_chunks,
@@ -1708,11 +1728,7 @@ class GenerationManager:
     def abandon(self, generation_id: str, reason: str) -> None:
         """Move an unprotected READY generation to failed so GC can reclaim it."""
         with self._connect() as conn, conn.transaction():
-            state = conn.execute(
-                "SELECT active_generation_id, previous_generation_id "
-                "FROM recall_tenant_state WHERE tenant_id = %s FOR UPDATE",
-                (self.tenant_id,),
-            ).fetchone()
+            state = self._lock_tenant_state(conn)
             current = self._require_generation(conn, generation_id, lock=True)
             if current.state != GenerationState.READY:
                 raise InvalidGenerationTransition(
@@ -1813,21 +1829,9 @@ class GenerationManager:
             graph_marker = summary.get("semantic_graph")
             if not isinstance(graph_marker, Mapping) or graph_marker.get("ready") is not True:
                 raise GenerationError("generation semantic graph is not ready")
-            graph_rows = conn.execute(
-                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
-                (self.tenant_id, generation_id),
-            ).fetchall()
+            graph_chunks = self._generation_chunks(conn, generation_id)
             graph = build_semantic_graph(
-                [
-                    Chunk(
-                        str(item[0]),
-                        str(item[1]),
-                        str(item[2]),
-                        item[3] if isinstance(item[3], dict) else {},
-                    )
-                    for item in graph_rows
-                ],
+                graph_chunks,
                 tenant_id=self.tenant_id,
                 generation_id=generation_id,
                 pipeline_fingerprint=current.pipeline_fingerprint,
@@ -1839,8 +1843,7 @@ class GenerationManager:
             ):
                 raise GenerationError("generation semantic graph fingerprint mismatch")
             summary["dependency_projection"] = self._persist_dependency_projection(
-                conn, generation_id, current.corpus_fingerprint,
-                [Chunk(str(item[0]), str(item[1]), str(item[2]), item[3] if isinstance(item[3], dict) else {}) for item in graph_rows],
+                conn, generation_id, current.corpus_fingerprint, graph_chunks,
             )
             summary.update({"validated_sources": len(actual), "validated_chunks": chunks})
             conn.execute(
@@ -1881,23 +1884,11 @@ class GenerationManager:
                 raise InvalidGenerationTransition(
                     f"graph rebuild requires a stable generation, found {current.state.value}"
                 )
-            rows = conn.execute(
-                "SELECT chunk_id, source_uri, text, metadata FROM recall_chunks_v1 "
-                "WHERE tenant_id = %s AND generation_id = %s ORDER BY chunk_id",
-                (self.tenant_id, generation_id),
-            ).fetchall()
+            graph_chunks = self._generation_chunks(conn, generation_id)
             graph_started = time.perf_counter()
             try:
                 graph = build_semantic_graph(
-                    [
-                        Chunk(
-                            str(row[0]),
-                            str(row[1]),
-                            str(row[2]),
-                            row[3] if isinstance(row[3], dict) else {},
-                        )
-                        for row in rows
-                    ],
+                    graph_chunks,
                     tenant_id=self.tenant_id,
                     generation_id=generation_id,
                     pipeline_fingerprint=current.pipeline_fingerprint,
@@ -1923,8 +1914,7 @@ class GenerationManager:
             summary = dict(summary_row[0]) if summary_row and isinstance(summary_row[0], Mapping) else {}
             summary["semantic_graph"] = _semantic_graph_marker(graph)
             summary["dependency_projection"] = self._persist_dependency_projection(
-                conn, generation_id, current.corpus_fingerprint,
-                [Chunk(str(row[0]), str(row[1]), str(row[2]), row[3] if isinstance(row[3], dict) else {}) for row in rows],
+                conn, generation_id, current.corpus_fingerprint, graph_chunks,
             )
             conn.execute(
                 "UPDATE recall_generations SET validation_summary = %s "
@@ -1953,11 +1943,7 @@ class GenerationManager:
                 "ON CONFLICT (tenant_id) DO NOTHING",
                 (self.tenant_id,),
             )
-            state = conn.execute(
-                "SELECT active_generation_id, previous_generation_id "
-                "FROM recall_tenant_state WHERE tenant_id = %s FOR UPDATE",
-                (self.tenant_id,),
-            ).fetchone()
+            state = self._lock_tenant_state(conn)
             target = self._require_generation(conn, generation_id, lock=True)
             if target.state != GenerationState.READY:
                 raise InvalidGenerationTransition(
@@ -2039,11 +2025,7 @@ class GenerationManager:
 
     def rollback(self, *, provisional_reason: str | None = None) -> str:
         with self._connect() as conn, conn.transaction():
-            state = conn.execute(
-                "SELECT active_generation_id, previous_generation_id "
-                "FROM recall_tenant_state WHERE tenant_id = %s FOR UPDATE",
-                (self.tenant_id,),
-            ).fetchone()
+            state = self._lock_tenant_state(conn)
             if not state or not state[1]:
                 raise NoActiveGeneration("no previous generation is available for rollback")
             active = str(state[0]) if state[0] else None
@@ -2197,11 +2179,7 @@ class GenerationManager:
         event_id = _new_id("evt")
         with self._connect() as conn, conn.transaction():
             self._source_lock(conn, self.tenant_id, source_uri)
-            state = conn.execute(
-                "SELECT active_generation_id, previous_generation_id "
-                "FROM recall_tenant_state WHERE tenant_id = %s FOR UPDATE",
-                (self.tenant_id,),
-            ).fetchone()
+            state = self._lock_tenant_state(conn)
             selected = {str(item) for item in (state or ()) if item}
             mutable = conn.execute(
                 "SELECT generation_id, manifest, corpus_fingerprint FROM recall_generations "
@@ -2352,16 +2330,22 @@ class GenerationManager:
         retention_days: int = DEFAULT_RETENTION_DAYS,
         retain_previous: int = DEFAULT_RETAIN_PREVIOUS,
     ) -> tuple[str, ...]:
+        """Delete, irreversibly, this tenant's retired and failed generations past retention.
+
+        The active and previous generations are never deleted. Retired generations are kept,
+        newest first, until `retain_previous` are held, and the previous generation counts toward
+        that number; failed generations get no such protection. Age is `retired_at`, else
+        `created_at`, against `retention_days`. After the commit it retracts, for good, the facts
+        whose memos no remaining generation holds (`retract_collected_facts`); a failed retraction
+        sets `last_gc_facts_retracted` to -1 and the next gc completes it. Returns the deleted
+        generation ids.
+        """
         if retention_days < 0 or retain_previous < 0:
             raise ValueError("retention_days and retain_previous cannot be negative")
         now = now or datetime.now(timezone.utc)
         cutoff = now - timedelta(days=retention_days)
         with self._connect() as conn, conn.transaction():
-            state = conn.execute(
-                "SELECT active_generation_id, previous_generation_id "
-                "FROM recall_tenant_state WHERE tenant_id = %s FOR UPDATE",
-                (self.tenant_id,),
-            ).fetchone()
+            state = self._lock_tenant_state(conn)
             protected = {str(item) for item in (state or ()) if item}
             rows = conn.execute(
                 "SELECT generation_id, state, COALESCE(retired_at, created_at) AS age "

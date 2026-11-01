@@ -839,3 +839,48 @@ def test_serving_check_refuses_fact_state_drift(drift, undo):
                 with psycopg.connect(TEST_DSN, autocommit=True) as conn:
                     conn.execute(undo)
             store.check_schema()
+
+
+@requires_db
+def test_schema_status_reports_the_drift_the_serving_check_refuses():
+    """DEF-6 (CCA DAT-004): `schema status` cannot say compatible when `check_schema` refuses.
+
+    Red against `beb08a605` (`schema_status` reads the ledger alone): node
+    tests/test_schema_migrations.py::test_schema_status_reports_the_drift_the_serving_check_refuses
+    fails on "DID NOT RAISE SchemaIncompatible".
+    """
+    with _target() as table:
+        apply_migrations(TEST_DSN, table=table, dim=DIM)
+        assert schema_status(TEST_DSN, table=table, dim=DIM).compatible
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute("ALTER TABLE recall_fact_current NO FORCE ROW LEVEL SECURITY")
+        try:
+            with pytest.raises(SchemaIncompatible, match="fact state"):
+                schema_status(TEST_DSN, table=table, dim=DIM)
+        finally:
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute("ALTER TABLE recall_fact_current FORCE ROW LEVEL SECURITY")
+
+
+@requires_db
+def test_a_migration_number_collision_names_both_files():
+    """DEF-14 (CCA DEPLOY-003): another branch's migration under one number is named as such.
+
+    Red against `beb08a605` (the ledger's filename is never read, so it reads as checksum drift):
+    node tests/test_schema_migrations.py::test_a_migration_number_collision_names_both_files fails
+    on 'Regex pattern did not match' for "number collision".
+    """
+    first = load_migrations()[0]
+    with _target() as table:
+        apply_migrations(TEST_DSN, table=table, dim=DIM)
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(
+                f"UPDATE {LEDGER_TABLE} SET filename = %s, checksum = %s "
+                "WHERE target_table = %s AND version = %s",
+                (f"{first.version}_from_another_branch.sql", "0" * 64, table, first.version),
+            )
+        with PgVectorStore(TEST_DSN, dim=DIM, table=table) as store:
+            with pytest.raises(MigrationChecksumMismatch, match="number collision") as raised:
+                store.check_schema()
+        assert first.filename in str(raised.value)
+        assert "from_another_branch" in str(raised.value)

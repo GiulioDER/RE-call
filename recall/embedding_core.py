@@ -14,7 +14,7 @@ import math
 import os
 import random
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -73,7 +73,8 @@ class NonTransientError(RecallError):
 
     ⚠️ Fixed HERE rather than in the wording. Rewording relocates the coincidence instead of
     removing it, and leaves the same fragility for every other caller of ``retry_with_backoff``:
-    the two sites in this module and ``recall/truth_extraction/_openai_engine.py``, none of which
+    ``recall/embedding_providers/voyage.py``, ``recall/embedding_providers/openai_compat.py``,
+    ``recall/multimodal.py`` and ``recall/truth_extraction/_openai_engine.py``, none of which
     passes a custom classifier. ``benchmarks/llm.py`` had already protected its own path with a
     ``PERMANENT_ERRORS`` tuple. Both callers had a fix, by two different mechanisms, which is why
     this went unnoticed: the hazard lives in the DEFAULT classifier, which neither of them uses.
@@ -313,7 +314,12 @@ def retry_with_backoff(
     ⚠️ A caller that has NOT switched its SDK's retries off would pay this pacing twice, once here
     and once inside the transport, since ``openai``'s own ``_calculate_retry_timeout`` applies the
     same 60s rule. No caller here is in that state; keep it that way when adding one.
+
+    ``attempts`` below 1 is refused: the loop would never call ``fn``, and it used to end in an
+    AssertionError, or under ``python -O`` in ``raise None`` (CCA BUG-003).
     """
+    if attempts < 1:
+        raise ValueError(f"attempts must be at least 1, got {attempts}")
     last: Exception | None = None
     for i in range(attempts):
         try:
@@ -358,6 +364,20 @@ def batched_embed(
             max_workers=max_workers,
         )
     out: list[list[float]] = []
+    for batch in _iter_batches(texts, batch_size, max_batch_chars):
+        out.extend(_checked(embed_batch, batch))
+    return out
+
+
+def _iter_batches(
+    texts: list[str], batch_size: int, max_batch_chars: int | None
+) -> Iterator[list[str]]:
+    """Cut ``texts`` into the batches both embedding paths send, in order.
+
+    One cut rule for the sequential and the concurrent path, whose docstring promises the same
+    batches: it was two copies of this loop (CCA CODE-017). A generator, so the sequential path
+    still streams.
+    """
     batch: list[str] = []
     chars = 0
     for t in texts:
@@ -365,13 +385,12 @@ def batched_embed(
             len(batch) >= batch_size
             or (max_batch_chars is not None and chars + len(t) > max_batch_chars)
         ):
-            out.extend(_checked(embed_batch, batch))
+            yield batch
             batch, chars = [], 0
         batch.append(t)
         chars += len(t)
     if batch:
-        out.extend(_checked(embed_batch, batch))
-    return out
+        yield batch
 
 
 def _batched_embed_concurrently(
@@ -382,20 +401,7 @@ def _batched_embed_concurrently(
     max_batch_chars: int | None,
     max_workers: int,
 ) -> list[list[float]]:
-    batches: list[list[str]] = []
-    batch: list[str] = []
-    chars = 0
-    for t in texts:
-        if batch and (
-            len(batch) >= batch_size
-            or (max_batch_chars is not None and chars + len(t) > max_batch_chars)
-        ):
-            batches.append(batch)
-            batch, chars = [], 0
-        batch.append(t)
-        chars += len(t)
-    if batch:
-        batches.append(batch)
+    batches = list(_iter_batches(texts, batch_size, max_batch_chars))
     if len(batches) <= 1:
         return [vector for one in batches for vector in _checked(embed_batch, one)]
     with ThreadPoolExecutor(max_workers=min(max_workers, len(batches))) as pool:

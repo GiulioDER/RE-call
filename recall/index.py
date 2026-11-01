@@ -32,7 +32,13 @@ from recall.extraction import (
     extract_document,
     strip_nul_from_blocks,
 )
-from recall.frontmatter import RECORD_KEY, legacy_pairing_differs, validity_bounds
+from recall.frontmatter import (
+    MARKDOWN_SUFFIXES,
+    RECORD_KEY,
+    legacy_pairing_differs,
+    validity_bounds,
+    with_provenance,
+)
 from recall.index_lock import single_writer
 from recall.observability import get_logger
 from recall.records import admit_record
@@ -66,11 +72,13 @@ _DEFAULT_INDEX_EXCLUDED_SUFFIXES = frozenset({".json", ".toml", ".yaml", ".yml"}
 #: would accept a value the CLI still rejected with exit 2.
 #:
 #: Here rather than in `recall.generation_build` because this module defines the two functions it
-#: names, and because `recall.cli` already imports this module at the top level while it reaches
-#: the builder lazily — so `argparse` can read the vocabulary without that import becoming eager.
-#: Measured, since an earlier version of this comment claimed the saving was psycopg and that was
-#: simply false: `import recall.cli` already pulls in psycopg and pgvector through `recall.store`.
-#: What stays lazy is `recall.generations`, which `recall.cli` does not import today.
+#: names, and because `recall.cli_commands.generation_cmd`, which `recall.cli` imports only when the
+#: `generation` command is dispatched, already imports this module at its top level while it
+#: reaches the builder lazily, so `argparse` can read the vocabulary without that import becoming
+#: eager. Measured, since an earlier version of this comment claimed the saving was psycopg and
+#: that was simply false: `import recall.cli` already pulls in psycopg and pgvector through
+#: `recall.store`. What stays lazy is `recall.generations` and `recall.generation_build`, which
+#: that module imports inside its handlers.
 ChunkerKind = Literal["text", "code"]
 #: Overlap may repeat at most a quarter of a chunk. Beyond that, consecutive pieces are mostly
 #: duplicated context: the index inflates and near-identical chunks crowd the top-k.
@@ -604,7 +612,8 @@ def _safe_link_target(root: Path, path: Path, glob: str) -> bool:
 
     The target's name and suffix, and the tool directories, are checked; a plain dot-directory
     above the target is not, because an in-root link into one is a supported layout (the lite
-    refresh keys such a memo by the link: `tests/test_lite_refresh.py`).
+    refresh keys such a memo by the link: `tests/test_lite_refresh.py`). Under a source security
+    policy the indexer also requires that one rule govern both the link and its target.
     """
     if glob != DEFAULT_INDEX_GLOB:
         return True
@@ -968,9 +977,10 @@ class Indexer:
 
         Chunk metadata merges the document's frontmatter. If frontmatter won, any indexed file
         could claim to come from another project, and provenance would be an assertion made by the
-        data rather than a record made by the indexer.
+        data rather than a record made by the indexer. The rule lives in
+        `recall.frontmatter.with_provenance`, shared with the generation build.
         """
-        return {**meta, **self.provenance}
+        return with_provenance(meta, self.provenance)
 
     def index_path(
         self,
@@ -1185,7 +1195,7 @@ class Indexer:
         for file_index, f in enumerate(files):
             raw: str | None = None
             extracted = None
-            is_markdown = f.suffix.lower() in {".md", ".markdown", ".mdx"}
+            is_markdown = f.suffix.lower() in MARKDOWN_SUFFIXES
             try:
                 str(f).encode("utf-8")
             except UnicodeEncodeError:
@@ -1275,7 +1285,9 @@ class Indexer:
             # one production path that attaches a shadow this re-embedded the whole corpus
             # through the active embedder AND the shadow one. Both now take the shared
             # content-addressed cache, so a re-flush of unchanged text costs a lookup on either
-            # side. What remains is the database write, which is the part splitting the flush
+            # side, except for a grouped (contextualized) embedder: its vectors depend on the
+            # whole document group, so it bypasses the cache and its side is re-embedded. What
+            # remains is the database write, which is the part splitting the flush
             # per generation would buy back, and that is still a much larger change to a path
             # that writes two tables in one transaction.
             #
@@ -1538,7 +1550,9 @@ class Indexer:
         # the two are, and sharing one file is what lets a re-flush of an unchanged source cost
         # nothing on either side. This used to pass None, which is the cost the comment in
         # `index_path` describes: on the one production path that attaches a shadow, a stale
-        # shadow re-embedded the whole corpus through BOTH models.
+        # shadow re-embedded the whole corpus through BOTH models. A grouped embedder is the
+        # exception: `_embed_bounded` sends it through `embed_document_groups`, which has no cache,
+        # so its side re-embeds on every flush.
         shadow_embeddings = self._embed_bounded(
             self._shadow.embedder,
             shadow_embedding_texts,
