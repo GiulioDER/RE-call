@@ -2562,6 +2562,33 @@ def test_the_default_local_base_url_prints_no_warning(tmp_path, monkeypatch):
     assert "withheld the cloud providers" not in output
 
 
+@pytest.mark.parametrize(
+    "separator", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"],
+    ids=["vt", "ff", "fs", "gs", "rs", "nel", "ls", "ps"],
+)
+def test_setup_rejects_non_cr_lf_line_separators(tmp_path, monkeypatch, separator):
+    """SEC-001: a model must not inject another dotenv assignment.
+
+    Red proof: unchanged node on eddfc9179 fails DID NOT RAISE ValueError at
+    _quote_env, which previously persisted every splitlines separator except CR/LF.
+    The public wizard must refuse before replacing the existing configuration.
+    """
+    monkeypatch.setattr("recall.setup.probe_reasoning_model", lambda **kw: "offline")
+    monkeypatch.setattr("recall.setup._prepare_schema_for_embedder", lambda **kw: None)
+    env_path = tmp_path / ".env"
+    original = "EXISTING_SETTING=preserved\n"
+    env_path.write_text(original, encoding="utf-8")
+    payload = f"model{separator}RECALL_ALLOW_INSECURE_DSN=1{separator}tail"
+
+    with pytest.raises(ValueError, match="line separator"):
+        _run_wizard(
+            tmp_path, monkeypatch,
+            ["y", "2", "1", "1", "y", "", payload, "n", "n"],
+        )
+
+    assert env_path.read_text(encoding="utf-8") == original
+
+
 def test_quote_env_escapes_newlines_so_a_value_cannot_span_lines(tmp_path, monkeypatch):
     """Without escaping, a raw newline inside a value broke out of its quoted line, and
     `recall/_env.py`'s line based parser read the continuation as its own unrelated `KEY=VALUE`

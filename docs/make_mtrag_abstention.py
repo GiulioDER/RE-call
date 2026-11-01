@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import html
 import http.client
+import math
 import os
 import pathlib
 import re
@@ -225,7 +226,13 @@ def _resize_badge(svg: str, origin: str) -> str:
     if width is None or height is None:
         raise ValueError(f"could not find the badge size attributes in {origin}")
 
-    scaled_w = round(float(width.group(1)) * BADGE_HEIGHT / float(height.group(1)))
+    width_px, height_px = float(width.group(1)), float(height.group(1))
+    if not (0 < width_px < math.inf and 0 < height_px < math.inf):
+        raise ValueError(f"badge dimensions from {origin} must be positive and finite")
+    scaled_width = width_px / height_px * BADGE_HEIGHT
+    if not math.isfinite(scaled_width):
+        raise ValueError(f"badge aspect ratio from {origin} cannot be scaled")
+    scaled_w = round(scaled_width)
     # Splice from the right, so the earlier match's offsets stay valid.
     for match, replacement in sorted(
         ((width, f'width="{scaled_w}"'), (height, f'height="{BADGE_HEIGHT}"')),

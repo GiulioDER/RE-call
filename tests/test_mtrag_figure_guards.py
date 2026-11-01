@@ -219,6 +219,32 @@ def test_bad_response_falls_back_without_poisoning_the_cache(generator, serve, c
     assert survived == COMMITTED_BADGE, f"{case} overwrote the fallback"
 
 
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [("0", "20"), ("110", "0"), ("9" * 400, "20"),
+     ("9" * 300, "0." + "0" * 299 + "1")],
+    ids=["zero-width", "zero-height", "nonfinite-width", "overflow-aspect"],
+)
+def test_invalid_badge_dimensions_use_cache(generator, serve, width, height):
+    """BUG-001: malformed dimensions must use the valid cache without replacing it.
+
+    Red proof: these exact nodes fail assertions on eddfc9179, targeting
+    _resize_badge's unchecked division and round; zero width returns an empty badge,
+    while zero height and unbounded dimensions bypass fallback with arithmetic errors.
+    """
+    module, tmp_path = generator
+    serve(body=f'<svg width="{width}" height="{height}"><g/></svg>')
+    error = None
+    result = ""
+    try:
+        result = module.glama_badge()
+    except (ZeroDivisionError, OverflowError) as exc:
+        error = exc
+    assert error is None, f"invalid dimensions bypassed the cached fallback: {error}"
+    assert 'width="176" height="32"' in result
+    assert (tmp_path / "glama_score_badge.svg").read_text(encoding="utf-8") == COMMITTED_BADGE
+
+
 def test_missing_cache_and_failed_fetch_names_the_cause(tmp_path, serve):
     """Without a cache there is nothing to render, so say that rather than raising IOError."""
     module = load_generator(tmp_path)
