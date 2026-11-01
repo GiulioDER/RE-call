@@ -94,12 +94,12 @@ Cross package edges: 374
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.doctor` |
 | 12 | `recall.eval.harness` |
+| 12 | `recall.setup` |
 | 12 | `recall.stated_facts` |
 | 12 | `recall.store` |
 | 12 | `recall_agent.memory` |
 | 12 | `recall_mcp.assistant` |
 | 11 | `recall.cli_commands.generation_cmd` |
-| 11 | `recall.cli_commands.reasoning_cmd` |
 
 ## Cross package edges
 
@@ -722,7 +722,7 @@ They are observations, not automatic failures.
 | `recall.semantic_graph._store` | 1 | 15 |
 | `recall.semantic_lint` | 8 | 109 |
 | `recall.served_gap` | 0 | 0 |
-| `recall.setup` | 11 | 128 |
+| `recall.setup` | 12 | 128 |
 | `recall.source_conditioning` | 1 | 1 |
 | `recall.sparse` | 1 | 1 |
 | `recall.sql_identifiers` | 0 | 0 |

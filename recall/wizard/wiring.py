@@ -34,7 +34,7 @@ actually answer.** Three cases, and they are not interchangeable:
   A configured server that raises on every query is worse than an absent one, which at least says
   what is missing.
 
-An uncalibrated corpus (`memory`) gets development trust and NO `RECALL_ENV`, because its rows live
+An uncalibrated corpus (`memory`) gets development trust and `RECALL_ENV=development`, because its rows live
 in the legacy `chunks` table that only `PgVectorStore` reads, and production mode routes past it.
 
 ⚠️ **Docker autostart is deliberately not done here.** Making a container start on login is a change
@@ -201,7 +201,13 @@ def server_blocks(
 
 
 def _base_env(spec: CorpusSpec, *, dsn: str, embedder: str) -> dict[str, str]:
-    return {"RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder, "RECALL_TENANT": spec.tenant}
+    return {
+        "RECALL_DSN": dsn,
+        # Clear an inherited override; settings then use the selected (or Docker-translated) DSN.
+        "RECALL_SERVING_DSN": "",
+        "RECALL_EMBEDDER": embedder,
+        "RECALL_TENANT": spec.tenant,
+    }
 
 
 def _generation_block(
@@ -234,8 +240,9 @@ def _legacy_block(
     fact_write_dsn: str | None,
 ) -> ServerBlock:
     env = _base_env(spec, dsn=dsn, embedder=embedder)
-    # No RECALL_ENV. This corpus lives in the legacy `chunks` table, which only `PgVectorStore`
-    # reads; production mode would route past it and find nothing.
+    # Override the client's inherited route: memory was indexed into the legacy table.
+    env["RECALL_ENV"] = "development"
+    env["RECALL_INDEX_MODE"] = "legacy"
     env["RECALL_TRUST_MODE"] = "development"
     if fact_write_dsn:
         env["RECALL_FACT_WRITE_DSN"] = fact_write_dsn

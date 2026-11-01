@@ -144,10 +144,19 @@ class WizardState:
         digest = raw.get("digest")
         if not isinstance(digest, str) or not digest:
             return None
+        if not isinstance(raw.get("outcomes", []), list) or not isinstance(
+            raw.get("indexed", []), list
+        ):
+            return None
         known = {f.name for f in fields(CorpusOutcome)}
         outcomes: list[CorpusOutcome] = []
         for item in raw.get("outcomes") or ():
             if not isinstance(item, dict):
+                return None
+            if any(
+                not isinstance(item.get(name, False), bool)
+                for name in ("certified", "promoted", "unverified_embedder")
+            ):
                 return None
             try:
                 outcomes.append(CorpusOutcome(**{k: v for k, v in item.items() if k in known}))
