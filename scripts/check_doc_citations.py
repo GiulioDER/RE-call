@@ -261,7 +261,7 @@ def resolve(old_line: int, hunks: list[tuple[int, int, int, int]]) -> int | None
     """Where `old_line` ended up, or None when the line itself was edited or deleted."""
     offset = 0
     for old_start, old_count, _new_start, new_count in hunks:
-        if old_line < old_start:
+        if old_line < old_start or (old_count == 0 and old_line == old_start):
             break
         if old_start <= old_line < old_start + old_count:
             return None  # inside a changed hunk: the cited content itself moved or went away
@@ -338,7 +338,9 @@ def check_one(
 
     body = source.read_text(encoding="utf-8", errors="replace").splitlines()
     start, end = int(m.group("start")), int(m.group("end") or m.group("start"))
-    if start > len(body):
+    if start < 1 or end < start:
+        return [Finding(rel, doc_line, cited, "citation must name an increasing, positive line range")]
+    if end > len(body):
         return [Finding(rel, doc_line, cited, f"{path} has only {len(body)} lines")]
 
     key = (path, base)
@@ -349,14 +351,16 @@ def check_one(
     if hunks is None:
         return []  # file unchanged since this document was last touched
 
-    moved = resolve(start, hunks)
-    if moved is None:
+    edited = next((line for line in range(start, end + 1) if resolve(line, hunks) is None), None)
+    if edited is not None:
         return [Finding(rel, doc_line, cited,
-                        f"line {start} of {path} was edited or removed after this document was "
+                        f"line {edited} of {path} was edited or removed after this document was "
                         f"last committed ({base[:8]}), so the citation may no longer name what it "
                         f"named. Re read it and write the current line.")]
-    if moved != start:
-        if moved > len(body):
+    moved, moved_end = resolve(start, hunks), resolve(end, hunks)
+    assert moved is not None and moved_end is not None
+    if moved != start or moved_end != end:
+        if moved_end > len(body):
             # The arithmetic ran off the end of the file, which means the diff was a rewrite
             # rather than a shift. Saying "cite line 1937" of a 1247 line file would be worse than
             # saying nothing, so this reports the drift and declines to invent a destination.
@@ -364,7 +368,7 @@ def check_one(
                             f"{path} was rewritten rather than shifted since {base[:8]} (it now "
                             f"has {len(body)} lines), so where line {start} went cannot be "
                             f"computed. Re read the passage and write the current line.")]
-        span = f"{moved}-{moved + (end - start)}" if end != start else str(moved)
+        span = f"{moved}-{moved_end}" if end != start else str(moved)
         return [Finding(rel, doc_line, cited,
                         f"the content at line {start} moved {moved - start:+d} since {base[:8]}, "
                         f"so it is now at `{path}:{span}`. Confirm before copying it in: that is "
