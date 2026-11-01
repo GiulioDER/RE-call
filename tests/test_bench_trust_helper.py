@@ -180,3 +180,29 @@ def test_a_none_policy_is_replaced_rather_than_passed_through(
 
     assert seen["policy"] is not None
     assert seen["policy"].mode is TrustMode.DEVELOPMENT
+
+
+def test_a_patch_active_at_first_import_does_not_stick(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`bench_search` reaches the seam as it is NOW, not as it was when the module was imported.
+
+    Found by PR 1106's mutation job: `tests/test_beam_calibration_wiring.py` patches
+    `research_search`, and its `_system()` happens to import `benchmarks._trust` for the first
+    time, so a module-level `from ... import research_search` kept that fake after the patch was
+    undone and every later `bench_search` returned the beam test's `_Result`. That needs the two
+    files to run first, in that order, in a fresh process, which the mutation job's selection did.
+
+    Red proof: against the pre-fix `benchmarks/_trust.py` (the module-level import), the call
+    after the patch is undone returns "stale-fake", failing the assertion.
+    """
+    import sys
+
+    from recall.eval import _research_trust
+
+    monkeypatch.delitem(sys.modules, "benchmarks._trust", raising=False)
+    with monkeypatch.context() as patch:
+        patch.setattr(_research_trust, "research_search", lambda *a, **k: "stale-fake")
+        from benchmarks._trust import bench_search
+    seen = _capture(monkeypatch)
+
+    assert bench_search(object(), _FakeEmbedder(), "q") == "sentinel-result"
+    assert seen["query"] == "q"
