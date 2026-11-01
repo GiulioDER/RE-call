@@ -120,30 +120,22 @@ nDCG@10 = 1/log2(r+1)                 (idcg = 1/log2(2) = 1 for a single relevan
 | `gold-dropper-half` | gold absent entirely on half the questions | `R@5 0.5`, `MRR 0.5`, `nDCG 0.5`, `P@5 0.1` | pins the mean over questions, not just the per-question value |
 | `guard-never-fires` | dense scores above threshold on every unanswerable query | `fcr_with_guard 1.0` | with the next row, pins the polarity of the `not g` negation inside `false_confident_rate` |
 | `guard-fires-on-half` | dense scores below threshold on half the unanswerable queries, above on the rest | `fcr_with_guard 0.5` | the interior point, not the 0.0 extreme, is what defeats a scorer that computes `any()`/`all()` instead of a mean over the class; the 0.0 extreme is already covered by every other member (all of which have `fcr_with_guard 0.0`) |
-| `no-answerable-queries` | declared blind spot, see below | `p_at_5 0.0` (current behaviour) | pins today's value and names the inconsistency |
+| `no-answerable-queries` | no answerable population | all four ranking metrics are NaN | distinguishes no measurement from a measured zero |
 
 `gold-dropper-half` is built as 10 answerable queries, 5 with the gold at rank 1 and 5 with the gold
 absent from the top 10 entirely.
 
-### The declared blind spot
+### Empty answerable sets
 
 `recall/eval/metrics.py` states its convention plainly: a rate with no data is NaN, because 0.0
 "would read as a PERFECT superseded-trust rate and a CATASTROPHIC accuracy at the same time" and
 NaN "forces publishers to render 'n/a' instead of a fake number".
 
-`_score_config` does not honour it. At `recall/eval/harness.py:167` four headline metrics use
-`mean(ps) if ps else 0.0`, so `p_at_5`, `r_at_5`, `mrr` and `ndcg_at_10` publish a fake `0.0` when a
-configuration has no answerable queries, while `fcr_with_guard` on the same return **is**
-NaN-on-empty via `false_confident_rate`. One return object, two conventions.
-
-It is latent rather than active: the shipped eval corpus has answerable queries, so the branch is
-not reached today.
-
-**Decision: declare it, do not fix it here.** The `no-answerable-queries` member pins the current
-`0.0` and names the inconsistency in its docstring. Changing the empty-case semantics of four
-published metrics is a real change to a published artifact's shape and deserves its own reviewed
-diff, not a quiet ride inside a test-only PR. The member is written so that whoever fixes it will
-see exactly which assertion to update and why.
+PR #337 originally recorded a blind spot: `_score_config` returned `0.0` for four ranking metrics
+on empty answerable sets. PR #338 resolved it in a separate reviewed change. `p_at_5`, `r_at_5`,
+`mrr` and `ndcg_at_10` now use `_mean_or_nan`, matching the NaN-on-empty convention already used
+by `fcr_with_guard`. The `no-answerable-queries` member asserts NaN for all four metrics, and
+`results_to_markdown` renders them as `n/a` through `_fmt_rate`.
 
 ## Surface B: `promotion/aggregate.py`
 
@@ -325,7 +317,7 @@ appear in the output rather than staying buried per member.
   aggregation step that silently computes something other than what its name claims, not that
   specific instance. Stating this plainly is better than implying we have vaccinated against the
   incident.
-- **`p_at_5`'s `0.0`-on-empty is pinned as current behaviour**, not asserted as correct.
+- **Empty answerable sets are covered:** all four ranking metrics must be NaN and render as `n/a`.
 
 ## Success criteria
 

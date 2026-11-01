@@ -1211,7 +1211,10 @@ def _quote_env(value: str) -> str:
     the existing backslash and quote escaping. Without this, a value carrying a raw newline broke
     out of its quoted line, and `recall/_env.py`'s line based parser read the continuation as an
     unrelated `KEY=VALUE` pair, letting a written value set a variable it never named.
+    Other separators recognised by `splitlines()` are refused before any file is written.
     """
+    if any(ch in value for ch in "\v\f\x1c\x1d\x1e\x85\u2028\u2029"):
+        raise ValueError("Setup values cannot contain an unsupported line separator")
     if value == "":
         return '""'
     if any(ch.isspace() for ch in value) or any(ch in value for ch in '#"'):
