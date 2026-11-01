@@ -68,3 +68,47 @@ def test_experiment_plan_is_serial_and_uses_isolated_names(tmp_path: Path) -> No
     assert plan["runtime_policy"]["gold_fields_used_at_runtime"] is False
     assert len(plan["arms"]) == 8
     assert len({(arm["table"], arm["tenant"]) for arm in plan["arms"]}) == 8
+
+
+@pytest.mark.parametrize("child_fails", [False, True])
+def test_experiment_keeps_dsn_out_of_output_and_failure_commands(
+    tmp_path, monkeypatch, capsys, child_fails,
+):
+    """SEC-001: both cases fail on d56661c71 at the output assertion.
+
+    The unchanged nodes run red before the argv repair and green afterward on the test host.
+    The fake child observes the actual command and environment at subprocess.run.
+    """
+    import subprocess
+    import sys
+    from scripts import enterprise_rag_experiment as experiment
+
+    questions, documents, ids = [tmp_path / name for name in ("q.jsonl", "d.zip", "ids")]
+    for path in (questions, documents, ids):
+        path.write_text("fixture", encoding="utf-8")
+    secret = "synthetic-experiment-password"
+    dsn = f"postgresql://tester:{secret}@localhost/fixture"
+    calls = []
+
+    def run(argv, check, **kwargs):
+        calls.append((argv, kwargs))
+        if child_fails:
+            raise subprocess.CalledProcessError(2, argv)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(experiment.subprocess, "run", run)
+    monkeypatch.setattr(sys, "argv", [
+        "experiment", "--questions", str(questions), "--documents", str(documents),
+        "--question-ids", str(ids), "--out-dir", str(tmp_path / "out"), "--dsn", dsn,
+        "--k", "5", "--candidate-k", "100", "--reranker", "none",
+    ])
+    error = None
+    try:
+        experiment.main()
+    except subprocess.CalledProcessError as exc:
+        error = exc
+    output = capsys.readouterr()
+    assert secret not in output.out + output.err + str(error)
+    assert "--dsn" not in calls[0][0]
+    assert calls[0][1]["env"]["RECALL_DSN"] == dsn
+    assert (error is not None) is child_fails

@@ -387,9 +387,9 @@ OPENROUTER_API_KEY=
 # anything loads, and a mismatch or a missing tree refuses startup. The BGE profiles read their
 # tree from RECALL_MODEL_CACHE, the Qwen profile from RECALL_QWEN_MODEL_PATH.
 #
-# HOSTED profiles, served by a provider's API. They take an API key and NOTHING else: there is no
-# artifact tree to point at and no bytes to hash, so RECALL_MODEL_CACHE and RECALL_MODEL_SHA256
-# are not merely optional here, they are refused.
+# HOSTED profiles, served by a provider's API. They require an API key rather than a local
+# artifact tree or digest. Environment adapters ignore RECALL_MODEL_CACHE and RECALL_MODEL_SHA256
+# for hosted profiles. Direct RegisteredProfile.build calls refuse explicit artifact arguments.
 #   voyage-code-3-v1, voyage-3-v1                      RECALL_EMBEDDER=voyage,     VOYAGE_API_KEY
 #   voyage-4-retrieval-v1, voyage-4-large-retrieval-v1, voyage-code-3-retrieval-v1
 #     The same RECALL_EMBEDDER=voyage selection, with Voyage's input_type sent ("query" for

@@ -257,7 +257,7 @@ def load_questions(
         )
         if selected_types and _text(row.get("question_type")).lower() not in selected_types:
             continue
-        if selected_ids and question.question_id not in selected_ids:
+        if question_ids is not None and question.question_id not in selected_ids:
             continue
         questions.append(question)
         if limit is not None and len(questions) >= limit:
@@ -680,6 +680,7 @@ def expand_retrieval_hits(
         }
 
     hits = list(initial_hits)
+    retrieval_runs: list[RetrievalDiagnostics] = []
     queries: list[str] = []
     fallback_reason: str | None = None
     model_metadata: dict[str, object] | None = None
@@ -701,7 +702,7 @@ def expand_retrieval_hits(
     )
 
     if arm in {"depth", "closed_loop"}:
-        _, depth_hits, depth_gap_warning = retrieve_docs(
+        _, depth_hits, depth_gap_warning, depth_diagnostics = retrieve_docs_with_diagnostics(
             store,
             embedder,
             question.question,
@@ -712,6 +713,7 @@ def expand_retrieval_hits(
             reranker=reranker,
             gap_threshold=gap_threshold,
         )
+        retrieval_runs.append(depth_diagnostics)
         hits = _merge_scored_hits(hits, depth_hits)
         passes = 2
         queries.append(question.question)
@@ -724,6 +726,7 @@ def expand_retrieval_hits(
             "queries": queries,
             "fallback_reason": None,
             "provider_skipped_reason": "depth_resolved",
+            "_retrieval_runs": retrieval_runs,
             "model": None,
         }
 
@@ -765,7 +768,7 @@ def expand_retrieval_hits(
                 for proposal in proposals:
                     if proposal.mode == "depth" and arm == "closed_loop":
                         continue
-                    _, proposal_hits, _ = retrieve_docs(
+                    _, proposal_hits, _, proposal_diagnostics = retrieve_docs_with_diagnostics(
                         store,
                         embedder,
                         proposal.query,
@@ -776,6 +779,7 @@ def expand_retrieval_hits(
                         reranker=reranker,
                         gap_threshold=gap_threshold,
                     )
+                    retrieval_runs.append(proposal_diagnostics)
                     hits = _merge_scored_hits(hits, proposal_hits)
                     queries.append(proposal.query)
                 passes += int(bool(proposals))
@@ -790,6 +794,7 @@ def expand_retrieval_hits(
         "queries": queries,
         "fallback_reason": fallback_reason,
         "model": model_metadata,
+        "_retrieval_runs": retrieval_runs,
     }
 
 
@@ -1096,7 +1101,7 @@ def _combine_retrieval_diagnostics(
     first: RetrievalDiagnostics,
     second: RetrievalDiagnostics,
 ) -> RetrievalDiagnostics:
-    """Combine the two retrieval passes used by selective depth."""
+    """Combine diagnostics from successive retrieval passes."""
 
     stage_ms: dict[str, float] = {}
     for diagnostics in (first, second):
@@ -1160,6 +1165,7 @@ def _answers(
                 reranker=reranker,
                 gap_threshold=gap_threshold,
             )
+            retrieval_runs = [retrieval_diagnostics]
             document_k, confidence_value, depth_expanded = adaptive_depth_choice(
                 hits,
                 base_k=k,
@@ -1179,10 +1185,7 @@ def _answers(
                     reranker=reranker,
                     gap_threshold=gap_threshold,
                 )
-                retrieval_diagnostics = _combine_retrieval_diagnostics(
-                    retrieval_diagnostics,
-                    expanded_diagnostics,
-                )
+                retrieval_runs.append(expanded_diagnostics)
             selected_document_ids = _doc_ids_from_hits(hits, k=document_k)
             reasoning_doc_ids, reasoning_hits, reasoning_diagnostics = expand_retrieval_hits(
                 question,
@@ -1200,6 +1203,11 @@ def _answers(
                 provider=expansion_provider,
                 expansion_cache=expansion_cache,
             )
+            retrieval_runs.extend(reasoning_diagnostics.pop("_retrieval_runs", []))
+            for diagnostics in retrieval_runs[1:]:
+                retrieval_diagnostics = _combine_retrieval_diagnostics(
+                    retrieval_diagnostics, diagnostics,
+                )
             if first_answer is None:
                 first_answer = (
                     reasoning_doc_ids,
@@ -1211,12 +1219,12 @@ def _answers(
                     retrieval_diagnostics,
                 )
             stage_ms = dict(retrieval_diagnostics.stage_ms)
-            retrieval_passes = 1 + int(depth_expanded)
+            retrieval_passes = len(retrieval_runs)
             calls = {
                 "embedding": retrieval_passes,
                 "lexical": retrieval_passes * int(sparse_backend in ("lexical", "both")),
                 "splade": retrieval_passes * int(sparse_backend in ("splade", "both")),
-                "reranker": retrieval_passes * int(retrieval_diagnostics.reranking_ran),
+                "reranker": sum(int(run.reranking_ran) for run in retrieval_runs),
             }
             capture_rows.append(
                 {
@@ -1356,7 +1364,7 @@ def adaptive_depth_choice(
         value = max(scores) if scores else None
     else:
         value = float(hits[7].score) if len(hits) >= 8 else None
-    expanded = value is not None and value < threshold
+    expanded = expanded_k > base_k and value is not None and value < threshold
     return (expanded_k if expanded else base_k), value, expanded
 
 
@@ -1948,7 +1956,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         )
     if args.adaptive_depth_threshold is not None and not 0.0 <= args.adaptive_depth_threshold <= 1.0:
         raise ValueError("--adaptive-depth-threshold must be between 0 and 1")
-    if args.adaptive_depth_k < args.k:
+    if args.adaptive_depth_feature is not None and args.adaptive_depth_k < args.k:
         raise ValueError("--adaptive-depth-k must be at least --k")
     reranker = build_reranker(
         args.reranker,
@@ -2089,6 +2097,14 @@ def main(argv: Iterable[str] | None = None) -> int:
                     per_stratum=args.calibrate_sample_per_stratum,
                     seed=args.calibrate_sample_seed,
                 )
+            # Gold labels belong to this evaluation branch, never the generation objects.
+            gold_rows = {
+                _required_text(row, "question_id", "id"): row for row in _json_rows(args.questions)
+            }
+            calibrate_questions = [
+                EnterpriseQuestion(q.question_id, q.question, gold_rows[q.question_id])
+                for q in calibrate_questions
+            ]
             calibration = retrieval_calibration(
                 calibrate_questions,
                 store,

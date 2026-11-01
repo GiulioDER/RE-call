@@ -359,6 +359,10 @@ class RegisteredProfile:
                 f"profile {self.profile_id!r} is local and needs both an artifact path and an "
                 "artifact digest"
             )
+        if self.hosted and env is not None and not api_key:
+            api_key = env.get(self.api_key_env)
+            if not api_key:
+                raise ValueError(f"profile {self.profile_id!r} requires {self.api_key_env}")
         identity = self.identity(
             artifact_digest=artifact_digest,
             dependencies=((self._dependency, _package_version(self._dependency)),),
@@ -661,8 +665,8 @@ _OPENROUTER = "https://openrouter.ai/api/v1"
 #: * **`normalization='l2'` is only true at gemini's NATIVE width.** `gemini-embedding-001`
 #:   returns a unit vector at 3072 but NOT at its Matryoshka widths: measured norm 0.694 at 1536
 #:   and 0.582 at 768. Truncated widths are therefore deliberately not registered, because the
-#:   profile would be declaring a normalization the provider does not apply, and cosine scores
-#:   against an abstention threshold calibrated on unit vectors would be quietly wrong.
+#:   profile would be declaring a normalization the provider does not apply. Positive rescaling
+#:   alone does not change cosine similarity.
 #: * **OpenRouter's `/v1/models` lists no embedding model at all** (412 models, zero matching
 #:   "embed" on 2026-08-18) while `/v1/embeddings` serves them regardless. So the catalogue
 #:   endpoint cannot be used to validate these ids, and an id absent from it is not evidence of
