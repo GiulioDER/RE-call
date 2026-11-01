@@ -742,6 +742,10 @@ def generate_llm(
     )
 
     payload = client.complete_json(system=_SYSTEM_PROMPT, user=user, schema=_SCHEMA)
+    for class_name in ("answerable", "unanswerable"):
+        items = payload.get(class_name)
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise QuerySetError(f"model output {class_name!r} must be an array of objects")
 
     corpus_words = _corpus_subject_words(chunks)
     entries: list[dict[str, Any]] = []

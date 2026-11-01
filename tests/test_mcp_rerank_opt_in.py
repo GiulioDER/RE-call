@@ -23,6 +23,29 @@ def test_no_reranker_unless_asked():
     assert resolve_reranker(env={"RECALL_RERANK": "false"}) is None
 
 
+@pytest.mark.parametrize("ambient", [None, "ambient-key"])
+def test_voyage_reranker_uses_the_settings_snapshot_key(monkeypatch, ambient):
+    """ENV-001: baseline 61b428432 either raises or retains the ambient key."""
+    from recall_mcp import factories
+
+    if ambient is None:
+        monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("VOYAGE_API_KEY", ambient)
+    monkeypatch.setattr("recall.rerank.CrossEncoderReranker", lambda **kw: object())
+    error = None
+    reranker = None
+    try:
+        reranker = factories._new_reranker({
+            "RECALL_RERANK": "1", "RECALL_RERANK_MODEL": "voyage",
+            "VOYAGE_API_KEY": "snapshot-key",
+        })
+    except Exception as exc:
+        error = exc
+    assert error is None, repr(error)
+    assert reranker.primary._api_key == "snapshot-key"
+
+
 def test_a_truthy_flag_selects_the_shipped_cross_encoder():
     """`ms-marco-MiniLM-L-6-v2` is the measured choice, not merely the incumbent:
     `bge-reranker-base` (12x the parameters) is statistically indistinguishable at 6.3x the

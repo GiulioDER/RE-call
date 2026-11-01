@@ -258,6 +258,47 @@ def test_the_deterministic_engine_answers_in_the_vocabulary_it_was_HANDED() -> N
     )
 
 
+@pytest.mark.parametrize("status", ["In Progress", "in-progress", "v2", "prêt", "Straße", "C++"])
+def test_deterministic_engine_matches_complete_custom_status_values(status) -> None:
+    """BUG-003: baseline 61b428432 truncates values to ASCII letters or picks In."""
+    from recall.truth_extraction._engine import DeterministicExtractionEngine
+    from recall.truth_extraction.extract import extract_file_claims
+
+    extraction = extract_file_claims(
+        file="memo.md", text=f"Status: {status}\n", corpus_names=("memo.md",),
+        engine=DeterministicExtractionEngine(), status_vocabulary=("In", status, "Done"),
+    )
+    assert extraction.batch_rejection is None
+    assert [claim.value for claim in extraction.claims] == [status]
+
+
+def test_deterministic_status_does_not_match_a_longer_hyphenated_value() -> None:
+    """BUG-003: baseline 61b428432 wrongly extracts active from active-ish."""
+    from recall.truth_extraction._engine import DeterministicExtractionEngine
+    from recall.truth_extraction.extract import extract_file_claims
+
+    extraction = extract_file_claims(
+        file="memo.md", text="Status: active-ish\n", corpus_names=("memo.md",),
+        engine=DeterministicExtractionEngine(), status_vocabulary=("active",),
+    )
+    assert not extraction.claims
+
+
+def test_deterministic_status_preserves_unicode_casefold_equivalence() -> None:
+    """BUG-003: the first literal-regex repair drops STRASSE for vocabulary Straße.
+
+    Red proof uses that production mutation; the original ASCII scanner handled STRASSE.
+    """
+    from recall.truth_extraction._engine import DeterministicExtractionEngine
+    from recall.truth_extraction.extract import extract_file_claims
+
+    extraction = extract_file_claims(
+        file="memo.md", text="Straße notes. Status: STRASSE\n", corpus_names=("memo.md",),
+        engine=DeterministicExtractionEngine(), status_vocabulary=("Straße", "Done"),
+    )
+    assert [claim.value for claim in extraction.claims] == ["Straße"]
+
+
 def test_a_reordered_vocabulary_is_a_different_prompt_and_a_different_key() -> None:
     """The ordering claim, made falsifiable.
 

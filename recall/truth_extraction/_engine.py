@@ -32,9 +32,8 @@ from recall.truth_extraction._prompt import ExtractionPrompt
 
 DETERMINISTIC_EXTRACTION_ENGINE_ID = "recall.truth_extraction.deterministic"
 DETERMINISTIC_EXTRACTION_MODEL_ID = "rules"
-#: v2 (2026-10-21): a negated or conditional supersession cue is no longer a claim
-#: (`recall.supersession_cues`). The extraction cache keys on this, so v1 answers are not reused.
-DETERMINISTIC_EXTRACTION_REVISION = "truth-extraction-rules-v2"
+#: v3: match complete custom status values. The cache must not reuse earlier omissions.
+DETERMINISTIC_EXTRACTION_REVISION = "truth-extraction-rules-v3"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"", "0", "false", "no", "off"})
@@ -58,7 +57,7 @@ _VALID_UNTIL_RE = re.compile(
 #: Not anchored to the line start: memos write `Status: deprecated` mid sentence as often as
 #: on its own line. The closed vocabulary does the filtering an anchor would have done, and it
 #: does it on the value rather than on the layout.
-_STATUS_RE = re.compile(r"\bstatus\s*[:=]\s*(?P<value>[A-Za-z]+)", re.IGNORECASE)
+_STATUS_RE = re.compile(r"\bstatus\s*[:=]\s*", re.IGNORECASE)
 _IDENTITY_RE = re.compile(
     r"(?P<entity>[A-Z][\w .'\-]{2,60}?)\s*\("
     r"(?:formerly|previously|f/k/a|also known as|aka)\s+(?:the\s+)?(?P<alias>[^)\n]{2,60})\)",
@@ -119,7 +118,13 @@ class DeterministicExtractionEngine:
         # it. The two arms would also have been measured against different vocabularies while
         # the report recorded one.
         vocabulary = {str(word).casefold(): str(word) for word in prompt.status_vocabulary}
-        for match in _STATUS_RE.finditer(body):
+        status_values = set(vocabulary) | set(vocabulary.values())
+        status_pattern = re.compile(
+            _STATUS_RE.pattern + r"(?P<value>"
+            + "|".join(re.escape(word) for word in sorted(status_values, key=len, reverse=True))
+            + r")(?![\w-])", re.IGNORECASE,
+        )
+        for match in status_pattern.finditer(body):
             value = vocabulary.get(match.group("value").casefold())
             if value is not None:
                 claims.append(

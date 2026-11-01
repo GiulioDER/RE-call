@@ -848,6 +848,8 @@ def head_commit(path: str | Path) -> str | None:
     """
     import subprocess
 
+    path = Path(path)
+    path = path.parent if path.is_file() else path
     try:
         out = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],

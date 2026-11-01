@@ -733,6 +733,7 @@ class GenerationManager:
         context_group_fingerprint: str | None = None,
         require_code_anchor_repo: bool = False,
         code_anchor_repo: str | None = None,
+        provenance: dict | None = None,
     ) -> int:
         source = conn.execute(
             "SELECT c.generation_id FROM recall_chunks_v1 c "
@@ -793,7 +794,7 @@ class GenerationManager:
             # Restamped with the current rule: a chunk set reused under an earlier rule that the
             # change could not reach is what this rule derives, and a later narrowed bump must
             # see it as such.
-            "text, metadata || jsonb_build_object('reused_from_generation', generation_id, "
+            "text, metadata || %s::jsonb || jsonb_build_object('reused_from_generation', generation_id, "
             "%s::text, %s::text), "
             "embedding, clock_timestamp(), COALESCE(first_indexed_at, indexed_at), tsv "
             "FROM recall_chunks_v1 "
@@ -801,6 +802,7 @@ class GenerationManager:
             (
                 generation_id,
                 object_version_id,
+                Jsonb(provenance or {}),
                 _METADATA_RULE_VERSION_KEY,
                 _METADATA_RULE_VERSION,
                 self.tenant_id,
@@ -1474,6 +1476,7 @@ class GenerationManager:
                             ),
                             require_code_anchor_repo=anchored_python,
                             code_anchor_repo=(provenance or {}).get("project"),
+                            provenance=provenance,
                         )
                     if reused:
                         reused_objects += 1

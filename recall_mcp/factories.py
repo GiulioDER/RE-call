@@ -374,7 +374,7 @@ def _new_reranker(
         from recall.rerank import FallbackReranker, reranker_from_name
 
         return FallbackReranker(
-            primary=reranker_from_name(model),
+            primary=reranker_from_name(model, api_key=values.get("VOYAGE_API_KEY")),
             fallback=CrossEncoderReranker(
                 model=DEFAULT_RERANKER_MODEL, revision=DEFAULT_RERANKER_REVISION
             ),
