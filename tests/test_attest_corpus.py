@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -240,3 +241,51 @@ def test_table_name_must_be_a_plain_identifier(bad: str) -> None:
 def test_table_name_accepts_the_real_tables() -> None:
     for good in ("chunks", "recall_chunks_v1", "cal_ab12"):
         assert attest._safe_table(good) == good
+
+
+@pytest.mark.parametrize("command", ["chunker", "census"])
+def test_undecodable_sources_are_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, command: str,
+) -> None:
+    """BUG-001: red on 23cccfbcb at the error assertion in main/run_census."""
+    (tmp_path / "binary.pdf").write_bytes(b"%PDF\xff")
+    (tmp_path / "broken.md").write_bytes(b"\xff")
+    (tmp_path / "valid.md").write_text("one paragraph", encoding="utf-8")
+    monkeypatch.setattr(attest, "fetch_chunks_by_source", lambda *args: {
+        "binary.pdf": ["binary"], "broken.md": ["broken"], "valid.md": ["one paragraph"],
+    })
+    monkeypatch.setattr(attest, "fetch_sources", lambda *args: [("broken.md", "a" * 64)])
+    error = None
+    try:
+        attest.main([command, "--dsn", "unused", "--tenant", "example", "--root", str(tmp_path)])
+    except UnicodeError as exc:
+        error = type(exc).__name__
+    assert error is None, f"undecodable source escaped the report: {error}"
+    report = json.loads(capsys.readouterr().out)
+    if command == "chunker":
+        assert report["out_of_scope_non_markdown"] == 1
+        assert report["skipped_unreadable"] == 1
+        assert report["sources"] == 1
+    else:
+        assert report["unreadable"] == report["total"] == 1
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+@pytest.mark.parametrize("where", ["stored", "fresh", "bar"])
+def test_embedder_attestation_refuses_nonfinite_values(bad: float, where: str) -> None:
+    """NUM-001: red on 23cccfbcb because attest_embedder does not refuse invalid inputs."""
+    stored = [bad, 0.0] if where == "stored" else [1.0, 0.0]
+    fresh = [bad, 0.0] if where == "fresh" else [1.0, 0.0]
+    with pytest.raises(ValueError, match="finite"):
+        attest.attest_embedder(
+            [("sample", stored)], lambda texts: [fresh], bar=bad if where == "bar" else 0.9999,
+        )
+
+
+@pytest.mark.parametrize("stored,fresh", [
+    ([1.0, 0.0], [1.0, 0.0, 0.0]), ([1.0, 0.0, 0.0], [1.0, 0.0]), ([], []),
+])
+def test_embedder_attestation_refuses_wrong_vector_width(stored, fresh) -> None:
+    """NUM-002: red on 23cccfbcb because truncated or empty vectors are accepted."""
+    with pytest.raises(ValueError, match="dimension"):
+        attest.attest_embedder([("sample", stored)], lambda texts: [fresh])

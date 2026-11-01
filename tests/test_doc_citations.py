@@ -52,6 +52,54 @@ def test_a_line_before_every_hunk_does_not_move() -> None:
     assert citations.resolve(5, [(10, 0, 10, 26)]) == 5
 
 
+def test_insertion_immediately_after_cited_line_does_not_move_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BUG-002: red on 23cccfbcb, resolve maps unchanged boundary line 10 to 13."""
+    _repo_with_docs(tmp_path, 1)
+    source = tmp_path / "recall/thing.py"
+    lines = [f"line{i}\n" for i in range(1, 16)]
+    source.write_text("".join(lines), encoding="utf-8")
+    _commit(tmp_path, "source", "recall/thing.py")
+    monkeypatch.setattr(citations, "REPO", tmp_path)
+    source.write_text("".join(lines[:10] + ["new\n"] * 3 + lines[10:]), encoding="utf-8")
+    raw = citations.line_map("recall/thing.py", "HEAD")
+    assert raw is not None
+    assert citations.resolve(10, raw["hunks"]) == 10
+    assert citations.resolve(11, raw["hunks"]) == 14
+
+
+@pytest.mark.parametrize("change", ["edit", "insert", "delete", "past-eof"])
+def test_range_checks_its_interior_and_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    """BUG-003: red on 23cccfbcb, check_one returns no finding for each invalid range."""
+    _repo_with_docs(tmp_path, 1)
+    source = tmp_path / "recall/thing.py"
+    lines = [f"line{i}\n" for i in range(1, 16)]
+    source.write_text("".join(lines), encoding="utf-8")
+    _commit(tmp_path, "source", "recall/thing.py")
+    monkeypatch.setattr(citations, "REPO", tmp_path)
+    valid = citations.CITATION.search("`recall/thing.py:2-10`")
+    assert valid is not None
+    assert citations.check_one("docs/d0.md", 1, valid, "HEAD", {}) == []
+    if change == "edit":
+        lines[4] = "edited\n"
+    elif change == "insert":
+        lines[4:4] = ["new\n"]
+    elif change == "delete":
+        del lines[4]
+    source.write_text("".join(lines), encoding="utf-8")
+    match = citations.CITATION.search(
+        "`recall/thing.py:2-20`" if change == "past-eof" else "`recall/thing.py:2-10`"
+    )
+    assert match is not None
+    findings = citations.check_one("docs/d0.md", 1, match, "HEAD", {})
+    assert findings, f"range change was ignored: {change}"
+    if change == "insert":
+        assert "recall/thing.py:2-11" in findings[0].detail
+
+
 def test_an_insertion_above_pushes_a_line_down() -> None:
     """The measured case: #381 inserted 26 lines and every citation below moved by 26."""
     assert citations.resolve(671, [(430, 0, 430, 26)]) == 697

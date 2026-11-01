@@ -16,14 +16,13 @@ store and the filesystem. What is genuinely absent, and what this adds:
   ran (chunk metadata has no chunker field, and `_index_fingerprint` carries only an inert
   `chunker_version` belonging to the embedding profile).
 
-Three subcommands, matching the three checks the design specifies:
+Two CLI subcommands:
 
     census    every source's stored content_hash against the bytes on disk now
     chunker   which chunker configuration reproduces the stored chunks exactly
-    embedder  re-embed a sample and compare cosine against the stored vectors
 
-`census` and `chunker` need no model and no network. `embedder` needs the embedder that built the
-corpus.
+`census` and `chunker` need no model and no network. Embedder attestation is available through the
+importable `attest_embedder` function, using the embedder that built the corpus.
 
 ⛔ **The candidate set for `chunker` is fixed and must not be widened to make something fit.** A
 search that keeps broadening always succeeds, and what it finds is a configuration that never ran.
@@ -107,7 +106,7 @@ def run_census(rows: Iterable[tuple[str, str]], root: Path) -> Census:
         except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
             census.missing.append(rel)
             continue
-        except OSError:
+        except (OSError, UnicodeError):
             census.unreadable.append(rel)
             continue
         (census.verified if fresh == stored else census.changed).append(rel)
@@ -163,10 +162,17 @@ def identify_chunker(
 
 
 def cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    if not a or len(a) != len(b):
+        raise ValueError("vectors must have equal, nonempty dimensions")
+    if any(not math.isfinite(value) for vector in (a, b) for value in vector):
+        raise ValueError("vector coordinates must be finite")
     num = sum(x * y for x, y in zip(a, b))
     na = math.sqrt(sum(x * x for x in a))
     nb = math.sqrt(sum(y * y for y in b))
-    return num / (na * nb) if na and nb else 0.0
+    result = num / (na * nb) if na and nb else 0.0
+    if not math.isfinite(result):
+        raise ValueError("cosine must be finite")
+    return result
 
 
 def sample_size_for(smallest_fraction: float, confidence: float = 0.95) -> int:
@@ -193,6 +199,8 @@ def attest_embedder(
     chunk i+1's fresh one. Without it, a comparison stuck on 1.0 is indistinguishable from a
     pipeline confirmed.
     """
+    if not math.isfinite(bar):
+        raise ValueError("attestation threshold must be finite")
     pairs = list(samples)
     if not pairs:
         return {"n": 0, "verdict": "no_samples"}
@@ -271,9 +279,12 @@ def main(argv: list[str] | None = None) -> int:
         sources = []
         skipped = 0
         for rel, chunks in sorted(stored.items()):
+            if Path(rel).suffix.lower() not in MARKDOWN_SUFFIXES:
+                sources.append((rel, "", chunks))
+                continue
             try:
                 raw = (root / rel).read_text(encoding="utf-8-sig")
-            except OSError:
+            except (OSError, UnicodeError):
                 skipped += 1
                 continue
             sources.append((rel, raw, chunks))

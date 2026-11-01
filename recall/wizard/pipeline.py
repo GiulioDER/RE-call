@@ -39,6 +39,7 @@ variable unnecessary for a wizard driving three corpora in one process.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -256,8 +257,9 @@ def _degraded_reason(
             "content and re-run, or promote this generation deliberately to serve it uncertified."
         )
     return (
-        f"{lead}{serving} It still holds a full copy of the corpus, which `recall generation "
-        f"abandon {generation_id}` releases for `recall generation gc`."
+        f"{lead}{serving} It still holds a full copy of the corpus, which `recall --tenant "
+        f"{shlex.quote(spec.tenant)} generation abandon {generation_id}` releases for "
+        f"`recall --tenant {shlex.quote(spec.tenant)} generation gc`."
     )
 
 
@@ -389,8 +391,8 @@ def run_corpus(
         _fail("validate/calibrate", exc)
         raise
 
-    announce("publish")
     try:
+        announce("publish")
         calibrations.publish(artifact.calibration_id)
         certified = True
         steps.append("publish")
@@ -399,6 +401,9 @@ def run_corpus(
         # `publish` raises rather than returning an uncertified artifact, which is why the earlier
         # version of this module never reached its own degraded branch against the real repository.
         certified = False
+    except BaseException as exc:
+        _fail("publish", exc)
+        raise
 
     # Read BEFORE promoting, because promoting is what replaces it. Its absence is the whole
     # difference between a degraded upgrade and a degraded first install, and only one of those is
@@ -407,10 +412,13 @@ def run_corpus(
         previously_serving: str | None = manager.active_generation_id()
     except NoActiveGeneration:
         previously_serving = None
+    except BaseException as exc:
+        _fail("active generation lookup", exc)
+        raise
 
     if certified:
-        announce("promote")
         try:
+            announce("promote")
             # ⚠️ The flag is a DEVELOPMENT requirement and a refusal wherever certification is
             # required, so it cannot be passed unconditionally. `certification_required` is the one
             # switch both sides read, so this cannot disagree with what `promote` will do.

@@ -483,6 +483,67 @@ def test_a_certified_corpus_reports_no_degradation(tmp_path: Path) -> None:
     assert outcome.degraded_reason is None
 
 
+@pytest.mark.parametrize("failure", ["publish", "active", "publish-progress", "promote-progress"])
+def test_post_calibration_failure_reclaims_ready_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    """BUG-004: red on 23cccfbcb, run_corpus leaves READY outside GC after these errors."""
+    from recall.wizard.pipeline import run_corpus
+
+    recorder = _Recorder()
+    manager = _FakeManager(recorder)
+    calibrations = _FakeCalibrations(recorder)
+    original = RuntimeError(failure)
+
+    def fail(*args):
+        raise original
+
+    def progress(step):
+        if failure == f"{step}-progress":
+            raise original
+
+    if failure == "publish":
+        monkeypatch.setattr(calibrations, "publish", fail)
+    elif failure == "active":
+        monkeypatch.setattr(manager, "active_generation_id", fail)
+    with pytest.raises(RuntimeError) as caught:
+        run_corpus(
+            docs_corpus(_corpus(tmp_path, files=45)), manager=manager,
+            calibrations=calibrations, embedder=_FakeEmbedder(),
+            corpus_version="2026-01-01", progress=progress,
+        )
+    assert caught.value is original
+    assert manager.abandoned, "READY generation must be reclaimed after the failed phase"
+    assert "promote" not in recorder.calls
+
+
+@pytest.mark.parametrize("tenant", ["default-docs", "team docs; example"])
+def test_degraded_reclaim_advice_targets_corpus_tenant(tmp_path: Path, tenant: str) -> None:
+    """DOC-001: red on 23cccfbcb, recovery commands omit the generation's tenant.
+
+    Intentional uncertified outcomes must retain their named READY evidence.
+    """
+    import shlex
+    from dataclasses import replace
+
+    from recall.wizard.pipeline import run_corpus
+
+    recorder = _Recorder()
+    manager = _FakeManager(recorder, tenant_id=tenant)
+    spec = replace(docs_corpus(_corpus(tmp_path, files=45)), tenant=tenant)
+    outcome = run_corpus(
+        spec, manager=manager, calibrations=_FakeCalibrations(recorder, certified=False),
+        embedder=_FakeEmbedder(), corpus_version="2026-01-01",
+    )
+    assert manager.state == "ready" and manager.abandoned == []
+    assert outcome.degraded_reason is not None
+    commands = [part for part in outcome.degraded_reason.split("`")[1::2] if part.startswith("recall ")]
+    assert [shlex.split(command) for command in commands] == [
+        ["recall", "--tenant", tenant, "generation", "abandon", outcome.generation_id],
+        ["recall", "--tenant", tenant, "generation", "gc"],
+    ]
+
+
 # ----------------------------------------------------------------------------------------------
 # What the pipeline must refuse to be handed
 # ----------------------------------------------------------------------------------------------

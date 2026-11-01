@@ -39,12 +39,13 @@ minutes into the first build.
 from __future__ import annotations
 
 import json
+import os
 import textwrap
 from collections.abc import Callable
 from dataclasses import MISSING, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Protocol
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from recall.calibration_v2 import CalibrationRepository
 from recall.embeddings import Embedder, resolve_embedder
@@ -770,7 +771,8 @@ class _RealServices:
 def _database_identity(dsn: str) -> tuple[str, int | None, str]:
     """Host, port and database name — what decides whether two DSNs reach the same database."""
     parts = urlsplit(dsn)
-    return (parts.hostname or "", parts.port, parts.path)
+    port = parse_qs(parts.query).get("port", [""])[-1] or parts.port or os.environ.get("PGPORT") or "5432"
+    return (parts.hostname or "", int(port), parts.path)
 
 
 def load_config(path: str | Path) -> HeadlessConfig:

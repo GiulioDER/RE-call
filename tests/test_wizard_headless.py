@@ -239,6 +239,46 @@ def test_the_migration_dsn_defaults_to_the_serving_one(tmp_path: Path) -> None:
     assert config.resolved_migration_dsn == config.resolved_dsn
 
 
+@pytest.mark.parametrize("port_source", ["default", "environment", "query"])
+def test_equivalent_default_ports_reach_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, port_source: str,
+) -> None:
+    """ENV-001: red on 23cccfbcb, equivalent port spellings fail before apply_schema."""
+    from recall.wizard.headless import run_headless
+
+    monkeypatch.delenv("PGPORT", raising=False)
+    port = 5432 if port_source == "default" else 5544
+    if port_source == "environment":
+        monkeypatch.setenv("PGPORT", str(port))
+    base = "postgresql://recall:recall@127.0.0.1"
+    serving = f"{base}/recall" + (f"?port={port}" if port_source == "query" else "")
+    payload = _config(tmp_path, dsn=serving, migration_dsn=f"{base}:{port}/recall")
+    spy = _Spy()
+    error = None
+    try:
+        run_headless(load_config(_write(tmp_path, payload)), services=spy)
+    except ConfigRefusal as exc:
+        error = exc.keys
+    assert error is None, f"equivalent database ports were refused: {error}"
+    assert spy.schema_dsns == [payload["migration_dsn"]]
+
+
+def test_different_effective_ports_are_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ENV-001 control: port normalization must retain the cross-database guard."""
+    from recall.wizard.headless import run_headless
+
+    monkeypatch.setenv("PGPORT", "5544")
+    payload = _config(
+        tmp_path, dsn="postgresql://recall:recall@127.0.0.1/recall",
+        migration_dsn="postgresql://recall:recall@127.0.0.1:5432/recall",
+    )
+    spy = _Spy()
+    with pytest.raises(ConfigRefusal) as caught:
+        run_headless(load_config(_write(tmp_path, payload)), services=spy)
+    assert caught.value.keys == ("dsn", "migration_dsn")
+    assert spy.schema_dsns == []
+
+
 def test_an_unknown_key_is_refused_rather_than_discarded(tmp_path: Path) -> None:
     """A typo silently did nothing, so a config that looked applied was not."""
     with pytest.raises(ConfigRefusal) as caught:
