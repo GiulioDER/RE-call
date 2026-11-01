@@ -13,9 +13,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   policy, instead of `DEPENDENCY_GRAPH_NOT_READY`. A generation with no projection is still
   `DEPENDENCY_GRAPH_NOT_READY`. Automation that retried on the second code for an outage should
   retry on the first.
-- `RECALL_TRUST_MODE=development` under `RECALL_ENV=production` is now refused when the MCP server
-  or a `recall` command starts, as is an unknown `RECALL_DEPENDENCY_INVALIDATION` value; both
-  used to surface on the first search, or not at all.
+- `RECALL_TRUST_MODE=development` under `RECALL_ENV=production` now logs a warning naming both
+  variables when the policy is resolved (at MCP server startup, and on a `recall` search); the
+  relaxed gate is still honoured. An unknown `RECALL_DEPENDENCY_INVALIDATION` value is now refused
+  when the MCP server or a `recall` command starts, instead of on the first search.
 
 - Upgrade note for calibration fitting (#1106): when rounding the midpoint down to the 0.001 grid
   would land on or below the unanswerable ceiling (a clean gap under about 0.002), the fitted

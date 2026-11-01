@@ -1,6 +1,6 @@
 """Regression tests for the owner's 2026-11-01 decisions on the trust hunt residue.
 
-ENV-002 (development refused under production), ENV-105 (the dependency mode validated at
+ENV-002 (development under production warned about), ENV-105 (the dependency mode validated at
 startup), the trust gate's non-finite dense score, and DOC-003 (a projection read that raises is
 an outage). No database and no network: stores and the retriever are fakes, as in
 `tests/test_trust_hunt_fixes.py`.
@@ -44,61 +44,63 @@ def _clear_trust_env(monkeypatch) -> None:
 # ENV-002
 
 
-def test_development_is_refused_under_production():
-    """`TrustPolicy.from_env` refuses development when RECALL_ENV is production, naming both.
+def _production_warnings(caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "recall.trust_policy" and "RECALL_ENV=production" in record.getMessage()
+    ]
 
-    Red proof: against the pre-fix `TrustPolicy.from_env` (recall/trust_policy.py, no production
-    check), the call returns a development policy and `pytest.raises` fails with "DID NOT RAISE".
+
+def test_development_under_production_is_warned_about_and_still_honoured(caplog):
+    """`TrustPolicy.from_env` warns, naming both variables, for the pair and for neither alone.
+
+    The owner chose warn only (2026-11-01): `recall setup` writes the pair on purpose, because
+    `RECALL_ENV=production` also selects `GenerationStore`. Red proof: against the pre-fix
+    `TrustPolicy.from_env` (recall/trust_policy.py, no production check at all), nothing is logged
+    for the pair and the first assertion fails (`[] == 1` warnings).
     """
+    import logging
+
     from recall.trust_policy import TrustMode, TrustPolicy
 
-    with pytest.raises(ValueError, match="RECALL_TRUST_MODE.*RECALL_ENV"):
-        TrustPolicy.from_env(dict(DEV_UNDER_PRODUCTION))
+    with caplog.at_level(logging.WARNING, logger="recall.trust_policy"):
+        policy = TrustPolicy.from_env(dict(DEV_UNDER_PRODUCTION))
+    warnings = _production_warnings(caplog)
+    assert len(warnings) == 1
+    assert "RECALL_TRUST_MODE=development" in warnings[0]
+    # No behaviour change: the relaxed gate is still what the operator gets.
+    assert policy.mode is TrustMode.DEVELOPMENT
+
     # Padded the way `env_is_production` normalises it, as a systemd EnvironmentFile pads it.
-    with pytest.raises(ValueError):
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="recall.trust_policy"):
         TrustPolicy.from_env({"RECALL_TRUST_MODE": " Development ", "RECALL_ENV": "Production "})
-    # Controls: development outside production, and strict in production, both still resolve.
-    assert TrustPolicy.from_env({"RECALL_TRUST_MODE": "development"}).mode is TrustMode.DEVELOPMENT
-    assert TrustPolicy.from_env({"RECALL_ENV": "production"}).strict is True
-    assert TrustPolicy.from_env({"RECALL_TRUST_MODE": "strict", "RECALL_ENV": "production"}).strict
+    assert len(_production_warnings(caplog)) == 1
+
+    # Controls: either variable alone, and strict in production, log nothing.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="recall.trust_policy"):
+        assert TrustPolicy.from_env({"RECALL_TRUST_MODE": "development"}).strict is False
+        assert TrustPolicy.from_env({"RECALL_ENV": "production"}).strict is True
+        assert TrustPolicy.from_env({"RECALL_TRUST_MODE": "strict", "RECALL_ENV": "production"}).strict
+    assert not caplog.records
 
 
-def test_the_server_refuses_development_under_production_at_startup():
-    """The MCP settings snapshot, built once at server start, refuses the combination.
+def test_the_server_warns_about_development_under_production_at_startup(caplog):
+    """The MCP settings snapshot, built once at server start, warns and keeps the relaxed policy.
 
-    Red proof: against pre-fix `TrustPolicy.from_env`, `Settings.from_env` builds a snapshot with
-    a development policy and `pytest.raises` fails with "DID NOT RAISE".
+    Red proof: against pre-fix `TrustPolicy.from_env`, `Settings.from_env` logs nothing for the
+    pair and the first assertion fails (`[] == 1` warnings).
     """
+    import logging
+
     from recall_mcp.settings import Settings
 
-    with pytest.raises(ValueError, match="RECALL_TRUST_MODE"):
-        Settings.from_env(dict(DEV_UNDER_PRODUCTION))
-    assert Settings.from_env({"RECALL_TRUST_MODE": "development"}).trust_policy.strict is False
-
-
-def test_the_cli_refuses_development_under_production_before_the_command_runs(
-    monkeypatch, capsys
-):
-    """A `recall` command that never searches still refuses, so the refusal is at startup.
-
-    `schema grants` opens nothing and prints SQL, so before the fix no code path read the trust
-    mode at all. Red proof: against the pre-fix `_main` (recall/cli.py, no `validate_trust_env`
-    call), the command prints its SQL and returns, and `pytest.raises(SystemExit)` fails with
-    "DID NOT RAISE".
-    """
-    from recall import cli
-
-    _clear_trust_env(monkeypatch)
-    for name, value in DEV_UNDER_PRODUCTION.items():
-        monkeypatch.setenv(name, value)
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main(["schema", "grants", "--role", "recall_app"])
-    assert "RECALL_TRUST_MODE=development is refused" in str(excinfo.value.code)
-    assert capsys.readouterr().out == ""
-    # Control: the same command under development alone runs and prints its grants.
-    monkeypatch.delenv("RECALL_ENV")
-    cli.main(["schema", "grants", "--role", "recall_app"])
-    assert "recall_app" in capsys.readouterr().out
+    with caplog.at_level(logging.WARNING, logger="recall.trust_policy"):
+        settings = Settings.from_env(dict(DEV_UNDER_PRODUCTION))
+    assert len(_production_warnings(caplog)) == 1
+    assert settings.trust_policy.strict is False
 
 
 # ENV-105

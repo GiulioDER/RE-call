@@ -206,8 +206,10 @@ class TrustPolicy:
         distinction is worth stating precisely rather than strictly, because someone will read this
         to decide whether their configuration is safe.
 
-        Raises ValueError when development is asked for under `RECALL_ENV=production`: a relaxed
-        gate never errors, so in production it would stamp `degraded` on every answer unseen.
+        Development under `RECALL_ENV=production` is honoured but warned about: a relaxed gate never
+        errors, so in production it would stamp `degraded` on every answer unseen. It is not refused,
+        because `RECALL_ENV=production` is also the switch that selects `GenerationStore`, and
+        `recall setup` writes the pair on purpose for a tenant served by an earlier generation.
         """
         import os
 
@@ -216,9 +218,9 @@ class TrustPolicy:
         source = os.environ if env is None else env
         raw = str(source.get("RECALL_TRUST_MODE", "")).strip().lower()
         if raw == TrustMode.DEVELOPMENT.value and env_is_production(env):
-            raise ValueError(
-                "RECALL_TRUST_MODE=development is refused when RECALL_ENV=production; unset "
-                "RECALL_TRUST_MODE (strict is the default) or RECALL_ENV"
+            logging.getLogger("recall.trust_policy").warning(
+                "RECALL_TRUST_MODE=development under RECALL_ENV=production: the trust gate is "
+                "relaxed, so uncertified answers are served as degraded"
             )
         if raw not in {"", *TrustMode}:
             # Still strict, but said: otherwise every search refuses and nothing tells the
@@ -246,11 +248,6 @@ def dependency_mode_from_env(env: Mapping[str, str]) -> str:
         raise ValueError("RECALL_DEPENDENCY_INVALIDATION must be 'off' or 'enforce'")
     return mode
 
-
-def validate_trust_env(env: Mapping[str, str]) -> None:
-    """Refuse a trust configuration at startup that every search would otherwise refuse later."""
-    TrustPolicy.from_env(dict(env))
-    dependency_mode_from_env(env)
 
 
 class TrustRefusal(RecallError):
