@@ -375,6 +375,13 @@ class RetrievalExpansionTrace:
     provider_skipped_reason: str | None = None
 
 
+def validate_expansion_binding(initial: TrustedResult, expanded: TrustedResult) -> None:
+    """Reject expansion evidence whose actual lineage differs from the initial retrieval."""
+    for name in ("tenant_id", "generation_id", "pipeline_fingerprint", "corpus_fingerprint"):
+        if getattr(expanded, name) != getattr(initial, name):
+            raise ValueError(f"expanded retrieval {name} does not match initial retrieval")
+
+
 def merge_trusted_results(
     initial: TrustedResult,
     expanded: Sequence[TrustedResult],

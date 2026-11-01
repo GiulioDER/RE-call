@@ -19,14 +19,14 @@ Cross package edges: 374
 | 197 | `recall_mcp.codex_server` |
 | 196 | `recall_mcp.server` |
 | 179 | `recall_mcp.service` |
-| 174 | `recall.cli_commands.setup_wizard` |
-| 169 | `recall.desktop.main` |
+| 175 | `recall.cli_commands.setup_wizard` |
+| 170 | `recall.desktop.main` |
 | 164 | `recall.cli_commands.reasoning_cmd` |
 | 163 | `recall.cli_commands.dashboard_cmd` |
 | 162 | `recall.dashboard.server` |
 | 161 | `recall.desktop.install_ui` |
+| 160 | `recall.desktop.ui` |
 | 160 | `recall_mcp.reasoning_api` |
-| 159 | `recall.desktop.ui` |
 | 156 | `recall.cli_commands.doctor_cmd` |
 | 156 | `recall.wizard.headless` |
 | 156 | `recall.wizard.state` |
@@ -92,6 +92,7 @@ Cross package edges: 374
 | 13 | `recall_mcp.desktop_ingest` |
 | 13 | `recall_mcp.reasoning_api` |
 | 12 | `recall.cli_commands.extract_rewrite` |
+| 12 | `recall.desktop.ui` |
 | 12 | `recall.doctor` |
 | 12 | `recall.eval.harness` |
 | 12 | `recall.setup` |
@@ -99,7 +100,6 @@ Cross package edges: 374
 | 12 | `recall.store` |
 | 12 | `recall_agent.memory` |
 | 12 | `recall_mcp.assistant` |
-| 11 | `recall.cli_commands.generation_cmd` |
 
 ## Cross package edges
 
@@ -529,7 +529,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.records_cmd` | 9 | 117 |
 | `recall.cli_commands.schema_cmd` | 2 | 116 |
 | `recall.cli_commands.secret_cmd` | 1 | 4 |
-| `recall.cli_commands.setup_wizard` | 16 | 174 |
+| `recall.cli_commands.setup_wizard` | 16 | 175 |
 | `recall.codex` | 1 | 1 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 14 |
@@ -556,12 +556,12 @@ They are observations, not automatic failures.
 | `recall.desktop.github` | 3 | 5 |
 | `recall.desktop.install_ui` | 7 | 161 |
 | `recall.desktop.jobs` | 0 | 0 |
-| `recall.desktop.main` | 8 | 169 |
+| `recall.desktop.main` | 8 | 170 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
 | `recall.desktop.runtime` | 5 | 42 |
 | `recall.desktop.sources` | 2 | 4 |
-| `recall.desktop.ui` | 11 | 159 |
+| `recall.desktop.ui` | 12 | 160 |
 | `recall.desktop.updates` | 2 | 2 |
 | `recall.desktop.uploads` | 3 | 17 |
 | `recall.doctor` | 12 | 155 |

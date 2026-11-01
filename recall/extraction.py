@@ -144,7 +144,8 @@ MAX_EPUB_TOTAL_BYTES = MAX_EXTRACTED_CHARACTERS * 4
 #: v2 (2026-10-31): `numeric_values` reads thousands grouping (`1,500` is `1500`, not `1.500`).
 #: Bumped because that list is persisted in chunk metadata, so an unchanged file must be
 #: re-extracted, and this value is in every file fingerprint and the generation chunker identity.
-STRUCTURED_DOCUMENT_VERSION = "table-row-groups-v2"
+#: v3: preserve narrative headings and single-line tables; bound every table chunk.
+STRUCTURED_DOCUMENT_VERSION = "table-row-groups-v3"
 
 _MEDIA_TYPE_SUFFIXES = {
     "text/plain": ".txt",
@@ -306,6 +307,7 @@ def _blocks_from_text(text: str, metadata: dict[str, Any]) -> tuple[ExtractedBlo
         if line.lstrip().startswith("#") and line.lstrip().split(" ", 1)[0].strip("#") == "":
             flush_narrative()
             heading = line.strip()
+            narrative.append(line)
         else:
             narrative.append(line)
         index += 1
@@ -918,7 +920,10 @@ def _chunk_table_block(
     lines = [line.strip() for line in block.text.splitlines() if line.strip()]
     pipe_lines = [line for line in lines if line.startswith("|")]
     if len(pipe_lines) < 2:
-        return [(block.text[:max_chars], {**block.metadata, "content_kind": "table"})]
+        return [
+            (piece, {**block.metadata, "content_kind": "table"})
+            for piece in _chunk_text_fallback(block.text, max_chars=max_chars, overlap=0)
+        ]
     prefix = [line for line in lines if not line.startswith("|")]
     header = pipe_lines[:2]
     rows = pipe_lines[2:]
@@ -946,11 +951,11 @@ def _chunk_table_block(
         if len(text) <= max_chars:
             result.append((text, metadata))
             return
-        if len(base) >= max_chars:
+        if len(base) + 1 >= max_chars:
             for piece in _chunk_text_fallback(text, max_chars=max_chars, overlap=0):
                 result.append((piece, metadata))
             return
-        budget = max(1, max_chars - len(base) - 1)
+        budget = max_chars - len(base) - 1
         for piece in _chunk_text_fallback("\n".join(current), max_chars=budget, overlap=0):
             result.append((base + "\n" + piece, metadata))
 
@@ -966,7 +971,8 @@ def _chunk_table_block(
             current_length += len(row) + (1 if current_length else 0)
     emit(len(rows) - 1)
     return result or [
-        (base, {**block.metadata, **table_metadata, "content_kind": "table"})
+        (piece, {**block.metadata, **table_metadata, "content_kind": "table"})
+        for piece in _chunk_text_fallback(base, max_chars=max_chars, overlap=0)
     ]
 
 
