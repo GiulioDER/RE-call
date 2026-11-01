@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from recall.calibration import Calibration
 from recall.evidence import AnswerSlot, EvidencePolicy, build_evidence_bundle
 from recall.retriever import (
@@ -253,3 +255,81 @@ def test_answer_slots_reject_partial_bundles_and_beam_covers_all_slots() -> None
     assert incomplete.decision == "abstain"
     assert incomplete.reason_code == "answer_slot_gap"
     assert incomplete.items == ()
+
+
+@pytest.mark.parametrize("limit", ["items", "tokens-prefix", "tokens-beam"])
+def test_required_slots_survive_the_final_bundle_limits(limit: str) -> None:
+    """BUG-001: all emitted requirements must survive every final budget.
+
+    Red proof: beb08a605, build_evidence_bundle returned an answer containing
+    only the cause after the indicated limit removed the exception.
+    """
+    from recall.evidence import render_evidence_prompt
+
+    cause = _trusted(_scored("cause", "cause.md", "Cause: retired cache.", 0.9, 1))
+    exception = _trusted(_scored("exception", "exception.md", "Exception: legacy client.", 0.8, 2))
+    result = _trusted_result(cause, exception)
+    slots = (AnswerSlot("cause", ("retired",)), AnswerSlot("exception", ("legacy",)))
+
+    class Characters:
+        def count_tokens(self, text: str) -> int:
+            return len(text)
+
+    one = build_evidence_bundle(_trusted_result(cause), EvidencePolicy())
+    token_budget = len(render_evidence_prompt(one)[1])
+    policy = EvidencePolicy(
+        answer_slots=slots,
+        max_items=1 if limit == "items" else 2,
+        max_tokens=token_budget if limit.startswith("tokens") else None,
+        tokenizer=Characters() if limit.startswith("tokens") else None,
+        selection_mode="beam" if limit == "tokens-beam" else "prefix",
+    )
+    bundle = build_evidence_bundle(result, policy)
+    assert bundle.decision == "abstain", "a final budget removed a required answer component"
+    assert bundle.reason_code == "answer_slot_gap"
+    assert bundle.items == ()
+
+
+@pytest.mark.parametrize("confidence", [0.5, 0.9, 1.0])
+@pytest.mark.parametrize("cosine", [0.7, 1.0])
+def test_slotless_beam_retains_a_supported_candidate(confidence: float, cosine: float) -> None:
+    """NUM-001: a slotless beam must not penalize all evidence as irrelevant.
+
+    Red proof: beb08a605, _beam_score charged three points for an empty slot
+    specification, so every bounded candidate lost to the empty state.
+    """
+    from dataclasses import replace
+
+    hit = replace(_trusted(_scored("one", "one.md", "Supported evidence.", cosine, 0)),
+                  confidence=confidence)
+    bundle = build_evidence_bundle(
+        _trusted_result(hit), EvidencePolicy(max_items=1, selection_mode="beam")
+    )
+    assert bundle.decision == "answer", "empty slot requirements must not discard trusted evidence"
+    assert [item.chunk_id for item in bundle.items] == ["one"]
+
+
+def test_structural_expansion_collects_later_seeds_in_selected_sources() -> None:
+    """BUG-003: a source cap limits searches, not seed ordinals in that source.
+
+    Red proof: beb08a605 stopped after the first seed and omitted near-later.
+    """
+    first = _scored("first", "a.md", "First section.", 0.9, 1)
+    other = _scored("other", "b.md", "Another source.", 0.85, 2)
+    later = _scored("later", "a.md", "Later section.", 0.8, 10)
+    neighbor = _scored("near-later", "a.md", "Neighbor.", 0.75, 9)
+    far = _scored("far", "a.md", "Not adjacent.", 0.7, 30)
+    terminal = _scored("terminal", "a.md", "Last retrieved candidate.", 0.6, 40)
+    calls: list[str | None] = []
+
+    def search(query: str, k: int, source: str | None = None) -> RetrievalResult:
+        calls.append(source)
+        return _retrieval(query, first, neighbor, far, terminal)
+
+    expanded = expand_retrieval_by_structure(
+        _retrieval("why did this change?", first, other, later), search,
+        StructuralExpansionPolicy(enabled=True, max_sources=1, radius=1),
+    )
+    assert "near-later" in {hit.chunk.id for hit in expanded.hits}
+    assert "far" not in {hit.chunk.id for hit in expanded.hits}
+    assert calls == ["a.md"]

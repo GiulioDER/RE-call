@@ -129,7 +129,7 @@ step a first-run wizard has to remove". It is not wired into the CLI.
     the `if generation_mode:` branch of `_make_lifespan` (`recall_mcp/server.py`), `recall/cli_commands/index_search.py:483` <!-- cite-anchor: generation_mode -->, and the `generation_mode` parameter threaded
    into `StoreRegistry` (`StoreRegistry.__init__`, in `recall_mcp/stores.py`), whose value is `generation_mode and not
    enterprise` and therefore also encodes the control plane interaction.
-4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:443`). <!-- cite-anchor: wants_learned -->
+4. **Retrieval legs.** Production disables the learned sparse leg (`recall/retriever.py:446`). <!-- cite-anchor: wants_learned -->
 5. **Promotion permission.** Production once refused `promote()` outright; it now requires a published, certified, still-bound calibration (`GenerationManager.promote`, in `recall/generations.py`). 🔁 Updated 2026-08-20.
 6. **Generation creation.** Production admits pinned local identities and hosted endpoints.
    It refuses `allow_unverified` for local identities (`GenerationManager.create`, in

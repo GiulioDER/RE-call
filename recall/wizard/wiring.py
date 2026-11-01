@@ -48,6 +48,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -685,13 +686,39 @@ def _register_local_scope_locked(
         )
 
     backup = target.with_name(target.name + ".recall-backup")
-    backup.write_text(raw, encoding="utf-8", newline="\n")
-    temporary = target.with_name(target.name + ".recall-tmp")
-    temporary.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n")
-    temporary.replace(target)
+    if backup.is_symlink():
+        return LocalScopeRegistration(
+            config_path=target,
+            project_keys=tuple(keys),
+            conflicts=tuple(conflicts),
+            skipped_reason="cannot write private Claude Code configuration: the backup is a symlink",
+        )
+    # Preserve the protected body's I/O exception contract; only lock acquisition
+    # failures and the explicit unsafe-backup refusal produce skip results.
+    _write_private_configuration(backup, raw)
+    _write_private_configuration(target, json.dumps(document, indent=2) + "\n")
     return LocalScopeRegistration(
         config_path=target,
         project_keys=tuple(keys),
         registered=tuple(registered),
         conflicts=tuple(conflicts),
     )
+
+
+def _write_private_configuration(path: Path, content: str) -> None:
+    """Stage credentials in an exclusively created 0600 file, then replace without following links."""
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temporary = Path(name)
+    try:
+        try:
+            handle = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)

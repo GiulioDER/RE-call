@@ -513,8 +513,18 @@ def build_evidence_bundle(
                 # the CLI sets a token budget.
                 break
         selected.append(item)
+    if policy.answer_slots:
+        retained_ids = {item.chunk_id for item in selected}
+        retained_hits = [hit for hit in trusted if hit.chunk.id in retained_ids]
+        missing_slots = tuple(
+            slot.name for slot in policy.answer_slots if not _slot_is_covered(slot, retained_hits)
+        )
+        if missing_slots:
+            selected = []
     decision: Literal["answer", "abstain"] = "answer" if selected else "abstain"
-    if selected:
+    if missing_slots:
+        empty_reason = "answer_slot_gap"
+    elif selected:
         empty_reason = None
     elif trusted:
         # There WERE trusted candidates and the budget took all of them.
@@ -531,7 +541,8 @@ def build_evidence_bundle(
         query=result.query,
         decision=decision,
         reason_code=empty_reason,
-        decision_state=_decision_state(result, has_supported_hits=bool(trusted)),
+        decision_state=("no_supporting_evidence" if missing_slots else
+                        _decision_state(result, has_supported_hits=bool(trusted))),
         calibrated=result.calibrated,
         stale=result.staleness.stale,
         embedding_profile=diagnostics.embedding_profile,
@@ -542,7 +553,7 @@ def build_evidence_bundle(
         failure_code=result.failure_code,
         query_support=result.query_support,
         calibration_coverage=result.calibration_coverage,
-        cards=cards_from_trusted_result(result),
+        cards=() if missing_slots else cards_from_trusted_result(result),
     )
 
 
@@ -657,7 +668,7 @@ def _beam_score(hits: list[TrustedHit], indices: tuple[int, ...], policy: Eviden
     irrelevant = sum(
         not any(_slot_match_count(slot, hit) >= slot.min_matches for slot in policy.answer_slots)
         for hit in selected
-    )
+    ) if policy.answer_slots else 0
     quality = sum(hit.confidence + 0.1 * hit.cosine for hit in selected)
     diversity = 0.25 * len(documents)
     position_cost = 0.0001 * sum(indices)
