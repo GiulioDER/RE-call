@@ -9,6 +9,11 @@ RE-call with the original EnterpriseRAG document id preserved in metadata, retri
 per question, then writes an answer file plus a run manifest. Generation is optional: the default
 `extractive` mode spends no model calls and is useful for validating ingestion, retrieval, and file
 format before paying for a full answer run.
+
+
+Prior work: RE-call project memory and the existing release-file loaders in this module
+and scripts/enterprise_rag_build_eval_cache.py were checked. This maintenance change
+preserves the dataset schema and repairs object parsing; it adds no new experiment.
 """
 
 from __future__ import annotations
