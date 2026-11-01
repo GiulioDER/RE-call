@@ -10,6 +10,8 @@ query's latency would be choosing for the operator.
 """
 from __future__ import annotations
 
+import pytest
+
 from recall_mcp import service
 from recall_mcp.service import resolve_reranker
 
@@ -129,3 +131,34 @@ def test_a_typo_does_not_silently_disable_reranking():
         assert "treu" in str(exc)
     else:  # pragma: no cover
         raise AssertionError("an unparseable flag must be refused, not treated as off")
+
+
+@pytest.mark.parametrize("settings", [
+    {"RECALL_RERANK": ""}, {"RECALL_RERANK_MODEL": ""},
+    {"RECALL_RERANK": "", "RECALL_RERANK_MODEL": ""}, {"RECALL_RERANK": " \t "},
+])
+@pytest.mark.parametrize("entry", ["startup", "construction"])
+def test_code_profile_defaults_empty_legacy_settings(monkeypatch, settings, entry):
+    """BUG-001: empty legacy values mean unset at both code-profile boundaries.
+
+    Red proof: all eight nodes fail the result assertion on baseline 61b428432,
+    whose setdefault calls preserve the empty entries. Tests are unchanged green.
+    """
+    from types import SimpleNamespace
+
+    from recall_mcp.retrieval import startup_retrieval_profile
+
+    monkeypatch.setattr("recall.rerank.QwenYesNoReranker", lambda **kwargs: SimpleNamespace(**kwargs))
+    env = {"RECALL_RETRIEVAL_PROFILE": "code", "RECALL_ACCEPT_REMOTE_MODEL_CODE": "1"}
+    env.update(settings)
+    result = None
+    refusal = None
+    try:
+        result = startup_retrieval_profile(env) if entry == "startup" else service._new_reranker(env)
+    except (ValueError, AssertionError) as exc:
+        refusal = str(exc)
+    assert result is not None, f"empty legacy settings must use code-profile defaults: {refusal}"
+    if entry == "startup":
+        assert result.name == "code"
+    else:
+        assert result.model == "hq-bench/coreb-code-reranker"

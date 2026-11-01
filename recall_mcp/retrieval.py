@@ -1014,8 +1014,8 @@ def startup_retrieval_profile(env: dict[str, str] | None = None) -> RetrievalPro
         _validate_quality_reranker_config(values)
     elif profile.name == "code":
         rerank_values = dict(values)
-        rerank_values.setdefault("RECALL_RERANK", "1")
-        rerank_values.setdefault("RECALL_RERANK_MODEL", "coreb-code")
+        rerank_values["RECALL_RERANK"] = rerank_values.get("RECALL_RERANK", "").strip() or "1"
+        rerank_values["RECALL_RERANK_MODEL"] = rerank_values.get("RECALL_RERANK_MODEL") or "coreb-code"
         spec = resolve_reranker(rerank_values)
         assert spec is not None
         if spec[0] != COREB_CODE_RERANKER_MODEL:

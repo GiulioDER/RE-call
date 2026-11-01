@@ -33,6 +33,14 @@ image tag; dump it from the old container and restore it into the PostgreSQL 18 
 `psycopg-pool` is optional because CLI use can run on a single connection. Server processes should
 install the `pool` extra or an extra that includes it.
 
+The optional OpenAI SDK dependencies require version 1.10 or later because configurable embedding
+dimensions are passed to `embeddings.create`, which older SDK versions do not accept.
+
+The `rerank` extra requires Transformers 5.6 or later, below 6, to preserve the pinned `coreb-code`
+model's configuration, including its `rope_parameters`. Transformers 4.51 recognizes Qwen3 but
+uses a different RoPE base for this configuration. PyTorch 2.4 or later, below 3, is declared
+directly because Transformers 5.6 requires it for model loading.
+
 ## Capability diagnostics
 
 Optional capabilities are planned without importing or constructing their models. `recall doctor`

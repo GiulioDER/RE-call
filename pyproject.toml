@@ -143,11 +143,11 @@ voyage = ["voyageai>=0.2.2", "requests>=2.31"]
 # threadpoolctl bounds the BLAS pool of the view-matrix product (`recall.atomic_rescue._view_scores`).
 atomic = ["numpy>=1.26", "threadpoolctl>=3.1"]
 # OpenAI-compatible embeddings, including OpenRouter-hosted models.
-openai = ["openai>=1.0"]
+openai = ["openai>=1.10"]
 hosted = [
     "anyio>=4",
     "httpx2>=2,<3",
-    "openai>=1.0",
+    "openai>=1.10",
     "pillow>=10",
     "psycopg-pool>=3.2",
     "starlette>=0.27",
@@ -161,11 +161,11 @@ aws = ["boto3>=1.35", "redis[hiredis]>=5,<9"]
 # Learned sparse retrieval uses transformers directly. Model weights are user-provisioned.
 sparse = ["transformers>=4.40,<6", "torch>=2.0,<3"]
 # Keep rerank and finetune sentence-transformers floors in step.
-rerank = ["sentence-transformers>=3.0"]
+rerank = ["sentence-transformers>=3.0", "transformers>=5.6,<6", "torch>=2.4,<3"]
 eval = ["matplotlib>=3.7", "numpy"]
 # Model backed truth extraction. Runs on the ingest path only, never the query path, and is
 # OFF unless RECALL_TRUTH_EXTRACTION is set. Shares the `bench` extra's openai floor.
-extract = ["openai>=1.0"]
+extract = ["openai>=1.10"]
 # Keep the benchmark on the Sentence Transformers legacy trainer. `accelerate` is deliberately
 # absent: CVE-2026-69112 affects its checkpoint loading helpers, and there is no fixed upstream
 # release yet. The benchmark does not need that optional package when it uses `old_fit`.
@@ -186,7 +186,7 @@ llamaindex = []
 # is pre-1.0 and `recall_agent/_sdk.py` is deliberately the only module exposed to its churn.
 agent = ["claude-agent-sdk>=0.2,<1", "psycopg-pool>=3.2"]
 # Benchmark extra is deliberate and excluded from `dev`.
-bench = ["mem0ai==2.0.13", "openai>=1.0", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.14.0"]
+bench = ["mem0ai==2.0.13", "openai>=1.10", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.14.0"]
 dev = [
     "pytest>=8", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.16,<0.17",
     "hypothesis>=6,<7",

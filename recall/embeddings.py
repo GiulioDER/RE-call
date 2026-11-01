@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 
 from recall._env import truthy
 from recall.embedding_core import (  # re-exported: this module is their public home
@@ -162,6 +163,11 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
     if name == "sfr-code":
         _require_research_model_opt_in(source, SFR_CODE_EMBEDDER_MODEL)
         _require_remote_model_code_opt_in(source, SFR_CODE_EMBEDDER_MODEL)
+        if Path(SFR_CODE_EMBEDDER_MODEL).exists():
+            raise ValueError(
+                f"a local path named {SFR_CODE_EMBEDDER_MODEL!r} would shadow the pinned hub "
+                "revision; move or rename that path before loading sfr-code"
+            )
         return SentenceTransformerEmbedder(
             SFR_CODE_EMBEDDER_MODEL,
             trust_remote_code=True,
