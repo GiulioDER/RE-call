@@ -153,12 +153,17 @@ def _json_text_rows(text: str, *, label: str) -> Iterator[Mapping[str, Any]]:
             if isinstance(item, Mapping):
                 yield item
         return
-    if stripped.startswith("{") and "\n" not in stripped:
-        payload = json.loads(stripped)
-        if isinstance(payload, Mapping):
-            yield payload
-            return
-        raise ValueError(f"{label}: expected a JSON object")
+    if stripped.startswith("{"):
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            if "\n" not in stripped:
+                raise
+        else:
+            if isinstance(payload, Mapping):
+                yield payload
+                return
+            raise ValueError(f"{label}: expected a JSON object")
     for i, line in enumerate(stripped.splitlines(), start=1):
         if not line.strip():
             continue

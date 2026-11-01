@@ -56,12 +56,14 @@ def build_cache(
             dsid = _doc_id_from_export_name(name)
             if dsid is None or dsid not in missing:
                 continue
+            rel = Path(name).with_suffix(".json")
+            target = sources_out / rel
+            if rel.is_absolute() or ".." in rel.parts or not target.resolve().is_relative_to(sources_out.resolve()):
+                raise ValueError(f"archive path escapes sources output: {name!r}")
             text = archive.read(name).decode("utf-8", errors="replace")
             lines = text.splitlines()
             title = lines[0].strip() if lines else dsid
             content = "\n".join(lines[1:]).strip() if len(lines) > 1 else text
-            rel = Path(name).with_suffix(".json")
-            target = sources_out / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "dataset_doc_uuid": dsid,

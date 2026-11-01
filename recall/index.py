@@ -17,6 +17,7 @@ from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.embedding_registry import context_version_for
 from recall.control_plane import ControlPlane
 from recall.document import parse_document
+from recall.derived_block import has_legacy_derived_block
 from recall.embeddings import (
     LEGACY_UNVERIFIED_DIGEST,
     Embedder,
@@ -747,6 +748,9 @@ def _body_derivation_hash(raw: str, content_hash: str) -> str:
         ).hexdigest()
     if _declares_record(raw):
         content_hash = hashlib.sha256(f"{content_hash}\x00recall-record-2026-10-21".encode()).hexdigest()
+    # Unchanged bytes can still carry chunks made before legacy blocks were excluded.
+    if has_legacy_derived_block(raw):
+        content_hash = hashlib.sha256(f"{content_hash}\x00derived-evidence-2026-11-01".encode()).hexdigest()
     return content_hash
 
 
