@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Upgrade note for calibration fitting (#1106): when rounding the midpoint down to the 0.001 grid
+  would land on or below the unanswerable ceiling (a clean gap under about 0.002), the fitted
+  threshold now sits strictly above the ceiling and at or below the answerable floor. It used to
+  round down onto or below the ceiling, which confirmed the unanswerable samples sitting there.
+  A v2 bundle fitted before this change on such scores re-derives a different threshold, so
+  `recall calibration import` refuses it ("threshold disagrees"); recalibrate instead.
+- Calibration fitting (#1106) now refuses a sample that is not a finite number. A NaN top cosine,
+  which a zero-norm query vector produces, used to move the fitted threshold silently.
 - Upgrade note for calibration import (#1095): `recall calibration import` now authenticates a
   v2 bundle, which its unkeyed checksums never did. It needs your own labelled query set
   (`--labels FILE`, the set the bundle was fitted on; its digest must equal the bundle's) and the

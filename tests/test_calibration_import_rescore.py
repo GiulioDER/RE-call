@@ -422,3 +422,22 @@ def test_the_lite_fit_refuses_a_query_repeated_with_other_relevant_ids(tmp_path:
     ]
     with pytest.raises(CalibrationBindingError, match="repeats the query 'same question'"):
         auto_calibrate(store, ContentWordEmbedder(), queries=queries)
+
+
+def test_a_bundle_fitted_under_the_old_narrow_gap_rounding_is_refused() -> None:
+    """BUG-103 upgrade path: an earlier fit's threshold no longer matches its own scores.
+
+    Before the fix, a clean gap that rounding crossed rounded the threshold down onto or below the
+    unanswerable ceiling (0.5 here, against a ceiling of 0.5001), confirming those samples. The
+    fix fits 0.5005, and `_require_scores_support_certification` re-derives the threshold at
+    1e-9, so the earlier bundle is refused rather than imported with the defect. The CHANGELOG
+    upgrade note says so. Nonbehavioral for the check itself (unchanged); it pins the decision.
+    """
+    answerable, unanswerable = [0.5009] * 25, [0.5001] * 25
+    current = _fitted(answerable, unanswerable)
+    assert 0.5001 < current.threshold <= 0.5009
+    _require_scores_support_certification(current)
+
+    earlier = _sealed(replace(current, threshold=0.5))
+    with pytest.raises(CalibrationBindingError, match="threshold"):
+        _require_scores_support_certification(earlier)

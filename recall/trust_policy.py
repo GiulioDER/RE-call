@@ -13,16 +13,20 @@ a threshold nobody ever certified for that corpus. The caller saw a normal-looki
 in the payload said the number behind it was invented.
 
 Strict mode refuses instead, and refuses *before* retrieval runs, so a refusal cannot carry corpus
-bytes it never fetched. Development mode still retrieves, but has to say so in band: `trust_state`
-is `degraded`, every hit is `unverified`, and no abstention decision is claimed.
+bytes it never fetched. `DEPENDENCY_UNAVAILABLE` refuses under every policy, because the gate could
+not run at all. Development mode still retrieves, but has to say so in band: `trust_state`
+is `degraded` and the result is never `calibrated`. With no calibration at all, every hit is
+`unverified` and no abstention decision is claimed. With a calibration that is not
+certified-bound (one the caller passed in, or a certified artifact while the dependency graph is
+not ready), the verdicts and any abstention computed under it are kept.
 
 Why the failure codes are an API
 --------------------------------
 
 Callers automate on these. A code is a promise: `CALIBRATION_STALE` will keep meaning "a certified
 artifact exists but no longer binds to this generation's lineage" across versions. Renaming one is
-a breaking change, which is why `TestFailureCodes` pins the exact spelling of all six rather than
-just iterating the enum.
+a breaking change, which is why `TestFailureCodes` pins the exact spelling of every code rather
+than just iterating the enum.
 
 The distinction the codes are really carrying is requirement 13: a working gate that found nothing
 is *not* the same event as a gate that could not run. The first is an answer. The second is an
@@ -32,6 +36,7 @@ Every code in here is the second kind, which is why every `advice` string says s
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -54,7 +59,8 @@ class TrustFailureCode(StrEnum):
 
     #: No active generation, or its physical index is not usable.
     INDEX_NOT_READY = "INDEX_NOT_READY"
-    #: The generation's pipeline or corpus fingerprint is not what the artifact was bound to.
+    #: The runtime embedder (model, dimension or profile) is not the one the active generation
+    #: was built with. A fingerprint that drifted from the artifact is `CALIBRATION_STALE`.
     LINEAGE_MISMATCH = "LINEAGE_MISMATCH"
     #: No calibration artifact exists for this tenant and generation.
     CALIBRATION_MISSING = "CALIBRATION_MISSING"
@@ -73,9 +79,13 @@ class TrustState(StrEnum):
 
     #: A certified artifact exactly bound to this generation backed the verdicts.
     TRUSTED = "trusted"
-    #: Development mode returned corpus text with no certified threshold behind it.
+    #: Development mode returned corpus text with no certified, generation-bound threshold behind
+    #: it. Verdicts are voided when no calibration exists, and kept when one exists but is not
+    #: certified-bound (passed in by the caller, or certified while the dependency graph is not
+    #: ready).
     DEGRADED = "degraded"
-    #: Strict mode refused. No corpus text was returned.
+    #: The gate refused: strict mode, or `DEPENDENCY_UNAVAILABLE` under any policy. No corpus text
+    #: was returned.
     REFUSED = "refused"
 
 
@@ -120,9 +130,10 @@ _ADVICE: dict[TrustFailureCode, str] = {
         "the trust gate never ran. Build and promote a generation, then retry."
     ),
     TrustFailureCode.LINEAGE_MISMATCH: (
-        "No trustworthy decision was possible: the active generation's pipeline or corpus "
-        "fingerprint does not match what the calibration was bound to, so the trust gate never "
-        "ran. Recalibrate against the current generation."
+        "No trustworthy decision was possible: the runtime embedder (model, dimension or "
+        "profile) is not the one the active generation was built with, so its cosines are not "
+        "comparable to any threshold and the trust gate never ran. Serve with the generation's "
+        "embedder, or build and promote a generation for this one."
     ),
     TrustFailureCode.CALIBRATION_MISSING: (
         "No trustworthy decision was possible: no calibration artifact is bound to this tenant "
@@ -130,9 +141,10 @@ _ADVICE: dict[TrustFailureCode, str] = {
         "Calibrate against a labelled query set and publish the artifact."
     ),
     TrustFailureCode.CALIBRATION_UNCERTIFIED: (
-        "No trustworthy decision was possible: the calibration artifact for this generation was "
-        "not certified, so its threshold is not usable and the trust gate never ran. The evidence "
-        "is retained as a rejected artifact; certify and publish a replacement."
+        "No trustworthy decision was possible: the calibration for this generation is not a "
+        "certified, published artifact bound to it (uncertified, rejected, a draft, a threshold "
+        "passed in unbound, or of unknown status), so its threshold is not usable and the trust "
+        "gate never ran. Certify and publish an artifact for this generation."
     ),
     TrustFailureCode.CALIBRATION_STALE: (
         "No trustworthy decision was possible: a certified calibration exists but no longer binds "
@@ -160,6 +172,11 @@ class TrustPolicy:
     """
 
     mode: TrustMode = TrustMode.STRICT
+
+    def __post_init__(self) -> None:
+        # `strict` tests identity, so a plain string mode, even "strict", would otherwise read as
+        # not strict and take the degrading path. Coercing raises on an unknown value instead.
+        object.__setattr__(self, "mode", TrustMode(self.mode))
 
     @property
     def strict(self) -> bool:
@@ -192,12 +209,22 @@ class TrustPolicy:
 
         source = os.environ if env is None else env
         raw = str(source.get("RECALL_TRUST_MODE", "")).strip().lower()
+        if raw not in {"", *TrustMode}:
+            # Still strict, but said: otherwise every search refuses and nothing tells the
+            # operator that the value they set was ignored. The value itself is not logged.
+            logging.getLogger("recall.trust_policy").warning(
+                "RECALL_TRUST_MODE is not 'strict' or 'development'; the strict trust gate is "
+                "in force"
+            )
         return cls(mode=TrustMode.DEVELOPMENT if raw == TrustMode.DEVELOPMENT.value else
                    TrustMode.STRICT)
 
 
 class TrustRefusal(RecallError):
-    """Strict mode refused to answer. Carries identity and a code, never corpus bytes.
+    """The trust gate refused to answer. Carries identity and a code, never corpus bytes.
+
+    Strict mode refuses on every failure code; `DEPENDENCY_UNAVAILABLE` refuses under every
+    policy, development included, because the gate could not run at all.
 
     The payload is built only from fields the *system* controls: the code, the calibration status,
     and the tenant and generation identifiers. Chunk text, source text, previews, scores, and the

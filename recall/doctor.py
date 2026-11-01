@@ -624,9 +624,12 @@ def _calibration_check(embedder_name: str, *, strict: bool, dsn: str) -> Check:
     `strict` is passed in rather than re-derived: the rule lives in `TrustPolicy.from_env`, and
     this module had hand-rolled it twice (F22).
     """
-    from recall.calibration import load_for
+    from recall.calibration import load_for, resolved_path
 
     try:
+        # Named in every outcome: with RECALL_CALIBRATION unset the file is relative to the
+        # working directory, so the same check run from two directories reads two files.
+        where = resolved_path()
         calibration = load_for(embedder_name)
     except Exception as exc:  # BROAD-CATCH: fail-open
         return Check(
@@ -638,7 +641,7 @@ def _calibration_check(embedder_name: str, *, strict: bool, dsn: str) -> Check:
         return Check(
             "calibration",
             "warn",
-            f"none fitted for {embedder_name!r}"
+            f"none fitted for {embedder_name!r} at {where}"
             + (
                 ", and this server is STRICT, so it will refuse every query until one is published"
                 if strict
@@ -646,7 +649,9 @@ def _calibration_check(embedder_name: str, *, strict: bool, dsn: str) -> Check:
             ),
             "recall setup   (fits one against your corpus)",
         )
-    return Check("calibration", "ok", f"threshold {calibration.threshold:.3f} for {embedder_name}")
+    return Check(
+        "calibration", "ok", f"threshold {calibration.threshold:.3f} for {embedder_name} at {where}"
+    )
 
 
 def _migration_check(dsn: str, *, table: str, dim: int | None) -> Check:

@@ -44,7 +44,8 @@ from typing import Any
 
 from recall.calibration import Calibration
 from recall.embeddings import embedding_profile_id
-from recall.eval._research_trust import RESEARCH_POLICY, research_search
+from recall.eval import _research_trust
+from recall.eval._research_trust import RESEARCH_POLICY
 from recall.guards import DEFAULT_GAP_THRESHOLD
 from recall.types import TrustedResult
 
@@ -79,4 +80,7 @@ def bench_search(store: Any, embedder: Any, query: str, **kwargs: Any) -> Truste
         kwargs["calibration"] = uncalibrated_floor(embedder)
     if kwargs.get("policy") is None:
         kwargs["policy"] = RESEARCH_POLICY
-    return research_search(store, embedder, query, **kwargs)
+    # Looked up at call time, not bound at import: a module-level `from ... import research_search`
+    # captured whatever was patched in when this module was FIRST imported, so a test that patched
+    # the seam and happened to trigger that import left every later caller on its fake.
+    return _research_trust.research_search(store, embedder, query, **kwargs)
