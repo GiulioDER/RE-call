@@ -819,10 +819,13 @@ there for the same reason. Naming it here so the trade is chosen rather than inh
 
 ### A defect found while measuring
 
-`.msg` appeared in the LibreOffice branch in the [measured commit](https://github.com/GiulioDER/RE-call/blob/bd58231605c408053274968cec1b59375cb1b2d6/recall/extraction.py#L175-L184), but that branch was **unreachable**:
-`extract_document` matched `.msg` earlier. A deployment without `python-oxmsg` therefore
-got an extraction error where the code appeared to offer a fallback. Filed separately; it is not
-part of this design.
+Corrected 2026-11-01: this paragraph said `.msg` sat, unreachable, in the LibreOffice branch of
+`recall/extraction.py`, so that a deployment without `python-oxmsg` got an error where the code
+appeared to offer a fallback. That was already wrong when written. `.msg` is not in
+`LIBREOFFICE_EXTENSIONS`, deliberately, because LibreOffice has no MAPI import filter; the
+`extract_document` dispatch sends it to `_extract_msg`, which reads it with `python-oxmsg` and,
+without that package, refuses with a message naming the documents extra. There is no fallback to
+reach, and so no defect.
 
 ## 7. What this design does not do
 
