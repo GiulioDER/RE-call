@@ -200,7 +200,8 @@ def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
     Degenerate inputs fall back rather than invent a boundary: with neither class, 0.5 (the value
     of `recall.guards.DEFAULT_GAP_THRESHOLD`); with only answerable samples, their floor; with
     only unanswerable samples, one grid step above their ceiling, capped at 1.0. Every result
-    lies on the 0.001 grid, rounded down.
+    lies on the 0.001 grid, rounded down, except where rounding down would land on or below the
+    unanswerable ceiling of a clean gap.
 
     Raises ValueError on a non-finite sample: `sorted()` cannot order a NaN, so the quantiles
     would be read from an unsorted list and the fit would still certify.
@@ -227,7 +228,20 @@ def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
     # collapsing onto one class, which is the least-bad boundary when no clean gap exists.
     # Round DOWN so rounding can only ever make the guard more permissive, never silently
     # abstain on a calibration sample that sat exactly on the boundary.
-    return _floor_to_grid((floor + ceiling) / 2)
+    midpoint = (floor + ceiling) / 2
+    threshold = _floor_to_grid(midpoint)
+    if floor > ceiling and threshold <= ceiling:
+        # A clean gap that rounding down crossed (any gap under about two grid steps): the
+        # threshold would confirm the unanswerable samples sitting on the ceiling. Take the first
+        # grid step above the ceiling if it is still inside the gap, else the unrounded midpoint,
+        # else the floor itself, which a gap of one float leaves as the only value above.
+        # One integer step on the grid, then one division: `_floor_to_grid(ceiling) + 0.001`
+        # can round back onto the ceiling itself (0.009 + 0.001 is 0.009999999999999998).
+        above = (math.floor(ceiling * 1000) + 1) / 1000
+        if ceiling < above <= floor:
+            return above
+        return midpoint if midpoint > ceiling else floor
+    return threshold
 
 
 @dataclass(frozen=True)

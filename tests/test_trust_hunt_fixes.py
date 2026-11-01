@@ -544,3 +544,30 @@ def test_the_empty_sample_threshold_matches_the_uncalibrated_floor():
     from recall.guards import DEFAULT_GAP_THRESHOLD
 
     assert best_threshold([], []) == DEFAULT_GAP_THRESHOLD
+
+
+def test_a_clean_gap_narrower_than_the_grid_keeps_the_threshold_above_the_ceiling():
+    """BUG-103 (+NUM-102): rounding down must not land on or below the unanswerable ceiling.
+
+    Red proof: against the pre-fix `best_threshold` (recall/calibration.py, a bare
+    `_floor_to_grid((floor + ceiling) / 2)`), the first case returns 0.5, below the ceiling
+    0.5001, failing the first assertion.
+    """
+    from recall.calibration import best_threshold
+
+    narrow = best_threshold([0.5009] * 25, [0.5001] * 25)
+    assert 0.5001 < narrow <= 0.5009
+    assert best_threshold([0.022] * 20, [0.020] * 20) == pytest.approx(0.021)
+    # The grid step above the ceiling (0.501), not the midpoint (0.5008).
+    assert best_threshold([0.5012] * 25, [0.5004] * 25) == pytest.approx(0.501, abs=1e-12)
+    # A ceiling one float below a grid point: the step above must not round back onto it.
+    edge = 0.009999999999999998
+    assert best_threshold([0.01] * 25, [edge] * 25) > edge
+    # A gap of one float: only the floor itself lies above the ceiling.
+    ceiling = 0.5
+    floor = math.nextafter(ceiling, 1.0)
+    assert best_threshold([floor] * 25, [ceiling] * 25) == floor
+    # Controls: a gap wider than the grid still rounds the midpoint down, and overlapping
+    # classes still bisect the overlap.
+    assert best_threshold([0.8] * 25, [0.3] * 25) == pytest.approx(0.55)
+    assert best_threshold([0.5] * 25, [0.6] * 25) == pytest.approx(0.55)
