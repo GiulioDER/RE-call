@@ -7,7 +7,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from recall.calibration import load_for
+from recall.calibration import load_for, resolved_path
 from recall.embeddings import Embedder
 from recall.lint import DEFAULT_GLOB
 
@@ -255,10 +255,12 @@ def _run_semantic(args: argparse.Namespace, validated_emb: Embedder | None) -> i
     # embedder" as the default; hardcoding 0.70 made that untrue on every corpus
     # whose calibration says otherwise.
     _cal = load_for(emb.name)
+    # Named because, with RECALL_CALIBRATION unset, the file is relative to the working directory.
+    _where = resolved_path()
     if args.threshold is not None:
         thr, _src = args.threshold, "--threshold"
     elif _cal is not None:
-        thr, _src = _cal.threshold, f"calibrated for {emb.name}"
+        thr, _src = _cal.threshold, f"calibrated for {emb.name} in {_where}"
     else:
         # `load_for` returns None WITHOUT raising when the artifact is keyed to a
         # different embedder, so this fallback is reachable even when a calibration
@@ -266,7 +268,7 @@ def _run_semantic(args: argparse.Namespace, validated_emb: Embedder | None) -> i
         # SPELLING while `recall calibrate` keys it by `embedder.name`. Saying which
         # threshold was used is the difference between a silent wrong answer and a
         # visible one; the help text promises the calibrated value.
-        thr, _src = 0.70, f"UNCALIBRATED default, no calibration matched {emb.name}"
+        thr, _src = 0.70, f"UNCALIBRATED default, no calibration matched {emb.name} in {_where}"
     print(f"semantic threshold: {thr:.2f} ({_src})")
     chains = semantic_lint(args.dsn, emb, args.path, threshold=thr, glob=args.glob)
     for c in chains:

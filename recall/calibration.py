@@ -410,6 +410,15 @@ def _resolve_path(path: str | Path | None) -> Path:
     return p.resolve()
 
 
+def resolved_path(path: str | Path | None = None) -> Path:
+    """The file `load_for` and `save` use for `path`: RECALL_CALIBRATION, else ./calibration.json.
+
+    The default is relative to the working directory, so a diagnostic that reads it says which
+    file it read: `recall doctor` run from another directory reports a different file.
+    """
+    return _resolve_path(path)
+
+
 #: JSON key holding `EmbeddingProfile.fingerprint()` — the SHA256 over the COMPLETE immutable
 #: embedding identity, not just its profile id. See `load_for_profile` for why the id alone is
 #: not enough to decide that a threshold may be applied.
