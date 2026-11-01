@@ -17,6 +17,7 @@ _LOG = get_logger("desktop.uploads")
 
 __all__ = ["UploadError", "delete_staged_sources", "discard_staging", "promote_uploads", "stage_uploads"]
 
+_MAX_FILES = 500
 _MAX_TOTAL_BYTES = 50 * 1024 * 1024
 _MAX_MIB = _MAX_TOTAL_BYTES // (1024 * 1024)
 _OVERSIZE_MSG = f"upload exceeds the {_MAX_MIB} MiB request limit"
@@ -168,6 +169,25 @@ def _promote_staged(work: Path, stable: Path) -> None:
         os.replace(source, target)
 
 
+def upload_batches(paths: list[Path]) -> list[tuple[Path, ...]]:
+    """Partition a desktop selection within the receiver's count and byte limits."""
+    batches: list[tuple[Path, ...]] = []
+    batch: list[Path] = []
+    total = 0
+    for path in paths:
+        size = path.stat().st_size
+        if size > _MAX_TOTAL_BYTES:
+            raise UploadError(f"{path.name}: {_OVERSIZE_MSG}; split the file before uploading")
+        if batch and (len(batch) >= _MAX_FILES or total + size > _MAX_TOTAL_BYTES):
+            batches.append(tuple(batch))
+            batch, total = [], 0
+        batch.append(path)
+        total += size
+    if batch:
+        batches.append(tuple(batch))
+    return batches
+
+
 def stage_uploads(
     tenant: str, files: list[dict[str, str]], *, job_key: str | None = None
 ) -> tuple[str, Path, int]:
@@ -199,7 +219,7 @@ def stage_uploads(
     tree once the whole batch has succeeded, so a refused upload leaves the stable tree exactly as
     it found it.
     """
-    if not files or len(files) > 500:
+    if not files or len(files) > _MAX_FILES:
         raise UploadError("files must contain between 1 and 500 entries")
     # Validated HERE, before a working directory exists, so a bad key cannot leave one orphaned.
     # `is not None`, NOT truthiness: an empty job key is a caller asking for a stable destination

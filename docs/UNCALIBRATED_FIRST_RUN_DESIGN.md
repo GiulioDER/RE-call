@@ -698,8 +698,8 @@ half the corpus, aborts** and reports that the candidate set does not describe t
    mapping: `_trust_state` (in `recall/reasoning.py`) rejects anything outside `{trusted, degraded, refused}`, on a
    versioned API whose version is unbumped, plus several `!= "trusted"` comparisons that would
    silently downgrade.
-5. **The strict gate is binary on `CERTIFIED`.** `code_for_status` returns a failure code for
-   everything else via a fail closed default (`recall/trust_policy.py:122`), so a new
+5. **The strict gate is binary on `CERTIFIED`.** `recall.trust_policy.code_for_status` returns a
+   failure code for everything else via a fail closed default, so a new
    `CalibrationStatus.PROVISIONAL` is silently classified `CALIBRATION_UNCERTIFIED` and strict
    refuses it. "Search works in strict mode with `trust_state: provisional`" is unreachable without
    changing that, and `code_for_status`'s return type is part of a documented stable API.
@@ -730,9 +730,9 @@ reaches a **weaker** conclusion on purpose.
 
 Markdown body derivation is pure Python inside this repository, so a chunker mismatch is
 diagnosable: the code that would differ is versioned by the repo. Extraction is not.
-`extract_document` (`recall/extraction.py:173`) dispatches to **six third party libraries** and, for
+`extract_document` (`recall/extraction.py:174`) dispatches to **six third party libraries** and, for
 five suffixes, to an **external LibreOffice binary** (`_extract_with_libreoffice`,
-`recall/extraction.py:773`). Those libraries
+`recall/extraction.py:775`). Those libraries
 are declared with open lower bounds in an optional extra (`pdfplumber>=0.11` and friends), and
 LibreOffice is not a Python dependency at all.
 
@@ -757,7 +757,7 @@ The precedent is already in the tree and is deliberate. `EmbeddingProfile.depend
 docstring says a `fastembed` upgrade costs a re embed on purpose, "because ONNX runtime changes are
 free to move the last bits of a vector and a cache cannot tell". **The identical argument applies to
 `pdfplumber` and to LibreOffice**, and extraction has no equivalent:
-`STRUCTURED_DOCUMENT_VERSION` (`recall/extraction.py:147`) versions recall's own block shape and
+`STRUCTURED_DOCUMENT_VERSION` (`recall/extraction.py:148`) versions recall's own block shape and
 says nothing about the libraries.
 
 So record, per extracted source:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import queue
@@ -169,13 +170,17 @@ class SdkMcpGateway:
             http_client = httpx2.AsyncClient(headers=headers)
         except ImportError:
             http_client = None
-        async with streamable_http_client(
-            self.profile.endpoint or "", http_client=http_client
-        ) as streams:
-            async with ClientSession(*streams) as session:
-                await session.initialize()
-                result = await session.call_tool(name, arguments)
-                return _tool_result(result)
+        try:
+            async with streamable_http_client(
+                self.profile.endpoint or "", http_client=http_client
+            ) as streams:
+                async with ClientSession(*streams) as session:
+                    await session.initialize()
+                    result = await session.call_tool(name, arguments)
+                    return _tool_result(result)
+        finally:
+            if http_client is not None:
+                await http_client.aclose()
 
     def close(self) -> None:
         with self._lock:
@@ -749,7 +754,8 @@ def _encoded_file(path: Path) -> dict[str, str]:
         data = path.read_bytes()
     except OSError as exc:
         raise RuntimeErrorBase(f"cannot read {path.name}: {exc}") from exc
-    return {"name": path.name, "content_b64": base64.b64encode(data).decode("ascii")}
+    source_key = hashlib.sha256(os.path.normcase(str(path.resolve().parent)).encode("utf-8")).hexdigest()
+    return {"name": f"{source_key}/{path.name}", "content_b64": base64.b64encode(data).decode("ascii")}
 
 
 def _job_from_result(result: Any, fallback: str) -> JobStatus:

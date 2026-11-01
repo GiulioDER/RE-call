@@ -29,6 +29,7 @@ from recall.desktop.sources import (
     display_type,
 )
 from recall.desktop.github import GithubImport, download_repository
+from recall.desktop.uploads import upload_batches
 from recall.desktop.jobs import CLOSE_WAIT_MS
 from recall.desktop.jobs import Job as _Worker
 from recall.store import scrub_dsn_secrets
@@ -1919,8 +1920,15 @@ if QApplication is not None:
             self._show_page(0)
 
         def _accept_drop(self, raw_paths: list[str]) -> None:
+            scope = dict(self._scope_data())
+            self._run(
+                lambda: collect_files([Path(raw_path) for raw_path in raw_paths], None),
+                lambda files: self._drop_collected(files, scope),
+            )
+
+        def _drop_collected(self, files: tuple[Path, ...], scope: dict[str, Any]) -> None:
             detected: list[tuple[Path, SourceCategory]] = []
-            for path in collect_files([Path(raw_path) for raw_path in raw_paths], None):
+            for path in files:
                 category = classify(path) or SourceCategory.MEMORY
                 detected.append((path, category))
             if not detected:
@@ -1928,7 +1936,7 @@ if QApplication is not None:
                     "No supported files were found. Use UTF-8 text or code files (.md, .txt, .py, .js, and similar)."
                 )
                 return
-            default_scope = dict(self._scope_data())
+            default_scope = scope
             self.pending_files.extend(detected)
             self.pending_scopes.extend(dict(default_scope) for _ in detected)
             self._refresh_table()
@@ -2170,21 +2178,30 @@ if QApplication is not None:
             self.start_button.setText("Indexing…")
             self.progress.setValue(10)
             self.status.setText("Indexing is running…")
-            self._run(
-                lambda: [
-                    self.runtime.start_ingest(
-                        SourceSelection(
-                            category,
-                            tuple(paths),
-                            tenant,
-                            shared,
-                            shared_profile=self.profile.shared_profile,
-                        )
-                    )
-                    for (category, tenant, shared), paths in groups.items()
-                ],
-                self._job_done,
-            )
+            def ingest() -> list[Any]:
+                jobs = []
+                completed = 0
+                try:
+                    for (category, tenant, shared), paths in groups.items():
+                        for batch in upload_batches(paths):
+                            job = self.runtime.start_ingest(
+                                SourceSelection(
+                                    category, batch, tenant, shared,
+                                    shared_profile=self.profile.shared_profile,
+                                )
+                            )
+                            jobs.append(job)
+                            if job.state == "completed":
+                                completed += len(batch)
+                except Exception as exc:  # BROAD-CATCH: error-translation
+                    if not jobs:
+                        raise
+                    raise RuntimeErrorBase(
+                        f"{completed} files completed before indexing stopped: {exc}"
+                    ) from exc
+                return jobs
+
+            self._run(ingest, self._job_done)
 
         def _check_calibration(self) -> None:
             self._run(lambda: self.runtime.calibration_status(self._selected_tenant()), self._show_calibration)

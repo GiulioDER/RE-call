@@ -46,14 +46,20 @@ def collect_files(paths: list[str | Path], category: SourceCategory | None = Non
         else DOCUMENT_EXTENSIONS | CODE_EXTENSIONS
     )
     result: list[Path] = []
+    seen: set[Path] = set()
     for raw in paths:
         path = Path(raw).expanduser()
         if path.is_dir():
-            candidates = sorted(item for item in path.rglob("*") if item.is_file())
+            root = _resolved(path)
+            candidates = sorted(
+                item for item in path.rglob("*")
+                if item.is_file() and _resolved(item).is_relative_to(root)
+            )
         else:
             candidates = [path]
         for candidate in candidates:
-            if candidate.suffix.lower() in allowed and candidate not in result:
+            if candidate.suffix.lower() in allowed and candidate not in seen:
+                seen.add(candidate)
                 result.append(candidate)
     return tuple(result)
 
@@ -135,6 +141,7 @@ def scan_files(
         root = Path(raw_root).expanduser()
         if not root.is_dir():
             continue
+        resolved_root = _resolved(root)
         config_directories = _claude_config_directories(root)
         for current, directories, filenames in os.walk(root, topdown=True, onerror=lambda _error: None):
             directories[:] = sorted(
@@ -147,6 +154,8 @@ def scan_files(
                 if path.suffix.casefold() not in allowed:
                     continue
                 resolved = _resolved(path)
+                if not resolved.is_relative_to(resolved_root):
+                    continue
                 config_base = next(
                     (base for base in config_directories if resolved == base or base in resolved.parents),
                     None,

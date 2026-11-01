@@ -263,6 +263,8 @@ def test_reserved_project_refusal_keeps_selection_and_next_drop_target(
         assert "Selection unchanged" in window.status.text()
         source = tmp_path / "note.md"
         source.write_text("a note", encoding="utf-8")
+        # PERF-001 collects on a worker; run that callback in this controlled fixture.
+        monkeypatch.setattr(window, "_run", lambda fn, done, *_args: done(fn()))
         window._accept_drop([str(source)])
         assert window.pending_scopes[-1] == prior, "the next import must keep its original target"
     finally:

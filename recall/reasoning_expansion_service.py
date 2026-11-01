@@ -20,6 +20,7 @@ from recall.reasoning_expansion import (
     RetrievalExpansionTrace,
     evidence_payload,
     merge_trusted_results,
+    validate_expansion_binding,
 )
 from recall.reasoning_proposals import ProviderFailure, ProviderFailureKind
 from recall.types import TrustedResult
@@ -164,6 +165,7 @@ def run_model_expansion(
         try:
             expanded = retriever(request, proposal, retrieval)
             validate_retrieval_binding(request, expanded)
+            validate_expansion_binding(initial_retrieval, expanded)
             if request.policy.require_certified_evidence and expanded.trust_state != "trusted":
                 raise validation_error("expanded retrieval is not certified")
         except Exception as exc:  # BROAD-CATCH: fail-open

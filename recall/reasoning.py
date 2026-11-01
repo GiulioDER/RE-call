@@ -35,6 +35,7 @@ from recall.reasoning_expansion import (
     ReasoningExpansionRetriever,
     RetrievalExpansionTrace,
     merge_trusted_results,
+    validate_expansion_binding,
 )
 from recall.reasoning_expansion_service import (
     expansion_failure as _expansion_failure,
@@ -611,6 +612,7 @@ def _expand_retrieval(
         try:
             depth_result = retriever(request, depth_proposal, retrieval)
             _validate_retrieval_binding(request, depth_result)
+            validate_expansion_binding(initial_retrieval, depth_result)
             if request.policy.require_certified_evidence and depth_result.trust_state != "trusted":
                 raise ReasoningValidationError("depth expansion is not certified")
         except Exception as exc:  # BROAD-CATCH: fail-open
