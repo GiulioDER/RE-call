@@ -104,7 +104,11 @@ OPENROUTER_API_KEY=
 # RECALL_INDEX_ROOT=/srv/recall/corpus  # corpus-only root for the MCP recall_index tool
 # RECALL_INDEX_BATCH_CHUNKS=64           # chunks per embedding batch; lower this if the local
 #                                        # embedder runs out of memory
-# Legacy RECALL_CALIBRATION files are import-only evidence; v1 search resolves calibration from Postgres.
+# RECALL_CALIBRATION=./calibration.json  # never read by search, which resolves calibration from
+#                                        # Postgres. It is the default file for `recall doctor`,
+#                                        # `recall lint --semantic` and the enterprise readiness
+#                                        # check. A legacy file is kept by importing it with
+#                                        # `calibration import FILE`, which takes its own path.
 
 # Content-addressed embedding cache, ON by default, under the platform cache directory
 # (%LOCALAPPDATA%\recall\ or $XDG_CACHE_HOME/recall/, else ~/.cache/recall/). Every indexing entry

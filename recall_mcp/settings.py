@@ -36,7 +36,7 @@ from recall.constants import (
 )
 from recall.paged_evidence import paged_evidence_mode
 from recall.federation import FederationConfig
-from recall.trust_policy import TrustPolicy
+from recall.trust_policy import TrustPolicy, dependency_mode_from_env
 
 
 DEFAULT_DSN = "postgresql://recall:recall@localhost:5432/recall"
@@ -307,6 +307,7 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
     # select it, because that would make configuration validity depend on traffic shape.
     RetrievalPlanResolver.from_env(source)
     FederationConfig.from_env(source)
+    dependency_mode_from_env(source)
     for name in (
         "RECALL_TRANSLATION_ENABLED",
         "RECALL_TRANSLATION_ALLOW_HTTP",

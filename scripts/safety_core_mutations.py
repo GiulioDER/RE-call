@@ -80,7 +80,9 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall/trust_gate.py",
         "low confidence threshold guard is disabled",
-        b"    if getattr(hit, \"score_kind\", \"dense_cosine\") == \"dense_cosine\" and hit.score < threshold:",
+        b"    if getattr(hit, \"score_kind\", \"dense_cosine\") == \"dense_cosine\" and (\n"
+        b"        not math.isfinite(hit.score) or hit.score < threshold\n"
+        b"    ):",
         b"    if False:",
         TRUST_TESTS,
     ),

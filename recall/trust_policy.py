@@ -37,6 +37,7 @@ Every code in here is the second kind, which is why every `advice` string says s
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -204,11 +205,23 @@ class TrustPolicy:
         This docstring previously said "the exact string", which the code has never done. The
         distinction is worth stating precisely rather than strictly, because someone will read this
         to decide whether their configuration is safe.
+
+        Development under `RECALL_ENV=production` is honoured but warned about: a relaxed gate never
+        errors, so in production it would stamp `degraded` on every answer unseen. It is not refused,
+        because `RECALL_ENV=production` is also the switch that selects `GenerationStore`, and
+        `recall setup` writes the pair on purpose for a tenant served by an earlier generation.
         """
         import os
 
+        from recall._env import env_is_production
+
         source = os.environ if env is None else env
         raw = str(source.get("RECALL_TRUST_MODE", "")).strip().lower()
+        if raw == TrustMode.DEVELOPMENT.value and env_is_production(env):
+            logging.getLogger("recall.trust_policy").warning(
+                "RECALL_TRUST_MODE=development under RECALL_ENV=production: the trust gate is "
+                "relaxed, so uncertified answers are served as degraded"
+            )
         if raw not in {"", *TrustMode}:
             # Still strict, but said: otherwise every search refuses and nothing tells the
             # operator that the value they set was ignored. The value itself is not logged.
@@ -218,6 +231,23 @@ class TrustPolicy:
             )
         return cls(mode=TrustMode.DEVELOPMENT if raw == TrustMode.DEVELOPMENT.value else
                    TrustMode.STRICT)
+
+
+#: The dependency invalidation modes, from an argument, the store, or RECALL_DEPENDENCY_INVALIDATION.
+DEPENDENCY_MODES = frozenset({"off", "enforce"})
+
+
+def dependency_mode_from_env(env: Mapping[str, str]) -> str:
+    """`RECALL_DEPENDENCY_INVALIDATION`, normalised; raises ValueError for anything but the modes.
+
+    Normalised like RECALL_ATOMIC_RESCUE_MODE, and named in the error, because an operator's
+    `Enforce` would otherwise pass startup and fail every search as a code bug.
+    """
+    mode = str(env.get("RECALL_DEPENDENCY_INVALIDATION", "off")).strip().lower()
+    if mode not in DEPENDENCY_MODES:
+        raise ValueError("RECALL_DEPENDENCY_INVALIDATION must be 'off' or 'enforce'")
+    return mode
+
 
 
 class TrustRefusal(RecallError):

@@ -10,6 +10,7 @@ re-exported from ``recall.trust``.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -135,7 +136,10 @@ def _verdict(
         return "expired", validity
     if start is not None and now < start:
         return "not_yet_valid", validity
-    if getattr(hit, "score_kind", "dense_cosine") == "dense_cosine" and hit.score < threshold:
+    # A NaN compares False with the threshold, so without the isfinite test it would read as ok.
+    if getattr(hit, "score_kind", "dense_cosine") == "dense_cosine" and (
+        not math.isfinite(hit.score) or hit.score < threshold
+    ):
         return "low_confidence", validity
     return "ok", validity
 

@@ -421,16 +421,17 @@ whose verdicts came from a threshold nobody had certified for that corpus.
 That fallback is gone. `TrustPolicy` decides what happens instead, and **strict is the default**
 for the library and for the MCP service. Omitting a policy cannot open the gate.
 
-### The six failure codes
+### The seven failure codes
 
 | Code | Meaning | Remedy |
 |---|---|---|
 | `INDEX_NOT_READY` | No active generation for this tenant | Build and promote a generation |
-| `LINEAGE_MISMATCH` | Generation pipeline or corpus fingerprint is not what the artifact bound | Recalibrate against the current generation |
+| `LINEAGE_MISMATCH` | The runtime embedder (model, dimension or profile) is not the one the active generation was built with | Search with the generation's embedder, or rebuild with this one |
 | `CALIBRATION_MISSING` | No artifact bound to this tenant and generation | Calibrate against a labelled query set and publish |
 | `CALIBRATION_UNCERTIFIED` | An artifact exists but was never certified | Certify and publish a replacement; the rejected evidence is retained |
 | `CALIBRATION_STALE` | A certified artifact no longer binds to the current lineage | Try `calibration carry-forward` first: after an ordinary rebuild it re-verifies the existing threshold against the new generation and needs no new labels. Recalibrate if it refuses, or after a privacy erasure |
-| `DEPENDENCY_UNAVAILABLE` | A dependency the gate needs was unreachable | Retry once healthy |
+| `DEPENDENCY_UNAVAILABLE` | A dependency the gate needs was unreachable, including a dependency projection read that raised. Refused under every policy | Retry once healthy |
+| `DEPENDENCY_GRAPH_NOT_READY` | `RECALL_DEPENDENCY_INVALIDATION=enforce` and the active generation has no dependency projection | Rebuild the generation graph and retry |
 
 These are an API. Automating on them is the intended use, so their spelling is pinned by test.
 

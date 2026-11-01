@@ -258,8 +258,9 @@ way.
 The projection identity is bound to tenant, generation, corpus fingerprint, schema version,
 `as_of`, and `known_as_of`. `trusted_search` enforces it only when dependency mode is `enforce`,
 selected by its `dependency_mode` argument, the store, or `RECALL_DEPENDENCY_INVALIDATION`; the
-default is `off`, which preserves existing trust behavior. Enforce mode fails closed with
-`DEPENDENCY_GRAPH_NOT_READY` when the projection cannot be read.
+default is `off`, which preserves existing trust behavior. Enforce mode fails closed: with
+`DEPENDENCY_GRAPH_NOT_READY` when the generation has no projection, and with
+`DEPENDENCY_UNAVAILABLE`, under every policy, when reading the projection raises.
 
 ## Identity Rules
 
