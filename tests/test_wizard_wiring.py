@@ -135,7 +135,10 @@ def test_a_degraded_tenant_with_nothing_serving_gets_no_server_at_all(tmp_path: 
 
 
 def test_the_uncalibrated_tenant_is_never_put_into_production_mode(tmp_path: Path) -> None:
-    """Its rows are in the legacy `chunks` table, which production mode routes past entirely."""
+    """ENV-001: pin development explicitly so an inherited production mode cannot redirect memory.
+
+    Baseline 83014e2c3 fails the environment assertion; development trust remains unchanged.
+    """
     blocks, _ = server_blocks(
         _plan(tmp_path),
         dsn="postgresql://recall:pw@127.0.0.1:5432/recall",
@@ -144,7 +147,7 @@ def test_the_uncalibrated_tenant_is_never_put_into_production_mode(tmp_path: Pat
     )
 
     memory = _by_name(blocks)["default-memory"]
-    assert "RECALL_ENV" not in memory.env, "production mode would route past the legacy table"
+    assert memory.env.get("RECALL_ENV") == "development", "production would route past memory"
     assert memory.env["RECALL_TRUST_MODE"] == "development"
 
 

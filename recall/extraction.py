@@ -703,11 +703,11 @@ def _libreoffice_profile(scratch: Path) -> Iterator[Path]:
         return
     pool = _profiles()
     slot = pool.get()
-    if slot is None:
-        slot = tempfile.mkdtemp(prefix="recall-office-profile-")
-        with _pool_lock:
-            _live_profiles.add(slot)
     try:
+        if slot is None:
+            slot = tempfile.mkdtemp(prefix="recall-office-profile-")
+            with _pool_lock:
+                _live_profiles.add(slot)
         yield Path(slot)
     except BaseException:
         # A `soffice` that died mid-run can leave a lock behind that poisons every later launch
@@ -717,9 +717,10 @@ def _libreoffice_profile(scratch: Path) -> Iterator[Path]:
         # `BaseException`, not `Exception`, and the difference is not pedantry: the slot MUST go
         # back. A Ctrl-C through here would otherwise retire one slot permanently, and enough of
         # them would empty the pool and leave the next `pool.get()` blocking for ever.
-        with _pool_lock:
-            _live_profiles.discard(slot)
-        shutil.rmtree(slot, ignore_errors=True)
+        if slot is not None:
+            with _pool_lock:
+                _live_profiles.discard(slot)
+            shutil.rmtree(slot, ignore_errors=True)
         pool.put(None)
         raise
     else:

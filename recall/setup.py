@@ -1076,6 +1076,8 @@ def _refuse_removed_entailment_in(path: Path) -> None:
 
 
 def _update_env_block(path: Path, values: dict[str, str]) -> None:
+    from recall.wizard.wiring import _write_private_configuration
+
     # Every writer of the managed block refuses here (`recall setup` and `recall wizard` both
     # rebuild it), so neither can drop a leftover RECALL_ENTAILMENT; `run_setup_wizard` also
     # checks before its first question, so a refusal there costs no answers.
@@ -1093,7 +1095,7 @@ def _update_env_block(path: Path, values: dict[str, str]) -> None:
         if lines and lines[-1].strip():
             lines.append("")
         lines.extend(block)
-    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    _write_private_configuration(path, "\n".join(lines).rstrip() + "\n")
 
 
 def _update_markdown_block(path: Path, begin: str, end: str, content: str) -> None:
