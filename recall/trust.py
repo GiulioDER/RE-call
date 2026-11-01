@@ -78,12 +78,14 @@ from recall.supersession import SupersessionGraph, stored_supersession_graph
 from recall.support import calibration_coverage
 from recall.unknown_terms import apply_unknown_term_gate, check_unknown_terms
 from recall.trust_policy import (
+    DEPENDENCY_MODES,
     CalibrationStatus,
     TrustFailureCode,
     TrustPolicy,
     TrustRefusal,
     TrustState,
     code_for_status,
+    dependency_mode_from_env,
 )
 from recall.trust_gate import (  # noqa: F401  # re-exported: tests and benchmarks import _verdict here
     _UNCALIBRATED,
@@ -116,8 +118,6 @@ _WARNED_NO_EDGE_DATES: set[str] = set()
 #: the two together rather than importing across the layers.
 _WITHHELD = "<withheld>"
 
-#: The dependency invalidation modes, from an argument, the store, or RECALL_DEPENDENCY_INVALIDATION.
-_DEPENDENCY_MODES = frozenset({"off", "enforce"})
 
 
 def _without_non_finite_dense(result: RetrievalResult) -> RetrievalResult:
@@ -409,14 +409,8 @@ def _trusted_search(
         mode_reader = getattr(store, "dependency_invalidation_mode", None)
         configured_dependency_mode = mode_reader() if callable(mode_reader) else None
     if configured_dependency_mode is None:
-        # Normalised like RECALL_ATOMIC_RESCUE_MODE below, and named in the error, because an
-        # operator's `Enforce` would otherwise pass startup and fail every search as a code bug.
-        configured_dependency_mode = (
-            str(environment_source.get("RECALL_DEPENDENCY_INVALIDATION", "off")).strip().lower()
-        )
-        if configured_dependency_mode not in _DEPENDENCY_MODES:
-            raise ValueError("RECALL_DEPENDENCY_INVALIDATION must be 'off' or 'enforce'")
-    elif configured_dependency_mode not in _DEPENDENCY_MODES:
+        configured_dependency_mode = dependency_mode_from_env(environment_source)
+    elif configured_dependency_mode not in DEPENDENCY_MODES:
         raise ValueError("dependency_mode must be 'off' or 'enforce'")
     dependency_projection: DependencyProjection | None = None
     dependency_failure: TrustFailureCode | None = None
@@ -475,8 +469,20 @@ def _trusted_search(
                 state_projection = project_current_state(store, as_of=now, known_as_of=known_as_of)
                 dependency_projection = state_projection.dependency_projection
         except Exception as exc:  # BROAD-CATCH: fail-closed
+            # A read that raised is an outage, like the binding read above, and refuses under
+            # every policy; only a projection that is absent means the graph is not built yet.
             _log.warning("dependency invalidation projection unavailable: %s", type(exc).__name__)
-            dependency_failure = TrustFailureCode.DEPENDENCY_GRAPH_NOT_READY
+            binding = generation_binding or {}
+            raise TrustRefusal(
+                code=TrustFailureCode.DEPENDENCY_UNAVAILABLE,
+                calibration_status=calibration_status,
+                tenant_id=binding.get("tenant_id") or getattr(store, "tenant", None),
+                generation_id=binding.get("generation_id"),
+                calibration_id=calibration_id,
+                pipeline_fingerprint=binding.get("pipeline_fingerprint"),
+                corpus_fingerprint=binding.get("corpus_fingerprint"),
+                query_set_digest=query_set_digest,
+            ) from exc
         if dependency_projection is None:
             dependency_failure = TrustFailureCode.DEPENDENCY_GRAPH_NOT_READY
             if active_policy.strict:

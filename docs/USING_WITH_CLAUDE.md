@@ -131,8 +131,9 @@ published certified calibration. It is included above only for local, uncalibrat
 Optional env: `RECALL_EMBEDDER=hashing` for the fully-offline embedder (default `fastembed`);
 `RECALL_INDEX_ROOT` bounds where the development-only `recall_index` may read (default: the
 server's working directory). V1 calibration is stored in PostgreSQL and resolved from the
-authenticated tenant plus active generation on every search. `RECALL_CALIBRATION` and local
-`calibration.json` files are never selected automatically; import a legacy file with
+authenticated tenant plus active generation on every search. Search never reads
+`RECALL_CALIBRATION` or a local `calibration.json`; `recall doctor`, `recall lint --semantic` and
+the enterprise readiness check read that file as their default. Import a legacy file with
 `recall --tenant T calibration import FILE` to retain it as unbound evidence.
 
 ### `RECALL_RERANK=1` — the single biggest quality lever

@@ -241,6 +241,16 @@ def _main(argv: list[str] | None = None) -> None:
     raw_argv = sys.argv[1:] if argv is None else list(argv)
     parser = build_parser(_command_from_argv(raw_argv))
     args = parser.parse_args(raw_argv)
+    # Once, here, rather than on the first search: a trust setting that every search would refuse
+    # (development under production, an unknown dependency mode) refuses the command instead.
+    # Imported only when one is set, since unset is valid and the import costs about 130 ms.
+    if {"RECALL_TRUST_MODE", "RECALL_DEPENDENCY_INVALIDATION"} & os.environ.keys():
+        from recall.trust_policy import validate_trust_env
+
+        try:
+            validate_trust_env(os.environ)
+        except ValueError as exc:
+            raise SystemExit(f"recall: {exc}") from exc
     # A command that cannot serve a lite store (`sqlite:///`) stops here, by name, before any
     # guard or handler opens anything; `recall.backends.LITE_REFUSED` lists them, and every
     # command must be classified there or in `LITE_SERVED`.

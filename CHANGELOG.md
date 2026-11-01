@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- API correction for the trust failure codes: with `RECALL_DEPENDENCY_INVALIDATION=enforce`, a
+  dependency projection read that raises is now `DEPENDENCY_UNAVAILABLE`, refused under every
+  policy, instead of `DEPENDENCY_GRAPH_NOT_READY`. A generation with no projection is still
+  `DEPENDENCY_GRAPH_NOT_READY`. Automation that retried on the second code for an outage should
+  retry on the first.
+- `RECALL_TRUST_MODE=development` under `RECALL_ENV=production` is now refused when the MCP server
+  or a `recall` command starts, as is an unknown `RECALL_DEPENDENCY_INVALIDATION` value; both
+  used to surface on the first search, or not at all.
+
 - Upgrade note for calibration fitting (#1106): when rounding the midpoint down to the 0.001 grid
   would land on or below the unanswerable ceiling (a clean gap under about 0.002), the fitted
   threshold now sits strictly above the ceiling and at or below the answerable floor. It used to

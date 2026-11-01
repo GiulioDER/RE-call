@@ -508,7 +508,7 @@ They are observations, not automatic failures.
 | `recall.capabilities` | 0 | 0 |
 | `recall.check` | 4 | 29 |
 | `recall.claude_code` | 6 | 128 |
-| `recall.cli` | 5 | 107 |
+| `recall.cli` | 6 | 108 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._lite` | 3 | 105 |
 | `recall.cli_commands._shared` | 10 | 115 |
@@ -741,7 +741,7 @@ They are observations, not automatic failures.
 | `recall.timing` | 3 | 18 |
 | `recall.trust` | 22 | 113 |
 | `recall.trust_gate` | 9 | 58 |
-| `recall.trust_policy` | 2 | 105 |
+| `recall.trust_policy` | 3 | 105 |
 | `recall.trust_verdicts` | 2 | 40 |
 | `recall.truth_extraction` | 4 | 23 |
 | `recall.truth_extraction._cache` | 6 | 25 |
