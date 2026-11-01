@@ -1815,6 +1815,24 @@ class GenerationManager:
             ).fetchall()
             actual = {str(item[0]) for item in actual_rows}
             if actual != expected:
+                # A forget that landed after the build wrote a source erases its rows here too,
+                # so the build's own record no longer matches. Still a failure, but one that a
+                # re-run fixes, and the operator should be told so rather than handed a diff.
+                forgotten = sorted(
+                    str(item[0]) for item in conn.execute(
+                        "SELECT source_uri FROM recall_source_tombstones "
+                        "WHERE tenant_id = %s AND source_uri = ANY(%s)",
+                        (self.tenant_id, sorted(expected - actual)),
+                    ).fetchall()
+                )
+                # Only when the forget explains the WHOLE mismatch: an extra row or another
+                # missing source is a different fault, and the plain diff below names it.
+                if forgotten and actual <= expected and set(forgotten) == expected - actual:
+                    raise GenerationError(
+                        f"source(s) {forgotten} were forgotten while this generation was being "
+                        "built, so its build record no longer matches its rows; re-run the build "
+                        "(a new generation from the same manifest) to produce one without them"
+                    )
                 raise GenerationError(
                     f"generation source mismatch: expected={sorted(expected)}, "
                     f"actual={sorted(actual)}"
@@ -1842,6 +1860,9 @@ class GenerationManager:
                 or graph_marker.get("graph_fingerprint") != graph.fingerprint
             ):
                 raise GenerationError("generation semantic graph fingerprint mismatch")
+            # Not a repeat of the build's write. A forget between build and validate can change
+            # this generation's corpus fingerprint (a manifest source with no rows passes the
+            # source check) and the tenant's supersession records, and both feed the projection.
             summary["dependency_projection"] = self._persist_dependency_projection(
                 conn, generation_id, current.corpus_fingerprint, graph_chunks,
             )
@@ -2281,6 +2302,11 @@ class GenerationManager:
                 # Chunk foreign keys remove mentions and relation evidence. Relations and
                 # entities are derived rows, so remove any that no longer have surviving support
                 # and leave the generation marker mismatched until an explicit graph rebuild.
+                # Deleting EVERY evidence-less relation in these generations, not only those that
+                # cited the rows just removed, is safe (DEF-11): `SemanticRelation` refuses a
+                # relation with no evidence (`recall/semantic_graph/_model.py`), and
+                # `write_semantic_graph` writes each relation's evidence in the same transaction,
+                # so the only orphans are ones a deleted chunk left behind.
                 conn.execute(
                     "DELETE FROM recall_graph_relations_v1 r "
                     "WHERE r.tenant_id = %s AND r.generation_id = ANY(%s) "

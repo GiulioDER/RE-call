@@ -679,6 +679,42 @@ def _create_ledger(conn: Connection) -> None:
     )
 
 
+#: The oldest pgvector this package serves. Filtered dense search sets `hnsw.iterative_scan`
+#: (`recall/store.py`, `_HNSW_FILTERED_TUNING_SQL`), which pgvector added in 0.8.0.
+PGVECTOR_MIN_VERSION = (0, 8, 0)
+
+
+def pgvector_version_problem(version: str) -> str | None:
+    """Why `version` of the `vector` extension cannot serve this package, or None if it can."""
+    parts = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", version)
+    floor = ".".join(str(part) for part in PGVECTOR_MIN_VERSION)
+    if parts is None:
+        return f"pgvector version {version!r} cannot be read; this install needs {floor} or newer"
+    found = tuple(int(part or 0) for part in parts.groups())
+    if found < PGVECTOR_MIN_VERSION:
+        return (
+            f"pgvector {version} is older than {floor}, which this install needs; run "
+            "`ALTER EXTENSION vector UPDATE;` after installing a newer pgvector package"
+        )
+    return None
+
+
+def _require_pgvector_floor(conn: Connection) -> None:
+    """Refuse before any migration runs when the installed, or about to be installed, pgvector
+    is too old. 0001 creates the extension at the server's default version when it is absent."""
+    row = conn.execute(
+        "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
+            "SELECT default_version FROM pg_available_extensions WHERE name = 'vector'"
+        ).fetchone()
+    if row is None:
+        return
+    if problem := pgvector_version_problem(str(row[0])):
+        raise SchemaError(problem)
+
+
 def _require_migration_privileges(conn: Connection) -> None:
     row = conn.execute(
         "SELECT has_schema_privilege(current_user, current_schema(), 'CREATE')"
@@ -784,6 +820,7 @@ def apply_migrations(
     applied_now: list[MigrationState] = []
     with _connect(migration_dsn) as conn:
         _require_migration_privileges(conn)
+        _require_pgvector_floor(conn)
         if not _take_migration_lock(conn):
             raise ConcurrentMigrator(
                 "another RE-call schema migrator is already running (the lock stayed held for "

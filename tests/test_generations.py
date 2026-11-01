@@ -3168,3 +3168,61 @@ def test_a_fixed_generation_stops_serving_once_abandoned(manager) -> None:
         with pytest.raises(NoActiveGeneration):
             with store.snapshot():
                 pass
+
+
+@requires_db
+def test_a_forget_that_fails_validation_names_the_source_and_the_repair(manager) -> None:
+    """Item 4 (DAT-001, owner decision 2026-11-01): a forget that lands after the build wrote a
+    source erases its rows, so validation still fails closed, but the error names the forgotten
+    source and says that re-running the build fixes it.
+
+    Red against `d56661c71` (the error was the bare "generation source mismatch" diff): node
+    tests/test_generations.py::test_a_forget_that_fails_validation_names_the_source_and_the_repair
+    fails on the assertion that the message says the source was forgotten.
+    """
+    data = b"a source erased after the build wrote it"
+    manifest = _manifest(manager.tenant_id, data)
+    uri = manifest.objects[0].uri
+    generation = manager.create(manifest, _pipeline("model-a"))
+    manager.build(generation.generation_id, _reader(manifest, data), _Embedder(1), lambda t: [t])
+    manager.forget(uri)
+
+    with pytest.raises(GenerationError) as caught:
+        manager.validate(generation.generation_id)
+    message = str(caught.value)
+    assert uri in message and "forgotten" in message and "re-run the build" in message, message
+    assert manager.get(generation.generation_id).state == GenerationState.FAILED
+
+
+@requires_db
+def test_sparse_search_breaks_rank_ties_by_chunk_id(manager) -> None:
+    """Item 10: twelve chunks with one text tie on `ts_rank`, and the top four must be the four
+    lowest chunk ids, in that order, whatever order the rows were written in.
+
+    Red against `d56661c71` (`ORDER BY rank DESC` only): node
+    tests/test_generations.py::test_sparse_search_breaks_rank_ties_by_chunk_id fails on
+    "tied ranks were not ordered by chunk id".
+    """
+    data = b"tie"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = manager.create(manifest, _pipeline("model-a", fts_language="simple"))
+    manager.build(
+        generation.generation_id, _reader(manifest, data), _Embedder(1), lambda t: [t] * 12
+    )
+    manager.validate(generation.generation_id)
+    manager.promote(generation.generation_id, unsafe_development=True)
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
+        lowest = [
+            str(row[0]) for row in conn.execute(
+                "SELECT chunk_id FROM recall_chunks_v1 WHERE tenant_id = %s "
+                "AND generation_id = %s ORDER BY chunk_id LIMIT 4",
+                (manager.tenant_id, generation.generation_id),
+            ).fetchall()
+        ]
+
+    with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
+        hits = store.query_sparse("tie", 4)
+
+    assert len({hit.score for hit in hits}) == 1, "the fixture did not produce a tie"
+    assert [hit.chunk.id for hit in hits] == lowest, "tied ranks were not ordered by chunk id"
