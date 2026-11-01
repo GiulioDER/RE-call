@@ -1380,57 +1380,39 @@ def test_picking_a_withheld_embedder_asks_again_instead_of_keeping_hashing(
     assert next(answers, None) is None
 
 
-def test_setup_auto_prepares_an_empty_mismatched_table(tmp_path, monkeypatch):
+def test_setup_refuses_to_replace_an_empty_mismatched_schema(tmp_path, monkeypatch):
+    """BUG-001/STAKES-001: setup must refuse before destructive schema replacement.
+
+    Contract change: emptiness no longer authorizes automatic DROP. This exact
+    test fails its refusal assertion on eddfc9179 before passing with the fix.
+    """
     monkeypatch.setattr("recall.setup.probe_hardware", lambda: _roomy_probe(10 * 1024**3))
     monkeypatch.setattr("recall.setup._module_available", lambda name: False)
     monkeypatch.setattr(
         "recall.setup._schema_prepare_state",
-        lambda dsn, dim, table=None: (
-            "conflict",
-            "recall_chunks_v1 uses vector(384), requested dimension is 1024",
-        ),
+        lambda dsn, dim, table=None: ("conflict", "vector width mismatch"),
     )
     monkeypatch.setattr(
-        "recall.setup._table_row_counts",
-        lambda dsn, tables: {name: 0 for name in tables},
+        "recall.setup._table_row_counts", lambda dsn, tables: {name: 0 for name in tables},
+        raising=False,
     )
-    dropped: list[str] = []
-    applied: list[tuple[str, str, int]] = []
-
-    monkeypatch.setattr("recall.setup._drop_default_schema_family", lambda dsn: dropped.append(dsn))
+    monkeypatch.setattr("recall.setup._drop_default_schema_family", lambda dsn: None, raising=False)
+    applied = []
     monkeypatch.setattr(
         "recall.schema.apply_migrations",
-        lambda dsn, *, table, dim: applied.append((dsn, table, dim)) or (),
+        lambda *args, **kwargs: applied.append((args, kwargs)) or (),
     )
-    answers = iter([
-        "n",  # security
-        "", "", "",  # API keys
-        "4",  # fastembed large, 1024 wide
-        "1",  # reranker
-        "1",  # sparse
-        "n",  # reasoning arm declined
-        "n",  # scaffold
-        "n",  # calibrate
-    ])
-    output = io.StringIO()
-
-    run_setup_wizard(
-        dsn="postgresql://example/recall",
-        migration_dsn="postgresql://owner/recall",
-        env_path=tmp_path / ".env",
-        input_fn=lambda _prompt="": next(answers),
-        print_fn=lambda *a, **k: print(*a, **k, file=output),
-    )
-
-    text = output.getvalue()
-    assert "uses vector(384), requested dimension is 1024" in text
-    assert "default schema is empty, so the wizard will rebuild it now" in text
-    assert dropped == ["postgresql://owner/recall"]
-    assert applied == [("postgresql://owner/recall", "chunks", 1024)]
-    assert next(answers, None) is None
-    assert "RECALL_EMBEDDER=fastembed:BAAI/bge-large-en-v1.5" in (
-        tmp_path / ".env"
-    ).read_text(encoding="utf-8")
+    answers = iter(["n", "", "", "", "4", "1", "1", "n", "n", "n"])
+    with pytest.raises(SystemExit, match="will not rebuild"):
+        run_setup_wizard(
+            dsn="postgresql://example/recall",
+            migration_dsn="postgresql://owner/recall",
+            env_path=tmp_path / ".env",
+            input_fn=lambda _prompt="": next(answers),
+            print_fn=lambda *args, **kwargs: None,
+        )
+    assert applied == []
+    assert not (tmp_path / ".env").exists()
 
 
 def test_an_unreachable_database_is_not_treated_as_a_conflict() -> None:
@@ -1495,13 +1477,9 @@ def test_setup_refuses_to_rebuild_a_populated_mismatched_table(tmp_path, monkeyp
         "recall.setup._schema_prepare_state",
         lambda dsn, dim, table=None: ("conflict", "mismatch" if dim == 1024 else None),
     )
-    monkeypatch.setattr(
-        "recall.setup._table_row_counts",
-        lambda dsn, tables: {name: (17 if name == "chunks" else 0) for name in tables},
-    )
     answers = iter(["n", "", "", "", "4"])
 
-    with pytest.raises(SystemExit, match="already contains data: chunks=17"):
+    with pytest.raises(SystemExit, match="will not rebuild"):
         run_setup_wizard(
             dsn="postgresql://example/recall",
             migration_dsn="postgresql://owner/recall",

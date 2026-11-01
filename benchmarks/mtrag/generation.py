@@ -469,8 +469,9 @@ def already_done(path: Path) -> set[str]:
     with path.open(encoding="utf-8", errors="surrogateescape") as handle:
         for line in handle:
             try:
+                line.encode("utf-8")
                 row = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeEncodeError):
                 continue
             if isinstance(row, dict) and "task_id" in row and submission_answer(row):
                 done.add(str(row["task_id"]))
@@ -504,8 +505,9 @@ def unparsable_rows(path: Path) -> int:
             if not line.strip():
                 continue
             try:
+                line.encode("utf-8")
                 json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeEncodeError):
                 bad += 1
     return bad
 
@@ -589,8 +591,9 @@ def drop_answerless_rows(path: Path, task_ids: set[str]) -> int:
     with path.open(encoding="utf-8", newline="", errors="surrogateescape") as handle:
         for line in handle:
             try:
+                line.encode("utf-8")
                 row = json.loads(line)
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeEncodeError):
                 kept.append(line)
                 continue
             answerless = (

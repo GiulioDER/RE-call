@@ -34,6 +34,58 @@ from benchmarks.mtrag import generation as gen
 from tests.test_mtrag_generation import _mtrag_root, _task
 
 
+@pytest.mark.parametrize("invalid", [b"\xff", b"\xc3"])
+def test_invalid_utf8_checkpoint_rows_are_not_complete(tmp_path, invalid):
+    """DAT-002 red proof: baseline accepts a surrogateescaped prediction as done."""
+    out = tmp_path / "preds.jsonl"
+    out.write_bytes(_row("bad", "MARKER").encode().replace(b"MARKER", invalid))
+    assert gen.already_done(out) == set(), "invalid UTF-8 must not count as a completed answer"
+
+
+@pytest.mark.parametrize("invalid", [b"\xff", b"\xc3"])
+def test_invalid_utf8_checkpoint_rows_are_reported(tmp_path, invalid):
+    """DAT-002 red proof: JSON syntax alone does not establish UTF-8 validity."""
+    out = tmp_path / "preds.jsonl"
+    out.write_bytes(_row("bad", "MARKER").encode().replace(b"MARKER", invalid))
+    assert gen.unparsable_rows(out) == 1, "invalid UTF-8 must be reported as an invalid row"
+
+
+@pytest.mark.parametrize("invalid", [b"\xff", b"\xc3"])
+def test_invalid_utf8_checkpoint_bytes_survive_answerless_repair(tmp_path, invalid):
+    """DAT-002 red proof: malformed bytes must survive a repair of another row."""
+    out = tmp_path / "preds.jsonl"
+    bad = _row("bad", "").replace('"input": []', '"input": ["MARKER"]').encode().replace(b"MARKER", invalid)
+    out.write_bytes(bad + _row("redo", "").encode())
+    assert gen.drop_answerless_rows(out, {"bad", "redo"}) == 1
+    assert out.read_bytes() == bad, "the invalid row is reported, not silently deleted"
+
+
+@pytest.mark.parametrize("invalid", [b"\xff", b"\xc3"])
+def test_resume_rejects_invalid_utf8_without_changing_checkpoint(
+    tmp_path, monkeypatch, capsys, invalid,
+):
+    """DAT-002 red proof at main: baseline falsely returns success with these bytes."""
+    root = _mtrag_root(tmp_path, [_task(task_id="done")])
+    out = tmp_path / "preds.jsonl"
+    raw = (_row("done", "valid") + _row("foreign", "MARKER")).encode().replace(b"MARKER", invalid)
+    out.write_bytes(raw)
+    gen.write_run_manifest(out, prompt=gen.DEFAULT_PROMPT, model=gen.DEFAULT_MODEL)
+    monkeypatch.setattr(gen, "openrouter_client", lambda: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *args, **kwargs: pytest.fail("no task is pending"))
+    assert gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)]) == 1
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert any(event.get("event") == "unparsable_rows" and event["count"] == 1 for event in events)
+    assert out.read_bytes() == raw
+
+
+def test_valid_non_ascii_checkpoint_remains_complete(tmp_path):
+    """Acceptance control, not a defect proof: valid UTF-8 already passes on baseline."""
+    out = tmp_path / "preds.jsonl"
+    out.write_text(json.dumps({"task_id": "valid", "predictions": [{"text": "Café"}]}, ensure_ascii=False) + "\n", encoding="utf-8")
+    assert gen.already_done(out) == {"valid"}
+    assert gen.unparsable_rows(out) == 0
+
+
 def _resumable(out, rows: str, prompt: str = gen.DEFAULT_PROMPT,
                model: str = "openai/gpt-4o-mini") -> None:
     """An output file AND the manifest a resume requires beside it.
