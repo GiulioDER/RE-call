@@ -608,8 +608,8 @@ def test_hosted_profiles_declare_only_measured_normalization():
 
     Measured 2026-08-18: `gemini-embedding-001` returns a unit vector at 3072 but norm 0.694 at
     1536 and 0.582 at 768. A profile declaring `normalization='l2'` at a truncated width would be
-    stating something the provider does not do, and every cosine compared against a calibrated
-    abstention threshold would be quietly wrong.
+    stating something the provider does not do. Positive rescaling alone leaves cosine
+    similarity unchanged.
     """
     for entry in REGISTERED_PROFILES.values():
         if not entry.hosted:
@@ -727,3 +727,28 @@ class _ProfiledEmbedder:
 
     def embed(self, texts):
         return [[0.0] * self.dim for _ in texts]
+
+
+@pytest.mark.parametrize("profile,spelling,key", [
+    (VOYAGE_PROFILE, "voyage", "VOYAGE_API_KEY"),
+    (OPENAI_PROFILE, "openrouter", "OPENROUTER_API_KEY"),
+])
+@pytest.mark.parametrize("adapter", ["mcp", "core"])
+def test_registered_environment_does_not_borrow_ambient_credentials(
+    stub_providers, monkeypatch, profile, spelling, key, adapter,
+):
+    """ENV-002: d56661c71 builds instead of raising, all four cases red on the test host.
+
+    A supplied environment is the credential source even when the process has a key.
+    Provider stubs ensure the regression never spends API credit.
+    """
+    from recall.embedding_core import resolve_registered_embedder
+    from recall_mcp.service import make_embedder
+
+    monkeypatch.setenv(key, "synthetic-ambient-key")
+    env = {"RECALL_EMBED_PROFILE": profile}
+    with pytest.raises(ValueError, match=key):
+        if adapter == "mcp":
+            make_embedder(spelling, env)
+        else:
+            resolve_registered_embedder(profile, env)

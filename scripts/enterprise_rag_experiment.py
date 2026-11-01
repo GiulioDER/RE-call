@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -107,8 +108,6 @@ def command(args: argparse.Namespace, arm: dict[str, Any]) -> list[str]:
         str(args.documents),
         "--out",
         arm["answers"],
-        "--dsn",
-        args.dsn,
         "--table",
         arm["table"],
         "--tenant",
@@ -165,7 +164,7 @@ def main() -> int:
     for arm in plan["arms"]:
         argv = command(args, arm)
         print("running " + arm["id"] + ": " + " ".join(argv), flush=True)
-        subprocess.run(argv, check=True)
+        subprocess.run(argv, check=True, env={**os.environ, "RECALL_DSN": args.dsn})
     print(f"completed {len(plan['arms'])} arm(s); manifest {plan_path}")
     return 0
 

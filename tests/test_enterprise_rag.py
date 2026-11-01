@@ -629,12 +629,12 @@ def test_closed_loop_skips_cheap_provider_after_depth_resolves_gap(
 
     calls: list[str] = []
 
-    def fake_retrieve(*_args: Any, **kwargs: Any) -> tuple[list[str], list[ScoredChunk], bool]:
+    def fake_retrieve(*_args: Any, **kwargs: Any):
         del kwargs
         calls.append(_args[2])
-        return ["dsid_2"], [depth], False
+        return ["dsid_2"], [depth], False, enterprise_rag.RetrievalDiagnostics()
 
-    monkeypatch.setattr(enterprise_rag, "retrieve_docs", fake_retrieve)
+    monkeypatch.setattr(enterprise_rag, "retrieve_docs_with_diagnostics", fake_retrieve)
     ids, _, diagnostics = expand_retrieval_hits(
         question,
         _Store(),
@@ -763,3 +763,134 @@ def test_retrieval_capture_limit_is_bounded() -> None:
                 retrieval_captures=11,
             )
         )
+
+
+@pytest.mark.parametrize("ids,expected", [(None, 2), ([], 0), (["q1"], 1), (["absent"], 0)])
+def test_question_selection_preserves_explicit_empty_scope(tmp_path, ids, expected):
+    """BUG-002: empty-list node fails 2 != 0 on d56661c71 before the fix."""
+    path = tmp_path / "questions.jsonl"
+    path.write_text("\n".join(json.dumps({"question_id": f"q{i}", "question": "Q"})
+                              for i in (1, 2)), encoding="utf-8")
+    assert len(load_questions(path, question_ids=ids)) == expected
+
+
+def test_inactive_adaptive_depth_does_not_restrict_k(tmp_path, monkeypatch):
+    """BUG-001: d56661c71 raises ValueError before the validation-boundary sentinel."""
+    class Validated(Exception):
+        pass
+
+    def stop(_args):
+        raise Validated
+
+    path = tmp_path / "q.jsonl"
+    path.write_text(json.dumps({"question_id": "q1", "question": "Q"}), encoding="utf-8")
+    monkeypatch.setattr(enterprise_rag, "_dsn", stop)
+    outcome = None
+    try:
+        enterprise_rag.main([
+            "--questions", str(path), "--documents", str(tmp_path / "d.zip"),
+            "--out", str(tmp_path / "out.jsonl"), "--embedder", "hashing", "--k", "20",
+        ])
+    except (Validated, ValueError) as exc:
+        outcome = type(exc)
+    assert outcome is Validated
+
+
+def test_calibration_cli_scores_labels_without_exposing_them_to_runtime(tmp_path, monkeypatch):
+    """BUG-003: d56661c71 reaches the writer with zero labeled questions, then fails.
+
+    This drives main and real retrieval_calibration; only retrieval I/O, the store,
+    and the unrelated population-weight summary are faked.
+    """
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    class Written(Exception):
+        pass
+
+    path = tmp_path / "q.jsonl"
+    path.write_text(json.dumps({"question_id": "q1", "question": "Q", "question_type": "basic",
+                                "expected_doc_ids": ["dsid_1"]}), encoding="utf-8")
+    assert "expected_doc_ids" not in load_questions(path)[0].raw
+    hit = _rerank_test_hit("dsid_1", 0.8)
+    observed = {}
+
+    def write(_path, payload):
+        observed.update(payload)
+        raise Written
+
+    monkeypatch.setattr(enterprise_rag, "PgVectorStore", lambda *a, **kw: nullcontext(
+        SimpleNamespace(ensure_schema=lambda: None, tenant="fixture", table="fixture")))
+    monkeypatch.setattr(enterprise_rag, "build_sparse_encoder", lambda *a, **kw: None)
+    monkeypatch.setattr(enterprise_rag, "POPULATION", {"basic": 1})
+    monkeypatch.setattr(enterprise_rag, "summarize", lambda rows: {})
+    monkeypatch.setattr(enterprise_rag, "retrieve_docs", lambda *a, **kw: (["dsid_1"], [hit], False))
+    monkeypatch.setattr(enterprise_rag, "best_dense_score", lambda *a: 0.8)
+    monkeypatch.setattr(enterprise_rag, "write_dense_floor_artifact", write)
+    with pytest.raises(Written):
+        enterprise_rag.main([
+            "--questions", str(path), "--documents", str(tmp_path / "d.zip"),
+            "--out", str(tmp_path / "out.jsonl"), "--embedder", "hashing", "--skip-index",
+            "--dsn", "postgresql://fixture", "--embedding-cache", str(tmp_path / "cache.sqlite"),
+            "--calibrate-retrieval-out", str(tmp_path / "calibration.json"),
+            "--calibrate-note", "fixture", "--calibrate-backs", "fixture",
+            "--calibrate-k-values", "1", "--calibrate-thresholds", "0.5",
+        ])
+    assert observed["k_metrics"]["1"]["questions_with_expected_docs"] == 1
+    assert observed["k_metrics"]["1"]["document_recall"] == 1.0
+    assert observed["threshold_metrics"]["0.5"]["answerable_questions"] == 1
+    assert "expected_doc_ids" not in load_questions(path)[0].raw
+
+
+@pytest.mark.parametrize("arm,equal_depth,expected", [
+    ("none", False, 1), ("none", True, 1), ("depth", False, 2),
+    ("cheap", False, 3), ("closed_loop", False, 2),
+])
+def test_capture_accounts_for_actual_retrieval_work(monkeypatch, arm, equal_depth, expected):
+    """PERF-001/NUM-001: d56661c71 repeats equal depth and omits reasoning work.
+
+    The same consumer nodes run red then green on the test host. The baseline control also
+    fails a deliberate production mutation setting its embedding call count to zero.
+    """
+    from types import SimpleNamespace
+    from recall.types import RetrievalDiagnostics
+
+    calls = []
+    hit = _rerank_test_hit("dsid_1", 0.2)
+
+    def retrieve(*args, **kwargs):
+        calls.append((args[2], kwargs["k"]))
+        return ["dsid_1"], [hit], False, RetrievalDiagnostics(
+            reranking_ran=len(calls) % 2 == 1, stage_ms={"embedding": 2.0})
+
+    metadata = {"provider_id": "fixture", "model_id": "fixture", "model_revision": "fixture"}
+
+    class Provider:
+        def provider_metadata(self):
+            return SimpleNamespace(to_dict=lambda: metadata)
+
+        def __call__(self, request):
+            return enterprise_rag.ExpansionReport(proposals=(
+                enterprise_rag.ExpansionProposal("one", "rewrite", "first query"),
+                enterprise_rag.ExpansionProposal("two", "rewrite", "second query"),
+            ))
+
+    monkeypatch.setattr(enterprise_rag, "retrieve_docs_with_diagnostics", retrieve)
+    monkeypatch.setattr(enterprise_rag, "retrieve_docs", lambda *a, **kw: retrieve(*a, **kw)[:3])
+    rows = list(enterprise_rag._answers(
+        [EnterpriseQuestion("q1", "Q", {})],
+        SimpleNamespace(tenant="fixture", table="fixture", generation_id=None),
+        SimpleNamespace(), k=8, candidate_k=80, mode="extractive", model="fixture",
+        api_key=None, max_chars=1000, sparse_backend="lexical", sparse_encoder=None,
+        reranker=None, gap_threshold=0.5, reasoning_arm=arm,
+        expansion_provider=Provider() if arm == "cheap" else None, expansion_cache=None,
+        adaptive_depth_feature="max_dense_score" if equal_depth else None,
+        adaptive_depth_threshold=1.0 if equal_depth else None, adaptive_depth_k=8,
+    ))
+    capture = rows[0]["_diagnostics"]["captures"]
+    assert len(calls) == expected
+    assert capture["calls"]["embedding"] == expected
+    assert capture["calls"]["lexical"] == expected
+    assert capture["calls"]["reranker"] == (expected + 1) // 2
+    assert capture["mean_stage_ms"]["embedding"] == expected * 2.0
+    json.dumps(rows)
