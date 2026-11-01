@@ -334,7 +334,9 @@ counts="$(mutmut results --all true 2>/dev/null | targeted | awk -F': ' '{n[$2]+
       echo "<details><summary><code>$name</code></summary>"
       echo
       echo '```diff'
-      mutmut show "$name" 2>/dev/null | head -40
+      # Drain the producer after line 40: head closes early, so a large diff makes Python
+      # fail with a broken pipe and pipefail aborts this report-only job.
+      mutmut show "$name" 2>/dev/null | sed -n '1,40p'
       echo '```'
       echo "</details>"
     done

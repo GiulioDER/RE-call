@@ -64,11 +64,14 @@ case "$1" in
     exit "${FAKE_RUN_EXIT:-0}"
     ;;
   results)
-    echo "    recall.thing.x_value__mutmut_1: killed"
+    echo "    recall.thing.x_value__mutmut_1: ${FAKE_RESULT:-killed}"
     if [ "$2" = "--all" ]; then echo "    recall.thing.x_value__mutmut_2: not checked"; fi
     ;;
   show)
     echo "--- a/recall/thing.py"
+    if [ -n "${FAKE_LARGE_DIFF:-}" ]; then
+      "$PYTHON" -c 'print("+mutated line\\n" * 20000)'
+    fi
     ;;
 esac
 """
@@ -163,3 +166,19 @@ def test_a_run_stopped_before_testing_reports_that_no_mutant_ran(tmp_path: Path)
     assert "no mutant was tested" in summary
     assert "counts are partial" not in summary
     assert "No survivors." not in summary
+
+
+def test_a_large_survivor_diff_is_truncated_without_failing_the_report(tmp_path: Path) -> None:
+    """Red against the original `mutmut show | head -40`: the producer gets a broken pipe,
+    and pipefail aborts the report. The same test passes when the reader drains the diff.
+    """
+    repo, env = _repository(tmp_path)
+    env["MUTATION_BUDGET_SECONDS"] = "30"
+    env["FAKE_RESULT"] = "survived"
+    env["FAKE_LARGE_DIFF"] = "1"
+
+    returncode, _elapsed, summary = _run(repo, env)
+
+    assert returncode == 0
+    assert summary.count("+mutated line") == 39
+    assert "</details>" in summary
