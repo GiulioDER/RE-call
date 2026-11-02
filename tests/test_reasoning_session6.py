@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from hypothesis import given, strategies as st
 import pytest
@@ -81,6 +82,35 @@ def test_reasoning_session6_rejects_boolean_latency(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="latency_ms must be a non-negative JSON number"):
         load_fixture(path)
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "1e309", str(10**400)])
+def test_reasoning_session6_rejects_nonfinite_latency(tmp_path: Path, token: str) -> None:
+    """NUM-001: baseline a6051cac5 accepts non-finite floats or leaks OverflowError.
+
+    This exact node must fail its rejection assertion on the original _as_float,
+    then pass unchanged after the boundary validates a finite float.
+    """
+    raw = json.loads(Path("recall/eval/reasoning_session6.json").read_text(encoding="utf-8"))
+    raw["cases"][0]["observations"]["current_retrieval"]["latency_ms"] = "LATENCY_TOKEN"
+    path = tmp_path / "fixture.json"
+    path.write_text(json.dumps(raw).replace('"LATENCY_TOKEN"', token), encoding="utf-8")
+
+    rejected = False
+    try:
+        load_fixture(path)
+    except ValueError as exc:
+        rejected = "latency_ms" in str(exc)
+    except OverflowError:
+        pass  # A conversion error does not satisfy the public validation contract.
+    assert rejected, "invalid latency must be rejected with a field-specific ValueError"
+
+
+@given(exponent=st.integers(min_value=309, max_value=400))
+def test_reasoning_session6_rejects_overflowing_json_exponents(exponent: int) -> None:
+    """NUM-001: JSON exponent overflow must never produce accepted latency."""
+    with TemporaryDirectory() as directory:
+        test_reasoning_session6_rejects_nonfinite_latency(Path(directory), f"1e{exponent}")
 
 
 def test_reasoning_session6_rejects_missing_provider_identity(tmp_path: Path) -> None:

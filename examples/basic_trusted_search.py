@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 
+from recall._env import load_dotenv
 from recall.embeddings import Embedder, FastEmbedEmbedder, HashingEmbedder
 from recall.store import PgVectorStore
 from recall.trust import trusted_search
@@ -31,6 +32,7 @@ def make_embedder(name: str) -> Embedder:
 
 
 def main() -> None:
+    load_dotenv()
     dsn = os.environ.get("RECALL_SERVING_DSN", "postgresql://recall:recall@localhost:5432/recall")
     table = os.environ.get("RECALL_TABLE", "recall_quickstart")
 

@@ -7,6 +7,7 @@ provider backed experiment is interpreted.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeAlias, cast
@@ -125,9 +126,16 @@ def _as_bool(value: object, *, case_id: str, system: str, field: str) -> bool:
 
 
 def _as_float(value: object, *, case_id: str, system: str, field: str) -> float:
+    message = f"{case_id}/{system}: {field} must be a non-negative JSON number"
     if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
-        raise ValueError(f"{case_id}/{system}: {field} must be a non-negative JSON number")
-    return float(value)
+        raise ValueError(message)
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError(message) from exc
+    if not math.isfinite(number):
+        raise ValueError(message)
+    return number
 
 
 def _expect_literal(
