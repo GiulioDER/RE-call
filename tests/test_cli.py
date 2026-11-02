@@ -270,3 +270,48 @@ def test_cli_db_commands_fail_closed_on_insecure_default_dsn(monkeypatch, tmp_pa
     note.write_text("the caching layer decision was adopted", encoding="utf-8")
     monkeypatch.setattr(cli_mod, "require_secure_dsn", _blocked)
     main(["check", str(note)])
+
+
+def test_broken_dotenv_setup_requires_a_known_database_target(monkeypatch, tmp_path):
+    """STAKES-001: a rejected dotenv must not let bare setup mutate its fallback target.
+
+    Red on a6051cac5 at the calls assertion: main exempts every setup invocation.
+    Explicit target, environment target and lite repair remain usable controls.
+    """
+    import os
+    import recall.cli as cli
+    import recall.setup as setup
+    from recall._env import load_dotenv
+    from recall.cli_commands import setup_wizard
+
+    monkeypatch.chdir(tmp_path)
+    for name in ("RECALL_SERVING_DSN", "RECALL_DSN", "RECALL_IGNORE_BROKEN_DOTENV", "BROKEN_AUDIT_VALUE"):
+        monkeypatch.delenv(name, raising=False)
+    env = tmp_path / ".env"
+    env.write_bytes(b"RECALL_SERVING_DSN=postgresql://configured:strong@remote.example/recall\n"
+                    b"BROKEN_AUDIT_VALUE=bad\x00value\n")
+    with pytest.raises(ValueError) as broken:
+        load_dotenv(env)
+    assert "RECALL_SERVING_DSN" not in os.environ
+    fallback = "postgresql://recall:recall@localhost:5432/recall"
+    monkeypatch.setattr(cli, "_DOTENV_ERROR", broken.value)
+    monkeypatch.setattr(cli, "DEFAULT_DSN", fallback)
+    calls = []
+    monkeypatch.setattr(setup, "run_setup_wizard", lambda **kw: calls.append(kw["dsn"]))
+    refused = False
+    try:
+        cli.main(["setup"])
+    except SystemExit as exc:
+        refused = ".env exists but could not be applied" in str(exc)
+    assert calls == [], f"setup used its fallback after losing the configured DSN: {calls!r}"
+    assert refused
+    for option in ("--dsn", "--serving-dsn", "--serving-d"):
+        cli.main([f"{option}={fallback}", "setup"])
+        assert calls.pop() == fallback
+    monkeypatch.setenv("RECALL_SERVING_DSN", fallback)
+    cli.main(["setup"])
+    assert calls.pop() == fallback
+    monkeypatch.delenv("RECALL_SERVING_DSN")
+    monkeypatch.setattr(setup_wizard, "_setup_lite", lambda args: calls.append("lite"))
+    cli.main(["setup", "--lite"])
+    assert calls == ["lite"]
