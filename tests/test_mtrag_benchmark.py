@@ -1,7 +1,97 @@
 import json
 
+import pytest
+
 from benchmarks.mtrag import run
 from benchmarks.mtrag.run import ndcg_at, query_text, recall_at, score_predictions
+from tests.conftest import TEST_DSN, requires_db
+
+
+@pytest.mark.parametrize("size", [0, -1])
+def test_batched_rejects_nonpositive_sizes_before_reading(size):
+    """BUG-002: baseline 5302950e4 batched consumes records and fails DID NOT RAISE."""
+    consumed = []
+
+    def records():
+        consumed.append(True)
+        yield {"id": "a"}
+
+    with pytest.raises(ValueError, match="positive"):
+        list(run.batched(records(), size))
+    assert consumed == []
+
+
+@pytest.mark.parametrize("size", [0, -1])
+def test_cli_rejects_nonpositive_index_batches(size):
+    """BUG-002: baseline parse_args accepts these bounds, failing DID NOT RAISE."""
+    with pytest.raises(SystemExit):
+        run.parse_args(["--mtrag-root", ".", "--output-dir", ".", "--batch-size", str(size)])
+
+
+@pytest.fixture
+def resume_corpus(tmp_path):
+    import uuid
+    import zipfile
+
+    from psycopg import sql
+    import psycopg
+    from recall.embeddings import HashingEmbedder
+
+    prefix = "mtrag_resume_" + uuid.uuid4().hex[:10]
+    path = tmp_path / "corpora/passage_level/clapnq.jsonl.zip"
+    path.parent.mkdir(parents=True)
+
+    def write(records):
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("clapnq.jsonl", "".join(json.dumps(r) + "\n" for r in records))
+
+    args = dict(dsn=TEST_DSN, root=tmp_path, domain="clapnq",
+                embedder=HashingEmbedder(dim=8), prefix=prefix, batch_size=2)
+    try:
+        yield write, args
+    finally:
+        table = run.table_name(prefix, "clapnq")
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(sql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(sql.Identifier(table)))
+            conn.execute("DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,))
+
+
+@requires_db
+@pytest.mark.parametrize("field", ["_id", "text", "title"])
+def test_resume_rejects_changed_corpus_records(resume_corpus, monkeypatch, field):
+    """BUG-001: baseline index_domain skips the changed row and fails DID NOT RAISE."""
+    write, args = resume_corpus
+    records = [{"_id": "a", "text": "first", "title": "old"},
+               {"_id": "b", "text": "second", "title": "kept"}]
+    write(records)
+    assert run.index_domain(**args)["rows"] == 2
+    records[0][field] = "changed"
+    write(records)
+
+    def no_embedding(_texts):
+        pytest.fail("resume must validate existing records before embedding")
+
+    monkeypatch.setattr(args["embedder"], "embed", no_embedding)
+    with pytest.raises(RuntimeError, match="resum"):
+        run.index_domain(**args)
+
+
+@requires_db
+@pytest.mark.parametrize("existing", [1, 2])
+def test_resume_preserves_verified_partial_and_complete_indexes(resume_corpus, existing):
+    """BUG-001 control: compatible records remain resumable without re-embedding.
+
+    Red proof uses an over-restrictive mutation rejecting every nonempty index.
+    """
+    write, args = resume_corpus
+    records = [{"_id": "a", "text": "first"}, {"_id": "b", "text": "second"}]
+    write(records[:existing])
+    assert run.index_domain(**args)["rows"] == existing
+    write(records)
+    result = run.index_domain(**args)
+    assert result["rows"] == 2
+    assert result["previous_rows"] == existing
+    assert result["written_this_run"] == 2 - existing
 
 
 def test_query_modes() -> None:

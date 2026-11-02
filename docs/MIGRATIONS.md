@@ -13,8 +13,9 @@ values are committed in
   deployments keep working.
 
 `recall-enterprise` follows the same split. Its DDL subcommands (`migrate`,
-`create-generation`) read `RECALL_MIGRATION_DSN`; its read-only ones (`readiness`,
-`status`, `parity`, `replay`) read `RECALL_SERVING_DSN`; both fall back to `RECALL_DSN`.
+`create-generation`) read `RECALL_MIGRATION_DSN`; `readiness`, `status`, `parity`,
+and `replay` read `RECALL_SERVING_DSN`; both fall back to `RECALL_DSN`. `replay` is a
+write operation: it updates generation tables and completes migration outbox records.
 That split is load-bearing for `readiness`, which reports whether row level security
 constrains "the runtime database role": the check reads `current_user` of the connection
 it was given, so run on the migration role it would certify a credential that never
@@ -28,10 +29,10 @@ the migration DSN.
 
 `RECALL_ENV` is what selects the production code paths, and it **fails open**. Set it explicitly on
 every production process: left unset, it resolves to `development` and silently disables all of the
-following. A misspelling behaves worse than either, because it is not handled consistently — `prod`
-or a stray trailing space degrades the seven `== "production"` comparisons below to development
-silently, while `GenerationManager` validates its value and raises `ValueError`, so the same typo
-is loud in one place and mute in the rest.
+following. Readers normalize surrounding whitespace and letter case, so ` production ` still
+selects production. Unsupported names such as `prod` are handled inconsistently: simple production
+checks return false, while generation and runtime-route validation raise `ValueError`. Use a
+documented environment name explicitly.
 
 | Set to `production` | Left at the default |
 |---|---|

@@ -1317,6 +1317,164 @@ def test_the_suite_would_notice_if_the_dsn_became_privileged() -> None:
     assert role_is_unprivileged(TEST_DSN) is (not bool(row[0]))
 
 
+@pytest.mark.parametrize("seeded", [False, True])
+def test_forget_excludes_replay_before_resolving_sources(enterprise, monkeypatch, seeded):
+    """SEC-001: forget must follow an in-flight replay before resolving/deleting.
+
+    Baseline 5302950e4, lifecycle._forget_memory_unlocked: the final erased-source
+    assertion fails after replay restores rows while forget waits for its scrub lock.
+    A real ungranted advisory lock establishes the interleaving, without a timing guess.
+    """
+    embedder = HashingEmbedder(dim=DIM)
+    erased, kept = "/corpus/racing-erase.md", "/corpus/racing-keep.md"
+    active = enterprise.store(enterprise.active_id, enterprise.active_table)
+    shadow = enterprise.store(enterprise.shadow_id, enterprise.shadow_table)
+    replay_read, release = threading.Event(), threading.Event()
+    connecting = threading.Event()
+    backend, errors, results = [], [], []
+    original_replace, original_connect = active.replace_sources, enterprise.control._connect
+
+    def pause_replay(*args, **kwargs):
+        replay_read.set()
+        assert release.wait(15), "replay was not released"
+        return original_replace(*args, **kwargs)
+
+    def track_forget_connection():
+        conn = original_connect()
+        if threading.current_thread().name == "cca199-forget":
+            backend.append(conn.info.backend_pid)
+            connecting.set()
+        return conn
+
+    def replay():
+        try:
+            enterprise.control.replay_pending(
+                enterprise.tenant, {enterprise.active_id: active, enterprise.shadow_id: shadow}
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    def forget():
+        try:
+            results.append(forget_memory(active, [erased], shadow, enterprise.control))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = []
+    try:
+        if seeded:
+            chunks, vectors = _chunks([erased, kept], embedder)
+            active.upsert(chunks, vectors)
+            shadow.upsert(chunks, vectors)
+        _crash_shaped_event(enterprise, [erased, kept], embedder)
+        monkeypatch.setattr(active, "replace_sources", pause_replay)
+        monkeypatch.setattr(enterprise.control, "_connect", track_forget_connection)
+        threads.append(threading.Thread(target=replay, daemon=True))
+        threads[0].start()
+        assert replay_read.wait(5), "replay did not read its pending payload"
+        threads.append(threading.Thread(target=forget, name="cca199-forget", daemon=True))
+        threads[1].start()
+        assert connecting.wait(5), "forget did not reach outbox exclusion"
+        waiting = False
+        with psycopg.connect(enterprise.dsn, autocommit=True) as conn:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                waiting = conn.execute(
+                    "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE pid = %s "
+                    "AND locktype = 'advisory' AND NOT granted)", (backend[0],)
+                ).fetchone()[0]
+                if waiting:
+                    break
+                time.sleep(0.01)
+        assert waiting, "forget never waited behind the replay's advisory lock"
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=15)
+        alive = [thread.name for thread in threads if thread.is_alive()]
+        if not alive:
+            active.close()
+            shadow.close()
+    assert not alive, f"concurrent operations did not finish: {alive}"
+    assert errors == []
+    assert len(results) == 1 and results[0].outbox_events_scrubbed >= 0
+    with enterprise.store(enterprise.active_id, enterprise.active_table) as store:
+        assert store.sources_for_identifiers([erased]) == {}, "replay restored erased text"
+        assert store.sources_for_identifiers([kept]) == {kept: [kept]}
+    with enterprise.store(enterprise.shadow_id, enterprise.shadow_table) as store:
+        assert store.sources_for_identifiers([erased]) == {}, "shadow replay restored erased text"
+
+
+@pytest.mark.parametrize("declared", [[], ["keep"], ["erase"]])
+def test_erasure_checks_outbox_records_despite_incomplete_declarations(enterprise, declared):
+    """DAT-001: actual records govern erasure and preservation of unrelated work.
+
+    Baseline 5302950e4, ControlPlane._scrub_locked: empty/keep declarations fail
+    changed==1; erase-only fails the surviving-event assertion by discarding kept work.
+    """
+    import json
+
+    embedder = HashingEmbedder(dim=DIM)
+    sources = {"keep": "/corpus/keep.md", "erase": "/corpus/erase.md"}
+    operation = _crash_shaped_event(enterprise, list(sources.values()), embedder)
+    with psycopg.connect(enterprise.dsn, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (enterprise.tenant,))
+        conn.execute(
+            "UPDATE recall_migration_events SET payload = jsonb_set(payload, '{sources}', "
+            "%s::jsonb) WHERE tenant_id = %s AND operation_id = %s",
+            (json.dumps([sources[key] for key in declared]), enterprise.tenant, operation),
+        )
+    changed = enterprise.control.erase_sources_from_pending(enterprise.tenant, [sources["erase"]])
+    assert changed == 1, "an incomplete sources array hid erased records"
+    pending = enterprise.control.pending_events(enterprise.tenant)
+    assert len(pending) == 1, "scrubbing discarded unrelated surviving work"
+    assert pending[0].payload["sources"] == [sources["keep"]]
+    assert sources["erase"] not in json.dumps(pending[0].payload)
+    with enterprise.store(enterprise.active_id, enterprise.active_table) as active:
+        with enterprise.store(enterprise.shadow_id, enterprise.shadow_table) as shadow:
+            enterprise.control.replay_pending(
+                enterprise.tenant, {enterprise.active_id: active, enterprise.shadow_id: shadow}
+            )
+            for store in (active, shadow):
+                assert store.sources_for_identifiers([sources["erase"]]) == {}
+                assert store.sources_for_identifiers([sources["keep"]]) == {
+                    sources["keep"]: [sources["keep"]]
+                }
+
+
+def test_retirement_invalidates_another_tenants_cached_route(enterprise):
+    """STAKES-001: global state invalidation must reach an already cached tenant.
+
+    Baseline 5302950e4, ControlPlane.retire_generation/StoreRegistry.invalidate_route:
+    the final get fails DID NOT RAISE after the notification is delivered.
+    """
+    other = enterprise.tenant + "_other"
+    enterprise.control.set_generation_state(enterprise.shadow_id, "ready")
+    enterprise.control.set_route(enterprise.tenant, enterprise.shadow_id)
+    enterprise.control.set_route(other, enterprise.active_id)
+    registry = StoreRegistry(
+        dsn=enterprise.dsn, dim=DIM, allowed_tenants=frozenset({other}),
+        pool_size=2, statement_timeout_ms=5000, control_plane=enterprise.control,
+        route_poll_seconds=3600,
+    )
+    try:
+        assert registry.get(other).generation_id == enterprise.active_id
+        # A dedicated listener deterministically delivers the actual retirement payload.
+        with psycopg.connect(enterprise.dsn, autocommit=True) as listener:
+            listener.execute("LISTEN recall_route_changed")
+            enterprise.control.retire_generation(enterprise.active_id, enterprise.tenant)
+            notifications = list(listener.notifies(timeout=5, stop_after=1))
+        assert len(notifications) == 1, "retirement did not emit an invalidation"
+        registry.invalidate_route(notifications[0].payload)
+        with pytest.raises(RuntimeError, match="retired"):
+            registry.get(other)
+    finally:
+        registry.close()
+        with psycopg.connect(enterprise.dsn, autocommit=True) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (other,))
+            conn.execute("DELETE FROM recall_tenant_routes WHERE tenant_id = %s", (other,))
+
+
 def test_recall_test_dsn_is_the_variable_in_use() -> None:
     """Never `RECALL_DSN`. The suite drops tables; that variable names a real database."""
     configured = os.environ.get("RECALL_TEST_DSN")
