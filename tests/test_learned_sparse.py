@@ -91,6 +91,88 @@ def test_padding_positions_do_not_contribute_terms() -> None:
     assert list(weights) == [{1: pytest.approx(math.log1p(5.0))}]
 
 
+def test_pooled_batch_transfers_once_before_sparse_scalar_conversion(monkeypatch) -> None:
+    """PERF-001: transfer the pooled batch before host-dependent sparse conversion.
+
+    A device-aware transport double keeps this runnable without torch or a GPU. Omitting
+    `pooled.cpu()` must fail at nonzero, the first synchronizing consumer; output checks also
+    preserve masking, pooling, zero removal and input order across the transfer.
+    """
+    import sys
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    transfers = []
+
+    class Tensor:
+        def __init__(self, values, device="cuda"):
+            self.values = np.asarray(values)
+            self.device = device
+
+        @property
+        def dtype(self):
+            return self.values.dtype
+
+        def unsqueeze(self, axis):
+            return Tensor(np.expand_dims(self.values, axis), self.device)
+
+        def to(self, dtype):
+            return Tensor(self.values.astype(dtype), self.device)
+
+        def __mul__(self, other):
+            return Tensor(self.values * other.values, self.device)
+
+        def max(self, dim):
+            return SimpleNamespace(values=Tensor(self.values.max(axis=dim), self.device))
+
+        def cpu(self):
+            transfers.append(self.values.shape)
+            return Tensor(self.values.copy(), "cpu")
+
+        def __iter__(self):
+            return (Tensor(value, self.device) for value in self.values)
+
+        def __getitem__(self, term):
+            return Tensor(self.values[int(term)], self.device)
+
+        def flatten(self):
+            return Tensor(self.values.flatten(), self.device)
+
+        def __int__(self):
+            assert self.device == "cpu", "term scalar conversion must follow the CPU transfer"
+            return int(self.values.item())
+
+        def __float__(self):
+            assert self.device == "cpu", "weight scalar conversion must follow the CPU transfer"
+            return float(self.values.item())
+
+    def nonzero(row, *, as_tuple):
+        assert row.device == "cpu", "nonzero must follow the pooled batch CPU transfer"
+        assert as_tuple is False
+        return Tensor(np.argwhere(row.values), row.device)
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        relu=lambda tensor: Tensor(np.maximum(tensor.values, 0), tensor.device),
+        log1p=lambda tensor: Tensor(np.log1p(tensor.values), tensor.device),
+        nonzero=nonzero,
+    ))
+    logits = Tensor([
+        [[0.0, 5.0, -1.0, 0.0], [10.0, 0.0, 0.0, 9.0]],
+        [[1.0, 0.0, 2.0, -3.0], [0.0, 3.0, 4.0, -1.0]],
+    ])
+    mask = Tensor([[1, 0], [1, 1]])
+
+    weights = splade_weights(logits, mask)
+
+    assert transfers == [(2, 4)], "transfer one pooled batch, not individual terms or logits"
+    assert weights == [
+        {1: pytest.approx(math.log(6.0))},
+        {0: pytest.approx(math.log(2.0)), 1: pytest.approx(math.log(4.0)),
+         2: pytest.approx(math.log(5.0))},
+    ]
+
+
 @pytest.fixture
 def tiny_splade(tmp_path):
     """A REAL BertForMaskedLM and a REAL tokenizer, both tiny and randomly initialised.

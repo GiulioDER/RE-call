@@ -126,7 +126,7 @@ def splade_weights(logits: "torch.Tensor", attention_mask: "torch.Tensor") -> li
 
     activated = torch.log1p(torch.relu(logits))
     masked = activated * attention_mask.unsqueeze(-1).to(activated.dtype)
-    pooled = masked.max(dim=1).values
+    pooled = masked.max(dim=1).values.cpu()
     out: list[dict[int, float]] = []
     for row in pooled:
         nonzero = torch.nonzero(row, as_tuple=False).flatten()

@@ -37,6 +37,7 @@ from recall.db_constants import (  # noqa: F401  # re-exported: public names of 
     DEFAULT_SCHEMA_LOCK_TIMEOUT_MS,
     DEFAULT_TABLE,
     DEFAULT_TENANT,
+    SPARSE_TABLE,
     TENANT_GUC,
     _schema_lock_timeout_ms,
 )
@@ -220,11 +221,6 @@ LEG_SPARSE = "sparse"
 #: Two different retrievers that are both "sparse"; collapsing them into one metric label would
 #: make a latency or error-rate regression in either one unattributable.
 LEG_LEARNED_SPARSE = "learned_sparse"
-
-#: Global sidecar holding learned sparse vectors for every chunk table. See migration 0012 for why
-#: it is global rather than per-target. Without a foreign key to the chunk table, erasure must
-#: explicitly clean this table before the learned sparse path can be enabled in production.
-SPARSE_TABLE = "recall_sparse_v1"
 
 #: Vocabulary width of both supported checkpoints (bert-base-uncased). Fixed in the `sparsevec`
 #: column type, so a model with a different vocabulary needs its own table, not a wider column.

@@ -759,6 +759,58 @@ def test_the_generated_serving_grants_are_sufficient_for_the_control_plane():
             raise AssertionError(f"grants test leaked role {role} into the cluster: {failures}")
 
 
+@requires_db
+def test_generated_serving_grants_support_sparse_operations_and_erasure(make_store):
+    """DAT-001: generated grants permit sparse DML without bypassing tenant isolation.
+
+    Red target: a6051cac5's serving_grants omits recall_sparse_v1, so the first sparse write
+    reaches the assertion naming the missing grant. The role is neither owner nor BYPASSRLS.
+    """
+    from tests.conftest import role_is_unprivileged
+    from tests.test_fact_rebuild_writer_cca_981 import database_role
+
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        allowed = conn.execute(
+            "SELECT rolsuper OR rolcreaterole FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+    if not (allowed and allowed[0]):
+        pytest.skip("RECALL_TEST_DSN's role cannot create the role this privilege test needs")
+
+    owner = make_store(DIM)
+    profile = "sparse-grant-probe"
+    source = "granted-sparse.md"
+    owner.upsert([Chunk(id="one", source=source, text="owned", metadata={})], [[1.0] * DIM])
+    with PgVectorStore(
+        TEST_DSN, dim=DIM, table=owner.table, tenant=_name("sparse_other_")
+    ) as other:
+        other.upsert(
+            [Chunk(id="one", source=source, text="other tenant", metadata={})], [[1.0] * DIM]
+        )
+        other.upsert_sparse(profile, {"one": {9: 100.0}})
+
+        with database_role(lambda name: serving_grants(name, table=owner.table)) as role:
+            assert role_is_unprivileged(role.dsn)
+            try:
+                with PgVectorStore(role.dsn, dim=DIM, table=owner.table) as serving:
+                    serving.check_schema()
+                    assert serving.upsert_sparse(profile, {"one": {7: 1.0}}) == 1
+                    assert serving.sparse_row_count(profile) == 1
+                    hits = serving.query_learned_sparse({7: 1.0}, k=5, profile_id=profile)
+                    assert [(hit.chunk.id, hit.chunk.text) for hit in hits] == [("one", "owned")]
+                    assert serving.upsert_sparse(profile, {"one": {9: 2.0}}) == 1
+                    assert serving.query_learned_sparse({7: 1.0}, k=5, profile_id=profile) == []
+                    hits = serving.query_learned_sparse({9: 1.0}, k=5, profile_id=profile)
+                    assert [(hit.chunk.id, hit.chunk.text) for hit in hits] == [("one", "owned")]
+                    assert serving.delete_sources([source]) == 1
+                    assert serving.sparse_row_count(profile) == 0
+            except psycopg.errors.InsufficientPrivilege as exc:
+                raise AssertionError(f"generated serving grants denied sparse DML or erasure: {exc}") from exc
+
+        assert other.sparse_row_count(profile) == 1
+        hits = other.query_learned_sparse({9: 1.0}, k=5, profile_id=profile)
+        assert [(hit.chunk.id, hit.chunk.text) for hit in hits] == [("one", "other tenant")]
+
+
 def test_serving_grants_cover_every_table_the_migrator_manages():
     """A table added to the constants must not be able to fall out of the grant list."""
     statements = " ".join(serving_grants("recall_server", enterprise=True))

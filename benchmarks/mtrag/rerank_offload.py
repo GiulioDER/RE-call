@@ -328,6 +328,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     This is the gate. If it fails, the offloaded numbers are not RE-call's numbers and must not
     be reported as such.
     """
+    if args.sample < 1:
+        raise ValueError("--sample must be positive")
+
     from recall.rerank import CrossEncoderReranker
     from recall.types import Chunk, ScoredChunk
 
@@ -357,6 +360,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
             if line.strip():
                 rows.append(json.loads(line))
     sample = rows[: args.sample]
+    if not sample:
+        raise ValueError("validation sample must not be empty")
 
     reranker = CrossEncoderReranker(**reranker_kwargs)
     failures: list[dict] = []

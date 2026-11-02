@@ -29,6 +29,10 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from recall.sparse import SparseProfile
 
 
 def passage_id(item: dict) -> str:
@@ -80,25 +84,58 @@ def read_passages(path: Path, limit: int | None) -> list[dict]:
     return rows
 
 
-def already_done(path: Path) -> set[str]:
+def already_done(path: Path, profile: SparseProfile, max_length: int) -> set[str]:
     """Ids present in an existing output file, so `--resume` can skip them.
 
-    A malformed trailing line (the shape an interrupted write leaves behind) is ignored rather
-    than fatal — that line's id simply is not counted as done, so it gets encoded again. Re-doing
-    one passage is the cheap error here; treating a truncated file as complete is the expensive
-    one.
+    Validate identity before changing bytes. Remove only an interrupted final record; interior
+    corruption is refused so a resume cannot silently discard completed work.
     """
     if not path.exists():
         return set()
     done: set[str] = set()
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
+    header = None
+    valid_end = 0
+    truncated = False
+    needs_separator = False
+    expected = {
+        "fingerprint": profile.fingerprint(), "model_name": profile.model_name,
+        "profile_id": profile.profile_id, "artifact_digest": profile.artifact_digest,
+        "top_k": profile.top_k, "dimension": profile.dimension,
+        "max_length": max_length,
+    }
+    with path.open("rb") as handle:
+        while line := handle.readline():
+            if not line.strip():
+                valid_end = handle.tell()
+                needs_separator = not line.endswith(b"\n")
+                continue
             try:
                 row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(row, dict) and "id" in row:
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                if handle.read(1):
+                    raise ValueError(f"{path}: malformed interior record") from exc
+                truncated = True
+                break
+            if not isinstance(row, dict):
+                raise ValueError(f"{path}: artifact records must be objects")
+            if header is None:
+                if not row.get("_header") or any(row.get(k) != v for k, v in expected.items()):
+                    raise ValueError(f"{path}: missing header or encoder identity mismatch")
+                header = row
+            elif row.get("_header"):
+                raise ValueError(f"{path}: multiple artifact headers")
+            elif "id" in row:
                 done.add(str(row["id"]))
+            valid_end = handle.tell()
+            needs_separator = not line.endswith(b"\n")
+    if header is None:
+        raise ValueError(f"{path}: no valid artifact header")
+    if truncated or needs_separator:
+        with path.open("r+b") as handle:
+            handle.truncate(valid_end)
+            if needs_separator:
+                handle.seek(valid_end)
+                handle.write(b"\n")
     return done
 
 
@@ -118,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
         help="required for naver/splade-v3 (cc-by-nc-sa-4.0); the checkpoint license, not RE-call's, restricts use",
     )
     args = parser.parse_args(argv)
+    if args.batch_size < 1:
+        parser.error("--batch-size must be positive")
 
     from recall.sparse import DEFAULT_MODEL, SpladeEncoder
 
@@ -131,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
 
     prepare_output(args.output)
     passages = read_passages(args.input, args.limit)
-    done = already_done(args.output) if args.resume else set()
+    done = already_done(args.output, encoder.profile, args.max_length) if args.resume else set()
     pending = [p for p in passages if passage_id(p) not in done]
     print(
         json.dumps({
@@ -156,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
                 "artifact_digest": encoder.profile.artifact_digest,
                 "top_k": encoder.profile.top_k,
                 "dimension": encoder.profile.dimension,
+                "max_length": args.max_length,
                 "fingerprint": encoder.profile.fingerprint(),
             }) + "\n")
         for start in range(0, len(pending), args.batch_size):

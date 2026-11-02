@@ -664,6 +664,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
             f"never fail; that is exactly as useless as one that could never pass."
         )
     sample = sorted(legs)[: args.sample]
+    if not sample:
+        raise ValueError("no queries in the actual validation sample; refusing a vacuous MATCH")
     failures = []
     stores = {}
     try:

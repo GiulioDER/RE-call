@@ -45,7 +45,7 @@ def main() -> int:
         "--prefix",
         action="append",
         dest="prefixes",
-        help=f"table prefix to sweep; repeatable. Defaults to {DEFAULT_PREFIXES}.",
+        help=f"approved prefix or narrower prefix; repeatable. Defaults to {DEFAULT_PREFIXES}.",
     )
     parser.add_argument(
         "--dim",
@@ -61,6 +61,8 @@ def main() -> int:
     )
     args = parser.parse_args()
     prefixes = tuple(args.prefixes) if args.prefixes else DEFAULT_PREFIXES
+    if any(not prefix.startswith(DEFAULT_PREFIXES) for prefix in prefixes):
+        parser.error(f"--prefix must be within the approved namespaces {DEFAULT_PREFIXES}")
 
     with psycopg.connect(args.dsn, autocommit=True, connect_timeout=10) as conn:
         rows = conn.execute(
@@ -82,7 +84,7 @@ def main() -> int:
     for table in tables:
         # Re-checked per table rather than trusting the filter above, because this is the statement
         # that actually destroys data.
-        if not table.startswith(prefixes):  # pragma: no cover - defensive
+        if not table.startswith(prefixes) or not table.startswith(DEFAULT_PREFIXES):  # pragma: no cover - defensive
             print(f"REFUSING {table}: outside {prefixes}", file=sys.stderr)
             return 1
         PgVectorStore(args.dsn, dim=args.dim, table=table).drop_table()

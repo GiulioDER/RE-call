@@ -30,6 +30,8 @@ def read_artifact(path: Path) -> tuple[dict, list[tuple[str, dict[int, float]]]]
                 continue
             row = json.loads(line)
             if row.get("_header"):
+                if header is not None:
+                    raise ValueError(f"{path}: second header on line {lineno}; refusing mixed artifacts")
                 header = row
                 continue
             if header is None:
@@ -57,6 +59,8 @@ def main(argv: list[str] | None = None) -> int:
         help="override the artifact's profile_id; must be given deliberately",
     )
     args = parser.parse_args(argv)
+    if args.batch_size < 1:
+        parser.error("--batch-size must be positive")
 
     dsn = os.environ.get(args.dsn_env)
     if not dsn:

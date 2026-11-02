@@ -6,6 +6,10 @@ compute, and nothing about the output would look wrong.
 
 from __future__ import annotations
 
+import json
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from benchmarks.mtrag.rerank_offload import compare_orderings, rerank_order
@@ -87,3 +91,62 @@ def test_compare_orderings_reports_a_deep_tie_rather_than_a_failure():
     )
     assert failure is None
     assert tie is True
+
+
+@pytest.fixture
+def offload_validation_case(tmp_path, monkeypatch):
+    """Keep the real command and reranker; replace only model construction/prediction."""
+    loads = []
+    predictions = []
+
+    class Model:
+        def __init__(self, *args, **kwargs):
+            loads.append((args, kwargs))
+
+        def predict(self, pairs):
+            predictions.append(pairs)
+            return [1.0 for _ in pairs]
+
+    monkeypatch.setitem(sys.modules, "sentence_transformers", SimpleNamespace(CrossEncoder=Model))
+    (tmp_path / "docs.jsonl").write_text(
+        json.dumps({"doc_id": "a", "text": "document"}) + "\n", encoding="utf-8",
+    )
+    scores = tmp_path / "scores.jsonl"
+    scores.write_text(json.dumps({"qid": "q", "doc_id": "a", "score": 1.0}) + "\n", encoding="utf-8")
+    (tmp_path / "pools").mkdir()
+    pool = tmp_path / "pools" / "arm.jsonl"
+    pool.write_text(
+        json.dumps({"task_id": "q", "query": "query", "candidates": ["a"]}) + "\n",
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(output_dir=tmp_path, scores=scores, sample=20, model=None, revision=None)
+    return args, pool, loads, predictions
+
+
+@pytest.mark.parametrize("sample,empty", [(0, False), (-1, False), (20, True)],
+                         ids=["zero", "negative", "empty"])
+def test_validate_refuses_zero_comparisons(offload_validation_case, capsys, sample, empty):
+    from benchmarks.mtrag.rerank_offload import cmd_validate
+
+    args, pool, loads, predictions = offload_validation_case
+    args.sample = sample
+    if empty:
+        pool.write_text("\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="sample"):
+        cmd_validate(args)
+    assert not loads, "invalid validation input must refuse before loading a model"
+    assert not predictions
+    assert '"MATCH"' not in capsys.readouterr().out
+
+
+def test_validate_nonempty_sample_still_compares(offload_validation_case, capsys):
+    from benchmarks.mtrag.rerank_offload import cmd_validate
+
+    args, _, loads, predictions = offload_validation_case
+    assert cmd_validate(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["sampled"] == 1
+    assert result["verdict"] == "MATCH"
+    assert result["max_score_delta"] == 0.0
+    assert len(loads) == 1
+    assert predictions and all(pairs == [("query", "document")] for pairs in predictions)
