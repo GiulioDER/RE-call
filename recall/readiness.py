@@ -268,10 +268,11 @@ def check_enterprise_readiness(
                 )
     try:
         facts = store.readiness_facts()
+        rls_effective = facts["rls_enabled"] and store.check_rls_effective()
     except Exception as exc:  # BROAD-CATCH: fail-open
         failures.append(f"database readiness query failed: {type(exc).__name__}")
     else:
-        if not facts["rls_enabled"] or not store.check_rls_effective():
+        if not rls_effective:
             failures.append("row level security is ineffective for the runtime database role")
         if not facts["indexes_valid"]:
             failures.append("required HNSW or full text index is missing or invalid")

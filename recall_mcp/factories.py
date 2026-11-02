@@ -176,7 +176,7 @@ def make_profile_embedder(
             "RECALL_SHADOW_QWEN_MODEL_PATH": "RECALL_QWEN_MODEL_PATH",
         }
         for source, target in mappings.items():
-            if source in values:
+            if values.get(source, "").strip():
                 values[target] = values[source]
     return make_embedder(spelling, values)
 
