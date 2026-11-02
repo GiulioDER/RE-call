@@ -546,7 +546,7 @@ class OidcValidator:
             if cached.ever_fetched:
                 if age > self._config.max_stale_key_s:
                     raise IdentityProviderUnavailable(
-                        "jwks_unavailable", "cached keys are stale and a refresh is in flight"
+                        "jwks_unavailable", "cached keys are stale while refresh is in flight"
                     )
                 # Warm: serve what we have rather than queue behind the in-flight fetch. This is
                 # the case the non-blocking acquire was written for.
