@@ -414,9 +414,9 @@ def maxsim_or_last(query_tokens: "np.ndarray", doc_tokens: "np.ndarray") -> floa
     divergence there does not degrade the comparison, it crashes it. Three copies kept in step by
     comment are a convention. One function is a guarantee.
 
-    `maxsim` itself still refuses an empty document, and still refuses an empty QUERY through
-    this path too: a query with no tokens carries no evidence to rank anything by, so unlike one
-    bad document there is no partial ordering worth returning.
+    Callers must validate query tokens before using this helper: an empty document returns
+    `-inf` without inspecting the query. For nonempty documents, `maxsim` rejects an empty query;
+    a query with no tokens carries no evidence to rank anything by.
     """
     if doc_tokens.shape[0] == 0:
         return float("-inf")

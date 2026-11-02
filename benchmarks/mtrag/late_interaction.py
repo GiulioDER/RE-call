@@ -1,5 +1,8 @@
 """Late-interaction (ColBERT/MaxSim) reranking arms for MTRAG-human dev.
 
+Prior work: builds on `benchmarks.mtrag.rerank_offload`'s frozen retrieval pools and
+`recall.rerank`'s ColBERT/MaxSim scoring; this harness compares arms on those same pools.
+
 Why this reuses `rerank_offload.cmd_dump` rather than re-running retrieval. Pool width alone
 moves reranker results here (`closed-hypothesis-recall-rerank-pool-interaction-2026-08-05`: the
 same MiniLM got WORSE as the pool widened, entire 95% CI below threshold). Scoring the same frozen
@@ -290,6 +293,8 @@ def validate_sample(
     """
     from recall.types import Chunk, ScoredChunk
 
+    if not rows:
+        raise ValueError("validation requires at least one query")
     failures: list[dict] = []
     ties = 0
     worst_delta = 0.0
@@ -350,6 +355,8 @@ def validate_sample(
 def cmd_validate(args: argparse.Namespace) -> int:
     from recall.rerank import LateInteractionReranker
 
+    if args.sample < 1:
+        raise ValueError(f"--sample must be >= 1, got {args.sample}")
     out = args.output_dir.resolve()
     arm = _resolve_arm(args.arm, args.accept_noncommercial)
     reranker = LateInteractionReranker.from_pretrained(

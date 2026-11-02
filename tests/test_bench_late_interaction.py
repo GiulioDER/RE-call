@@ -299,6 +299,42 @@ def test_validate_matches_when_offloaded_scores_agree():
     assert report["max_score_delta"] < 1e-9
 
 
+def test_validate_refuses_an_empty_sample():
+    """BUG-001: baseline a6051cac5 returned MATCH; this must fail with DID NOT RAISE."""
+    with pytest.raises(ValueError, match="at least one query"):
+        validate_sample(_live_reranker(_TABLE), [], _DOCS, {})
+
+
+@pytest.mark.parametrize("sample", [0, -1])
+def test_validate_cli_refuses_nonpositive_sample(sample, tmp_path, monkeypatch):
+    """BUG-001: the unchanged CLI test returns zero on a6051cac5, failing DID NOT RAISE."""
+    import json
+
+    from benchmarks.mtrag.late_interaction import main
+
+    (tmp_path / "pools").mkdir()
+    (tmp_path / "pools" / "pool.jsonl").write_text(json.dumps(_ROWS[0]) + "\n")
+    (tmp_path / "docs.jsonl").write_text("\n".join(
+        json.dumps({"doc_id": doc, "text": text}) for doc, text in _DOCS.items()
+    ))
+    scores = tmp_path / "scores.jsonl"
+    scores.write_text("\n".join(
+        json.dumps({"qid": "t1", "doc_id": doc, "score": score})
+        for doc, score in {"far": 0.0, "mid": 0.6, "multi": 1.0}.items()
+    ))
+    loaded = []
+
+    def load(*args, **kwargs):
+        loaded.append(True)
+        return _live_reranker(_TABLE)
+
+    monkeypatch.setattr(LateInteractionReranker, "from_pretrained", load)
+    with pytest.raises(ValueError, match="--sample must be >= 1"):
+        main(["validate", "--output-dir", str(tmp_path), "--scores", str(scores),
+              "--arm", "li_colbertv2", "--sample", str(sample)])
+    assert not loaded
+
+
 def test_validate_mismatches_when_the_offloaded_order_is_wrong():
     """G2's whole purpose. An offloaded ordering that merely looks reasonable produces a
     publishable nDCG that RE-call itself would never compute."""
