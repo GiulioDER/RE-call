@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,8 @@ def main() -> int:
     # Abstain when P(unanswerable) > p*  <=>  confidence < 1 - p*. Monotone, so invert by scan.
     target = 1.0 - P_STAR
     breaks = sorted({*pay, *unans})
+    # Strict v < thr needs the interval above the largest score to represent all-abstain.
+    breaks.append(math.nextafter(breaks[-1], math.inf))
     prereg_thr = next((c for c in breaks if cal.confidence(c) >= target), breaks[-1])
 
     print("\n=== operating points ===")

@@ -32,7 +32,10 @@ def test_cancellation_during_launch_reaps_the_real_process_tree(tmp_path, monkey
     cli.write_text(
         "import json,os,subprocess,sys,time\n"
         "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(20)'])\n"
-        f"open({str(pids)!r},'w').write(json.dumps([os.getpid(),child.pid]))\n"
+        # Existence must signal a complete PID list before cancellation can kill the writer.
+        f"with open({str(pids.with_suffix('.tmp'))!r},'w') as f: "
+        "f.write(json.dumps([os.getpid(),child.pid]))\n"
+        f"os.replace({str(pids.with_suffix('.tmp'))!r},{str(pids)!r})\n"
         "time.sleep(20)\n",
         encoding="utf-8",
     )

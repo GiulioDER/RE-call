@@ -12,6 +12,7 @@ file exists to replace.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 
@@ -35,6 +36,13 @@ from benchmarks.check_profile_encoder_distinctness import (
 pytestmark = pytest.mark.benchharness
 
 DIM = 384
+
+
+@pytest.fixture(autouse=True)
+def _restore_offline_environment(monkeypatch):
+    # measure assigns directly, so register the prior state before success or refusal.
+    for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.setenv(name, os.environ.get(name, "0"))
 
 
 def _unit(seed: int, dim: int = DIM) -> np.ndarray:
@@ -406,11 +414,97 @@ class MentionsButDoesNotCall:
 
 
 def test_a_backend_that_really_delegates_is_reported_as_explained(tree):
+    """BUG-001: source delegation is reported, but cannot establish universal identity."""
     result = _measure(tree, Delegating())
     resolved = result["resolved_encoders"]
     assert resolved["asymmetric_encoders_delegate_to_base"] is True
-    assert resolved["identity_is_explained"] is True
-    assert "DELEGATE" in result["verdict"]
+    assert resolved["identity_is_explained"] is False
+    assert "not settled by this measurement" in result["verdict"]
+
+
+class ConditionalDelegation(Delegating):
+    def query_embed(self, texts):
+        yield from self.embed(["changed" if text == "unseen-condition" else text for text in texts])
+
+    def passage_embed(self, texts):
+        yield from self.embed(["changed" if text == "unseen-condition" else text for text in texts])
+
+
+def test_delegation_does_not_prove_identity_outside_the_probes(tree):
+    """BUG-001: baseline claims impossibility despite a real unprobed counterexample."""
+    backend = ConditionalDelegation()
+    assert not np.array_equal(backend.embed(["unseen-condition"])[0],
+                              list(backend.query_embed(["unseen-condition"]))[0])
+    result = _measure(tree, backend)
+    assert result["all_probes_identical"] is True
+    assert result["resolved_encoders"]["identity_is_explained"] is False
+    assert "cannot produce different vectors" not in result["verdict"]
+
+
+def test_actual_function_aliases_still_establish_identity(tree):
+    class Aliases(Delegating):
+        query_embed = Delegating.embed
+        passage_embed = Delegating.embed
+
+    result = _measure(tree, Aliases())
+    assert result["resolved_encoders"]["identity_is_explained"] is True
+    assert "cannot produce different vectors" in result["verdict"]
+
+
+def test_same_implementation_on_different_receivers_does_not_prove_identity(tree):
+    """BUG-001 architect correction: receiver configuration is part of callable identity."""
+    class Configured:
+        def __init__(self, changed):
+            self.changed = changed
+
+        def embed(self, texts):
+            return [_by_text("changed" if self.changed and text == "unseen-condition" else text)
+                    for text in texts]
+
+    class Rebound:
+        pass
+
+    backend = Rebound()
+    backend.embed = Configured(False).embed
+    backend.query_embed = Configured(True).embed
+    backend.passage_embed = Configured(False).embed
+    assert not np.array_equal(backend.embed(["unseen-condition"])[0],
+                              backend.query_embed(["unseen-condition"])[0])
+    result = _measure(tree, backend)
+    assert result["all_probes_identical"] is True
+    assert result["resolved_encoders"]["all_three_are_one_function"] is True
+    assert result["resolved_encoders"]["identity_is_explained"] is False
+    assert "cannot produce different vectors" not in result["verdict"]
+
+
+@pytest.mark.parametrize("original", [None, "0"])
+@pytest.mark.parametrize("probe", [
+    "test_one_function_under_three_names_is_a_null_by_construction",
+    "test_an_unprovisioned_tree_refuses_before_the_loader_can_delete_anything",
+])
+def test_probe_tests_restore_offline_environment(tmp_path, original, probe):
+    """ENV-001: a subsequent test fails on baseline after success or refusal."""
+    keys = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    environment = os.environ.copy()
+    for key in keys:
+        if original is None:
+            environment.pop(key, None)
+        else:
+            environment[key] = original
+    following = tmp_path / "test_following.py"
+    following.write_text(
+        "import os\ndef test_original_environment():\n"
+        f"    assert [os.environ.get(k) for k in {keys!r}] == {[original, original]!r}\n",
+        encoding="utf-8",
+    )
+    # Both paths are explicit; their temporary-directory siblings are not test inputs.
+    completed = subprocess.run(
+        [sys.executable, "-m", "pytest", "-n", "0", "-q", "-p", "no:cacheprovider",
+         "-o", "norecursedirs=*",
+         f"{__file__}::{probe}", str(following)],
+        capture_output=True, text=True, env=environment,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
 def test_a_docstring_or_comment_mentioning_the_base_encoder_is_not_delegation(tree):
