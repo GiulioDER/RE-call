@@ -632,3 +632,29 @@ def test_removing_an_empty_older_file_is_still_noticed(tmp_path, monkeypatch) ->
         "an empty, older file was removed: total size and newest mtime are both unchanged, so only "
         "the file count can see it"
     )
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_empty_shadow_overrides_inherit_the_provisioned_active_artifact(
+    stub_fastembed, provisioned, blank,
+) -> None:
+    """ENV-001 red proof: 5302950e4 erases the provisioned artifact settings.
+
+    Target: make_profile_embedder. The same consumer must build the active artifact
+    when optional shadow keys from the environment template are empty.
+    """
+    from recall_mcp.service import make_profile_embedder
+
+    root, digest = provisioned
+    env = {
+        "RECALL_MODEL_CACHE": str(root), "RECALL_MODEL_SHA256": digest,
+        "RECALL_SHADOW_MODEL_CACHE": blank, "RECALL_SHADOW_MODEL_SHA256": blank,
+        "RECALL_SHADOW_QWEN_MODEL_PATH": blank,
+    }
+    built = None
+    try:
+        built = make_profile_embedder("bge-small-asymmetric-v1", shadow=True, env=env)
+    except ValueError:
+        pass
+    assert built is not None, "empty optional shadow settings must preserve active artifacts"
+    assert built.profile.artifact_digest == digest

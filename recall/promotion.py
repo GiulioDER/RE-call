@@ -4,7 +4,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 from datetime import datetime
-from math import isfinite
+from math import isclose, isfinite
 from statistics import mean
 from typing import TYPE_CHECKING, Literal
 
@@ -320,9 +320,16 @@ def evaluate_retrieval_promotion(
             failures.append(f"{corpus} hit@5 regresses by more than two percentage points")
     if not any(value < 0.05 and corpus_delta[name] > 0 for name, value in corrected.items()):
         failures.append("no improving corpus has Holm corrected paired significance below 0.05")
-    if gate.candidate_safety.false_confidence - gate.baseline_safety.false_confidence > 0.02:
+    # Allow only binary rounding at the inclusive two-point boundary.
+    false_confidence_delta = gate.candidate_safety.false_confidence - gate.baseline_safety.false_confidence
+    if false_confidence_delta > 0.02 and not isclose(
+        false_confidence_delta, 0.02, rel_tol=0.0, abs_tol=1e-15
+    ):
         failures.append("false confidence regresses by more than two percentage points")
-    if gate.candidate_safety.false_abstention - gate.baseline_safety.false_abstention > 0.02:
+    false_abstention_delta = gate.candidate_safety.false_abstention - gate.baseline_safety.false_abstention
+    if false_abstention_delta > 0.02 and not isclose(
+        false_abstention_delta, 0.02, rel_tol=0.0, abs_tol=1e-15
+    ):
         failures.append("false abstention regresses by more than two percentage points")
     if gate.candidate_safety.superseded_trust_rate is None:
         failures.append(

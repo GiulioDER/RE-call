@@ -991,7 +991,7 @@ def test_a_route_change_during_a_search_leaves_the_acquired_store_alone(enterpri
         assert in_flight.count() == 1
         assert in_flight.table == enterprise.active_table
         # A new acquisition uses the new route, and is a DIFFERENT store object: the cache is
-        # keyed on (tenant, generation), so one tenant holds two generations at once.
+        # keyed on (tenant, generation); the acquired old store remains usable.
         fresh = registry.get(enterprise.tenant)
         assert fresh.table == enterprise.shadow_table
         assert fresh is not in_flight
@@ -1012,12 +1012,12 @@ def test_the_route_cache_is_keyed_on_tenant_and_generation(enterprise) -> None:
         registry.invalidate_route(enterprise.tenant)
         second = registry.get(enterprise.tenant)
         keys = set(registry._stores)
-        assert keys == {
-            (enterprise.tenant, enterprise.active_id),
-            (enterprise.tenant, enterprise.shadow_id),
-        }
+        assert keys == {(enterprise.tenant, enterprise.shadow_id)}
         assert first.generation_id == enterprise.active_id
         assert second.generation_id == enterprise.shadow_id
+        assert second is not first
+        assert registry.get(enterprise.tenant) is second
+        assert first.count() == 0  # Eviction drops the cache reference, not an in-flight store.
     finally:
         registry.close()
 

@@ -600,3 +600,55 @@ def test_a_refused_redirect_closes_the_response_it_refuses() -> None:
         )
 
     assert response.closed
+
+
+@pytest.mark.parametrize("age,accepted", [(20, True), (21, False)])
+def test_concurrent_refresh_respects_stale_key_ceiling(keypair, age, accepted) -> None:
+    """SEC-001: validate must bound every use of a cached signing key.
+
+    Red proof: HEAD 5302950e4 accepts the age=21 concurrent request while its
+    competing refresh is blocked. The unchanged age=20 case preserves stale reuse.
+    Target: OidcValidator._refresh's competing-fetch warm-cache branch.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    private, public = keypair
+    clock = [time.time()]
+    entered, release = Event(), Event()
+    calls = 0
+
+    def fetch():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _jwks(public)
+        entered.set()
+        if not release.wait(30):
+            raise AssertionError("test did not release the JWKS fetch")
+        raise OSError("identity provider unavailable")
+
+    validator = OidcValidator(
+        OidcConfig(issuer=ISSUER, audience=AUDIENCE, jwks_refresh_s=10, max_stale_key_s=20),
+        _jwks_fetcher=fetch, _clock=lambda: clock[0],
+    )
+    token = _token(private)
+    assert validator.validate(token).tenant == "acme"
+    clock[0] += age
+    observed = None
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(validator.validate, token)
+        try:
+            assert entered.wait(30), "the competing refresh did not start"
+            try:
+                observed = validator.validate(token).tenant
+            except IdentityProviderUnavailable as exc:
+                observed = exc.reason
+        finally:
+            release.set()
+        if accepted:
+            assert first.result(timeout=30).tenant == "acme"
+        else:
+            with pytest.raises(IdentityProviderUnavailable):
+                first.result(timeout=30)
+    assert observed == ("acme" if accepted else "jwks_unavailable")

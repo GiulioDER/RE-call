@@ -177,6 +177,13 @@ class StoreRegistry:
         route = self._control_plane.route(tenant)
         if route is None:
             raise RuntimeError(f"tenant {tenant!r} has no configured index generation route")
+        current = {route.active.generation_id}
+        if route.shadow is not None:
+            current.add(route.shadow.generation_id)
+        # Drop registry references only; in-flight requests may still hold these stores.
+        for key in list(self._stores):
+            if key[0] == tenant and key[1] not in current:
+                del self._stores[key]
         self._routes[tenant] = (now, route)
         return route
 

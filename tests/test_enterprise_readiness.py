@@ -470,3 +470,28 @@ def check_enterprise_readiness_indirect(**kwargs):
         control_plane=kwargs.pop("control", _ControlPlane()),
         **kwargs,
     )
+
+
+def test_rls_probe_outage_returns_unready_without_connection_details(monkeypatch) -> None:
+    """BUG-001 red proof: 5302950e4 lets the separate RLS query error escape.
+
+    Target: check_enterprise_readiness. The facts probe succeeds, and the expected
+    assertion fails because the public readiness call returns no result.
+    """
+    import psycopg
+
+    store = _Store()
+
+    def unavailable():
+        raise psycopg.OperationalError("private-connection-detail")
+
+    monkeypatch.setattr(store, "check_rls_effective", unavailable)
+    result = None
+    try:
+        result = _check(store=store)
+    except psycopg.OperationalError:
+        pass
+    assert result is not None, "an RLS query outage must return an unready result"
+    assert not result.ready
+    assert "database readiness query failed: OperationalError" in result.failures
+    assert "private-connection-detail" not in str(result)

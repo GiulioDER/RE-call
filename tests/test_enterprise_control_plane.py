@@ -492,3 +492,129 @@ def test_a_still_building_shadow_is_refused_for_the_right_reason() -> None:
                 conn.execute(
                     "DELETE FROM recall_schema_migrations WHERE target_table = %s", (table,)
                 )
+
+
+def test_route_refresh_releases_only_unroutable_generation_references(monkeypatch) -> None:
+    """PERF-001 red proof: 5302950e4 retains old acme generations in _stores.
+
+    Target: StoreRegistry._route. Retention is bounded by active and shadow routes;
+    a caller holding the old store may finish without its store or pool being closed.
+    """
+    from dataclasses import replace
+
+    generation = IndexGeneration(
+        "g0", "chunks_g0", "profile-a", 8, "ready", 0, 0,
+        datetime.now(UTC), datetime.now(UTC),
+    )
+    routes = {
+        tenant: TenantRoute(tenant, replace(generation, generation_id=tenant), None, datetime.now(UTC))
+        for tenant in ("acme", "other")
+    }
+
+    class Control:
+        def route(self, tenant):
+            return routes[tenant]
+
+        def watch_routes(self, _callback, _stop):
+            pass
+
+    class Store:
+        def __init__(self, *_args, **_kwargs):
+            self.closed = False
+
+        def check_schema(self):
+            pass
+
+        def readiness_facts(self):
+            return {"dimension": 8, "rls_enabled": True, "indexes_valid": True}
+
+        def check_rls_effective(self):
+            assert not self.closed
+            return True
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(stores_module, "PgVectorStore", Store)
+    registry = StoreRegistry(
+        dsn="postgresql:///unused", dim=8, allowed_tenants=frozenset(routes),
+        pool_size=1, statement_timeout_ms=1000, control_plane=Control(),
+        embedding_profile="profile-a",
+    )
+    try:
+        held = registry.get("acme")
+        other = registry.get("other")
+        for i in range(3):
+            active = replace(generation, generation_id=f"g{i}")
+            shadow = replace(generation, generation_id=f"shadow{i}")
+            routes["acme"] = TenantRoute("acme", active, shadow, datetime.now(UTC))
+            registry.invalidate_route("acme")
+            registry.get("acme")
+            registry.get_shadow("acme")
+            assert set(registry._stores) == {("acme", f"g{i}"), ("acme", f"shadow{i}"), ("other", "other")}
+        assert held.check_rls_effective()
+        assert not held.closed
+        assert registry.get("other") is other
+    finally:
+        registry.close()
+
+
+@requires_db
+@pytest.mark.parametrize("option_source", ["dsn", "environment"])
+def test_serving_control_plane_inherits_the_configured_query_timeout(monkeypatch, option_source) -> None:
+    """PERF-002 red proof: 5302950e4 omits the serving control-plane timeout.
+
+    Target: the real ControlPlane built by the MCP lifespan. PostgreSQL must cancel
+    a statement under the supplied limit while preserving unrelated DSN options.
+    """
+    import asyncio
+    from types import SimpleNamespace
+    from psycopg.conninfo import make_conninfo
+    from recall.embeddings import HashingEmbedder
+    from recall_mcp import server
+    from recall_mcp.settings import Settings
+    import recall.schema
+
+    options = "-c statement_timeout=5000 -c application_name=route-timeout-test"
+    if option_source == "dsn":
+        dsn = make_conninfo(TEST_DSN, options=options)
+    else:
+        monkeypatch.setenv("PGOPTIONS", options)
+        dsn = TEST_DSN
+    settings = Settings.from_env({
+        "RECALL_DSN": dsn, "RECALL_EMBEDDER": "hashing", "RECALL_ENV": "development",
+        "RECALL_INDEX_MODE": "generation", "RECALL_ENTERPRISE_CONTROL_PLANE": "1",
+        "RECALL_STATEMENT_TIMEOUT_MS": "73", "RECALL_EMBED_CACHE": "off",
+    })
+    monkeypatch.setattr(server, "load_source_policy", lambda _env: object())
+    monkeypatch.setattr(server, "make_embedder", lambda *_args, **_kwargs: HashingEmbedder(dim=8))
+    monkeypatch.setattr(recall.schema, "schema_status", lambda *_args, **_kwargs: SimpleNamespace(compatible=True))
+    observed = {}
+
+    class StopStartup(Exception):
+        pass
+
+    def inspect_registry(**kwargs):
+        control = kwargs["control_plane"]
+        with control._connect() as conn:
+            observed["timeout"] = conn.execute("SHOW statement_timeout").fetchone()[0]
+            observed["application"] = conn.execute("SHOW application_name").fetchone()[0]
+            try:
+                conn.execute("SELECT pg_sleep(0.2)")
+            except psycopg.errors.QueryCanceled:
+                observed["cancelled"] = True
+            else:
+                observed["cancelled"] = False
+        raise StopStartup
+
+    monkeypatch.setattr(server, "StoreRegistry", inspect_registry)
+
+    async def drive():
+        async with server._make_lifespan(SimpleNamespace(tenants=frozenset({"acme"})), settings=settings)(None):
+            raise AssertionError("startup must stop after observing its real control plane")
+
+    with pytest.raises(StopStartup):
+        asyncio.run(drive())
+    assert observed["application"] == "route-timeout-test"
+    assert observed["cancelled"], "the serving timeout must govern actual PostgreSQL statements"
+    assert observed["timeout"] == "73ms"

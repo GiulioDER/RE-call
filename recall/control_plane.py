@@ -135,14 +135,25 @@ class ControlPlaneLedgerState:
 class ControlPlane:
     """Small PostgreSQL control plane. Runtime calls are always tenant scoped."""
 
-    def __init__(self, dsn: str, *, connect_timeout_s: int = 10) -> None:
+    def __init__(
+        self, dsn: str, *, connect_timeout_s: int = 10, statement_timeout_ms: int | None = None
+    ) -> None:
         self._dsn = dsn
         self._connect_timeout_s = connect_timeout_s
+        self._statement_timeout_ms = statement_timeout_ms
 
     def _connect(self) -> "psycopg.Connection":
-        return psycopg.connect(
+        conn = psycopg.connect(
             self._dsn, autocommit=True, connect_timeout=self._connect_timeout_s
         )
+        if self._statement_timeout_ms is None:
+            return conn
+        try:
+            conn.execute(f"SET statement_timeout = {int(self._statement_timeout_ms)}")
+        except BaseException:  # BROAD-CATCH: cleanup-only
+            conn.close()
+            raise
+        return conn
 
     def watch_routes(
         self, callback: Callable[[str], None], stop: threading.Event

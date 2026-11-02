@@ -683,7 +683,10 @@ def _make_lifespan(
                     max_tenants=max_tenants,
                     statement_timeout_ms=statement_timeout_ms,
                     generation_mode=generation_mode and not enterprise,
-                    control_plane=ControlPlane(serving_dsn) if enterprise else None,
+                    control_plane=(
+                        ControlPlane(serving_dsn, statement_timeout_ms=statement_timeout_ms)
+                        if enterprise else None
+                    ),
                     embedding_profile=embedding_profile_id(embedder),
                 )
         except Exception as exc:  # BROAD-CATCH: fail-closed
