@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import hashlib
@@ -172,9 +173,10 @@ def forget_memory(
     from recall.lite import LiteStore
 
     erasing = store.erasing() if isinstance(store, LiteStore) else nullcontext()
-    with write_session(store, "forget"), erasing:
+    pending = control_plane.erasure_session(store.tenant) if control_plane else nullcontext(None)
+    with write_session(store, "forget"), erasing, pending as scrub_pending:
         return _forget_memory_unlocked(
-            store, sources, shadow_store, control_plane, security_policy, security_context,
+            store, sources, shadow_store, scrub_pending, security_policy, security_context,
             erase_memo_requests=erase_memo_requests,
         )
 
@@ -202,9 +204,10 @@ def withdraw_memory(
     from recall.lite import LiteStore
 
     erasing = store.erasing() if isinstance(store, LiteStore) else nullcontext()
-    with write_session(store, "forget"), erasing:
+    pending = control_plane.erasure_session(store.tenant) if control_plane else nullcontext(None)
+    with write_session(store, "forget"), erasing, pending as scrub_pending:
         result = _forget_memory_unlocked(
-            store, sources, shadow_store, control_plane, security_policy, security_context,
+            store, sources, shadow_store, scrub_pending, security_policy, security_context,
             withdraw=True,
         )
     return WithdrawResult(
@@ -281,7 +284,7 @@ def _forget_memory_unlocked(
     store: PgVectorStore,
     sources: list[str],
     shadow_store: PgVectorStore | None = None,
-    control_plane: ControlPlane | None = None,
+    scrub_pending: Callable[[list[str]], int] | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     security_context: AccessContext | None = None,
     *,
@@ -355,11 +358,9 @@ def _forget_memory_unlocked(
     else:
         chunks_removed = store.delete_sources(to_delete, withdraw=withdraw) if to_delete else 0
     outbox_events_scrubbed = 0
-    if control_plane is not None:
+    if scrub_pending is not None:
         try:
-            outbox_events_scrubbed = control_plane.erase_sources_from_pending(
-                store.tenant, sorted({*requested, *to_delete})
-            )
+            outbox_events_scrubbed = scrub_pending(sorted({*requested, *to_delete}))
         except Exception:  # BROAD-CATCH: error-translation
             _log.exception("outbox scrub failed after chunk deletion for tenant %r", store.tenant)
             outbox_events_scrubbed = -1

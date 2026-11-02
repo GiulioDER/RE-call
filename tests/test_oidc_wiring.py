@@ -176,6 +176,59 @@ def test_a_cold_cache_makes_concurrent_callers_wait_not_fail(keypair):
     assert len(fetches) == 1, f"single-flight broken: {len(fetches)} concurrent fetches"
 
 
+@pytest.mark.parametrize("age", [61, 120, 121])
+def test_contended_jwks_refresh_respects_the_stale_window(keypair, age):
+    """SEC-002: an in-flight fetch cannot extend the signing-key trust window.
+
+    Baseline 5302950e4, OidcValidator._refresh: age=121 fails DID NOT RAISE at
+    validate(token). The other ages preserve the documented nonblocking fallback.
+    """
+    from recall_mcp.oidc import IdentityProviderUnavailable
+
+    private, public = keypair
+    started, release = threading.Event(), threading.Event()
+    state = {"now": 1000.0, "fetches": 0}
+
+    def fetch():
+        state["fetches"] += 1
+        if state["fetches"] == 1:
+            return jwks_for(public)
+        started.set()
+        assert release.wait(10), "the controlled refresh was not released"
+        raise OSError("identity provider unavailable")
+
+    validator = OidcValidator(
+        OidcConfig(issuer=ISSUER, audience=AUDIENCE, jwks_refresh_s=60,
+                   max_stale_key_s=120, allowed_tenants=frozenset({"acme"})),
+        _jwks_fetcher=fetch, _clock=lambda: state["now"],
+    )
+    token = token_for(private)
+    assert validator.validate(token).tenant == "acme"
+    state["now"] += age
+    outcomes = []
+
+    def refresh():
+        try:
+            outcomes.append(validator.validate(token).tenant)
+        except TokenRejected as exc:
+            outcomes.append(exc.reason)
+
+    worker = threading.Thread(target=refresh, daemon=True)
+    worker.start()
+    try:
+        assert started.wait(5), "the first request did not begin its refresh"
+        if age > 120:
+            with pytest.raises(IdentityProviderUnavailable):
+                validator.validate(token)
+        else:
+            assert validator.validate(token).tenant == "acme"
+    finally:
+        release.set()
+        worker.join(timeout=10)
+    assert not worker.is_alive()
+    assert outcomes == (["jwks_unavailable"] if age > 120 else ["acme"])
+
+
 def test_an_allowlist_given_as_a_bare_string_is_refused():
     """BUG-002. `frozenset("acme")` is {"a","c","e","m"}.
 

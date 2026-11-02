@@ -73,8 +73,9 @@ OPENROUTER_API_KEY=
 # ungated in both, by design. It also governs MCP authentication: `production` REFUSES the
 # static token file
 # (RECALL_AUTH_TOKENS_FILE below), so an HTTP transport there must authenticate via OIDC.
-# Anything other than "production", including an unset value, a typo such as "prod", or a stray
-# trailing space, resolves to development and leaves every one of those guards OFF.
+# Readers strip surrounding whitespace and normalize letter case. An unset value selects
+# development; unsupported names such as "prod" disable simple production checks and are
+# rejected by generation and runtime-route validation. Use a documented environment name.
 # The full table of what `production` enables is in docs/MIGRATIONS.md.
 # RECALL_ENV=development
 # RECALL_INDEX_MODE=legacy          # legacy or generation; one process uses one route

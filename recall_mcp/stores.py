@@ -157,8 +157,12 @@ class StoreRegistry:
         return self._connection_budget
 
     def invalidate_route(self, tenant: str) -> None:
-        """Drop only routing metadata. Acquired stores remain valid for in-flight requests."""
+        """Drop routing metadata, globally for an empty payload. Acquired stores remain valid."""
         with self._lock:
+            if not tenant:
+                self._routes.clear()
+                self._plan_calibrations.clear()
+                return
             self._routes.pop(tenant, None)
             for key in [key for key in self._plan_calibrations if key[0] == tenant]:
                 del self._plan_calibrations[key]
