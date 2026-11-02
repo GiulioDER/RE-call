@@ -505,14 +505,19 @@ def assert_sparse_coverage(
     EXPLAINS it: an operator who can see that the missing chunks were term-free can proceed,
     where "1 of 2" alone cannot be told apart from a broken encoder.
 
-    The two counts are separate round trips (`sparse_row_count`, then `count()`), so this assumes
-    indexing has quiesced: a concurrent indexer running between the two queries can make them
-    disagree transiently. No locking is added for that; the caller is responsible for calling
-    this only once writes have settled.
+    The counts and source-coverage checks are separate round trips, so this assumes indexing
+    has quiesced. The caller is responsible for calling this only once writes have settled.
     """
     encoded = store.sparse_row_count(profile_id)
     total = store.count()
     if encoded == total:
+        # Orphans can offset missing chunks. The existing source query joins actual chunk IDs.
+        if set(store.source_content_hashes()) != store.sparse_covered_sources(profile_id):
+            raise SparseCoverageError(
+                f"learned sparse sidecar and corpus both hold {total} rows under profile "
+                f"{profile_id!r}, but missing chunk encodings are offset by orphaned rows. "
+                f"Equal counts do not establish coverage."
+            )
         return
     if encoded < total:
         message = (

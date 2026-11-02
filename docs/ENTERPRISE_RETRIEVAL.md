@@ -293,13 +293,12 @@ Verify: `schema status` exits non-zero when the table is not current, and every 
 > * The real question is not "are the two versions equivalent" but **"is re-application safe against
 >   the tables as they stand"**. Equivalence says nothing about what re-running does.
 > * Take a **restorable backup first**, and do not treat the recorded row as a rollback. Restoring it
->   does not undo DDL the re-apply already executed, and **after any re-apply the ledger's
->   `applied_by` no longer answers "who applied the version that is in the ledger now"**: nothing in
->   the codebase writes that column, so it is set by its `DEFAULT current_user` on a fresh INSERT and
->   left untouched by the upsert. Which of those you get depends on the path taken, so do not rely on
->   it either way. **If you restore the row, do not re-apply on top of it.**
+>   does not undo DDL the re-apply already executed. **Deleting the ledger row and re-applying
+>   records the new applier**: the fresh INSERT sets `applied_by` through `DEFAULT current_user`.
+>   Retrying an existing failed or running row instead retains its original `applied_by`, because
+>   the upsert leaves that column untouched. **If you restore the row, do not re-apply on top of it.**
 >
->   ⚠️ This bullet has been rewritten three times, and each rewrite asserted a different single
+>   ⚠️ Earlier rewrites of this bullet asserted a different single
 >   branch of `apply_migrations` as though it were the whole behaviour. If you need the exact
 >   attribution for an incident, read `recall/schema.py` rather than trusting this paragraph.
 > * Re-applying takes **ACCESS EXCLUSIVE** on the target chunk table, and `apply_migrations` sets

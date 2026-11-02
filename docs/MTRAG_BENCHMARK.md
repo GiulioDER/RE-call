@@ -188,8 +188,8 @@ scoring an exact 1.0 on `rb_agg` for an UNANSWERABLE task as a correct refusal:
 | qwen-2.5-72b-instruct | 1/55 · 1.8% | 0.5625 |
 | mixtral_8x22b_instruct | 0/55 · 0.0% | 0.5230 |
 
-**Second of ten, tied with `llama-3.1-70b`, and the correlation runs the wrong way for the leaderboard.** The two systems that
-beat us end to end refuse **12.7%** and **5.5%** of what they cannot answer. The system that refuses
+**Second of ten, tied with `llama-3.1-70b`, and the correlation runs the wrong way for the leaderboard.** Three systems
+beat us end to end and refuse less often. For example, `gpt-4o` and `llama-3.1-405b` refuse **12.7%** and **5.5%** of what they cannot answer. The system that refuses
 best, `llama-3.1-8b`, is last on answer score. A single harmonic mean cannot express that trade, and
 this table is the reason we publish both columns rather than the one that flatters us.
 

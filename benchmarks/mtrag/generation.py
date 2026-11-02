@@ -390,19 +390,15 @@ def write_run_manifest(out: Path, **fields: Any) -> None:
     run_manifest_path(out).write_text(json.dumps(fields, indent=2), encoding="utf-8")
 
 
-def previous_prompt(out: Path) -> str | None:
+def previous_run_manifest(out: Path) -> dict[str, Any]:
     path = run_manifest_path(out)
     if not path.exists():
-        return None
+        return {}
     try:
-        prompt = json.loads(path.read_text(encoding="utf-8")).get("prompt")
-    except (json.JSONDecodeError, OSError):
-        return None
-    # Validate the type rather than trusting the manifest. This feeds the resume guard, which
-    # refuses to continue a run whose prompt differs; a non-string here would compare unequal to
-    # every known prompt name and read as UNKNOWN provenance, which is the safe direction but for
-    # the wrong reason. Returning None says "no recorded prompt", which is what a bad value means.
-    return prompt if isinstance(prompt, str) else None
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
 
 
 class CheckpointChanged(RuntimeError):
@@ -917,7 +913,10 @@ def main(argv: list[str] | None = None) -> int:
     # manifests existed — which is every artifact generated so far, i.e. exactly the population the
     # guard was added to protect. A guard that is disarmed precisely where it is needed is not a
     # guard. A corrupt manifest reads as unknown and lands here as well, which is the safe side.
-    prior = previous_prompt(args.out)
+    prior_manifest = previous_run_manifest(args.out)
+    prior = prior_manifest.get("prompt")
+    if not isinstance(prior, str):
+        prior = None
     if done and prior != args.prompt:
         detail = (
             f"generated with --prompt {prior!r}" if prior is not None
@@ -928,6 +927,20 @@ def main(argv: list[str] | None = None) -> int:
             f"{args.prompt!r}. Resuming would mix two prompts in one file. Write to a new --out, "
             f"or delete the existing one. If you know the existing rows used {args.prompt!r}, "
             f"write that into {run_manifest_path(args.out).name} to record it."
+        )
+    config = {
+        "model": args.model, "task": args.task,
+        "contexts_from": args.contexts_from if args.task == "c" else "reference",
+        "max_tokens": args.max_tokens,
+    }
+    if done and any(
+        type(prior_manifest.get(key)) is not type(value) or prior_manifest[key] != value
+        for key, value in config.items()
+    ):
+        raise RuntimeError(
+            f"{args.out} already holds answers with a different or UNKNOWN generation "
+            f"configuration. Resuming would mix model, task, context source, or token budgets. "
+            f"Use a new --out or restore the original generation configuration."
         )
     pending = [t for t in tasks if str(t["task_id"]) not in done]
     print(
@@ -1008,9 +1021,7 @@ def main(argv: list[str] | None = None) -> int:
     # dry run never reaches here, so the old `args.dry_run` guard is now the control flow itself;
     # that guard existed because a limited preview would otherwise describe a run producing nothing.
     write_run_manifest(
-        args.out, prompt=args.prompt, layout=layout, model=args.model, task=args.task,
-        contexts_from=args.contexts_from if args.task == "c" else "reference",
-        max_tokens=args.max_tokens, tasks=len(tasks), limit=args.limit,
+        args.out, prompt=args.prompt, layout=layout, **config, tasks=len(tasks), limit=args.limit,
     )
     # Rewritten, not appended across runs: this file describes the run that just happened. Appending
     # would leave a task that failed once and later succeeded sitting in the log forever, so the
