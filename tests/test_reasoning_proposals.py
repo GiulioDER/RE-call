@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
@@ -432,6 +433,54 @@ def test_provider_batch_is_atomic_on_malformed_later_output(
     )
 
     report = proposal_report(graph, model_provider=provider)
+
+    assert report.failure_matrix["malformed_output"] == 1
+    assert all(proposal.provider_id != "test.provider" for proposal in report.proposals)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("subject_id", None), ("object_id", 7), ("explanation", None),
+     ("uncertainty", "needs review"), ("uncertainty", [None])],
+)
+def test_provider_rejects_malformed_mapping_shapes_atomically(
+    graph: ReasoningGraphProjection, field: str, value: Any,
+) -> None:
+    """DAT-001: each case fails on a6051cac5 at the malformed-output assertion."""
+    valid = {
+        "source_evidence_ids": [graph.nodes[0].id], "proposed_relation": "references",
+        "subject_id": "a", "object_id": "b", "explanation": "candidate",
+        "confidence": 0.5, "uncertainty": [],
+    }
+    malformed = {**valid, "object_id": "c", field: value}
+    report = proposal_report(graph, model_provider=_Provider([valid, malformed]))
+
+    assert report.failure_matrix["malformed_output"] == 1
+    assert all(proposal.provider_id != "test.provider" for proposal in report.proposals)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("explanation", None), ("uncertainty", "needs review"), ("uncertainty", [None])],
+)
+def test_provider_rejects_malformed_typed_shapes_atomically(
+    graph: ReasoningGraphProjection, field: str, value: Any,
+) -> None:
+    """DAT-001: baseline accepts these nonidentity fields after tuple coercion."""
+    valid = {
+        "source_evidence_ids": [graph.nodes[0].id], "proposed_relation": "references",
+        "subject_id": "a", "object_id": "b", "explanation": "candidate",
+        "confidence": 0.5, "uncertainty": [],
+    }
+    typed = {**valid, "object_id": "c"}
+    seed = next(p for p in proposal_report(graph, model_provider=_Provider([typed])).proposals
+                if p.provider_id == "test.provider")
+
+    class MalformedTypedProvider(_Provider):
+        def propose(self, graph, context: ProposalContext):
+            return [valid, replace(seed, **{field: value})]
+
+    report = proposal_report(graph, model_provider=MalformedTypedProvider(None))
 
     assert report.failure_matrix["malformed_output"] == 1
     assert all(proposal.provider_id != "test.provider" for proposal in report.proposals)
