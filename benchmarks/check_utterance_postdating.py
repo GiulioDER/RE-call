@@ -51,6 +51,10 @@ PRE-REGISTERED
       a snapshot collapses every scope onto one instant, which makes the control non-empty exactly
       when P2 is, so it would agree with the thing it exists to check independently.
 
+Correction (2026-11-02): the original P3 prediction above is preserved. An empty control is
+UNINFORMATIVE, and a declared P2 hold still succeeds at any transcript count. With a derived
+instant and an empty control, neither count supplies evidence. A nonempty P2 fails first.
+
 P3 is not hypothetical. The merged reading below is the same operation as §10's, which took
 LongMemEval's per-question haystacks into one 19,195-session corpus and dropped hit@5 from 0.970 to
 0.366. (0.719 is the intermediate Oracle arm over 940 sessions, not the per-question baseline.)
@@ -236,8 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     # JSON artifact would otherwise be indistinguishable from a real finding.
     try:
         corpus = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        print(f"MALFORMED: {path} is not JSON ({exc}).")
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        print(f"MALFORMED: {path} cannot be read as UTF-8 JSON ({exc}).")
         return 2
     if not isinstance(corpus, list):
         print(f"MALFORMED: {path} is {type(corpus).__name__}, not a list of samples.")

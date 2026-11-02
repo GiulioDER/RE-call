@@ -887,3 +887,45 @@ def test_the_textless_timed_reader_matches_the_public_one_except_for_text(make_s
     assert [(c.id, c.source, c.metadata, at) for c, at in textless] == [
         (c.id, c.source, c.metadata, at) for c, at in public
     ]
+
+
+
+@requires_db
+def test_touch_refreshes_cached_supersession_after_timestamp_repair(make_store):
+    """STAKES-001: a touch must invalidate the graph when its first-write date changes.
+
+    Red proof: f961d148e repairs the DB timestamp and preserves max/count, but the same
+    store's graph still reports the old future candidate; the candidate assertion fails.
+    """
+    from datetime import UTC, datetime
+
+    store = make_store(3)
+    store.upsert([
+        Chunk("old", "a.md", "old", metadata={"file": "a.md"}),
+        Chunk("new", "b.md", "new", metadata={"file": "b.md", "supersedes": "a.md"}),
+        Chunk("pin", "c.md", "unrelated", metadata={"file": "c.md"}),
+    ], [[1.0, 0.0, 0.0]] * 3)
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(
+            f"UPDATE {store._table} SET first_indexed_at = now() + interval '1 day', "
+            "indexed_at = now() + interval '1 day' WHERE id = 'new'"
+        )
+        conn.execute(
+            f"UPDATE {store._table} SET indexed_at = now() + interval '2 days' WHERE id = 'pin'"
+        )
+        before = conn.execute(f"SELECT max(indexed_at), count(*) FROM {store._table}").fetchone()
+    graph = store.supersession_graph()
+    assert graph.candidates["a.md"][0][1] > datetime.now(UTC)
+    assert graph.successor("a.md", known_as_of=datetime.now(UTC)) is None
+    assert store.touch_files(["b.md"]) == 1
+    now = datetime.now(UTC)
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        after = conn.execute(f"SELECT max(indexed_at), count(*) FROM {store._table}").fetchone()
+        repaired = conn.execute(
+            f"SELECT first_indexed_at FROM {store._table} WHERE id = 'new'"
+        ).fetchone()[0]
+    assert before == after
+    assert repaired <= now
+    refreshed = store.supersession_graph()
+    assert refreshed.candidates["a.md"][0][1] == repaired
+    assert refreshed.successor("a.md", known_as_of=now) == "b.md"

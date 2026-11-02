@@ -22,13 +22,11 @@ was scoring plain semantic retrieval. `load_metadata` below writes `effective_fr
 into the frontmatter RE-call reads.
 
 ⚠️ **`known_as_of` is still NOT wired here, deliberately, and the reason has narrowed.** It is
-TRANSACTION time; valid time is what tiers T1 to T5 score, and that is what `load_metadata` now
-supplies. But manifest v4 added **T6-write-time**, which places the reference time strictly inside
-the gap between `asserted_at` and `effective_from` -- a tier that cannot be answered from valid
-time alone. So the old claim that this axis "scores valid time" and therefore cannot measure
-`known_as_of` is no longer true of v4. Wiring it needs `asserted_at` mapped onto the store's write
-column, which means backdating rows on purpose; that is its own pre-registered arm, and folding it
-in here would make this a two-variable change.
+TRANSACTION time. The supplied validity intervals also cover manifest v4's **T6-write-time**
+shape: its reference time precedes the future revision's `effective_from`, so that revision is
+not yet valid and the effective predecessor can be served. That result does not establish a need
+for `known_as_of`. Evaluating transaction time separately would require mapping `asserted_at`
+onto write timestamps, which means backdating rows on purpose and needs its own pre-registered arm.
 
 Run it:
 

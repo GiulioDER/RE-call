@@ -936,3 +936,215 @@ def test_a_migration_number_collision_names_both_files():
                 store.check_schema()
         assert first.filename in str(raised.value)
         assert "from_another_branch" in str(raised.value)
+
+
+
+@requires_db
+def test_mixed_case_target_uses_one_physical_migration_identity():
+    """BUG-001: accepted spellings must share a usable schema and ledger.
+
+    Red proof: f961d148e, apply_migrations raises policy drift for the accepted uppercase
+    spelling; the explicit error assertion fails. The fixed run checks both spellings.
+    """
+    from recall.schema import SchemaError
+
+    with _target() as table:
+        mixed = table.upper()
+        error = None
+        try:
+            apply_migrations(TEST_DSN, table=mixed, dim=DIM)
+        except SchemaError as exc:
+            error = str(exc)
+        assert error is None, f"accepted migration target failed: {error}"
+        assert apply_migrations(TEST_DSN, table=table, dim=DIM) == ()
+        for spelling in (table, mixed):
+            assert schema_status(TEST_DSN, table=spelling, dim=DIM).compatible
+            with PgVectorStore(TEST_DSN, table=spelling, dim=DIM) as store:
+                store.check_schema()
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            targets = conn.execute(
+                f"SELECT DISTINCT target_table FROM {LEDGER_TABLE} "
+                "WHERE lower(target_table) = %s", (table,)
+            ).fetchall()
+        assert targets == [(table,)]
+
+
+@requires_db
+@pytest.mark.parametrize("surface", ["store", "status"])
+def test_serving_check_refuses_missing_upsert_arbiter(surface):
+    """DAT-001: a current ledger cannot certify a missing conflict key.
+
+    Red proof: f961d148e, the real nonempty upsert raises InvalidColumnReference, but
+    both compatibility surfaces fail the intended DID NOT RAISE assertion.
+    """
+    with _target() as table:
+        apply_migrations(TEST_DSN, table=table, dim=DIM)
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f"ALTER TABLE {table} DROP CONSTRAINT {table}_pkey")
+        with PgVectorStore(TEST_DSN, table=table, dim=DIM) as store:
+            with pytest.raises(psycopg.errors.InvalidColumnReference):
+                store.upsert([Chunk("arbiter", "a.md", "text")], [[1.0] * DIM])
+            with pytest.raises(SchemaIncompatible, match="uniqueness"):
+                if surface == "store":
+                    store.check_schema()
+                else:
+                    schema_status(TEST_DSN, table=table, dim=DIM)
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM pg_index WHERE indrelid = %s::regclass "
+                "AND indisunique", (table,)
+            ).fetchone() == (0,), "serving checks repaired the drift"
+
+
+@requires_db
+def test_serving_check_accepts_immediate_unique_upsert_arbiter():
+    """DAT-001 control: ON CONFLICT also accepts an immediate standalone unique index.
+
+    Red proof uses the restrictive production mutation requiring indisprimary instead of
+    indisunique. A primary-key-only gate rejects this supported replacement arbiter.
+    """
+    with _target() as table:
+        apply_migrations(TEST_DSN, table=table, dim=DIM)
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f"ALTER TABLE {table} DROP CONSTRAINT {table}_pkey")
+            conn.execute(
+                f"CREATE UNIQUE INDEX {table}_arbiter ON {table} (id, tenant_id) INCLUDE (source)"
+            )
+        with PgVectorStore(TEST_DSN, table=table, dim=DIM) as store:
+            error = None
+            try:
+                store.check_schema()
+            except SchemaIncompatible as exc:
+                error = str(exc)
+            assert error is None, f"usable uniqueness index was refused: {error}"
+            store.upsert([Chunk("arbiter", "a.md", "text")], [[1.0] * DIM])
+            assert store.count() == 1
+        assert schema_status(TEST_DSN, table=table, dim=DIM).compatible
+
+
+@requires_db
+def test_mixed_case_ledger_history_is_recognized_without_reapplying():
+    """BUG-001: recover aliases already written before catalog validation failed.
+
+    Red proof: f961d148e reads no history under the canonical spelling, so its compatible
+    assertion fails after the stored target is changed to the supported uppercase alias.
+    """
+    with _target() as table:
+        apply_migrations(TEST_DSN, table=table, dim=DIM)
+        try:
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute(
+                    f"UPDATE {LEDGER_TABLE} SET target_table = %s WHERE target_table = %s",
+                    (table.upper(), table),
+                )
+            assert schema_status(TEST_DSN, table=table, dim=DIM).compatible
+            assert apply_migrations(TEST_DSN, table=table, dim=DIM) == ()
+            assert schema_status(TEST_DSN, table=table.upper(), dim=DIM).compatible
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                assert conn.execute(
+                    f"SELECT DISTINCT target_table FROM {LEDGER_TABLE} "
+                    "WHERE lower(target_table) = %s", (table,)
+                ).fetchall() == [(table.upper(),)]
+        finally:
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute(
+                    f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (table.upper(),)
+                )
+
+
+@requires_db
+def test_conflicting_case_alias_histories_are_not_silently_combined():
+    """BUG-001: physical aliases cannot conceal conflicting migration checksums.
+
+    Red proof: f961d148e ignores the conflicting uppercase alias and fails DID NOT RAISE.
+    """
+    with _target() as table:
+        apply_migrations(TEST_DSN, table=table, dim=DIM)
+        try:
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute(
+                    f"INSERT INTO {LEDGER_TABLE} "
+                    "(target_table, version, filename, checksum, state) "
+                    f"SELECT %s, version, filename, %s, state FROM {LEDGER_TABLE} "
+                    "WHERE target_table = %s AND version = '0001'",
+                    (table.upper(), "0" * 64, table),
+                )
+            with pytest.raises(SchemaIncompatible, match="conflicting migration aliases"):
+                schema_status(TEST_DSN, table=table, dim=DIM)
+        finally:
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute(
+                    f"DELETE FROM {LEDGER_TABLE} WHERE target_table = %s", (table.upper(),)
+                )
+
+
+
+@requires_db
+@pytest.mark.parametrize("state", ["failed", "running"])
+@pytest.mark.parametrize("duplicate_alias", [False, True])
+@pytest.mark.parametrize("version", ["0001", "0002"])
+def test_interrupted_case_alias_migrations_recover_consistently(
+    state, duplicate_alias, version, monkeypatch,
+):
+    """BUG-001: a retry must recover every accepted historical case alias.
+
+    Red proof: the schema-only normalization repair reads legacy aliases but writes a new
+    canonical row, leaving failed/running aliases inconsistent after the retry. Concurrent
+    retries also exercise a real SQL failure before successful recovery.
+    """
+    from recall import schema
+
+    with _target() as table:
+        aliases = [table.upper()]
+        if duplicate_alias:
+            aliases.append(table.capitalize())
+        apply_migrations(TEST_DSN, table=table, dim=DIM)
+        try:
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute(
+                    f"UPDATE {LEDGER_TABLE} SET target_table = %s, state = %s "
+                    "WHERE target_table = %s AND version = %s",
+                    (aliases[0], state, table, version),
+                )
+                if duplicate_alias:
+                    conn.execute(
+                        f"INSERT INTO {LEDGER_TABLE} "
+                        "(target_table, version, filename, checksum, state) "
+                        f"SELECT %s, version, filename, checksum, state FROM {LEDGER_TABLE} "
+                        "WHERE target_table = %s AND version = %s",
+                        (aliases[1], aliases[0], version),
+                    )
+            if version == "0002":
+                original_render = schema._render
+
+                def failing_render(migration, target, dim):
+                    sql, index = original_render(migration, target, dim)
+                    return ("RECALL_INTENTIONAL_INVALID_SQL", index) if migration.version == version else (sql, index)
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(schema, "_render", failing_render)
+                    with pytest.raises(psycopg.errors.SyntaxError):
+                        apply_migrations(TEST_DSN, table=table, dim=DIM)
+                with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                    states = conn.execute(
+                        f"SELECT DISTINCT state FROM {LEDGER_TABLE} "
+                        "WHERE lower(target_table) = %s AND version = %s", (table, version),
+                    ).fetchall()
+                assert states == [("failed",)], f"retry left conflicting failure states: {states}"
+            error = None
+            try:
+                applied = apply_migrations(TEST_DSN, table=table, dim=DIM)
+                assert [row.version for row in applied] == [version]
+                for spelling in (table, *aliases):
+                    assert schema_status(TEST_DSN, table=spelling, dim=DIM).compatible
+                    assert apply_migrations(TEST_DSN, table=spelling, dim=DIM) == ()
+                    with PgVectorStore(TEST_DSN, table=spelling, dim=DIM) as store:
+                        store.check_schema()
+            except schema.SchemaError as exc:
+                error = str(exc)
+            assert error is None, f"historical alias retry failed compatibility: {error}"
+        finally:
+            with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+                conn.execute(
+                    f"DELETE FROM {LEDGER_TABLE} WHERE target_table = ANY(%s)", (aliases,),
+                )
