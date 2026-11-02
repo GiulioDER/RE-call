@@ -497,8 +497,10 @@ def test_probe_tests_restore_offline_environment(tmp_path, original, probe):
         f"    assert [os.environ.get(k) for k in {keys!r}] == {[original, original]!r}\n",
         encoding="utf-8",
     )
+    # Both paths are explicit; their temporary-directory siblings are not test inputs.
     completed = subprocess.run(
         [sys.executable, "-m", "pytest", "-n", "0", "-q", "-p", "no:cacheprovider",
+         "-o", "norecursedirs=*",
          f"{__file__}::{probe}", str(following)],
         capture_output=True, text=True, env=environment,
     )
