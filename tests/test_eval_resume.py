@@ -67,6 +67,20 @@ def test_reading_without_repair_leaves_the_file_alone(tmp_path) -> None:
     assert path.read_bytes() == before
 
 
+def test_repair_terminates_a_complete_final_record_before_appending(tmp_path) -> None:
+    """BUG-001: baseline 33759a686 glued two objects and discarded both on the next read."""
+    path = tmp_path / "ledger.jsonl"
+    original = b'{"question_id":"a"}'
+    path.write_bytes(original)
+    read_ledger(path, id_field="question_id")
+    assert path.read_bytes() == original
+    read_ledger(path, id_field="question_id", repair_truncated_tail=True)
+    append_rows(path, [{"question_id": "b"}])
+    read = read_ledger(path, id_field="question_id")
+    assert read.ids == {"a", "b"}
+    assert read.truncated == ()
+
+
 def test_the_first_occurrence_of_an_id_wins_across_several_files(tmp_path) -> None:
     first, second = tmp_path / "a.jsonl", tmp_path / "b.jsonl"
     _write(first, [{"question_id": "x", "score": 1}])

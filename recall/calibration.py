@@ -621,16 +621,21 @@ def load_for_profile(
     every consumer already handles as "uncalibrated", so the failure is a degraded mode and not a
     crash. `load_for` is untouched, so a legacy caller keeps the behaviour it had.
 
-    Reads the file a second time rather than threading the raw payload out of `load_for`'s cached
-    path: this runs once per benchmark arm, not once per query, and the alternative was widening
-    `load_for`'s return type on the hot retrieval path to serve a caller that is not on it.
+    The fingerprint snapshot must match the cached bytes that produced the returned calibration.
+    An atomic replacement between reads therefore refuses rather than mixing two file versions.
     """
     cal = load_for(profile.profile_id, path)
     if cal is None:
         return None
     resolved = _resolve_path(path)
     try:
-        payload = json.loads(resolved.read_text(encoding="utf-8"))
+        raw = resolved.read_bytes()
+        cached = _LOAD_CACHE.get((str(resolved), profile.profile_id))
+        if cached is None or cached[1] is not cal or cached[0] != hashlib.blake2b(
+            raw, digest_size=16
+        ).digest():
+            return None
+        payload = json.loads(raw)
         stored = payload.get(PROFILE_FINGERPRINT_KEY)
     except (OSError, json.JSONDecodeError, AttributeError):
         return None

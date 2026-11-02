@@ -593,12 +593,27 @@ def test_budget_enforced_with_slow_source(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """H13."""
+    entered, completed = threading.Event(), threading.Event()
     real = records_files.load_memo_records
 
     def slow(directory: Path, **options: Any) -> Any:
-        time.sleep(6.0)
-        return real(directory)
+        entered.set()
+        try:
+            time.sleep(6.0)
+            return real(directory)
+        finally:
+            completed.set()
 
+    monkeypatch.setattr(auditor_brief, "start_scope", lambda cwd: {})
+    monkeypatch.setattr(
+        auditor_brief, "finish_scope",
+        lambda started, cwd, prompt, *, deadline: (
+            REPO, [{"file": FILE, "symbol": "Pool._lease", "code_sha": CHANGED_SHA}],
+        ),
+    )
+    monkeypatch.setattr(auditor_brief, "cca_holdout_run", lambda cwd, *, deadline: None)
+    # Isolate the inner diagnostic from the separately tested outer hard stop.
+    monkeypatch.setattr(auditor_brief, "INNER_MARGIN", 1.0)
     monkeypatch.setattr(records_files, "load_memo_records", slow)
     monkeypatch.setenv("RECALL_AUDITOR_BRIEF_BUDGET", "2")
     started = time.monotonic()
@@ -607,6 +622,8 @@ def test_budget_enforced_with_slow_source(
     assert elapsed < 4.0, f"the hook waited {elapsed:.2f}s on a slow source"
     assert output is None
     log = env.read_text(encoding="utf-8")
+    assert entered.is_set(), f"the slow memo source was not entered: {log!r}"
+    assert not completed.is_set(), "the slow source finished before the hook returned"
     assert "the memo directory was still being read" in log, (
         f"the log does not name the slow source: {log!r}"
     )

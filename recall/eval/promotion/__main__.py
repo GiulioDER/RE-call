@@ -23,10 +23,12 @@ import os
 import re
 import sys
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
-from recall.eval.promotion.adapters import ADAPTERS, CorpusAdapter, CorpusUnavailable, label_kind
+from recall.eval.promotion.adapters import (
+    ADAPTERS, CorpusAdapter, CorpusUnavailable, MtragAdapter, label_kind,
+)
 from recall.eval.promotion.aggregate import decide as run_gate
 from recall.eval.promotion.aggregate import write_decision
 from recall.eval.promotion.manifest import FrozenQuestion, read_manifest, write_manifest
@@ -150,7 +152,9 @@ def _refuse_overbroad_glob(glob: str) -> None:
 
 
 @contextlib.contextmanager
-def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator[tuple]:
+def _indexed_store(
+    args: argparse.Namespace, adapter: CorpusAdapter, *, domain: str | None = None
+) -> Iterator[tuple]:
     """A throwaway uuid-named store holding the corpus, dropped on the way out.
 
     Setup runs INSIDE the guard, matching `recall/eval/harness.py::_throwaway_store`: a failure
@@ -170,6 +174,11 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     # make_embedder -> connect -> CREATE TABLE -> refuse, which touched the operator's database
     # for a request that was always going to be refused.
     _refuse_overbroad_glob(args.glob)
+    if domain is not None:
+        from benchmarks.mtrag.run import DOMAINS
+
+        if not isinstance(adapter, MtragAdapter) or domain not in DOMAINS:
+            raise ValueError(f"unsupported MT-RAG domain {domain!r}")
     embedder = make_embedder(args.embedder)
     # The context policy has to come from the arm's own profile. `Indexer` defaults to
     # `ContextPolicy()`, which is mode "none" / `raw-v1`, and it REFUSES an embedder whose profile
@@ -179,10 +188,16 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
     # comparing context modes could not run at all, and the failure was at index time rather than
     # in the numbers, which is the only reason it was not a silent wrong result.
     context_policy = context_policy_for_profile(embedding_profile_id(embedder))
-    store = PgVectorStore(args.dsn, dim=embedder.dim, table=f"promo_{uuid.uuid4().hex[:8]}")
+    if domain is not None and context_policy.mode != "none":
+        raise ValueError("MT-RAG document ingestion requires a raw-passage embedding profile")
+    prefix = f"promo_{uuid.uuid4().hex[:8]}"
+    table = f"{prefix}_{domain}" if domain is not None else prefix
+    store = PgVectorStore(args.dsn, dim=embedder.dim, table=table)
     try:
         store.ensure_schema()
         corpus_dir = args.corpus_dir or getattr(adapter, "corpus_dir", None)
+        if corpus_dir is None and isinstance(adapter, MtragAdapter):
+            corpus_dir = adapter.root
         if corpus_dir is None:
             raise SystemExit(
                 f"{adapter.name}: no corpus directory to index. Pass --corpus-dir pointing at the "
@@ -192,12 +207,22 @@ def _indexed_store(args: argparse.Namespace, adapter: CorpusAdapter) -> Iterator
         # ZERO files and every one of 110 questions came back abstained with an empty pool. The
         # gate's `VacuousArm` guard did catch it, but only after four arms had each paid for a
         # full embedding pass, and its message blames the label space, which was not the fault.
-        stats = Indexer(store, embedder, context_policy=context_policy).index_path(
-            Path(corpus_dir), args.glob
-        )
+        if domain is not None:
+            from benchmarks.mtrag.run import index_domain
+
+            indexed = index_domain(
+                dsn=args.dsn, root=Path(corpus_dir), domain=domain, embedder=embedder,
+                prefix=prefix, batch_size=64,
+            )
+            chunks = indexed["rows"]
+        else:
+            stats = Indexer(store, embedder, context_policy=context_policy).index_path(
+                Path(corpus_dir), args.glob
+            )
+            chunks = stats.chunks
         # An empty index cannot produce a measurement, and 110 abstentions is not a result. Refuse
         # where the cause is still legible rather than three steps downstream.
-        if not stats.chunks:
+        if not chunks:
             raise SystemExit(
                 f"{adapter.name}: indexing {corpus_dir} with glob {args.glob!r} produced no "
                 f"chunks. Every question would abstain against an empty index and the gate would "
@@ -247,48 +272,67 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"{sorted({question.corpus for question in frozen})}."
         )
 
-    with _indexed_store(args, adapter) as (store, embedder):
-        profile = embedding_profile(embedder)
-        arm = ArmConfig(
-            label=args.arm,
-            embedding_profile_id=profile.profile_id,
-            retrieval_profile=args.retrieval_profile,
-            generation=args.generation,
-            candidate_pool=args.candidate_k,
-            embedding_fingerprint=profile.fingerprint(),
+    domains: Sequence[str | None] = (
+        sorted({question.corpus.partition(":")[2] for question in scoped})
+        if isinstance(adapter, MtragAdapter) else [None]
+    )
+    queries = adapter.queries()
+    scored_now = resumed = total = 0
+    repaired = False
+    for domain in domains:
+        questions = (
+            [question for question in scoped if question.corpus == f"mtrag:{domain}"]
+            if domain is not None else scoped
         )
-        from recall.trust_policy import TrustPolicy
-
-        policy = (
-            TrustPolicy.development()
-            if args.trust_policy == "development"
-            else TrustPolicy.strict_policy()
-        )
-        if args.trust_policy == "development":
-            print(
-                "trust policy: DEVELOPMENT — the trust gate does not run, every hit carries the "
-                "'unverified' verdict, and abstention is degraded. This arm's safety metrics "
-                "describe a degraded system; they are not a measurement of the trust layer."
+        with _indexed_store(args, adapter, domain=domain) as (store, embedder):
+            profile = embedding_profile(embedder)
+            arm = ArmConfig(
+                label=args.arm,
+                embedding_profile_id=profile.profile_id,
+                retrieval_profile=args.retrieval_profile,
+                generation=args.generation,
+                candidate_pool=args.candidate_k,
+                embedding_fingerprint=profile.fingerprint(),
+                k=args.k,
             )
-        search = StoreSearch(
-            store=store,
-            embedder=embedder,
-            k=args.k,
-            candidate_k=args.candidate_k,
-            retrieval_profile=args.retrieval_profile,
-            generation=args.generation,
-            label_kind=label_kind(adapter),
-            policy=policy,
-        )
-        out = args.out or args.out_dir / f"{arm.artifact_stem()}.jsonl"
-        result = score_arm(
-            scoped, adapter.queries(), search, arm, out, resume=not args.no_resume
-        )
-    if result.repaired_truncated_tail:
+            from recall.trust_policy import TrustPolicy
+
+            policy = (
+                TrustPolicy.development()
+                if args.trust_policy == "development"
+                else TrustPolicy.strict_policy()
+            )
+            if args.trust_policy == "development":
+                print(
+                    "trust policy: DEVELOPMENT — the trust gate does not run, every hit carries the "
+                    "'unverified' verdict, and abstention is degraded. This arm's safety metrics "
+                    "describe a degraded system; they are not a measurement of the trust layer."
+                )
+            search = StoreSearch(
+                store=store,
+                embedder=embedder,
+                k=args.k,
+                candidate_k=args.candidate_k,
+                retrieval_profile=args.retrieval_profile,
+                generation=args.generation,
+                label_kind=label_kind(adapter),
+                policy=policy,
+            )
+            out = args.out or args.out_dir / f"{arm.artifact_stem()}.jsonl"
+            result = score_arm(
+                questions, queries, search, arm, out,
+                # Later domains append rows created by this same invocation.
+                resume=not args.no_resume or domain != domains[0],
+            )
+        scored_now += result.scored_now
+        resumed += len(result.records) - result.scored_now
+        total += len(result.records)
+        repaired |= result.repaired_truncated_tail
+    if repaired:
         print(f"note: {out} had a truncated trailing line from an earlier run; it was repaired.")
     print(
-        f"arm {args.arm}: {result.scored_now} scored now, {result.resumed} resumed, "
-        f"{len(result.records)} total -> {out}"
+        f"arm {args.arm}: {scored_now} scored now, {resumed} resumed, "
+        f"{total} total -> {out}"
     )
     return 0
 

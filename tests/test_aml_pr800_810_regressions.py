@@ -75,6 +75,11 @@ def test_add_preflight_respects_the_response_budget(stage: str, monkeypatch) -> 
         monkeypatch.setattr(service, "stored_add", held_receipt)
 
     async def scenario() -> None:
+        # The ASGI client does not run lifespan setup; prepare a spare execution lane.
+        warm = threading.Barrier(2)
+        await asyncio.gather(
+            asyncio.to_thread(warm.wait, 2), asyncio.to_thread(warm.wait, 2),
+        )
         body = HeldBody()
         async with _client_for(_app(service, slots=1)) as client:
             if stage == "body":
@@ -89,6 +94,12 @@ def test_add_preflight_respects_the_response_budget(stage: str, monkeypatch) -> 
                 done, _ = await asyncio.wait({task}, timeout=BUDGET + 0.7)
                 assert task in done, "preflight outlived the response budget"
                 assert _pending(task.result())
+                # A fresh Add uses clean hooks while the original work remains blocked.
+                monkeypatch.setattr(app_module, "add_identity", real_identity)
+                monkeypatch.setattr(service, "stored_add", real_stored)
+                assert (await _add(client, "recovery")).status_code == 200
+                assert service.add_calls == 1
+                assert (tenant_for("u"), "recovery") in repository.stored
             finally:
                 release.set()
                 receipt_release.set()
@@ -96,8 +107,6 @@ def test_add_preflight_respects_the_response_budget(stage: str, monkeypatch) -> 
                 if not task.done():
                     task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-            # Timeouts must give both gates back so a later valid Add can run.
-            assert (await _add(client, "recovery")).status_code == 200
 
     asyncio.run(scenario())
 

@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from recall.embeddings import FastEmbedEmbedder
+from recall.embeddings import Embedder, FastEmbedEmbedder, embed_passages
 from recall.rerank import CrossEncoderReranker
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
@@ -310,7 +310,7 @@ def table_name(prefix: str, domain: str) -> str:
 
 
 def index_domain(
-    *, dsn: str, root: Path, domain: str, embedder: FastEmbedEmbedder,
+    *, dsn: str, root: Path, domain: str, embedder: Embedder,
     prefix: str, batch_size: int,
 ) -> dict[str, Any]:
     path = corpus_zip(root, domain)
@@ -351,7 +351,7 @@ def index_domain(
             if not chunks:
                 seen = next_seen
                 continue
-            vectors = embedder.embed([chunk.text for chunk in chunks])
+            vectors = embed_passages(embedder, [chunk.text for chunk in chunks])
             store.upsert(chunks, vectors)
             written += len(chunks)
             seen = next_seen

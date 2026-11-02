@@ -404,3 +404,18 @@ def test_the_original_regression_test_still_holds() -> None:
     )
     assert not decision.promoted
     assert any("b hit@5 regresses" in failure for failure in decision.failures)
+
+
+def test_mixed_unverified_evidence_cannot_pass_a_measured_safety_gate() -> None:
+    """STAKES-002: 33759a686 promoted this mixed arm with a fabricated measured zero."""
+    frozen = _corpus("alpha")
+    baseline = _arm(frozen, hits=4)
+    candidate = _arm(frozen, hits=20, verdict="unverified")
+    decision, document = decide(
+        baseline, candidate, frozen,
+        manifest_digest="d", baseline_label="b", candidate_label="c",
+        security_green=True, latency_budget_ms=250.0,
+        certified_latency_p95_ms=90.0, bootstrap_samples=200,
+    )
+    assert not decision.promoted, "unverified evidence cannot establish a zero stale-trust rate"
+    assert document["safety"]["candidate"]["superseded_trust_rate"] is None

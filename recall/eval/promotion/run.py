@@ -18,11 +18,13 @@ question id is unique within its corpus and not across them.
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from recall.atomic_write import atomic_write_bytes
 from recall.eval.promotion.manifest import FrozenQuestion
 from recall.eval.promotion.records import (
     QuestionRecord,
@@ -50,24 +52,25 @@ class ArmConfig:
     retrieval_profile: str
     generation: str
     candidate_pool: int
-    #: `EmbeddingProfile.fingerprint()`. Not a record field — the record carries the profile ID,
-    #: which is what a human reads — but it is part of what keys the arm's artifacts, so two arms
-    #: sharing a profile ID and differing in artifact digest cannot land in the same ledger.
+    #: Stored in the ledger's .arm.json binding, alongside the configured retrieval depth.
     embedding_fingerprint: str = ""
+    k: int = 20
 
-    def identity(self) -> tuple[str, str, str, int]:
+    def identity(self) -> tuple[str, str, str, int, str, int]:
         """Everything except the label that decides what an arm's rows MEAN."""
         return (
             self.embedding_profile_id,
             self.retrieval_profile,
             self.generation,
             self.candidate_pool,
+            self.embedding_fingerprint,
+            self.k,
         )
 
     def artifact_stem(self) -> str:
         """A filename stem carrying the arm's full identity, not just its label.
 
-        Every field of `identity()` is in here, plus the embedding fingerprint. An earlier version
+        Every field of `identity()` is in here, including the embedding fingerprint. An earlier version
         carried only label, profile id and fingerprint, so two arms differing solely in
         `--retrieval-profile` shared a ledger: the second resumed the first's rows, scored nothing,
         and the gate compared a file with itself and reported a clean null difference. The
@@ -129,6 +132,9 @@ def score_arm(
     produce the same gate input. A version that returned only this invocation's rows would gate on
     whatever fraction of the manifest happened to survive the last crash, and would look identical
     from the outside.
+
+    Keep the adjacent `.arm.json` configuration binding with the ledger. Legacy ledgers without
+    that binding cannot attest their embedding artifact or retrieval depth and must be re-scored.
     """
     existing = (
         read_ledger(ledger_path, id_field=LEDGER_ID_FIELDS, repair_truncated_tail=True)
@@ -149,7 +155,7 @@ def score_arm(
             record.generation,
             record.candidate_pool,
         )
-        if found != arm.identity():
+        if found != arm.identity()[:4]:
             raise ValueError(
                 f"{ledger_path}: {record.corpus}/{record.question_id} was scored under "
                 f"{found}, but this arm is {arm.identity()}. Resuming would publish another "
@@ -166,6 +172,24 @@ def score_arm(
             f"generations of the same questions in one ledger, and the discarded ones would win "
             f"on every later read. Remove it, or score into a new ledger."
         )
+
+    # The closed question-record schema cannot attest fingerprint or configured k. Bind them
+    # separately, including for an explicit --out; an old unbound ledger cannot prove its origin.
+    binding = ledger_path.with_suffix(ledger_path.suffix + ".arm.json")
+    configuration = list(arm.identity())
+    if existing.rows:
+        try:
+            recorded_identity = json.loads(binding.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            recorded_identity = None
+        if recorded_identity != configuration:
+            raise ValueError(
+                f"{ledger_path}: was scored under {recorded_identity}, but this arm is "
+                f"{configuration}. Missing or different configuration binding; score into a new ledger."
+            )
+    else:
+        binding.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_bytes(binding, json.dumps(configuration).encode("utf-8"))
 
     scored_now = 0
     for question in sorted(frozen, key=lambda q: (q.corpus, q.question_id)):

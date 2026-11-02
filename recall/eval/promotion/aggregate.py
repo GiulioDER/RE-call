@@ -256,7 +256,7 @@ def build_safety(records: Sequence[QuestionRecord], *, arm: str) -> SafetyMetric
     # `None` rather than an exception, deliberately, matching `latency_p95_ms`: an unmeasured
     # input should produce a DECISION that says so and blocks, not a crash. An operator needs the
     # artifact naming what was missing far more than they need a traceback.
-    degraded = bool(records) and all(record.trust_verdict == _DEGRADED for record in records)
+    degraded = any(record.trust_verdict == _DEGRADED for record in records)
     stale_trusted = [record.trust_verdict in _STALE for record in records]
     metrics = SafetyMetrics(
         false_confidence=gap_false_confident_rate(unanswerable_confident),

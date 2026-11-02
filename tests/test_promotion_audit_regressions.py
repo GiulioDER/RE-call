@@ -433,3 +433,68 @@ def test_run_refuses_an_absent_or_empty_dsn_before_it_builds_anything(value) -> 
     args.dsn = value
     with pytest.raises(SystemExit, match="no DSN"):
         cmd_run(args)
+
+
+def test_resume_rejects_another_embedding_artifact_at_an_explicit_path(tmp_path) -> None:
+    """DAT-002: 33759a686 silently resumed the first artifact without a replacement search."""
+    ledger = tmp_path / "explicit.jsonl"
+    frozen = [_frozen("q1", "alpha")]
+    score_arm(frozen, {"q1": "q1"}, _search, _arm_config(), ledger)
+    with pytest.raises(ValueError, match="was scored under"):
+        score_arm(
+            frozen, {"q1": "q1"}, _search,
+            _arm_config(embedding_fingerprint="b" * 64), ledger,
+        )
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_cli_retrieval_depth_cannot_resume_a_different_depth(tmp_path, monkeypatch, explicit):
+    """DAT-002: both 33759a686 paths reused depth-five rows when asked to retrieve twenty."""
+    from contextlib import contextmanager
+
+    import recall.eval.promotion.__main__ as cli
+    import recall.eval.promotion.search as search_module
+    from recall.embeddings import HashingEmbedder
+    from recall.eval.promotion.adapters import LabelledAdapter
+
+    adapter = LabelledAdapter()
+    manifest = tmp_path / "manifest.jsonl"
+    write_manifest(manifest, adapter.freeze()[:1], corpus_hashes={})
+    searched = []
+
+    @contextmanager
+    def indexed(*args, **kwargs):
+        yield None, HashingEmbedder(dim=64)
+
+    def make_search(**kwargs):
+        def search(query):
+            searched.append(kwargs["k"])
+            return _search(query)
+        return search
+
+    monkeypatch.setattr(cli, "_indexed_store", indexed)
+    monkeypatch.setattr(search_module, "StoreSearch", make_search)
+    argv = [
+        "run", "--manifest", str(manifest), "--corpus", "labelled", "--arm", "baseline",
+        "--dsn", "postgresql:///unused", "--out-dir", str(tmp_path / "arms"),
+    ]
+    if explicit:
+        argv += ["--out", str(tmp_path / "explicit.jsonl")]
+    cli.cmd_run(cli.build_parser().parse_args(argv + ["--k", "5"]))
+    if explicit:
+        with pytest.raises(ValueError, match="was scored under"):
+            cli.cmd_run(cli.build_parser().parse_args(argv + ["--k", "20"]))
+        assert searched == [5]
+    else:
+        cli.cmd_run(cli.build_parser().parse_args(argv + ["--k", "20"]))
+        assert searched == [5, 20]
+
+
+def test_resume_refuses_missing_configuration_binding(tmp_path) -> None:
+    """DAT-002: legacy rows cannot attest their absent fingerprint and depth. Red on 33759a686."""
+    ledger = tmp_path / "arm.jsonl"
+    frozen = [_frozen("q1", "alpha")]
+    score_arm(frozen, {"q1": "q1"}, _search, _arm_config(), ledger)
+    ledger.with_suffix(".jsonl.arm.json").unlink(missing_ok=True)
+    with pytest.raises(ValueError, match="was scored under"):
+        score_arm(frozen, {"q1": "q1"}, _search, _arm_config(), ledger)

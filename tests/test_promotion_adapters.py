@@ -17,6 +17,110 @@ from recall.eval.promotion.adapters import (
     label_kind,
 )
 from recall.eval.promotion.run import ArmConfig, SearchOutcome, score_arm
+from tests.conftest import TEST_DSN, requires_db
+
+
+@pytest.fixture
+def mtrag_inputs(tmp_path, monkeypatch):
+    import benchmarks.mtrag.run as mtrag
+
+    tasks_file = tmp_path / "tasks.jsonl"
+    tasks_file.write_text("{}\n", encoding="utf-8")
+    tasks = [
+        {"task_id": domain, "Collection": domain,
+         "input": [{"speaker": "user", "text": "shared question"}]}
+        for domain in ("clapnq", "govt")
+    ]
+    qrels = {domain: {domain: {f"doc-{domain}"}} for domain in ("clapnq", "govt")}
+    monkeypatch.setattr(mtrag, "tasks_path", lambda root: tasks_file)
+    monkeypatch.setattr(mtrag, "load_tasks", lambda root: tasks)
+    monkeypatch.setattr(mtrag, "load_qrels", lambda root: qrels)
+    return tmp_path
+
+
+def test_default_mtrag_adapter_converts_real_test_task_shape(mtrag_inputs) -> None:
+    """BUG-002: 33759a686 passed last_turn to the real query_text and failed this assertion."""
+    adapter = MtragAdapter(mtrag_inputs)
+    error = None
+    try:
+        frozen = adapter.freeze()
+    except ValueError as exc:
+        error = exc
+    assert error is None, f"the default adapter cannot convert its own task format: {error}"
+    assert len(frozen) == 2
+    assert set(adapter.queries().values()) == {"shared question"}
+
+
+@requires_db
+def test_mtrag_promotion_indexes_dataset_ids_in_separate_domains(mtrag_inputs, monkeypatch):
+    """BUG-003: 33759a686 failed the document-ID assertion. A deliberate passage-to-legacy
+    encoder mutation fails the encoder assertion after domain routing succeeds.
+    """
+    import zipfile
+
+    import recall.eval.promotion.__main__ as cli
+    import recall_mcp.factories
+    from recall.embeddings import EmbeddingProfile, HashingEmbedder
+    from recall.eval.promotion.manifest import write_manifest
+
+    root = mtrag_inputs
+    for domain in ("clapnq", "govt"):
+        path = root / "corpora" / "passage_level" / f"{domain}.jsonl.zip"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("corpus.jsonl", json.dumps(
+                {"_id": f"doc-{domain}", "text": "shared question"}
+            ) + "\n")
+    # Keep the old generic path nonempty, so the baseline fails on labels rather than setup.
+    (root / "decoy.md").write_text("shared question", encoding="utf-8")
+    adapter = MtragAdapter(root, mode="last")
+    manifest, ledger = root / "manifest.jsonl", root / "arm.jsonl"
+    write_manifest(manifest, adapter.freeze(), corpus_hashes={})
+    monkeypatch.setattr(cli, "_adapters", lambda names: [adapter])
+    legacy_calls, passage_calls = [], []
+
+    class PassageSpy(HashingEmbedder):
+        profile = EmbeddingProfile(
+            profile_id="spy-asymmetric-v1", model_name="offline-spy",
+            artifact_digest="a" * 64, dimension=64,
+            query_mode="embed_query", passage_mode="embed_passages",
+        )
+
+        def embed(self, texts):
+            legacy_calls.extend(texts)
+            return super().embed(texts)
+
+        def embed_passages(self, texts):
+            passage_calls.extend(texts)
+            return super().embed(texts)
+
+        def embed_query(self, text):
+            return super().embed([text])[0]
+
+    monkeypatch.setattr(recall_mcp.factories, "make_embedder", lambda name: PassageSpy(64))
+    args = cli.build_parser().parse_args([
+        "run", "--manifest", str(manifest), "--corpus", "mtrag", "--arm", "baseline",
+        "--dsn", TEST_DSN, "--corpus-dir", str(root), "--out", str(ledger),
+        "--trust-policy", "development",
+    ])
+    assert cli.cmd_run(args) == 0
+    records = cli._load_records(ledger)
+    assert len(records) == 2
+    for record in records:
+        expected = f"doc-{record.corpus.split(':')[1]}"
+        assert record.retrieved_chunk_ids == (expected,)
+        assert record.expected_relevance_labels == (expected,)
+    args.out = root / "fresh.jsonl"
+    args.no_resume = True
+    error = None
+    try:
+        cli.cmd_run(args)
+    except FileExistsError as exc:
+        error = exc
+    assert error is None, "later domains must append the rows created by this invocation"
+    assert len(cli._load_records(args.out)) == 2
+    assert legacy_calls == [], "MT-RAG ingestion bypassed the declared passage encoder"
+    assert passage_calls == ["shared question"] * 4
 
 
 def test_every_named_corpus_is_reachable_from_the_table() -> None:

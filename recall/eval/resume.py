@@ -32,8 +32,8 @@ Two properties the callers depend on, and the tests pin:
   JSONL for every future reader. `repair_truncated_tail` is therefore explicit at every call
   site.
 - **First occurrence of an id wins.** Resuming across several sidecars means the same question
-  may appear more than once; they are the same scored item either way, and taking the first keeps
-  the result independent of the order the paths are passed.
+  may appear more than once. The first row in supplied path order wins, so that order matters
+  when duplicate rows differ.
 """
 from __future__ import annotations
 
@@ -83,7 +83,8 @@ def _read_one(
 ) -> tuple[list[dict[str, Any]], bool]:
     if not path.exists():
         return [], False
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    text = path.read_text(encoding="utf-8")
+    lines = [line for line in text.splitlines() if line.strip()]
     rows: list[dict[str, Any]] = []
     valid: list[str] = []
     truncated = False
@@ -113,8 +114,8 @@ def _read_one(
             )
         rows.append(row)
         valid.append(line)
-    if truncated and repair_truncated_tail:
-        # Without this rewrite the next appended row is glued onto the end of the partial line,
+    if repair_truncated_tail and (truncated or (valid and not text.endswith("\n"))):
+        # Without this rewrite the next appended row is glued onto the unterminated final line,
         # and the file stops being readable JSONL for every future reader, not just this run.
         #
         # newline="\n" for the same reason `append_rows` uses it: these ledgers are committed

@@ -117,6 +117,31 @@ def test_saving_a_calibration_for_the_wrong_profile_is_refused(tmp_path) -> None
         save_for_profile(_calibration("some-other-model"), PROFILE, tmp_path / "c.json")
 
 
+def test_profile_validation_cannot_mix_two_atomic_file_versions(tmp_path, monkeypatch) -> None:
+    """STAKES-001: 33759a686 validated B's fingerprint while returning A's threshold."""
+    from pathlib import Path
+
+    path = tmp_path / "calibration.json"
+    other = replace(PROFILE, artifact_digest="b" * 64)
+    replacement = replace(_calibration(), threshold=0.61)
+    save_for_profile(_calibration(), PROFILE, path)
+    read_bytes = Path.read_bytes
+    replaced = False
+
+    def replace_after_read(target):
+        nonlocal replaced
+        raw = read_bytes(target)
+        if target == path and not replaced:
+            replaced = True
+            save_for_profile(replacement, other, path)
+        return raw
+
+    monkeypatch.setattr(Path, "read_bytes", replace_after_read)
+    loaded = load_for_profile(other, path)
+    assert loaded is None, "the first snapshot belongs to a different embedding identity"
+    assert load_for_profile(other, path).threshold == 0.61
+
+
 def test_the_arm_config_keys_its_artifacts_on_the_full_fingerprint() -> None:
     """Two arms sharing a profile ID and differing in artifact digest must not share a ledger."""
     from recall.eval.promotion.run import ArmConfig
