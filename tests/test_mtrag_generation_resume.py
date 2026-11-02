@@ -64,12 +64,18 @@ def test_invalid_utf8_checkpoint_bytes_survive_answerless_repair(tmp_path, inval
 def test_resume_rejects_invalid_utf8_without_changing_checkpoint(
     tmp_path, monkeypatch, capsys, invalid,
 ):
-    """DAT-002 red proof at main: baseline falsely returns success with these bytes."""
+    """DAT-002 red proof at main: baseline falsely returns success with these bytes.
+
+    BUG-001 fixture update: removing unparsable_rows' UTF-8 encoding check fails the rc assertion.
+    """
     root = _mtrag_root(tmp_path, [_task(task_id="done")])
     out = tmp_path / "preds.jsonl"
     raw = (_row("done", "valid") + _row("foreign", "MARKER")).encode().replace(b"MARKER", invalid)
     out.write_bytes(raw)
-    gen.write_run_manifest(out, prompt=gen.DEFAULT_PROMPT, model=gen.DEFAULT_MODEL)
+    gen.write_run_manifest(
+        out, prompt=gen.DEFAULT_PROMPT, model=gen.DEFAULT_MODEL,
+        task="b", contexts_from="reference", max_tokens=512,
+    )
     monkeypatch.setattr(gen, "openrouter_client", lambda: object())
     monkeypatch.setattr(gen, "generate_one", lambda *args, **kwargs: pytest.fail("no task is pending"))
     assert gen.main(["--mtrag-root", str(root), "--task", "b", "--out", str(out)]) == 1
@@ -90,12 +96,13 @@ def _resumable(out, rows: str, prompt: str = gen.DEFAULT_PROMPT,
                model: str = "openai/gpt-4o-mini") -> None:
     """An output file AND the manifest a resume requires beside it.
 
-    Resuming without one is refused outright, on the grounds that rows of unknown provenance must
-    not be mixed with rows from a known prompt. So a test that drives `main` over an existing file
-    has to supply the manifest, exactly as the run that wrote those rows would have.
+    Resuming completed rows requires their known generation configuration. A test that drives
+    `main` over an existing file supplies the manifest the original run would have written.
     """
     out.write_text(rows, encoding="utf-8")
-    gen.write_run_manifest(out, prompt=prompt, model=model)
+    gen.write_run_manifest(
+        out, prompt=prompt, model=model, task="b", contexts_from="reference", max_tokens=512,
+    )
 
 
 def _row(task_id: str, answer: object = "an answer", *, carry_predictions: bool = True) -> str:
@@ -309,11 +316,15 @@ def test_an_ordinary_resume_terminates_the_last_line_even_with_nothing_to_drop(
     and `main` then appends onto the end of the last line: two rows become one unparseable line,
     losing the answer already paid for and the one just paid for, and `check_submission_size` counts
     bytes rather than rows so the run still exits 0.
+
+    BUG-001 fixture update: removing main's ensure_final_newline call fails the rc assertion.
     """
     tasks = [_task(task_id="a<::>1"), _task(task_id="b<::>1")]
     root = _mtrag_root(tmp_path, tasks)
     out = tmp_path / "preds.jsonl"
-    _resumable(out, _row("a<::>1", "already paid for").rstrip("\n"))
+    _resumable(
+        out, _row("a<::>1", "already paid for").rstrip("\n"), model=gen.DEFAULT_MODEL,
+    )
 
     monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
     monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "the new answer")
@@ -846,11 +857,16 @@ def test_a_concurrent_run_stops_this_one_by_name_rather_than_by_accident(
 
 def test_a_rerun_repairs_an_artifact_written_before_the_guards(tmp_path, monkeypatch) -> None:
     """The whole defect, end to end. A submission written by the pre-guard path holds an empty row;
-    re-running the identical command used to skip it, write nothing and exit 0."""
+    re-running the identical command used to skip it, write nothing and exit 0.
+
+    BUG-001 fixture update: replacing main's drop_answerless_rows call with 0 fails len(rows)==2.
+    """
     tasks = [_task(task_id="a<::>1"), _task(task_id="b<::>1")]
     root = _mtrag_root(tmp_path, tasks)
     out = tmp_path / "preds.jsonl"
-    _resumable(out, _row("a<::>1", "already good") + _row("b<::>1", ""))
+    _resumable(
+        out, _row("a<::>1", "already good") + _row("b<::>1", ""), model=gen.DEFAULT_MODEL,
+    )
 
     monkeypatch.setattr(gen, "openrouter_client", lambda *a, **k: object())
     monkeypatch.setattr(gen, "generate_one", lambda *a, **k: "the regenerated answer")

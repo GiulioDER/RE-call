@@ -173,6 +173,23 @@ def test_coverage_refuses_a_half_encoded_corpus(make_store) -> None:
 
 
 @requires_db
+def test_coverage_refuses_orphans_that_cancel_missing_chunks(make_store) -> None:
+    """DAT-001: equal row counts do not establish coverage of current chunk IDs.
+
+    Red proof: on a6051cac5, assert_sparse_coverage returns and pytest reports DID NOT RAISE.
+    A second profile's encoding cannot fill the selected profile's missing chunk.
+    """
+    store = make_store(64)
+    store.upsert([_chunk("a", "aardvark"), _chunk("b", "beta")], [[0.1] * 64] * 2)
+    store.upsert_sparse(PROFILE_ID, {"a": {7: 1.0}, "orphan": {9: 1.0}})
+    store.upsert_sparse("other-profile", {"b": {9: 1.0}})
+    assert store.sparse_row_count(PROFILE_ID) == store.count() == 2
+
+    with pytest.raises(SparseCoverageError, match="missing.*orphan"):
+        assert_sparse_coverage(store, PROFILE_ID)
+
+
+@requires_db
 def test_coverage_refuses_an_overcounted_sidecar_and_names_the_cause(make_store) -> None:
     """More sidecar rows than chunks is an orphan, not a shortfall, and needs its own message.
 

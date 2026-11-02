@@ -758,6 +758,65 @@ def test_passage_numbering_has_no_gaps_when_a_context_is_empty() -> None:
     assert "PASSAGE 3" not in user["content"]
 
 
+@pytest.mark.parametrize("change", ["model", "task", "contexts_from", "max_tokens", "unknown"])
+def test_resume_refuses_incompatible_generation_config(tmp_path, monkeypatch, change) -> None:
+    """BUG-001: retained answers must keep their original generation configuration.
+
+    Red proof: on a6051cac5, this exact test fails with DID NOT RAISE for each case;
+    main's prompt-only guard lets the old answers acquire a new manifest.
+    """
+    root = _mtrag_root(tmp_path, [_task()])
+    task_file = root / "mtrag-human/generation_tasks"
+    (task_file / "RAG.jsonl").write_bytes((task_file / "reference.jsonl").read_bytes())
+    contexts = tmp_path / "contexts.jsonl"
+    contexts.write_text("", encoding="utf-8")
+    out = tmp_path / "preds.jsonl"
+    args = ["--mtrag-root", str(root), "--task", "c", "--out", str(out)]
+    monkeypatch.setattr(gen, "openrouter_client", lambda: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a: "an answer")
+    assert gen.main(args) == 0
+    manifest_path = gen.run_manifest_path(out)
+    if change == "unknown":
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        del manifest["model"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    changed_args = {
+        "model": ["--model", "another-model"], "task": ["--task", "b"],
+        "contexts_from": ["--contexts-from", str(contexts)],
+        "max_tokens": ["--max-tokens", "1024"], "unknown": [],
+    }[change]
+    before = out.read_bytes(), manifest_path.read_bytes()
+    calls = []
+    monkeypatch.setattr(gen, "openrouter_client", lambda: calls.append("client") or object())
+
+    with pytest.raises(RuntimeError, match="generation configuration"):
+        gen.main(args + changed_args)
+
+    assert calls == [], "refusal must precede client construction"
+    assert (out.read_bytes(), manifest_path.read_bytes()) == before
+
+
+def test_resume_keeps_same_config_limit_extensions(tmp_path, monkeypatch) -> None:
+    """BUG-001 control: extending a task selection keeps the first answer and adds the next.
+
+    Red proof: mutating main's pending selection to all tasks fails the call-count assertion
+    (three calls instead of two). The fixed selection preserves exact first-row bytes.
+    """
+    root = _mtrag_root(tmp_path, [_task("c0<::>1"), _task("c1<::>1")])
+    out = tmp_path / "preds.jsonl"
+    args = ["--mtrag-root", str(root), "--task", "b", "--out", str(out)]
+    calls = []
+    monkeypatch.setattr(gen, "openrouter_client", lambda: object())
+    monkeypatch.setattr(gen, "generate_one", lambda *a: calls.append(1) or "first answer")
+    assert gen.main(args + ["--limit", "1"]) == 0
+    first = out.read_bytes()
+    monkeypatch.setattr(gen, "generate_one", lambda *a: calls.append(1) or "second answer")
+    assert gen.main(args + ["--contexts-from", "ignored-for-task-b"]) == 0
+    assert len(calls) == 2
+    assert out.read_bytes().startswith(first)
+    assert len(out.read_text(encoding="utf-8").splitlines()) == 2
+
+
 def test_resume_refuses_when_the_existing_rows_have_UNKNOWN_provenance(tmp_path, monkeypatch) -> None:
     """The hole the first version of this guard left, and the one that mattered.
 
