@@ -42,6 +42,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -49,6 +52,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from benchmarks.analyze import paired_mcnemar
 from benchmarks.claim_gate import matches
 from benchmarks.artifact_contract import load_published_artifact
+from recall.atomic_write import atomic_write_bytes
 
 OutcomeMap = dict[str, bool]
 
@@ -240,6 +244,14 @@ def build(runs: Path) -> tuple[dict[str, Any], dict[str, list[str]]]:
     for row in PUBLISHED_ROWS:
         recall_outcomes, recall_cfg = load_run(runs / row.recall_run)
         mem0_outcomes, mem0_cfg = load_run(runs / row.mem0_run)
+        for arm, config in (("recall", recall_cfg), ("mem0", mem0_cfg)):
+            expected = {"arm": arm, "generator": row.generator, "judge": row.judge}
+            for field, value in expected.items():
+                actual = config[field]
+                if field != "arm":
+                    actual = actual.removeprefix("openai/")
+                if actual != value:
+                    raise ValueError(f"{row.row_id}: {arm} {field} does not match {value!r}")
         # Raises if the arms did not answer the same questions, or labelled adversarial
         # differently. A paired claim over an implicit intersection is not a paired claim.
         test = paired_mcnemar(recall_outcomes, mem0_outcomes)
@@ -308,27 +320,55 @@ def build(runs: Path) -> tuple[dict[str, Any], dict[str, list[str]]]:
 def write_artifact(out: Path, artifact: Mapping[str, Any], vectors: Mapping[str, list[str]]) -> None:
     """Write the verified artifact. Called only after `verify_against_published` is clean.
 
-    Explicit `newline="\n"` on BOTH files. `Path.write_text` uses the platform default, so
+    Encode LF-terminated UTF-8 bytes for BOTH files. `Path.write_text` uses the platform default, so
     on Windows the summary was written CRLF while the vectors beside it were LF -- and the
     sibling `scripts/generate_claims_baseline.py` documents that exact invariant for its own
     artifact, because a working copy that does not match its own git blob byte for byte
     breaks every sha256 taken over it.
     """
     outcomes = out / "outcomes"
-    outcomes.mkdir(parents=True, exist_ok=True)
-    for key, lines in vectors.items():
-        with (outcomes / f"{key}.jsonl").open("w", encoding="utf-8", newline="\n") as fh:
-            fh.write("".join(line + "\n" for line in lines))
+    payloads = {outcomes / f"{key}.jsonl": "".join(line + "\n" for line in lines).encode("utf-8")
+                for key, lines in vectors.items()}
+    payloads[out / "paired_accuracy.json"] = (json.dumps(artifact, indent=2) + "\n").encode("utf-8")
     # The directory is a FUNCTION of the build, not an accumulation of every build that ever
     # ran. Renaming a key used to leave its predecessor behind, backing nothing: the first
     # commit of this artifact shipped nine vectors for seven declared rows, because an
     # earlier key derivation had produced two of them under different names. A stale vector
     # is worse than a missing one -- it reads as evidence, and nothing distinguishes it from
     # the live file beside it.
-    for stale in sorted(set(outcomes.glob("*.jsonl")) - {outcomes / f"{k}.jsonl" for k in vectors}):
-        stale.unlink()
-    with (out / "paired_accuracy.json").open("w", encoding="utf-8", newline="\n") as fh:
-        fh.write(json.dumps(artifact, indent=2) + "\n")
+    stale = sorted(set(outcomes.glob("*.jsonl")) - payloads.keys())
+    outcomes.mkdir(parents=True, exist_ok=True)
+    # Stage every byte before publication; backups permit rollback of caught handover errors.
+    # Individual renames are atomic, but the complete multi-file handover is not crash-atomic.
+    with tempfile.TemporaryDirectory(prefix=".h2h-", dir=out) as directory:
+        staging = Path(directory)
+        backups: dict[Path, Path] = {}
+        for index, (target, data) in enumerate(payloads.items()):
+            staged = staging / f"new-{index}"
+            staged.touch(mode=0o666)
+            atomic_write_bytes(staged, data)
+        for index, target in enumerate([*payloads, *stale]):
+            if target.exists():
+                backup = staging / f"old-{index}"
+                shutil.copy2(target, backup)
+                backups[target] = backup
+                if target in payloads:
+                    shutil.copymode(backup, staging / f"new-{index}")
+        changed: list[Path] = []
+        try:
+            for index, target in enumerate(payloads):
+                os.replace(staging / f"new-{index}", target)
+                changed.append(target)
+            for target in stale:
+                target.unlink()
+                changed.append(target)
+        except BaseException:
+            for target in reversed(changed):
+                if target in backups:
+                    os.replace(backups[target], target)
+                else:
+                    target.unlink(missing_ok=True)
+            raise
 
 
 def _outcome_vector(recall_map: OutcomeMap, mem0_map: OutcomeMap) -> list[str]:
@@ -435,6 +475,18 @@ def verify_against_published(artifact: Mapping[str, Any]) -> list[str]:
                 f"{row['row_id']}: p derived {row['mcnemar']['p_value']:.6g} does not round "
                 f"to published {published['p']}"
             )
+    shipped = artifact["as_shipped_embedder"]
+    for field, published_value in {
+        "replicate_low_accuracy": "0.41169", "replicate_high_accuracy": "0.42208",
+        "margin_min": "0.046", "margin_max": "0.056", "replicate_spread_points": "1.04",
+    }.items():
+        if not _agrees(shipped[field], published_value):
+            problems.append(f"as-shipped: {field} does not round to published {published_value}")
+    if not _agrees(shipped["mem0"]["accuracy"], "0.366"):
+        problems.append("as-shipped: mem0 accuracy does not round to published 0.366")
+    for index, replicate in enumerate(shipped["recall_replicates"]):
+        if replicate["mcnemar"]["p_value"] > 0.0014:
+            problems.append(f"as-shipped: replicate {index + 1} p exceeds published 0.0014")
     return problems
 
 
