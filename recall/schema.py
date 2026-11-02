@@ -19,7 +19,9 @@ import psycopg
 if TYPE_CHECKING:
     from psycopg import Connection
 
-from recall.db_constants import DEFAULT_TABLE, DEFAULT_TENANT, TENANT_GUC, _schema_lock_timeout_ms
+from recall.db_constants import (
+    DEFAULT_TABLE, DEFAULT_TENANT, SPARSE_TABLE, TENANT_GUC, _schema_lock_timeout_ms,
+)
 from recall.errors import RecallError
 
 LEDGER_TABLE = "recall_schema_migrations"
@@ -215,6 +217,7 @@ def serving_grants(
     statements = [
         f"GRANT SELECT ON {LEDGER_TABLE} TO {role};",
         f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role};",
+        f"GRANT SELECT, INSERT, UPDATE, DELETE ON {SPARSE_TABLE} TO {role};",
         "GRANT SELECT, INSERT, UPDATE, DELETE ON "
         + ", ".join(
             name for name in GENERATION_TABLES

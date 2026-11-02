@@ -4715,7 +4715,7 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'dev'", specifier = "==0.14.0" },
     { name = "tokenizers", marker = "extra == 'fastembed'", specifier = ">=0.13,<1" },
     { name = "torch", marker = "extra == 'rerank'", specifier = ">=2.4,<3" },
-    { name = "torch", marker = "extra == 'sparse'", specifier = ">=2.0,<3" },
+    { name = "torch", marker = "extra == 'sparse'", specifier = ">=2.5,<3" },
     { name = "transformers", marker = "extra == 'rerank'", specifier = ">=5.6,<6" },
     { name = "transformers", marker = "extra == 'sparse'", specifier = ">=4.40,<6" },
     { name = "uvicorn", marker = "extra == 'hosted'", specifier = ">=0.30,<1" },

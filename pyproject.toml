@@ -159,7 +159,7 @@ s3 = ["boto3>=1.35"]
 # stdio installations do not gain a cloud control plane or credential provider implicitly.
 aws = ["boto3>=1.35", "redis[hiredis]>=5,<9"]
 # Learned sparse retrieval uses transformers directly. Model weights are user-provisioned.
-sparse = ["transformers>=4.40,<6", "torch>=2.0,<3"]
+sparse = ["transformers>=4.40,<6", "torch>=2.5,<3"]
 # Keep rerank and finetune sentence-transformers floors in step.
 rerank = ["sentence-transformers>=3.0", "transformers>=5.6,<6", "torch>=2.4,<3"]
 eval = ["matplotlib>=3.7", "numpy"]

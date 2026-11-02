@@ -1,6 +1,6 @@
 """Offload cross-encoder SCORING to a GPU while retrieval and credentials stay on the DB host.
 
-Prior work (searched 2026-08-06, `docs_search(source_type="memory")`, no gap warning):
+Prior work: searched 2026-08-06, `docs_search(source_type="memory")`, no gap warning.
 
   - [[project-recall-mtrag-retrieval-coverage-bottleneck-2026-08-06]] -- the reranker is worth
     +0.0864 nDCG@5 on MTRAG dev, CI [+0.0671, +0.1061], measured at candidate_k=100 (fused pool
@@ -328,6 +328,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
     This is the gate. If it fails, the offloaded numbers are not RE-call's numbers and must not
     be reported as such.
     """
+    if args.sample < 1:
+        raise ValueError("--sample must be positive")
+
     from recall.rerank import CrossEncoderReranker
     from recall.types import Chunk, ScoredChunk
 
@@ -357,6 +360,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
             if line.strip():
                 rows.append(json.loads(line))
     sample = rows[: args.sample]
+    if not sample:
+        raise ValueError("validation sample must not be empty")
 
     reranker = CrossEncoderReranker(**reranker_kwargs)
     failures: list[dict] = []
