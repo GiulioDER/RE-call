@@ -240,7 +240,12 @@ def _main(argv: list[str] | None = None) -> None:
     configure_logging()
     raw_argv = sys.argv[1:] if argv is None else list(argv)
     parser = build_parser(_command_from_argv(raw_argv))
+    # Keep explicit target selection distinct from the fallback, even if their values agree.
+    parser.set_defaults(dsn=None)
     args = parser.parse_args(raw_argv)
+    dsn_explicit = bool(args.dsn)
+    if args.dsn is None:
+        args.dsn = DEFAULT_DSN
     # Once, here, rather than on the first search: an unknown dependency mode, which every search
     # would refuse, refuses the command instead. Imported only when it is set, since unset is valid
     # and the import costs about 130 ms.
@@ -287,19 +292,14 @@ def _main(argv: list[str] | None = None) -> None:
 
     if (
         opens_db
-        and args.cmd not in {"setup", "wizard"}  # see the setup-specific carve-out for _require_secure below —
-        # `recall setup` is the command you run to REPAIR a broken .env, so blocking it on a
-        # broken .env is the same dead end that carve-out exists to avoid, one guard down. A
-        # round-6 audit caught this: it fired unconditionally and refused `setup` even when the
-        # operator had already passed an explicit --dsn that resolved the ambiguity.
-        #
-        # `setup` is not left silent: the note comes from the import-time stderr print above
-        # (near `_DOTENV_ERROR = _dotenv_exc`), which runs for every command before args.cmd is
-        # even known — NOT from run_setup_wizard, which has no .env-specific messaging of its
-        # own. A round-7 audit caught an earlier version of this comment misattributing it,
-        # which is worth naming: believing the notice were conditional on reaching the wizard
-        # could lead a later change to gate or remove the import-time print, leaving `setup`
-        # with zero indication anything was wrong.
+        and args.cmd != "wizard"
+        # Setup can repair a broken file only when its database target is independently known.
+        # The parser records explicit flags; exported settings must match the selected default.
+        and not (args.cmd == "setup" and args.dsn and (
+            dsn_explicit or args.dsn in {
+                os.environ.get("RECALL_SERVING_DSN"), os.environ.get("RECALL_DSN"),
+            }
+        ))
         and _DOTENV_ERROR is not None
         and not _env_opt_out("RECALL_IGNORE_BROKEN_DOTENV")
     ):

@@ -239,3 +239,36 @@ def test_docker_internal_warns_but_does_not_refuse(caplog):
         "the demotion must still be audible in the log"
     )
     require_secure_dsn(dsn)  # must not raise
+
+
+@pytest.mark.parametrize("dsn", [
+    "host=remote.example user=recall password=recall dbname=recall",
+    "host='remote.example' user='recall' password='recall' dbname=recall",
+    "postgresql://safe:strong@localhost/recall?user=recall&password=recall&host=remote.example",
+    "host=localhost,remote.example user=recall password=recall dbname=recall",
+    "postgresql://recall:recall@localhost/recall?host=localhost,remote.example&hostaddr=127.0.0.1,",
+])
+def test_migration_guard_uses_libpq_connection_parameters(monkeypatch, dsn):
+    """SEC-001: published remote credentials refuse before public CLI dispatch reaches DDL.
+
+    Red on a6051cac5: warn_if_insecure_dsn only inspects URI userinfo, so the refusal
+    assertion fails for each spelling. Strong keyword and loopback controls still reach DDL.
+    """
+    from recall import schema
+    from recall.cli import main
+
+    monkeypatch.delenv("RECALL_ALLOW_INSECURE_DSN", raising=False)
+    calls = []
+    monkeypatch.setattr(schema, "apply_migrations", lambda dsn, **kw: calls.append(dsn) or [])
+    base = ["--serving-dsn", "postgresql://safe:strong@localhost/recall"]
+    refused = False
+    try:
+        main([*base, "--migration-dsn", dsn, "schema", "--dim", "2", "apply"])
+    except PermissionError:
+        refused = True
+    assert refused, f"published credentials reached the DDL handler: {calls!r}"
+    assert calls == []
+    for safe in ["host=remote.example user=recall password=strong dbname=recall",
+                 "host=localhost user=recall password=recall dbname=recall"]:
+        main([*base, "--migration-dsn", safe, "schema", "--dim", "2", "apply"])
+        assert calls.pop() == safe

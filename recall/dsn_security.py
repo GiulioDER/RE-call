@@ -18,7 +18,7 @@ _log = get_logger("store")  # the store's own logger name, which tests filter on
 #: The built-in dev credentials shipped in the default DSN — safe only against a local database.
 _DEFAULT_CREDS = ("recall", "recall")
 
-#: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: urlsplit strips
+#: "" covers a hostless/unix-socket DSN. Bracketed IPv6 is absent on purpose: libpq strips
 #: the brackets. All of 127.0.0.0/8 is handled numerically by `_is_local_host`.
 #: `0.0.0.0` is here as a CONNECT target, not a bind address: as a destination it resolves to
 #: the local host, so a DSN naming it carries the built-in credentials no further than
@@ -164,34 +164,41 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
     points at a real remote database. This warns loudly and returns the message; it never blocks
     execution (returns None when there is nothing to warn about).
     """
+    from itertools import zip_longest
+
+    from psycopg import ProgrammingError
+    from psycopg.conninfo import conninfo_to_dict
+
     try:
-        parts = urlsplit(dsn)
-    except ValueError:
+        parts = conninfo_to_dict(dsn)
+    except (ProgrammingError, ValueError):
+        return None  # malformed connection strings are refused by the connection itself
+    # Use libpq's interpretation: keyword syntax and URI query parameters can override userinfo.
+    if (parts.get("user", ""), parts.get("password", "")) != _DEFAULT_CREDS:
         return None
-    # unquote: urlsplit returns the RAW percent-encoded form, so "recal%6C" is the password
-    # "recall" and must not slip past the comparison
-    if (unquote(parts.username or ""), unquote(parts.password or "")) != _DEFAULT_CREDS:
-        return None
-    host = (parts.hostname or "").lower()
-    if _is_local_host(host):
-        return None
-    if host in _WARN_ONLY_HOSTS:
-        # Warn without returning a message: `require_secure_dsn` raises on any returned
-        # message, and this host must warn rather than block (it is the documented way a
-        # containerised quickstart reaches its database).
-        _log.warning(
-            "recall: WARNING — default 'recall:recall' credentials against %r, which reaches "
-            "the container HOST, not this container. Fine for a local quickstart; set a strong "
-            "password if that machine is shared.",
-            parts.hostname,
+    # hostaddr is the actual destination when supplied; every fallback host must be safe too.
+    hosts = str(parts.get("host") or "").split(",")
+    addresses = str(parts.get("hostaddr") or "").split(",")
+    for name, address in zip_longest(hosts, addresses, fillvalue=""):
+        host = (address or name).lower()
+        if _is_local_host(host):
+            continue
+        if host in _WARN_ONLY_HOSTS:
+            # The documented container quickstart warns without blocking.
+            _log.warning(
+                "recall: WARNING — default 'recall:recall' credentials against %r, which reaches "
+                "the container HOST, not this container. Fine for a local quickstart; set a strong "
+                "password if that machine is shared.",
+                host,
+            )
+            continue
+        msg = (
+            f"recall: WARNING — using the default 'recall:recall' credentials against non-local host "
+            f"{host!r}. Set a strong password via RECALL_DSN before using a remote database."
         )
-        return None
-    msg = (
-        f"recall: WARNING — using the default 'recall:recall' credentials against non-local host "
-        f"{parts.hostname!r}. Set a strong password via RECALL_DSN before using a remote database."
-    )
-    _log.warning(msg)
-    return msg
+        _log.warning(msg)
+        return msg
+    return None
 
 
 def _env_opt_out(name: str) -> bool:
