@@ -41,10 +41,11 @@ def mcnemar_power(
 ) -> float:
     """Simulated power of McNemar's exact test on `n` paired binary outcomes.
 
-    `p_control` and `p_treatment` are bury RATES (lower is better for the treatment). `rho` is the
-    probability that the treatment simply copies the control's decision, which models two rankers
-    agreeing on the easy cases; the remainder is drawn independently. That is a deliberately
-    simple association model, and its value is reported with the result rather than hidden.
+    `p_control` is the control bury rate; `p_treatment` is the independent branch's bury
+    probability. `rho` is the probability that treatment copies control, which models two rankers
+    agreeing on easy cases; the remainder is drawn independently. The achieved treatment bury
+    rate is `rho * p_control + (1 - rho) * p_treatment`, not the branch probability. This
+    deliberately simple association model is unchanged by reporting its achieved rate.
     """
     if not 0.0 <= rho <= 1.0:
         raise ValueError(f"rho must be in [0, 1], got {rho}")
@@ -76,12 +77,13 @@ def minimum_detectable_shift(
 ) -> float | None:
     """The largest treatment bury rate still detectable at `target_power`, or None if none is.
 
-    Scans downward from `p_control` in steps of 0.01. `None` is the answer the spec's demotion
-    rule keys on: it means no shift in range is detectable, so Family B carries no p-value.
+    Scans the independent branch probability downward from `p_control` in steps of 0.01,
+    then reports its mixture marginal. `None` means no shift in range is detectable, so the
+    spec's demotion rule makes Family B descriptive with no p-value.
     """
     rate = p_control
     while rate >= 0.0:
         if mcnemar_power(n, p_control, rate, rho, alpha, trials=4000, seed=7) >= target_power:
-            return round(rate, 4)
+            return round(rho * p_control + (1 - rho) * rate, 4)
         rate = round(rate - 0.01, 4)
     return None

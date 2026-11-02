@@ -290,6 +290,8 @@ def validate_sample(
     """
     from recall.types import Chunk, ScoredChunk
 
+    if not rows:
+        raise ValueError("validation requires at least one query")
     failures: list[dict] = []
     ties = 0
     worst_delta = 0.0
@@ -350,6 +352,8 @@ def validate_sample(
 def cmd_validate(args: argparse.Namespace) -> int:
     from recall.rerank import LateInteractionReranker
 
+    if args.sample < 1:
+        raise ValueError(f"--sample must be >= 1, got {args.sample}")
     out = args.output_dir.resolve()
     arm = _resolve_arm(args.arm, args.accept_noncommercial)
     reranker = LateInteractionReranker.from_pretrained(
