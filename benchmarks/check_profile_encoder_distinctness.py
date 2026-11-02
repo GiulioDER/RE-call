@@ -46,7 +46,7 @@ rather than imported, which also makes it an independent recomputation of the ma
 What this measurement cannot do by byte comparison alone is separate "one function under three
 names" from "three genuinely different functions behind a cache keyed on the text alone", because
 every probe of the second case is a cache hit by construction. So it also records the RESOLVED
-METHOD IDENTITIES: if all three names resolve to one function, the cache hypothesis is not needed.
+METHOD IDENTITIES: if all three names resolve to one function on the same receiver, the cache hypothesis is not needed.
 If they are distinct functions that nevertheless agree byte for byte, that is a different and more
 interesting finding, and the verdict says so rather than eliding it.
 
@@ -311,7 +311,7 @@ def calls_base_encoder(source: str) -> bool:
     and a comment reading "used to be `yield from self.embed(texts)`" both made it True, so a
     NEGATION read as a confirmation and the verdict escalated from "not settled" to "cannot produce
     different vectors". That mattered because on the real backend the three names are three
-    distinct functions, so this check is the ONLY support for that escalation.
+    distinct functions, so the old check supplied the only support for that escalation.
 
     Patching the pattern was available and is the wrong move: this repository has a recorded case
     of one domain check rewritten five times, producing a new defect each time, and the lesson is
@@ -352,8 +352,10 @@ def resolved_encoders(model: Any) -> dict[str, Any]:
 
     resolved: dict[str, Any] = {}
     groups: dict[int, str] = {}
+    bound_encoders: list[Any] = []
     for name in ENCODER_NAMES:
         bound = getattr(model, name, None)
+        bound_encoders.append(bound)
         underlying = getattr(bound, "__func__", bound)
         # Walk the delegation chain, not just the bound method. fastembed's public
         # `TextEmbedding` is a thin wrapper that forwards to `self.model`, so inspecting only the
@@ -386,8 +388,8 @@ def resolved_encoders(model: Any) -> dict[str, Any]:
             # A stable label per distinct underlying function, so the artifact records how many
             # functions there are without publishing a memory address.
             "function_group": groups.setdefault(id(underlying), f"f{len(groups)}"),
-            # Source-level delegation is the second way to settle the cache hypothesis, and the
-            # only one that does not need the weights. In fastembed 0.8.0 `BAAI/bge-small-en-v1.5`
+            # Record source-level delegation as context, without treating a call as proof of
+            # identity. In fastembed 0.8.0 `BAAI/bge-small-en-v1.5`
             # resolves to `OnnxTextEmbedding`, which does NOT override these two: they come from
             # `TextEmbeddingBase` and both `yield from self.embed(...)` with no instruction. So
             # byte-identity here is a property of the LIBRARY, not of one provisioned host.
@@ -400,10 +402,12 @@ def resolved_encoders(model: Any) -> dict[str, Any]:
     resolved["asymmetric_encoders_delegate_to_base"] = all(
         resolved[name]["source_delegates_to_base"] for name in ASYMMETRIC_ENCODERS
     )
-    # Either route closes the question: one function cannot differ from itself, and a function
-    # whose body defers to the base encoder cannot either.
-    resolved["identity_is_explained"] = bool(
-        resolved["all_three_are_one_function"] or resolved["asymmetric_encoders_delegate_to_base"]
+    # A call to the base encoder may transform its input or sit behind a condition. Source
+    # delegation is useful context. Function identity also needs the same receiver, because
+    # different instances may carry different encoder configuration.
+    resolved["identity_is_explained"] = resolved["all_three_are_one_function"] and all(
+        getattr(encoder, "__self__", None) is getattr(bound_encoders[0], "__self__", None)
+        for encoder in bound_encoders
     )
     return resolved
 
@@ -526,21 +530,16 @@ def build_verdict(
             f"genuinely distinct here"
         )
     if bool(resolved["identity_is_explained"]):
-        why = (
-            "all three names resolve to ONE underlying function"
-            if resolved["all_three_are_one_function"]
-            else f"both asymmetric encoders DELEGATE to {BASE_ENCODER} in source"
-        )
         return (
             f"{', '.join(ASYMMETRIC_ENCODERS)} are BYTE-IDENTICAL to {BASE_ENCODER} on every "
-            f"probe, and {why}: {asymmetric_profile} and {symmetric_profile} cannot produce "
+            f"probe, and all three names resolve to ONE underlying function on the same receiver: "
+            f"{asymmetric_profile} and {symmetric_profile} cannot produce "
             f"different vectors on this backend, so a paired comparison of the two is a null by "
             f"construction"
         )
     return (
-        f"byte-identical on every probe, but the three names resolve to "
-        f"{resolved['distinct_function_count']} distinct functions and no delegation was found in "
-        f"source: {asymmetric_profile} and {symmetric_profile} agree here, and WHY they agree is "
+        f"byte-identical on every probe, but identity of the implementation and bound receiver "
+        f"is not established: {asymmetric_profile} and {symmetric_profile} agree here, and WHY they agree is "
         f"not settled by this measurement (see the module docstring on the text-keyed cache "
         f"hypothesis)"
     )

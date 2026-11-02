@@ -93,9 +93,33 @@ def _alive(pid: int) -> bool:
         if state.is_file() and state.read_text().split()[2] == "Z":
             return False
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, FileNotFoundError):
         return False
     return True
+
+
+def test_alive_accepts_a_process_disappearing_during_proc_read(monkeypatch):
+    """Red: _alive catching only ProcessLookupError leaks FileNotFoundError; error is None fails.
+
+    Only the filesystem and signal boundary are replaced; no real PID is signalled.
+    """
+    class VanishedStat:
+        def is_file(self):
+            return True
+
+        def read_text(self):
+            raise FileNotFoundError("process exited between stat and read")
+
+    monkeypatch.setattr(sys.modules[__name__], "Path", lambda _path: VanishedStat())
+    monkeypatch.setattr(os, "kill", lambda *_args: None)
+    error = None
+    alive = None
+    try:
+        alive = _alive(123)
+    except FileNotFoundError as caught:
+        error = caught
+    assert error is None, "a vanished /proc entry means the process has exited"
+    assert alive is False
 
 
 def _survivors(pids: list[int], within_s: float = 2.0) -> dict[int, str]:
@@ -202,10 +226,15 @@ def test_claude_adapter_reaps_spawned_work(tmp_path, monkeypatch, cancel):
             await asyncio.wait_for(ready.wait(), timeout=2)
             task.cancel()
             deliver.set()
+        outcome = None
         try:
             await task
-        except (claude_exec.ClaudeTranscriptError, asyncio.CancelledError):
-            pass
+        except asyncio.CancelledError:
+            outcome = "cancellation"
+        except claude_exec.ClaudeTranscriptError as error:
+            assert "exceeded timeout_s=" in str(error)
+            outcome = "timeout"
+        assert outcome == ("cancellation" if cancel else "timeout")
 
     started = time.monotonic()
     try:

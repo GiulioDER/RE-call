@@ -26,8 +26,8 @@ from recall.migration import validate_generation_parity
 from recall.store import PgVectorStore, require_secure_dsn
 
 
-#: Subcommands that only READ. These take the serving credential, because what they report is
-#: only true of the role that will actually serve.
+#: Commands using the serving credential, because their checks must evaluate the runtime role.
+#: `replay` also writes both generations and completes outbox records under that credential.
 _SERVING_COMMANDS = frozenset({"readiness", "status", "parity", "replay"})
 
 

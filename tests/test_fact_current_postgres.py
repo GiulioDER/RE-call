@@ -22,6 +22,7 @@ import pytest
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
 from recall.fact_current import CURRENT_TABLE, PostgresCurrentFacts
 from recall.fact_ledger import PostgresFactLedger, PostgresMaterializationOutbox
@@ -47,6 +48,7 @@ def tenant() -> str:
 # it, the global 120s cut it off as a timeout that read like a broken equivalence, while under this
 # budget it passed in 127s. 400s is about three times that.
 @pytest.mark.timeout(400)
+@pytest.mark.parametrize("served_mode", range(5))
 @settings(
     max_examples=15, deadline=None,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.function_scoped_fixture],
@@ -59,7 +61,7 @@ def tenant() -> str:
 @example(CASES[4])
 @example(CASES[5])
 @example(CASES[6])
-def test_postgres_tables_answer_as_the_replay_on_any_ledger(ops: list[Op]) -> None:
+def test_postgres_tables_answer_as_the_replay_on_any_ledger(served_mode: int, ops: list[Op]) -> None:
     """Random ledgers on PostgreSQL: writes decide as on a replaying lite file, and every table
     read equals the replay.
 
@@ -67,7 +69,27 @@ def test_postgres_tables_answer_as_the_replay_on_any_ledger(ops: list[Op]) -> No
     window rule's half-open bound lost) also lists Paris at the instant Rome starts, where Paris's
     interval ends, and "current == project_current" fails on the first explicit example and three
     others. The `project_key` own-window mutation fails it the same way.
+
+    The per-mode negative control disables PostgresFactLedger.current_view's materialized view;
+    every mode must then fail the retained last_read == "table" assertion.
     """
+    # Collect each served mode separately so all generated and explicit ledgers fit the same
+    # watchdog. The explicit matrix below also preserves mode changes on one ledger instance.
+    _check_postgres_equivalence(ops, served_mode=served_mode)
+
+
+@pytest.mark.timeout(400)
+@pytest.mark.parametrize("ops", CASES)
+def test_postgres_explicit_ledgers_across_all_served_modes(ops: list[Op]) -> None:
+    """Keep same-ledger mode transitions for every explicit ledger.
+
+    Red: disabling PostgresFactLedger.current_view's materialized read makes last_read ==
+    "table" fail for every case, without bypassing the replay comparison's other assertions.
+    """
+    _check_postgres_equivalence(ops)
+
+
+def _check_postgres_equivalence(ops: list[Op], *, served_mode: int | None = None) -> None:
     name = tenant()
     with tempfile.TemporaryDirectory() as tmp:
         replay_store = LiteStore(Path(tmp) / "replay.db", dim=4, tenant=name)
@@ -75,6 +97,7 @@ def test_postgres_tables_answer_as_the_replay_on_any_ledger(ops: list[Op]) -> No
             check_equivalence(
                 PostgresFactLedger(TEST_DSN, tenant_id=name), LiteFactLedger(replay_store, materialize=False),
                 ops, tenant=name, verify=PostgresCurrentFacts(TEST_DSN, tenant_id=name).verify,
+                served_mode=served_mode,
             )
         finally:
             replay_store.close()
@@ -198,11 +221,26 @@ def role(grants: Callable[[str], Sequence[str]]) -> Iterator[str]:
             admin.execute(sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(sql.Identifier(name), sql.Literal(password)))
             for statement in grants(name):
                 admin.execute(statement)
-        yield TEST_DSN.replace("recall:recall@", f"{name}:{password}@")
+        yield make_conninfo(TEST_DSN, user=name, password=password)
     finally:
         with psycopg.connect(TEST_DSN, autocommit=True) as admin:
             admin.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(name)))
             admin.execute(sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(name)))
+
+
+def test_role_uses_its_login_with_a_keyword_dsn(monkeypatch) -> None:
+    """Red: role's old literal credential replacement leaves a keyword DSN as administrator;
+    selected_user != admin_user fails before any privilege claim can pass under that identity.
+    """
+    monkeypatch.setitem(globals(), "TEST_DSN", make_conninfo(**conninfo_to_dict(TEST_DSN)))
+    with psycopg.connect(TEST_DSN) as admin:
+        admin_user = admin.execute("SELECT current_user").fetchone()[0]
+    with role(controller_grants) as dsn:
+        selected_user = conninfo_to_dict(dsn)["user"]
+        assert selected_user != admin_user
+        assert selected_user.startswith("fact_current_")
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute("SELECT current_user").fetchone() == (selected_user,)
 
 
 def test_a_strict_serving_role_reads_the_tables_and_cannot_write_them() -> None:

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Literal
 from typing import TYPE_CHECKING
 import threading
@@ -407,10 +408,9 @@ class ControlPlane:
             ).fetchone()
             if updated is None:
                 raise KeyError(f"unknown generation: {generation_id}")
-            # Every other route-affecting write notifies. Without this the serving refusal does
-            # not bind until each process's route cache expires, so a retired generation keeps
-            # answering requests for up to `route_poll_seconds`.
-            conn.execute("SELECT pg_notify('recall_route_changed', %s)", (tenant,))
+            # Generation state is global, so invalidate every tenant's cached route. An empty
+            # payload carries no tenant data and cannot name a provisioned tenant.
+            conn.execute("SELECT pg_notify('recall_route_changed', '')")
 
     def erase_sources_from_pending(self, tenant: str, sources: list[str]) -> int:
         """Scrub erased sources out of pending outbox payloads. Returns events changed.
@@ -429,8 +429,16 @@ class ControlPlane:
         """
         if not sources:
             return 0
-        erased = set(sources)
-        changed = 0
+        with self.erasure_session(tenant) as scrub:
+            return scrub(sources)
+
+    @contextmanager
+    def erasure_session(self, tenant: str) -> Iterator[Callable[[list[str]], int]]:
+        """Exclude replay through source resolution, deletion and the yielded outbox scrub.
+
+        Call the yielded scrub with the concrete erased sources before leaving this session.
+        Taking exclusion only after deleting rows lets an in-flight replay restore them first.
+        """
         # The lock, not `FOR UPDATE`, is what excludes a concurrent drain. `pending_events` is a
         # plain non-locking read, and under READ COMMITTED a plain SELECT is never blocked by a
         # row lock, so a replay would happily read the pre-scrub payload and write the erased text
@@ -447,13 +455,15 @@ class ControlPlane:
                 (self._outbox_lock_key(tenant),),
             )
             try:
-                changed = self._scrub_locked(conn, tenant, erased)
+                def scrub(sources: list[str]) -> int:
+                    return self._scrub_locked(conn, tenant, set(sources)) if sources else 0
+
+                yield scrub
             finally:
                 conn.execute(
                     "SELECT pg_advisory_unlock(hashtextextended(%s, 0))",
                     (self._outbox_lock_key(tenant),),
                 )
-        return changed
 
     def _scrub_locked(
         self, conn: "psycopg.Connection", tenant: str, erased: set[str]
@@ -475,9 +485,15 @@ class ControlPlane:
                 # server side and never reached the chunk-derived fallback below. Selecting
                 # on the TYPE keeps the optimisation for well-formed arrays while letting
                 # every malformed shape through to be scrubbed.
-                "     OR jsonb_typeof(payload -> 'sources') IS DISTINCT FROM 'array') "
+                "     OR jsonb_typeof(payload -> 'sources') IS DISTINCT FROM 'array' "
+                "     OR EXISTS (SELECT 1 FROM jsonb_array_elements("
+                "         CASE WHEN jsonb_typeof(payload -> 'active_chunks') = 'array' "
+                "              THEN payload -> 'active_chunks' ELSE '[]'::jsonb END || "
+                "         CASE WHEN jsonb_typeof(payload -> 'chunks') = 'array' "
+                "              THEN payload -> 'chunks' ELSE '[]'::jsonb END) AS record "
+                "         WHERE record ->> 'source' = ANY(%s))) "
                 "ORDER BY sequence_id FOR UPDATE",
-                (tenant, list(erased)),
+                (tenant, list(erased), list(erased)),
             ).fetchall()
             for operation_id, payload in rows:
                 if not isinstance(payload, dict):
@@ -499,8 +515,7 @@ class ControlPlane:
                 if not present & erased:
                     continue
                 remaining = [s for s in declared_list if s not in erased]
-                if not declared_list:
-                    remaining = sorted(present - erased)
+                remaining.extend(sorted(present - erased - set(remaining)))
                 if not remaining:
                     # active_count goes to 0 with the payload. Leaving it at N would make a
                     # voided event byte-identical, in the retained audit record, to a shadow

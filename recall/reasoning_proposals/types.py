@@ -126,9 +126,21 @@ class InferenceProposal:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        _validate_proposal_shapes(vars(self))
         object.__setattr__(self, "source_evidence_ids", tuple(self.source_evidence_ids))
         object.__setattr__(self, "uncertainty", tuple(self.uncertainty))
         object.__setattr__(self, "metadata", _freeze_value(self.metadata))
+
+
+def _validate_proposal_shapes(raw: Mapping[str, Any]) -> None:
+    for name in ("subject_id", "object_id", "explanation"):
+        if not isinstance(raw[name], str):
+            raise ValueError(f"{name} must be a string")
+    for name in ("source_evidence_ids", "uncertainty"):
+        value = raw[name]
+        if (isinstance(value, str | bytes) or not isinstance(value, Sequence)
+                or any(not isinstance(item, str) for item in value)):
+            raise ValueError(f"{name} must be a sequence of strings")
 
 
 @dataclass(frozen=True)

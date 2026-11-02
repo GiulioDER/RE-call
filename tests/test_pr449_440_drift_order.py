@@ -19,13 +19,16 @@ from tests.test_calibration_carry_forward import (  # noqa: F401 - shared DB fix
 
 @requires_db
 def test_drift_uses_last_publication_while_list_keeps_creation_order(
-    carry_tenant, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    carry_tenant,  # noqa: F811
 ) -> None:
     """VERIFY-001, baseline 160a23a3f: a later publication of an older fit is ignored.
 
     Build and fit two real generations, then publish in the opposite order to creation. The
     intended red assertion observes evaluate_drift choosing the newer-created calibration rather
     than the last published one. The list_records assertion protects its existing history API.
+
+    Red: _published_calibration iterating list_records instead of published_records fails the
+    report.calibration_id assertion while retaining the existing fit-history order.
     """
     tenant, manager = carry_tenant
     embedder = _CarryEmbedder()
@@ -51,22 +54,19 @@ def test_drift_uses_last_publication_while_list_keeps_creation_order(
     assert report.delta["corpus_delta"] == 0.0
     assert report.probe is None
 
-    # Controls stay in this same baseline-red node: correcting the ordering must retain the
-    # existing lifecycle, loadability and equal-publication-time behavior.
-    for rejected in (False, True):
-        _unpublished_fit_does_not_replace_baseline(carry_tenant, rejected)
-    _unloadable_publication_falls_back(carry_tenant, monkeypatch)
-    _equal_publication_times_use_creation_order(carry_tenant)
-
-
-def _unpublished_fit_does_not_replace_baseline(
-    tenant_fixture, rejected: bool
+@requires_db
+@pytest.mark.parametrize("rejected", [False, True], ids=["draft", "rejected"])
+def test_unpublished_fit_does_not_replace_baseline(
+    carry_tenant, rejected: bool  # noqa: F811
 ) -> None:
     """VERIFY-001 control for the existing draft and rejected-fit exclusions.
 
     Publication-order repair must retain the existing exclusion of a newer draft or rejected fit.
+
+    Red: _published_calibration returning the newest fit without lifecycle/certification checks
+    fails report.calibration_id for both the draft and rejected cases.
     """
-    tenant, manager = tenant_fixture
+    tenant, manager = carry_tenant
     repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
     embedder = _CarryEmbedder()
     baseline = _ready(manager, embedder, _bodies(), "baseline")
@@ -88,15 +88,19 @@ def _unpublished_fit_does_not_replace_baseline(
     assert report.verdict is DriftVerdict.STABLE
 
 
-def _unloadable_publication_falls_back(
-    tenant_fixture, monkeypatch: pytest.MonkeyPatch
+@requires_db
+def test_unloadable_publication_falls_back(
+    carry_tenant, monkeypatch: pytest.MonkeyPatch  # noqa: F811
 ) -> None:
     """VERIFY-001 control for the existing fallback after a failed artifact load.
 
     A failed artifact load must retain the existing fallback to the next published calibration.
     Only the read failure is injected; publication ordering and generation comparison use the DB.
+
+    Red: _published_calibration returning None after CalibrationError instead of continuing
+    fails report.calibration_id == usable.calibration_id.
     """
-    tenant, manager = tenant_fixture
+    tenant, manager = carry_tenant
     repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
     embedder = _CarryEmbedder()
     baseline = _ready(manager, embedder, _bodies(), "baseline")
@@ -119,13 +123,17 @@ def _unloadable_publication_falls_back(
     assert report.verdict is DriftVerdict.STABLE
 
 
-def _equal_publication_times_use_creation_order(tenant_fixture) -> None:
+@requires_db
+def test_equal_publication_times_use_creation_order(carry_tenant) -> None:  # noqa: F811
     """VERIFY-001 control for the existing creation-order secondary ordering.
 
     Publication timestamps can tie. Preserve the existing creation-order secondary ordering,
     matching carry_forward's parent lookup; only lifecycle timestamps are adjusted in the fixture.
+
+    Red: published_records sorting tied publications by created_at ASC instead of DESC chooses
+    the older fit and fails report.calibration_id == newer.calibration_id.
     """
-    tenant, manager = tenant_fixture
+    tenant, manager = carry_tenant
     repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
     embedder = _CarryEmbedder()
     older_generation = _ready(manager, embedder, _bodies(), "older")

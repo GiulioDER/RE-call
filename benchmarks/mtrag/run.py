@@ -1,9 +1,9 @@
-"""Index and evaluate MT-RAG while retaining dataset document identities.
+"""Retrieval adapter for MTRAG-UN / MTRAGEval Task A.
 
-Prior work: this runner supplies the dataset loaders used by
-recall.eval.promotion.adapters. The promotion CLI reuses index_domain;
-recall.embeddings.embed_passages supplies the shared passage-encoding contract.
+Prior work: uses the benchmark's official passage corpora and released qrels,
+as described in benchmarks/mtrag/README.md.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -290,6 +290,8 @@ def iter_corpus(path: Path) -> Iterator[dict[str, Any]]:
 
 
 def batched(items: Iterable[dict[str, Any]], size: int) -> Iterator[list[dict[str, Any]]]:
+    if size < 1:
+        raise ValueError("batch size must be positive")
     batch: list[dict[str, Any]] = []
     for item in items:
         batch.append(item)
@@ -321,12 +323,6 @@ def index_domain(
         written = 0
         for batch in batched(iter_corpus(path), batch_size):
             next_seen = seen + len(batch)
-            if next_seen <= existing:
-                seen = next_seen
-                continue
-            if seen < existing:
-                batch = batch[existing - seen :]
-                seen = existing
             chunks = []
             for item in batch:
                 document_id = str(item.get("_id") or item.get("id"))
@@ -345,10 +341,20 @@ def index_domain(
                         },
                     )
                 )
+            skipped = min(len(chunks), max(0, existing - seen))
+            if skipped:
+                # A row count cannot establish that this is still the indexed corpus.
+                stored = store.chunks_by_ids([chunk.id for chunk in chunks[:skipped]])
+                if any(stored.get(chunk.id) != chunk for chunk in chunks[:skipped]):
+                    raise RuntimeError(f"{table}: corpus records changed; refusing to resume")
+                chunks = chunks[skipped:]
+            if not chunks:
+                seen = next_seen
+                continue
             vectors = embed_passages(embedder, [chunk.text for chunk in chunks])
             store.upsert(chunks, vectors)
             written += len(chunks)
-            seen += len(chunks)
+            seen = next_seen
             if seen % (batch_size * 10) == 0 or len(batch) < batch_size:
                 print(
                     json.dumps(
@@ -1008,7 +1014,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--accept-noncommercial-license", action="store_true",
         help="required for naver/splade-v3 (cc-by-nc-sa-4.0)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.batch_size < 1:
+        parser.error("--batch-size must be positive")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -599,6 +599,7 @@ def event_view(event: FactEvent) -> tuple[object, ...]:
 def check_equivalence(
     table: Any, replay: Any, ops: Sequence[Op], *, tenant: str = TENANT,
     verify: Callable[[], Verification] | None = None,
+    served_mode: int | None = None,
 ) -> None:
     """Run `ops` on a materializing ledger and on one that replays; compare everything.
 
@@ -611,7 +612,8 @@ def check_equivalence(
     if verify is not None:
         verification = verify()
         assert verification.matches, verification.to_payload()
-    for served in served_variants():
+    modes = served_variants()
+    for served in modes if served_mode is None else (modes[served_mode],):
         for at in INSTANTS:
             current, support = table.current_view(tenant_id=tenant, now=at, served=served)
             assert table.last_read == "table"

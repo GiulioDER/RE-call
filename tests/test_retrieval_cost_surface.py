@@ -393,8 +393,15 @@ def test_the_budget_verdict_is_charged_once_not_twice(make_store, monkeypatch):
     charges the same allowance twice: a request whose own retrieval was fast gets labelled over
     budget because someone else was ahead of it, and the counter saturates under any queueing.
     That destroys exactly the attribution the seven-stage surface exists to provide.
+
+    Red: _cost_surface using served_ms = elapsed_ms labels this queued request over budget;
+    the budget_exceeded is False assertion fails with the same fixed clock and admission seam.
     """
-    from recall_mcp.service import _admission
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from recall_mcp import retrieval, service
+    from tests.test_limits import FakeClock
 
     monkeypatch.setenv("RECALL_RETRIEVAL_PROFILE", "fast")
     monkeypatch.delenv("RECALL_RERANK", raising=False)
@@ -404,33 +411,25 @@ def test_the_budget_verdict_is_charged_once_not_twice(make_store, monkeypatch):
     store = make_store(3)
     store.upsert([Chunk("a", "notes.md", "cats")], [[1.0, 0.0, 0.0]])
 
-    admission = _admission(resolve_retrieval_profile())
-    held = threading.Event()
-    release = threading.Event()
+    clock = FakeClock()
 
-    def occupy() -> None:
-        with admission:
-            held.set()
-            release.wait(10)
+    @contextmanager
+    def admission(_profile):
+        clock.advance(0.15)
+        yield
 
-    holder = threading.Thread(target=occupy, daemon=True)
-    holder.start()
-    assert held.wait(5)
-    # The fixture has to make wait + work cross the 250 ms budget while the WORK alone stays under
-    # it, or the assertion is vacuous: with an instant search, charging the wait as well still
-    # lands inside the budget and a double-charging implementation passes. ~150 ms queued plus
-    # ~150 ms of work gives ~300 ms total against 250 ms of work allowance. (Found by mutation:
-    # an earlier fixture used a 200 ms wait and a microsecond search, and survived.)
-    threading.Timer(0.15, release.set).start()
+    # Replace the admission boundary and this module's clock, retaining the public request and
+    # real cost attribution. Host scheduling cannot change 150 ms queued + 150 ms of work.
+    monkeypatch.setattr(service, "_admission", admission)
+    monkeypatch.setattr(retrieval, "time", SimpleNamespace(perf_counter=clock))
 
     class SlowEmbedder(CountingEmbedder):
         def embed(self, texts):
-            time.sleep(0.15)
+            clock.advance(0.15)
             return super().embed(texts)
 
     slow = SlowEmbedder({"cats": [1.0, 0.0, 0.0]}, default=[0.0, 0.0, 1.0])
     result = dev_search_memory(store, slow, "cats")
-    holder.join(10)
 
     assert result.stage_ms["admission_wait"] >= 100, "the wait must be measured, not assumed"
     assert result.total_ms > 250, "wait + work must cross the budget, or this proves nothing"

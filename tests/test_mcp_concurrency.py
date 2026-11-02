@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-import time
 
 import pytest
 
@@ -87,32 +86,36 @@ def test_every_tool_is_async():
 def test_the_event_loop_stays_responsive_while_a_tool_blocks():
     """The behavioural check: a blocking tool body must not stall other loop work.
 
-    A sync tool holding the loop for 300 ms would delay every concurrent task by ~300 ms. Handed
-    to a thread, the loop keeps ticking and the heartbeat below records many ticks.
+    The worker can finish only after another event-loop task releases it. The bounded wait
+    makes an inline implementation return False instead of hanging the test.
+
+    Red: recall_mcp.threads._to_thread returning fn() blocks the release task, so the final
+    assertion observes False. The wait limit bounds broken code, not runner performance.
     """
     from recall_mcp import server as srv
 
-    async def scenario() -> tuple[int, float]:
-        ticks = 0
-        stop = asyncio.Event()
+    release = threading.Event()
 
-        async def heartbeat() -> None:
-            nonlocal ticks
-            while not stop.is_set():
-                ticks += 1
-                await asyncio.sleep(0.005)
+    async def scenario() -> bool:
+        entered = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
-        hb = asyncio.create_task(heartbeat())
-        t0 = time.perf_counter()
-        await srv._to_thread(lambda: time.sleep(0.3))
-        elapsed = time.perf_counter() - t0
-        stop.set()
-        await hb
-        return ticks, elapsed
+        def worker() -> bool:
+            loop.call_soon_threadsafe(entered.set)
+            return release.wait(10)
 
-    ticks, elapsed = asyncio.run(scenario())
-    assert elapsed >= 0.3  # the work really did take its time
-    assert ticks > 10, f"loop was starved: only {ticks} ticks while a tool ran for {elapsed:.2f}s"
+        async def release_from_loop() -> None:
+            await entered.wait()
+            release.set()
+
+        releaser = asyncio.create_task(release_from_loop())
+        try:
+            return await srv._to_thread(worker)
+        finally:
+            release.set()
+            await releaser
+
+    assert asyncio.run(scenario()), "the worker blocked the event loop that must release it"
 
 
 def test_concurrent_tool_bodies_overlap():

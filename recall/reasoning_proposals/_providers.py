@@ -27,6 +27,7 @@ from recall.reasoning_proposals.types import (
     ProposedRelation,
     ProviderFailure,
     ProviderFailureKind,
+    _validate_proposal_shapes,
 )
 
 def _coerce_provider_proposal(
@@ -62,6 +63,7 @@ def _coerce_provider_proposal(
         missing = sorted(key for key in required if key not in raw)
         if missing:
             raise ValueError(f"provider proposal missing fields: {', '.join(missing)}")
+        _validate_proposal_shapes(raw)
         proposal = _make_proposal(
             graph=graph,
             context=context,
