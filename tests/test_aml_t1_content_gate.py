@@ -253,12 +253,11 @@ def test_a_long_token_at_the_window_edge_is_read_conservatively() -> None:
 
 @pytest.mark.parametrize("unit", ["today/", "today ", "`x` today "], ids=["slashes", "spaces", "spans"])
 def test_the_content_gate_costs_linear_time_on_a_long_item(unit: str) -> None:
-    """Invariant: deciding whether a phrase is code looks at a bounded neighbourhood, so the cost
-    of an item grows linearly with its length and one long retrieved item cannot stall a Search.
-    The test compares the cost at two lengths, four times apart, so it holds on any machine:
-    linear is about 4 times, quadratic about 16.
+    """Bounded neighbourhoods and logarithmic span lookup keep CPU growth below quadratic.
+    Compare the executing thread's work at lengths four times apart: elapsed time also counts
+    unrelated descheduling. Linear work grows about four times, quadratic work about sixteen.
 
-    Red proof: the first draft of this audit's rewrite, which sliced and split the whole text
+    Historical elapsed-time red proof: the first draft sliced and split the whole text
     around every phrase and scanned every span per phrase, fails every row (a 120 KB item of the
     first row's shape took 310 s there, against 1.1 s now).
     """
@@ -267,9 +266,9 @@ def test_the_content_gate_costs_linear_time_on_a_long_item(unit: str) -> None:
         text = unit * repeats
         best = float("inf")
         for _ in range(runs):
-            started = time.perf_counter()
+            started = time.thread_time_ns()
             resolve_text(text, ANCHOR, skip_code=True, render="v2")
-            best = min(best, time.perf_counter() - started)
+            best = min(best, time.thread_time_ns() - started)
         return best
 
     small, large = cost(1000, 3), cost(4000, 2)

@@ -425,7 +425,11 @@ def _acquire(
             if on_queued is not None and not told:
                 told = True
                 on_queued(position, holder)
-            poll = POLL_HEAD_S if position == 1 else min(poll * 2, POLL_MAX_S)
+            # The live holder keeps position 1, so its immediate successor is the waiting head.
+            poll = (
+                POLL_HEAD_S if position == 1 or (position == 2 and holder is not None)
+                else min(poll * 2, POLL_MAX_S)
+            )
             time.sleep(min(poll, max(0.0, budget - waited)))
     except BaseException:
         if ticket_fh is not None:

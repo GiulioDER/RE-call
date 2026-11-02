@@ -1,3 +1,9 @@
+"""Index and evaluate MT-RAG while retaining dataset document identities.
+
+Prior work: this runner supplies the dataset loaders used by
+recall.eval.promotion.adapters. The promotion CLI reuses index_domain;
+recall.embeddings.embed_passages supplies the shared passage-encoding contract.
+"""
 from __future__ import annotations
 
 import argparse
@@ -19,7 +25,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from recall.embeddings import FastEmbedEmbedder
+from recall.embeddings import Embedder, FastEmbedEmbedder, embed_passages
 from recall.rerank import CrossEncoderReranker
 from recall.retriever import HybridRetriever
 from recall.store import PgVectorStore
@@ -302,7 +308,7 @@ def table_name(prefix: str, domain: str) -> str:
 
 
 def index_domain(
-    *, dsn: str, root: Path, domain: str, embedder: FastEmbedEmbedder,
+    *, dsn: str, root: Path, domain: str, embedder: Embedder,
     prefix: str, batch_size: int,
 ) -> dict[str, Any]:
     path = corpus_zip(root, domain)
@@ -339,7 +345,7 @@ def index_domain(
                         },
                     )
                 )
-            vectors = embedder.embed([chunk.text for chunk in chunks])
+            vectors = embed_passages(embedder, [chunk.text for chunk in chunks])
             store.upsert(chunks, vectors)
             written += len(chunks)
             seen += len(chunks)

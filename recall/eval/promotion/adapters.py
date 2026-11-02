@@ -355,7 +355,7 @@ class MtragAdapter(CorpusAdapter):
     #: the qrels line up with chunk ids directly.
     label_kind = "chunk_id"
 
-    def __init__(self, root: Path | None = None, *, mode: str = "last_turn") -> None:
+    def __init__(self, root: Path | None = None, *, mode: str = "last") -> None:
         self.root = root or Path("mtrag")
         self.mode = mode
 

@@ -145,6 +145,10 @@ def test_claude_adapter_reaps_spawned_work(tmp_path, monkeypatch, cancel):
     timeout cut from 5 to 0.1 s, so the adapter returns at once with the fixture's child alive.
     Both cases failed on "timeout/cancellation must reap the CLI tree", naming the child
     (state=S, ppid=1). Removing `killpg` alone fails the elapsed assertion instead.
+
+    Establish a complete descendant fixture before the communication timeout starts;
+    process-handle delivery alone does not mean the fresh Python CLI has run yet.
+    Cancellation is requested while handle delivery is held, exercising launch cleanup.
     """
     from benchmarks.agent_ab import claude_exec
     from benchmarks.agent_ab.schema import RECALL_ON
@@ -154,7 +158,9 @@ def test_claude_adapter_reaps_spawned_work(tmp_path, monkeypatch, cancel):
     fake.write_text(
         "import json,os,subprocess,sys,time\n"
         "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(5)'])\n"
-        f"open({str(pids)!r},'w').write(json.dumps([os.getpid(),child.pid]))\n"
+        f"with open({str(pids.with_suffix('.tmp'))!r},'w') as record:\n"
+        "    record.write(json.dumps([os.getpid(),child.pid]))\n"
+        f"os.replace({str(pids.with_suffix('.tmp'))!r},{str(pids)!r})\n"
         "time.sleep(5)\n", encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -162,16 +168,40 @@ def test_claude_adapter_reaps_spawned_work(tmp_path, monkeypatch, cancel):
     )
     config = claude_exec.ClaudeExecConfig(timeout_s=0.25, strict_mcp_config=False)
 
+    launch = asyncio.create_subprocess_exec
+    ready, deliver = asyncio.Event(), asyncio.Event()
+
+    async def launch_ready(*args, **kwargs):
+        process = await launch(*args, **kwargs)
+        try:
+            deadline = time.monotonic() + 2
+            while not pids.exists():
+                assert time.monotonic() < deadline, "the CLI fixture never spawned its descendant"
+                await asyncio.sleep(0.01)
+            recorded = json.loads(pids.read_text())
+            assert len(recorded) == 2 and recorded[0] == process.pid
+            ready.set()
+            if cancel:
+                await deliver.wait()
+            return process
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await asyncio.wait_for(process.communicate(), timeout=1)
+            raise
+
+    monkeypatch.setattr(claude_exec.asyncio, "create_subprocess_exec", launch_ready)
+
     async def run():
         task = asyncio.create_task(
             claude_exec.run_claude_case({"task_id": "fixture", "user_input": "fixture"}, RECALL_ON, config)
         )
         if cancel:
-            for _ in range(200):
-                if pids.exists():
-                    break
-                await asyncio.sleep(0.01)
+            await asyncio.wait_for(ready.wait(), timeout=2)
             task.cancel()
+            deliver.set()
         try:
             await task
         except (claude_exec.ClaudeTranscriptError, asyncio.CancelledError):

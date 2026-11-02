@@ -346,6 +346,41 @@ def test_status_lists_holder_and_waiters(db: Path, tmp_path: Path) -> None:
     assert holder.wait(30) == 0 and waiter.wait(30) == 0
 
 
+def test_first_waiter_polls_fast_while_holder_is_live(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The holder's ticket must not put the first waiter on the slow backoff.
+
+    Red: the position == 1 poll predicate requests 0.04 seconds for position 2,
+    failing the POLL_HEAD_S assertion. The existing W12 consumer bound stays unchanged.
+    """
+    from types import SimpleNamespace
+
+    sleeps, queued = [], []
+
+    class StopPoll(BaseException):
+        pass
+
+    def sleep(delay):
+        sleeps.append(delay)
+        raise StopPoll
+
+    def wait():
+        try:
+            with lite_lane(db, purpose="waiter", wait_s=5, on_queued=lambda p, h: queued.append((p, h))):
+                pytest.fail("a waiter acquired a held lane")
+        except StopPoll:
+            pass
+
+    with lite_lane(db, purpose="holder"):
+        monkeypatch.setattr(wl, "time", SimpleNamespace(time=time.time, monotonic=time.monotonic, sleep=sleep))
+        waiter = threading.Thread(target=wait, daemon=True)
+        waiter.start()
+        waiter.join(5)
+        assert not waiter.is_alive()
+        assert queued[0][0] == 2 and queued[0][1]["purpose"] == "holder"
+        assert sleeps == [wl.POLL_HEAD_S], "the first waiter used the slow backoff"
+        assert lite_lane_status(db).waiters == []
+
+
 def test_the_lane_passes_to_the_next_waiter_promptly(db: Path, tmp_path: Path) -> None:
     """W12: five handoffs cost under 0.6 s in total. Each round releases at a different offset
     (0.0 to 0.4 s) into one waiter's polling, so a slow poll costs about its period whatever its

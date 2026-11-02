@@ -604,7 +604,7 @@ They are observations, not automatic failures.
 | `recall.eval.promotion.aggregate` | 6 | 44 |
 | `recall.eval.promotion.manifest` | 0 | 0 |
 | `recall.eval.promotion.records` | 0 | 0 |
-| `recall.eval.promotion.run` | 3 | 4 |
+| `recall.eval.promotion.run` | 4 | 5 |
 | `recall.eval.promotion.search` | 9 | 124 |
 | `recall.eval.provenance` | 0 | 0 |
 | `recall.eval.reasoning_session1` | 0 | 0 |
