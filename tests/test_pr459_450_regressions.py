@@ -93,9 +93,33 @@ def _alive(pid: int) -> bool:
         if state.is_file() and state.read_text().split()[2] == "Z":
             return False
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, FileNotFoundError):
         return False
     return True
+
+
+def test_alive_accepts_a_process_disappearing_during_proc_read(monkeypatch):
+    """Red: _alive catching only ProcessLookupError leaks FileNotFoundError; error is None fails.
+
+    Only the filesystem and signal boundary are replaced; no real PID is signalled.
+    """
+    class VanishedStat:
+        def is_file(self):
+            return True
+
+        def read_text(self):
+            raise FileNotFoundError("process exited between stat and read")
+
+    monkeypatch.setattr(sys.modules[__name__], "Path", lambda _path: VanishedStat())
+    monkeypatch.setattr(os, "kill", lambda *_args: None)
+    error = None
+    alive = None
+    try:
+        alive = _alive(123)
+    except FileNotFoundError as caught:
+        error = caught
+    assert error is None, "a vanished /proc entry means the process has exited"
+    assert alive is False
 
 
 def _survivors(pids: list[int], within_s: float = 2.0) -> dict[int, str]:
@@ -154,7 +178,8 @@ def test_claude_adapter_reaps_spawned_work(tmp_path, monkeypatch, cancel):
     fake.write_text(
         "import json,os,subprocess,sys,time\n"
         "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(5)'])\n"
-        f"open({str(pids)!r},'w').write(json.dumps([os.getpid(),child.pid]))\n"
+        f"with open({str(pids) + '.tmp'!r},'w') as f: f.write(json.dumps([os.getpid(),child.pid]))\n"
+        f"os.replace({str(pids) + '.tmp'!r},{str(pids)!r})\n"
         "time.sleep(5)\n", encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -163,24 +188,51 @@ def test_claude_adapter_reaps_spawned_work(tmp_path, monkeypatch, cancel):
     config = claude_exec.ClaudeExecConfig(timeout_s=0.25, strict_mcp_config=False)
 
     async def run():
+        ready = asyncio.Event()
+        create_process = asyncio.create_subprocess_exec
+        ready_at = None
+
+        async def launch_ready(*args, **kwargs):
+            nonlocal ready_at
+            process = await create_process(*args, **kwargs)
+
+            async def wait_for_fixture():
+                while not pids.exists():  # noqa: ASYNC110 - readiness is an external file
+                    await asyncio.sleep(0.01)
+
+            try:
+                await asyncio.wait_for(wait_for_fixture(), timeout=10)
+            except BaseException:
+                os.killpg(process.pid, signal.SIGKILL)
+                await process.communicate()
+                raise
+            ready_at = time.monotonic()
+            ready.set()
+            return process
+
+        # The adapter's 250 ms timeout begins after the fake CLI has published its complete
+        # process tree. Startup scheduling is fixture setup, not the cleanup behavior measured.
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", launch_ready)
         task = asyncio.create_task(
             claude_exec.run_claude_case({"task_id": "fixture", "user_input": "fixture"}, RECALL_ON, config)
         )
         if cancel:
-            for _ in range(200):
-                if pids.exists():
-                    break
-                await asyncio.sleep(0.01)
+            await asyncio.wait_for(ready.wait(), timeout=12)
             task.cancel()
+        outcome = None
         try:
             await task
-        except (claude_exec.ClaudeTranscriptError, asyncio.CancelledError):
-            pass
+        except asyncio.CancelledError:
+            outcome = "cancellation"
+        except claude_exec.ClaudeTranscriptError as error:
+            assert "exceeded timeout_s=" in str(error)
+            outcome = "timeout"
+        assert outcome == ("cancellation" if cancel else "timeout")
+        assert ready_at is not None, "the fake CLI must start before cleanup is tested"
+        return time.monotonic() - ready_at
 
-    started = time.monotonic()
     try:
-        asyncio.run(run())
-        elapsed = time.monotonic() - started
+        elapsed = asyncio.run(run())
         recorded = json.loads(pids.read_text())
         assert elapsed < 3, "a timeout must not wait for surviving descendant pipes"
         survivors = _survivors(recorded)
