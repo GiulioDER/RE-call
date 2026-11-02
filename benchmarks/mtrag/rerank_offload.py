@@ -1,6 +1,6 @@
 """Offload cross-encoder SCORING to a GPU while retrieval and credentials stay on the DB host.
 
-Prior work (searched 2026-08-06, `docs_search(source_type="memory")`, no gap warning):
+Prior work: searched 2026-08-06, `docs_search(source_type="memory")`, no gap warning.
 
   - [[project-recall-mtrag-retrieval-coverage-bottleneck-2026-08-06]] -- the reranker is worth
     +0.0864 nDCG@5 on MTRAG dev, CI [+0.0671, +0.1061], measured at candidate_k=100 (fused pool

@@ -3,7 +3,7 @@
 The arms, contrasts, decision rule and predicted outcome were frozen before any score was
 observed; `MQ_ARMS` below is the executable copy and `tests/test_multiquery.py` pins it.
 
-Prior work (searched 2026-08-06, `docs_search(source_type="memory")`, no gap warning):
+Prior work: searched 2026-08-06, `docs_search(source_type="memory")`, no gap warning.
 
   - [[project-recall-mtrag-retrieval-coverage-bottleneck-2026-08-06]] -- coverage, not ranking, is
     the bottleneck: R@100 0.687 against a ~0.95 saturation threshold.
