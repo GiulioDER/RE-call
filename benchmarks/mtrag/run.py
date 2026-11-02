@@ -1,3 +1,9 @@
+"""Retrieval adapter for MTRAG-UN / MTRAGEval Task A.
+
+Prior work: uses the benchmark's official passage corpora and released qrels,
+as described in benchmarks/mtrag/README.md.
+"""
+
 from __future__ import annotations
 
 import argparse
