@@ -121,7 +121,8 @@ def _check_corpus_name(value: str, kind: str) -> str:
     write outside the workspace. Mirrors `recall.eval.longmemeval._check_session_id`, the guard the
     sibling converter already applies to the same class.
     """
-    if not isinstance(value, str) or not _SAFE_CORPUS_NAME.match(value) or value in {".", ".."}:
+    if (not isinstance(value, str) or not _SAFE_CORPUS_NAME.match(value)
+            or value in {".", ".."} or (kind == "sample_id" and ":" in value)):
         raise ValueError(f"unsafe LOCOMO {kind} (path traversal?): {value!r}")
     return value
 

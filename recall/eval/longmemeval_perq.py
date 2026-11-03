@@ -90,18 +90,23 @@ def populate_haystack(
     every question, and an append would grow the haystack monotonically, making each successive
     question easier against a corpus that is supposed to be fixed at ~40 sessions.
     """
-    if store is None:
-        store = PgVectorStore(dsn, dim=dim, table=scratch)
-        store.ensure_schema()
     # The MASTER table is never migrated by this arm (`ensure_schema` runs on the SCRATCH table
     # only), so a master built before `first_indexed_at` existed would make this SELECT die on a
     # raw UndefinedColumn. Degrade to its last write, which is what the read path does anyway.
     with psycopg.connect(dsn) as probe:
+        same_table = probe.execute(
+            "SELECT %s::regclass = to_regclass(%s)", (master, scratch)
+        ).fetchone()
+        if same_table is not None and same_table[0]:
+            raise ValueError("master and scratch must identify different tables")
         has_first = probe.execute(
             "SELECT 1 FROM pg_attribute WHERE attrelid = %s::regclass "
             "AND attname = 'first_indexed_at' AND NOT attisdropped",
             (master,),
         ).fetchone() is not None
+    if store is None:
+        store = PgVectorStore(dsn, dim=dim, table=scratch)
+        store.ensure_schema()
     cols = ", ".join(_COPIED)
     select_cols = cols if has_first else ", ".join(
         c if c != "first_indexed_at" else "indexed_at AS first_indexed_at" for c in _COPIED
