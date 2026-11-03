@@ -1,6 +1,6 @@
 """RE-call as a mem-bench axis-3 (temporal correctness) system.
 
-Prior-work status for this package is recorded once in `__init__.py`: relocation of an existing
+Prior work: status for this package is recorded once in `__init__.py`: relocation of an existing
 adapter that has already produced a published figure, not a new experiment, and `docs_search` was
 unavailable (VPS2 down).
 

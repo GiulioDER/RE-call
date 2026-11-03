@@ -1,6 +1,6 @@
 """Do any turns postdate the reference instant their own scope would supply?
 
-Prior work searched 2026-08-01. `docs_search(source_type="memory")` was UNAVAILABLE: the memory
+Prior work: searched 2026-08-01. `docs_search(source_type="memory")` was UNAVAILABLE: the memory
 corpus is served from VPS2, which is down, and the VPS3 mirror has no `docs_chunks` relation. Fell
 back to grep and Read over this repo's docs, which found the load-bearing items below. Recorded
 because an unavailable index is not the same as an empty one, and a later reader must not mistake
