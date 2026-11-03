@@ -58,23 +58,7 @@ _log = logging.getLogger(__name__)
 
 
 def _make_embedder(name: str) -> Embedder:
-    if name == "hashing":
-        from recall.embeddings import HashingEmbedder
-
-        return HashingEmbedder(dim=64)
-    if name == "voyage":
-        from recall.embeddings import VoyageEmbedder
-
-        return VoyageEmbedder()
-    if name.startswith("st:"):
-        # Any sentence-transformers model, including one this repo fine-tuned:
-        #   --embedder st:finetune/model
-        from recall.embeddings import SentenceTransformerEmbedder
-
-        return SentenceTransformerEmbedder(name[3:])
-    # Every other spelling goes to the shared resolver. This used to fall back to bge-small for
-    # anything unrecognised, so `--embedder st-prompted:<model>` (or a typo) measured bge-small
-    # and reported it under the name that was asked for.
+    # Every spelling must honor the configured profile and its backend compatibility check.
     from recall.embeddings import resolve_embedder
 
     return resolve_embedder(name)
