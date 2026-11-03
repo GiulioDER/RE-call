@@ -1,4 +1,7 @@
-"""Find the retrieval budget `k` for an embedder, for $0 — no answerer, no judge.
+"""Find the retrieval budget `k` for an embedder without an answerer or judge.
+
+Hosted embedders and rerankers can still incur API charges. The input artifact must declare
+`chat_size: "1M"`, matching the indexed tenants this probe reads.
 
 `k` was swept once, on `text-embedding-3-small`, and carried into every later plan. An optimum
 fitted on one embedder is not evidence about another: voyage-4-large's cosines sit on an entirely
@@ -78,8 +81,17 @@ def sweep(
     depths: list[int],
     reranker_name: str = "local",
 ) -> dict[str, Any]:
+    if (not depths or any(type(k) is not int or not 1 <= k <= MAX_POOL for k in depths)
+            or depths != sorted(set(depths))):
+        raise ValueError(f"depths must be unique increasing integers from 1 to {MAX_POOL}")
+    rows = [row for row in rows if nuggets_of(row) and row.get("question")]
+    if not rows:
+        raise ValueError("no eligible questions with rubric nuggets")
+
     from benchmarks._trust import bench_search
+    from benchmarks.beam.systems import require_indexed
     from benchmarks.systems import resolve_embedder, resolve_reranker
+    from recall.eval.provenance import model_stack
     from recall.store import PgVectorStore
 
     embedder = resolve_embedder(embedder_name)
@@ -91,10 +103,9 @@ def sweep(
 
     for i, row in enumerate(rows, 1):
         nugs = nuggets_of(row)
-        if not nugs or not row.get("question"):
-            continue
         tenant = f"beam-1m-{row['conversation_idx']}"
         with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table=table) as store:
+            require_indexed(store, tenant=tenant, table=table, what="ksweep")
             # This sweep reads only `h.chunk.text`, never a verdict or `abstained`, so the
             # calibration `bench_search` supplies changes nothing it measures: the threshold
             # reaches the retriever as `gap_threshold`, which sets a warning flag and culls no
@@ -107,7 +118,7 @@ def sweep(
             )
         memories = [h.chunk.text for h in result.hits]
         if not memories:
-            continue
+            raise RuntimeError(f"ksweep: eligible question in {tenant!r} retrieved no memories")
 
         vectors = embedder.embed(nugs + memories)
         nug_vecs, mem_vecs = vectors[: len(nugs)], vectors[len(nugs):]
@@ -135,6 +146,7 @@ def sweep(
         },
         "benchmark": "BEAM — nugget coverage vs retrieval budget",
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "stack": model_stack(),
         "embedder": embedder_name,
         "reranker": reranker_name,
         "table": table,
@@ -181,7 +193,10 @@ def main() -> None:
     if not dsn:
         raise SystemExit("--dsn or RECALL_DSN required")
 
-    rows = json.loads(args.rows.read_text(encoding="utf-8"))["rows"]
+    payload = json.loads(args.rows.read_text(encoding="utf-8"))
+    if payload.get("chat_size") != "1M":
+        p.error("--rows must declare chat_size='1M' to match the indexed tenant namespace")
+    rows = payload["rows"]
     if args.conversations:
         keep = {int(x) for x in args.conversations.split(",")}
         rows = [r for r in rows if r.get("conversation_idx") in keep]
