@@ -1,0 +1,5 @@
+# ast-grep project config: structural lint rules and their cases. See tools/ast-grep/README.md.
+ruleDirs:
+  - tools/ast-grep/rules
+testConfigs:
+  - testDir: tools/ast-grep/rule-tests

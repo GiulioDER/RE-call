@@ -1,0 +1,90 @@
+id: benchmark-indexer-without-cache
+snapshots:
+  Indexer(cache=EmbeddingCache(path)):
+    labels:
+    - source: Indexer(cache=EmbeddingCache(path))
+      style: primary
+      start: 0
+      end: 35
+    - source: Indexer
+      style: secondary
+      start: 0
+      end: 7
+    - source: cache
+      style: secondary
+      start: 8
+      end: 13
+    - source: cache=EmbeddingCache(path)
+      style: secondary
+      start: 8
+      end: 34
+    - source: cache=EmbeddingCache(path)
+      style: secondary
+      start: 8
+      end: 34
+  "Indexer(store, embedder, cache=self._cache).index_path(workdir)":
+    labels:
+    - source: Indexer(store, embedder, cache=self._cache)
+      style: primary
+      start: 0
+      end: 43
+    - source: Indexer
+      style: secondary
+      start: 0
+      end: 7
+    - source: cache
+      style: secondary
+      start: 25
+      end: 30
+    - source: cache=self._cache
+      style: secondary
+      start: 25
+      end: 42
+    - source: cache=self._cache
+      style: secondary
+      start: 25
+      end: 42
+  "Indexer(store, embedder, chunker=chunker, cache=cache, batch_chunks=8)":
+    labels:
+    - source: Indexer(store, embedder, chunker=chunker, cache=cache, batch_chunks=8)
+      style: primary
+      start: 0
+      end: 70
+    - source: Indexer
+      style: secondary
+      start: 0
+      end: 7
+    - source: cache
+      style: secondary
+      start: 42
+      end: 47
+    - source: cache=cache
+      style: secondary
+      start: 42
+      end: 53
+    - source: cache=cache
+      style: secondary
+      start: 42
+      end: 53
+  "indexer.Indexer(store, embedder, cache=cache)":
+    labels:
+    - source: indexer.Indexer(store, embedder, cache=cache)
+      style: primary
+      start: 0
+      end: 45
+    - source: indexer.Indexer
+      style: secondary
+      start: 0
+      end: 15
+    - source: cache
+      style: secondary
+      start: 33
+      end: 38
+    - source: cache=cache
+      style: secondary
+      start: 33
+      end: 44
+    - source: cache=cache
+      style: secondary
+      start: 33
+      end: 44

@@ -1,0 +1,15 @@
+# ast-grep-cli for the structural lint rules in ci.yml's architecture job, installed with
+# pip install --require-hashes. It has no dependencies. Regenerate when the pin moves:
+#   printf 'ast-grep-cli==<version>\n' > ast-grep.in
+#   uv pip compile ast-grep.in --generate-hashes --python-version 3.12 \
+#     --python-platform x86_64-manylinux_2_28 --no-header -o .github/requirements/ast-grep.txt
+# then delete the `# via` line, which names the local path of ast-grep.in.
+ast-grep-cli==0.51.0 \
+    --hash=sha256:0c2f59d7881d8b4584d319865e7be4e97fa1a26ec09c02b7d2095b30af9a56e4 \
+    --hash=sha256:17007574681fe872473850780304b3df57ca98ac575d88957972fea8c3810c26 \
+    --hash=sha256:17f288ed74bf4e5cc8bfa7fda0e7d23f658cef2e7257216720df0ccb958be9d1 \
+    --hash=sha256:3c6b0b4fe358dab092f56e196974cf77bd19465162b8260c78b837f6d2e2ad2c \
+    --hash=sha256:575f8d1a457e5dd1336a7c8db07cf4ae78cc3b8083f9529261016a2dd0510c9a \
+    --hash=sha256:a134c0795d7e74b7d8530db96b06d82377784f4a30d488497c4fb1414e100c9f \
+    --hash=sha256:be2586df4192adb60fa808bd83c4f3a46c63315f48394400f07700f9e76f4dc6 \
+    --hash=sha256:ff724d3f03cf44b4f3567518acc325dcff3bd383b77778dc0753b66ce2080250

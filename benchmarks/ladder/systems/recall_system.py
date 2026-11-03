@@ -196,6 +196,8 @@ class RecallSystem:
                 self._store.delete_sources(self._prev_sources)
 
             before_embed = self.texts_embedded_total
+            # The cache is the point here: an unchanged turn is embedded once per run (docstring).
+            # ast-grep-ignore: benchmark-indexer-without-cache
             Indexer(self._store, self._embedder, cache=self._cache).index_path(workdir)
             _log.info(
                 "ingested %d doc(s) into %r: %d text(s) embedded (cache miss), %d served from "
