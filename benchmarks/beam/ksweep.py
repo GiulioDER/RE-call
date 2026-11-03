@@ -3,6 +3,9 @@
 Hosted embedders and rerankers can still incur API charges. The input artifact must declare
 `chat_size: "1M"`, matching the indexed tenants this probe reads.
 
+Prior work: results/RESULTS.md section 7a establishes the retrieval-depth prefix method.
+This probe applies it to BEAM's rubric nuggets.
+
 `k` was swept once, on `text-embedding-3-small`, and carried into every later plan. An optimum
 fitted on one embedder is not evidence about another: voyage-4-large's cosines sit on an entirely
 different scale (median 0.560 against bge-small's 0.825). This measures it per embedder.
