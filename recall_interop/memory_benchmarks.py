@@ -67,7 +67,9 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
+
+_T = TypeVar("_T")
 
 #: Table this adapter writes. Never `recall_chunks`: a benchmark run must not be able to touch, or
 #: be polluted by, a real corpus sharing the same database.
@@ -257,16 +259,11 @@ class RecallBackend:
             path.write_text(body, encoding="utf-8")
             from recall.index import Indexer
 
-            # `files=` rather than a re-glob of the whole workspace: their LOCOMO run issues one
-            # `add` per turn (BEAM one per two turns), so re-walking would make ingestion
-            # quadratic in turns — thousands of file reads per call on BEAM's 1M-token
-            # conversations. Passing the single new file also means `_prune_vanished` finds every
-            # older document still present on disk and deletes nothing.
-            Indexer(scope.store, self._embedder).index_path(scope.workspace, files=[path])
+            # A single-file root avoids reconciling the entire accumulated workspace per turn.
+            Indexer(scope.store, self._embedder).index_path(path)
             return {"results": [{"id": path.stem, "memory": body, "event": "ADD"}]}
 
-        async with self._lock:
-            return await asyncio.to_thread(work)
+        return await self._run_serialized(work)
 
     async def search(
         self,
@@ -287,22 +284,20 @@ class RecallBackend:
             raise ValueError("top_k must be >= 1")
         if rerank:
             raise ValueError(
-                "rerank=True is not supported by this adapter: RE-call's reranker is a paid "
-                "cross-encoder, and this arm is $0 by construction. Silently ignoring the flag "
+                "rerank=True is not supported by this adapter. Silently ignoring the flag "
                 "would label the run 'reranked' when it was not."
             )
-        if user_id not in self._scopes:
-            return []
-
         pool = self._candidate_k or top_k
 
         def work() -> list[dict]:
+            scope = self._scopes.get(user_id)
+            if scope is None:
+                return []
             from recall.retriever import DEFAULT_CANDIDATE_K
             # Benchmark backend: measures retrieval on uncertified corpora, so it opts
             # into development mode explicitly. See recall/eval/_research_trust.py.
             from recall.eval._research_trust import research_search
 
-            scope = self._scopes[user_id]
             result = research_search(
                 scope.store,
                 self._embedder,
@@ -335,8 +330,7 @@ class RecallBackend:
                 out.append(entry)
             return out
 
-        async with self._lock:
-            return await asyncio.to_thread(work)
+        return await self._run_serialized(work)
 
     async def delete_user(self, user_id: str) -> bool:
         """Drop everything indexed for `user_id`. True on success, False if unknown."""
@@ -363,11 +357,13 @@ class RecallBackend:
 
         # Membership is decided INSIDE the lock: checked outside it, two concurrent deletes
         # of one user both passed the check and the second pop raised KeyError.
-        async with self._lock:
-            return await asyncio.to_thread(work)
+        return await self._run_serialized(work)
 
     async def close(self) -> None:
-        """Close every store. Workspaces are removed unless `keep_workspace` was set."""
+        """Close every store, removing an owned temporary root unless `keep_workspace` is set.
+
+        Explicitly supplied workspace roots remain caller-owned and are retained.
+        """
         if self._closed:
             return
         self._closed = True
@@ -382,8 +378,7 @@ class RecallBackend:
             if self._own_root and not self._keep_workspace:
                 shutil.rmtree(self._root, ignore_errors=True)
 
-        async with self._lock:
-            await asyncio.to_thread(work)
+        await self._run_serialized(work)
 
     async def __aenter__(self) -> RecallBackend:
         return self
@@ -396,6 +391,26 @@ class RecallBackend:
     def _require_open(self) -> None:
         if self._closed:
             raise RuntimeError("RecallBackend is closed")
+
+    async def _run_serialized(self, work: Callable[[], _T]) -> _T:
+        """Drain a running worker before cancellation releases its resources to another call."""
+        async with self._lock:
+            worker = asyncio.create_task(asyncio.to_thread(work))
+            cancelled = False
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:  # BROAD-CATCH: cleanup-only
+                    if not cancelled:
+                        raise
+            if cancelled:
+                # Observe a worker failure, but preserve the caller's cancellation after draining.
+                if not worker.cancelled():
+                    worker.exception()
+                raise asyncio.CancelledError
+            return worker.result()
 
     def _scope(self, user_id: str) -> _UserScope:
         """The tenant/store/workspace for `user_id`, created on first use."""

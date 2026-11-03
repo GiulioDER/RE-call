@@ -4,10 +4,10 @@ Two modules in this package now edit a memo in place — `recall/fix.py`, which 
 `supersedes:` edge a memo already states in prose, and `recall/rewrite.py`, which writes back a
 reviewed promotion. Both are writing over a document nobody else has a copy of.
 
-The sequence below is four steps and every one of them is load-bearing: `mkstemp` in the target's
+Every step below is load-bearing: `mkstemp` in the target's
 own directory so the swap is a same-filesystem rename, `fsync` so the staged bytes are on the
-platter before the rename claims they are, `copymode` so the swap does not silently tighten (or,
-as root, re-own) the user's file, and `os.replace` so the target is either the old file or the new
+platter before the rename claims they are, ownership preservation and `copymode` so the swap
+retains the user's metadata, and `os.replace` so the target is either the old file or the new
 one and never a truncation in between. A second copy of that sequence is how one of them ends up
 without the `copymode` — so there is one copy, here, and the callers import it.
 
@@ -61,8 +61,12 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
             fh.flush()
             os.fsync(fh.fileno())
         if path.exists():
+            if os.name == "posix":
+                owner = path.stat()
+                # chown can clear special mode bits, so preserve ownership before copymode.
+                os.chown(tmp_name, owner.st_uid, owner.st_gid)
             # The temp file is created 0600 by mkstemp; carry the original's permission bits over
-            # so the atomic swap does not silently tighten (or, as root, re-own) the user's memo.
+            # so the atomic swap does not silently tighten the user's memo.
             shutil.copymode(path, tmp_name)
         os.replace(tmp_name, path)  # atomic on POSIX and on Windows for a same-directory target
     except BaseException:

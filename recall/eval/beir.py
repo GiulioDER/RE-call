@@ -158,6 +158,13 @@ def materialize(
     selected = select_documents(qrels, list(documents), max_docs=max_docs, seed=seed)
     questions = build_questions(queries, qrels, set(selected))
 
+    selected_files = {safe_filename(doc_id) for doc_id in selected}
+    existing_files = {path.relative_to(out_dir).as_posix() for path in out_dir.rglob("*.txt")}
+    if existing_files - selected_files:
+        raise ValueError(
+            "output directory contains documents outside the selected corpus; "
+            "use an empty output directory"
+        )
     out_dir.mkdir(parents=True, exist_ok=True)
     for doc_id in selected:
         (out_dir / safe_filename(doc_id)).write_text(documents[doc_id], encoding="utf-8")

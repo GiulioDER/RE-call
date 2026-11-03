@@ -68,6 +68,11 @@ class CrossEncoderReranker:
         artifact_sha256: str | None = None,
         inference_threads: int | None = None,
     ) -> None:
+        if not local_files_only and model == DEFAULT_RERANKER_MODEL and Path(model).exists():
+            raise ValueError(
+                f"a local path named {model!r} would shadow the pinned hub revision; "
+                "move or rename that path before loading the default reranker"
+            )
         try:
             from sentence_transformers import CrossEncoder
         except ImportError as exc:  # pragma: no cover - exercised only without the extra
