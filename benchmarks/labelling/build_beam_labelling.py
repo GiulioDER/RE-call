@@ -1,5 +1,8 @@
 """Build a BLIND labelling set: RE-call vs Mem0 on BEAM, judged by a human.
 
+Prior work: benchmarks/beam/dataset.py supplies the rubric parser reused here;
+benchmarks/labelling/README.md describes the existing blind annotation workflow.
+
 Why a human judge here rather than a cheaper model
 --------------------------------------------------
 `benchmarks/labelling/RESULTS.md` measured the LLM judges against blind human labels on 195
@@ -136,6 +139,8 @@ def build(
         if category and row.get("question_type") != category:
             continue
         cell = _their_cell(their)
+        if not cell:
+            continue
         if disagreements_only:
             ours_score = row.get("score")
             their_score = cell.get("score")

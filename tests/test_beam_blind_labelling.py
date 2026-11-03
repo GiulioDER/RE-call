@@ -175,3 +175,38 @@ def test_an_empty_cutoff_block_is_still_skipped_rather_than_raising() -> None:
     from benchmarks.labelling.build_beam_labelling import _their_cell
 
     assert _their_cell({"question_id": "q1", "cutoff_results": {}}) == {}
+
+
+@pytest.mark.parametrize("cutoffs", [{}, None])
+def test_unevaluated_comparator_is_excluded_from_the_sheet(cutoffs) -> None:
+    """BUG-001: build must not invent a comparator answer.
+
+    Red proof on d03099027: the unchanged build emitted two rows for the unevaluated
+    question, failing the expected row count and paired-question exclusion.
+    """
+    theirs = [{**THEIRS[0], "cutoff_results": cutoffs}, *THEIRS[1:]]
+    rows, key = build(
+        OURS, theirs, seed=0, category=None, disagreements_only=False, limit=None,
+    )
+    assert len(rows) == 4
+    assert all(meta["question_id"] != OURS[0]["question_id"] for meta in key.values())
+
+
+@pytest.mark.parametrize("repeated_verdict", ["Y", "N", ""])
+def test_duplicate_label_items_are_rejected(repeated_verdict) -> None:
+    """DAT-001: one item identity can contribute only one label.
+
+    Red proof on d03099027: score accepted the repeated item instead of raising,
+    for identical, conflicting and undecidable repeated labels.
+    """
+    key = {
+        "1": {"arm": "recall", "question_id": "q1"},
+        "2": {"arm": "mem0", "question_id": "q1"},
+    }
+    labels = [
+        {"item": "1", "your_verdict_Y_or_N": "Y"},
+        {"item": "2", "your_verdict_Y_or_N": "N"},
+        {"item": " 1 ", "your_verdict_Y_or_N": repeated_verdict},
+    ]
+    with pytest.raises(ValueError, match="duplicate label item: 1"):
+        score(labels, key)
