@@ -469,3 +469,27 @@ def test_absent_and_non_string_dia_ids_get_their_own_reasons(tmp_path) -> None:
     corpus[0]["conversation"]["session_1"][1]["dia_id"] = False
     _resolved, unresolved = corpus_turns(corpus)
     assert "dia_id is bool, not a string" in [w for _i, _d, w in unresolved]
+
+
+
+@pytest.mark.parametrize("kind", ["directory", "invalid_utf8"])
+def test_main_unreadable_corpus_is_an_operator_error(tmp_path, kind):
+    """BUG-002: the actual CLI distinguishes bad input from a failed invariant.
+
+    Red proof: f961d148e exits 1 for each input; the intended returncode == 2 assertion
+    fails before checking the diagnostic. No collection or setup exception is used as proof.
+    """
+    import subprocess
+
+    corpus = tmp_path / "corpus"
+    if kind == "directory":
+        corpus.mkdir()
+    else:
+        corpus.write_bytes(b"\xff\xfe")
+    run = subprocess.run(
+        [sys.executable, "-m", "benchmarks.check_utterance_postdating", "--corpus", str(corpus)],
+        capture_output=True, text=True, check=False,
+    )
+    assert run.returncode == 2, run.stderr
+    assert "MALFORMED" in run.stdout
+    assert "Traceback" not in run.stderr

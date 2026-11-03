@@ -288,6 +288,7 @@ class SourceMutationMixin:
         """
         if not files:
             return 0
+        self._supersession_cache = None
         # rowcount read inside the borrow — see `delete_sources` for why.
         return self._with_retry(
             lambda conn: (

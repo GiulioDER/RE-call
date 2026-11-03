@@ -458,8 +458,9 @@ read as a check and was not one:
   the merged count is empty there whatever the data says. Reported as a failure, it told a single
   live transcript that genuinely held that "the predicate never fires", one invocation after the
   same corpus had demonstrated it firing, and returned exit 1 for both a real break and a real
-  hold. `CONTROL FAILED` is now reserved for two or more transcripts, where an empty control is a
-  fact about the data.
+  hold. The final rule applies at any transcript count: an empty control is `UNINFORMATIVE`,
+  and a hold against a declared instant still succeeds. With a derived instant and an empty
+  control, neither count supplies evidence. A non-empty P2 is checked first and still fails.
 
 `tests/test_utterance_postdating.py` pins the predicate, `main()`'s verdicts, its exit codes and
 its printed counts, for a CI that cannot run the script against the corpus because `locomo10.json`

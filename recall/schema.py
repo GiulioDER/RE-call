@@ -165,11 +165,13 @@ class SchemaStatus:
         return tuple(m for m in self.migrations if m.state != "applied")
 
 
-def _validate_target(table: str, dim: int) -> None:
+def _validate_target(table: str, dim: int) -> str:
     if not table.isidentifier():
         raise ValueError("table must be a valid SQL identifier")
     if not isinstance(dim, int) or dim <= 0:
         raise ValueError("dim must be a positive int")
+    # DDL uses unquoted identifiers; PostgreSQL folds ASCII capitals, not Unicode capitals.
+    return table.translate(str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"))
 
 
 def serving_grants(
@@ -397,13 +399,19 @@ def _read_applied(
         return {}
     rows = conn.execute(
         f"SELECT version, checksum, state, applied_at::text, error, filename "
-        f"FROM {LEDGER_TABLE} WHERE target_table = %s ORDER BY version",
+        f"FROM {LEDGER_TABLE} WHERE translate(target_table, "
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz') = %s ORDER BY version",
         (table,),
     ).fetchall()
-    return {
-        str(r[0]): (str(r[1]), str(r[2]), r[3], r[4], None if r[5] is None else str(r[5]))
-        for r in rows
-    }
+    applied: dict[str, tuple[str, str, str | None, str | None, str | None]] = {}
+    for row in rows:
+        version = str(row[0])
+        value = (str(row[1]), str(row[2]), row[3], row[4], None if row[5] is None else str(row[5]))
+        previous = applied.get(version)
+        if previous and (previous[:2], previous[4]) != (value[:2], value[4]):
+            raise SchemaIncompatible(f"table {table!r} has conflicting migration aliases at {version}")
+        applied[version] = value
+    return applied
 
 
 def _checksum_mismatch(
@@ -426,7 +434,7 @@ def _checksum_mismatch(
 
 def schema_status(dsn: str, *, table: str = DEFAULT_TABLE, dim: int) -> SchemaStatus:
     """Inspect migration state with SELECTs only; never bootstraps the ledger."""
-    _validate_target(table, dim)
+    table = _validate_target(table, dim)
     migrations = load_migrations()
     with _connect(dsn) as conn:
         table_applied = _read_applied(conn, table)
@@ -521,6 +529,18 @@ def _validate_current_schema(conn: Connection, table: str, dim: int) -> None:
     present = set(columns[0] or ()) if columns else set()
     if missing := sorted({"tenant_id", "first_indexed_at"} - present):
         raise SchemaIncompatible(f"table {table!r} schema drift: missing columns {missing}")
+
+    arbiter = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = %s::regclass "
+        "AND i.indisunique AND i.indisvalid AND i.indimmediate AND NOT i.indisexclusion "
+        "AND i.indpred IS NULL AND i.indexprs IS NULL AND i.indnkeyatts = 2 "
+        "AND ARRAY(SELECT a.attname FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) "
+        "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
+        "WHERE k.ord <= i.indnkeyatts ORDER BY a.attname) = ARRAY['id', 'tenant_id']::name[])",
+        (table,),
+    ).fetchone()
+    if not arbiter or not arbiter[0]:
+        raise SchemaIncompatible(f"table {table!r} schema drift: missing upsert uniqueness key")
 
     _require_tenant_isolation(
         conn, table, f"table {table!r} row-level-security policy drift; run a new reviewed migration"
@@ -730,6 +750,15 @@ def _require_migration_privileges(conn: Connection) -> None:
 
 
 def _mark_running(conn: Connection, ledger_target: str, migration: Migration) -> None:
+    # Older migrators recorded accepted unquoted targets with their original case. Keep
+    # every validated alias in the same retry state rather than stranding its old row.
+    conn.execute(
+        f"UPDATE {LEDGER_TABLE} SET filename = %s, checksum = %s, state = 'running', "
+        "started_at = clock_timestamp(), applied_at = NULL, error = NULL "
+        "WHERE translate(target_table, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+        "'abcdefghijklmnopqrstuvwxyz') = %s AND version = %s",
+        (migration.filename, migration.checksum, ledger_target, migration.version),
+    )
     conn.execute(
         f"""
         INSERT INTO {LEDGER_TABLE}
@@ -752,7 +781,8 @@ def _mark_failed(
 ) -> None:
     conn.execute(
         f"UPDATE {LEDGER_TABLE} SET state = 'failed', error = %s "
-        "WHERE target_table = %s AND version = %s",
+        "WHERE translate(target_table, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+        "'abcdefghijklmnopqrstuvwxyz') = %s AND version = %s",
         (f"{type(exc).__name__}: {exc}"[:2000], ledger_target, migration.version),
     )
 
@@ -760,7 +790,8 @@ def _mark_failed(
 def _mark_applied(conn: Connection, ledger_target: str, migration: Migration) -> None:
     conn.execute(
         f"UPDATE {LEDGER_TABLE} SET state = 'applied', applied_at = clock_timestamp(), error = NULL "
-        "WHERE target_table = %s AND version = %s",
+        "WHERE translate(target_table, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+        "'abcdefghijklmnopqrstuvwxyz') = %s AND version = %s",
         (ledger_target, migration.version),
     )
 
@@ -818,7 +849,7 @@ def apply_migrations(
     migration_dsn: str, *, table: str = DEFAULT_TABLE, dim: int
 ) -> tuple[MigrationState, ...]:
     """Apply pending migrations under a process-wide PostgreSQL advisory lock."""
-    _validate_target(table, dim)
+    table = _validate_target(table, dim)
     migrations = load_migrations()
     applied_now: list[MigrationState] = []
     with _connect(migration_dsn) as conn:
@@ -907,7 +938,7 @@ def apply_migrations(
 
 def check_schema(conn: Connection, *, table: str = DEFAULT_TABLE, dim: int) -> None:
     """Fail unless the schema exactly matches this package. Executes SELECT only."""
-    _validate_target(table, dim)
+    table = _validate_target(table, dim)
     migrations = load_migrations()
     table_applied = _read_applied(conn, table)
     global_applied = _read_applied(conn, GLOBAL_MIGRATION_TARGET)
