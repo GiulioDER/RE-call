@@ -232,11 +232,14 @@ def test_power_floor_and_primary_arm_have_exactly_one_definition():
     assert gap_run.PRIMARY_ARM is gap_study.PRIMARY_ARM
 
 
-def test_main_redacts_libpq_password_token(tmp_path, monkeypatch):
+@pytest.mark.parametrize("password", ["Synthetic%tPassword", "ab%", "x%", "%"],
+                         ids=["long", "three_chars", "two_chars", "one_char"])
+def test_main_redacts_libpq_password_token(tmp_path, monkeypatch, password):
     """SEC-001: real libpq parsing exposes a standalone token before artifact scrubbing.
 
     Pre-fix main fails the final assertion for both persisted diagnostic fields.
     The transport boundary raises before any network or paid API call.
+    The short-token cases also fail on the initial fix, whose shared scrubber skips them.
     """
     import sys
 
@@ -244,7 +247,6 @@ def test_main_redacts_libpq_password_token(tmp_path, monkeypatch):
 
     from recall.eval import gap_run
 
-    password = "Synthetic%tPassword"
     dsn = f"postgresql://u:{password}@127.0.0.1/db"
 
     def fail_connection(*args):

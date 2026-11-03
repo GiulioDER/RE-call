@@ -22,7 +22,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from recall.dsn_security import scrub_dsn_secrets
+from recall.dsn_security import _dsn_passwords
 from recall.eval.beir import materialize
 from recall.eval.gap_study import POWER_FLOOR as _POWER_FLOOR
 from recall.eval.metrics import nan_to_null
@@ -135,12 +135,12 @@ def failure_record(dataset: str, exc: BaseException, *, dsn: str = "") -> dict[s
     return {
         "status": "failed",
         "dataset": dataset,
-        "error": _scrub(scrub_dsn_secrets(str(exc), dsn)),
+        "error": _scrub(str(exc), dsn),
         "error_type": type(exc).__name__,
         # Redacted and bounded, because `results/gap/` is a git-TRACKED directory and this run
         # holds a password-bearing DSN and an API key in its environment. An exception message
         # that happens to carry either would otherwise be committed verbatim and published.
-        "traceback": _scrub(scrub_dsn_secrets(traceback.format_exc(), dsn))[-2000:],
+        "traceback": _scrub(traceback.format_exc(), dsn)[-2000:],
     }
 
 
@@ -151,10 +151,14 @@ _SECRET_PATTERNS = (
 )
 
 
-def _scrub(text: str) -> str:
+def _scrub(text: str, dsn: str = "") -> str:
     """Remove credentials from text that is about to be written into a committed artifact."""
     text = _SECRET_PATTERNS[0].sub(r"\g<scheme>***:***@", text)
-    return _SECRET_PATTERNS[1].sub("***", text)
+    text = _SECRET_PATTERNS[1].sub("***", text)
+    # Artifacts need redaction below the shared diagnostic helper's four-character floor.
+    for password in _dsn_passwords(dsn):
+        text = text.replace(password, "***")
+    return text
 
 
 def summarise(datasets: list[str], out_dir: Path) -> dict[str, Any]:
