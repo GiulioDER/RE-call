@@ -40,6 +40,10 @@ queries, where a shared bias cancels. It would not be acceptable for an accuracy
 
 **This test can fail.** If the three embedders turn out to occupy similar cosine regimes, embedder
 independence is not a real problem, 0.50 is fine, and the whole line closes as unnecessary.
+
+Prior work: this sweep reuses `benchmarks.beam.dataset.iter_conversations` for BEAM parsing and
+`benchmarks.systems.resolve_embedder` for model selection. Declaration added during maintenance;
+the experiment and predictions above predate it.
 """
 from __future__ import annotations
 

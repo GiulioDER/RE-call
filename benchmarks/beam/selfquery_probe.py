@@ -35,6 +35,10 @@ Agreement is judged on the STARVE RATE the derived floor would produce on real q
 closeness of the two floor values. A floor 0.05 too high is harmless where the distribution is
 sparse there and catastrophic where it is dense; only the rate says which. Within ~3 points of the
 target 5 % is usable; beyond ~10 % it is not.
+
+Prior work: `benchmarks.beam.regime_sweep` supplies the real-query comparison described above;
+this probe reuses `benchmarks.systems.resolve_embedder` and `recall.store.PgVectorStore`.
+Declaration added during maintenance; the experiment and interpretation rule above predate it.
 """
 from __future__ import annotations
 
