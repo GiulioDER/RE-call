@@ -160,8 +160,8 @@ def test_depth_curve_is_monotone_in_k() -> None:
 
 
 def test_depth_curve_agrees_with_a_single_depth_scoring() -> None:
-    # The curve's k row must equal what a run issued at that k alone would score — the coherence
-    # check `run()` asserts on the real data, pinned here on data that cannot drift.
+    # A curve row and a single-depth projection of the same hits must agree. This checks scoring
+    # consistency, not whether independent retrievals return identical prefixes.
     hits = [_FakeHit(_dia_id_to_filename(f"D1:{i}")) for i in range(1, 11)]
 
     curve = _hit_by_depth(hits, ["D1:4"], [1, 4, 10])
