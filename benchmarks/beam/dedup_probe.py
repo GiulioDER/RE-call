@@ -33,6 +33,9 @@ It reports, per question, how many chunks survive and whether the stale/current 
 present — NOT a score. Turning a promising collapse into a benchmark cell requires the paid arm,
 and conflating the two is how a mechanism becomes an overclaim (see §9h/§9i, where exactly that
 went wrong at n=2).
+
+Prior work: ``benchmarks.beam.systems`` provides the existing BEAM retrieval adapter
+and date reconstruction reused by this probe.
 """
 from __future__ import annotations
 
@@ -205,8 +208,7 @@ def main() -> None:
     # Named for what it is. This was `baseline_gold_present`, but it is the tightest COLLAPSE
     # threshold, not the un-collapsed condition — so a reader differencing "baseline" against the
     # swept thresholds was comparing dedup against dedup, and the report contained no measurement
-    # of the no-treatment arm at all. The real baseline is now computed below, from the full
-    # retrieved set before any collapse.
+    # of the no-treatment arm at all. This report still has no uncollapsed gold-presence baseline.
     report[f"gold_present_at_{DEDUP_COSINES[0]}"] = round(
         sum(1 for r in rows if r["by_threshold"][str(DEDUP_COSINES[0])]["gold_present"]) / len(rows), 4
     )

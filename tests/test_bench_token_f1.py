@@ -194,3 +194,31 @@ class TestMain:
         assert main(["--compare", str(a), str(b), "--json"]) == 0
         payload = json.loads(capsys.readouterr().out)
         assert payload["n"] == 1 and payload["delta"] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("arm", [0, 1])
+def test_compare_refuses_duplicate_question_ids(tmp_path: Path, arm: int) -> None:
+    """BUG-001: pre-fix compare accepts duplicate q1 rows in either arm."""
+    row = _outcome("q1", "cat", "cat")
+    rows = [[row], [row]]
+    rows[arm] = [row, _outcome("q1", "dog", "cat")]
+    paths = [_artifact(tmp_path, name, name, outcomes)
+             for name, outcomes in zip(("a", "b"), rows)]
+    with pytest.raises(ValueError, match="duplicate.*q1"):
+        compare(*paths)
+
+
+def test_compare_refuses_mismatched_gold(tmp_path: Path) -> None:
+    """BUG-002: pre-fix compare accepts q1 with incompatible gold references."""
+    a = _artifact(tmp_path, "a", "a", [_outcome("q1", "cat", "cat")])
+    b = _artifact(tmp_path, "b", "b", [_outcome("q1", "cat", "dog")])
+    with pytest.raises(ValueError, match="gold.*q1"):
+        compare(a, b)
+
+
+def test_compare_accepts_normalized_gold(tmp_path: Path) -> None:
+    """BUG-002 control: replacing normalized comparison with raw equality must fail."""
+    a = _artifact(tmp_path, "a", "a", [_outcome("q1", "cat", "The CAT.")])
+    b = _artifact(tmp_path, "b", "b", [_outcome("q1", "cat", "cat")])
+    result = compare(a, b)
+    assert result["n"] == 1 and result["delta"] == 0

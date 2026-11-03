@@ -35,6 +35,9 @@ run never touches, and the scored run is told which ones those were.
 The labels are BEAM's own, not ours: the `abstention` category is unanswerable BY CONSTRUCTION
 (its questions ask about things absent from the conversation), and the other nine are answerable.
 No hand-labelling is involved, so there is nothing here to tune toward a preferred answer.
+
+Prior work: ``recall.calibration.from_samples`` supplies the threshold fit, and
+``benchmarks.beam.systems.BeamRecallSystem`` supplies the BEAM retrieval used here.
 """
 from __future__ import annotations
 
@@ -45,6 +48,7 @@ from typing import Any
 
 from benchmarks.beam.dataset import iter_conversations, parse_conversation_indices
 from benchmarks.beam.systems import BEAM_TABLE, BeamRecallSystem
+from recall.atomic_write import atomic_write_bytes
 from recall.calibration import from_samples, save
 from recall.eval.locomo import DEFAULT_DSN
 
@@ -61,7 +65,7 @@ def _stamp_fit_set(path: Path, indices: list[int]) -> None:
     """Record which conversations a calibration was fitted on, inside the calibration file."""
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["fit_on_conversations"] = sorted(indices)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8", newline="\n")
+    atomic_write_bytes(path, json.dumps(payload, indent=2).encode("utf-8"))
 
 
 def main() -> None:

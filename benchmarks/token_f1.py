@@ -54,6 +54,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from benchmarks.analyze import _by_question_id
 from benchmarks.artifact_contract import load_published_artifact
 
 #: Resamples for the paired bootstrap. Large enough that the 2.5/97.5 percentiles are stable to
@@ -100,8 +101,8 @@ def _answerable(artifact: Mapping[str, Any]) -> dict[str, tuple[str, str]]:
     axis is abstention, which ``benchmarks.analyze`` reports and this metric cannot express.
     """
     return {
-        outcome["question_id"]: (outcome.get("answer") or "", outcome.get("gold") or "")
-        for outcome in artifact["outcomes"]
+        question_id: (outcome.get("answer") or "", outcome.get("gold") or "")
+        for question_id, outcome in _by_question_id(artifact["outcomes"], "token-F1").items()
         if not outcome.get("is_adversarial")
     }
 
@@ -129,6 +130,10 @@ def compare(a_path: Path, b_path: Path) -> dict[str, Any]:
     shared = sorted(set(a_rows) & set(b_rows))
     if not shared:
         raise SystemExit(f"no shared answerable questions between {a_path} and {b_path}")
+
+    for question_id in shared:
+        if normalize(a_rows[question_id][1]) != normalize(b_rows[question_id][1]):
+            raise ValueError(f"gold references differ for shared question_id {question_id!r}")
 
     a_scores = [token_f1(*a_rows[qid]) for qid in shared]
     b_scores = [token_f1(*b_rows[qid]) for qid in shared]

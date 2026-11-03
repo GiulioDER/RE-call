@@ -588,7 +588,7 @@ They are observations, not automatic failures.
 | `recall.eval.bm25` | 2 | 37 |
 | `recall.eval.calibrate` | 6 | 104 |
 | `recall.eval.cosine_dump` | 8 | 123 |
-| `recall.eval.gap_run` | 6 | 120 |
+| `recall.eval.gap_run` | 7 | 120 |
 | `recall.eval.gap_study` | 0 | 0 |
 | `recall.eval.harness` | 12 | 116 |
 | `recall.eval.hostload` | 1 | 1 |
