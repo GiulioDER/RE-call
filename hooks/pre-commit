@@ -9,8 +9,31 @@
 # Install:  ln -s ../../hooks/pre-commit .git/hooks/pre-commit
 # Bypass:   git commit --no-verify   (an augmenting memo is not a successor)
 
-staged=$(git diff --cached --name-only --diff-filter=ACM | grep '\.md$')
-[ -z "$staged" ] && exit 0
+exec python - <<'PY'
+import os
+from pathlib import Path
+import subprocess
+from tempfile import TemporaryDirectory
 
-# shellcheck disable=SC2086
-python -m recall.cli check --strict $staged
+from recall.check import check_file, corpus_names, format_prompt
+
+paths = subprocess.check_output([
+    "git", "diff", "--cached", "--name-only", "--diff-filter=ACMRT", "-z",
+]).split(b"\0")
+needs = 0
+with TemporaryDirectory(prefix="recall-staged-") as directory:
+    for raw in paths:
+        name = os.fsdecode(raw)
+        if not name.endswith(".md"):
+            continue
+        # The index is the commit's content; an unstaged edit must not change its verdict.
+        staged = Path(directory) / Path(name).name
+        staged.write_bytes(subprocess.check_output(["git", "show", f":./{name}"]))
+        result = check_file(staged, corpus_names(Path(name).parent))
+        if result.needs_attention:
+            needs += 1
+            print(format_prompt(result))
+if needs:
+    print(f"\n{needs} memo(s) state a closure in prose only.")
+raise SystemExit(bool(needs))
+PY

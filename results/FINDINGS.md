@@ -436,9 +436,10 @@ compared:
 | candidate pool 20 → 100 | −0.065 fused, +0.022 reranked | n.s. at n=46 — and see below |
 | **embedder → voyage-3** | **+0.282** | 0.348 → **0.630**; the one difference this sample can resolve |
 
-The rerank result is the informative failure. **A reranker can only reorder what fusion already
-retrieved** — it converted 3 of 31 misses, so for roughly 28 of them the right document was never
-in the candidate window at all. The bottleneck is candidate recall, not ranking.
+The reranker converted 3 of 31 misses into hits at the reported cutoff. **Corrected 2026-11-03:** the earlier
+inference that the remaining 28 lacked the right document in the candidate window is withdrawn.
+An imperfect reranker can leave a relevant candidate below rank five. This result does not
+separate candidate omissions from ranking failures; that requires measuring candidate recall directly.
 
 **The pool null is retracted and stays retracted.** That experiment could not have detected a pool
 effect, for two independent reasons: `hnsw.ef_search` capped the dense leg at 40, so a pool of 100
@@ -458,10 +459,10 @@ than the data supports.
 
 ### What is left: the representation
 
-Ranking and chunking are eliminated; **pool size is not**. What remains is the representation, and
-it is evidenced directly by the +0.282 rather than by elimination: `bge-small` cannot connect a
-paraphrased question to these documents, because the vocabulary that identifies them — project
-codenames, venue and bot names, internal shorthand — appears nowhere in its pretraining.
+**Corrected 2026-11-03:** ranking and chunking were not eliminated by these small-sample results;
+pool size was not ruled out either. The representation change improved hit@5 by +0.282 on this
+sample. That observation supports its measured benefit, without establishing which stage caused
+each miss or what vocabulary appeared in the models' pretraining.
 
 That is precisely the condition §3 measured: **+0.00** on a rich corpus, **0.31 → 0.55** held-out
 MRR on an opaque-codename one. This corpus's measured MRR of **0.31** is, to the decimal, where
