@@ -334,6 +334,13 @@ def _forget_memory_unlocked(
         _authorize_erasure(
             store, shadow_store, to_delete, security_policy, security_context, withdraw=withdraw
         )
+    for identifier in found:
+        matches = sorted(set(resolved[identifier]))
+        if len(matches) > 1:
+            raise ValueError(
+                f"source {identifier!r} is ambiguous; use an exact canonical source identifier "
+                f"from {matches!r}"
+            )
     facts_retracted = 0
     facts_redacted = 0
     erasure: FactErasure | None = None

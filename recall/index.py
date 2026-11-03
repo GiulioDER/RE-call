@@ -1124,7 +1124,15 @@ class Indexer:
                         "source policy rule governs; index the target under its own path"
                     )
 
-        known = self._store.source_content_hashes()
+        if (
+            not root_is_dir
+            and type(self._store) is PgVectorStore
+            and not self._store.sources_for_identifiers([str(root)])
+        ):
+            # A new legacy source has no hash to load. Existing sources retain the compact hash read.
+            known = {}
+        else:
+            known = self._store.source_content_hashes()
         # ⛔ **A second, machine-independent view of the same question.** `known` keys on the
         # absolute path, so a corpus re-indexed from a different root matches nothing: every file
         # is re-embedded and, because `replace_sources` keys the same way, the new rows land beside

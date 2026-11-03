@@ -123,6 +123,7 @@ def populate_haystack(
             (files,),
         )
         conn.commit()
+    store._supersession_cache = None  # raw refills can preserve the cache's count/timestamp key
     return store
 
 
