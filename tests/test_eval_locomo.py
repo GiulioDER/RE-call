@@ -7,6 +7,8 @@ plausible. Every assertion here guards a specific way the mapping could be quiet
 """
 from __future__ import annotations
 
+import pytest
+
 from recall.eval.locomo import (
     ADVERSARIAL_CATEGORY,
     _depths,
@@ -90,6 +92,26 @@ def test_write_corpus_skips_turns_without_dia_id(tmp_path) -> None:
         ],
     }
     assert write_conversation_corpus(conversation, tmp_path) == 1
+
+
+@pytest.mark.parametrize("stale_name", ["D1_2.md", "nested/D2_1.md", "old-turn.txt"])
+def test_write_corpus_refuses_unexpected_retained_documents(tmp_path, stale_name) -> None:
+    """BUG-001: retained files must not enter a fresh benchmark's corpus.
+
+    Red proof: on 79b9350b5, this node fails DID NOT RAISE at the refusal assertion.
+    Targets write_conversation_corpus; identical retained corpora remain a valid control.
+    """
+    conversation = {"session_1": [{"speaker": "A", "dia_id": "D1:1", "text": "current"}]}
+    assert write_conversation_corpus(conversation, tmp_path) == 1
+    assert write_conversation_corpus(conversation, tmp_path) == 1
+    stale = tmp_path / stale_name
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("a turn absent from the current input", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected.*file"):
+        write_conversation_corpus(conversation, tmp_path)
+
+    assert stale.read_text(encoding="utf-8") == "a turn absent from the current input"
 
 
 def test_write_corpus_orders_sessions_numerically(tmp_path) -> None:

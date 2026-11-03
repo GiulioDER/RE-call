@@ -21,9 +21,9 @@ What it measures instead is the part RE-call *is* responsible for, and it measur
 1. **Retrieval (categories 1-4).** LOCOMO annotates every answerable question with the dialog
    turns that contain the answer (``evidence: ["D1:3"]``), and every turn carries that id. So
    "did retrieval surface the right turn" is checkable by string equality — no judge, no
-   generator, no scoring model, and therefore no judge variance. `hit@k` here is a *ceiling* on
-   whatever J any downstream generator could reach: a turn that was never retrieved cannot be
-   answered from.
+   generator, no scoring model, and therefore no judge variance. This measures retrieval of
+   annotated evidence turns. It does not bound downstream answer accuracy: another retrieved
+   turn may repeat the answer, and annotations need not list every answer-bearing turn.
 
 2. **Abstention (category 5).** This is the reason the file is worth writing.
 
@@ -85,7 +85,7 @@ from recall.embeddings import Embedder
 from recall.eval.labelled import _make_embedder
 from recall.eval.metrics import wilson_ci
 from recall.eval.provenance import generated_at, model_stack
-from recall.index import Indexer
+from recall.index import Indexer, candidate_files
 from recall.rerank import DEFAULT_RERANKER_MODEL, Reranker
 from recall.retriever import DEFAULT_CANDIDATE_K, HybridRetriever
 from recall.store import PgVectorStore
@@ -230,6 +230,8 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
     Files on disk rather than an in-memory shortcut into the store, deliberately: this routes the
     benchmark through `Indexer.index_path` — the same chunking, hashing and frontmatter path that
     real corpora take. A bespoke in-memory loader would be measuring a code path no user runs.
+    Unexpected indexable files in a retained directory are refused, never silently included or
+    deleted. Reusing a directory with exactly the current turns is permitted.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     sessions = sorted(
@@ -240,6 +242,7 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
         key=lambda k: int(k.split("_")[1]),
     )
     written = 0
+    written_files: set[Path] = set()
     structural_metadata = locomo_structural_metadata(conversation)
     for key in sessions:
         turns = conversation[key]
@@ -250,7 +253,8 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
             dia_id = turn.get("dia_id")
             if not dia_id:
                 continue
-            (out_dir / _dia_id_to_filename(dia_id)).write_text(
+            turn_path = out_dir / _dia_id_to_filename(dia_id)
+            turn_path.write_text(
                 _turn_document(
                     {
                         **turn,
@@ -262,7 +266,12 @@ def write_conversation_corpus(conversation: dict[str, Any], out_dir: Path) -> in
                 ),
                 encoding="utf-8",
             )
+            written_files.add(turn_path.resolve())
             written += 1
+    if set(candidate_files(out_dir)) - written_files:
+        raise ValueError(
+            f"{out_dir} contains unexpected indexable files; use a new or empty corpus directory"
+        )
     return written
 
 
