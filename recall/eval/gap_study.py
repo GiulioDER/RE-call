@@ -24,7 +24,7 @@ from collections.abc import Mapping, Sequence
 Number = float | int
 
 
-def _complete_pairs(*series: Sequence[Number]) -> tuple[list[float], ...]:
+def _complete_pairs(*series: Sequence[Number]) -> tuple[list[Number], ...]:
     """The input series restricted to the indices where EVERY series is finite.
 
     The predictors are allowed to be absent. `vocab.oov_rate`, `vocab.query_overlap` and
@@ -44,10 +44,11 @@ def _complete_pairs(*series: Sequence[Number]) -> tuple[list[float], ...]:
     keep = [
         i
         for i in range(n)
-        if all(len(s) == n and isinstance(s[i], (int, float)) and math.isfinite(s[i])
+        if all(len(s) == n and isinstance(s[i], (int, float))
+               and (isinstance(s[i], int) or math.isfinite(s[i]))
                for s in series)
     ]
-    return tuple([float(s[i]) for i in keep] for s in series)
+    return tuple([s[i] for i in keep] for s in series)
 
 
 def _ranks(values: Sequence[Number]) -> list[float]:

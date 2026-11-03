@@ -97,17 +97,13 @@ def rebuild_dates(store: Any) -> dict[str, str]:
     """
     dates: dict[str, str] = {}
     for chunk in store.iter_chunks():
+        # Store iteration follows chunk IDs, so a body heading may precede the turn header.
+        if chunk.metadata.get("ord") != 0:
+            continue
         head = chunk.text.lstrip().split("\n", 1)[0]
         if not head.startswith("#") or "—" not in head:
             continue
         name = Path(chunk.source).name
-        if dates.get(name):
-            # First non-empty wins. Only the FIRST chunk of a turn carries the header; a later
-            # chunk of the same document whose first line happens to start with `#` and contain
-            # an em dash would otherwise overwrite a recovered date — most likely with "", since
-            # `_iso_date` returns "" on anything it cannot parse. That would blank the date for
-            # some files only, which `dedup_probe`'s `any(...)` check cannot see.
-            continue
         dates[name] = _iso_date(head.split("—", 1)[1].strip())
     return dates
 

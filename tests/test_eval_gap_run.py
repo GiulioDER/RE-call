@@ -230,3 +230,33 @@ def test_power_floor_and_primary_arm_have_exactly_one_definition():
 
     assert gap_run.POWER_FLOOR is gap_study.POWER_FLOOR
     assert gap_run.PRIMARY_ARM is gap_study.PRIMARY_ARM
+
+
+def test_main_redacts_libpq_password_token(tmp_path, monkeypatch):
+    """SEC-001: real libpq parsing exposes a standalone token before artifact scrubbing.
+
+    Pre-fix main fails the final assertion for both persisted diagnostic fields.
+    The transport boundary raises before any network or paid API call.
+    """
+    import sys
+
+    import psycopg
+
+    from recall.eval import gap_run
+
+    password = "Synthetic%tPassword"
+    dsn = f"postgresql://u:{password}@127.0.0.1/db"
+
+    def fail_connection(*args):
+        psycopg.connect(dsn)
+
+    monkeypatch.setenv("VOYAGE_API_KEY", "synthetic-no-network")
+    monkeypatch.setattr(gap_run, "run_corpus", fail_connection)
+    monkeypatch.setattr(sys, "argv", [
+        "gap_run", "--beir-root", str(tmp_path), "--out", str(tmp_path),
+        "--dsn", dsn, "--datasets", "scifact",
+    ])
+    gap_run.main()
+    record = json.loads((tmp_path / "scifact.json").read_text())
+    assert record["error_type"] == "ProgrammingError"
+    assert password not in record["error"] + record["traceback"]

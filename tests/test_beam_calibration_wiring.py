@@ -173,3 +173,36 @@ def test_the_policy_flag_is_derived_not_asserted(captured) -> None:
         assert policy["enforced"] is True
     finally:
         systems_mod.RESEARCH_POLICY = original
+
+
+def test_stamp_fit_set_preserves_calibration_on_write_failure(tmp_path, monkeypatch):
+    """DAT-001: pre-fix direct rewrite truncates the saved calibration on write failure."""
+    import json
+    from pathlib import Path
+
+    from benchmarks.beam.calibrate import _stamp_fit_set
+    from recall import atomic_write
+
+    path = tmp_path / "calibration.json"
+    original = b'{"threshold": 0.8}'
+    path.write_bytes(original)
+    _stamp_fit_set(path, [2, 1])
+    payload = json.loads(path.read_text())
+    assert payload.get("fit_on_conversations") == [1, 2] and payload["threshold"] == 0.8
+    original = path.read_bytes()
+    real_write = Path.write_text
+
+    def broken_write(target, data, **kwargs):
+        if target == path:
+            target.write_bytes(data[:4].encode())
+            raise OSError("synthetic disk failure")
+        return real_write(target, data, **kwargs)
+
+    def broken_replace(*args):
+        raise OSError("synthetic disk failure")
+
+    monkeypatch.setattr(Path, "write_text", broken_write)
+    monkeypatch.setattr(atomic_write.os, "replace", broken_replace)
+    with pytest.raises(OSError, match="synthetic disk failure"):
+        _stamp_fit_set(path, [2, 1])
+    assert path.read_bytes() == original

@@ -12,7 +12,7 @@ because "they agree by construction" is a claim, not a guarantee.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pytest
 
@@ -34,6 +34,7 @@ pytestmark = pytest.mark.benchharness
 class _Chunk:
     source: str
     text: str
+    metadata: dict = field(default_factory=dict)
 
 
 class _FakeStore:
@@ -52,8 +53,9 @@ class _FakeStore:
 def _indexed_turn(turn: dict[str, str], index: int = 0) -> list[_Chunk]:
     """A turn as it lands in the store: chunked exactly as the ingest path chunks it."""
     name = _filename(index)
-    return [_Chunk(source=f"/tmp/beam-xyz/{name}", text=piece)
-            for piece in chunk_text(_turn_document(turn, index))]
+    # Fixture fidelity only: production indexing persists each chunk's ordinal.
+    return [_Chunk(source=f"/tmp/beam-xyz/{name}", text=piece, metadata={"ord": ordinal})
+            for ordinal, piece in enumerate(chunk_text(_turn_document(turn, index)))]
 
 
 # --- require_indexed ----------------------------------------------------------------------
@@ -112,3 +114,18 @@ def test_rebuild_dates_returns_nothing_when_no_chunk_carries_a_header() -> None:
 def test_rebuild_dates_keeps_an_unparseable_date_empty_rather_than_guessing() -> None:
     turn = {"role": "user", "content": "hello", "date": "not-a-real-date-at-all"}
     assert rebuild_dates(_FakeStore(_indexed_turn(turn))) == {_filename(0): ""}
+
+
+@pytest.mark.parametrize("date", ["March-01-2024", "unknown"])
+def test_rebuild_dates_uses_only_the_header_chunk(date):
+    """DAT-002: pre-fix reconstruction accepts a later date-looking body heading."""
+    from types import SimpleNamespace
+
+    from recall.types import Chunk
+
+    chunks = [
+        Chunk("body", "turn.md", "# section — April-15-2025", {"ord": 1}),
+        Chunk("head", "turn.md", f"# User — {date}", {"ord": 0}),
+    ]
+    expected = "2024-03-01" if date != "unknown" else ""
+    assert rebuild_dates(SimpleNamespace(iter_chunks=lambda: chunks)) == {"turn.md": expected}

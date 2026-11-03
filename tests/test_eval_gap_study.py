@@ -14,6 +14,7 @@ import math
 import random
 
 import pytest
+from hypothesis import given, strategies as st
 
 from recall.eval.gap_study import (
     analyse_records,
@@ -29,6 +30,22 @@ from recall.eval.gap_study import (
 def test_spearman_is_one_for_a_perfectly_monotone_relation():
     assert spearman([1, 2, 3, 4], [10, 20, 30, 40]) == pytest.approx(1.0)
     assert spearman([1, 2, 3, 4], [40, 30, 20, 10]) == pytest.approx(-1.0)
+
+
+@given(offset=st.integers(2**53, 2**53 + 32))
+def test_spearman_preserves_exact_integer_ranks(offset):
+    """NUM-001: pre-fix float coercion creates ties, yielding rho=0.866 at 2**53."""
+    assert spearman([offset, offset + 1, offset + 2], [1, 2, 3]) == pytest.approx(1)
+
+
+def test_spearman_accepts_arbitrary_size_integers():
+    """NUM-001: pre-fix finiteness conversion overflows before ranking valid ints."""
+    offset = 10**400
+    try:
+        result = spearman([offset, offset + 1, offset + 2], [1, 2, 3])
+    except OverflowError:
+        result = None
+    assert result == pytest.approx(1)
 
 
 def test_spearman_ranks_rather_than_fits_a_line():
