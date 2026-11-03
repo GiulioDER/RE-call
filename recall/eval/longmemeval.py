@@ -208,6 +208,14 @@ def convert(instances: list[dict], out_dir: Path) -> ConversionReport:
         report.by_type[question["question_type"]] += 1
         questions.append(question)
 
+    expected = {f"{sid}.md" for sid in seen}
+    stale = sorted(p.name for p in corpus.iterdir() if p.name not in expected)
+    if stale:
+        raise ConversionError(
+            f"existing corpus contains files outside this conversion: {stale[:5]}; "
+            "use a fresh output directory"
+        )
+
     # Written last: a session's full date list is only known once every instance has been read.
     for sid, (_, turns, dates) in seen.items():
         (corpus / f"{sid}.md").write_text(render_session(sid, dates, turns), encoding="utf-8")

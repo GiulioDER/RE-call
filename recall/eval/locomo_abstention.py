@@ -40,6 +40,7 @@ import argparse
 import json
 import os
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,7 @@ from recall.embeddings import Embedder
 from recall.eval.locomo import (
     ADVERSARIAL_CATEGORY,
     ANSWERABLE_CATEGORIES,
+    _dia_id_to_filename,
     _make_embedder,
     _rate,
 )
@@ -146,6 +148,18 @@ def run(
         answerable, adversarial = _partition_questions(qa, answerable_sample, rng)
 
         with PgVectorStore(dsn, dim=embedder.dim, tenant=tenant, table="locomo_chunks") as store:
+            expected = {
+                _dia_id_to_filename(turn["dia_id"])
+                for key, turns in conv["conversation"].items()
+                if re.fullmatch(r"session_\d+", key) and isinstance(turns, list)
+                for turn in turns if turn.get("dia_id")
+            }
+            missing = expected - store.sources_for_identifiers(sorted(expected)).keys()
+            if not expected or missing:
+                raise ValueError(
+                    f"indexed corpus for tenant {tenant!r} is missing conversation turns "
+                    f"({len(missing)} missing); run the main LOCOMO indexer first"
+                )
             retriever = HybridRetriever(store, embedder)
             cal = _fit_calibration(retriever, embedder_name, answerable, adversarial, k)
             thresholds.append(cal.threshold)
