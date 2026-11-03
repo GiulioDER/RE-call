@@ -1,5 +1,8 @@
 """Score the two memory systems against the human labels, paired on question.
 
+Prior work: benchmarks/labelling/score_labels.py establishes the free-text label
+rules followed here; this module adds the paired comparison between systems.
+
 `score_labels.py` arbitrates two JUDGES on one system's answers. This scores two SYSTEMS under one
 judge — the annotator — so the statistic is different: McNemar on the questions where the two arms
 were labelled differently, because the questions they both got right (or both got wrong) carry no
