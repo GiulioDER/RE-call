@@ -180,6 +180,22 @@ def test_rejudge_document_records_provenance_and_reaggregates() -> None:
     assert doc["aggregate"]["answerable_accuracy"]["rate"] == 0.0  # source untouched
 
 
+def test_chained_rejudge_names_the_immediately_preceding_judge() -> None:
+    """DAT-002: df339c87a attributes judge A's verdicts to the original generator."""
+    original = {
+        "config": {"model": "original-generator"},
+        "outcomes": [_record("c:0", correct=False)],
+        "aggregate": {},
+    }
+    first = rejudge_document(original, _always_yes, "judge-A", "original.json")
+    before = json.dumps(first, sort_keys=True)
+    second = rejudge_document(first, _always_yes, "judge-B", "first.json")
+    assert second["rejudge"]["original_judge_model"] == "judge-A"
+    assert second["rejudge"]["judge_model"] == "judge-B"
+    assert second["rejudge"]["original_aggregate"] == first["aggregate"]
+    assert json.dumps(first, sort_keys=True) == before
+
+
 def test_to_outcome_round_trips_the_scored_fields() -> None:
     outcome = to_outcome(_record("c:9", correct=True, answer="x"))
 

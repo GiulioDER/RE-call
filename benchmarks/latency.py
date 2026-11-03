@@ -163,6 +163,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seed", type=int, default=1234)
     args = p.parse_args(argv)
 
+    if args.embedder != "fastembed" and not (
+        args.embedder.startswith("fastembed:") and args.embedder[len("fastembed:"):].strip()
+    ):
+        p.error("--embedder must be fastembed or fastembed:<model> so both arms use the same model")
+
     if "OPENROUTER_API_KEY" not in os.environ:
         p.error("OPENROUTER_API_KEY must be set (Mem0's ingest extraction needs it)")
     convs = json.loads(args.data.read_text(encoding="utf-8"))[: args.conversations]

@@ -9,6 +9,7 @@ from __future__ import annotations
 import gc
 import random
 import weakref
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -18,6 +19,22 @@ from benchmarks import latency as latency_module
 #: Benchmark-harness coverage, not product coverage; product CI can deselect with
 #: `-m 'not benchharness'`.
 pytestmark = pytest.mark.benchharness
+
+
+@pytest.mark.parametrize("embedder", ["hashing", "st:example", "router:example", "fastembed:"])
+def test_latency_rejects_unmatched_embedders_before_running_arms(
+    embedder: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """BUG-002: df339c87a runs both arms instead of rejecting the mismatched model."""
+    data = tmp_path / "data.json"
+    data.write_text("[]")
+    calls: list[str] = []
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-key")
+    monkeypatch.setattr(latency_module, "_run_arm", lambda arm, *a: (calls.append(arm) or [1.0], [1.0]))
+    with pytest.raises(SystemExit) as exc:
+        latency_module.main(["--embedder", embedder, "--data", str(data), "--out", str(tmp_path)])
+    assert exc.value.code == 2
+    assert calls == []
 
 
 class _RecordingSystem:

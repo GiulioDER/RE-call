@@ -3,7 +3,10 @@
 ::
 
     # No LLM spend at all — indexing, retrieval and arithmetic. Hours of CPU, ~$1 of cloud embedding.
-    python -m benchmarks.beam.regime_sweep --out regime_sweep.json
+    python -m benchmarks.beam.regime_sweep --memory <corpus-dir> --out regime_sweep.json
+
+Cloud conditions require --allow-cloud. Existing experiment corpora are refused because their
+source identity cannot be verified; use fresh experiment tables for a new sweep.
 
 The claim under test
 --------------------
@@ -37,6 +40,10 @@ queries, where a shared bias cancels. It would not be acceptable for an accuracy
 
 **This test can fail.** If the three embedders turn out to occupy similar cosine regimes, embedder
 independence is not a real problem, 0.50 is fine, and the whole line closes as unnecessary.
+
+Prior work: this sweep reuses `benchmarks.beam.dataset.iter_conversations` for BEAM parsing and
+`benchmarks.systems.resolve_embedder` for model selection. Declaration added during maintenance;
+the experiment and predictions above predate it.
 """
 from __future__ import annotations
 
@@ -44,6 +51,7 @@ import argparse
 import json
 import re
 import statistics
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -141,7 +149,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dsn", default=DEFAULT_DSN)
     parser.add_argument("--shards", type=Path, default=Path("/opt/recall-beam-data/shards_1M"))
-    parser.add_argument("--memory", type=Path, default=Path("/opt/docs_rag_corpora/memory"))
+    parser.add_argument("--memory", type=Path, required=True)
+    parser.add_argument("--allow-cloud", action="store_true", help="allow sending the selected corpora to cloud embedders")
     parser.add_argument("--beam-conversations", type=int, default=5)
     parser.add_argument("--k", type=int, default=45)
     parser.add_argument("--out", type=Path, default=Path("regime_sweep.json"))
@@ -155,6 +164,8 @@ def main() -> None:
                               "memory_queries": len(mem_q)}
 
     for label, spec in EMBEDDERS:
+        if spec.startswith("router:") and not args.allow_cloud:
+            continue
         embedder = resolve_embedder(spec)
         print(f"\n=== {label} (dim {embedder.dim}) ===", flush=True)
 
@@ -165,9 +176,10 @@ def main() -> None:
         ) as store:
             store.ensure_schema()
             existing = sum(1 for _ in store.iter_chunks())
-            if not existing:
-                Indexer(store, embedder, batch_chunks=32).index_path(args.memory)
-                print(f"  memory indexed: {sum(1 for _ in store.iter_chunks())} chunks", flush=True)
+            if existing:
+                raise RuntimeError(f"existing corpus in {table}: source identity is unverified; use a fresh experiment table")
+            Indexer(store, embedder, batch_chunks=32).index_path(args.memory)
+            print(f"  memory indexed: {sum(1 for _ in store.iter_chunks())} chunks", flush=True)
         scores = _top1_scores(args.dsn, table, embedder, mem_q, args.k)
         report["conditions"][f"memory/{label}"] = _rates(scores)
         print(f"  memory done: {report['conditions'][f'memory/{label}']}", flush=True)
@@ -180,14 +192,14 @@ def main() -> None:
             with PgVectorStore(args.dsn, dim=embedder.dim, tenant=tenant, table=btable) as store:
                 store.ensure_schema()
                 if sum(1 for _ in store.iter_chunks()):
-                    continue
-                workspace = Path(f"/tmp/regime-{label}-{conv.index}")
-                workspace.mkdir(parents=True, exist_ok=True)
-                for i, turn in enumerate(conv.turns):
-                    (workspace / f"turn_{i:06d}.md").write_text(
-                        f"# {turn['role']}\n\n{turn['content']}\n", encoding="utf-8"
-                    )
-                Indexer(store, embedder, batch_chunks=32).index_path(workspace)
+                    raise RuntimeError(f"existing corpus in {btable}/{tenant}: source identity is unverified; use a fresh experiment table")
+                with tempfile.TemporaryDirectory(prefix="regime-") as directory:
+                    workspace = Path(directory)
+                    for i, turn in enumerate(conv.turns):
+                        (workspace / f"turn_{i:06d}.md").write_text(
+                            f"# {turn['role']}\n\n{turn['content']}\n", encoding="utf-8"
+                        )
+                    Indexer(store, embedder, batch_chunks=32).index_path(workspace)
             print(f"  beam conv {conv.index} indexed", flush=True)
         scores = _top1_scores(args.dsn, btable, embedder, beam_q, args.k)
         report["conditions"][f"beam/{label}"] = _rates(scores)

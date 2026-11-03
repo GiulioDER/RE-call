@@ -648,6 +648,7 @@ class Mem0System:
         run_id: str = "adhoc",
         storage_dir: str | Path | None = None,
     ) -> None:
+        self._storage = tempfile.TemporaryDirectory(prefix="recall-bench-mem0-") if storage_dir is None else None
         self._config = mem0_config(
             openrouter_key,
             model,
@@ -657,7 +658,7 @@ class Mem0System:
             openai_model=openai_model,
             openai_base_url=openai_base_url,
             run_id=run_id,
-            storage_dir=storage_dir,
+            storage_dir=self._storage.name if self._storage is not None else storage_dir,
         )
         self._k = k
         self._user: str | None = None
@@ -732,8 +733,6 @@ class Mem0System:
         """
         memory, self._mem = self._mem, None
         self._closed = True
-        if memory is None:
-            return
         # Collect first, release second, so one unreadable store cannot hide the others. `_read`
         # is total because these are attributes on a third-party object, and a property is free to
         # raise: this runs inside `finally` blocks and `__exit__`, where a raise would REPLACE the
@@ -753,6 +752,8 @@ class Mem0System:
         # of one must never be conditional on another closing cleanly.
         releases = [(name, _read(client, "close")) for name, client in clients]
         releases.append(("Memory.close", _read(memory, "close")))
+        if self._storage is not None:
+            releases.append(("private storage", self._storage.cleanup))
         for name, release in releases:
             if release is None:
                 continue

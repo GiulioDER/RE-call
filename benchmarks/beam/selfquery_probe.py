@@ -5,6 +5,8 @@
     # $0 — retrieval and arithmetic over an already-indexed corpus. No LLM.
     python -m benchmarks.beam.selfquery_probe --out selfquery_probe.json
 
+Cloud conditions require --allow-cloud, which permits sending stored corpus text to the provider.
+
 The idea being tested (H4)
 -------------------------
 The regime sweep established that an absolute cosine floor is the wrong TYPE of statistic: 0.50
@@ -33,6 +35,10 @@ Agreement is judged on the STARVE RATE the derived floor would produce on real q
 closeness of the two floor values. A floor 0.05 too high is harmless where the distribution is
 sparse there and catastrophic where it is dense; only the rate says which. Within ~3 points of the
 target 5 % is usable; beyond ~10 % it is not.
+
+Prior work: `benchmarks.beam.regime_sweep` supplies the real-query comparison described above;
+this probe reuses `benchmarks.systems.resolve_embedder` and `recall.store.PgVectorStore`.
+Declaration added during maintenance; the experiment and interpretation rule above predate it.
 """
 from __future__ import annotations
 
@@ -102,6 +108,7 @@ def _self_query_scores(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dsn", default=DEFAULT_DSN)
+    parser.add_argument("--allow-cloud", action="store_true", help="allow sending stored corpus text to cloud embedders")
     parser.add_argument("--sample", type=int, default=SAMPLE)
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument("--sweep", type=Path, default=Path("regime_sweep.json"))
@@ -112,6 +119,8 @@ def main() -> None:
     report: dict[str, Any] = {"sample": args.sample, "quantile": QUANTILE, "conditions": {}}
 
     for label, table, tenant, spec in CONDITIONS:
+        if spec.startswith("router:") and not args.allow_cloud:
+            continue
         embedder = resolve_embedder(spec)
         scores, skipped = _self_query_scores(
             args.dsn, table, tenant, embedder, args.sample, args.k

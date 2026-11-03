@@ -229,7 +229,7 @@ def rejudge_document(
     payload["rejudge"] = {
         "judge_model": judge_model,
         "source": source,
-        "original_judge_model": (doc.get("config") or {}).get("model"),
+        "original_judge_model": (doc.get("rejudge") or {}).get("judge_model") or (doc.get("config") or {}).get("model"),
         "original_aggregate": doc.get("aggregate"),
         "agreement": report,
     }

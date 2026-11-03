@@ -30,7 +30,9 @@ re-index them::
 
     python -m recall.eval.locomo      --data locomo10.json
     python -m recall.eval.cosine_dump --data locomo10.json \\
-        --out results/cosine/distributions.json --chart-dir results/cosine
+        --out cosine-rerun/distributions.json --chart-dir cosine-rerun/charts
+
+Use a new output directory for each rerun; retained result artifacts must not be overwritten.
 """
 from __future__ import annotations
 
