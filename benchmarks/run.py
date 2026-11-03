@@ -699,7 +699,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
             # conversation ingested, so ingesting all of them up front would answer every question out
             # of the final conversation's memory.
             system.ingest(conv)
-            if position == 0 and args.arm == "recall":
+            if not ablation_ran and conv_questions and args.arm == "recall":
                 # `_build_system` always returns a `RecallSystem` for `arm == "recall"` today, so this
                 # is unreachable — but if that ever changed silently, falling through here would skip
                 # the preflight with zero trace: the artifact would stamp `verdicts: []`, indistinguishable

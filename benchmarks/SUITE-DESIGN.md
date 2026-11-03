@@ -81,11 +81,11 @@ significant against us** (accuracy 0.39, false-abstain 1.00, abstention 1.00).
 
 So the honest position going in is that this track is **undetermined**, not lost. It must not be
 written up as a loss we bravely disclosed, and it must not be written up as a win: the abstention
-cell that would settle it does not exist yet. What is structurally true in advance is that λ=1
-reproduces BEAM's own weighting, under which a system that declines to invent cannot win the mean
-by construction (10 % of questions reward abstention, 90 % punish false abstention) — so a λ=1
-deficit would be a property of the weighting as much as of the system, and this track may not
-present it as the latter.
+cell that would settle it does not exist yet. At λ=1, the metric reproduces BEAM's own weighting:
+10 % of questions reward correct abstention, while false abstention on answerable questions
+(90 %) lowers their scores. This mix affects the tradeoff but does not predetermine which system
+wins the mean. A λ=1 deficit must be interpreted from measured per-category results, rather than
+attributed to the weighting in advance.
 
 **What counts as losing it**, fixed now rather than after the numbers land: our abstention cell
 below Mem0's 0.536 on a held-out corpus at λ=1, or a false-abstain rate above theirs at any λ in

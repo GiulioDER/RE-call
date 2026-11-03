@@ -1802,3 +1802,66 @@ def test_a_run_that_scores_nothing_still_keeps_its_stem_claimed(
         main(argv, now=_NOW)
 
     assert published.read_text(encoding="utf-8") == before, "the published artifact was clobbered"
+
+
+@pytest.mark.parametrize("later_questions", [False, True])
+def test_main_preflight_waits_for_scoreable_questions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, later_questions: bool
+) -> None:
+    """BUG-001: preflight runs once on the first nonempty filtered conversation.
+
+    Red proof: both nodes fail on f961d148e at the empty-sample assertion below,
+    through main, the real RecallSystem preflight and arm_check._compare. Only
+    ingestion, database construction, retrieval IDs and paid completion are stubbed.
+    The repaired guard must also leave ran=False when every QA row is unscoreable.
+    """
+    from contextlib import nullcontext
+
+    from benchmarks.systems import RecallSystem
+    from recall import store
+    from recall.eval import arm_check
+
+    fixture = _fixture()
+    fixture[0]["qa"] = [{"question": "unsupported", "answer": "x", "category": 9}]
+    if not later_questions:
+        fixture = fixture[:1]
+    data = tmp_path / "data.json"
+    data.write_text(json.dumps(fixture), encoding="utf-8")
+    out = tmp_path / "results"
+    events: list[tuple[str, Any]] = []
+    real_preflight = RecallSystem.ablation_preflight
+
+    def _ingest(self: RecallSystem, conversation: dict[str, Any]) -> None:
+        self._tenant = conversation["sample_id"]
+        events.append(("ingest", self._tenant))
+
+    def _preflight(self: RecallSystem, questions: list[str], **kwargs: Any) -> list[dict[str, Any]]:
+        events.append(("preflight", questions))
+        return real_preflight(self, questions, **kwargs)
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", _FAKE_KEY)
+    monkeypatch.setattr(run_module, "_build_system", _recall_stub_build)
+    monkeypatch.setattr(RecallSystem, "ingest", _ingest)
+    monkeypatch.setattr(RecallSystem, "retrieve", lambda self, q: events.append(("retrieve", q)) or "ctx")
+    monkeypatch.setattr(RecallSystem, "ablation_preflight", _preflight)
+    monkeypatch.setattr(store, "PgVectorStore", lambda *a, **kw: nullcontext(None))
+    monkeypatch.setattr(arm_check, "_ids", lambda *a: ["id"])
+    monkeypatch.setattr(OpenRouterLLM, "complete", _stub_complete)
+    error = None
+    try:
+        code = main(
+            ["--arm", "recall", "--data", str(data), "--conversations", str(len(fixture)),
+             "--allow-inert-arm", "--out", str(out)], now=_NOW,
+        )
+    except arm_check.EmptySampleError as exc:
+        error = exc
+    assert error is None, f"preflight received an empty filtered conversation: {error}"
+    assert code == 0
+    preflights = [event for event in events if event[0] == "preflight"]
+    assert preflights == ([("preflight", ["Who is Dan?"])] if later_questions else [])
+    if later_questions:
+        assert events.index(preflights[0]) < events.index(("retrieve", "Who is Dan?"))
+    stamp = _STAMP_2CONV if later_questions else _STAMP_1CONV
+    payload = json.loads((out / f"{stamp}.json").read_text(encoding="utf-8"))
+    assert payload["ablation_preflight"]["ran"] is later_questions
+    assert payload["aggregate"]["answerable_accuracy"]["n"] == int(later_questions)
