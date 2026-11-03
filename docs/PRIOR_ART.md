@@ -63,8 +63,9 @@ Two further differences, and one deficit:
   so no number here belongs beside it. What is measured is the retrieval substrate underneath such
   a system — evidence-turn **hit@5 0.671** [0.65, 0.69] with the free local embedder, rising to
   **hit@20 0.855** [0.84, 0.87] across the measured depth curve ([FINDINGS §9a](../results/FINDINGS.md)).
-  Both depths are quoted deliberately: `hit@k` is a *ceiling* on any downstream J, and a ceiling
-  published at one depth reads as a ceiling at every depth — it is not. Depth is not free either,
+  Both depths are quoted deliberately: they describe annotated-evidence retrieval at different
+  context budgets. They do not bound downstream J, since another turn may repeat the answer and
+  the evidence annotations need not be exhaustive. Depth is not free either,
   since k=20 spends four times the generator's context to buy it — and the one
   axis no published LOCOMO result scores at all: the **446 adversarial questions** (22.5% of the
   set) that test whether a system knows what it doesn't know. There, out of the box, RE-call

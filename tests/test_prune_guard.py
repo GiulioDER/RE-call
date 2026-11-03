@@ -95,6 +95,32 @@ def test_deleting_a_few_files_still_prunes_normally(corpus, store):
 
 
 @requires_db
+@pytest.mark.parametrize("replaced_count", [1, 5])
+def test_replacing_files_with_directories_prunes_or_trips_guard(corpus, store, replaced_count):
+    """DAT-001: a directory cannot keep the vanished file's rows alive.
+
+    Red proof on 79b9350b5: count=1 fails deleted==1; count=5 fails DID NOT RAISE.
+    Targets Indexer._prune_vanished through index_path and actual stored row counts.
+    """
+    Indexer(store, _E()).index_path(corpus)
+    before = store.count()
+    replaced = [corpus / f"memo{i}.md" for i in range(replaced_count)]
+    for path in replaced:
+        path.unlink()
+        path.mkdir()
+
+    if replaced_count == 5:
+        with pytest.raises(PruneGuardTripped):
+            Indexer(store, _E()).index_path(corpus)
+        assert store.count() == before, "the mass-prune refusal must preserve every row"
+    else:
+        stats = Indexer(store, _E()).index_path(corpus)
+        assert stats.deleted == 1
+        assert store.count() == before - 1
+        assert str(replaced[0]) not in store.source_content_hashes()
+
+
+@requires_db
 def test_allow_prune_lets_a_confirmed_deletion_through(corpus, store):
     """The escape hatch has to actually work, or the guard is a wall."""
     Indexer(store, _E()).index_path(corpus)

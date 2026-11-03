@@ -120,6 +120,40 @@ def test_a_source_that_is_really_gone_is_still_pruned(tmp_path):
     assert store.deleted == [str(gone)]
 
 
+@pytest.mark.parametrize("linked_parent", [False, True])
+def test_a_source_redirected_to_an_outside_directory_is_not_pruned(tmp_path, linked_parent):
+    """DAT-001 repair control: an outside-root link is unreachable, not deleted.
+
+    Red proof: the initial non-regular-stat repair fails deleted==0 with deleted=1.
+    The parent-link case prevents replacing confinement with only source.is_symlink().
+    """
+    root = tmp_path / "corpus"
+    root.mkdir()
+    keep = root / "keep.md"
+    keep.write_text("still indexed", encoding="utf-8")
+    source = root / "nested" / "memo.md" if linked_parent else root / "memo.md"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("previously indexed", encoding="utf-8")
+    store = _RecordingStore(known={str(keep): "hash", str(source): "hash"})
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source.unlink()
+    try:
+        if linked_parent:
+            source.parent.rmdir()
+            (outside / source.name).mkdir()
+            source.parent.symlink_to(outside, target_is_directory=True)
+        else:
+            source.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"cannot create a directory symlink here: {exc}")
+
+    stats = Indexer(store, _NullEmbedder()).index_path(root)
+
+    assert stats.deleted == 0, "an outside-root redirect was treated as a deletion"
+    assert store.deleted == []
+
+
 def test_a_file_that_vanishes_before_it_is_read_does_not_abort_the_run(tmp_path):
     """A pre-walked list is stale by construction; one dead entry must not void the rest.
 

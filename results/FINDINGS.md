@@ -574,8 +574,9 @@ measures it with no judge and therefore no judge variance:
 
 - **Retrieval (categories 1–4).** LOCOMO annotates every answerable question with the dialog turns
   that contain the answer (`evidence: ["D1:3"]`) and every turn carries that id, so "was the
-  evidence turn retrieved" is string equality. `hit@k` here is a *ceiling* on any downstream J: a
-  turn never retrieved cannot be answered from.
+  evidence turn retrieved" is string equality. This measures annotated-evidence retrieval,
+  without bounding downstream J: another retrieved turn may repeat the answer, and the
+  annotations are not known to list every answer-bearing turn.
 - **Abstention (category 5).** LOCOMO's adversarial split — 446 questions (22.5% of the set) that
   look answerable and are not, typically an event mis-attributed to the wrong speaker. An
   independent audit (github.com/dial481/locomo-audit) finds **no published LOCOMO result evaluates
@@ -623,13 +624,14 @@ configuration note.
 #### Why quoting one depth was a mistake
 
 An earlier version of this section reported a **single** depth while calling `hit@k` a **ceiling**
-on any downstream J. Together those invite a reading the data never supported — that the k=5 figure
-bounds what a system built on this library can reach. It bounds what it reaches *at k=5*. Hence the
-full curve above. Two things it still does **not** license:
+on any downstream J. That bound was unsupported even at a fixed depth: the scorer checks annotated
+turn IDs, not every way retrieved text could supply the answer. The full curve above reports
+annotated-evidence retrieval at each depth. Two things it still does **not** license:
 
 - **Depth is not free.** k=20 hands a generator four times the context of k=5, with four times the
   distractors, and this repo's whole thesis is that a confidently wrong retrieved memory is worse
-  than a missing one. 0.855 is a ceiling at a larger context budget, not a better system.
+  than a missing one. 0.855 measures annotated-evidence retrieval at a larger context budget;
+  downstream answer accuracy was not measured.
 - **cat3 is still the floor** — 0.620 at k=20 against 0.837 for cat1. Depth lifts it (0.228 →
   0.620, the steepest climb of any category) without closing the gap.
 

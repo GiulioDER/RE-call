@@ -1706,14 +1706,20 @@ class Indexer:
             # directory (EACCES), a dropped network mount (EIO/ESTALE) or a symlink loop
             # (ELOOP) would be read as a deletion and the rows would go. Only ENOENT and
             # ENOTDIR mean the file is actually gone; every other error means unreachable,
-            # which is not a deletion.
+            # which is not a deletion. A successful stat of a non-regular path also proves
+            # that the previously indexed file is gone, even though its name still exists.
             try:
-                os.stat(source)
+                found = os.stat(source)
             except (FileNotFoundError, NotADirectoryError):
                 return True
             except (OSError, ValueError):
                 return False
-            return False
+            if stat_module.S_ISREG(found.st_mode):
+                return False
+            try:
+                return Path(source).resolve().is_relative_to(root)
+            except (OSError, ValueError, RuntimeError):
+                return False
 
         present = {str(f) for f in files}
         # One pass, one definition of "under this root". The guard below divides by this set, so
