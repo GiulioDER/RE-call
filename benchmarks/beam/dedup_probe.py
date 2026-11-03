@@ -33,6 +33,9 @@ It reports, per question, how many chunks survive and whether the stale/current 
 present — NOT a score. Turning a promising collapse into a benchmark cell requires the paid arm,
 and conflating the two is how a mechanism becomes an overclaim (see §9h/§9i, where exactly that
 went wrong at n=2).
+
+Prior work: ``benchmarks.beam.systems`` provides the existing BEAM retrieval adapter
+and date reconstruction reused by this probe.
 """
 from __future__ import annotations
 

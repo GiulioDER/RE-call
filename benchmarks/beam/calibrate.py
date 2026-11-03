@@ -35,6 +35,9 @@ run never touches, and the scored run is told which ones those were.
 The labels are BEAM's own, not ours: the `abstention` category is unanswerable BY CONSTRUCTION
 (its questions ask about things absent from the conversation), and the other nine are answerable.
 No hand-labelling is involved, so there is nothing here to tune toward a preferred answer.
+
+Prior work: ``recall.calibration.from_samples`` supplies the threshold fit, and
+``benchmarks.beam.systems.BeamRecallSystem`` supplies the BEAM retrieval used here.
 """
 from __future__ import annotations
 
