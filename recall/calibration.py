@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import quantiles
@@ -566,7 +567,8 @@ def load_for(embedder: str, path: str | Path | None = None) -> Calibration | Non
 
     def _count(key: str) -> int | None:
         v = data.get(key)
-        return v if isinstance(v, int) and v >= 0 else None
+        # Genuine sample counts come from len(); larger values can overflow interval arithmetic.
+        return v if isinstance(v, int) and 0 <= v <= sys.maxsize else None
 
     cal = Calibration(embedder=embedder, threshold=threshold, scale=scale, separability=sep,
                       n_answerable=_count("n_answerable"),

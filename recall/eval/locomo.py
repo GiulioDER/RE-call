@@ -387,10 +387,10 @@ def run_conversation(
 ) -> dict[str, Any]:
     """Index one conversation and score every question against it.
 
-    `ks` scores several retrieval depths from ONE retrieval instead of one depth per run. That is
-    exact rather than an approximation: `candidate_k` fixes the fused pool independently of `k`,
-    so `search(k=n)` returns the first `n` of the same ranking `search(k=N>n)` returns. The k=5
-    row of a curve therefore has to reproduce a k=5 run exactly, and `run()` checks that it does.
+    `ks` scores prefixes at several depths from ONE returned ranking. `candidate_k` fixes the
+    fused pool independently of `k`; this scoring does not independently verify that separate
+    searches return the same prefixes. `run()` checks only that pooled depth labels agree with
+    the headline score derived from that retrieval.
 
     Truncation is applied to the CHUNK hits, not to the dialog ids derived from them: several
     chunks can map to one turn, so slicing the id list would score a deeper retrieval than the
