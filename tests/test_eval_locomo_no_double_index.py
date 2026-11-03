@@ -13,6 +13,9 @@ must?"). One `count()` would have caught it in a second.
 from __future__ import annotations
 
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from threading import Event
 
 import psycopg
 import pytest
@@ -129,3 +132,57 @@ def test_index_conversation_override_still_permits_a_deliberate_add(tmp_path: Pa
         index_conversation(store, HashingEmbedder(dim=64), _CONV,
                            corpus_dir=tmp_path / "c2", allow_existing=True)
         assert store.count() > first
+
+
+@requires_db
+def test_concurrent_fresh_ingests_cannot_both_pass_the_empty_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """BUG-001: df339c87a permits both ingests; fixed code refuses the second.
+
+    Pause the first count until the second writer attempts the real corpus lock.
+    This forces the old count-before-lock interleaving without timing sleeps.
+    """
+    from recall import index as index_module
+    from recall.eval import locomo
+
+    counted, second_attempt = Event(), Event()
+    with _fresh("t-concurrent", "lab_dbl_concurrent") as first, PgVectorStore(
+        TEST_DSN, dim=64, tenant="t-concurrent", table="lab_dbl_concurrent",
+    ) as second:
+        original_lock = index_module.single_writer
+        original_count = first.count
+
+        @contextmanager
+        def observed_lock(store, **kwargs):
+            if store is second:
+                second_attempt.set()
+            with original_lock(store, **kwargs) as taken:
+                yield taken
+
+        def paused_count():
+            result = original_count()
+            counted.set()
+            assert second_attempt.wait(15), "the second writer never attempted its lock"
+            return result
+
+        monkeypatch.setattr(first, "count", paused_count)
+        monkeypatch.setattr(index_module, "single_writer", observed_lock)
+        monkeypatch.setattr(locomo, "single_writer", observed_lock, raising=False)
+
+        def ingest(store, name):
+            try:
+                locomo.index_conversation(store, HashingEmbedder(dim=64), _CONV,
+                                          corpus_dir=tmp_path / name)
+            except RuntimeError as exc:
+                return str(exc)
+            return "indexed"
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            one = pool.submit(ingest, first, "first")
+            assert counted.wait(15), "the first writer never reached its count"
+            two = pool.submit(ingest, second, "second")
+            results = [one.result(timeout=30), two.result(timeout=30)]
+        assert results.count("indexed") == 1, results
+        assert any("already holds" in result for result in results)
+        assert original_count() == len(_CONV["session_1"])

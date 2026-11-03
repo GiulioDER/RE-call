@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import statistics
@@ -116,8 +117,11 @@ def _parse_judge(raw: str) -> tuple[float | None, str]:
     if match:
         try:
             obj = json.loads(match.group(0))
-            return _clamp(float(obj.get("score", 0.0))), str(obj.get("reason", ""))
-        except (json.JSONDecodeError, TypeError, ValueError):
+            raw_score = obj["score"]
+            score = float(raw_score)
+            if not isinstance(raw_score, bool) and math.isfinite(score):
+                return _clamp(score), str(obj.get("reason", ""))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             pass
     return None, text[:300]
 

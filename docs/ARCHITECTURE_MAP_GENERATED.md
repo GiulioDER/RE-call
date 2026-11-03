@@ -593,7 +593,7 @@ They are observations, not automatic failures.
 | `recall.eval.harness` | 12 | 116 |
 | `recall.eval.hostload` | 1 | 1 |
 | `recall.eval.labelled` | 13 | 117 |
-| `recall.eval.locomo` | 9 | 119 |
+| `recall.eval.locomo` | 10 | 119 |
 | `recall.eval.locomo_abstention` | 7 | 120 |
 | `recall.eval.longmemeval` | 1 | 1 |
 | `recall.eval.longmemeval_perq` | 9 | 118 |

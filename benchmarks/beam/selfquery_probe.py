@@ -5,6 +5,8 @@
     # $0 — retrieval and arithmetic over an already-indexed corpus. No LLM.
     python -m benchmarks.beam.selfquery_probe --out selfquery_probe.json
 
+Cloud conditions require --allow-cloud, which permits sending stored corpus text to the provider.
+
 The idea being tested (H4)
 -------------------------
 The regime sweep established that an absolute cosine floor is the wrong TYPE of statistic: 0.50
@@ -102,6 +104,7 @@ def _self_query_scores(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dsn", default=DEFAULT_DSN)
+    parser.add_argument("--allow-cloud", action="store_true", help="allow sending stored corpus text to cloud embedders")
     parser.add_argument("--sample", type=int, default=SAMPLE)
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument("--sweep", type=Path, default=Path("regime_sweep.json"))
@@ -112,6 +115,8 @@ def main() -> None:
     report: dict[str, Any] = {"sample": args.sample, "quantile": QUANTILE, "conditions": {}}
 
     for label, table, tenant, spec in CONDITIONS:
+        if spec.startswith("router:") and not args.allow_cloud:
+            continue
         embedder = resolve_embedder(spec)
         scores, skipped = _self_query_scores(
             args.dsn, table, tenant, embedder, args.sample, args.k

@@ -79,6 +79,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from recall.index_lock import single_writer
+
 from recall.embeddings import Embedder
 from recall.eval.labelled import _make_embedder
 from recall.eval.metrics import wilson_ci
@@ -298,23 +300,25 @@ def index_conversation(
         #
         # Refused rather than de-duplicated: a table in that state is evidence that something ran
         # twice, and silently repairing it would hide the fact worth knowing.
-        existing = store.count()
-        if existing and not allow_existing:
-            raise RuntimeError(
-                f"tenant {store.tenant!r} already holds {existing} chunk(s) in table "
-                f"{store.table!r}. A benchmark run indexes a fresh corpus, so this means a "
-                f"previous run wrote here — indexing again would DOUBLE the corpus and depress "
-                f"every hit@k without erroring. Use a new table, drop this one, or pass "
-                f"allow_existing=True if you genuinely mean to add to it."
-            )
+        with single_writer(store):
+            existing = store.count()
+            if existing and not allow_existing:
+                raise RuntimeError(
+                    f"tenant {store.tenant!r} already holds {existing} chunk(s) in table "
+                    f"{store.table!r}. A benchmark run indexes a fresh corpus, so this means a "
+                    f"previous run wrote here — indexing again would DOUBLE the corpus and depress "
+                    f"every hit@k without erroring. Use a new table, drop this one, or pass "
+                    f"allow_existing=True if you genuinely mean to add to it."
+                )
 
-        Indexer(
-            store,
-            embedder,
-            context_group_for_file=(
-                (lambda _path: context_group_id) if context_group_id is not None else None
-            ),
-        ).index_path(workspace)
+            # The guard and writes share one lock; index_path would acquire it again.
+            Indexer(
+                store,
+                embedder,
+                context_group_for_file=(
+                    (lambda _path: context_group_id) if context_group_id is not None else None
+                ),
+            )._index_path(workspace)
         return n_turns
     finally:
         if cleanup:

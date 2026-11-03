@@ -41,6 +41,64 @@ def _mem0_installed() -> bool:
     return importlib.util.find_spec("mem0") is not None
 
 
+def test_mem0_default_storage_avoids_hostile_shared_namespace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """SEC-001: df339c87a resolves backend paths inside the precreated shared directory."""
+    import tempfile
+    from benchmarks.systems import Mem0System
+
+    hostile = tmp_path / "recall-bench-mem0"
+    hostile.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    with Mem0System("synthetic-key", "synthetic-model") as system:
+        history = Path(system.describe()["history_db_path"])
+        assert not history.is_relative_to(hostile), "default storage enters an unowned namespace"
+        private = history.relative_to(tmp_path).parts[0]
+        private_root = tmp_path / private
+        assert private_root.is_dir()
+        if os.name != "nt":
+            assert private_root.stat().st_mode & 0o077 == 0
+    assert not private_root.exists(), "owned storage must be cleaned even before backend creation"
+    assert hostile.is_dir(), "cleanup must leave the foreign namespace untouched"
+
+
+def test_mem0_cleanup_failure_preserves_the_original_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FIX-003 review: the initial fix replaced the original error before backend creation.
+
+    Both construction states must attempt cleanup without escaping, even when warnings raise.
+    """
+    from types import SimpleNamespace
+    from benchmarks.systems import Mem0System
+
+    for backend in (None, SimpleNamespace()):
+        system = Mem0System("synthetic-key", "synthetic-model")
+        storage = system._storage
+        calls = []
+
+        def fail_cleanup():
+            calls.append("cleanup")
+            raise OSError("synthetic cleanup failure")
+
+        monkeypatch.setattr(system, "_storage", SimpleNamespace(cleanup=fail_cleanup), raising=False)
+        system._mem = backend
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                try:
+                    with system:
+                        raise ValueError("original failure")
+                except Exception as exc:
+                    observed = exc
+            assert isinstance(observed, ValueError), "cleanup replaced the original failure"
+            assert calls == ["cleanup"]
+        finally:
+            if storage is not None:
+                storage.cleanup()
+
+
 class _FakeSystem:
     name = "fake"
 
