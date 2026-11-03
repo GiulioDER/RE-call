@@ -171,3 +171,32 @@ def test_populate_reuses_one_store_across_refills(master):
     finally:
         sub.drop_table()
         sub.close()
+
+
+def test_refill_drops_the_previous_haystacks_supersession_graph(master):
+    """BUG-001: a refill must replace the graph even when its fingerprint is unchanged.
+
+    Red proof: on bb50147bb, this exact node fails the final empty-edge assertion:
+    populate_haystack preserves the warmed s1.md -> s2.md edge after s2.md is removed.
+    The fixed run uses the same test against a cache invalidation after the copy commits.
+    """
+    master_store, emb, table = master
+    with master_store._connect() as conn:  # noqa: SLF001
+        conn.execute(f"UPDATE {table} SET indexed_at = '2026-01-01T00:00:00Z'")
+        conn.execute(
+            f"UPDATE {table} SET metadata = metadata || %s::jsonb "
+            "WHERE metadata->>'file' = %s",
+            ('{"supersedes": "s1.md"}', "s2.md"),
+        )
+    scratch = "sc_" + uuid.uuid4().hex[:8]
+    sub = PgVectorStore(TEST_DSN, dim=emb.dim, table=scratch)
+    sub.ensure_schema()
+    try:
+        populate_haystack(TEST_DSN, emb.dim, table, scratch, ["s1.md", "s2.md"], store=sub)
+        assert sub.supersession()[0] == {"s1.md": "s2.md"}
+        populate_haystack(TEST_DSN, emb.dim, table, scratch, ["s1.md", "s3.md"], store=sub)
+        assert sub.count() == 2
+        assert sub.supersession()[0] == {}
+    finally:
+        sub.drop_table()
+        sub.close()

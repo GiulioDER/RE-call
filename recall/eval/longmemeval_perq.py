@@ -123,6 +123,7 @@ def populate_haystack(
             (files,),
         )
         conn.commit()
+    store._supersession_cache = None  # noqa: SLF001 - raw refill can preserve the cache fingerprint
     return store
 
 
