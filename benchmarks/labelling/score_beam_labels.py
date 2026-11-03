@@ -53,12 +53,16 @@ def score(labels: list[dict[str, str]], key: dict[str, dict[str, Any]]) -> dict[
     by_question: dict[str, dict[str, bool]] = defaultdict(dict)
     per_arm: dict[str, list[bool]] = defaultdict(list)
     excluded = 0
+    seen_items: set[str] = set()
 
     for row in labels:
         item = row.get("item", "").strip()
         meta = key.get(item)
         if meta is None:
             continue
+        if item in seen_items:
+            raise ValueError(f"duplicate label item: {item}")
+        seen_items.add(item)
         verdict = read_verdict(row.get("your_verdict_Y_or_N", ""))
         if verdict is None:
             excluded += 1

@@ -136,6 +136,8 @@ def build(
         if category and row.get("question_type") != category:
             continue
         cell = _their_cell(their)
+        if not cell:
+            continue
         if disagreements_only:
             ours_score = row.get("score")
             their_score = cell.get("score")
