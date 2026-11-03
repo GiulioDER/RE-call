@@ -1,0 +1,10 @@
+id: benchmark-indexer-without-cache
+valid:
+  - Indexer(store, embedder, batch_chunks=32).index_path(root)
+  - Indexer(store, embedder, cache=None).index_path(root)
+  - Indexer(store, embedder)
+invalid:
+  - Indexer(store, embedder, cache=self._cache).index_path(workdir)
+  - Indexer(store, embedder, chunker=chunker, cache=cache, batch_chunks=8)
+  - Indexer(cache=EmbeddingCache(path))
+  - indexer.Indexer(store, embedder, cache=cache)

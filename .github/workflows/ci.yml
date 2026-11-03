@@ -60,6 +60,16 @@ jobs:
           pip install --require-hashes -r .github/requirements/squawk.txt
           bash scripts/lint_migrations.sh
 
+      # Structural lint rules (ast-grep), configured by sgconfig.yml. `test` runs every rule
+      # against its valid and invalid cases first, so a rule that has stopped matching fails here
+      # instead of scanning green; `scan` then fails on any error-level match in the tree.
+      # ast-grep-cli has no dependencies, so it installs from one hashed requirement.
+      - name: Structural lint rules (ast-grep)
+        run: |
+          pip install --require-hashes -r .github/requirements/ast-grep.txt
+          ast-grep test
+          ast-grep scan --format github
+
   optional-import-profiles:
     name: Optional imports (${{ matrix.profile }})
     runs-on: ubuntu-latest

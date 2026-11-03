@@ -1,0 +1,25 @@
+id: benchmark-indexer-without-cache
+language: python
+severity: error
+files:
+  - benchmarks/**/*.py
+message: A benchmark builds an Indexer with the embedding cache, which silently corrupts any measurement of embedding cost.
+note: |
+  `Indexer(cache=...)` defaults to None on purpose (CLAUDE.md, "The embedding cache is on by
+  default"): a cache under a run that measures embedding cost turns the cost it reports into the
+  cost of a cache lookup. When reusing embeddings is the point of the benchmark, put
+  `# ast-grep-ignore: benchmark-indexer-without-cache` on the line above, beside a comment that
+  says why.
+rule:
+  kind: call
+  all:
+    - has:
+        field: function
+        regex: (^|\.)Indexer$
+    - has:
+        field: arguments
+        has:
+          kind: keyword_argument
+          all:
+            - has: {field: name, regex: ^cache$}
+            - not: {has: {field: value, kind: none}}
