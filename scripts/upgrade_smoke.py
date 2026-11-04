@@ -163,7 +163,15 @@ async def _server_calls(env: dict[str, str], cwd: Path, calls):
 
 
 def _top(payload: dict) -> list[str]:
-    return [str(hit.get("source", "")) for hit in payload.get("hits") or []][:3]
+    return [source for source, _ in _scored(payload)]
+
+
+def _scored(payload: dict) -> list[list]:
+    """The top three hits as [source, dense cosine], the cosine rounded past float noise."""
+    return [
+        [str(hit.get("source", "")), round(float(hit.get("score") or 0.0), 6)]
+        for hit in payload.get("hits") or []
+    ][:3]
 
 
 def _require_trusted(step: str, query: str, payload: dict) -> None:
@@ -245,8 +253,8 @@ def seed(workdir: Path) -> None:
             top = _top(payload)
             if not top or not top[0].endswith(f"{topic}.md"):
                 raise StepFailed(f"seed 6: {topic}.md is not the top hit for its own query: {top}")
-            probes[topic] = top
-            print(f"    {topic}: {top} ({payload.get('trust_state')})")
+            probes[topic] = _scored(payload)
+            print(f"    {topic}: {probes[topic]} ({payload.get('trust_state')})")
         evidence = await call("recall_evidence", {"query": _query(FACT_TOPIC), "k": 3})
         cards = [c for c in evidence.get("cards") or [] if c.get("structured_facts")]
         if not cards:
@@ -341,10 +349,20 @@ def verify(workdir: Path) -> None:
         for topic, before in state["probes"].items():
             payload = await call("recall_search", {"query": _query(topic), "k": 3})
             _require_trusted("verify 5", topic, payload)
-            after = _top(payload)
+            after = _scored(payload)
             print(f"    {topic}: {after} ({payload.get('trust_state')})")
+            # What the upgrade must preserve is the data: the memo that answers stays first, and
+            # the same memos come back with the same dense cosines, which only identical stored
+            # vectors can give. The order of the lower, near-tied hits is retrieval policy, which
+            # a release may change; a change there is printed, not failed.
+            if after[0][0] != before[0][0]:
+                raise StepFailed(f"verify 5: the top hit for {topic!r} changed: before {before}, after {after}")
+            if sorted(map(tuple, after)) != sorted(map(tuple, before)):
+                raise StepFailed(
+                    f"verify 5: hits or cosines for {topic!r} changed: before {before}, after {after}"
+                )
             if after != before:
-                raise StepFailed(f"verify 5: top hits for {topic!r} changed: before {before}, after {after}")
+                print(f"    NOTE: {topic!r} reordered below the top hit: before {before}")
         return await call("recall_current_facts", {})
 
     current = asyncio.run(_server_calls(prod, workdir, read_calls))
@@ -355,7 +373,7 @@ def verify(workdir: Path) -> None:
         )
 
     print(f"verify 6: forget {FORGET_TOPIC}.md, a memo {state['seeded_by']} indexed", flush=True)
-    source = next(s for s in state["probes"][FORGET_TOPIC] if s.endswith(f"{FORGET_TOPIC}.md"))
+    source = next(s for s, _ in state["probes"][FORGET_TOPIC] if s.endswith(f"{FORGET_TOPIC}.md"))
     _run("verify 6", _recall("forget", source, "--yes"), env=prod, cwd=workdir)
 
     async def after_forget(call):
