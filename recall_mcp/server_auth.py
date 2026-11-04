@@ -162,8 +162,9 @@ class OidcTokenVerifier:
             # Called inline from here that stops the entire server for up to 20s, and the
             # single-flight `acquire(blocking=False)` written to prevent exactly that outage is
             # inert against it: it lets other THREADS carry on with cached keys, and an event
-            # loop has none, only coroutines that never get scheduled. Even fully warm, RSA
-            # verification is ~2ms of uninterruptible loop time on every authenticated request.
+            # loop has none, only coroutines that never get scheduled. Fully warm, a whole
+            # `validate` measured 0.25 ms p50 on the test host (2026-11-04, RS256; the worker hop
+            # brings `verify_token` to 0.48 ms), which is why there is no verified-token cache.
             principal = await _to_thread(lambda: self._validator.validate(token))
         except IdentityProviderUnavailable as exc:
             self._throttle.refund()
@@ -338,7 +339,12 @@ def build_auth(
     #   moment with the least rollback slack.
     oidc = oidc_validator_from_env(e) if has_oidc else None
     validator = oidc if use_oidc else None
-    registry = token_registry_from_env(e) if not use_oidc else None
+    # Loaded only where it is used. stdio authenticates nobody, so a leftover RECALL_AUTH_TOKENS_FILE
+    # there is inert: it gets the warning below rather than the production refusal (or a "file not
+    # found") from `load_token_registry`, which would stop a server that never reads it (DEF-45).
+    registry = (
+        token_registry_from_env(e) if not use_oidc and transport in HTTP_TRANSPORTS else None
+    )
 
     if has_oidc and has_static:
         # Precedence was declared, so the refusal no longer carries the warning. The log has to.
@@ -356,7 +362,7 @@ def build_auth(
         # access-controlled when the pipe itself is the only boundary. Two messages rather than
         # one generic one: an operator needs to know WHICH knob is inert, and "authentication is
         # unused" leaves them checking both.
-        if registry is not None:
+        if has_static and not use_oidc:
             _log.warning(
                 "%s is set but transport is %r — stdio has no remote "
                 "caller to authenticate, so the tokens are unused and the single tenant "

@@ -413,15 +413,50 @@ def benchmark_generation_setting(
     return value
 
 
-def _transport_security_settings(resource_url: str) -> TransportSecuritySettings:
-    parsed = urlsplit(resource_url)
-    if not parsed.scheme or not parsed.netloc:
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _transport_security_settings(
+    resource_url: str, extra_hosts: str = ""
+) -> TransportSecuritySettings:
+    """The Host and Origin allowlist for the HTTP transports.
+
+    The SDK compares both headers exactly (a `host:*` entry is its only pattern), so the resource
+    URL is stripped and lowercased, and its host is allowed with and without the scheme's default
+    port: a client that reaches `https://recall.example.com` sends `Host: recall.example.com`
+    whether or not the URL spelled `:443`. `extra_hosts` (RECALL_ALLOWED_HOSTS) names further
+    `host[:port]` values, for a service reached under an internal name or a proxy that rewrites
+    Host; each is allowed as given, lowercased, with the resource URL's scheme (DEF-46).
+    """
+    parsed = urlsplit(resource_url.strip())
+    if not parsed.scheme or not parsed.netloc or not parsed.hostname:
         raise AuthConfigError(
             "RECALL_AUTH_RESOURCE_URL must be an absolute URL so HTTP transport security can "
             "validate Host and Origin headers"
         )
-    origin = f"{parsed.scheme}://{parsed.netloc}"
-    return TransportSecuritySettings(allowed_hosts=[parsed.netloc], allowed_origins=[origin])
+    scheme = parsed.scheme.lower()
+    host = parsed.hostname.lower()
+    if ":" in host:  # an IPv6 literal goes back in brackets for a Host header
+        host = f"[{host}]"
+    default_port = _DEFAULT_PORTS.get(scheme)
+    if parsed.port is None or parsed.port == default_port:
+        netlocs = [host] + ([f"{host}:{default_port}"] if default_port else [])
+    else:
+        netlocs = [f"{host}:{parsed.port}"]
+    for raw in extra_hosts.split(","):
+        extra = raw.strip().lower()
+        if not extra:
+            continue
+        if "/" in extra or "@" in extra or extra.startswith(":") or extra.endswith(":"):
+            raise AuthConfigError(
+                f"RECALL_ALLOWED_HOSTS entry {raw.strip()!r} is not a host[:port]; give names "
+                f"such as recall.internal:8000, comma separated"
+            )
+        if extra not in netlocs:
+            netlocs.append(extra)
+    return TransportSecuritySettings(
+        allowed_hosts=netlocs, allowed_origins=[f"{scheme}://{n}" for n in netlocs]
+    )
 
 
 def _check_limiter_from_worker(
@@ -3569,7 +3604,9 @@ def main() -> None:
     if transport == "stdio":
         server.run()
     elif transport == "sse":
-        security = _transport_security_settings(environment["RECALL_AUTH_RESOURCE_URL"])
+        security = _transport_security_settings(
+            environment["RECALL_AUTH_RESOURCE_URL"], environment.get("RECALL_ALLOWED_HOSTS", "")
+        )
         server.run(
             transport="sse",
             host=host,
@@ -3577,7 +3614,9 @@ def main() -> None:
             transport_security=security,
         )
     else:
-        security = _transport_security_settings(environment["RECALL_AUTH_RESOURCE_URL"])
+        security = _transport_security_settings(
+            environment["RECALL_AUTH_RESOURCE_URL"], environment.get("RECALL_ALLOWED_HOSTS", "")
+        )
         server.run(
             transport="streamable-http",
             host=host,

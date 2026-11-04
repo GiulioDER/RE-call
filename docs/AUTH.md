@@ -127,6 +127,13 @@ The two URLs are published in the server's protected-resource metadata so a clie
 get a token and which audience it is for. When you provision tokens by hand, set both to the
 server's own public URL.
 
+`RECALL_AUTH_RESOURCE_URL` also sets the DNS-rebinding allowlist: requests whose `Host` (and
+`Origin`, when sent) do not name that host are refused, while `/livez` and `/readyz` stay green.
+The configured URL is stripped and lowercased, and its host is accepted with or without the
+scheme's default port. A client that
+reaches the server under another name (an in-cluster service name, or a proxy that rewrites
+`Host`) needs that name in `RECALL_ALLOWED_HOSTS=recall.internal:8000,...`.
+
 Clients send the token as an ordinary bearer credential:
 
 ```
@@ -199,7 +206,8 @@ Two limits, stated because discovering them mid-cutover is the expensive way:
 
 - **`RECALL_ENV=production` cannot run step 1.** Production refuses the static token file outright,
   and under `mode=static` that file is the active mechanism, so the rehearsal step is refused on
-  every transport including stdio. A production host still swaps in one revision; stage the cutover
+  an HTTP transport. (On stdio the file is never loaded: stdio authenticates nobody, so the server
+  warns that the tokens are unused and starts.) A production host still swaps in one revision; stage the cutover
   somewhere the token file is allowed, and treat production as the flip alone.
 - **Rollback needs two things kept.** Flipping `mode` back to `static` is a rollback only while the
   token file still exists, so do not remove it until you have renounced rollback. Set

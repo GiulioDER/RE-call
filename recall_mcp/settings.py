@@ -135,6 +135,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_PORT", "MCP", "HTTP bind port", "8000"),
     EnvironmentSpec("RECALL_MCP_STATELESS", "MCP", "stateless HTTP sessions; boolean", "1"),
     EnvironmentSpec("RECALL_MCP_TOOLS", "MCP", "comma or space separated tool names or presets"),
+    EnvironmentSpec("RECALL_ALLOWED_HOSTS", "MCP", "extra Host values (host[:port], comma separated) the HTTP transport accepts besides RECALL_AUTH_RESOURCE_URL's"),
     EnvironmentSpec("RECALL_LOG_LEVEL", "MCP", "log level", "INFO"),
     EnvironmentSpec("RECALL_LOG_FORMAT", "MCP", "text or json log format", "text"),
     EnvironmentSpec("RECALL_AUTH_MODE", "Authentication", "static or oidc"),
