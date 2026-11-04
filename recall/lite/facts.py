@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -214,6 +215,16 @@ class LiteFactLedger:
         self.materialize = materialize
         self.last_read: str | None = None
         ensure_fact_tables(store)
+
+    def erasure_lock(self, *, shared: bool) -> AbstractContextManager[Any]:
+        """`PostgresFactLedger.erasure_lock` on the file: its write lane, which a forget already
+        holds for its whole erase (`recall_mcp.lifecycle`), so an application waits for one and a
+        forget for it. The lane has no shared mode, so applications also take turns with each
+        other and with an index run (`recall.lite.writer_lock`; reentrant in one thread, so an
+        index's own stated-fact reconcile does not wait for itself)."""
+        from recall.backends import write_session
+
+        return write_session(self._store, "fact erasure" if not shared else "fact application")
 
     def _check(self, tenant_id: str) -> None:
         if tenant_id != self.tenant_id:

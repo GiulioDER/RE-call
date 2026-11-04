@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -421,9 +422,6 @@ def _next_request_id(request_id: str, removed: set[str]) -> str:
 
 
 def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | None = None) -> StatedFactsReport:
-    from recall.fact_retraction import FACT_WRITE_DSN_ENV
-    from recall.lite import LiteStore
-
     report = StatedFactsReport(True, "")
     memos = _admitted_memos(store, rule)
     report.memos_read = len(memos)
@@ -469,9 +467,39 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
         if (rid := _next_request_id(request_id, removed)) not in known
     ]
     # A forget that ran after the memos were read erased their request ids, so their facts would
-    # read as new and be recorded again; nothing serialises the two on PostgreSQL. What is no
-    # longer served is dropped here. A forget landing between this check and the writes below is
-    # not excluded: that needs a lock forget shares with this reconcile.
+    # read as new and be recorded again. What is no longer served is dropped here, and from this
+    # check to the last write the ledger's erasure lock is held shared, which a forget holds
+    # exclusively (`recall.fact_ledger.PostgresFactLedger.erasure_lock`): a forget either runs
+    # first, and the check sees its memos gone, or waits, and retracts what this wrote.
+    with _erasure_lock(ledger):
+        return _record_statements(store, generation_id, report, ledger, card_store, todo, cards, source_of)
+
+
+def _erasure_lock(ledger: object) -> AbstractContextManager[Any]:
+    """`ledger`'s erasure lock, shared, or nothing for a ledger without one."""
+    lock = getattr(ledger, "erasure_lock", None)
+    return lock(shared=True) if callable(lock) else nullcontext()
+
+
+def _record_statements(
+    store: Any,
+    generation_id: str,
+    report: StatedFactsReport,
+    ledger: Any,
+    card_store: Any,
+    todo: list[tuple[AtomicFact, EvidenceCard, str]],
+    cards: list[EvidenceCard],
+    source_of: dict[str, str],
+) -> StatedFactsReport:
+    """Record `todo` once its memos are known still served, under the caller's erasure lock.
+
+    `generation_id` is the one the cards were built with, read before the lock: on lite a forget
+    the lock waited for changes the store's generation (its fingerprint), and a controller built
+    on the new one refused every card of the old (2026-11-04 audit, DAT-004).
+    """
+    from recall.fact_retraction import FACT_WRITE_DSN_ENV
+    from recall.lite import LiteStore
+
     gone = _vanished(store, {source_of[card.card_id] for _fact, card, _rid in todo})
     before = len(todo)
     todo = [item for item in todo if source_of[item[1].card_id] not in gone]

@@ -59,6 +59,16 @@ FactCardinality = Literal["single", "set", "event"]
 FACT_CARDINALITIES: tuple[FactCardinality, ...] = get_args(FactCardinality)
 
 
+def fact_cardinality(value: object) -> FactCardinality | None:
+    """`value` as a `FactCardinality` (None stays None), refusing anything else."""
+    if value is None:
+        return None
+    for cardinality in FACT_CARDINALITIES:
+        if value == cardinality:
+            return cardinality
+    raise ValueError(f"cardinality must be one of {', '.join(FACT_CARDINALITIES)}")
+
+
 def _nfc(value: Any) -> Any:
     """`value` with every string in it NFC-normalised, containers rebuilt in their own type."""
     if isinstance(value, str):
@@ -129,7 +139,7 @@ class AtomicFact:
     #: The fact's own `FACT_CARDINALITIES` value; None defers to its predicate's
     #: (`recall.provenance_controller.predicate_cardinality`). Recorded in the payload only when
     #: set, so every fact that declares none keeps the identity it always had.
-    cardinality: str | None = None
+    cardinality: FactCardinality | None = None
 
     def __post_init__(self) -> None:
         # NFC at construction, so every comparison sees one spelling: the identity and the
@@ -142,8 +152,7 @@ class AtomicFact:
             object.__setattr__(self, name, unicodedata.normalize("NFC", value.strip()))
         object.__setattr__(self, "object", _nfc(self.object))
         object.__setattr__(self, "context", _nfc(dict(self.context)))
-        if self.cardinality is not None and self.cardinality not in FACT_CARDINALITIES:
-            raise ValueError(f"cardinality must be one of {', '.join(FACT_CARDINALITIES)}")
+        fact_cardinality(self.cardinality)
         valid_from = _utc_datetime(self.valid_from)
         valid_until = _utc_datetime(self.valid_until)
         object.__setattr__(self, "valid_from", valid_from)
@@ -183,9 +192,7 @@ class AtomicFact:
             context=dict(payload.get("context") or {}),
             valid_from=parse_time(payload.get("valid_from")),
             valid_until=parse_time(payload.get("valid_until")),
-            cardinality=(
-                str(payload["cardinality"]) if payload.get("cardinality") is not None else None
-            ),
+            cardinality=fact_cardinality(payload.get("cardinality")),
         )
 
 

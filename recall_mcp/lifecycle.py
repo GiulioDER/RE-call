@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -131,6 +131,20 @@ def _fact_ledger_for(store: object) -> Any | None:
     return fact_ledger_for(store, runtime_environment())
 
 
+def _erasure_lock(store: PgVectorStore) -> AbstractContextManager[Any]:
+    """The fact ledger's erasure lock, held exclusively for a whole forget or withdraw.
+
+    Every fact application holds it shared from its card checks to its append
+    (`recall.fact_ledger.PostgresFactLedger.erasure_lock`), so an assertion is either in this
+    erase's plan or checked after its memo is gone, never appended in between and left
+    unretracted (STAKES-003). Taken before anything is deleted; a lock that cannot be taken
+    raises, and nothing is deleted. Nothing for a store with no ledger.
+    """
+    ledger = _fact_ledger_for(store)
+    lock = getattr(ledger, "erasure_lock", None)
+    return lock(shared=False) if callable(lock) else nullcontext()
+
+
 def _forget_retractions(
     store: PgVectorStore,
     shadow_store: PgVectorStore | None,
@@ -191,7 +205,7 @@ def forget_memory(
 
     erasing = store.erasing() if isinstance(store, LiteStore) else nullcontext()
     pending = control_plane.erasure_session(store.tenant) if control_plane else nullcontext(None)
-    with write_session(store, "forget"), erasing, pending as scrub_pending:
+    with write_session(store, "forget"), _erasure_lock(store), erasing, pending as scrub_pending:
         result = _forget_memory_unlocked(
             store, sources, shadow_store, scrub_pending, security_policy, security_context,
             erase_memo_requests=erase_memo_requests,
@@ -233,7 +247,7 @@ def withdraw_memory(
 
     erasing = store.erasing() if isinstance(store, LiteStore) else nullcontext()
     pending = control_plane.erasure_session(store.tenant) if control_plane else nullcontext(None)
-    with write_session(store, "forget"), erasing, pending as scrub_pending:
+    with write_session(store, "forget"), _erasure_lock(store), erasing, pending as scrub_pending:
         result = _forget_memory_unlocked(
             store, sources, shadow_store, scrub_pending, security_policy, security_context,
             withdraw=True,
