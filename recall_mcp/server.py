@@ -114,7 +114,7 @@ from recall_mcp.retrieval import (
 )
 from recall_mcp.federation_adapter import federation_diagnostics, prepare_federated_execution
 from recall_mcp.reasoning_api import reasoning_audit, reasoning_query
-from recall.profiles import RetrievalProfile
+from recall.profiles import RetrievalOverloaded, RetrievalProfile
 from recall_mcp.stores import StoreRegistry
 from recall_mcp.tool_surface import LITE_UNSERVED_TOOLS, FilteredToolRegistrar, resolve_tool_surface
 from recall_mcp.translation import (
@@ -252,7 +252,7 @@ async def _record_mutation_result(
     if store is None:
         registry = state.get("stores")
         if isinstance(registry, StoreRegistry):
-            store = registry.get(tenant)
+            store = await _to_thread(lambda: registry.get(tenant))
     durable = getattr(store, "record_operation_receipt", None)
     if callable(durable):
         await _to_thread(
@@ -949,7 +949,8 @@ def ingest_into_serving_store(
             "share one route decision"
         )
     if route.enterprise:
-        raise RuntimeError(
+        # A preflight refusal: nothing was written, so the caller's reservation is released.
+        raise IndexPreflightError(
             "enterprise control plane does not accept direct staged uploads; build an immutable "
             "generation from a manifest and cut it over through the control plane"
         )
@@ -1134,6 +1135,24 @@ def _tool_error_for_trust_refusal(refusal: TrustRefusal, *, refresh_warning: str
     return ToolError(json.dumps(payload, sort_keys=True))
 
 
+def _tool_error_for_overload(overload: RetrievalOverloaded) -> ToolError:
+    """Keep a retryable overload's reason and retry hint visible through MCP's error channel.
+
+    The SDK replaces any exception that is not a ToolError with a bare "Error executing tool",
+    which would drop exactly the fields the search tools document for this case (BUG-001).
+    """
+    return ToolError(
+        json.dumps(
+            {
+                "error": "retrieval_overloaded",
+                "reason": overload.reason,
+                "retry_after_seconds": overload.retry_after_seconds,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def _retrieval_plan_for(
     state: Mapping[str, object],
     store: PgVectorStore,
@@ -1253,6 +1272,8 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 refresher = state.get("lite_refresher")
                 warning = refresher.warning() if refresher is not None else None
                 raise _tool_error_for_trust_refusal(exc, refresh_warning=warning) from exc
+            except RetrievalOverloaded as exc:
+                raise _tool_error_for_overload(exc) from exc
             if locale is None:
                 return _serving_json(result)
             return await _translation_to_thread(
@@ -1642,6 +1663,8 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
 def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _require = deps.require
+    _require_mutation = deps.require_mutation
+    _record_mutation_result = deps.record_mutation_result
     _state = deps.state
     _access_context = deps.access_context
 
@@ -2096,6 +2119,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         stale_quote: str,
         current_quote: str,
         task: str | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         """Report that one memory you used is replaced by another, newer one you also saw.
 
@@ -2103,9 +2127,34 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         status and one clearly replaces the other. Not for a memory that is merely old, partial or
         off topic. Name both by their source path, and copy at least 20 characters exactly from
         each: the outdated statement and the one that replaces it. The report is queued for a
-        person to review; nothing in memory changes until they accept it.
+        person to review; nothing in memory changes until they accept it. A server with a
+        shared rate limiter requires `idempotency_key`, as for every write.
         """
-        store = await _require(SCOPE_WRITE, ctx)
+        state = _state(ctx)
+        operation = "recall_report_stale"
+        fingerprint = _mutation_fingerprint(
+            operation,
+            {
+                "stale_source": stale_source,
+                "replacing_source": replacing_source,
+                "stale_quote": stale_quote,
+                "current_quote": current_quote,
+                "task": task,
+            },
+        )
+        store, replay = await _require_mutation(
+            SCOPE_WRITE,
+            ctx,
+            idempotency_key=idempotency_key,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
+        if replay is not None:
+            return replay
+        assert store is not None
+        # An authenticated server serves many tenants from one process root, so it records
+        # reports only in the caller's own ledger (SEC-001).
+        sidecar = state.get("stores") is None
         with METRICS.timer("recall_tool_latency_ms", tool="report_stale"):
             try:
                 result = await _to_thread(
@@ -2116,13 +2165,24 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         stale_quote=stale_quote,
                         current_quote=current_quote,
                         task=task,
+                        sidecar=sidecar,
                     )
                 )
             except StaleReportRefused as exc:
+                await _release_mutation_reservation(state, store.tenant, idempotency_key)
                 raise ToolError(
                     json.dumps({"error": "stale_report_refused", "reason": str(exc)}, sort_keys=True)
                 ) from exc
-        return json.dumps(result, indent=2)
+        payload = json.dumps(result, indent=2)
+        await _record_mutation_result(
+            state,
+            store.tenant,
+            idempotency_key,
+            payload,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
+        return payload
 
     @mcp.tool(
         name="recall_report_use",
@@ -2144,6 +2204,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         task_succeeded: bool | None = None,
         query: str | None = None,
         note: str | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         """After a task that searched memory, say what the memories did for it.
 
@@ -2152,9 +2213,33 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         misleading; name each by its source as search returned it. Set `task_succeeded` when you
         know whether the task itself succeeded, and `query` to the search you made. Report once
         per task, honestly, including when memory did not help: the counts are only useful if
-        the no-difference cases are in them. Nothing in memory or search changes.
+        the no-difference cases are in them. Nothing in memory or search changes. A server with
+        a shared rate limiter requires `idempotency_key`, as for every write.
         """
-        store = await _require(SCOPE_WRITE, ctx)
+        state = _state(ctx)
+        operation = "recall_report_use"
+        fingerprint = _mutation_fingerprint(
+            operation,
+            {
+                "task": task,
+                "effect": effect,
+                "used": used or [],
+                "wrong": wrong or [],
+                "task_succeeded": task_succeeded,
+                "query": query,
+                "note": note,
+            },
+        )
+        store, replay = await _require_mutation(
+            SCOPE_WRITE,
+            ctx,
+            idempotency_key=idempotency_key,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
+        if replay is not None:
+            return replay
+        assert store is not None
         with METRICS.timer("recall_tool_latency_ms", tool="report_use"):
             try:
                 result = await _to_thread(
@@ -2170,13 +2255,23 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     )
                 )
             except UseReportRefused as exc:
+                await _release_mutation_reservation(state, store.tenant, idempotency_key)
                 raise ToolError(
                     json.dumps(
                         {"error": "use_report_refused", "reason": str(exc), "effects": list(EFFECTS)},
                         sort_keys=True,
                     )
                 ) from exc
-        return json.dumps(result, indent=2)
+        payload = json.dumps(result, indent=2)
+        await _record_mutation_result(
+            state,
+            store.tenant,
+            idempotency_key,
+            payload,
+            idempotency_operation=operation,
+            idempotency_fingerprint=fingerprint,
+        )
+        return payload
 
     @mcp.tool(
         name="recall_reasoning_audit",
@@ -2260,7 +2355,10 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         limiter = state.get("limiter")
         tenant = _current_tenant(state)
         registry: StoreRegistry | None = state.get("stores")
-        try:
+
+        def _shadow_preflight() -> tuple[PgVectorStore | None, Embedder | None]:
+            # Synchronous control-plane and store work (a route read is a fresh connection, and
+            # an embedder may load a model), so it runs in a worker, not on the loop (PERF-002).
             shadow_store = (
                 registry.get_shadow(tenant) if registry is not None and tenant is not None else None
             )
@@ -2292,6 +2390,10 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                                 "shadow embedder dimension does not match generation"
                             )
                         cache[profile_id] = shadow_embedder
+            return shadow_store, shadow_embedder
+
+        try:
+            shadow_store, shadow_embedder = await _to_thread(_shadow_preflight)
         except Exception:  # BROAD-CATCH: cleanup-only
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
@@ -2416,7 +2518,12 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             category != "memory" or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", source_namespace)
         ):
             raise ValueError("source_namespace requires memory uploads and 1 to 64 safe characters")
-        fingerprint = _ingest_mutation_fingerprint(files, category, source_namespace) if idempotency_key else None
+        # Hashing, decoding and writing up to 50 MiB is CPU and disk work: keep it off the loop.
+        fingerprint = (
+            await _to_thread(lambda: _ingest_mutation_fingerprint(files, category, source_namespace))
+            if idempotency_key
+            else None
+        )
         store, replay = await _require_mutation(
             SCOPE_WRITE,
             ctx,
@@ -2429,7 +2536,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             return replay
         assert store is not None
         try:
-            job_id, root, total_bytes = stage_uploads(store.tenant, files)
+            job_id, root, total_bytes = await _to_thread(lambda: stage_uploads(store.tenant, files))
         except BaseException:
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
@@ -2447,6 +2554,8 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     read_only=False,
                 )
             except BaseException:
+                # Synchronous on purpose: this handler also sees a cancellation, and an awaited
+                # worker call would hit anyio's checkpoint and skip the cleanup.
                 discard_staging(root)
                 await _release_mutation_reservation(state, store.tenant, idempotency_key)
                 raise
@@ -2458,10 +2567,11 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         **({"source_namespace": source_namespace} if source_namespace is not None else {}),
                     )
                 )
-        except LiteWriterBusy:
-            # Refused before the lite store's write lane was held, so nothing was indexed: drop
-            # the staged files and the reservation, so the retry the message invites can run.
-            discard_staging(root)
+        except (IndexPreflightError, LiteWriterBusy):
+            # Refused before any write (a preflight refusal, or the lite store's write lane busy),
+            # so nothing was indexed: drop the staged files and the reservation, so a retry can
+            # run instead of being told the mutation may have committed.
+            await _to_thread(lambda: discard_staging(root))
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
         except Exception:  # BROAD-CATCH: fail-closed
@@ -2488,7 +2598,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     explicit=True,
                 )
             if route.enterprise or not route.uses_generation:
-                discard_staging(root)
+                await _to_thread(lambda: discard_staging(root))
             raise
         payload = json.loads(result.model_dump_json())
         payload.update({"job_id": job_id, "state": "completed", "category": category})
@@ -2720,7 +2830,10 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
         shadow = (
-            registry.get_shadow(tenant) if registry is not None and tenant is not None else None
+            # get_shadow holds the registry lock across a control-plane read (PERF-002).
+            await _to_thread(lambda: registry.get_shadow(tenant))
+            if registry is not None and tenant is not None
+            else None
         )
         control = registry.control_plane if registry is not None else None
         try:
@@ -2799,7 +2912,10 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         registry: StoreRegistry | None = state.get("stores")
         tenant = _current_tenant(state)
         shadow = (
-            registry.get_shadow(tenant) if registry is not None and tenant is not None else None
+            # get_shadow holds the registry lock across a control-plane read (PERF-002).
+            await _to_thread(lambda: registry.get_shadow(tenant))
+            if registry is not None and tenant is not None
+            else None
         )
         control = registry.control_plane if registry is not None else None
         try:
@@ -3223,9 +3339,10 @@ def build_server(settings: Settings | None = None) -> MCPServer:
     ) -> PgVectorStore:
         """Authorise this call and return the store for the caller's OWN tenant.
 
-        Every tool body goes through here. The store it hands back is the only one that tool can
-        reach, so a missing scope check cannot leak data across tenants — at worst it lets a
-        principal do the wrong thing inside its own namespace.
+        Every tool body goes through here. The store it hands back is the caller's own tenant's.
+        The one other route to another tenant's store is federated retrieval, which reaches the
+        registry through `_retrieval_plan_for` and is gated there by `recall:federate`, not here;
+        any new use of `state["stores"]` must repeat that check.
 
         This is also where the per-tenant call budget is debited, for the same reason: one choke
         point that a new tool cannot forget to call, because it cannot get a store without it.
@@ -3237,6 +3354,11 @@ def build_server(settings: Settings | None = None) -> MCPServer:
             # to charge and no one to protect the local user from but themselves, so the budget
             # does not apply — matching how auth itself is scoped.
             store: PgVectorStore = state["store"]
+            served = getattr(store, "tenant", None)
+            if requested_tenant is not None and requested_tenant != served:
+                raise PermissionError(
+                    f"this single-tenant server serves tenant {served!r}, not {requested_tenant!r}"
+                )
             if scope != SCOPE_READ and idempotency_key:
                 durable = await _durable_replay(
                     store, idempotency_key, idempotency_operation, idempotency_fingerprint
@@ -3284,7 +3406,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
                 except IdempotencyResultMissing as missing:
                     if scope == SCOPE_READ:
                         raise
-                    store = registry.get(tenant)
+                    store = await _to_thread(lambda: registry.get(tenant))
                     durable = await _durable_replay(
                         store,
                         missing.idempotency_key,
@@ -3313,7 +3435,9 @@ def build_server(settings: Settings | None = None) -> MCPServer:
                 result = check(tenant, _SCOPE_BUDGETS[scope])
                 if hasattr(result, "__await__"):
                     await result
-        store = registry.get(tenant)
+        # StoreRegistry.get holds a process-wide lock across synchronous PostgreSQL work (a
+        # control-plane route refresh, a lazy tenant's store open), so it runs in a worker.
+        store = await _to_thread(lambda: registry.get(tenant))
         if scope != SCOPE_READ and idempotency_key:
             durable = await _durable_replay(
                 store, idempotency_key, idempotency_operation, idempotency_fingerprint
@@ -3380,14 +3504,15 @@ def build_server(settings: Settings | None = None) -> MCPServer:
 
 def main() -> None:
     settings = bootstrap_settings()
-    server = build_server(settings)
     environment = settings.env
     # stderr only, and propagate=False — stdout carries JSON-RPC, so a stray log line there
-    # would corrupt the protocol.
+    # would corrupt the protocol. Before build_server: its auth and trust-mode warnings must
+    # reach the configured handler and format, not Python's bare last-resort one (ENV-002).
     configure_logging(
         level=environment.get("RECALL_LOG_LEVEL", "INFO"),
         fmt=environment.get("RECALL_LOG_FORMAT", "text"),
     )
+    server = build_server(settings)
     transport = settings.transport
     host = settings.host
     port = settings.port
