@@ -31,11 +31,12 @@ import os
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TypedDict, Unpack
 from datetime import datetime
 from pathlib import Path
 
 from recall.atomic_write import atomic_write_bytes
-from recall.dashboard.review import _DECISION_LOCK, ReviewRefused, memo_files
+from recall.dashboard.review import DECISION_LOCK, ReviewRefused, is_memo_name, memo_files
 from recall.document import parse_document
 from recall.frontmatter import (
     SupersedesDeclaresNothing,
@@ -53,7 +54,7 @@ from recall.lint import (
     supersession_cycle_closed_by,
     supersession_graph_of,
 )
-from recall.rewrite import RewriteRefused, _derived_value, set_derived_status
+from recall.rewrite import RewriteRefused, derived_value, set_derived_status
 from recall.state_dir import make_parent
 from recall.stale_reports import StaleReportRefused, resolve_memo
 from recall.truth_extraction.types import STATUS_VOCABULARY
@@ -62,6 +63,16 @@ from recall.truth_extraction.types import STATUS_VOCABULARY
 KEEP = object()
 
 _LEDGER = ".recall/edits.sqlite3"
+
+
+class EditChanges(TypedDict, total=False):
+    """The values one edit changes; a key left out is kept as it is (`KEEP`)."""
+
+    add_supersedes: tuple[str, ...]
+    remove_supersedes: tuple[str, ...]
+    valid_from: object
+    valid_until: object
+    status: object
 
 
 class EditRefused(ReviewRefused):
@@ -124,7 +135,7 @@ def _memo(root: Path, name: str) -> tuple[str, Path]:
         _corpus_name, path = resolve_memo(root, name)
     except StaleReportRefused as exc:
         raise EditRefused(str(exc)) from exc
-    if path.suffix.lower() != ".md" or any(part.startswith(".") for part in path.relative_to(root).parts):
+    if not is_memo_name(root, path):
         # The editor lists `memo_files` only: never write front matter into `.git/config`, an
         # `.obsidian` settings file or a text file that a typed URL names.
         raise EditRefused(f"{name} is not a memo in this corpus")
@@ -170,7 +181,7 @@ def current_values(root: Path, name: str) -> MemoValues:
         supersedes=supersedes_targets(meta.get("supersedes")),
         valid_from=str(meta["valid_from"]) if meta.get("valid_from") else None,
         valid_until=str(meta["valid_until"]) if meta.get("valid_until") else None,
-        status=_derived_value(raw, "status"),
+        status=derived_value(raw, "status"),
     )
 
 
@@ -557,7 +568,7 @@ def _require_person(editor: str, note: str) -> None:
 
 def apply_edit(
     root: Path, name: str, *, editor: str, note: str, shown_sha: str, now: datetime,
-    shown_after_sha: str | None = None, **changes: object,
+    shown_after_sha: str | None = None, **changes: Unpack[EditChanges],
 ) -> EditRecord:
     """Make the edit if the memo is still the one the person saw, and record it.
 
@@ -566,10 +577,10 @@ def apply_edit(
     """
     _require_person(editor, note)
     root = root.resolve()
-    with _DECISION_LOCK:
+    with DECISION_LOCK:
         try:
             with EditLedger(root) as ledger:
-                plan = plan_edit(root, name, **changes)  # type: ignore[arg-type]
+                plan = plan_edit(root, name, **changes)
                 if plan.before_sha != shown_sha:
                     raise EditRefused(f"{plan.name} changed since you reviewed the edit; review it again")
                 if shown_after_sha is not None and plan.after_sha != shown_after_sha:
@@ -585,7 +596,7 @@ def undo_edit(root: Path, edit_id: int, *, editor: str, note: str, now: datetime
     _require_person(editor, note)
     root = root.resolve()
     try:
-        with _DECISION_LOCK, EditLedger(root) as ledger:
+        with DECISION_LOCK, EditLedger(root) as ledger:
             found = ledger.bytes_of(edit_id)
             if found is None:
                 raise EditRefused(f"no edit {edit_id}")
@@ -633,7 +644,7 @@ def history(root: Path, name: str | None = None, limit: int = 50) -> list[EditRe
         except (sqlite3.Error, OSError):
             pass  # fall through to the locked open, which reports a storage failure properly
     try:
-        with _DECISION_LOCK, EditLedger(root.resolve()) as ledger:
+        with DECISION_LOCK, EditLedger(root.resolve()) as ledger:
             return ledger.history(name, limit)
     except (sqlite3.Error, OSError) as exc:
         raise EditRefused(f"edit history storage is unavailable: {exc}") from exc
@@ -645,7 +656,7 @@ def pending_refusal(root: Path, name: str) -> str | None:
     if not path.exists() or not (_recovery_names(path) or set()) & {name}:
         return None
     try:
-        with _DECISION_LOCK, EditLedger(root.resolve()) as ledger:
+        with DECISION_LOCK, EditLedger(root.resolve()) as ledger:
             return ledger.refusal(name)
     except (sqlite3.Error, OSError) as exc:
         raise EditRefused(f"edit history storage is unavailable: {exc}") from exc

@@ -203,7 +203,7 @@ def search(dsn: str, tenant: str, event_id: str) -> dict[str, Any] | None:
         return _search_row(row) if row is not None else None
 
 
-def control(dsn: str, tenant: str) -> dict[str, Any]:
+def control(dsn: str, tenant: str, *, retrievals: bool = True) -> dict[str, Any]:
     """`recall.dashboard.db.control`, the same rules: one retrieval per (search, memory), at its best rank."""
     memos: dict[str, dict[str, Any]] = {}
 
@@ -217,7 +217,7 @@ def control(dsn: str, tenant: str) -> dict[str, Any]:
     with connect(dsn) as c:
         search_rows = list(_events(c, tenant, SEARCH_EVENTS))
         report_rows = list(_events(c, tenant, (USE_REPORT_EVENT,)))
-    for _id, event_type, _a, _g, _s, raw, created in search_rows:
+    for _id, event_type, _a, _g, _s, raw, created in (search_rows if retrievals else ()):
         if event_type != "search_decision":
             continue
         at = _when(created)

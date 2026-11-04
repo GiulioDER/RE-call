@@ -1004,6 +1004,10 @@ def _derived_value(raw: bytes, key: str) -> str | None:
     return None
 
 
+#: The public name the dashboard's memo editor reads a derived value through.
+derived_value = _derived_value
+
+
 def set_derived_status(raw: bytes, value: str | None) -> bytes | None:
     """Set the memo's `status` in the derived block to `value`, or remove it when None.
 

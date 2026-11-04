@@ -50,7 +50,13 @@ from typing import Any
 from recall.dashboard.db import MAX_STALE_REPORTS, DatabaseUnavailable
 from recall.document import parse_document
 from recall.errors import RecallError
-from recall.frontmatter import encodable_name, supersedes_key, supersedes_targets
+from recall.frontmatter import (
+    SupersedesDeclaresNothing,
+    add_supersedes_target,
+    encodable_name,
+    supersedes_key,
+    supersedes_targets,
+)
 from recall.promotion import (
     PromotedFact,
     accept_reviewed_proposal,
@@ -77,7 +83,7 @@ AGENT_PROVIDER_REVISION = "stale_reports.v1"
 #: One decision at a time per process. `apply_rewrite` takes no lock, and two writes to one memo are
 #: last writer wins; across processes the edit ledger's reservation (`_edit_reservation`) serializes
 #: an accept with every dashboard edit, and the memo hash below catches a writer that is not a dashboard.
-_DECISION_LOCK = threading.Lock()
+DECISION_LOCK = threading.Lock()
 
 
 class ReviewRefused(ValueError, RecallError):
@@ -178,11 +184,38 @@ def rejected_claims(root: Path) -> frozenset[str]:
         return ledger.claims()
 
 
+def is_memo_name(root: Path, path: Path) -> bool:
+    """Whether resolved `path`, inside resolved `root`, is a name `memo_files` would list.
+
+    A `.md` file outside every dot directory: never `.git/config`, an `.obsidian` settings file,
+    the `.recall` sidecar or a text file that a typed URL names.
+    """
+    return path.suffix.lower() == ".md" and not any(part.startswith(".") for part in path.relative_to(root).parts)
+
+
+def memo_path(root: Path, name: str) -> Path | None:
+    """The memo `name` names inside `root`, or None: the one rule the dashboard's readers share.
+
+    An anchored name (absolute, drive, UNC) is refused before any filesystem call, then the
+    resolved path must stay inside the root, be a file, and be a name `memo_files` lists.
+    """
+    if anchored(name):
+        return None  # never a memo here, and resolving it could reach another host
+    try:
+        boundary = root.resolve()
+        path = (root / name).resolve()
+        if not path.is_relative_to(boundary) or not path.is_file():
+            return None
+        return path if is_memo_name(boundary, path) else None
+    except (OSError, ValueError):  # ValueError: a NUL in a name stand-in
+        return None
+
+
 def already_declared(root: Path, stale: str, replacing: str) -> bool:
     """Whether the newer memo already names the stale one in `supersedes:`."""
-    if anchored(replacing):
-        return False  # never a memo here, and opening it could reach another host
-    path = root / replacing
+    path = memo_path(root, replacing)
+    if path is None:
+        return False
     try:
         meta = parse_document(path.read_text(encoding="utf-8-sig")).meta
     except (OSError, ValueError):  # ValueError: a decode failure, or a NUL in a name stand-in
@@ -456,16 +489,12 @@ def build_queue(
 
 def memo_digest(root: Path, name: str) -> str:
     """The hash of the memo a decision would edit, as the page showed it."""
-    if anchored(name):
-        raise ReviewRefused(f"{name!r} is outside the corpus")
+    path = memo_path(root, name)
+    if path is None:
+        raise ReviewRefused(f"{name!r} is not a memo in the corpus")
     try:
-        path = (root / name).resolve()
-        if not path.is_relative_to(root.resolve()):
-            raise ReviewRefused(f"{name!r} is outside the corpus")
         return hashlib.sha256(path.read_bytes()).hexdigest()
-    except (OSError, ValueError) as exc:
-        if isinstance(exc, ReviewRefused):
-            raise
+    except OSError as exc:
         raise ReviewRefused(f"{name!r} cannot be read: {exc}") from exc
 
 
@@ -491,7 +520,7 @@ def accept(root: Path, item: QueueItem, *, reviewer: str, note: str, shown_diges
     """Write the declaration, if the memo is still the one the reviewer saw."""
     root = root.resolve()
     fact = _promoted(item, reviewer, note, now)
-    with _DECISION_LOCK, _edit_reservation(root) as edits:
+    with DECISION_LOCK, _edit_reservation(root) as edits:
         # Planned once, for the fact being written, and handed to `apply_rewrite`: planning reads
         # the whole corpus, and this lock holds every other decision while it does.
         try:
@@ -503,22 +532,58 @@ def accept(root: Path, item: QueueItem, *, reviewer: str, note: str, shown_diges
             raise ReviewRefused(stuck)
         if memo_digest(root, plan.edit_file) != shown_digest:
             raise ReviewRefused(f"{plan.edit_file} changed since you reviewed it; review the new version")
+        if plan.key != "supersedes" or plan.block != "frontmatter":
+            raise ReviewRefused(f"the queue only declares supersedes, not {plan.key} in the {plan.block}")
         try:
             with RejectionLedger(default_ledger_path(root)) as ledger:
-                result = apply_rewrite(root, fact, ledger=ledger, apply=True, plan=plan)
+                # A dry run: every refusal `apply_rewrite` knows (a rejected claim, a declaration
+                # already there) is still judged by it, but the write goes through the edit ledger.
+                result = apply_rewrite(root, fact, ledger=ledger, apply=False, plan=plan)
         except RewriteRefused as exc:
             raise ReviewRefused(str(exc)) from exc
-        if not result.written:
+        if result.refusal is not None:
             raise ReviewRefused(f"not written: {result.refusal}")
+        _record_accept(root, edits, plan, reviewer=reviewer, note=note, now=now)
         _close_report(root, item.claim, "accepted", reviewer, note, now)
         return plan
+
+
+def _record_accept(root: Path, edits: Any, plan: RewritePlan, *, reviewer: str, note: str, now: datetime) -> None:
+    """Write the accepted declaration as a dashboard edit: recovery bytes first, then history.
+
+    So an accept keeps who decided and why, the bytes before it, a line on the Activity page and
+    an undo on the memo's page, as an edit made in the memo editor does. The bytes are the ones
+    `apply_rewrite` writes for a supersedes declaration (`add_supersedes_target`).
+    """
+    from recall.dashboard.edit import EditOutcomeUnknown, EditPlan, EditRefused
+
+    path = memo_path(root, plan.edit_file)
+    if path is None:
+        raise ReviewRefused(f"{plan.edit_file!r} is not a memo in the corpus")
+    before = path.read_bytes()
+    try:
+        after = add_supersedes_target(before, plan.value)
+    except (SupersedesDeclaresNothing, ValueError) as exc:
+        raise ReviewRefused(f"not written: {exc}") from exc
+    if after is None:
+        raise ReviewRefused(f"not written: {plan.edit_file} already declares supersedes: {plan.value!r}")
+    summary = (f"supersedes {plan.value} (accepted from the review queue)",)
+    try:
+        edits.replace(
+            EditPlan(name=encodable_name(plan.edit_file), before=before, after=after, summary=summary, diff=()),
+            editor=reviewer, note=note, at=now,
+        )
+    except EditOutcomeUnknown as exc:
+        raise DecisionRecorded(str(exc)) from exc
+    except EditRefused as exc:
+        raise ReviewRefused(str(exc)) from exc
 
 
 def reject(root: Path, item: QueueItem, *, reviewer: str, note: str, now: datetime) -> None:
     """Record the claim as declined, so no source shows it again."""
     root = root.resolve()
     _require_person(reviewer, note)
-    with _DECISION_LOCK, _edit_reservation(root):
+    with DECISION_LOCK, _edit_reservation(root):
         # Checked again under the reservation an accept holds, so a reject racing an accept of the
         # same claim (two tabs, two dashboards) cannot record a decline beside a written declaration.
         if item.claim in rejected_claims(root) or already_declared(root, item.stale, item.replacing):

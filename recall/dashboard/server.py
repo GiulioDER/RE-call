@@ -68,6 +68,16 @@ LITE_CORPUS_MESSAGE = (
 TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 # The corpora this project serves, first in the switcher, by what they hold.
 PRIMARY_TENANTS = (("memory", "memory"), ("re-call-code-gen", "code"), ("re-call-docs", "docs"), (MULTIMODAL_TENANT, "multimodal"))
+PRIMARY_LABELS = dict(PRIMARY_TENANTS)
+PRIMARY_ORDER = tuple(name for name, _ in PRIMARY_TENANTS)
+#: Display caps, each used both to cut a list and to say that it was cut.
+MAX_LINKS_LISTED = 40
+MAX_FIND_HITS = 60
+MAX_ISSUES_LISTED = 60
+MAX_CHUNK_CHARS = 4000
+#: How much of the memo the Find page shows before and after a match.
+FIND_SNIPPET_BEFORE = 80
+FIND_SNIPPET_AFTER = 160
 MAX_MEMO_CHARS = 20_000
 #: The overview counts recorded searches by reading at most this many; above it the tile says so.
 MAX_COUNTED_SEARCHES = 500
@@ -548,9 +558,9 @@ class DashboardApp:
             else f"<span class='absent' title='{_e(name)} has no active generation in this database.'>{_e(label)} <span class='muted'>not built</span></span>"
             for name, label in PRIMARY_TENANTS
         ]
-        rest = [link(name, name) for name in names if name not in dict(PRIMARY_TENANTS)]
+        rest = [link(name, name) for name in names if name not in PRIMARY_LABELS]
         others = f"<span class='eyebrow sub'>benchmarks and other projects · {len(rest)}</span>{''.join(rest)}" if rest else ""
-        label = dict(PRIMARY_TENANTS).get(current, current)
+        label = PRIMARY_LABELS.get(current, current)
         return (
             f"<details class='tenantpick'><summary title='Which corpus the search pages read'>corpus <b>{_e(label)}</b> ▾</summary>"
             f"<div class='tenantlist'>{''.join(main)}{others}</div></details>"
@@ -641,54 +651,54 @@ class DashboardApp:
         return secrets.compare_digest(value.encode("utf-8", "surrogatepass"), self.token.encode("utf-8"))
 
     def _route(self, method: str, path: str, query: Mapping[str, str], cookies: Mapping[str, str], body: bytes) -> Response:
-        url = urlsplit(path)
-        if method == "GET" and url.path == "/overview":
+        # `path` is the request path `handle` already split off: it carries no query to split again.
+        if method == "GET" and path == "/overview":
             return self._overview_page()
-        if method == "GET" and url.path == "/retrieval":
+        if method == "GET" and path == "/retrieval":
             return self._retrieval_page(query.get("q", ""))
-        if method == "GET" and url.path == "/retrieval/event":
+        if method == "GET" and path == "/retrieval/event":
             return self._retrieval_event_page(query.get("id", ""))
-        if method == "GET" and url.path == "/":
+        if method == "GET" and path == "/":
             return self._home_page()
-        if method == "GET" and url.path == "/queue":
+        if method == "GET" and path == "/queue":
             return self._queue_page(query.get("done"))
-        if method == "GET" and url.path == "/control":
+        if method == "GET" and path == "/control":
             return self._control_page(query.get("sort", ""))
-        if method == "GET" and url.path == "/control/memo":
+        if method == "GET" and path == "/control/memo":
             return self._control_memo_page(query.get("source", ""))
-        if method == "GET" and url.path == "/read":
+        if method == "GET" and path == "/read":
             return self._read_page(query.get("path", ""))
-        if method == "GET" and url.path == "/find":
+        if method == "GET" and path == "/find":
             return self._find_page(query.get("q", ""))
-        if method == "GET" and url.path == "/review":
+        if method == "GET" and path == "/review":
             return self._review_page(query.get("claim", ""), cookies)
-        if method == "GET" and url.path == "/activity":
+        if method == "GET" and path == "/activity":
             return self._activity_page()
-        if method == "GET" and url.path == "/health":
+        if method == "GET" and path == "/health":
             return self._health_page(cookies)
-        if method == "GET" and url.path == "/config":
+        if method == "GET" and path == "/config":
             return self._config_page(query.get("all", "") == "1")
-        if method == "GET" and url.path == "/graph":
+        if method == "GET" and path == "/graph":
             return self._graph_page(self._corpus_param(query))
-        if method == "GET" and url.path == "/api/graph.json":
+        if method == "GET" and path == "/api/graph.json":
             return self._graph_json(self._corpus_param(query))
-        if method == "GET" and url.path == "/corpus/source":
+        if method == "GET" and path == "/corpus/source":
             return self._corpus_source_page(query.get("file", ""))
-        if method == "GET" and url.path in _STATIC_FILES:
-            name, kind = _STATIC_FILES[url.path]
+        if method == "GET" and path in _STATIC_FILES:
+            name, kind = _STATIC_FILES[path]
             return Response(HTTPStatus.OK, (STATIC / name).read_bytes(), (("Content-Type", kind),))
-        if method == "GET" and url.path == "/memo":
+        if method == "GET" and path == "/memo":
             return self._memo_page(query.get("path", ""), query.get("done"), cookies, query.get("add", ""))
-        if method == "POST" and url.path in ("/accept", "/reject", "/memo/preview", "/memo/apply", "/memo/undo", "/lint/dismiss", "/lint/restore"):
+        if method == "POST" and path in ("/accept", "/reject", "/memo/preview", "/memo/apply", "/memo/undo", "/lint/dismiss", "/lint/restore"):
             fields = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
             form = {k: v[0] for k, v in fields.items()}
             if not secrets.compare_digest(form.get("csrf", "").encode("utf-8", "surrogatepass"), self.csrf.encode("ascii")):
                 return self._error(HTTPStatus.FORBIDDEN, "This form did not come from this page.")
-            if url.path.startswith("/memo/"):
-                return self._memo_action(url.path[len("/memo/"):], form, fields.get("remove", []))
-            if url.path.startswith("/lint/"):
-                return self._lint_action(url.path[len("/lint/"):], form)
-            return self._decide(url.path[1:], form)
+            if path.startswith("/memo/"):
+                return self._memo_action(path[len("/memo/"):], form, fields.get("remove", []))
+            if path.startswith("/lint/"):
+                return self._lint_action(path[len("/lint/"):], form)
+            return self._decide(path[1:], form)
         return self._error(HTTPStatus.NOT_FOUND, "No such page.")
 
     # ------------------------------------------------------------------ pages
@@ -700,7 +710,7 @@ class DashboardApp:
         # The queue is built once, above; the graph is only asked for its counts.
         counts = build_graph(self.root, include_queue=False)["counts"]
         tenant = self._current_tenant()
-        label = dict(PRIMARY_TENANTS).get(tenant, tenant)
+        label = PRIMARY_LABELS.get(tenant, tenant)
         attention: list[tuple[str, str, str, str]] = []
         if pending:
             attention.append(("signal", f"{pending} change{'s' if pending != 1 else ''} waiting for your review",
@@ -717,7 +727,8 @@ class DashboardApp:
                               "Start the dashboard with --db-dsn-file to read the corpus database (read-only).", "/overview"))
         else:
             try:
-                data = dbq.control(self.db, tenant)
+                # The home page shows the summary and reported-wrong memos, never retrieval counts.
+                data = dbq.control(self.db, tenant, retrievals=False)
                 chosen = next((t for t in self._tenants() if t["tenant"] == tenant), None)
             except dbq.DatabaseUnavailable:
                 attention.append(("warn", "The corpus database did not answer", "Searches and agent reports cannot be shown right now.", "/overview"))
@@ -838,7 +849,7 @@ class DashboardApp:
         body = f"<div class='tiles'>{tiles}</div>{explain}<div class='chips sortbar'>{chips}</div>{table}"
         return self._html(self._shell(
             title="RE-call · control", active="control", root=self.root, pending=0,
-            eyebrow=f"control · {dict(PRIMARY_TENANTS).get(tenant, tenant)}", heading="Is memory doing its job?",
+            eyebrow=f"control · {PRIMARY_LABELS.get(tenant, tenant)}", heading="Is memory doing its job?",
             lede="For each memory: how often search returned it, and what agents said it did for their task.",
             body=body,
         ))
@@ -952,8 +963,8 @@ class DashboardApp:
         def link_list(title: str, items: list[str], note: str = "") -> str:
             if not items:
                 return ""
-            shown = "".join(f"<li>{self._memo_link(n)}</li>" for n in items[:40])
-            more = f"<li class='muted'>and {len(items) - 40} more</li>" if len(items) > 40 else ""
+            shown = "".join(f"<li>{self._memo_link(n)}</li>" for n in items[:MAX_LINKS_LISTED])
+            more = f"<li class='muted'>and {len(items) - MAX_LINKS_LISTED} more</li>" if len(items) > MAX_LINKS_LISTED else ""
             return f"<div class='card'><span class='eyebrow'>{_e(title)}</span>{f'<p class=muted>{_e(note)}</p>' if note else ''}<ul class='plain'>{shown}{more}</ul></div>"
 
         side = (
@@ -982,12 +993,10 @@ class DashboardApp:
         ))
 
     def _find_page(self, q: str) -> Response:
-        from recall.dashboard.graph import _memo_files
-
         needle = q.strip().lower()
         hits: list[tuple[int, str, str]] = []
         if needle:
-            for path in _memo_files(self.root):
+            for path in review.memo_files(self.root):
                 name = path.relative_to(self.root).as_posix()
                 try:
                     text = path.read_text(encoding="utf-8", errors="replace")
@@ -998,18 +1007,18 @@ class DashboardApp:
                 at = found.start() if found else -1
                 if needle not in name.lower() and at < 0:
                     continue
-                snippet = " ".join(text[max(0, at - 80): at + 160].split()) if at >= 0 else " ".join(text[:200].split())
+                snippet = " ".join(text[max(0, at - FIND_SNIPPET_BEFORE): at + FIND_SNIPPET_AFTER].split()) if at >= 0 else " ".join(text[:200].split())
                 hits.append((0 if needle in name.lower() else 1, name, snippet))
         hits.sort()
         cards = "".join(
             f"<div class='card found'><div class='names'>{self._memo_link(name)} <a class='muted small' href='/graph#memo={_e(quote(name, safe=''))}'>graph</a></div>"
             f"<div class='muted'>{_e(snippet)}</div></div>"
-            for _, name, snippet in hits[:60]
+            for _, name, snippet in hits[:MAX_FIND_HITS]
         )
         if not needle:
             body = "<div class='card empty'><b>Type a name or a few words</b>Searches memo file names and their text, on this machine.</div>"
         else:
-            more = f"<p class='muted'>Showing 60 of {len(hits)}.</p>" if len(hits) > 60 else ""
+            more = f"<p class='muted'>Showing {MAX_FIND_HITS} of {len(hits)}.</p>" if len(hits) > MAX_FIND_HITS else ""
             body = (cards + more) or f"<div class='card empty'><b>No memo mentions “{_e(q.strip())}”</b>Try fewer or different words.</div>"
         return self._html(self._shell(
             title="RE-call · find", active="", root=self.root, pending=0,
@@ -1053,14 +1062,12 @@ class DashboardApp:
 
     def _memo(self, name: str) -> str:
         """The whole memo, so the evidence is found wherever it is; the full view is cut for display."""
-        if _anchored(name):
+        path = review.memo_path(self.root, name)
+        if path is None:
             return ""
         try:
-            path = (self.root / name).resolve()
-            if not path.is_relative_to(self.root) or not path.is_file():
-                return ""
             return path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, ValueError):
+        except OSError:
             return ""
 
     def _review_page(self, claim: str, cookies: Mapping[str, str]) -> Response:
@@ -1123,9 +1130,7 @@ class DashboardApp:
     # ------------------------------------------------------------------ memo editing (a person's)
 
     def _memo_names(self) -> list[str]:
-        from recall.dashboard.graph import _memo_files
-
-        return [encodable_name(p.relative_to(self.root).as_posix()) for p in _memo_files(self.root)]
+        return [encodable_name(p.relative_to(self.root).as_posix()) for p in review.memo_files(self.root)]
 
     def _memo_page(self, name: str, done: str | None, cookies: Mapping[str, str], prefill: str = "") -> Response:
         try:
@@ -1206,17 +1211,19 @@ class DashboardApp:
         )
 
     @staticmethod
-    def _changes(form: Mapping[str, str], remove: list[str], values: edit.MemoValues) -> dict[str, object]:
-        changes: dict[str, object] = {}
+    def _changes(form: Mapping[str, str], remove: list[str], values: edit.MemoValues) -> edit.EditChanges:
+        changes: edit.EditChanges = {}
         if form.get("add", "").strip():
             changes["add_supersedes"] = (form["add"].strip(),)
         if remove:
             changes["remove_supersedes"] = tuple(remove)
         for key in ("valid_from", "valid_until"):
-            if form.get(f"clear_{key}"):
-                changes[key] = None
-            elif form.get(key, "") and form.get(key) != getattr(values, key):
-                changes[key] = form[key]
+            value: object = None if form.get(f"clear_{key}") else form.get(key, "")
+            if value is None or (value and value != getattr(values, key)):
+                if key == "valid_from":
+                    changes["valid_from"] = value
+                else:
+                    changes["valid_until"] = value
         status = form.get("status", "")
         if status == "__clear__":
             changes["status"] = None
@@ -1238,7 +1245,7 @@ class DashboardApp:
             values = edit.current_values(self.root, name)
             changes = self._changes(form, remove, values)
             if action == "preview":
-                plan = edit.plan_edit(self.root, name, **changes)  # type: ignore[arg-type]
+                plan = edit.plan_edit(self.root, name, **changes)
                 return self._preview_page(plan, form, remove)
             record = edit.apply_edit(
                 self.root, name, editor=form.get("editor", ""), note=form.get("note", ""),
@@ -1379,7 +1386,9 @@ class DashboardApp:
         restored = "".join(
             f"<li>{self._memo_link(f.file)}: <span class='muted'>{_e(f.sentence[:160])}</span>"
             f"<form method='post' action='/lint/restore' class='inline'>{token}<input type='hidden' name='file' value='{_e(f.file)}'>"
-            f"<input type='hidden' name='sha' value='{_e(f.sentence_sha)}'><button type='submit' class='link'>show again</button></form></li>"
+            f"<input type='hidden' name='sha' value='{_e(f.sentence_sha)}'>"
+            f"<input name='reviewer' value='{_e(reviewer)}' placeholder='your name' required>"
+            "<input name='note' placeholder='why (optional)'><button type='submit' class='link'>show again</button></form></li>"
             for f in dismissed
         )
         intro = (
@@ -1400,8 +1409,15 @@ class DashboardApp:
                 return self._error(HTTPStatus.CONFLICT, f"Nothing was recorded: {exc}")
             return Response(HTTPStatus.SEE_OTHER, b"", (("Location", "/health"), self._reviewer_header(form.get("reviewer", ""))))
         if action == "restore":
-            triage.restore(self.root, file, sha)
-            return Response(HTTPStatus.SEE_OTHER, b"", (("Location", "/health"),))
+            try:
+                restored = triage.restore(
+                    self.root, file, sha, reviewer=form.get("reviewer", ""), note=form.get("note", ""), now=datetime.now(UTC)
+                )
+            except triage.TriageRefused as exc:
+                return self._error(HTTPStatus.CONFLICT, f"Nothing was recorded: {exc}")
+            if not restored:
+                return self._error(HTTPStatus.CONFLICT, "Nothing to show again: that decision is not on record.")
+            return Response(HTTPStatus.SEE_OTHER, b"", (("Location", "/health"), self._reviewer_header(form.get("reviewer", ""))))
         return self._error(HTTPStatus.NOT_FOUND, "No such action.")
 
     def _health_page(self, cookies: Mapping[str, str]) -> Response:
@@ -1433,9 +1449,9 @@ class DashboardApp:
         sections: list[str] = []
         for code, found in sorted(by_code.items(), key=lambda item: -len(item[1])):
             items = "".join(
-                f"<li>{self._memo_link(name)} <a class='muted' href='/graph#memo={_e(quote(name, safe=''))}'>graph</a></li>" for name, _level, _msg in found[:60]
+                f"<li>{self._memo_link(name)} <a class='muted' href='/graph#memo={_e(quote(name, safe=''))}'>graph</a></li>" for name, _level, _msg in found[:MAX_ISSUES_LISTED]
             )
-            more = f"<li class='muted'>and {len(found) - 60} more</li>" if len(found) > 60 else ""
+            more = f"<li class='muted'>and {len(found) - MAX_ISSUES_LISTED} more</li>" if len(found) > MAX_ISSUES_LISTED else ""
             sections.append(
                 f"<details class='card' {'open' if len(sections) == 0 else ''}><summary><span class='tag'>{_e(found[0][1])}</span> "
                 f"<b>{_e(code)}</b> · {len(found)}</summary><p class='muted'>{_e(found[0][2])}</p><ul class='plain'>{items}{more}</ul></details>"
@@ -1595,7 +1611,7 @@ class DashboardApp:
             f"<p class='muted mono'>schema: {_e(migrations or 'unknown')}</p>"
         )
         cards = []
-        order = [name for name, _ in PRIMARY_TENANTS]
+        order = list(PRIMARY_ORDER)
         for t in sorted(every, key=lambda x: (not x["generation"], order.index(x["tenant"]) if x["tenant"] in order else len(order), -x["chunks"])):
             if not t["generation"]:
                 continue
@@ -1889,7 +1905,7 @@ class DashboardApp:
         chunks = "".join(
             "<details class='card'" + (" open" if i < 3 else "") + "><summary>"
             f"<b>#{_e(c['ordinal'])}</b> {_e(' › '.join(c['headings']) or '(no heading)')}</summary>"
-            f"<pre class='chunk'>{_e(c['text'][:4000])}{'…' if len(c['text']) > 4000 else ''}</pre></details>"
+            f"<pre class='chunk'>{_e(c['text'][:MAX_CHUNK_CHARS])}{'…' if len(c['text']) > MAX_CHUNK_CHARS else ''}</pre></details>"
             for i, c in enumerate(found["chunks"])
         )
         more = (
@@ -1922,11 +1938,11 @@ class DashboardApp:
                 names = [t["tenant"] for t in self._tenants() if t["generation"]]
             except dbq.DatabaseUnavailable:
                 names = []
-        order = [name for name, _ in PRIMARY_TENANTS]
+        order = list(PRIMARY_ORDER)
         # The main corpora only, plus the one shown if it is another: a deployment can hold dozens
         # of benchmark tenants, and any of them is still reachable as `/graph?corpus=<name>`.
         names = sorted((n for n in names if n in order or n == corpus), key=lambda n: (order.index(n) if n in order else len(order), n))
-        labels = dict(PRIMARY_TENANTS)
+        labels = PRIMARY_LABELS
         links = [f"<a href='/graph' class='{'on' if not corpus else ''}'>memo files</a>"] + [
             f"<a href='/graph?{_e(urlencode({'corpus': name}))}' class='{'on' if name == corpus else ''}'>{_e(labels.get(name, name))}</a>"
             for name in names

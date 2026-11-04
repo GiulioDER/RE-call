@@ -58,9 +58,6 @@ def _born(text: str, name: str, path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).date().isoformat()
 
 
-_memo_files = memo_files
-
-
 def _display(text: str, stem: str) -> tuple[str, str]:
     """Title and description for display only: a top-level heading, else the file stem."""
     front = _FRONT.match(text)
@@ -91,7 +88,7 @@ def build_graph(
     """
     root = root.resolve()
     now = today or datetime.now(UTC)
-    files = _memo_files(root)
+    files = memo_files(root)
     # Stand-ins for names that are not UTF-8, as the editor uses: a raw surrogate breaks the page encode.
     names = [encodable_name(path.relative_to(root).as_posix()) for path in files]
 

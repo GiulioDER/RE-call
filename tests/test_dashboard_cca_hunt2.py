@@ -309,7 +309,7 @@ def test_perf005_history_does_not_wait_behind_a_decision(root: Path) -> None:
     plan = edit.plan_edit(root, "b.md", status="draft")
     edit.apply_edit(root, "b.md", editor="p", note="n", shown_sha=plan.before_sha, now=NOW, status="draft")
     done: list[int] = []
-    with review._DECISION_LOCK:
+    with review.DECISION_LOCK:
         reader = threading.Thread(target=lambda: done.append(len(edit.history(root))), daemon=True)
         reader.start()
         reader.join(3)

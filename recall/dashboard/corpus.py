@@ -205,26 +205,23 @@ def _instant(today: str) -> datetime:
 def _state(file: str, graph: SupersessionGraph, valid_from: str | None, valid_until: str | None, today: str) -> str:
     """The trust gate's verdict for `file` on `today`, in this view's words: `superseded` only
     while a successor is itself valid (the window rule), `ambiguous` for a file a claim cannot
-    pick out, and `not_yet_valid` apart from `expired`. A self-claim is no claim."""
+    pick out, `invalid_metadata` for validity dates the gate cannot read, and `not_yet_valid`
+    apart from `expired`. A self-claim is no claim."""
     if file in graph.unresolved:
         return "ambiguous"
-    if graph.successor(file, now=_instant(today)) is not None:
-        return "superseded"
     try:
         # The trust gate's own parse: it accepts `2026-9-30`, which a string comparison orders
         # after `2026-11-04`, drawing an expired file current.
         start, end = validity_bounds({"valid_from": valid_from, "valid_until": valid_until})
     except ValueError:
-        pass  # not a plain date (or an empty window): compared as written, below
-    else:
-        if end is not None and end < _instant(today):
-            return "expired"
-        if start is not None and start > _instant(today):
-            return "not_yet_valid"
-        return "current"
-    if valid_until and valid_until[:10] < today:
+        # A malformed date or an empty window: the gate refuses the file as `invalid_metadata`,
+        # ahead of supersession (`recall.trust_gate`), so this view says so rather than guessing.
+        return "invalid_metadata"
+    if graph.successor(file, now=_instant(today)) is not None:
+        return "superseded"
+    if end is not None and end < _instant(today):
         return "expired"
-    if valid_from and valid_from[:10] > today:
+    if start is not None and start > _instant(today):
         return "not_yet_valid"
     return "current"
 
