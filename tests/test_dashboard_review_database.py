@@ -255,7 +255,7 @@ def test_the_queue_page_reads_the_database_and_reject_closes_it(corpus: Path, mo
 
     monkeypatch.setattr(dbq, "stale_reports", reports)
     monkeypatch.setattr(dbq, "tenants", lambda db: [])
-    app = DashboardApp(corpus, port=PORT, token="tok123", db=dbq.DashboardDB("postgresql://unused"))
+    app = DashboardApp(corpus, port=PORT, token="tok123", db=dbq.DashboardDB("postgresql://unused"), reports_tenants=("memory",))
     page = app.handle("GET", "/queue", SIGNED).body.decode()
     assert asked and set(asked) == {("memory",)}, "the queue read reports from tenants this folder is not bound to"
     assert "review?" + urlencode({"claim": KEY}) in page

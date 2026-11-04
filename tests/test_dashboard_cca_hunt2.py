@@ -85,6 +85,9 @@ def _accept_form(app: DashboardApp, root: Path) -> bytes:
 
 
 def _app(root: Path, **kwargs: Any) -> DashboardApp:
+    # Written against the shared `memory` corpus, which is no longer the default tenant (ENV-010).
+    kwargs.setdefault("default_tenant", "memory")
+    kwargs.setdefault("reports_tenants", ("memory",))
     return DashboardApp(root, port=8765, token="tok", **kwargs)
 
 

@@ -119,7 +119,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> FakeCorpus:
 
 @pytest.fixture
 def app(corpus: Path, fake: FakeCorpus) -> DashboardApp:
-    return DashboardApp(corpus, port=8765, token="tok", db=DashboardDB("postgresql://fake"))
+    return DashboardApp(corpus, port=8765, token="tok", db=DashboardDB("postgresql://fake"), default_tenant="memory")
 
 
 def test_without_a_database_the_memo_pages_serve_and_the_database_pages_say_so(corpus: Path) -> None:

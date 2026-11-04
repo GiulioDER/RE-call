@@ -83,7 +83,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         default=None,
         metavar="TENANT",
         help="a tenant whose agent stale reports belong to this folder's review queue; repeat for "
-        "more (default: the SQLite file's tenant, else memory). "
+        "more (default: the SQLite file's tenant, else default). "
         "Reports filed in any other tenant are not shown.",
     )
     parser.set_defaults(func=_cmd_dashboard)

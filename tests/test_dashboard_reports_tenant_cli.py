@@ -59,4 +59,4 @@ def test_any_named_tenant_reaches_the_app(monkeypatch, tmp_path: Path) -> None:
     assert isinstance(seen[-1], _Served), f"a named tenant was refused: {seen[-1]!r}"
     assert seen[0].reports_tenants == ("memory", "_bench")  # type: ignore[attr-defined]
     default, _ = _run(monkeypatch, tmp_path)
-    assert default.reports_tenants == ("memory",)  # type: ignore[attr-defined]
+    assert default.reports_tenants == ("default",)  # type: ignore[attr-defined]  # ENV-010

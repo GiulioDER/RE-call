@@ -27,7 +27,7 @@ def test_retrieval_keeps_answer_abstention_and_refusal_distinct(tmp_path: Path, 
         rows.append({"event_id": outcome, "event": "search_refusal" if outcome == "refused" else "search_decision",
                      "actor": "test", "generation": None, "created_at": WHEN, **dbq._summarise(payload)})
     fake.searches["memory"] = rows
-    app = DashboardApp(tmp_path, port=8765, token="tok", db=dbq.DashboardDB("postgresql://fake"))
+    app = DashboardApp(tmp_path, port=8765, token="tok", db=dbq.DashboardDB("postgresql://fake"), default_tenant="memory")
     listing = app.handle("GET", "/retrieval", SIGNED).body.decode()
     assert "<span class='eyebrow'>answered</span><b>1</b>" in listing, "NUM-002: a refusal counted as an answer"
     assert ">refused</span>" in listing

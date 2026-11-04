@@ -75,9 +75,9 @@ Cross package edges: 376
 | 17 | `recall.cli_commands.calibration_cmd` |
 | 17 | `recall.wizard.headless` |
 | 16 | `recall.cli_commands.setup_wizard` |
+| 16 | `recall.dashboard.server` |
 | 16 | `recall.generation_store` |
 | 16 | `recall_mcp.semantic_graph_cache` |
-| 15 | `recall.dashboard.server` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.lifecycle` |
 | 15 | `recall_mcp.query_construction_api` |
@@ -547,7 +547,7 @@ They are observations, not automatic failures.
 | `recall.dashboard.lite_db` | 5 | 130 |
 | `recall.dashboard.markdown` | 0 | 0 |
 | `recall.dashboard.review` | 9 | 132 |
-| `recall.dashboard.server` | 15 | 162 |
+| `recall.dashboard.server` | 16 | 162 |
 | `recall.dashboard.triage` | 6 | 133 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 106 |

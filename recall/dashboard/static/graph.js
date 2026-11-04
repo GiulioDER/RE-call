@@ -97,6 +97,8 @@
 
   function stateAt(n) {
     if (!asOf) return n.state;
+    // Dates search cannot read hold on no day: comparing the raw text would draw it current.
+    if (n.state === "invalid_metadata") return n.state;
     if (n.valid_until && n.valid_until < asOf) return "expired";
     if (n.valid_from && n.valid_from > asOf) return "expired";
     const by = supersededBy.get(n.id);
