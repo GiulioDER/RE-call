@@ -679,6 +679,8 @@ def _setup_with_model_name(project: Path, monkeypatch: pytest.MonkeyPatch) -> tu
     """A store built by setup from the spec `content-words`, whose embedder's own `name` (what the
     store records as `embedder_model`) is a model name no resolver accepts, as fastembed's
     `BAAI/bge-small-en-v1.5` is. The returned list collects every name refresh asks to resolve."""
+    import sqlite3
+
     import recall.embeddings as embeddings
     from recall.lite.setup import run_lite_setup
 
@@ -688,6 +690,17 @@ def _setup_with_model_name(project: Path, monkeypatch: pytest.MonkeyPatch) -> tu
         project_root=project, memory=project / "memory", embedder=embedder,  # type: ignore[arg-type]
         embedder_name="content-words", register=False,
     )
+    # The store writes `embedder_model` only when it saves a calibration, and three memos do not
+    # calibrate. Record it as a calibrated setup does (the CI run certified and recorded it), or
+    # refresh never reaches the resolver and neither test observes anything.
+    conn = sqlite3.connect(report.store)
+    with conn:
+        conn.execute(
+            "INSERT INTO meta(key, value) VALUES ('embedder_model', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (embedder.name,),
+        )
+    conn.close()
     asked: list[str] = []
 
     def resolve(name: str) -> ContentWordEmbedder:
@@ -707,9 +720,11 @@ def test_refresh_after_setup_needs_no_embedder_flag(
     embedder setup used. It crashed on every OS in CI (PR 1169) with `unknown embedder:
     'BAAI/bge-small-en-v1.5'`, because refresh fell back to the recorded model name.
 
-    Red proof: NOT YET RUN. The planned mutation removes `store.record_embedder_spec(embedder_name)`
-    from `recall.lite.setup.run_lite_setup`; the expected failure is the `asked` assertion with
-    `['org/model-name']`. The behaviour itself was seen red end to end: the first-run-lite job of
+    Red proof, 2026-11-04 on the remote test host: with `store.record_embedder_spec(embedder_name)` removed from
+    `recall.lite.setup.run_lite_setup`, this failed at the `asked` assertion with
+    `['org/model-name'] == ['content-words']`; restored, it passed. (A first version of the fixture
+    did not record `embedder_model`, and the same mutation then failed with `[]`: refresh never
+    reached the resolver. The fixture records it now.) End to end, the first-run-lite job of
     PR 1169 failed on all three OSes at this refresh before the fix."""
     db, asked = _setup_with_model_name(project, monkeypatch)
     try:
@@ -727,12 +742,12 @@ def test_refresh_of_a_store_without_a_recorded_spec_asks_instead_of_crashing(
     """A store set up before the spec was recorded holds only the model name. Refresh must say
     which flag to pass, not raise the resolver's ValueError as a traceback.
 
-    Red proof: NOT YET RUN. The planned mutation removes the `except ValueError` branch from
-    `recall.cli_commands.lite_cmd._cmd_refresh`; the expected failure is `pytest.fail` with the
-    resolver's "unknown embedder: 'org/model-name'"."""
+    Red proof, 2026-11-04 on the remote test host: with the `try`/`except ValueError` around `resolve_embedder`
+    removed from `recall.cli_commands.lite_cmd._cmd_refresh`, this failed at `pytest.fail` with
+    "unknown embedder: 'org/model-name'"; restored, it passed."""
     import sqlite3
 
-    db, _ = _setup_with_model_name(project, monkeypatch)
+    db, asked = _setup_with_model_name(project, monkeypatch)
     conn = sqlite3.connect(db)
     with conn:
         conn.execute("DELETE FROM meta WHERE key = 'embedder_spec'")
@@ -741,6 +756,7 @@ def test_refresh_of_a_store_without_a_recorded_spec_asks_instead_of_crashing(
         code = _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"))
     except ValueError as exc:
         pytest.fail(f"refresh raised the resolver's error instead of asking: {exc}")
+    assert asked == ["org/model-name"], f"refresh never tried the recorded model name: {asked}"
     assert code == -1, "refresh did not stop with a message"
 
 
