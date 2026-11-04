@@ -792,7 +792,7 @@ They are observations, not automatic failures.
 | `recall_hooks.__main__` | 1 | 117 |
 | `recall_hooks.auditor_brief` | 5 | 116 |
 | `recall_hooks.codex` | 3 | 118 |
-| `recall_hooks.credentials` | 1 | 116 |
+| `recall_hooks.credentials` | 2 | 116 |
 | `recall_hooks.general_knowledge` | 2 | 116 |
 | `recall_hooks.hosted` | 3 | 116 |
 | `recall_hooks.mcp_cleanup` | 0 | 0 |

@@ -201,7 +201,12 @@ def write_refresh_token(config: dict[str, Any], token: str) -> str:
             ring.set_password(KEYRING_SERVICE, account, token)
             return "keyring"
         except Exception:  # BROAD-CATCH: fail-open
-            pass
+            # `read_refresh_token` prefers the keychain, so an older token left there would
+            # shadow the one about to go to the file, and after a rotation that one is dead.
+            try:
+                ring.delete_password(KEYRING_SERVICE, account)
+            except Exception:  # BROAD-CATCH: fail-open
+                pass
     path = fallback_path()
     try:
         stored = json.loads(path.read_text(encoding="utf-8"))
@@ -306,12 +311,26 @@ def access_token(config: dict[str, Any], *, now: float | None = None) -> Credent
     cached = cached_access_token(config, now=now)
     if cached is not None:
         return cached
-    stored = read_refresh_token(config)
-    if not stored:
-        raise AuthError("no stored credential; run `recall-hooks login`")
-    cred = refresh(config, stored, now=now)
-    store_access_token(config, cred)
-    return cred
+    from .general_knowledge import _claim_lock  # noqa: PLC0415 - only a refresh pays for it
+
+    # One refresh per credential at a time. A provider that rotates refresh tokens refuses the
+    # second redeemer of the same token, and with reuse detection revokes the whole family, so
+    # two hooks refreshing together would sign the user out. The waiter re-reads the cache the
+    # winner just wrote. The wait outlasts the 15 s token request, so it fails only on a hang.
+    cache = token_cache_path(config)
+    try:
+        with _claim_lock(cache.parent, cache.stem, timeout=20.0):
+            cached = cached_access_token(config, now=now)
+            if cached is not None:
+                return cached
+            stored = read_refresh_token(config)
+            if not stored:
+                raise AuthError("no stored credential; run `recall-hooks login`")
+            cred = refresh(config, stored, now=now)
+            store_access_token(config, cred)
+            return cred
+    except TimeoutError as exc:
+        raise AuthError("another process is still refreshing this credential") from exc
 
 
 def headers(config: dict[str, Any], *, now: float | None = None) -> dict[str, str]:
@@ -443,19 +462,25 @@ def logout(config: dict[str, Any], *, out: Any = None) -> int:
     """
     out = out or sys.stdout
     removed = []
-    account = _credential_key(config)
+    # The bare account key is what every version before the context-v1 key stored under. It is
+    # never READ any more, which is exactly why logout must still remove it: nothing else will.
+    accounts = [_credential_key(config), _account(config)]
     ring = _keyring()
     if ring is not None:
-        try:
-            ring.delete_password(KEYRING_SERVICE, account)
-            removed.append("keychain")
-        except Exception:  # BROAD-CATCH: fail-open
-            pass
+        for account in accounts:
+            try:
+                ring.delete_password(KEYRING_SERVICE, account)
+                if "keychain" not in removed:
+                    removed.append("keychain")
+            except Exception:  # BROAD-CATCH: fail-open
+                pass
     path = fallback_path()
     try:
         stored = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(stored, dict) and account in stored:
-            del stored[account]
+        present = [a for a in accounts if isinstance(stored, dict) and a in stored]
+        if present:
+            for account in present:
+                del stored[account]
             _write_private_json(path, stored)
             removed.append(str(path))
     except (OSError, json.JSONDecodeError):

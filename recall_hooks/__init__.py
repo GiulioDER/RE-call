@@ -78,8 +78,11 @@ def load_config() -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        # `utf-8-sig`: a BOM written by a Windows editor must not silently switch the integration
+        # off. ValueError covers bytes that are not UTF-8 at all, which would otherwise raise out
+        # of SessionStart, whose contract is to fail open.
+        document = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError, RecursionError):
         return {}
     return document if isinstance(document, dict) else {}
 
@@ -134,7 +137,11 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
             pass
         return int(config.get("chunks", 0) or 0)
 
-    _save_config({**config, "chunks": count})
+    # Re-read rather than write back the snapshot: indexing can take minutes, and an install or
+    # a hand edit made meanwhile must survive. A count taken against another corpus is dropped.
+    current = load_config()
+    if all(current.get(key) == config.get(key) for key in ("dsn", "tenant", "table")):
+        _save_config({**current, "chunks": count})
     return count
 
 
@@ -335,10 +342,16 @@ def memory_dirs(cwd: str, override: str = "") -> list[tuple[str, Path]]:
     The `root_id` namespaces them, because two roots with the same internal layout would otherwise
     collide into one uploaded name and each sync would overwrite the other's file.
     """
+    def linked(path: Path) -> bool:
+        # `is_symlink` is False for a Windows junction, which still redirects the whole root.
+        # normcase: Windows may resolve the leaf to its on-disk case, which is not a link.
+        resolved = os.path.normcase(str(path.resolve()))
+        return path.is_symlink() or resolved != os.path.normcase(str(path.parent.resolve() / path.name))
+
     roots: list[tuple[str, Path]] = []
     if cwd:
         local = Path(str(cwd)) / "memory"
-        if local.is_dir() and not local.is_symlink():
+        if local.is_dir() and not linked(local):
             roots.append(("worktree", local))
     try:
         from .prompt_time import find_store
@@ -348,7 +361,7 @@ def memory_dirs(cwd: str, override: str = "") -> list[tuple[str, Path]]:
     if (
         store is not None
         and store.is_dir()
-        and not store.is_symlink()
+        and not linked(store)
         and all(store != path for _id, path in roots)
     ):
         roots.append(("project", store))
@@ -442,24 +455,27 @@ def session_end(payload: dict[str, Any]) -> int:
     # MCP transports belong to the client session, not to the checkout. Keep this before the
     # memory refresh so a slow or missing corpus cannot skip transport cleanup. The import stays
     # local because SessionStart is on the hot path and must not pay for process inspection.
-    try:
-        from .mcp_cleanup import close_own_mcp_transports
+    # `clear` and `resume` end a conversation inside a client that keeps running and keeps its
+    # MCP connections, so closing them would leave the rest of the session with dead tools.
+    if payload.get("reason") not in {"clear", "resume"}:
+        try:
+            from .mcp_cleanup import close_own_mcp_transports
 
-        close_own_mcp_transports(
-            str(payload.get("_client_pid") or os.environ.get("CLAUDE_PID", "")),
-            str(payload.get("_client_mark") or os.environ.get("RECALL_MCP_CLIENT", "")),
-            # The event's session_id is used by the workspace claim, but the generated config is
-            # the durable MCP identity source. Do not substitute an unrelated event ID here when
-            # a manually generated config has its own opaque session ID; the cleanup module will
-            # recover the config ID below.
-            session_id=str(payload.get("_client_session_id")
-                           or os.environ.get("RECALL_MCP_SESSION_ID", "")),
-            cwd=str(payload.get("cwd") or ""),
-        )
-    except BaseException:
-        # SessionEnd is fail-open. A cleanup diagnostic must never prevent memory refresh or
-        # turn a missing process table into a session failure.
-        pass
+            close_own_mcp_transports(
+                str(payload.get("_client_pid") or os.environ.get("CLAUDE_PID", "")),
+                str(payload.get("_client_mark") or os.environ.get("RECALL_MCP_CLIENT", "")),
+                # The event's session_id is used by the workspace claim, but the generated config
+                # is the durable MCP identity source. Do not substitute an unrelated event ID here
+                # when a manually generated config has its own opaque session ID; the cleanup
+                # module will recover the config ID below.
+                session_id=str(payload.get("_client_session_id")
+                               or os.environ.get("RECALL_MCP_SESSION_ID", "")),
+                cwd=str(payload.get("cwd") or ""),
+            )
+        except BaseException:
+            # SessionEnd is fail-open. A cleanup diagnostic must never prevent memory refresh or
+            # turn a missing process table into a session failure.
+            pass
     try:
         from .relay import stop
 
@@ -570,6 +586,12 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         return 0
+    # Every hook runs in the session's directory, which may be a repository nobody here wrote.
+    # Windows CreateProcess searches the current directory before PATH for a bare name such as
+    # `git`, `powershell` or `taskkill`, so a `git.exe` committed at a repository's root would run
+    # instead of git. This variable turns that search off for every child this process starts;
+    # elsewhere it is inert. Nothing here guarantees the client already set it.
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
     if args[0] in {"login", "logout", "auth-headers"}:
         return _auth_command(args)
     if args[0] == "warm-auditor-brief":

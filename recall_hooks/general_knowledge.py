@@ -770,7 +770,7 @@ def _prune_state(state_dir: Path) -> None:
 
 
 @contextmanager
-def _claim_lock(home: Path, key: str) -> Iterator[None]:
+def _claim_lock(home: Path, key: str, timeout: float = CLAIM_LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
     """Serialize one session's read/update, with a bounded wait and automatic OS unlock.
 
     Lock files remain in a separate directory: unlinking a lock file while another process has
@@ -782,7 +782,7 @@ def _claim_lock(home: Path, key: str) -> Iterator[None]:
         if handle.tell() == 0:
             handle.write(b"0")
             handle.flush()
-        deadline = time.monotonic() + CLAIM_LOCK_TIMEOUT_SECONDS
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 if sys.platform == "win32":

@@ -69,6 +69,7 @@ which is why the query is the DRAFT TEXT rather than a goal description.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -97,6 +98,10 @@ TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 #: Beside the hook config rather than inside it: `SessionEnd` rewrites that file asynchronously,
 #: and a cooldown stamp written from a PreToolUse hook has no business racing it.
 COOLDOWN_NAME = "recall-hook-write-time-cooldown"
+#: A cold query in flight, as `inflight:<start epoch>:<cooldown seconds>` in the cooldown file.
+INFLIGHT_PREFIX = "inflight:"
+#: Longer than any live PreToolUse hook (the client kills it at 5 s), so an older mark is a kill.
+INFLIGHT_SECONDS = 6.0
 
 
 def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -112,8 +117,19 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     config = load_config() if config is None else config
     block = config.get("write_time")
     block = block if isinstance(block, dict) else {}
+    # psycopg truncates connect_timeout to whole seconds and turns 0 or less into its 130 s
+    # default, which the 5 s hook timeout kills before any cooldown is written; it also floors
+    # the wait at 2 s. So anything below 1 s, non-numeric or non-finite is the 2 s default.
+    try:
+        connect_timeout = float(block.get("connect_timeout", 2.0))
+    except (TypeError, ValueError):
+        connect_timeout = 2.0
+    if not math.isfinite(connect_timeout) or connect_timeout < 1.0:
+        connect_timeout = 2.0
     return {
-        "enabled": bool(block.get("enabled", True)),
+        # Only a real bool: `bool("false")` is True, so a hand-written string would turn the
+        # hook ON. Anything else present fails closed, as general_knowledge.settings does.
+        "enabled": block.get("enabled", True) is True,
         # Older configs retain the measured process-per-call behavior. The installer writes
         # ``relay`` explicitly for new installs, making the rollout reversible by editing one
         # config value rather than changing the client hook again.
@@ -122,7 +138,7 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
         else "cold",
         "k": int(block.get("k", TOP_K)),
         "min_chars": int(block.get("min_chars", MIN_QUERY_CHARS)),
-        "connect_timeout": float(block.get("connect_timeout", 2.0)),
+        "connect_timeout": connect_timeout,
         "cooldown_seconds": float(block.get("cooldown_seconds", COOLDOWN_SECONDS)),
     }
 
@@ -144,9 +160,26 @@ def _in_cooldown() -> bool:
     except OSError:
         return False
     try:
+        if raw.startswith(INFLIGHT_PREFIX):
+            # A cold query that started at `begun`. While it can still be running, other calls
+            # proceed; once it is older than any live hook can be, its process was killed before
+            # it could record the failure, and that counts as one.
+            begun_text, _sep, seconds_text = raw[len(INFLIGHT_PREFIX):].partition(":")
+            begun, seconds = float(begun_text), float(seconds_text)
+            now = time.time()
+            return now - begun > INFLIGHT_SECONDS and now < begun + seconds
         return time.time() < float(raw)
     except ValueError:
         return False
+
+
+def _mark_inflight(seconds: float) -> None:
+    try:
+        _cooldown_path().write_text(
+            f"{INFLIGHT_PREFIX}{time.time()}:{seconds}", encoding="utf-8", newline="\n"
+        )
+    except OSError:
+        pass
 
 
 def _start_cooldown(seconds: float) -> None:
@@ -324,15 +357,17 @@ def context_for(payload: dict[str, Any]) -> str | None:
         return None
 
     try:
-        if options["connection_mode"] == "relay":
-            session_id = str(payload.get("session_id") or "")
-            if session_id:
-                from .relay import search as relay_search
+        session_id = str(payload.get("session_id") or "")
+        if options["connection_mode"] == "relay" and session_id:
+            from .relay import search as relay_search
 
-                hits = relay_search(session_id, query[:MAX_QUERY_CHARS], config, options)
-            else:
-                hits = search(query, config, options)
+            hits = relay_search(session_id, query[:MAX_QUERY_CHARS], config, options)
         else:
+            # Interpreter start, the psycopg import, the connect and the 5 s statement timeout
+            # together outlast the client's 5 s hook timeout, and a killed process never reaches
+            # the except below. So mark the cold query in flight first: concurrent calls still
+            # run while it is young, and a mark its process never cleared becomes the cooldown.
+            _mark_inflight(options["cooldown_seconds"])
             hits = search(query, config, options)
     except Exception:  # noqa: BLE001 - a retrieval failure must never break the session  # BROAD-CATCH: fail-open
         # Any failure to reach the corpus starts the cooldown, not only a timeout: a wrong DSN, a

@@ -278,10 +278,17 @@ def scan(
     for root_id, root in roots:
         if not root.is_dir():
             continue
+        # The leaf check alone misses a linked DIRECTORY: `**` walks into a Windows junction (not
+        # a symlink to pathlib), and into a symlinked directory before Python 3.13. Containment
+        # of the resolved path is the property that matters, whatever kind of link breaks it.
+        real_root = root.resolve()
         for path in sorted(root.glob(glob)):
             if path.is_symlink() or not path.is_file():
                 continue
             name = f"{root_id}/{path.relative_to(root).as_posix()}"
+            if not path.resolve().is_relative_to(real_root):
+                note[name] = "reached through a link that leaves the memory directory"
+                continue
             if name in found or name in note or name in oversized:
                 continue
             reason = unsafe_name_reason(name)
@@ -468,18 +475,19 @@ _KINDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def classify(message: str) -> str:
     """Which kind of failure this is, so the caller can pick a remedy rather than a guess.
 
-    The four kinds want genuinely different handling, which is the only reason to have them:
+    The kind is recorded in the manifest's `last_error` and chooses the remedy `SessionStart`
+    names. What happens next is the same for every kind today: the next `SessionEnd` or
+    `PreCompact` retries, and while work is pending `SessionStart` reports the recorded error.
+    There is no failure counter and no back-off; a `quota` failure is retried every session, and
+    a `network` failure is reported after the first one, not the second. The kinds:
 
-    * **auth** — do not retry in a loop. A 401 after a fresh refresh is a real re-authentication,
-      and hammering it just burns the token endpoint. Surface at the next `SessionStart`.
-    * **quota** — back off for a long time. Retrying every session burns the bucket that is
-      already empty.
-    * **refusal** — surface immediately and name the file. It will never fix itself.
-    * **network** — retry next session, and stay quiet until it has failed twice, so a laptop
-      closed on a plane does not nag.
+    * **auth**: a 401 after a fresh refresh is a real re-authentication; the remedy is a login.
+    * **quota**: the bucket is empty; retrying cannot refill it.
+    * **refusal**: name the file; it will never fix itself.
+    * **network**: transient by nature; the next session tries again.
 
-    Anything unrecognised is `network`, because that is the kind whose policy (retry quietly) is
-    safe to apply to a failure nobody has classified yet.
+    Anything unrecognised is `network`, the kind whose remedy (try again later) is safe to apply
+    to a failure nobody has classified yet.
     """
     lowered = message.lower()
     for kind, markers in _KINDS:
@@ -544,9 +552,9 @@ def call_tool(
         raise
     except ImportError as exc:
         # ⛔ NOT a network failure, though it used to classify as one. `mcp` is an optional extra,
-        # so a base install reports "no module named mcp", gets the `network` policy (retry
-        # quietly, stay silent until it has failed twice), and therefore syncs nothing, forever,
-        # saying nothing. Retrying cannot install a package, so it is `blocking`: SessionStart
+        # so a base install reports "no module named mcp", is classified `network` (try again
+        # next session), and therefore syncs nothing, forever, with only a transient-sounding
+        # warning and nothing at all before work is pending. Retrying cannot install a package, so it is `blocking`: SessionStart
         # reports it even though nothing is pending yet, which is exactly the first-run case.
         #
         # ⚠️ The extra is `mcp`, not `hosted`. The salvaged version named `hosted`, which is the
@@ -818,9 +826,11 @@ def sync_memory_roots(
 ) -> SyncOutcome:
     """Upload what changed. Never raises; the outcome is returned and recorded.
 
-    The deadline bounds when a NEW batch may start. `SessionEnd` and `PreCompact` are both
-    registered async and so have no client timeout, and everything past the deadline stays
-    pending, which is exactly the retry mechanism.
+    The deadline bounds when a NEW batch may start, and everything past it stays pending, which
+    is exactly the retry mechanism. In Claude Code `SessionEnd` and `PreCompact` are registered
+    async and so have no client timeout. Codex runs `SessionEnd` synchronously with a 15 s
+    timeout (`recall/codex.py`), after MCP cleanup and the relay stop, so there the client's kill
+    is the real bound, and a sync it interrupts records neither `pending` nor `last_error`.
 
     ⛔ **`clock` is a CALLABLE, and that is the whole point.** It used to be a `now: float`, and
     `started` and the loop's reading were both set from it, so an injected value made the elapsed

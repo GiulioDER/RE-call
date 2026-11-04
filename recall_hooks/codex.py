@@ -171,6 +171,9 @@ def _normalise(payload: object, event: str) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     """Run one Codex hook while preserving the shared fail-open contract."""
+    # Read before stdin: a client that exits while this hook is still reading leaves it
+    # reparented, and the later parent (init or a subreaper) is no session's identity.
+    launch_parent_pid = os.getppid()
     args = list(sys.argv[1:] if argv is None else argv)
     event = args[0] if args else ""
     if event not in {
@@ -211,7 +214,9 @@ def main(argv: list[str] | None = None) -> int:
             # but the cleanup consults them only when no client PID is available; with a PID,
             # ownership is the parent chain alone, and transports outside it are left alone.
             parent_pid = str(os.getppid())
-            payload["_client_pid"] = parent_pid
+            # A parent that changed since launch means the client is gone; leave the pid empty
+            # so the cleanup falls back to the session ID rather than the new parent's chain.
+            payload["_client_pid"] = parent_pid if os.getppid() == launch_parent_pid else ""
             payload["_client_mark"] = os.environ.get("RECALL_MCP_CLIENT", f"codex-{parent_pid}")
             payload["_client_session_id"] = (
                 os.environ.get("RECALL_MCP_SESSION_ID") or payload.get("session_id") or ""

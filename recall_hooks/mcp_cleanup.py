@@ -39,8 +39,13 @@ def _process_table() -> list[tuple[str, str, str]] | None:
             'Get-CimInstance Win32_Process | ForEach-Object { "$(($_.ProcessId)) $(($_.ParentProcessId)) $(($_.CommandLine))" }',
         ]
         try:
+            # Measured 2026-11-04 on a Windows 11 workstation: this listing takes 2.2 to 9 s, so
+            # the old 2 s bound timed out every time and nothing was ever closed. SessionEnd is
+            # async in Claude Code and has a 15 s budget in Codex. Windows PowerShell writes
+            # piped output in the OEM code page, so one non-ASCII command line must not void it.
             output = subprocess.run(
-                command, capture_output=True, text=True, encoding="utf-8", timeout=2
+                command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=8,
             ).stdout
         except (OSError, subprocess.SubprocessError):
             return None
@@ -48,10 +53,12 @@ def _process_table() -> list[tuple[str, str, str]] | None:
         try:
             output = subprocess.run(
                 ["ps", "-eo", "pid=,ppid=,args="],
-                capture_output=True, text=True, encoding="utf-8", timeout=2,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2,
             ).stdout
         except (OSError, subprocess.SubprocessError):
             return None
+    if output is None:
+        return None
 
     rows = []
     for line in output.splitlines():
@@ -152,6 +159,10 @@ def close_own_mcp_transports(
             "nothing was closed"
         )
     client_pid = client_pid or os.environ.get("CLAUDE_PID", "")
+    # Pid 1 (or 0) is what an orphaned hook reports as its parent: every process descends from
+    # it, so it would select every session's transports. Such a pid is no identity at all.
+    if client_pid and not (client_pid.isdigit() and int(client_pid) > 1):
+        client_pid = ""
     session_id = session_id or os.environ.get("RECALL_MCP_SESSION_ID", "")
     client_mark = client_mark or os.environ.get("RECALL_MCP_CLIENT", "")
     config_session_id, config_mark = _identity_from_config(cwd or os.getcwd())

@@ -38,7 +38,9 @@ What it reads, and what it does not:
    already carries one of CCA's brief headings or this hook's marker, passes untouched, so no
    auditor sees the context twice. So is a launch inside a CCA run whose `memory-arm.json` names
    the `holdout` arm (`cca_holdout_run`): CCA withheld its brief from that run on purpose, and the
-   Codex bridge sends an empty prompt, so the heading check alone cannot see it.
+   Codex bridge sends an empty prompt, so the heading check alone cannot see it. That check is
+   bounded by the same budget, and it fails OPEN: when it does not finish in time, or reaches its
+   deadline before it reads the run's worktree, the brief IS delivered and the log line says so.
 
 The block's benefit is unmeasured; it ships as context, and no benefit is claimed until a
 pre-registered comparison supports one.
