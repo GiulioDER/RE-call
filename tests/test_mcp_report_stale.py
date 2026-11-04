@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -27,6 +28,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from recall.stale_reports import StaleReportQueue, default_queue_path
 from recall_mcp.server import build_server
+from recall_mcp.settings import Settings
 
 OLD = "The release is 0.12.0 and it is still being prepared for PyPI.\n"
 NEW = "Release 0.12.0 was published to PyPI on 2 September.\n"
@@ -35,7 +37,15 @@ NEW = "Release 0.12.0 was published to PyPI on 2 September.\n"
 def _call(name: str, **kwargs):
     tools = {t.name: t for t in build_server()._tool_manager.list_tools()}
     ctx = SimpleNamespace(
-        request_context=SimpleNamespace(lifespan_context={"store": SimpleNamespace(tenant="acme"), "embedder": None, "calibration": None})
+        request_context=SimpleNamespace(
+            lifespan_context={
+                "store": SimpleNamespace(tenant="acme"),
+                "embedder": None,
+                "calibration": None,
+                # The lifespan always carries a Settings snapshot; the tool reads the index root from it.
+                "settings": Settings.from_env(dict(os.environ)),
+            }
+        )
     )
 
     async def run():

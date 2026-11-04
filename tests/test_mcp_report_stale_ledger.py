@@ -94,6 +94,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -113,6 +114,7 @@ from recall.stale_reports import (
     find_quote,
     quote_fingerprint,
 )
+from recall_mcp.settings import Settings
 from recall_mcp.stale_reports_api import MAX_QUOTE_CHARS, report_stale
 
 OLD_QUOTE = "it is still being prepared for PyPI"
@@ -251,7 +253,10 @@ def test_the_registered_tool_records_to_the_ledger(empty_root: Path, monkeypatch
     monkeypatch.setenv("RECALL_INDEX_ROOT", str(empty_root))
     store = LedgerStore()
     tools = {t.name: t for t in build_server()._tool_manager.list_tools()}
-    ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context={"store": store, "embedder": None, "calibration": None}))
+    # The lifespan always carries a Settings snapshot; recall_report_stale reads the index root from it.
+    ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context={
+        "store": store, "embedder": None, "calibration": None, "settings": Settings.from_env(dict(os.environ)),
+    }))
 
     async def run() -> str:
         return await tools["recall_report_stale"].fn(

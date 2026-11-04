@@ -105,7 +105,7 @@ def _serve(env: dict[str, str], body: Callable[[dict[str, Any], Callable[..., An
     tools = {t.name: t for t in mcp._tool_manager.list_tools()}
 
     async def run() -> Any:
-        async with srv._make_lifespan(None, None, {}, settings)(mcp) as state:
+        async with srv._make_lifespan(None, None, settings)(mcp) as state:
             ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context=state))
 
             async def call(name: str, **kwargs: Any) -> str:

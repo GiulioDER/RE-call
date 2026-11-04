@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from recall.multimodal import (
     DEFAULT_MAX_ITEMS,
@@ -47,6 +47,15 @@ DEFAULT_MAX_TENANTS = 1000
 DEFAULT_READINESS_TENANT_PROBES = 3
 MAX_READINESS_TENANT_PROBES = 10
 DEFAULT_STATEMENT_TIMEOUT_MS = 15_000
+
+#: Transport to serve. `stdio` is a private pipe between one client and this process: there is no
+#: network listener and no remote caller to authenticate, so auth is not required there. The HTTP
+#: transports open a socket, and `build_auth` refuses to start them unless an authentication
+#: mechanism is configured (a static token file, or an OIDC provider). Defined here, in a leaf
+#: module, so the settings validator and `server_auth` read one list instead of two copies.
+Transport = Literal["stdio", "sse", "streamable-http"]
+TRANSPORTS: tuple[Transport, ...] = ("stdio", "sse", "streamable-http")
+HTTP_TRANSPORTS = frozenset({"streamable-http", "sse"})
 
 @dataclass(frozen=True)
 class EnvironmentSpec:
@@ -466,7 +475,7 @@ class Settings:
     ) -> "Settings":
         source = dict(os.environ if env is None else env)
         transport = source.get("RECALL_TRANSPORT", "stdio")
-        if transport not in {"stdio", "sse", "streamable-http"}:
+        if transport not in TRANSPORTS:
             raise ValueError(
                 f"RECALL_TRANSPORT={transport!r} is not a valid transport; expected stdio, sse, streamable-http"
             )
@@ -505,7 +514,7 @@ class Settings:
             statement_timeout_ms=_int(
                 source, "RECALL_STATEMENT_TIMEOUT_MS", DEFAULT_STATEMENT_TIMEOUT_MS, minimum=1
             ),
-            mcp_stateless=_bool(source, "RECALL_MCP_STATELESS", transport in {"sse", "streamable-http"}),
+            mcp_stateless=_bool(source, "RECALL_MCP_STATELESS", transport in HTTP_TRANSPORTS),
             enterprise_control_plane=_bool(source, "RECALL_ENTERPRISE_CONTROL_PLANE", False),
             trust_policy=TrustPolicy.from_env(source),
             aws_region=aws_region(source),

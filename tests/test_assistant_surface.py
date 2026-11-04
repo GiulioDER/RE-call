@@ -130,8 +130,8 @@ def _serve_both(
     servers = [srv.build_server(s) for s in settings]
 
     async def run() -> Any:
-        async with srv._make_lifespan(None, None, {}, settings[0])(servers[0]) as a_state, \
-                srv._make_lifespan(None, None, {}, settings[1])(servers[1]) as p_state:
+        async with srv._make_lifespan(None, None, settings[0])(servers[0]) as a_state, \
+                srv._make_lifespan(None, None, settings[1])(servers[1]) as p_state:
             await _caller(servers[1], p_state)("recall_index", path=str(Path(envs[1]["RECALL_INDEX_ROOT"]) / "mem"))
             return await body(_caller(servers[0], a_state), _caller(servers[1], p_state), a_state)
 

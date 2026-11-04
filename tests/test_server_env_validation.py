@@ -303,7 +303,9 @@ def test_the_refusal_releases_the_pool_it_was_holding():
     source = inspect.getsource(server)
     # The CALL site, not the definition: the definition's docstring also names the function.
     after_call = source.split("rls_effective=probe.check_rls_effective()", 1)[1]
-    handler = after_call.split("if rls_warning is not None", 1)[0]
+    # The refusal re-raises into the one cleanup handler that covers every startup check after
+    # the schema check (RLS, enterprise readiness, limiter); that handler closes the registry.
+    handler = after_call.split("# BROAD-CATCH: cleanup-only", 1)[1].split("\n        try:", 1)[0]
     # Comments stripped before the ordering check. The first version of this test matched the
     # word "raises" inside the explanatory comment and reported the close as coming too late,
     # which is a test failing on its own prose rather than on the code it guards.

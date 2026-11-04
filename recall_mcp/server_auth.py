@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, Protocol, TypeVar
+from typing import Protocol
 
+import anyio.to_thread
+from anyio import CapacityLimiter
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
 from pydantic import AnyHttpUrl
@@ -19,6 +22,7 @@ from recall.observability import get_logger
 from recall_mcp.auth import (
     AuthConfigError,
     ENV_TOKENS_FILE,
+    Principal,
     TokenRegistry,
     token_registry_from_env,
 )
@@ -36,19 +40,26 @@ from recall_mcp.oidc import (
     oidc_env_present,
     oidc_validator_from_env,
 )
-from recall_mcp.threads import _to_thread
+from recall_mcp.settings import (  # noqa: F401  # re-exported: recall_mcp.server imports them from here
+    HTTP_TRANSPORTS,
+    TRANSPORTS,
+    Transport,
+)
 
-_T = TypeVar("_T")
 _log = get_logger("mcp")  # the server's own logger name
 
+#: OIDC validation gets its own bounded pool (PERF). On a JWKS cache miss each validation blocks
+#: on up to two HTTPS calls; in anyio's shared default pool a burst of them would hold the worker
+#: threads every tool body needs, so a slow IdP would stall the whole server, not only sign-in.
+AUTH_THREAD_LIMITER = CapacityLimiter(4)
 
-#: Transport to serve. `stdio` is a private pipe between one client and this process — there is no
-#: network listener and no remote caller to authenticate, so auth is not required there. The HTTP
-#: transports open a socket, and `build_auth` refuses to start them unless an authentication
-#: mechanism is configured — a static token file, or an OIDC provider.
-Transport = Literal["stdio", "sse", "streamable-http"]
-TRANSPORTS: tuple[Transport, ...] = ("stdio", "sse", "streamable-http")
-HTTP_TRANSPORTS = frozenset({"streamable-http", "sse"})
+
+async def _to_thread(fn: Callable[[], Principal]) -> Principal:
+    """Run one OIDC validation off the event loop, in the authentication pool.
+
+    A module-level name so a test can replace the offload without touching anyio.
+    """
+    return await anyio.to_thread.run_sync(fn, limiter=AUTH_THREAD_LIMITER)
 
 
 class TenantProvisioning(Protocol):
@@ -190,11 +201,19 @@ class OidcTokenVerifier:
             # this is the subject's bound set. Federated retrieval may not select a tenant outside
             # it (`_retrieval_plan_for`), so the binding bounds every leg, not only the token's own.
             claims["bound_tenants"] = sorted(subject_tenants.get(principal.name, ()))
+        # The validator accepts `exp` with a `clock_skew_s` leeway, but the SDK's bearer middleware
+        # rejects `expires_at < now` with none. Without the same leeway here a token in its last
+        # skew window is validated, its reservation refunded, and then refused with a 401 anyway.
+        expires_at = (
+            int(principal.expires_at.timestamp()) + self._validator.config.clock_skew_s
+            if principal.expires_at
+            else None
+        )
         return AccessToken(
             token=token,
             client_id=principal.name,
             scopes=sorted(principal.scopes),
-            expires_at=(int(principal.expires_at.timestamp()) if principal.expires_at else None),
+            expires_at=expires_at,
             # `subject` and `iss` are populated (SEC-007) because the SDK's session-principal
             # comparison is built from client_id + subject + claims["iss"], and silently degrades
             # to whichever of those the verifier supplied. Both are known here, verified.
@@ -218,7 +237,8 @@ class ProvisionedTenants:
         # Coerced and checked here rather than trusted from the caller (DAT-002). This type is
         # the carrier of "the tenant set comes from configuration, never from traffic", and an
         # annotation is not an enforcement: a plain `set` passed in stays mutable, and an empty
-        # one reaches `min(registry.allowed_tenants)` in the lifespan. Every future provisioning
+        # one reaches `health_probes[0]` in `_make_lifespan` (via `bounded_tenant_probe_ids`) as
+        # an IndexError. Every future provisioning
         # mechanism passes through here, so the check belongs here and not in each of them.
         if isinstance(self.tenants, (str, bytes)):
             # `frozenset("acme")` is {"a","c","e","m"} (BUG-002), and that set is handed straight
@@ -418,7 +438,11 @@ _RLS_BYPASS = "this database role bypasses row-level security (superuser or BYPA
 
 
 def require_effective_rls(*, rls_effective: bool, multi_tenant: bool) -> str | None:
-    """Refuse ineffective row-level security for authenticated multi-tenant serving."""
+    """Refuse ineffective row-level security for authenticated multi-tenant serving.
+
+    Returns None when RLS is effective. Raises RuntimeError when it is not and `multi_tenant` is
+    true. Otherwise returns a warning string for the caller to log.
+    """
     if rls_effective:
         return None
     if multi_tenant:

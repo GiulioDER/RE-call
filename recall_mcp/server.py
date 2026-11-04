@@ -1,3 +1,9 @@
+"""The RE-call MCP server: `build_server`, tool registration, idempotency helpers and `main`.
+
+Authentication and tenancy live in `recall_mcp.server_auth`; their public names are re-imported
+here so `recall_mcp.server.<name>` keeps resolving for existing callers.
+"""
+
 from __future__ import annotations
 
 import json
@@ -87,6 +93,7 @@ from recall_mcp.settings import (
 from recall_mcp.graph_projection import reasoning_projection
 from recall_mcp.indexing import IndexPreflightError, index_memory
 from recall_mcp.lifecycle import (
+    ErasurePreflightRefused,
     current_state_memory,
     forget_memory,
     withdraw_memory,
@@ -103,7 +110,7 @@ from recall_mcp.use_reports_api import EFFECTS, UseReportRefused, report_use
 # Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
 from recall_mcp.service import query_construction_challenge, tenant_scopes
 from recall_mcp.status import JobLedger, calibration_status, job_status
-from recall_mcp.models import EvidenceResult, IndexResult, SearchResult
+from recall_mcp.models import EvidenceResult, ForgetResult, IndexResult, SearchResult, WithdrawResult
 from recall_mcp.factories import make_embedder, make_profile_embedder
 from recall_mcp.generation_admin import generation_ingest, publish_calibration, run_calibration
 from recall_mcp.retrieval import (
@@ -132,7 +139,6 @@ from recall_mcp.server_auth import (  # noqa: F401  # re-exported: public names 
     OidcTokenVerifier,
     ProvisionedTenants,
     build_auth,
-    _RLS_BYPASS,
     require_effective_rls,
 )
 from recall_mcp.threads import _to_thread  # noqa: F401  # re-exported: tests call srv._to_thread
@@ -254,17 +260,35 @@ async def _record_mutation_result(
         if isinstance(registry, StoreRegistry):
             store = await _to_thread(lambda: registry.get(tenant))
     durable = getattr(store, "record_operation_receipt", None)
-    if callable(durable):
-        await _to_thread(
-            lambda: durable(
-                idempotency_key,
-                result,
-                operation=idempotency_operation or ANY_OPERATION,
-                request_fingerprint=idempotency_fingerprint,
-            )
-        )
     limiter = state.get("limiter")
     record = getattr(limiter, "store_idempotency_result", None)
+    if callable(durable):
+        try:
+            await _to_thread(
+                lambda: durable(
+                    idempotency_key,
+                    result,
+                    operation=idempotency_operation or ANY_OPERATION,
+                    request_fingerprint=idempotency_fingerprint,
+                )
+            )
+        except BaseException as durable_error:
+            # The mutation has committed but its durable receipt did not. The Redis copy is then
+            # the only replay a retry can find, so still try it, and surface the durable failure.
+            if callable(record):
+                try:
+                    await record(
+                        tenant,
+                        idempotency_key,
+                        result,
+                        operation=idempotency_operation,
+                        request_fingerprint=idempotency_fingerprint,
+                    )
+                except Exception:  # BROAD-CATCH: fail-open, the durable failure below is reported
+                    _log.warning(
+                        "idempotency replay cache write failed after the durable receipt failed"
+                    )
+            raise durable_error
     if callable(record):
         try:
             await record(
@@ -510,7 +534,6 @@ def bounded_tenant_probe_ids(tenants: frozenset[str], limit: int) -> tuple[str, 
 def _make_lifespan(
     token_registry: TenantProvisioning | None,
     health: HealthController | None = None,
-    secret_versions: dict[str, str] | None = None,
     settings: Settings | None = None,
 ) -> Callable[[MCPServer], AbstractAsyncContextManager[dict]]:
     """Build the lifespan.
@@ -742,62 +765,79 @@ def _make_lifespan(
             _log.error("schema check failed", exc_info=True)
             raise
 
+        limiter: AsyncRateLimiter | None = None
         try:
-            # A SQLite file has no roles and holds one tenant, so there is no policy to check.
-            rls_warning = None if lite else require_effective_rls(
-                rls_effective=probe.check_rls_effective(), multi_tenant=registry is not None
-            )
-        except RuntimeError:
+            try:
+                # A SQLite file has no roles and holds one tenant, so there is no policy to check.
+                rls_warning = None if lite else require_effective_rls(
+                    rls_effective=probe.check_rls_effective(), multi_tenant=registry is not None
+                )
+            except RuntimeError:
+                _log.error("refusing to serve: row-level security is not effective for this role")
+                raise
+            if rls_warning is not None:
+                _log.warning("%s", rls_warning)
+            enterprise_readiness_ok = True
+            if enterprise:
+                # The calibration argument is supplied again. #182 removed it, and because the
+                # parameter defaults to None every enterprise boot since then took the
+                # `calibration is None` path: a permanent degraded-readiness warning that said
+                # nothing about the real calibration state, and an identity-mismatch FAILURE that
+                # could not be reached from this call site at all. A check that reads as a gate
+                # and cannot fail is worse than no check, so the argument comes back rather than
+                # the branch being deleted. `load_for` returns None for a calibration belonging to
+                # a different embedder, so the warning now means "there is none", which is
+                # actionable, instead of "this call site does not pass one", which was not.
+                #
+                # Stated precisely, because the first version of this comment overclaimed: what
+                # is repaired is the WARNING, not the identity-mismatch FAILURE. `load_for(P)`
+                # returns None exactly when the stored calibration names another embedder and
+                # otherwise constructs `Calibration(embedder=P)`, so `calibration.embedder != P`
+                # is still unreachable FROM HERE. That branch guards direct library callers, who
+                # may pass any Calibration, and `tests/test_enterprise_readiness.py` exercises it
+                # there. Making it reachable from startup needs an identity-agnostic loader, which
+                # is a separate change.
+                readiness = check_enterprise_readiness(
+                    probe,
+                    embedder,
+                    control_plane=registry.control_plane if registry is not None else None,
+                    calibration=calibration_load_for(embedding_profile_id(embedder)),
+                )
+                if not readiness.ready:
+                    enterprise_readiness_ok = False
+                    raise RuntimeError(
+                        "enterprise readiness failed: " + "; ".join(readiness.failures)
+                    )
+                if readiness.degraded:
+                    _log.warning(
+                        "enterprise readiness degraded: %s", "; ".join(readiness.warnings)
+                    )
+            # Built only for the authenticated shape: buckets are keyed by tenant, and stdio has
+            # no principal to attribute a call to. Reported at startup so the effective budget is
+            # visible in the journal rather than inferred from which requests started failing.
+            limiter = async_limiter_from_env(runtime_env) if registry is not None else None
+            if limiter is not None:
+                limits = getattr(limiter, "limits", {})
+                _log.info(
+                    "per-tenant budgets: %s",
+                    ", ".join(f"{k}={v.capacity:,.0f}" for k, v in sorted(limits.items()))
+                    or "(all disabled)",
+                )
+        except Exception as exc:  # BROAD-CATCH: cleanup-only
+            # Every refusal between the schema check and the yield (RLS, enterprise readiness,
+            # calibration load, limiter construction) leaves the same resources open as the
+            # handlers above, and the main `finally` below is not entered yet.
+            if health is not None:
+                health.mark_failed(exc)
+            if limiter is not None:
+                await limiter.close()
+            if store is not None:
+                store.close()
             if registry is not None:
                 registry.close()
-            _log.error("refusing to serve: row-level security is not effective for this role")
+            if clock_installed:
+                eval_clock.uninstall()
             raise
-        if rls_warning is not None:
-            _log.warning("%s", rls_warning)
-        enterprise_readiness_ok = True
-        if enterprise:
-            # The calibration argument is supplied again. #182 removed it, and because the
-            # parameter defaults to None every enterprise boot since then took the
-            # `calibration is None` path: a permanent degraded-readiness warning that said
-            # nothing about the real calibration state, and an identity-mismatch FAILURE that
-            # could not be reached from this call site at all. A check that reads as a gate and
-            # cannot fail is worse than no check, so the argument comes back rather than the
-            # branch being deleted. `load_for` returns None for a calibration belonging to a
-            # different embedder, so the warning now means "there is none", which is actionable,
-            # instead of "this call site does not pass one", which was not.
-            #
-            # Stated precisely, because the first version of this comment overclaimed: what is
-            # repaired is the WARNING, not the identity-mismatch FAILURE. `load_for(P)` returns
-            # None exactly when the stored calibration names another embedder and otherwise
-            # constructs `Calibration(embedder=P)`, so `calibration.embedder != P` is still
-            # unreachable FROM HERE. That branch guards direct library callers, who may pass any
-            # Calibration, and `tests/test_enterprise_readiness.py` exercises it there. Making it
-            # reachable from startup needs an identity-agnostic loader, which is a separate
-            # change.
-            readiness = check_enterprise_readiness(
-                probe,
-                embedder,
-                control_plane=registry.control_plane if registry is not None else None,
-                calibration=calibration_load_for(embedding_profile_id(embedder)),
-            )
-            if not readiness.ready:
-                enterprise_readiness_ok = False
-                raise RuntimeError("enterprise readiness failed: " + "; ".join(readiness.failures))
-            if readiness.degraded:
-                _log.warning("enterprise readiness degraded: %s", "; ".join(readiness.warnings))
-        # Built only for the authenticated shape: buckets are keyed by tenant, and stdio has no
-        # principal to attribute a call to. Reported at startup so the effective budget is visible
-        # in the journal rather than inferred from which requests started failing.
-        limiter: AsyncRateLimiter | None = (
-            async_limiter_from_env(runtime_env) if registry is not None else None
-        )
-        if limiter is not None:
-            limits = getattr(limiter, "limits", {})
-            _log.info(
-                "per-tenant budgets: %s",
-                ", ".join(f"{k}={v.capacity:,.0f}" for k, v in sorted(limits.items()))
-                or "(all disabled)",
-            )
 
         try:
             active_generation = None
@@ -842,7 +882,7 @@ def _make_lifespan(
                 "connection_budget": connection_budget,
                 "active_generation": active_generation,
                 "enterprise_readiness_ok": enterprise_readiness_ok,
-                "secret_versions": dict(secret_versions or runtime_secret_versions),
+                "secret_versions": runtime_secret_versions,
                 "settings": runtime_settings,
                 "trust_policy": runtime_settings.trust_policy,
                 "retrieval_plan_resolver": retrieval_plan_resolver,
@@ -899,6 +939,26 @@ class _IngestNamespaceOptions(TypedDict, total=False):
     source_namespace: str
 
 
+def _check_source_namespace(category: str, source_namespace: str | None) -> None:
+    if source_namespace is not None and (
+        category != "memory" or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", source_namespace)
+    ):
+        raise ValueError("source_namespace requires memory uploads and 1 to 64 safe characters")
+
+
+def _compat_route(state: Mapping[str, object]) -> RuntimeRoute:
+    # Compatibility for direct library callers. The live server always publishes a resolved
+    # RuntimeRoute; this fallback never reads the environment, so a helper call cannot drift
+    # away from the state it was handed.
+    return RuntimeRoute(
+        mode="generation" if state.get("generation_mode") else "legacy",
+        environment="development",
+        source="state compatibility",
+        table="chunks",
+        explicit=True,
+    )
+
+
 def ingest_into_serving_store(
     state: Mapping[str, object],
     store: PgVectorStore,
@@ -926,23 +986,11 @@ def ingest_into_serving_store(
     immutable embedder revision or artifact digest. Calling the wrong one is therefore either an
     error or, as here, a silent write to a table nobody reads.
     """
-    if source_namespace is not None and (
-        category != "memory" or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", source_namespace)
-    ):
-        raise ValueError("source_namespace requires memory uploads and 1 to 64 safe characters")
+    _check_source_namespace(category, source_namespace)
     embedder = cast(Embedder, state["embedder"])
     route = state.get("route")
     if route is None:
-        # Compatibility for direct library callers. The live server always publishes a resolved
-        # RuntimeRoute; this fallback never reads the environment, so a helper call cannot drift
-        # away from the state it was handed.
-        route = RuntimeRoute(
-            mode="generation" if state.get("generation_mode") else "legacy",
-            environment="development",
-            source="state compatibility",
-            table="chunks",
-            explicit=True,
-        )
+        route = _compat_route(state)
     if not isinstance(route, RuntimeRoute):
         raise RuntimeError(
             "serving state contains an invalid route; restart the server so indexing and serving "
@@ -954,11 +1002,11 @@ def ingest_into_serving_store(
             "enterprise control plane does not accept direct staged uploads; build an immutable "
             "generation from a manifest and cut it over through the control plane"
         )
+    raw_security_policy = state.get("source_security_policy")
+    security_policy = (
+        raw_security_policy if isinstance(raw_security_policy, SourceSecurityPolicy) else None
+    )
     if route.uses_generation:
-        raw_security_policy = state.get("source_security_policy")
-        security_policy = (
-            raw_security_policy if isinstance(raw_security_policy, SourceSecurityPolicy) else None
-        )
         if security_policy is None and access_context is None:
             return generation_ingest(
                 store, embedder, staged_root, category, env=_runtime_env_for(state)
@@ -981,10 +1029,6 @@ def ingest_into_serving_store(
     #
     # The test that accompanied that fix asserted WHICH function was called and never what it was
     # called with, which is why neither it nor its mutation run could see this.
-    raw_security_policy = state.get("source_security_policy")
-    security_policy = (
-        raw_security_policy if isinstance(raw_security_policy, SourceSecurityPolicy) else None
-    )
     namespace_options: _IngestNamespaceOptions = {}
     if source_namespace is not None:
         namespace_options["source_namespace"] = source_namespace
@@ -1054,9 +1098,10 @@ class _RecordMutationResult(Protocol):
 class _ToolDeps:
     """What a tool body needs from `build_server`'s closures.
 
-    The three callables close over `build_auth()`'s results, so they cannot be module
-    globals; passing them explicitly is what lets each tool family register from a
-    module-level function while the bodies stay byte-identical.
+    Most of the callables are `build_server` closures over `_state` and over each other, so
+    they cannot be module globals; `record_mutation_result` is the module-level helper. Passing
+    them explicitly is what lets each tool family register from a module-level function while
+    the bodies stay byte-identical.
     """
 
     require: _Require
@@ -1098,11 +1143,22 @@ def _proof_payload(proof: ProofRun) -> dict[str, object]:
     }
 
 
+def _parse_as_of(as_of: str | None) -> datetime | None:
+    if not as_of:
+        return None
+    try:
+        instant = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("as_of must be an ISO 8601 timestamp") from exc
+    if instant.tzinfo is None:
+        # Graph validity bounds are timezone aware (bare dates are read as UTC), and comparing
+        # them with a naive instant raises TypeError.
+        instant = instant.replace(tzinfo=UTC)
+    return instant
+
+
 def _trust_policy_for(state: Mapping[str, object]) -> TrustPolicy:
-    settings = state.get("settings")
-    if not isinstance(settings, Settings):
-        raise RuntimeError("MCP runtime state is missing its Settings snapshot")
-    return settings.trust_policy
+    return _runtime_settings_for(state).trust_policy
 
 
 def _runtime_settings_for(state: Mapping[str, object]) -> Settings:
@@ -1572,15 +1628,20 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         repeat an existing subject and predicate exactly to write under the same key.
         """
         store = await _require(SCOPE_READ, ctx)
-        instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
+        instant = _parse_as_of(as_of)
         state = _state(ctx)
-        result = await _to_thread(lambda: current_facts_memory(
-            store, as_of=instant, security_policy=state.get("source_security_policy"),
-            access_context=_access_context(state, store),
-        ))
-        if subject.strip():
-            result = subject_view(result, subject, predicate.strip() or None)
-        return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+
+        def build() -> str:
+            # The view and the serialisation are O(ledger) too, so they stay off the loop.
+            result = current_facts_memory(
+                store, as_of=instant, security_policy=state.get("source_security_policy"),
+                access_context=_access_context(state, store),
+            )
+            if subject.strip():
+                result = subject_view(result, subject, predicate.strip() or None)
+            return json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+
+        return await _to_thread(build)
 
     @mcp.tool(
         name="recall_apply_fact",
@@ -1658,7 +1719,7 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 evidence_card_ids=evidence_card_ids,
                 request_id=request_id,
                 writer=writer,
-                        policy=_trust_policy_for(state),
+                policy=_trust_policy_for(state),
                 security_policy=state.get("source_security_policy"),
                 access_context=_access_context(state, store),
             )
@@ -1839,7 +1900,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         store = await _require(SCOPE_READ, ctx)
-        instant = datetime.fromisoformat(as_of) if as_of else None
+        instant = _parse_as_of(as_of)
         with METRICS.timer("recall_tool_latency_ms", tool="current_state"):
             return await _to_thread(
                 lambda: current_state_memory(
@@ -1902,14 +1963,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 provider, returns no generated answer, and may issue one source scoped repair.
         """
         state = _state(ctx)
-        try:
-            as_of_instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
-        except ValueError as exc:
-            raise ValueError("as_of must be an ISO 8601 timestamp") from exc
-        if as_of_instant is not None and as_of_instant.tzinfo is None:
-            # Graph validity bounds are timezone aware (bare dates are read as UTC), and comparing
-            # them with a naive instant raises TypeError.
-            as_of_instant = as_of_instant.replace(tzinfo=UTC)
+        as_of_instant = _parse_as_of(as_of)
         store = await _require(SCOPE_READ, ctx)
         with METRICS.timer("recall_tool_latency_ms", tool="reasoning_query"):
             def execute_reasoning(mode_name: str, question: str) -> ReasoningResponse:
@@ -2124,7 +2178,6 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             idempotent_hint=False,
             open_world_hint=False,
         ),
-        meta={_META_REQUIRED_SCOPE: SCOPE_WRITE},
     )
     async def recall_report_stale(
         ctx: Context[dict, object],
@@ -2179,6 +2232,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         stale_quote=stale_quote,
                         current_quote=current_quote,
                         task=task,
+                        env=_runtime_env_for(state),
                         sidecar=sidecar,
                     )
                 )
@@ -2207,7 +2261,6 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             idempotent_hint=False,
             open_world_hint=False,
         ),
-        meta={_META_REQUIRED_SCOPE: SCOPE_WRITE},
     )
     async def recall_report_use(
         ctx: Context[dict, object],
@@ -2345,7 +2398,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         file leaves no stale chunks behind).
         `path` is confined to RECALL_INDEX_ROOT (default: the server's working directory), and the
         request is refused before anything is embedded if it exceeds RECALL_INDEX_MAX_FILES or
-        RECALL_INDEX_MAX_BYTES (see `recall_mcp/service.py`).
+        RECALL_INDEX_MAX_BYTES (see `recall/index_budget.py`).
 
         Args:
             path: a file or directory path (``**/*.md`` is indexed for directories).
@@ -2528,10 +2581,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         operation = "recall_ingest"
         if category not in {"documents", "code", "memory"}:
             raise ValueError("category must be documents, code, or memory")
-        if source_namespace is not None and (
-            category != "memory" or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", source_namespace)
-        ):
-            raise ValueError("source_namespace requires memory uploads and 1 to 64 safe characters")
+        _check_source_namespace(category, source_namespace)
         # Hashing, decoding and writing up to 50 MiB is CPU and disk work: keep it off the loop.
         fingerprint = (
             await _to_thread(lambda: _ingest_mutation_fingerprint(files, category, source_namespace))
@@ -2604,13 +2654,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             # so it cannot land mid-promote here.
             route = state.get("route")
             if not isinstance(route, RuntimeRoute):
-                route = RuntimeRoute(
-                    mode="generation" if state.get("generation_mode") else "legacy",
-                    environment="development",
-                    source="state compatibility",
-                    table="chunks",
-                    explicit=True,
-                )
+                route = _compat_route(state)
             if route.enterprise or not route.uses_generation:
                 await _to_thread(lambda: discard_staging(root))
             raise
@@ -2791,45 +2835,17 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _current_tenant = deps.current_tenant
     _access_context = deps.access_context
 
-    @mcp.tool(
-        name="recall_forget",
-        annotations=ToolAnnotations(
-            title="Forget agent memory",
-            read_only_hint=False,
-            destructive_hint=True,
-            idempotent_hint=True,
-            open_world_hint=False,
-        ),
-    )
-    async def recall_forget(
-        sources: list[str], ctx: Context[dict, object], idempotency_key: str | None = None
+    async def _erase(
+        ctx: Context[dict, object],
+        sources: list[str],
+        idempotency_key: str | None,
+        *,
+        operation: str,
+        tool: str,
+        eraser: Callable[..., ForgetResult | WithdrawResult],
     ) -> str:
-        """Permanently delete indexed memory for the given source(s). IRREVERSIBLE.
-
-        This is the right-to-erasure path: use it to make the agent forget a memory that should
-        no longer be recalled (e.g. it indexed something it should not have retained). Deletion
-        is scoped to this server's own tenant and cannot reach another tenant's memory. A source
-        that does not exist is reported in `sources_not_found` rather than silently counted as
-        "removed" — check that list before assuming a name was actually forgotten. A fact
-        applied with `recall_apply_fact` whose only evidence was in these sources is retracted
-        with them, so `recall_current_facts` stops listing it, and its value is erased: the fact
-        ledger, the evidence cards citing these sources and the replay receipts echoing them are
-        rewritten in place under fresh ids, keeping the shape of the history but not the value. A
-        fact with evidence in a memo that survives stays. A name that matches nothing still
-        completes the erasure of facts it supplied, so re-run a forget that reported a failure.
-        Whatever a forgotten memory superseded stays retired; for a memory that was a mistake,
-        and should give back what it replaced, use `recall_withdraw` instead.
-
-        Args:
-            sources: one or more source values to forget, exactly as they appear in
-                `recall_search` hits (the `source` field).
-
-        Returns:
-            JSON of {chunks_removed, sources_removed, sources_not_found, message,
-            facts_retracted, facts_redacted}.
-        """
+        """The body `recall_forget` and `recall_withdraw` share; they differ only in these three."""
         state = _state(ctx)
-        operation = "recall_forget"
         fingerprint = _mutation_fingerprint(operation, {"sources": sources})
         store, replay = await _require_mutation(
             SCOPE_FORGET,
@@ -2851,19 +2867,26 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         )
         control = registry.control_plane if registry is not None else None
         try:
-            with METRICS.timer("recall_tool_latency_ms", tool="forget"):
+            security_context = _access_context(state, store)
+        except PermissionError:
+            # An invalid clearance claim is refused before anything is read or deleted.
+            await _release_mutation_reservation(state, store.tenant, idempotency_key)
+            raise
+        try:
+            with METRICS.timer("recall_tool_latency_ms", tool=tool):
                 payload = await _to_thread(
-                    lambda: forget_memory(
+                    lambda: eraser(
                         store,
                         sources,
                         shadow,
                         control,
                         security_policy=state.get("source_security_policy"),
-                        security_context=_access_context(state, store),
+                        security_context=security_context,
                     ).model_dump_json(indent=2)
                 )
-        except LiteWriterBusy:
-            # Refused before the lite store's write lane was held, so nothing was deleted.
+        except (ErasurePreflightRefused, LiteWriterBusy):
+            # Refused before the first write (a malformed, ambiguous or unauthorized request, or
+            # the lite store's write lane busy), so nothing was deleted and a retry may run.
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
             raise
         await _record_mutation_result(
@@ -2875,6 +2898,48 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             idempotency_fingerprint=fingerprint,
         )
         return payload
+
+    @mcp.tool(
+        name="recall_forget",
+        annotations=ToolAnnotations(
+            title="Forget agent memory",
+            read_only_hint=False,
+            destructive_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_forget(
+        sources: list[str], ctx: Context[dict, object], idempotency_key: str | None = None
+    ) -> str:
+        """Permanently delete indexed memory for the given source(s). IRREVERSIBLE.
+
+        This is the right-to-erasure path: use it to make the agent forget a memory that should
+        no longer be recalled (e.g. it indexed something it should not have retained). Deletion
+        is scoped to the caller's tenant (this server's tenant on stdio, the token's tenant on an
+        authenticated server) and cannot reach another tenant's memory. A source
+        that does not exist is reported in `sources_not_found` rather than silently counted as
+        "removed" — check that list before assuming a name was actually forgotten. A fact
+        applied with `recall_apply_fact` whose only evidence was in these sources is retracted
+        with them, so `recall_current_facts` stops listing it, and its value is erased: the fact
+        ledger, the evidence cards citing these sources and the replay receipts echoing them are
+        rewritten in place under fresh ids, keeping the shape of the history but not the value. A
+        fact with evidence in a memo that survives stays. A name that matches nothing still
+        completes the erasure of facts it supplied, so re-run a forget that reported a failure.
+        Whatever a forgotten memory superseded stays retired; for a memory that was a mistake,
+        and should give back what it replaced, use `recall_withdraw` instead.
+
+        Args:
+            sources: one or more source values to forget, exactly as they appear in
+                `recall_search` hits (the `source` field).
+
+        Returns:
+            JSON of {chunks_removed, sources_removed, sources_not_found, message,
+            facts_retracted, facts_redacted}.
+        """
+        return await _erase(
+            ctx, sources, idempotency_key, operation="recall_forget", tool="forget", eraser=forget_memory
+        )
 
     @mcp.tool(
         name="recall_withdraw",
@@ -2900,7 +2965,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         A -> B -> C, withdrawing B leaves A retired by C). In the fact ledger, each fact it alone
         supported is withdrawn, which also undoes the supersession that fact made, and the
         values it supplied are erased as `recall_forget` erases them. A memory forgotten earlier
-        can be withdrawn by the name it had. Scoped to this server's tenant.
+        can be withdrawn by the name it had. Scoped to the caller's tenant.
 
         Args:
             sources: one or more source values to withdraw, exactly as they appear in
@@ -2910,53 +2975,9 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             JSON of {chunks_removed, sources_withdrawn, sources_not_found, message,
             facts_withdrawn, facts_redacted}.
         """
-        state = _state(ctx)
-        operation = "recall_withdraw"
-        fingerprint = _mutation_fingerprint(operation, {"sources": sources})
-        store, replay = await _require_mutation(
-            SCOPE_FORGET,
-            ctx,
-            idempotency_key=idempotency_key,
-            idempotency_operation=operation,
-            idempotency_fingerprint=fingerprint,
+        return await _erase(
+            ctx, sources, idempotency_key, operation="recall_withdraw", tool="withdraw", eraser=withdraw_memory
         )
-        if replay is not None:
-            return replay
-        assert store is not None
-        registry: StoreRegistry | None = state.get("stores")
-        tenant = _current_tenant(state)
-        shadow = (
-            # get_shadow holds the registry lock across a control-plane read (PERF-002).
-            await _to_thread(lambda: registry.get_shadow(tenant))
-            if registry is not None and tenant is not None
-            else None
-        )
-        control = registry.control_plane if registry is not None else None
-        try:
-            with METRICS.timer("recall_tool_latency_ms", tool="withdraw"):
-                payload = await _to_thread(
-                    lambda: withdraw_memory(
-                        store,
-                        sources,
-                        shadow,
-                        control,
-                        security_policy=state.get("source_security_policy"),
-                        security_context=_access_context(state, store),
-                    ).model_dump_json(indent=2)
-                )
-        except LiteWriterBusy:
-            # Refused before the lite store's write lane was held, so nothing was deleted.
-            await _release_mutation_reservation(state, store.tenant, idempotency_key)
-            raise
-        await _record_mutation_result(
-            state,
-            store.tenant,
-            idempotency_key,
-            payload,
-            idempotency_operation=operation,
-            idempotency_fingerprint=fingerprint,
-        )
-        return payload
 
     @mcp.tool(
         name="recall_inventory",
@@ -3211,15 +3232,20 @@ def _register_assistant_views(held: _HeldTools, deps: _ToolDeps, assistant: Assi
             # From the library, not the held tool's text: that one sorts every key, nested facts
             # included, and the compact form keeps the order the ledger writes.
             store = await _require(SCOPE_READ, ctx)
-            instant = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else None
+            instant = _parse_as_of(as_of)
             state = deps.state(ctx)
-            result = await _to_thread(lambda: current_facts_memory(
-                store, as_of=instant, security_policy=state.get("source_security_policy"),
-                access_context=deps.access_context(state, store),
-            ))
-            if subject.strip():
-                result = subject_view(result, subject, predicate.strip() or None)
-            return assistant_dumps(assistant.render_current_facts(result))
+
+            def build() -> str:
+                # The view and the serialisation are O(ledger) too, so they stay off the loop.
+                result = current_facts_memory(
+                    store, as_of=instant, security_policy=state.get("source_security_policy"),
+                    access_context=deps.access_context(state, store),
+                )
+                if subject.strip():
+                    result = subject_view(result, subject, predicate.strip() or None)
+                return assistant_dumps(assistant.render_current_facts(result))
+
+            return await _to_thread(build)
 
         held.register("recall_current_facts", recall_current_facts)
 
@@ -3275,7 +3301,6 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         lifespan=_make_lifespan(
             token_registry,
             health,
-            dict(runtime_settings.secret_versions),
             runtime_settings,
         ),
         token_verifier=verifier,
@@ -3445,10 +3470,7 @@ def build_server(settings: Settings | None = None) -> MCPServer:
                 # Keep compatibility with the small synchronous test doubles and host supplied
                 # local limiters. The Redis implementation is the only backend that needs the
                 # richer idempotency and fallback arguments.
-                check = getattr(limiter, "check")
-                result = check(tenant, _SCOPE_BUDGETS[scope])
-                if hasattr(result, "__await__"):
-                    await result
+                await _check_limiter_async(limiter, tenant, _SCOPE_BUDGETS[scope], 1.0)
         # StoreRegistry.get holds a process-wide lock across synchronous PostgreSQL work (a
         # control-plane route refresh, a lazy tenant's store open), so it runs in a worker.
         store = await _to_thread(lambda: registry.get(tenant))

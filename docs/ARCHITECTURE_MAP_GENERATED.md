@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 355
-Cross package edges: 374
+Cross package edges: 375
 
 ## Highest fan in modules
 
@@ -78,13 +78,13 @@ Cross package edges: 374
 | 16 | `recall.wizard.headless` |
 | 16 | `recall_mcp.semantic_graph_cache` |
 | 15 | `recall_mcp.graph_first_api` |
+| 15 | `recall_mcp.lifecycle` |
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.calibration_v2` |
 | 14 | `recall.cli_commands.provenance_cmd` |
 | 14 | `recall.dashboard.server` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall.lite.store` |
-| 14 | `recall_mcp.lifecycle` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.lite.refresh` |
@@ -245,6 +245,7 @@ They are observations, not automatic failures.
 | `recall_mcp.lifecycle` | `recall.backends` |
 | `recall_mcp.lifecycle` | `recall.control_plane` |
 | `recall_mcp.lifecycle` | `recall.current_state` |
+| `recall_mcp.lifecycle` | `recall.errors` |
 | `recall_mcp.lifecycle` | `recall.fact_redaction` |
 | `recall_mcp.lifecycle` | `recall.fact_retraction` |
 | `recall_mcp.lifecycle` | `recall.guards` |
@@ -816,7 +817,7 @@ They are observations, not automatic failures.
 | `recall_mcp.graph_first_api` | 15 | 142 |
 | `recall_mcp.graph_projection` | 6 | 45 |
 | `recall_mcp.indexing` | 20 | 124 |
-| `recall_mcp.lifecycle` | 14 | 123 |
+| `recall_mcp.lifecycle` | 15 | 123 |
 | `recall_mcp.limits` | 5 | 15 |
 | `recall_mcp.lite_refresh` | 5 | 105 |
 | `recall_mcp.models` | 2 | 5 |
@@ -832,7 +833,7 @@ They are observations, not automatic failures.
 | `recall_mcp.retrieval` | 23 | 128 |
 | `recall_mcp.semantic_graph_cache` | 16 | 125 |
 | `recall_mcp.server` | 60 | 196 |
-| `recall_mcp.server_auth` | 5 | 41 |
+| `recall_mcp.server_auth` | 5 | 123 |
 | `recall_mcp.service` | 59 | 179 |
 | `recall_mcp.settings` | 9 | 119 |
 | `recall_mcp.stale_reports_api` | 3 | 130 |
