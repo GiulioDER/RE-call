@@ -321,6 +321,70 @@ def test_a_real_generation_reads_back_as_graph_and_view_two(built: str) -> None:
     assert corpus.source_detail(db, built, "no/such/file.md") is None
 
 
+LONG_CHUNKS = corpus.MAX_CHUNKS + 30
+
+
+@pytest.fixture
+def built_long() -> Any:
+    """One memo cut into more chunks than View 2 lists, in a promoted generation."""
+    if not _db_available():
+        pytest.skip(db_unreachable_reason())
+    from recall.generations import GenerationManager
+    from recall.lineage import ChunkerIdentity, EmbedderIdentity, IndexManifestV1, ManifestObjectV1, PipelineIdentity
+    from recall.manifest import S3Allowlist, S3ObjectReader
+
+    tenant = "dash-long-" + uuid.uuid4().hex[:10]
+    key = f"corpora/{tenant}/long.md"
+    data = "\n\n".join(f"Paragraph {i} of the long memo." for i in range(LONG_CHUNKS)).encode()
+    manifest = IndexManifestV1(tenant, "long-v1", (
+        ManifestObjectV1(f"s3://approved/{key}", "v1", "text/markdown", len(data), hashlib.sha256(data).hexdigest()),
+    ))
+    reader = S3ObjectReader(_S3({("approved", key, "v1"): data}), S3Allowlist.parse("approved/corpora/"))
+    pipeline = PipelineIdentity(
+        EmbedderIdentity("fixture", "fixture-model", 64, revision="r1"),
+        ChunkerIdentity("paragraph-pack", 1, {"max_chars": 800, "overlap": 80}),
+        fts_configuration={"language": "english", "schema_version": 1},
+    )
+    manager = GenerationManager(TEST_DSN, tenant, actor="pytest", environment="test")
+    try:
+        generation = manager.create(manifest, pipeline)
+        manager.build(
+            generation.generation_id, reader, _Embedder(),
+            lambda text: [piece for piece in text.split("\n\n") if piece.strip()],
+        )
+        manager.validate(generation.generation_id)
+        manager.promote(generation.generation_id, unsafe_development=True)
+        yield tenant, f"s3://approved/{key}"
+    finally:
+        _cleanup(tenant)
+
+
+@requires_db
+def test_view_two_dates_cover_every_chunk_not_only_the_listed_ones(built_long: Any) -> None:
+    """NUM-004: first and last indexed were the min and max over the 201 chunks listed.
+
+    Chunks past the listed ones are given the earliest and the latest dates, so a page that reads
+    only the listed chunks shows neither. Red proof, 2026-11-04: `recall/dashboard/corpus.py`
+    `source_detail` mutated back to `_day(min(row[6] for row in chunks))` and
+    `_day(max(row[5] for row in chunks))` (the pre-fix lines) failed at "first indexed ignored".
+    """
+    tenant, source = built_long
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET first_indexed_at = '2026-01-02T00:00:00Z' WHERE tenant_id = %s AND chunk_ordinal = %s",
+            (tenant, LONG_CHUNKS - 2),
+        )
+        conn.execute(
+            "UPDATE recall_chunks_v1 SET indexed_at = '2099-06-30T00:00:00Z' WHERE tenant_id = %s AND chunk_ordinal = %s",
+            (tenant, LONG_CHUNKS - 1),
+        )
+    detail = corpus.source_detail(DashboardDB(TEST_DSN), tenant, source)
+    assert detail is not None and detail["chunk_count"] == LONG_CHUNKS
+    assert detail["first_indexed"] == "2026-01-02", "NUM-004: first indexed ignored the chunks past the listed ones"
+    assert detail["last_indexed"] == "2099-06-30", "NUM-004: last indexed ignored the chunks past the listed ones"
+
+
 @pytest.fixture
 def built_copies() -> Any:
     if not _db_available():

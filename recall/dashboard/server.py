@@ -37,6 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
+from recall import db_constants
 from recall.dashboard import db as dbq
 from recall.dashboard import edit, review
 from recall.dashboard import triage
@@ -50,7 +51,8 @@ from recall.truth_extraction.types import STATUS_VOCABULARY
 COOKIE = "recall_dashboard"
 REVIEWER_COOKIE = "recall_reviewer"
 TENANT_COOKIE = "recall_tenant"
-DEFAULT_TENANT = "memory"
+# Every other RE-call surface (the CLI, the MCP server, lite setup) opens `default`; so does this.
+DEFAULT_TENANT = db_constants.DEFAULT_TENANT
 TENANT_CACHE_SECONDS = 60
 #: A corpus graph is rebuilt at most this often: building one reads every file of the corpus, about
 #: 2 s on the database host and 7 s over a tunnel for the memory tenant (measured 2026-10-08). A
@@ -451,7 +453,7 @@ class DashboardApp:
         self.project_root = (project_root or Path.cwd()).resolve()
         self.config_host = config_host
         self.config_command = config_command
-        # The tenant a page shows when none is chosen: `memory` for the shared corpora, the file's
+        # The tenant a page shows when none is chosen: `default`, as everywhere in RE-call, the file's
         # own tenant for a lite store, which holds exactly one.
         self.default_tenant = default_tenant
         self._recover_lite_tenant = recover_lite_tenant
