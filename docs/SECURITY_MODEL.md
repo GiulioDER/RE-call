@@ -370,7 +370,7 @@ user-editable profile attribute or a client-requested claim, it is caller-contro
 cross-tenant read follows. `RECALL_OIDC_SUBJECT_TENANTS` pins the mapping here instead and does not
 rest on that promise. One of the two is required to boot, and there is no default.
 
-**Requests are bounded individually and in aggregate; the limiter is per process.**
+**Requests are bounded individually and in aggregate.**
 Each `recall_index` request is measured — candidate file count and total bytes — BEFORE anything
 is read or embedded, and refused whole if it exceeds `RECALL_INDEX_MAX_FILES` (default 2000) or
 `RECALL_INDEX_MAX_BYTES` (default 20 MB).
@@ -395,9 +395,10 @@ Set any of these to `off` to disable it. A malformed or non-positive value falls
 default rather than being read as "unlimited": `0` means "no limit" to one reader and "nothing
 allowed" to another, and guessing wrong in a spend control removes the cap.
 
-Two limits worth knowing. **Buckets live in the process**, so N server workers admit roughly N
-times these rates — honest for the single-process-behind-TLS deployment this targets, and the
-first thing to revisit before running a fleet. And **`stdio` is not metered**: it is a private
+Two limits worth knowing. **With the default local backend, buckets live in the process**, so N
+server workers admit roughly N times these rates. `RECALL_RATE_LIMIT_BACKEND=redis` (with
+`RECALL_REDIS_URL`) shares them across workers, and `RECALL_ENV=production` refuses any other
+backend. And **`stdio` is not metered**: it is a private
 pipe to one local client with no principal to charge, matching how authentication is scoped.
 
 **Request SIZE is bounded too, and this document previously said it did not need to be.** The

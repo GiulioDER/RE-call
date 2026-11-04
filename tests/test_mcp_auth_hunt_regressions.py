@@ -464,3 +464,22 @@ def test_main_configures_logging_before_building_the_server(monkeypatch) -> None
     with pytest.raises(_Stop):
         server.main()
     assert order == ["logging", "build"]
+
+
+# --- ENV-001 ---------------------------------------------------------------------------------
+
+
+def test_the_documented_jwks_refresh_default_is_the_one_the_code_applies() -> None:
+    """ENV-001: the schema behind .env.example and the generated docs must state the real default.
+
+    Invariant: the documented RECALL_OIDC_JWKS_REFRESH_SECONDS default equals the value the
+    validator uses when the variable is unset. Failure mode caught: the docs said 300 s while the
+    code applied 900 s, so a withdrawn signing key kept verifying three times longer than an
+    operator planned for. `settings.py` cannot import the constant (it would load PyJWT), so this
+    test is what keeps the two from drifting.
+    """
+    from recall_mcp.oidc import DEFAULT_JWKS_REFRESH_S
+    from recall_mcp.settings import ENVIRONMENT_SCHEMA
+
+    (spec,) = [s for s in ENVIRONMENT_SCHEMA if s.name == "RECALL_OIDC_JWKS_REFRESH_SECONDS"]
+    assert spec.default == str(DEFAULT_JWKS_REFRESH_S)
