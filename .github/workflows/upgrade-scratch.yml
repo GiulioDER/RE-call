@@ -9,12 +9,13 @@ permissions:
 
 jobs:
   upgrade-from-release:
-    name: Upgrade from 0.14.0 (PostgreSQL ${{ matrix.postgres }})
+    name: Upgrade RED ${{ matrix.mutation }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         postgres: [18]
+        mutation: [drop-migration-0030, hashing-sha1]
     services:
       db:
         image: pgvector/pgvector:pg${{ matrix.postgres }}
@@ -72,6 +73,15 @@ jobs:
           "$PY" -m pip install --quiet --force-reinstall --no-deps "$wheel"
           "$PY" -m pip install --quiet "${wheel}[mcp]"
           "$PY" -I -c "import recall; print(recall.__version__, recall.__file__)"
+
+      - name: RED, break the installed wheel on purpose
+        run: |
+          set -euo pipefail
+          site=$("$PY" -I -c "import recall, pathlib; print(pathlib.Path(recall.__file__).parent)")
+          case "${{ matrix.mutation }}" in
+            drop-migration-0030) rm -v "$site/migrations/sql/0030_fact_current_table.sql" ;;
+            hashing-sha1) sed -i 's/hashlib.md5(tok.encode/hashlib.sha1(tok.encode/' "$site/embedding_core.py"; grep -n "hashlib.sha1(tok" "$site/embedding_core.py" ;;
+          esac
 
       - name: Upgrade and verify with the new wheel
         working-directory: ${{ runner.temp }}
