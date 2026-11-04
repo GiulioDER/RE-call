@@ -911,8 +911,9 @@ class PostgresFactLedger:
     def erasure_lock(self, *, shared: bool) -> Iterator[None]:
         """Order this tenant's fact applications against its erasures.
 
-        An application (`ProvenanceController.apply_fact`, `apply_stated`) holds it shared from
-        its card checks to its append; a forget or withdraw (`recall_mcp.lifecycle`) holds it
+        An application (`ProvenanceController.apply_fact`, and the stated reconcile in
+        `recall.stated_facts`; `apply_stated` itself takes none, because its caller holds it)
+        holds it shared from its card checks to its append; a forget or withdraw (`recall_mcp.lifecycle`) holds it
         exclusively from its plan to its redaction. So a forget either sees an assertion in its
         plan or runs first, and the application then finds the memo gone. Without it an
         assertion checked before a forget deleted its memo was appended after the forget's
