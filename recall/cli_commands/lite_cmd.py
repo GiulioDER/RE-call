@@ -51,7 +51,10 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
                            help="a memo folder; repeatable (default: the folders the store was last "
                                 "refreshed from, else RECALL_INDEX_ROOT, else the current directory, "
                                 "as `recall setup --lite` defaults)")
-    p_refresh.add_argument("--embedder", default=None,
+    from recall.cli import StoreGiven
+
+    # SUPPRESS, not None: a default here would overwrite `recall --embedder X lite refresh`'s X.
+    p_refresh.add_argument("--embedder", action=StoreGiven, default=argparse.SUPPRESS,
                            help="the embedder the store was built with (default: RECALL_EMBEDDER, else "
                                 "the one the store recorded)")
     p_refresh.add_argument("--force", action="store_true", help="refresh even when no memo changed")
@@ -162,7 +165,10 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.embeddings import resolve_embedder
     from recall.lite import LiteStore
 
-    given = args.embedder or os.environ.get("RECALL_EMBEDDER", "").strip()
+    # Only a typed --embedder, before or after `lite refresh`: the global option's default is
+    # RECALL_EMBEDDER or fastembed, which must not outrank the spec the store recorded.
+    typed = args.embedder if getattr(args, "embedder_given", False) else ""
+    given = typed or os.environ.get("RECALL_EMBEDDER", "").strip()
     info = inspect_lite_file(db)
     name = given or info.embedder_spec or info.embedder_model
     ask = f"which embedder built {db}? Pass --embedder or set RECALL_EMBEDDER"

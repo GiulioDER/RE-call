@@ -705,7 +705,7 @@ def _setup_with_model_name(project: Path, monkeypatch: pytest.MonkeyPatch) -> tu
 
     def resolve(name: str) -> ContentWordEmbedder:
         asked.append(name)
-        if name != "content-words":
+        if name not in ("content-words", "typed-words"):
             raise ValueError(f"unknown embedder: {name!r}")
         return embedder
 
@@ -733,6 +733,29 @@ def test_refresh_after_setup_needs_no_embedder_flag(
         code = -2
         print(exc)
     assert asked == ["content-words"], f"refresh resolved {asked}, not the spec setup used"
+    assert code == 0, capsys.readouterr()
+
+
+@pytest.mark.parametrize("before", [True, False], ids=["recall --embedder X lite refresh", "lite refresh --embedder X"])
+def test_a_typed_embedder_flag_wins_in_either_position(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], before: bool
+) -> None:
+    """`recall --embedder X lite refresh`, the form LITE.md uses for setup, used to lose X: the
+    subcommand's own `--embedder` default of None overwrote the global value, so refresh fell back
+    to the recorded spec. A typed flag must win in either position. (That an UNtyped flag does
+    not override the recorded spec is test_refresh_after_setup_needs_no_embedder_flag.)
+
+    Red proof, 2026-11-04 on the remote test host: with refresh's option back to `default=None` in
+    `recall.cli_commands.lite_cmd.register`, the flag-first case failed at the `asked` assertion
+    with `['content-words'] == ['typed-words']`. With `_cmd_refresh` reading `args.embedder` whether
+    or not it was typed, test_refresh_after_setup_needs_no_embedder_flag failed with
+    `['fastembed'] == ['content-words']`. Restored, all passed."""
+    db, asked = _setup_with_model_name(project, monkeypatch)
+    rest = ["--store", str(db), "--memory", str(project / "memory")]
+    argv = (["--embedder", "typed-words", "lite", "refresh", *rest] if before
+            else ["lite", "refresh", "--embedder", "typed-words", *rest])
+    code = _cli(*argv)
+    assert asked == ["typed-words"], f"refresh resolved {asked}, not the typed --embedder"
     assert code == 0, capsys.readouterr()
 
 
