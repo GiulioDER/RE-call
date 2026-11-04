@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import stat
 import sys
@@ -32,6 +33,11 @@ from . import claude_config_home
 #: Seconds of remaining life below which a cached access token is refreshed rather than used. A
 #: token that expires mid-request costs a 401 and a retry; a minute of slack costs nothing.
 REFRESH_MARGIN_S = 60
+#: Lifetime assumed when the provider states none (or an unusable one): short, so a provider whose
+#: tokens live minutes is not sent an expired bearer for the better part of an hour.
+UNKNOWN_LIFETIME_S = 300.0
+#: No stated lifetime is trusted past a day.
+MAX_LIFETIME_S = 86400.0
 
 #: Filename PREFIX for the cached access token, completed by a digest of the account. Beside the
 #: hook config rather than inside it: the config is read by every session start, and a token has a
@@ -291,7 +297,16 @@ def refresh(config: dict[str, Any], refresh_token: str, *, now: float | None = N
     token = payload.get("access_token")
     if not token:
         raise AuthError("the identity provider returned no access_token")
-    lifetime = float(payload.get("expires_in", 3600))
+    # `expires_in` is only RECOMMENDED (RFC 6749 section 5.1), and JSON lets a provider send
+    # Infinity or 1e999, which would cache the token forever. A missing, non-numeric, non-finite
+    # or non-positive value is treated as a short lifetime, and none is trusted past a day.
+    try:
+        lifetime = float(payload.get("expires_in"))
+    except (TypeError, ValueError):
+        lifetime = 0.0
+    if not math.isfinite(lifetime) or lifetime <= 0:
+        lifetime = UNKNOWN_LIFETIME_S
+    lifetime = min(lifetime, MAX_LIFETIME_S)
     cred = Credential(
         access_token=str(token), expires_at=(time.time() if now is None else now) + lifetime
     )
@@ -430,7 +445,10 @@ def login(
         # not a decision to make on somebody's behalf.
         print(
             f"recall: no OS keychain available, so the token is in {fallback_path()} "
-            "(plaintext, permissions 0600). Install the `desktop` extra for keychain storage.",
+            # Windows has no mode bits to set: the file has only its folder's permissions.
+            + ("(plaintext, permissions 0600). " if os.name != "nt"
+               else "(plaintext, protected only by your profile folder's permissions). ")
+            + "Install the `desktop` extra for keychain storage.",
             file=err,
         )
     else:

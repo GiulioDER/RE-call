@@ -117,7 +117,11 @@ BM25_B = 0.75
 FIELD_WEIGHT = 3
 
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{2,}")
-DESCRIPTION_RE = re.compile(r"^description:\s*(.+)$", re.MULTILINE)
+#: Spaces and tabs only after the colon: `\s` crossed the newline, so an empty description took
+#: the NEXT line as its value.
+DESCRIPTION_RE = re.compile(r"^description:[ \t]*(.*)$", re.MULTILINE)
+#: YAML block-scalar indicators, whose value is the indented lines that follow.
+BLOCK_SCALARS = {"|", "|-", "|+", ">", ">-", ">+"}
 
 #: A memo's frontmatter: the block between an opening and a closing line that are each `---`
 #: alone (a UTF-8 BOM and surrounding blanks allowed), as `frontmatter_span` reads them.
@@ -202,7 +206,7 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
 #: Suffixes stripped to fold a prompt's wording onto a memo's. Longest first, so `decisions`
 #: loses `s` after `ions` has had its chance. Deliberately NOT Porter: a real stemmer is another
 #: dependency on the critical path of every user turn, and the cases that matter here are the
-#: plural and the participle, which four rules cover. `bus` and `gas` are the classic casualties
+#: plural and the participle, plus -er/-ers and -ation/-ations: nine suffixes in all. `bus` and `gas` are the classic casualties
 #: and MIN_LENGTH is what keeps them whole.
 SUFFIXES = ("ations", "ation", "ings", "ing", "ies", "ers", "er", "ed", "s")
 #: The root left behind must be at least this long. Three, not five: at five, `tests` and `runs`
@@ -293,12 +297,36 @@ def load_memos(store: Path) -> list[tuple[str, str, list[str]]]:
         except OSError:
             # One unreadable memo must not cost the other 328.
             continue
-        match = DESCRIPTION_RE.search(raw)
-        summary = match.group(1).strip().strip('"').strip("'") if match else ""
+        summary = _description(raw)
         title = path.stem.replace("-", " ")
         tokens = tokenize(title) * FIELD_WEIGHT + tokenize(summary) * FIELD_WEIGHT + tokenize(raw)
         memos.append((path.stem, summary or title, tokens))
     return memos
+
+
+def _description(raw: str) -> str:
+    """The memo's `description`, read from its frontmatter only.
+
+    Searched in the head and nowhere else, as `provenance` reads its fields: a body line that
+    happens to begin `description:` (a quoted YAML sample) is not the memo's summary. A block
+    scalar (`description: >-` and indented lines) is joined, rather than returned as `>-`.
+    """
+    head_match = FRONTMATTER_RE.search(raw)
+    if not head_match or not _is_frontmatter(head_match.group(1)):
+        return ""
+    head = head_match.group(1)
+    match = DESCRIPTION_RE.search(head)
+    if not match:
+        return ""
+    value = match.group(1).strip()
+    if value in BLOCK_SCALARS:
+        lines = []
+        for line in head[match.end():].split("\n")[1:]:
+            if line[:1] not in (" ", "\t") or not line.strip():
+                break
+            lines.append(line.strip())
+        value = " ".join(lines)
+    return value.strip('"').strip("'")
 
 
 def rank(

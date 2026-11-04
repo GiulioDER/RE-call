@@ -1,8 +1,9 @@
-"""Deciding what a hosted sync should upload, without uploading anything.
+"""Hosted sync: the pure upload diff, and the transport and manifest that apply it.
 
-This module is the diff. It answers "which of my files does the server not already have, and in
-what batches may I send them", and it does so as pure functions over dictionaries so the decision
-can be tested without a network, a database, or a server.
+The first half of this module is the diff, and it uploads nothing. It answers "which of my files
+does the server not already have, and in what batches may I send them", and it does so as pure
+functions over dictionaries so the decision can be tested without a network, a database, or a
+server. The second half (`call_tool`, the manifest, `sync_memory_roots`) does upload.
 
 **Nothing here imports `recall`.** That is the same rule the rest of this package follows and for
 the same measured reason: `recall/__init__.py` costs about a second, and a `SessionStart` hook runs
@@ -110,8 +111,6 @@ class SyncPlan:
     """
 
     unchanged: int = 0
-    skipped_unreadable: list[str] = field(default_factory=list)
-    """Files that could not be read. Not an error, and not silence either."""
 
 
 def digest_of(path: Path) -> tuple[str, int] | None:
@@ -506,8 +505,9 @@ def call_tool(
 ) -> Any:
     """Call one MCP tool over streamable-http and return its parsed result.
 
-    Imports the SDK lazily and inside the call. `SessionEnd` is the only event that reaches here,
-    and it is asynchronous, so the cost is never charged to a session launch — which is the whole
+    Imports the SDK lazily and inside the call. `SessionEnd` and `PreCompact` are the only events
+    that reach here, and neither is a session launch (Claude Code runs both async; Codex runs
+    `SessionEnd` synchronously with a 15 s timeout), so the cost is never charged to a launch — which is the whole
     reason this package avoids `recall`.
 
     Raises `SyncError` with a classified kind. Never leaks an `ExceptionGroup`.
@@ -590,6 +590,10 @@ def remote_inventory(
             "tail of the corpus; raise the limit or page it",
         )
     entries = payload.get("entries") or []
+    # A malformed answer is a refusal the caller records, not an AttributeError that escapes the
+    # never-raises sync and loses this run's withheld, skipped and pending records with it.
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        raise SyncError("refusal", "recall_inventory returned entries that are not a list of objects")
     return {str(e["source"]): str(e.get("sha256") or "") for e in entries if e.get("source")}
 
 

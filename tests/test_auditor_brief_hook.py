@@ -1022,7 +1022,9 @@ def _log_text(env: Path) -> str:
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected"), [("nan", 3.0), ("inf", 3.0), ("1e9", 30.0), ("x", 3.0)]
+    # 4.0 since CCA ENV-007 (2026-11-04): the cap now stays below the 5 s Codex SubagentStart
+    # timeout. Control: a value above the cap is still replaced and logged, as before.
+    ("raw", "expected"), [("nan", 3.0), ("inf", 3.0), ("1e9", 4.0), ("x", 3.0)]
 )
 def test_budget_rejects_unusable_values(
     env: Path, monkeypatch: pytest.MonkeyPatch, raw: str, expected: float,

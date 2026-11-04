@@ -29,8 +29,11 @@ benefit as *plausible and unproven*, not as measured. What IS measured:
 
 ## Cost is latency, not tokens, and that is what the guards here are about
 
-This runs as one PROCESS PER TOOL CALL, so every cost is paid on every `Write`, `Edit` and `Bash`.
-Measured on this machine, 2026-08-27:
+In `connection_mode: cold` this runs as one PROCESS PER TOOL CALL, so every cost is paid on every
+`Write`, `Edit` and `Bash`. (`connection_mode: relay`, which the installer writes for new
+installs, keeps one connection open in a per-session helper, `recall_hooks/relay.py`, so the
+import and handshake rows below are paid once per session instead.) Measured on this machine,
+2026-08-27, cold:
 
 | condition | wall clock |
 |---|---|
@@ -90,6 +93,10 @@ TOP_K = 5
 SNIPPET_CHARS = 1200
 #: Seconds to stand down after a connection failure. See the latency table above.
 COOLDOWN_SECONDS = 300
+#: Upper bounds on hand-edited settings: an hour of stand-down, and 20 hits of up to
+#: SNIPPET_CHARS each, which already exceeds what one tool call should inject.
+MAX_COOLDOWN_SECONDS = 3600.0
+MAX_K = 20
 
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 COMMAND_TOOLS = ("Bash", "BashOutput")
@@ -136,11 +143,22 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
         "connection_mode": block.get("connection_mode", "cold")
         if block.get("connection_mode") in WRITE_TIME_CONNECTION_MODES
         else "cold",
-        "k": int(block.get("k", TOP_K)),
-        "min_chars": int(block.get("min_chars", MIN_QUERY_CHARS)),
+        # Each bounded, and a wrong type keeps the default, rather than a bare int()/float(): a
+        # null raised out of this hook, a negative k failed every query in SQL and so started
+        # the cooldown, and an infinite cooldown_seconds silenced the hook for good.
+        "k": int(_bounded(block, "k", TOP_K, 1, MAX_K)),
+        "min_chars": int(_bounded(block, "min_chars", MIN_QUERY_CHARS, 1, MAX_QUERY_CHARS)),
         "connect_timeout": connect_timeout,
-        "cooldown_seconds": float(block.get("cooldown_seconds", COOLDOWN_SECONDS)),
+        "cooldown_seconds": _bounded(block, "cooldown_seconds", COOLDOWN_SECONDS, 0, MAX_COOLDOWN_SECONDS),
     }
+
+
+def _bounded(block: dict[str, Any], key: str, default: float, low: float, high: float) -> float:
+    """`block[key]` as a finite number clamped to `[low, high]`, else `default`."""
+    value = block.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return default
+    return min(max(value, low), high)
 
 
 def _cooldown_path() -> Path:
@@ -167,8 +185,11 @@ def _in_cooldown() -> bool:
             begun_text, _sep, seconds_text = raw[len(INFLIGHT_PREFIX):].partition(":")
             begun, seconds = float(begun_text), float(seconds_text)
             now = time.time()
-            return now - begun > INFLIGHT_SECONDS and now < begun + seconds
-        return time.time() < float(raw)
+            return now - begun > INFLIGHT_SECONDS and now < begun + min(seconds, MAX_COOLDOWN_SECONDS)
+        # A stamp further ahead than any cooldown can reach was written by a clock that ran
+        # ahead (or by hand); honouring it would silence the hook for as long as it says.
+        stamp = float(raw)
+        return time.time() < stamp <= time.time() + MAX_COOLDOWN_SECONDS
     except ValueError:
         return False
 
@@ -252,7 +273,8 @@ def _search_connection(
 ) -> list[tuple[str, str, float]]:
     """Run the lexical query on an already-open connection.
 
-    This is kept separate from :func:`search` so a benchmark relay can amortize connection setup
+    This is kept separate from :func:`search` so the write-time relay (`recall_hooks/relay.py`,
+    the default for new installs) and its benchmark can amortize connection setup
     without creating a second SQL implementation. The caller owns the connection lifecycle.
     """
 
