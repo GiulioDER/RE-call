@@ -1401,6 +1401,7 @@ def run_setup_wizard(
                 table=table or DEFAULT_TABLE,
                 write_time=write_time_requested,
                 prompt_time=prompt_time_requested,
+                project_root=project_root,
                 print_fn=print_fn,
             )
             print_fn(

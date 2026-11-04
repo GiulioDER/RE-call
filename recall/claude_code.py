@@ -767,7 +767,8 @@ def uninstall(
         print_fn(f"Removed MCP server '{SERVER_NAME}' from {len(removed)} key(s): " + ", ".join(removed))
 
 
-def _write_hook_config(
+def hook_config_document(
+    path: Path,
     *,
     dsn: str,
     tenant: str,
@@ -777,10 +778,14 @@ def _write_hook_config(
     write_time_connection_mode: str = "relay",
     project_root: Path | None = None,
     prompt_time: bool = True,
-) -> None:
-    path = hook_config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    config = {
+) -> dict[str, Any]:
+    """The hook config an installer writes to `path`, with the operator's switch carried forward.
+
+    Shared by the Claude Code and Codex installers, which feed the same `recall_hooks` readers:
+    a key one of them leaves out (the Codex writer once omitted `project_root`) silently switches
+    a feature off for that client, because the readers refuse a config without it.
+    """
+    config: dict[str, Any] = {
         "dsn": dsn,
         "tenant": tenant,
         "embedder": embedder,
@@ -825,6 +830,33 @@ def _write_hook_config(
         config["general_knowledge"] = previous["general_knowledge"]
     elif unreadable or (previous is not None and not isinstance(previous, dict)):
         config["general_knowledge"] = {"enabled": False}
+    return config
+
+
+def _write_hook_config(
+    *,
+    dsn: str,
+    tenant: str,
+    embedder: str,
+    table: str = "chunks",
+    write_time: bool = True,
+    write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
+    prompt_time: bool = True,
+) -> None:
+    path = hook_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    config = hook_config_document(
+        path,
+        dsn=dsn,
+        tenant=tenant,
+        embedder=embedder,
+        table=table,
+        write_time=write_time,
+        write_time_connection_mode=write_time_connection_mode,
+        project_root=project_root,
+        prompt_time=prompt_time,
+    )
     _write_json(path, config)
     try:
         path.chmod(0o600)

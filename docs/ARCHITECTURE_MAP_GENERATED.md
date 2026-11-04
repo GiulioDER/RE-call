@@ -532,7 +532,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.schema_cmd` | 2 | 116 |
 | `recall.cli_commands.secret_cmd` | 1 | 4 |
 | `recall.cli_commands.setup_wizard` | 16 | 175 |
-| `recall.codex` | 1 | 1 |
+| `recall.codex` | 2 | 128 |
 | `recall.constants` | 0 | 0 |
 | `recall.context` | 2 | 14 |
 | `recall.control_plane` | 5 | 38 |
@@ -792,7 +792,7 @@ They are observations, not automatic failures.
 | `recall_hooks` | 9 | 116 |
 | `recall_hooks.__main__` | 1 | 117 |
 | `recall_hooks.auditor_brief` | 5 | 116 |
-| `recall_hooks.codex` | 3 | 118 |
+| `recall_hooks.codex` | 3 | 129 |
 | `recall_hooks.credentials` | 2 | 116 |
 | `recall_hooks.general_knowledge` | 2 | 116 |
 | `recall_hooks.hosted` | 3 | 116 |

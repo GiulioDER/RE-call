@@ -264,8 +264,9 @@ Claude settings is approved.
 - **Configuration and files** (as built, 2026-10-23). `RECALL_AUDITOR_TYPES` (comma separated,
   matched case-insensitively; a value naming no type falls back to the default list and logs),
   `RECALL_AUDITOR_MEMOS`, `CCA_BUGS_DIR` (read exactly as CCA reads it), and
-  `RECALL_AUDITOR_BRIEF_BUDGET` (seconds, default 3, at most 30; an invalid value is logged and
-  replaced). The log is `<config home>/logs/recall-auditor-brief.log` and the parsed-memo cache
+  `RECALL_AUDITOR_BRIEF_BUDGET` (seconds, default 3, at most 4; an invalid value is logged and
+  replaced). 🔁 Corrected 2026-11-04: this said "at most 30", the cap as built; CCA ENV-007 lowered
+  it to 4 s so a budget cannot outlast the 5 s Codex SubagentStart timeout. The log is `<config home>/logs/recall-auditor-brief.log` and the parsed-memo cache
   `<config home>/cache/recall-auditor-brief-memos-<hash of the memo directory>.json`, one per
   directory, where the config home is `RECALL_HOOK_CONFIG_HOME`, else `CLAUDE_CONFIG_DIR`, else
   `~/.claude`. `python -m recall_hooks warm-auditor-brief` fills the cache with no deadline; run it
