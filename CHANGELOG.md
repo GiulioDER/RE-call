@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- `recall forget` (and `recall_forget`) on a generation tenant without the enterprise
+  control-plane tables no longer logs an ERROR and warns that the erased text "may be restored".
+  `recall schema apply` does not create the migration outbox, so there is nothing pending to
+  scrub; the scrub now reports 0 there.
+- `recall doctor` on the generation route (`RECALL_ENV=production`, or
+  `RECALL_INDEX_MODE=generation`) judges a tenant with no legacy rows by its active generation,
+  and reports that generation's calibration status from the database, the one the server serves
+  by, instead of `calibration.json`. It used to FAIL "holds NO chunks" on such a tenant while it
+  served trusted answers. The legacy route is unchanged.
+- `recall calibration auto` after a forget now names the calibration the forget superseded and
+  the labelled refit (`recall calibration calibrate --generation ... --publish`), instead of
+  reporting that no certified calibration was ever published.
+
 - A `recall_record` of kind `bug` may carry `defect_class`, one of the fixed classes cca-audit's
   `audit-fix.md` lists ("Defect classes"), or null, and `defect_class_reason`. Both are optional,
   so every existing record stays valid; an unlisted class is refused like any other invalid

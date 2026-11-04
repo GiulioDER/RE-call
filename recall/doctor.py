@@ -477,7 +477,33 @@ def _embedding_width(conn: Any, table: str) -> int | None:
     return row[0] if row and row[0] and row[0] > 0 else None
 
 
-def _corpus_checks(conn: Any, *, table: str, tenant: str) -> Iterator[Check]:
+def _active_generation(conn: Any, tenant: str) -> tuple[str, int] | None:
+    """The tenant's active generation and its chunk count, or None when it has none.
+
+    None too on a database that predates generations (no `recall_tenant_state`), and when the
+    database will not answer: as in `_count_for_tenant`, the caller then reports what it could
+    establish rather than turning the whole report into a database failure.
+    """
+    try:
+        if conn.execute("SELECT to_regclass('recall_tenant_state')").fetchone()[0] is None:
+            return None
+        row = conn.execute(
+            "SELECT active_generation_id FROM recall_tenant_state WHERE tenant_id = %s", (tenant,)
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        (count,) = conn.execute(
+            "SELECT count(*) FROM recall_chunks_v1 WHERE tenant_id = %s AND generation_id = %s",
+            (tenant, row[0]),
+        ).fetchone()
+    except Exception:  # BROAD-CATCH: fail-open
+        return None
+    return str(row[0]), int(count)
+
+
+def _corpus_checks(
+    conn: Any, *, table: str, tenant: str, generation_route: bool = False
+) -> Iterator[Check]:
     """⚠️ The headline check, and the one the other tools cannot substitute for.
 
     `recall search` answers "what did you find". This answers "where were you looking", which is
@@ -558,6 +584,16 @@ def _corpus_checks(conn: Any, *, table: str, tenant: str) -> Iterator[Check]:
     if held:
         yield Check("corpus", "ok", f"{held} chunk(s) in {table!r}/{tenant!r}")
         return
+    generation = _active_generation(conn, tenant) if generation_route else None
+    if generation is not None and generation[1]:
+        # A tenant built with `recall generation build` serves from its active generation and may
+        # have no legacy rows at all (the wizard's docs and code tenants are built that way). It
+        # used to FAIL here as "holds NO chunks" while serving trusted answers.
+        yield Check(
+            "corpus", "ok",
+            f"{generation[1]} chunk(s) in active generation {generation[0]} of {tenant!r}",
+        )
+        return
 
     populated, unreadable = _populated_corpora(conn, columns)
     yield from _scan_caveats(conn, unreadable)
@@ -613,6 +649,33 @@ def _populated_corpora(conn: Any, columns: dict[str, set[str]]) -> tuple[str, li
     # longer any string that means both "here is what I found" and "here is what I could not
     # check", so a future caller cannot reintroduce the confusion by accident.
     return ", ".join(found), slow
+
+
+def _generation_calibration_check(dsn: str, tenant: str, generation_id: str, *, strict: bool) -> Check:
+    """The calibration bound to the tenant's active generation, which is what the server serves by.
+
+    A generation tenant's calibration lives in the database (`recall calibration calibrate
+    --generation ... --publish`), never in the legacy `calibration.json` that `_calibration_check`
+    reads, so on such a tenant that check reported "none fitted" beside a certified calibration.
+    Still a warning when not certified, for the reason `_calibration_check` gives.
+    """
+    from recall.generations import GenerationManager
+
+    status = GenerationManager(dsn, tenant).calibration_status_for(generation_id)
+    if status == "certified":
+        return Check("calibration", "ok", f"certified for active generation {generation_id}")
+    return Check(
+        "calibration",
+        "warn",
+        f"{status} for active generation {generation_id}"
+        + (
+            ", and this server is STRICT, so it will refuse queries until a certified one is published"
+            if strict
+            else ", and this server is in development mode, so queries answer as DEGRADED"
+        ),
+        f"recall --tenant {tenant} calibration calibrate --generation {generation_id} "
+        "--queries <labelled queries.json> --publish",
+    )
 
 
 def _calibration_check(embedder_name: str, *, strict: bool, dsn: str) -> Check:
@@ -875,6 +938,12 @@ def run_checks(
 
     # ONE connection for the server facts and the corpus counts both, opened here so an unreachable
     # database is reported once and waited for once. See `_database_checks`.
+    # The route the server resolves (`recall.runtime_route`): only on the generation route does it
+    # serve from the active generation and its database calibration.
+    from recall.runtime_route import resolve_runtime_route
+
+    uses_generation = resolve_runtime_route().uses_generation
+    generation: tuple[str, int] | None = None
     try:
         conn = _connect(dsn, tenant=tenant)
     except Exception as exc:  # BROAD-CATCH: fail-open
@@ -905,9 +974,12 @@ def run_checks(
             with conn:
                 for check in _database_checks(dsn, conn):
                     report.add(check)
-                for check in _corpus_checks(conn, table=table, tenant=tenant):
+                for check in _corpus_checks(
+                    conn, table=table, tenant=tenant, generation_route=uses_generation
+                ):
                     report.add(check)
                 report.add(_migration_check_for(conn, dsn, table=table))
+                generation = _active_generation(conn, tenant) if uses_generation else None
         except Exception as exc:  # BROAD-CATCH: fail-open
             report.add(
                 Check(
@@ -928,7 +1000,10 @@ def run_checks(
             else "development (answers an uncalibrated corpus as DEGRADED)",
         )
     )
-    report.add(_calibration_check(embedder, strict=policy.strict, dsn=dsn))
+    if generation is not None:
+        report.add(_generation_calibration_check(dsn, tenant, generation[0], strict=policy.strict))
+    else:
+        report.add(_calibration_check(embedder, strict=policy.strict, dsn=dsn))
     for check in _claude_code_checks(Path(project_root or Path.cwd()).resolve()):
         report.add(check)
     return report

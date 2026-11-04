@@ -1,0 +1,52 @@
+name: Red scratch
+
+on:
+  push:
+    branches: [claude/upgrade-findings-fixes]
+
+permissions:
+  contents: read
+
+jobs:
+  red:
+    name: Red ${{ matrix.mutation }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mutation: [none, no-scrub-guard, no-superseded-branch, no-doctor-generation, no-doctor-calibration]
+    services:
+      db:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      RECALL_TEST_DSN: postgresql://recall:recall@localhost:5432/recall
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev,documents]"
+      - name: Mutate
+        run: python .github/scratch_mutate.py ${{ matrix.mutation }}
+      - name: Run the new tests
+        run: >-
+          pytest -q -p no:randomly
+          "tests/test_enterprise_integration.py::test_the_scrub_has_nothing_to_do_where_no_outbox_table_exists"
+          "tests/test_calibration_drift.py::test_auto_after_a_forget_names_the_superseded_calibration_and_the_refit"
+          "tests/test_doctor.py::test_a_generation_only_tenant_passes_on_the_generation_route"
+          "tests/test_doctor.py::test_a_generation_tenant_reports_its_own_calibration"

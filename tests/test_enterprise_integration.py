@@ -825,6 +825,35 @@ def test_the_scrub_still_reaches_a_payload_whose_sources_list_is_malformed(enter
     assert "contents of" not in serialised, "the erased text survives in the outbox"
 
 
+def test_the_scrub_has_nothing_to_do_where_no_outbox_table_exists() -> None:
+    """A database without the enterprise control-plane tables has no pending events to scrub.
+
+    Every forget on a generation tenant, from `recall forget` and from the MCP server, scrubs the
+    outbox through `ControlPlane`, but `recall schema apply` never creates
+    `recall_migration_events`. Querying it raised UndefinedTable after the chunks were already
+    deleted, so the forget logged an ERROR and told the user the erased text "may be restored",
+    which the 0.14.0 upgrade job (`scripts/upgrade_smoke.py`, verify 8) showed on every run.
+
+    The schema is a fresh one on the search path, so tables other tests created in this database
+    are not visible.
+
+    Red proof, 2026-11-04: with the `to_regclass` guard in `ControlPlane._scrub_locked` removed,
+    this test fails with `psycopg.errors.UndefinedTable: relation "recall_migration_events" does
+    not exist`; restored, it passes.
+    """
+    schema = f"no_outbox_{uuid.uuid4().hex[:10]}"
+    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+        conn.execute(f'CREATE SCHEMA "{schema}"')
+    try:
+        from psycopg.conninfo import make_conninfo
+
+        dsn = make_conninfo(TEST_DSN, options=f"-csearch_path={schema}")
+        assert ControlPlane(dsn).erase_sources_from_pending("tenant-a", ["/corpus/gone.md"]) == 0
+    finally:
+        with psycopg.connect(TEST_DSN, autocommit=True) as conn:
+            conn.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def test_retire_refuses_a_tenant_it_cannot_check(enterprise) -> None:
     """An absent route must not be the quiet path through the only check `retire` has.
 

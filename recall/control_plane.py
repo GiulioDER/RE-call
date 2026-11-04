@@ -480,6 +480,13 @@ class ControlPlane:
         self, conn: "psycopg.Connection", tenant: str, erased: set[str]
     ) -> int:
         changed = 0
+        # The outbox is an enterprise control-plane table (`recall/sql/001_enterprise_control_plane.sql`),
+        # which `recall schema apply` does not create, while every generation-tenant forget comes
+        # through here. Without the table no event can be pending, so there is nothing to scrub;
+        # querying it anyway made each such forget log an ERROR and warn that the erased text
+        # "may be restored".
+        if conn.execute("SELECT to_regclass('recall_migration_events')").fetchone()[0] is None:
+            return 0
         with conn.transaction():
             self._set_tenant(conn, tenant)
             # Filtered SERVER SIDE. The payload of one event carries every chunk's text AND its
