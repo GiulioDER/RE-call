@@ -675,6 +675,74 @@ def test_setup_and_refresh_index_alike(project: Path, monkeypatch: pytest.Monkey
     assert again.indexed_files == 0, f"the first refresh after setup re-embedded {again.indexed_files} memo(s)"
 
 
+def _setup_with_model_name(project: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list[str]]:
+    """A store built by setup from the spec `content-words`, whose embedder's own `name` (what the
+    store records as `embedder_model`) is a model name no resolver accepts, as fastembed's
+    `BAAI/bge-small-en-v1.5` is. The returned list collects every name refresh asks to resolve."""
+    import recall.embeddings as embeddings
+    from recall.lite.setup import run_lite_setup
+
+    monkeypatch.delenv("RECALL_EMBEDDER", raising=False)
+    embedder = ContentWordEmbedder(name="org/model-name")
+    report = run_lite_setup(
+        project_root=project, memory=project / "memory", embedder=embedder,  # type: ignore[arg-type]
+        embedder_name="content-words", register=False,
+    )
+    asked: list[str] = []
+
+    def resolve(name: str) -> ContentWordEmbedder:
+        asked.append(name)
+        if name != "content-words":
+            raise ValueError(f"unknown embedder: {name!r}")
+        return embedder
+
+    monkeypatch.setattr(embeddings, "resolve_embedder", resolve)
+    return report.store, asked
+
+
+def test_refresh_after_setup_needs_no_embedder_flag(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The documented `recall lite refresh --store --memory`, after a default setup, resolves the
+    embedder setup used. It crashed on every OS in CI (PR 1169) with `unknown embedder:
+    'BAAI/bge-small-en-v1.5'`, because refresh fell back to the recorded model name.
+
+    Red proof, 2026-11-04: with `store.record_embedder_spec(embedder_name)` removed from
+    `recall.lite.setup.run_lite_setup`, this fails at the `asked` assertion with
+    `['org/model-name']`."""
+    db, asked = _setup_with_model_name(project, monkeypatch)
+    try:
+        code = _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"))
+    except ValueError as exc:
+        code = -2
+        print(exc)
+    assert asked == ["content-words"], f"refresh resolved {asked}, not the spec setup used"
+    assert code == 0, capsys.readouterr()
+
+
+def test_refresh_of_a_store_without_a_recorded_spec_asks_instead_of_crashing(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A store set up before the spec was recorded holds only the model name. Refresh must say
+    which flag to pass, not raise the resolver's ValueError as a traceback.
+
+    Red proof, 2026-11-04: with the `except ValueError` branch removed from
+    `recall.cli_commands.lite_cmd._cmd_refresh`, this fails at `pytest.fail` with the
+    resolver's "unknown embedder: 'org/model-name'"."""
+    import sqlite3
+
+    db, _ = _setup_with_model_name(project, monkeypatch)
+    conn = sqlite3.connect(db)
+    with conn:
+        conn.execute("DELETE FROM meta WHERE key = 'embedder_spec'")
+    conn.close()
+    try:
+        code = _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"))
+    except ValueError as exc:
+        pytest.fail(f"refresh raised the resolver's error instead of asking: {exc}")
+    assert code == -1, "refresh did not stop with a message"
+
+
 def test_a_future_dated_memo_does_not_keep_every_snapshot_racy(store: LiteStore, project: Path) -> None:
     """D4b (deferred BUG-007, found at L5.5): a whole-second mtime far ahead is not "just written"."""
     memo = project / "memory" / "memo-000.md"

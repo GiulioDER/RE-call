@@ -240,6 +240,7 @@ def run_lite_setup(
                     context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
                 ).index_path(memory)
             report.files, report.chunks, report.skipped = stats.files, stats.chunks, stats.skipped
+            store.record_embedder_spec(embedder_name)
             outcome = ensure_calibrated(store, embedder)
         report.calibration, report.calibration_reason = outcome.status.value, outcome.reason
     if register:
