@@ -169,8 +169,11 @@ def test_streamable_http_run_passes_transport_security(monkeypatch):
     assert calls["port"] == 9000
     assert calls["stateless_http"] is True
     assert calls["transport_security"].enable_dns_rebinding_protection is True
-    assert calls["transport_security"].allowed_hosts == ["recall.example.com"]
-    assert calls["transport_security"].allowed_origins == ["https://recall.example.com"]
+    # DEF-46: the scheme's default port is accepted written or omitted, since a client may send either.
+    assert calls["transport_security"].allowed_hosts == ["recall.example.com", "recall.example.com:443"]
+    assert calls["transport_security"].allowed_origins == [
+        "https://recall.example.com", "https://recall.example.com:443",
+    ]
 
 
 @pytest.mark.parametrize("raw", ["maybe", "2", "truth"])
