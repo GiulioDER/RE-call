@@ -532,6 +532,46 @@ def bounded_tenant_probe_ids(tenants: frozenset[str], limit: int) -> tuple[str, 
     return tuple(sorted(tenants)[:limit])
 
 
+@dataclass
+class _StartupConfig:
+    """What the lifespan resolves from configuration before it opens anything."""
+
+    runtime_settings: Settings
+    runtime_env: dict[str, str]
+    runtime_secret_versions: dict[str, str]
+    serving_dsn: str
+    embedder_name: str
+    table: str
+    tenant: str
+    enterprise: bool
+    runtime_route: RuntimeRoute
+    source_policy: SourceSecurityPolicy | None
+    pool_size: int
+    connection_budget: int
+    max_tenants: int
+    readiness_tenant_probes: int
+    statement_timeout_ms: int
+    retrieval_plan_resolver: RetrievalPlanResolver
+    federation_config: FederationConfig
+    translation_provider: object
+
+
+@dataclass
+class _ServingBackend:
+    """What the lifespan opened: the store or registry, the embedder, the providers."""
+
+    store: PgVectorStore | None
+    registry: StoreRegistry | None
+    embedder: Embedder
+    answer_provider: object
+    answer_profile: str
+    proof_provider: object
+    generation_mode: bool
+    pinned_generation_id: str | None
+    lite: bool
+    clock_installed: bool
+
+
 def _make_lifespan(
     token_registry: TenantProvisioning | None,
     health: HealthController | None = None,
@@ -549,8 +589,8 @@ def _make_lifespan(
       lazy until its first authenticated request.
     """
 
-    @asynccontextmanager
-    async def _lifespan(_server: MCPServer) -> AsyncIterator[dict]:
+    def _resolve_startup_config() -> _StartupConfig:
+        """Phase 1: resolve and validate configuration and the route, before any I/O."""
         from recall.store import require_secure_dsn
 
         runtime_settings = settings if settings is not None else bootstrap_settings()
@@ -568,9 +608,6 @@ def _make_lifespan(
                 "enterprise control plane requires RECALL_SOURCE_POLICY_FILE; "
                 "source authorization and redaction must be configured"
             )
-        settings_token = None
-        lite_refresher: LiteAutoRefresher | None = None
-        clock_installed = False
         pool_size = runtime_settings.pool_size
         connection_budget = runtime_settings.connection_budget
         max_tenants = runtime_settings.max_tenants
@@ -615,6 +652,45 @@ def _make_lifespan(
             retrieval_profile.max_concurrency,
             retrieval_profile.queue_capacity,
         )
+        return _StartupConfig(
+            runtime_settings=runtime_settings,
+            runtime_env=runtime_env,
+            runtime_secret_versions=runtime_secret_versions,
+            serving_dsn=serving_dsn,
+            embedder_name=embedder_name,
+            table=table,
+            tenant=tenant,
+            enterprise=enterprise,
+            runtime_route=runtime_route,
+            source_policy=source_policy,
+            pool_size=pool_size,
+            connection_budget=connection_budget,
+            max_tenants=max_tenants,
+            readiness_tenant_probes=readiness_tenant_probes,
+            statement_timeout_ms=statement_timeout_ms,
+            retrieval_plan_resolver=retrieval_plan_resolver,
+            federation_config=federation_config,
+            translation_provider=translation_provider,
+        )
+
+    def _open_serving_backend(config: _StartupConfig) -> _ServingBackend:
+        """Phase 2: build the embedder and providers, refuse a bad route, open the store or registry.
+
+        Also installs the evaluation clock. A failure here marks health failed and re-raises
+        without uninstalling it, exactly as before the lifespan was split into phases.
+        """
+        runtime_env = config.runtime_env
+        runtime_route = config.runtime_route
+        serving_dsn = config.serving_dsn
+        embedder_name = config.embedder_name
+        table = config.table
+        tenant = config.tenant
+        enterprise = config.enterprise
+        pool_size = config.pool_size
+        connection_budget = config.connection_budget
+        max_tenants = config.max_tenants
+        statement_timeout_ms = config.statement_timeout_ms
+        clock_installed = False
         store: PgVectorStore | None = None
         registry: StoreRegistry | None = None
         try:
@@ -723,7 +799,32 @@ def _make_lifespan(
                 exc_info=True,
             )
             raise
+        return _ServingBackend(
+            store=store,
+            registry=registry,
+            embedder=embedder,
+            answer_provider=answer_provider,
+            answer_profile=answer_profile,
+            proof_provider=proof_provider,
+            generation_mode=generation_mode,
+            pinned_generation_id=pinned_generation_id,
+            lite=lite,
+            clock_installed=clock_installed,
+        )
 
+    def _check_schema_and_probes(
+        config: _StartupConfig, backend: _ServingBackend
+    ) -> tuple[PgVectorStore, list[PgVectorStore]]:
+        """Phase 3: check the schema, apply a generation pin, open the bounded readiness sample.
+
+        A failure closes the store or registry and re-raises; it does not uninstall the
+        evaluation clock, exactly as before the lifespan was split into phases.
+        """
+        store = backend.store
+        registry = backend.registry
+        pinned_generation_id = backend.pinned_generation_id
+        readiness_tenant_probes = config.readiness_tenant_probes
+        max_tenants = config.max_tenants
         try:
             if store is not None:
                 store.check_schema()
@@ -765,7 +866,23 @@ def _make_lifespan(
                 registry.close()
             _log.error("schema check failed", exc_info=True)
             raise
+        return probe, health_probes
 
+    async def _gate_readiness(
+        config: _StartupConfig, backend: _ServingBackend, probe: PgVectorStore
+    ) -> tuple[AsyncRateLimiter | None, bool]:
+        """Phase 4: the RLS gate, enterprise readiness, and the per-tenant limiter.
+
+        Returns the limiter and whether enterprise readiness passed. A failure closes everything
+        opened so far, uninstalls the evaluation clock, and re-raises.
+        """
+        store = backend.store
+        registry = backend.registry
+        embedder = backend.embedder
+        lite = backend.lite
+        clock_installed = backend.clock_installed
+        enterprise = config.enterprise
+        runtime_env = config.runtime_env
         limiter: AsyncRateLimiter | None = None
         try:
             try:
@@ -839,58 +956,105 @@ def _make_lifespan(
             if clock_installed:
                 eval_clock.uninstall()
             raise
+        return limiter, enterprise_readiness_ok
 
+    def _assemble_runtime_state(
+        config: _StartupConfig,
+        backend: _ServingBackend,
+        probe: PgVectorStore,
+        health_probes: list[PgVectorStore],
+        limiter: AsyncRateLimiter | None,
+        enterprise_readiness_ok: bool,
+    ) -> dict[str, object]:
+        """Phase 5: read the active generation and build the state every tool reads.
+
+        Called inside the lifespan's main `try`, so a failure here reaches its `finally`.
+        """
+        store = backend.store
+        registry = backend.registry
+        embedder = backend.embedder
+        answer_provider = backend.answer_provider
+        answer_profile = backend.answer_profile
+        proof_provider = backend.proof_provider
+        generation_mode = backend.generation_mode
+        runtime_route = config.runtime_route
+        source_policy = config.source_policy
+        translation_provider = config.translation_provider
+        readiness_tenant_probes = config.readiness_tenant_probes
+        max_tenants = config.max_tenants
+        connection_budget = config.connection_budget
+        runtime_secret_versions = config.runtime_secret_versions
+        runtime_settings = config.runtime_settings
+        retrieval_plan_resolver = config.retrieval_plan_resolver
+        federation_config = config.federation_config
+        active_generation = None
+        if generation_mode:
+            try:
+                # `probe` is typed as the common store because authenticated registries can
+                # return either implementation. Generation mode supplies this capability,
+                # while enterprise routing may deliberately keep a base store here.
+                active_generation_reader = cast(
+                    Callable[[], str], getattr(probe, "active_generation_id")
+                )
+                active_generation = active_generation_reader()
+            except Exception:  # BROAD-CATCH: fail-closed, readiness reports missing generation
+                _log.warning("no active generation is available during startup")
+        runtime_state: dict[str, object] = {
+            "store": store,
+            "stores": registry,
+            "embedder": embedder,
+            "answer_provider": answer_provider,
+            "answer_profile": answer_profile,
+            "proof_provider": proof_provider,
+            "route": runtime_route,
+            "route_identity": runtime_route.identity(),
+            "source_security_policy": source_policy,
+            # Which store this server READS from, so a write can be routed to the same place.
+            # `recall_ingest` used to build a generation unconditionally, including on a server
+            # serving the legacy `chunks` table, so an upload succeeded and then could not be
+            # found. Recorded here rather than re-derived in the tool, because two readings of
+            # `RECALL_ENV` are two chances to disagree, and the whole defect was a disagreement
+            # about which store was in play.
+            "generation_mode": generation_mode,
+            "limiter": limiter,
+            "translation_provider": translation_provider,
+            "shadow_embedders": {},
+            "shadow_embedder_lock": threading.Lock(),
+            "health_probe": probe,
+            "health_probes": tuple(health_probes),
+            "control_plane": registry.control_plane if registry is not None else None,
+            "tenant_count": len(registry.allowed_tenants) if registry is not None else 1,
+            "tenant_probe_limit": readiness_tenant_probes,
+            "max_tenants": max_tenants,
+            "connection_budget": connection_budget,
+            "active_generation": active_generation,
+            "enterprise_readiness_ok": enterprise_readiness_ok,
+            "secret_versions": runtime_secret_versions,
+            "settings": runtime_settings,
+            "trust_policy": runtime_settings.trust_policy,
+            "retrieval_plan_resolver": retrieval_plan_resolver,
+            "federation_config": federation_config,
+            "federation_embedders": {},
+            "federation_embedder_lock": threading.Lock(),
+        }
+        return runtime_state
+
+    @asynccontextmanager
+    async def _lifespan(_server: MCPServer) -> AsyncIterator[dict]:
+        config = _resolve_startup_config()
+        backend = _open_serving_backend(config)
+        probe, health_probes = _check_schema_and_probes(config, backend)
+        limiter, enterprise_readiness_ok = await _gate_readiness(config, backend, probe)
+        store = backend.store
+        registry = backend.registry
+        clock_installed = backend.clock_installed
+        source_policy = config.source_policy
+        settings_token = None
+        lite_refresher: LiteAutoRefresher | None = None
         try:
-            active_generation = None
-            if generation_mode:
-                try:
-                    # `probe` is typed as the common store because authenticated registries can
-                    # return either implementation. Generation mode supplies this capability,
-                    # while enterprise routing may deliberately keep a base store here.
-                    active_generation_reader = cast(
-                        Callable[[], str], getattr(probe, "active_generation_id")
-                    )
-                    active_generation = active_generation_reader()
-                except Exception:  # BROAD-CATCH: fail-closed, readiness reports missing generation
-                    _log.warning("no active generation is available during startup")
-            runtime_state: dict[str, object] = {
-                "store": store,
-                "stores": registry,
-                "embedder": embedder,
-                "answer_provider": answer_provider,
-                "answer_profile": answer_profile,
-                "proof_provider": proof_provider,
-                "route": runtime_route,
-                "route_identity": runtime_route.identity(),
-                "source_security_policy": source_policy,
-                # Which store this server READS from, so a write can be routed to the same place.
-                # `recall_ingest` used to build a generation unconditionally, including on a server
-                # serving the legacy `chunks` table, so an upload succeeded and then could not be
-                # found. Recorded here rather than re-derived in the tool, because two readings of
-                # `RECALL_ENV` are two chances to disagree, and the whole defect was a disagreement
-                # about which store was in play.
-                "generation_mode": generation_mode,
-                "limiter": limiter,
-                "translation_provider": translation_provider,
-                "shadow_embedders": {},
-                "shadow_embedder_lock": threading.Lock(),
-                "health_probe": probe,
-                "health_probes": tuple(health_probes),
-                "control_plane": registry.control_plane if registry is not None else None,
-                "tenant_count": len(registry.allowed_tenants) if registry is not None else 1,
-                "tenant_probe_limit": readiness_tenant_probes,
-                "max_tenants": max_tenants,
-                "connection_budget": connection_budget,
-                "active_generation": active_generation,
-                "enterprise_readiness_ok": enterprise_readiness_ok,
-                "secret_versions": runtime_secret_versions,
-                "settings": runtime_settings,
-                "trust_policy": runtime_settings.trust_policy,
-                "retrieval_plan_resolver": retrieval_plan_resolver,
-                "federation_config": federation_config,
-                "federation_embedders": {},
-                "federation_embedder_lock": threading.Lock(),
-            }
+            runtime_state = _assemble_runtime_state(
+                config, backend, probe, health_probes, limiter, enterprise_readiness_ok
+            )
             # A lite store follows its memo folder on its own: a catch-up refresh now, and a
             # debounced check before each retrieval (`recall_mcp.lite_refresh`). None otherwise.
             # It applies the source policy with the context `recall_index` gets on a stdio server
@@ -898,8 +1062,8 @@ def _make_lifespan(
             # refresh uses the same one (`refresh_access_context`).
             lite_refresher = LiteAutoRefresher.from_env(
                 store,
-                embedder,
-                runtime_env,
+                backend.embedder,
+                config.runtime_env,
                 security_policy=source_policy,
                 security_context=(
                     None
@@ -910,7 +1074,7 @@ def _make_lifespan(
             if lite_refresher is not None:
                 lite_refresher.start()
             runtime_state["lite_refresher"] = lite_refresher
-            settings_token = activate_runtime_settings(runtime_settings)
+            settings_token = activate_runtime_settings(config.runtime_settings)
             if health is not None:
                 health.mark_started(runtime_state)
             yield runtime_state
