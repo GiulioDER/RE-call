@@ -40,7 +40,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from recall.wizard.stack import COMPOSE_NAME, DB_VOLUME, DOCKERFILE_NAME
+from recall.wizard.stack import (
+    COMPOSE_NAME,
+    DB_VOLUME,
+    DOCKERFILE_NAME,
+    existing_tenants,
+    is_generated_dockerfile,
+)
 from recall.errors import RecallError
 from recall.atomic_write import atomic_write_bytes
 from recall.wizard.config_lock import configuration_lock
@@ -278,7 +284,9 @@ def _configured_project_root(data_root: Path) -> Path | None:
     return Path(value) if isinstance(value, str) and value else None
 
 
-def _registrations(project_root: Path, config_path: Path) -> tuple[Removable, ...]:
+def _registrations(
+    project_root: Path, config_path: Path, owned: frozenset[str]
+) -> tuple[Removable, ...]:
     """The MCP servers this project registered, and only those.
 
     ⛔ The `cwd` marker decides. `register_local_scope` writes one into every block it creates and
@@ -286,6 +294,11 @@ def _registrations(project_root: Path, config_path: Path) -> tuple[Removable, ..
     else. Removal has to apply the same test in the same direction: an entry a person wrote by hand
     under a name this wizard also uses must survive an uninstall, or the uninstaller becomes a way
     to lose configuration nobody asked it to touch.
+
+    The marker alone is not enough, though: `recall setup --lite`, a second install for the same
+    project and a hand-written server can all carry the same `cwd`. So an entry is removed only
+    when its NAME is also one of `owned`, the tenants this install's stack file provisions, which
+    are the names `server_blocks` registers. Everything else under that `cwd` is listed as kept.
     """
     from recall.wizard.wiring import _written_by_this_project
 
@@ -307,11 +320,13 @@ def _registrations(project_root: Path, config_path: Path) -> tuple[Removable, ..
         if not isinstance(servers, dict):
             continue
         for name, definition in servers.items():
-            if _written_by_this_project(definition, project_root):
+            if str(name) in owned and _written_by_this_project(definition, project_root):
                 found.append(
                     Removable("registration", str(name), f"in {key}")
                 )
-            elif isinstance(definition, dict) and "recall" in str(name):
+            elif isinstance(definition, dict) and (
+                "recall" in str(name) or _written_by_this_project(definition, project_root)
+            ):
                 found.append(
                     Removable(
                         "registration",
@@ -457,8 +472,17 @@ def plan_uninstall(
 
     for filename in _INSTALLER_FILES:
         path = data_root / filename
-        if path.exists():
-            items.append(Removable("file", str(path), "written by the installer"))
+        if not path.exists():
+            continue
+        if filename == DOCKERFILE_NAME and not is_generated_dockerfile(path):
+            # The name alone does not make it ours: a data folder can be somebody's project.
+            items.append(
+                Removable(
+                    "file", str(path), "not written by the recall wizard", removing=False
+                )
+            )
+            continue
+        items.append(Removable("file", str(path), "written by the installer"))
 
     profile = _profile_for(data_root, profile_path)
     if profile is not None:
@@ -467,7 +491,8 @@ def plan_uninstall(
     project_root = _configured_project_root(data_root)
     if project_root is not None:
         config = claude_config_path or _default_claude_config()
-        items.extend(_registrations(project_root, config))
+        owned = frozenset(existing_tenants(data_root / COMPOSE_NAME))
+        items.extend(_registrations(project_root, config, owned))
 
     # ⛔ Listed as KEPT, loudly. These are the user's own files, and on a default install they sit
     # inside `data_root`, which is the directory somebody would otherwise expect to be deleted.

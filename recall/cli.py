@@ -369,6 +369,12 @@ def _main(argv: list[str] | None = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # `recall index .` runs `git`, and the wizard, uninstall and setup probes run `docker`, `wsl`,
+    # `systeminfo` and `nvidia-smi`, all by bare name. Windows CreateProcess searches the current
+    # directory before PATH for such a name, so a `git.exe` committed at the root of a cloned
+    # repository would run in place of git. This turns that search off for every child this
+    # process starts, as `recall_hooks.main` does for the hooks; elsewhere it is inert.
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
     try:
         _main(argv)
     except SchemaError as exc:

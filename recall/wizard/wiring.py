@@ -224,6 +224,10 @@ def _generation_block(
     # reachable through it. Without this the server would read the legacy `chunks` table, which a
     # generation build never wrote to, and answer nothing while looking configured.
     env["RECALL_ENV"] = "production"
+    # Pinned for the same reason the legacy block pins its own: the client lays this block over
+    # its environment, and an inherited RECALL_INDEX_MODE=legacy beside production is refused by
+    # `resolve_runtime_route`, which leaves the server with no tools.
+    env["RECALL_INDEX_MODE"] = "generation"
     env["RECALL_TRUST_MODE"] = trust
     if fact_write_dsn:
         env["RECALL_FACT_WRITE_DSN"] = fact_write_dsn
@@ -244,6 +248,9 @@ def _legacy_block(
     env["RECALL_ENV"] = "development"
     env["RECALL_INDEX_MODE"] = "legacy"
     env["RECALL_TRUST_MODE"] = "development"
+    # The MCP index path only writes under RECALL_INDEX_ROOT, defaulting to the server's working
+    # directory, so without this the agent could not index the memory folder this block serves.
+    env["RECALL_INDEX_ROOT"] = str(spec.root)
     if fact_write_dsn:
         env["RECALL_FACT_WRITE_DSN"] = fact_write_dsn
     return ServerBlock(
@@ -338,6 +345,28 @@ def mcp_config(
     }
 
 
+def _managed_env_values(path: Path) -> dict[str, str]:
+    """The `KEY=VALUE` pairs inside `path`'s managed `recall setup` block, in file order."""
+    from recall._env import _unquote
+    from recall.setup import SETUP_BEGIN, SETUP_END
+
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    inside = False
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line == SETUP_BEGIN:
+            inside = True
+        elif line == SETUP_END:
+            break
+        elif inside:
+            key, sep, value = line.partition("=")
+            if sep and key.strip() and not key.lstrip().startswith("#"):
+                values[key.strip()] = _unquote(value)
+    return values
+
+
 def write_project_files(
     *,
     project_root: Path,
@@ -381,7 +410,13 @@ def write_project_files(
     written: list[Path] = []
 
     env_path = project_root / ".env"
-    _update_env_block(env_path, {"RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder})
+    # `_update_env_block` rebuilds the whole managed block from the keys it is given, and
+    # `recall setup` keeps provider API keys, RECALL_CALIBRATION, RECALL_RERANK and more in that
+    # same block. Passing only the two keys the wizard owns deleted all of them without a backup.
+    _update_env_block(
+        env_path,
+        {**_managed_env_values(env_path), "RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder},
+    )
     written.append(env_path)
 
     claude_md = project_root / "CLAUDE.md"

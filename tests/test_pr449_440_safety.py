@@ -24,7 +24,7 @@ def _registered_install(tmp_path):
     root = _install(tmp_path, project_root=project)
     config = tmp_path / "client.json"
     config.write_text(json.dumps({"projects": {str(project): {"mcpServers": {
-        "recall": {"command": "python", "cwd": str(project)},
+        "acme-docs": {"command": "python", "cwd": str(project)},
         "other": {"command": "other", "env": {"TOKEN": "fake-credential-marker"}},
     }}}}), encoding="utf-8")
     config.chmod(0o600)
@@ -80,7 +80,7 @@ def test_unregister_keeps_credentials_private_at_first_write(tmp_path, monkeypat
     assert all(mode & 0o077 == 0 for mode in observed), observed
     assert not report.failed
     servers = json.loads(config.read_text())["projects"][str(project)]["mcpServers"]
-    assert "recall" not in servers
+    assert "acme-docs" not in servers
     assert servers["other"]["env"]["TOKEN"] == "fake-credential-marker"
 
 

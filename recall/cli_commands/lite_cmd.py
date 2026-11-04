@@ -177,12 +177,25 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
         raise SystemExit(f"{ask} (the store has not recorded one yet)")
     try:
         embedder = resolve_embedder(name)
-    except ValueError:
-        if given or info.embedder_spec:
-            raise
-        # A store set up before the spec was recorded holds only the model's own name, such as
-        # BAAI/bge-small-en-v1.5, which names no provider; guessing one is the nonsense above.
-        raise SystemExit(f"{ask} (the store recorded the model {name!r}, which names no embedder)") from None
+    except (MemoryError, RecursionError):
+        raise
+    except Exception as exc:  # BROAD-CATCH: error-translation  # as `_shared._make_embedder`
+        if not (given or info.embedder_spec) and isinstance(exc, ValueError):
+            # A store set up before the spec was recorded holds only the model's own name, such
+            # as BAAI/bge-small-en-v1.5, which names no provider; guessing one is the nonsense above.
+            raise SystemExit(
+                f"{ask} (the store recorded the model {name!r}, which names no embedder)"
+            ) from None
+        # A typo, or a recorded backend whose extra is not installed here, is the operator's to
+        # fix: one line naming the extra, as every other command prints, not a traceback.
+        from recall.capabilities import diagnose_exception
+
+        raise SystemExit(
+            diagnose_exception(
+                "embedder", "construction", exc, target=name,
+                remediation="check `recall doctor` and install the extra named by the diagnostic",
+            ).render()
+        ) from exc
     with LiteStore(db, dim=embedder.dim) as store:
         policy, context = _policy(store.tenant)
         result = refresh(

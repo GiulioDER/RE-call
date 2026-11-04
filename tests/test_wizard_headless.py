@@ -388,6 +388,10 @@ class _Spy:
             failure_code=None,
         )
 
+    def active_generation(self, tenant: str) -> str | None:
+        # Stands in for a database that still serves what `run` below promoted.
+        return f"gen_{tenant}"
+
     def index_legacy(self, spec: Any) -> Any:
         from recall.wizard.headless import LegacyIndex
 

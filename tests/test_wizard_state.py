@@ -233,6 +233,10 @@ class _CountingSpy:
         self.legacy.append(spec.tenant)
         return LegacyIndex(tenant=spec.tenant, files=1, chunks=4)
 
+    def active_generation(self, tenant: str) -> str | None:
+        # Stands in for a database that still serves what `_promoted` recorded.
+        return f"gen_{tenant}"
+
     def run(self, spec: Any, *, progress: Any = None) -> Any:
         self.built.append(spec.tenant)
         if spec.tenant in self._crash:
