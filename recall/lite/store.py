@@ -26,12 +26,15 @@ already is, so none of that code changes:
   root replaces its old rows instead of landing beside them.
 
 One file holds one tenant and one embedding width, both recorded on creation; opening it with a
-different one is refused rather than mixed. Writes take SQLite's own lock, so this is a local,
-single-user store.
+different one is refused rather than mixed. It is a local store that several processes on one
+machine may share (two MCP servers, a CLI beside them): each write transaction takes SQLite's own
+lock, and the longer operations queue on the file's write and refit lanes
+(`recall.lite.writer_lock`).
 """
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import sqlite3
@@ -45,10 +48,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from recall.calibration_v2 import CalibrationBindingError, CalibrationResolution
+from recall.calibration_v2 import CalibrationResolution
 from recall.db_constants import DEFAULT_TABLE
 from recall import eval_clock
 from recall.errors import RecallError
+from recall.idempotency_receipts import ANY_OPERATION
 from recall.observability import get_logger
 from recall.scope import FACET_METADATA_KEY, Scope, _source_prefix_regex_pattern, coerce_scope, group_expression
 from recall.state_dir import make_parent
@@ -107,6 +111,16 @@ _DELETE_PROJECT_FILES = (
 _ZETA_TWO = 1.64493406685
 _MAX_POSITIONS = 255
 _MAX_POSITION = 16383
+#: `ts_rank`'s default weight for a lexeme (class D) and the numeric-match boost, as the
+#: Postgres store's keyword SQL has them.
+_DEFAULT_LEXEME_WEIGHT = 0.1
+_NUMERIC_BOOST = 0.25
+#: How long a connection waits for another's SQLite lock before "database is locked".
+_BUSY_TIMEOUT_S = 30.0
+#: The oldest SQLite the schema runs on: UPSERT is 3.24, the window functions of the
+#: supersession scan 3.25.
+_MIN_SQLITE = (3, 25, 0)
+_NO_LEARNED_SPARSE = "learned sparse retrieval needs the full (Postgres) install"
 _OCCURRENCE_WEIGHT = [0.0]
 for _n in range(1, _MAX_POSITIONS + 1):
     _OCCURRENCE_WEIGHT.append(_OCCURRENCE_WEIGHT[-1] + 1.0 / (_n * _n))
@@ -127,6 +141,31 @@ class LiteUnsupported(LiteStoreError, AttributeError):
 
 def is_lite_dsn(dsn: str | None) -> bool:
     return bool(dsn) and str(dsn).startswith(LITE_DSN_PREFIX)
+
+
+@functools.cache
+def _require_sqlite() -> None:
+    """Refuse, naming the fix, an interpreter whose SQLite cannot hold a lite store.
+
+    Checked before the file is created: an older or FTS5-less libsqlite3 would otherwise fail
+    with a raw OperationalError after leaving part of the schema in a new file.
+    """
+    found = sqlite3.sqlite_version
+    if sqlite3.sqlite_version_info < _MIN_SQLITE:
+        raise LiteStoreError(
+            f"the lite store needs SQLite {'.'.join(map(str, _MIN_SQLITE))} or newer; this Python "
+            f"uses SQLite {found}. Use a Python built against a newer SQLite."
+        )
+    probe = sqlite3.connect(":memory:")
+    try:
+        probe.execute("CREATE VIRTUAL TABLE fts5_probe USING fts5(text)")
+    except sqlite3.OperationalError as exc:
+        raise LiteStoreError(
+            f"the lite store needs SQLite's FTS5 module, which this Python's SQLite {found} lacks ({exc}). "
+            "Use a Python built with FTS5."
+        ) from exc
+    finally:
+        probe.close()
 
 
 def lite_dsn_path(dsn: str) -> Path:
@@ -393,11 +432,23 @@ class LiteStore:
         self._tenant = tenant
         self._table = table
         self._lock = threading.RLock()
+        #: Set by `erasing()`: True when its closing checkpoint was blocked by a reader.
+        self.erase_checkpoint_blocked = False
+        _require_sqlite()
         make_parent(self.path)
-        self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=30.0)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._create_schema()
+        self._conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None, timeout=_BUSY_TIMEOUT_S)
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            # Every free zeroes its bytes, not only a forget's: an edited memo's old text,
+            # freed by re-indexing or an FTS segment merge, would otherwise outlive a later forget.
+            self._conn.execute("PRAGMA secure_delete = ON")
+            self._create_schema()
+        except BaseException:
+            # A refused open (another width or tenant, not a SQLite file) must not keep the file
+            # handle open for as long as its traceback lives.
+            self._conn.close()
+            raise
         self._matrix: _Matrix | None = None
         self._calibration_cache: tuple[tuple[int, int, str, str | None, str | None], CalibrationResolution, dict[str, str]] | None = None
         with self._lock:
@@ -476,7 +527,8 @@ class LiteStore:
                 raise AttributeError(name)
             raise LiteUnsupported(
                 f"{name!r} needs the full (Postgres) install; the lite store (one SQLite file) "
-                "indexes, searches, calibrates and resolves supersession only"
+                "indexes, searches, calibrates, forgets and erases, resolves supersession, and keeps "
+                "audit events, operation receipts and a fact ledger; not this"
             )
 
     def _create_schema(self) -> None:
@@ -504,6 +556,9 @@ class LiteStore:
                     created_at TEXT NOT NULL,
                     payload TEXT NOT NULL
                 );
+                -- Every trusted search looks up the fit in force; read backwards, this index
+                -- answers ORDER BY created_at DESC, rowid DESC LIMIT 1 with one row, not a sort.
+                CREATE INDEX IF NOT EXISTS calibrations_latest ON calibrations(created_at);
                 -- What a fit was measured on, kept so a changed corpus can re-verify its threshold
                 -- without embedding anything (`recall.lite.calibration.carry_forward`): the labelled
                 -- questions, their vectors (float32, one row per question, in order) and the corpus
@@ -593,10 +648,12 @@ class LiteStore:
         version of a rewritten row included. After it, the full-text index is merged so a deleted
         chunk's terms leave its segments (an FTS5 delete only appends a tombstone), and a TRUNCATE
         checkpoint copies the new pages over the old ones in the main file and empties the
-        write-ahead log. A reader holding a snapshot open can keep that checkpoint from finishing,
-        which is logged. VACUUM, which also compacts the file, is `vacuum()`.
+        write-ahead log. A reader holding a snapshot open can keep that checkpoint from finishing:
+        that is logged and left in `erase_checkpoint_blocked`, for the caller to report. VACUUM,
+        which also compacts the file, is `vacuum()`.
         """
         with self._lock:
+            self.erase_checkpoint_blocked = False
             prior = int(self._conn.execute("PRAGMA secure_delete").fetchone()[0])
             self._conn.execute("PRAGMA secure_delete = ON")
             try:
@@ -605,7 +662,7 @@ class LiteStore:
                     self._conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES ('optimize')")
             finally:
                 self._conn.execute(f"PRAGMA secure_delete = {prior}")
-                self.checkpoint()
+                self.erase_checkpoint_blocked = not self.checkpoint()
 
     def checkpoint(self) -> bool:
         """Copy the write-ahead log into the file and truncate it; False when a reader blocked it."""
@@ -763,7 +820,7 @@ class LiteStore:
         return False
 
     def sparse_covered_sources(self, profile_id: str) -> set[str]:
-        raise LiteStoreError("learned sparse retrieval needs the full (Postgres) install")
+        raise LiteUnsupported(_NO_LEARNED_SPARSE)
 
     # ------------------------------------------------------------------ reads used by indexing
 
@@ -963,7 +1020,7 @@ class LiteStore:
             # row is append-only and independent of that view, so it is written on a connection of
             # its own; WAL lets it commit while this reader keeps its snapshot. (Restack fix: the
             # ledger swallows write errors, so every lite search went unrecorded, silently.)
-            conn = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+            conn = sqlite3.connect(self.path, timeout=_BUSY_TIMEOUT_S, isolation_level=None)
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
@@ -1030,7 +1087,7 @@ class LiteStore:
                 finally:
                     cursor.close()
                 return
-        reader = sqlite3.connect(self.path, timeout=30.0)
+        reader = sqlite3.connect(self.path, timeout=_BUSY_TIMEOUT_S)
         try:
             cursor = reader.execute("SELECT id, source, text, metadata FROM chunks ORDER BY id")
             while rows := cursor.fetchmany(batch_size):
@@ -1087,7 +1144,7 @@ class LiteStore:
         self,
         idempotency_key: str,
         *,
-        operation: str = "legacy",
+        operation: str = ANY_OPERATION,
         request_fingerprint: str | None = None,
         now: datetime | None = None,
     ) -> str | None:
@@ -1103,7 +1160,7 @@ class LiteStore:
         idempotency_key: str,
         result: str,
         *,
-        operation: str = "legacy",
+        operation: str = ANY_OPERATION,
         request_fingerprint: str | None = None,
         now: datetime | None = None,
     ) -> None:
@@ -1179,11 +1236,13 @@ class LiteStore:
         positions = np.arange(len(matrix.rows)) if allowed is None else np.asarray(allowed, dtype=np.int64)
         if positions.size == 0:
             return []
-        # Unscoped, multiply the cached matrix itself: indexing it with every position would copy
-        # all of it (54 MB on the 13,304 chunk memory corpus) on every query, which measured
-        # 2026-10-07 as most of a 114 ms dense search against 5 ms for the product alone.
-        vectors = matrix.vectors if allowed is None else matrix.vectors[positions]
-        scores = vectors @ self._query_vector(vector)
+        # Multiply the cached matrix itself and index the scores: indexing the matrix with the
+        # positions would copy those rows (up to 54 MB on the 13,304 chunk memory corpus) on every
+        # query, which measured 2026-10-07 as most of a 114 ms dense search against 5 ms for the
+        # product alone. A scoped score is then the same number top_cosine computes.
+        scores = matrix.vectors @ self._query_vector(vector)
+        if allowed is not None:
+            scores = scores[positions]
         # Select with numpy, then order only those in Python. Every row scoring at least the k-th
         # best is kept, so a tie straddling the cut, however wide, is still broken by chunk id.
         if k < positions.size:
@@ -1304,10 +1363,10 @@ class LiteStore:
                 row = matrix.rows[position]
                 if not effective.is_empty and not _matches(effective, row):
                     continue
-                rank = 0.1 * total / _ZETA_TWO / len(terms)
+                rank = _DEFAULT_LEXEME_WEIGHT * total / _ZETA_TWO / len(terms)
                 values = row.metadata.get("numeric_values")
                 if numeric and isinstance(values, list) and any(str(v) in numeric for v in values):
-                    rank += 0.25
+                    rank += _NUMERIC_BOOST
                 ranked.append((rank, row.id, row))
             ranked.sort(key=lambda item: (-item[0], item[1]))
             top = ranked[:k]
@@ -1319,7 +1378,7 @@ class LiteStore:
             return [self._hit(item[2], item[0]) for item in top]
 
     def query_learned_sparse(self, *args: Any, **kwargs: Any) -> list[ScoredChunk]:
-        raise LiteStoreError("learned sparse retrieval needs the full (Postgres) install")
+        raise LiteUnsupported(_NO_LEARNED_SPARSE)
 
     # ------------------------------------------------------------------ calibration and lineage
 
@@ -1328,7 +1387,7 @@ class LiteStore:
         return self._load().fingerprint
 
     def corpus_revision(self) -> int:
-        """The persisted write revision used to guard calibration publication."""
+        """The persisted write revision: it moves with every corpus write, in this process or another."""
         return self._version()
 
     def lite_generation_id(self) -> str:
@@ -1357,20 +1416,27 @@ class LiteStore:
         created_at: str,
         model: str,
         dimension: int,
-        expected_revision: int | None = None,
         evidence: tuple[str, str, bytes, str] | None = None,
     ) -> None:
         """Append a fit and, in the same transaction, the evidence it was fitted on.
 
         `evidence` is `(calibration_id, queries JSON, query vectors as float32 bytes, sources JSON)`;
-        together or not at all, so a calibration never names evidence that was not written. An
-        expected revision refuses publication if any corpus write occurred during the fit; the
-        comparison and insertion share the write transaction, excluding another writer. Identity
-        metadata follows the timestamp-selected row.
+        together or not at all, so a calibration never names evidence that was not written.
+        Identity metadata follows the timestamp-selected row.
+
+        Evidence naming a source the chunks table no longer holds is not written: a fit that
+        started before a forget would otherwise put back the test questions the forget deleted.
+        That calibration then refuses to carry forward (fails closed) until the next refit. Once
+        this fit is the one in force, the evidence of every other fit is deleted, since only the
+        newest fit's evidence is ever read.
         """
         with self._write():
-            if expected_revision is not None and self._version() != expected_revision:
-                raise CalibrationBindingError("corpus changed during calibration; retry the fit")
+            if evidence is not None and self._conn.execute(
+                "SELECT 1 FROM json_each(?) AS fitted WHERE fitted.key NOT IN (SELECT source FROM chunks) LIMIT 1",
+                (evidence[3],),
+            ).fetchone():
+                _log.warning("a calibration fit of %s outlived a forget of one of its sources; its evidence is not kept", self.path)
+                evidence = None
             inserted = self._conn.execute("INSERT INTO calibrations(created_at, payload) VALUES (?, ?)", (created_at, payload))
             if evidence is not None:
                 self._conn.execute(
@@ -1383,6 +1449,10 @@ class LiteStore:
                 self._conn.executemany(
                     "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                     [("embedder_model", model), ("embedder_dimension", str(dimension))],
+                )
+                self._conn.execute(
+                    "DELETE FROM calibration_evidence WHERE calibration_id IS NOT ?",
+                    (None if evidence is None else evidence[0],),
                 )
 
     def save_near_miss_coverage(self, calibration_id: str, report: dict[str, Any]) -> None:
@@ -1506,9 +1576,10 @@ class LiteStore:
 
         The rows have the shape `PgVectorStore.supersession_all` builds in SQL, read per chunk by
         the shared Python twin (`chunk_supersedes_targets`): one row per (file, declared
-        reference), a chunk declaring nothing still yields one row so every file reaches the
-        resolver, dated by the earliest `first_indexed_at` among the chunks carrying the claim.
-        The shared `resolve_supersession_candidates` then applies the rule both stores share.
+        reference, source, validity window), a chunk declaring nothing still yields one row so
+        every file reaches the resolver, dated by the earliest `first_indexed_at` among the chunks
+        carrying the claim. `supersession_graph` then hands the rows and the stored supersession
+        records to the shared `resolve_supersession_graph`, which applies the rule both stores share.
 
         Two residues, neither reachable from metadata the indexer writes: the twin reads a few
         hand-written `supersedes` shapes (a flow-sequence string, padded or non-string list

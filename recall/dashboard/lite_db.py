@@ -21,12 +21,16 @@ from pathlib import Path
 from typing import Any
 
 from recall.dashboard.db import SEARCH_EVENTS, USE_REPORT_EVENT, DatabaseUnavailable, _summarise, stale_row
-from recall.lite import LITE_DSN_PREFIX
+from recall.lite import LiteStoreError, lite_dsn_path
 from recall.stale_reports import STALE_REPORT_EVENT
 
 
 def store_path(dsn: str) -> Path:
-    return Path(dsn[len(LITE_DSN_PREFIX):])
+    """The file the server would open, refusing as the server does a DSN it would refuse."""
+    try:
+        return lite_dsn_path(dsn)
+    except LiteStoreError as exc:
+        raise DatabaseUnavailable(str(exc)) from exc
 
 
 @contextmanager

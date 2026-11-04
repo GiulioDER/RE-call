@@ -15,9 +15,9 @@ the same ideas map onto less machinery:
 | promote, gc | nothing: one corpus, no generations |
 | `last-memory-refresh.json` | `<db stem>.refresh.json` beside the store |
 
-The trigger lives in the MCP server (`recall_mcp.lite_refresh`), because it is the only reader of
-the store and it runs exactly when somebody may search; `recall lite refresh` is the same call for a
-person or a scheduler. Design: recall-lab `research/designs/2026-10-12-lite-auto-refresh.md`.
+The trigger lives in the MCP server (`recall_mcp.lite_refresh`), because it is the reader that runs
+exactly when somebody may search; the CLI search, `recall doctor` and the dashboard also read the
+store and do not refresh it. `recall lite refresh` is the same call for a person or a scheduler. Design: recall-lab `research/designs/2026-10-12-lite-auto-refresh.md`.
 
 A memo folder may contain the store itself. Its files never enter a snapshot because the indexer's
 default walk never reads them: the state file is `.json`, which `recall.index` excludes by default,
@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import enum
 import hashlib
-import inspect
 import json
 import logging
 import time
@@ -210,12 +209,19 @@ def over_budget(snap: Snapshot, budget: IndexBudget | None) -> str | None:
 
 
 def read_state(db: str | Path) -> dict[str, Any]:
-    """The state file, or `{}` when it is absent, unreadable or of another schema."""
+    """The state file, or `{}` when it is absent, unreadable, of another schema or another store's.
+
+    Two stores whose names differ only by extension share a state file name; the store it records
+    keeps one from reading the other's `last_success` as its own.
+    """
     try:
         document = json.loads(state_path(db).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     if not isinstance(document, dict) or document.get("schema") != STATE_SCHEMA:
+        return {}
+    recorded = document.get("store")
+    if isinstance(recorded, str) and Path(recorded).resolve() != Path(db).resolve():
         return {}
     return document
 
@@ -304,17 +310,16 @@ def _stated_marker(store: LiteStore, roots: Sequence[Path]) -> str | None:
         return None
 
 
-def _calibrate(store: LiteStore, embedder: Embedder, background: bool) -> CalibrationOutcome:
-    """`ensure_calibrated`, in the background when asked and when this version can.
+def _key_base(root: Path, key_root: Path | None) -> Path:
+    """What a file under `root` is named relative to: `key_root` when `root` lies under it."""
+    return key_root if key_root is not None and root.is_relative_to(key_root) else root
 
-    The `background` keyword arrives with the carry-forward change (PR 911). Asked for where it
-    does not exist yet, the fit runs inline, which is what every caller did before it.
-    """
+
+def _calibrate(store: LiteStore, embedder: Embedder, background: bool) -> CalibrationOutcome:
+    """`ensure_calibrated`, in the background when asked."""
     from recall.lite.calibration import ensure_calibrated
 
-    if background and "background" in inspect.signature(ensure_calibrated).parameters:
-        return cast("CalibrationOutcome", cast(Any, ensure_calibrated)(store, embedder, background=True))
-    return ensure_calibrated(store, embedder)
+    return ensure_calibrated(store, embedder, background=background)
 
 
 def _finish(
@@ -413,7 +418,7 @@ def refresh(
         # The store's write counter, not `lite_generation_id()`: that loads every row and
         # embedding to hash the corpus, which a scheduled check of an unchanged folder would pay
         # on every run (CCA PERF-005).
-        and last.get("corpus_version") == store._version()
+        and last.get("corpus_version") == store.corpus_revision()
         and last.get("policy") == key
         # A store upgraded with its memos in place, or a stating rule changed, has facts to record
         # although no memo changed (`recall.stated_facts.stated_marker`).
@@ -491,7 +496,9 @@ def _refresh_locked(
         allowed = {
             root: [
                 f for f in found
-                if security_policy.decide(f.relative_to(root).as_posix(), security_context).allowed
+                # The name the indexer judges and stores, relative to `key_root` when the folder
+                # lies under it (`Indexer.index_path`), not to the walked folder.
+                if security_policy.decide(f.relative_to(_key_base(root, key_root)).as_posix(), security_context).allowed
             ]
             for root, found in current.files.items()
         }
@@ -559,7 +566,7 @@ def _refresh_locked(
         roots,
         report,
         success_generation=store.lite_generation_id(),
-        corpus_version=store._version(),
+        corpus_version=store.corpus_revision(),
         policy=policy_key(security_policy, security_context),
         key_root=key_root,
         stated=_stated_marker(store, roots) if report.facts_stated >= 0 else None,

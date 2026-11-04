@@ -21,10 +21,12 @@ read the MCP registration, so apply those settings when running CLI searches or 
 | `RECALL_LITE_REFRESH_WAIT` | `3` seconds | How long a retrieval waits for a detected refresh. |
 | `RECALL_LITE_WRITE_WAIT` | `300` seconds | Maximum wait in the local writer queue. |
 | `RECALL_LITE_REFIT_WAIT` | `120` seconds | Maximum wait in the separate calibration queue. |
+| `RECALL_ASSISTANT_MEMOS` | Unset (off) | A folder inside `RECALL_INDEX_ROOT` where the assistant tools write memo files; lite (`sqlite:///`) only. |
 | `RECALL_INDEX_MAX_FILES` | `2000` | File budget for automatic refresh and MCP indexing. |
 | `RECALL_INDEX_MAX_BYTES` | `20000000` bytes | Byte budget for automatic refresh and MCP indexing. |
 
-Set refresh overrides in the MCP server environment and restart the client. Manual
+Both waits take seconds; `0` (or a negative number) tries once. An empty value, `nan` or `inf`
+means the default, with a warning for the last two, and text that is not a number is refused. Set refresh overrides in the MCP server environment and restart the client. Manual
 `recall lite refresh --store <file> --memory <folder>` warns and proceeds when the folder exceeds
 the indexing budgets; `--check` writes nothing. A refresh failure appears in `refresh_warning`,
 doctor, and `recall_stats`. See [API.md](API.md) for command results and refusal behavior.

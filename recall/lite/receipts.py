@@ -37,8 +37,9 @@ CREATE INDEX IF NOT EXISTS recall_idempotency_receipts_expiry_idx
 
 
 def _stamp(moment: datetime) -> str:
-    """Fixed width, so text order is time order."""
-    return moment.astimezone(UTC).isoformat(timespec="microseconds")
+    """Fixed width and UTC, so text order is time order; a naive moment is read as UTC, as the
+    fact ledger's `_stamp` reads it."""
+    return (moment if moment.tzinfo else moment.replace(tzinfo=UTC)).astimezone(UTC).isoformat(timespec="microseconds")
 
 
 def _ensure(store: LiteStore) -> None:

@@ -83,11 +83,11 @@ Cross package edges: 374
 | 14 | `recall.cli_commands.provenance_cmd` |
 | 14 | `recall.dashboard.server` |
 | 14 | `recall.eval.promotion.__main__` |
+| 14 | `recall.lite.store` |
 | 14 | `recall_mcp.lifecycle` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.lite.refresh` |
-| 13 | `recall.lite.store` |
 | 13 | `recall.reasoning` |
 | 13 | `recall_mcp.desktop_ingest` |
 | 13 | `recall_mcp.reasoning_api` |
@@ -649,7 +649,7 @@ They are observations, not automatic failures.
 | `recall.lite.receipts` | 3 | 104 |
 | `recall.lite.refresh` | 13 | 104 |
 | `recall.lite.setup` | 11 | 129 |
-| `recall.lite.store` | 13 | 104 |
+| `recall.lite.store` | 14 | 104 |
 | `recall.lite.writer_lock` | 1 | 104 |
 | `recall.manifest` | 3 | 15 |
 | `recall.memory_index` | 6 | 105 |

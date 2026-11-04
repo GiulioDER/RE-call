@@ -73,6 +73,11 @@ uncertified. Add substantive memos and refresh; inspect the reported calibration
 turning off trust to make a search answer. Automatic calibration does not guarantee that every
 corpus can certify. See [CALIBRATION.md](CALIBRATION.md) for its coverage and limits.
 
+After memos change, Lite re-verifies the calibration it already has rather than refitting at once.
+Up to a quarter of the sources changed since the fit, the carried calibration needs no refit;
+up to three quarters, it keeps serving while it still re-verifies, with a refit due; past that,
+strict search refuses until the store is refitted. A PostgreSQL store stops carrying at a quarter.
+
 For a custom database location, use `--store /absolute/path/memory.db` on setup and refresh. Keep
 the file on a local disk. Multiple clients on the same machine can share it, with writes queued;
 network shares and simultaneous writers on different machines are unsupported.
@@ -200,7 +205,7 @@ database, and memo paths in client configuration.
 | `--lite` is unrecognized | Activate the source installation's environment and inspect `recall setup --help`. |
 | Doctor tries PostgreSQL | Apply the environment printed by Lite setup; client configuration is not shell configuration. |
 | No tools after setup | Inspect registration results, restart the client in the configured project, and check its interpreter path. |
-| Store is indexed but searches refuse | Inspect calibration status; add useful memos and refresh while keeping strict trust enabled. |
+| Store is indexed but searches refuse | Inspect calibration status; add useful memos and refresh while keeping strict trust enabled. After a forget, this is expected: forgetting a memo, or a refresh that prunes one, deletes the calibration test questions built from it, and the next refresh refits the store ([CALIBRATION.md](CALIBRATION.md)). |
 | Changed memo is missing | Check `refresh_warning` and run refresh with explicit store and memo paths. |
 | Writer is busy | Let the current writer finish and retry; do not remove live lane files. |
 | Need shared serving or generations | Use the [PostgreSQL installation](INSTALLATION.md#postgresql-database); copying the SQLite file is not a PostgreSQL migration. |

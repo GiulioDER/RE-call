@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import socket
 import sys
@@ -43,7 +44,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Literal
+from typing import IO, Literal, get_args
 
 from recall.lite.store import LiteStoreError
 
@@ -62,7 +63,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 Lane = Literal["write", "refit"]
-LANES: tuple[str, ...] = ("write", "refit")
+LANES: tuple[Lane, ...] = get_args(Lane)
 DEFAULT_WAIT_S = {"write": 300.0, "refit": 120.0}
 WAIT_ENV = {"write": "RECALL_LITE_WRITE_WAIT", "refit": "RECALL_LITE_REFIT_WAIT"}
 # The head of the queue polls fast: it is the only one that can take the lane, and a slow poll
@@ -291,12 +292,17 @@ def _next_seq(root: Path, lane: str) -> int:
 
 def _wait_default(lane: str) -> float:
     raw = os.environ.get(WAIT_ENV[lane])
-    if raw is None:
+    if raw is None or not raw.strip():
         return DEFAULT_WAIT_S[lane]
     try:
-        return max(0.0, float(raw))
+        seconds = float(raw)
     except ValueError:
         raise LiteStoreError(f"{WAIT_ENV[lane]} must be a number of seconds, got {raw!r}") from None
+    if not math.isfinite(seconds):
+        # nan would read as "try once" and inf as "wait forever", both silently.
+        _log.warning("%s=%r is not a finite number of seconds; using the default %s", WAIT_ENV[lane], raw, DEFAULT_WAIT_S[lane])
+        return DEFAULT_WAIT_S[lane]
+    return max(0.0, seconds)
 
 
 @contextmanager
@@ -498,9 +504,13 @@ def queued_notice(command: str, lane: str = "write") -> Callable[[int, dict[str,
 
     def say(position: int, holder: dict[str, object] | None) -> None:
         who = f"{holder.get('purpose')} (pid {holder.get('pid')})" if holder else "another writer"
+        try:
+            limit = f"{_wait_default(lane):.0f} seconds (set {WAIT_ENV[lane]} to change it)"
+        except (KeyError, LiteStoreError):
+            limit = "the configured wait"
         print(
             f"{command}: waiting for the lite store's {lane} lane, held by {who}; position {position}. "
-            f"It gives up after {WAIT_ENV.get(lane, 'the wait')} seconds.",
+            f"It gives up after {limit}.",
             file=sys.stderr,
             flush=True,
         )

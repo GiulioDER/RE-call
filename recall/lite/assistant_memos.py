@@ -38,7 +38,10 @@ if TYPE_CHECKING:
     from recall.lite import LiteStore
     from recall.lite.refresh import RefreshReport
 
-__all__ = ["LEDGER_NAME", "MEMO_ID", "MemoFolder", "forget_memo_requests", "is_assistant_memo"]
+__all__ = ["ASSISTANT_AUTHOR", "LEDGER_NAME", "MEMO_ID", "MemoFolder", "forget_memo_requests", "is_assistant_memo"]
+
+#: The author the assistant surface writes as; only its own memos may be superseded through it.
+ASSISTANT_AUTHOR = "assistant"
 
 LEDGER_NAME = ".recall-authors.json"
 
@@ -48,7 +51,8 @@ def is_assistant_memo(source: str) -> bool:
     path = Path(source)
     if not path.is_absolute() or path.suffix != ".md" or not MEMO_ID.fullmatch(path.stem):
         return False
-    return (path.parent / LEDGER_NAME).is_file()
+    ledger = path.parent / LEDGER_NAME
+    return ledger.is_file() and not ledger.is_symlink()
 
 
 def forget_memo_requests(sources: Iterable[str]) -> int:
@@ -104,7 +108,7 @@ class MemoFolder:
         supersedes: str | None = None,
         fact: object = None,
         *,
-        author: str = "assistant",
+        author: str = ASSISTANT_AUTHOR,
         request_id: str | None = None,
         expected_revision: str | None = None,
         include_receipt: bool = False,
@@ -157,7 +161,7 @@ class MemoFolder:
         if supersedes is not None:
             if supersedes not in authors:
                 return {"refused": f"no memo {supersedes!r}"}
-            if authors[supersedes] != "assistant":
+            if authors[supersedes] != ASSISTANT_AUTHOR:
                 return {"refused": f"{supersedes} was not written by the assistant; it cannot be superseded"}
         front = []
         if valid_from:
@@ -190,7 +194,7 @@ class MemoFolder:
 
     def path_of(self, memo_id: str) -> Path | None:
         """The file of a memo id of this folder, or None for a string that is not a memo id."""
-        return self.folder / f"{memo_id}.md" if MEMO_ID.match(memo_id) else None
+        return self.folder / f"{memo_id}.md" if MEMO_ID.fullmatch(memo_id) else None
 
     def delete(self, memo_id: str) -> None:
         """Delete one memo file of this folder. Forget its rows first (`recall_mcp.assistant`)."""

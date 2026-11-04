@@ -30,8 +30,9 @@ gate see through `resolve`:
 
 So a calibration that failed re-verification is never served, whatever the delta, and the delta
 decides only how far the labelled questions are trusted to speak for the questions nobody
-labelled. `ensure_calibrated` performs a due or needed refit inline by default, or in a background
-thread with `background=True` (the MCP write path), so the write returns at once; meanwhile the
+labelled. `ensure_calibrated` performs a due or needed refit inline by default. With
+`background=True` (the MCP write path) it runs in a background thread, so the write returns at
+once, but only once a fit has certified: before that, the refit still runs inline. Meanwhile the
 carried calibration serves only while it still re-verifies, which `resolve` re-checks on every
 corpus change. Carried calibrations are never stored as calibrations: each is recomputed from the
 fit and its evidence, and `ensure_calibrated` records the lineage as a `calibration_carried_forward`
@@ -57,7 +58,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from recall.calibration import from_samples
 from recall.calibration_v2 import (
@@ -239,8 +240,31 @@ def _identity(model: object, dimension: object) -> tuple[str, int]:
     return str(model), int(cast("Any", dimension))
 
 
+class CarrySource(Protocol):
+    """The store reads `carry_forward` makes: a `LiteStore`, or doctor's read-only stand-in."""
+
+    @property
+    def tenant(self) -> str: ...
+
+    def latest_calibration_json(self) -> str | None: ...
+
+    def calibration_evidence(self, calibration_id: str) -> tuple[str, bytes, str] | None: ...
+
+    def corpus_fingerprint(self) -> str: ...
+
+    def source_manifest(self) -> dict[str, str]: ...
+
+    def lite_generation_id(self) -> str: ...
+
+    def top_cosine(self, vector: list[float]) -> float: ...
+
+
+#: What reading a stored artifact raises when the row does not verify.
+ARTIFACT_READ_ERRORS = (CalibrationError, ValueError, KeyError, TypeError)
+
+
 def carry_forward(
-    store: LiteStore,
+    store: CarrySource,
     fit: CalibrationArtifactV2 | None = None,
     *,
     embedder: Embedder | None = None,
@@ -466,12 +490,13 @@ def auto_calibrate(
     artifact = dataclasses.replace(draft, checksum=canonical_sha256(draft.immutable_payload()))
     import numpy as np
 
+    # Only a certified fit is ever carried forward, so only its evidence is ever read.
     evidence = (
         artifact.calibration_id,
         canonical_json(list(labels)).decode("utf-8"),
         np.asarray(recorder.vectors, dtype=np.float32).tobytes(),
         canonical_json(sources).decode("utf-8"),
-    )
+    ) if certified else None
     store.save_calibration(
         artifact_to_json(artifact), created_at=artifact.created_at, model=model, dimension=dimension, evidence=evidence
     )
@@ -541,7 +566,7 @@ def ensure_calibrated(store: LiteStore, embedder: Embedder, *, background: bool 
         return auto_calibrate(store, embedder)
     try:
         fit = artifact_from_json(raw)
-    except (CalibrationError, ValueError, KeyError, TypeError) as exc:
+    except ARTIFACT_READ_ERRORS as exc:
         # A newest row this release cannot read (written by a newer one, or damaged) has no
         # threshold to keep, and refitting is the way out: the new fit becomes the newest row.
         _log.warning("the newest lite calibration does not verify (%s); refitting", type(exc).__name__)
@@ -594,7 +619,7 @@ def _refit_wanted(store: LiteStore) -> bool:
         return True
     try:
         fit = artifact_from_json(raw)
-    except (CalibrationError, ValueError, KeyError, TypeError):
+    except ARTIFACT_READ_ERRORS:
         return True
     if fit.corpus_fingerprint == store.corpus_fingerprint():
         return False
@@ -719,8 +744,12 @@ def status_report(store: LiteStore) -> dict[str, object]:
             "refit_due",
             "refit_threshold",
         )
+        # The fit's separability is above; the carried one is re-measured on the corpus as it is
+        # now, and is the figure `recall doctor` shows for the calibration in force.
         report["carried_forward"] = {
             "calibration_id": carried.artifact.calibration_id,
+            "separability": carried.artifact.separability,
+            "separability_ci": list(carried.artifact.separability_ci),
             **{key: carried.provenance.get(key) for key in keys},
         }
     return report
@@ -772,8 +801,6 @@ def _stored_artifacts(
     the store serves, search refuses until the store is recalibrated, and the caller must not
     report any other calibration as in force.
     """
-    from recall.calibration_v2 import CalibrationError
-
     rows = store.calibration_rows()
     served_rowid = rows[0][0] if rows else None
     served_verifies = True
@@ -781,7 +808,7 @@ def _stored_artifacts(
     for rowid, payload in rows:
         try:
             artifacts.append(artifact_from_json(str(payload)))
-        except (CalibrationError, ValueError, KeyError, TypeError) as exc:
+        except ARTIFACT_READ_ERRORS as exc:
             if rowid == served_rowid:
                 served_verifies = False
             if problems is not None:
@@ -799,13 +826,11 @@ def _one_artifact(store: LiteStore, calibration_id: str) -> tuple[CalibrationArt
     It is in force when it is the row the store serves; a `published` one that is not has been
     replaced, so it reads `superseded`, as in the listing.
     """
-    from recall.calibration_v2 import CalibrationError
-
     served = store.calibration_rows(limit=1)
     for rowid, payload in store.calibration_rows(calibration_id=calibration_id):
         try:
             artifact = artifact_from_json(payload)
-        except (CalibrationError, ValueError, KeyError, TypeError):
+        except ARTIFACT_READ_ERRORS:
             continue
         if artifact.calibration_id != calibration_id:
             continue

@@ -90,6 +90,7 @@ REQUEST_ID_MAX_LEN = 128
 
 
 def load_ledger(path: Path) -> dict[str, Any]:
+    _refuse_link(path)
     if not path.exists():
         return {"version": 1, "authors": {}}
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -103,7 +104,14 @@ def load_ledger(path: Path) -> dict[str, Any]:
     return value
 
 
+def _refuse_link(path: Path) -> None:
+    """Refuse a ledger that is a symbolic link: it would be read from, and rewritten at, its target."""
+    if path.is_symlink():
+        raise ValueError("the memo authorship ledger is a symbolic link; refusing to follow it")
+
+
 def _save(path: Path, ledger: dict[str, Any]) -> None:
+    _refuse_link(path)
     if "requests" in ledger:
         ledger["version"] = LEDGER_VERSION
     atomic_write_bytes(path, (json.dumps(ledger, sort_keys=True, indent=1) + "\n").encode())

@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from recall.backends import write_session
 from recall.errors import RecallError
-from recall.lite.assistant_memos import MEMO_ID, MemoFolder
+from recall.lite.assistant_memos import ASSISTANT_AUTHOR, MEMO_ID, MemoFolder
 from recall.lite.memo_requests import cancel_requests, restore_requests
 
 if TYPE_CHECKING:
@@ -170,7 +170,7 @@ class AssistantMemos(MemoFolder):
         supersedes: str | None = None,
         fact: object = None,
         *,
-        author: str = "assistant",
+        author: str = ASSISTANT_AUTHOR,
         request_id: str | None = None,
         expected_revision: str | None = None,
         include_receipt: bool = False,
@@ -258,7 +258,7 @@ class AssistantMemos(MemoFolder):
             # A memo of this folder by its id, as the surface names it everywhere; any other by its name.
             parent, _, file = name.rpartition("/")
             stem = file.removesuffix(".md")
-            return stem if parent == folder and MEMO_ID.match(stem) else name
+            return stem if parent == folder and MEMO_ID.fullmatch(stem) else name
 
         try:
             # Typed for PgVectorStore, it reads a lite store as the held `recall_current_facts` does.
