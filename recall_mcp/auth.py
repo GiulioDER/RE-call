@@ -2,11 +2,11 @@
 
 Why this module exists
 ----------------------
-`PgVectorStore` is bound to ONE tenant for its whole lifetime: the pool's `configure` hook sets
-`recall.tenant_id` per connection, and the RLS policy compares against that GUC (`store.py`
-`_prepare` / `_enable_rls`). Tenant isolation is therefore a property of *which store you hold*,
-not of an argument you pass. So authentication here does not just answer "may this caller in?" —
-it answers "which store is this caller allowed to touch?", and the answer has to be decided before
+`PgVectorStore` is bound to ONE tenant for its whole lifetime. Its connections come from the
+shared process pool (`recall/pool.py`), which sets `recall.tenant_id` per transaction with
+`SET LOCAL`, and the RLS policy compares against that GUC. Tenant isolation is therefore a
+property of *which store you hold*, not of an argument you pass. So authentication here does not
+just answer "may this caller in?" — it answers "which store is this caller allowed to touch?", and the answer has to be decided before
 any tool body runs.
 
 Threat model
@@ -23,10 +23,10 @@ production:
 - **Bearer means bearer.** A leaked token is full access for that principal until it is removed.
   There is no proof-of-possession and no audience binding.
 
-For a deployment that needs any of those, put a real identity provider in front and supply the
-SDK's `auth_server_provider` instead of this. What this module *does* give you is the property
-that matters most and is most often missing: an unauthenticated network listener is impossible to
-create by accident, because `build_auth` fails closed (see `AuthConfigError`).
+For a deployment that needs any of those, use the built-in OIDC path instead of this: set
+`RECALL_OIDC_ISSUER` (see `recall_mcp/oidc.py`) and the server validates tokens from your
+identity provider. What this module *does* give you is the property that matters most and is
+most often missing: an unauthenticated network listener is impossible to create by accident, because `build_auth` fails closed (see `AuthConfigError`).
 
 Tokens come from a FILE, never an environment variable
 ------------------------------------------------------
@@ -411,7 +411,7 @@ def token_registry_from_env(env: dict[str, str] | None = None) -> TokenRegistry 
     """Build a registry from `RECALL_AUTH_TOKENS_FILE`, or None when unset.
 
     None means "no auth configured". It is the caller's job to decide whether that is acceptable
-    for the transport it is about to start — `build_auth` in `server.py` refuses it for HTTP and
+    for the transport it is about to start — `build_auth` in `server_auth.py` refuses it for HTTP and
     permits it for stdio.
     """
     source = env if env is not None else dict(os.environ)

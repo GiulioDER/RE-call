@@ -349,8 +349,8 @@ policy that lists only the limits it has already solved is misleading.
 **Authentication shipped; token lifecycle is still manual.** The HTTP transports
 (`streamable-http`, `sse`) now require bearer tokens and **refuse to start without them** — an
 unauthenticated listener cannot be created by accident. Each token maps to a principal with a
-tenant and scopes, and the tenant selects its own connection pool, so a principal cannot reach
-another tenant's rows (`recall_mcp/auth.py`, `recall_mcp/stores.py`; see docs/AUTH.md).
+tenant and scopes, and the tenant is set per transaction (`SET LOCAL`) on the shared connection
+pool and enforced by RLS, so a principal cannot reach another tenant's rows (`recall_mcp/auth.py`, `recall_mcp/stores.py`; see docs/AUTH.md).
 
 Two mechanisms satisfy that requirement: the static token file, and an external OIDC provider
 (`RECALL_OIDC_ISSUER`). The static file is development-only and is refused under

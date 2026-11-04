@@ -4,24 +4,7 @@ from __future__ import annotations
 # service-owned names and monkeypatch seams while implementations move to focused boundaries.
 # ruff: noqa: F401
 
-import copy
-import hashlib
-import json
-import os
-import random
-from contextlib import AbstractContextManager, nullcontext, suppress
-import mimetypes
-import threading
-import time
-from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import Any, cast
-
-import psycopg
-from pydantic import BaseModel, Field
 
 from recall_mcp.models import (
     EvidenceCardModel,
@@ -397,7 +380,8 @@ from recall_mcp.factories import make_embedder, make_profile_embedder  # noqa: E
 #: Worth enabling when a human is waiting on the answer; leave it off for high-volume automated
 #: retrieval or constrained hardware.
 def resolve_reranker(env: dict[str, str] | None = None) -> tuple[str, str | None] | None:
-    """Resolve through the production owner, using this service's settings snapshot."""
+    """Facade over `recall_mcp.factories.resolve_reranker`: `(model, revision)` or None when off;
+    raises ValueError on an invalid setting."""
     return _factories.resolve_reranker(env if env is not None else dict(runtime_environment()))
 
 

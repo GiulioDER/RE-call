@@ -12,10 +12,12 @@ Every refusal carries a stable `reason`, and the reasons are the API: alerting o
 versus `unknown_kid` watches two different events (a forgery attempt versus a rotation this
 process has not caught up with).
 
-Two exception types, on purpose. `TokenRejected` states a fact about the TOKEN and maps to 401.
-`IdentityProviderUnavailable` states a fact about the IdP and maps to 503. Collapsing them means
-answering 401 for a server-side outage, which tells every client to re-authenticate against the
-provider that is already down.
+Two exception types, on purpose. `TokenRejected` states a fact about the TOKEN (a 401).
+`IdentityProviderUnavailable` states a fact about the IdP (a 503). That 401/503 distinction is
+this validator's contract to its callers. Through the MCP SDK's `TokenVerifier` boundary both
+become a 401, because `verify_token` can only return a token or None; the cause is kept in the
+log instead (see `OidcTokenVerifier` in `server_auth.py`), so an operator can still tell an
+outage from a forgery wave.
 
 The rejections that carry the most weight
 -----------------------------------------------
@@ -124,15 +126,22 @@ class TokenRejected(RecallError):
 
 
 class IdentityProviderUnavailable(TokenRejected):
-    """The IdP could not be consulted. A 503, not a 401.
+    """The IdP could not be consulted. A 503, not a 401, in this validator's contract.
 
-    Subclasses `TokenRejected` so an existing caller that catches only that still fails closed;
+    Through the MCP SDK's `TokenVerifier` boundary it still becomes a 401, with the cause kept
+    in the log (see `OidcTokenVerifier`). Subclasses `TokenRejected` so an existing caller that catches only that still fails closed;
     a caller that wants the distinction catches this first.
     """
 
 
 @dataclass(frozen=True)
 class OidcConfig:
+    """Validation settings for one OIDC issuer.
+
+    Every field is validated in `__post_init__`; an invalid configuration raises ValueError at
+    construction rather than refusing tokens at request time.
+    """
+
     issuer: str
     audience: str
     algorithms: tuple[str, ...] = DEFAULT_ALGORITHMS
@@ -551,7 +560,9 @@ class OidcValidator:
         age = now - cached.fetched_at
         if not self._fetch_lock.acquire(blocking=False):
             if cached.ever_fetched:
-                if age > self._config.max_stale_key_s:
+                # A negative age is a backward wall-clock step: the keys' real age is unknown, so
+                # they are treated as stale rather than as freshly fetched.
+                if age < 0 or age > self._config.max_stale_key_s:
                     raise IdentityProviderUnavailable(
                         "jwks_unavailable", "cached keys are stale while refresh is in flight"
                     )
@@ -594,7 +605,7 @@ class OidcValidator:
                 with self._lock:
                     self._failure_seq += 1
                     self._retry_after = now + self._config.jwks_refresh_s / _FORCED_REFRESH_DIVISOR
-                if cached.ever_fetched and age <= self._config.max_stale_key_s:
+                if cached.ever_fetched and 0 <= age <= self._config.max_stale_key_s:
                     _log.warning("serving stale JWKS: identity provider unreachable")
                     return cached.keys
                 raise IdentityProviderUnavailable(
@@ -614,8 +625,11 @@ class OidcValidator:
         cached = self._snapshot()
         now = self._clock()
         age = now - cached.fetched_at
-        due = not cached.ever_fetched or age >= self._config.jwks_refresh_s
-        if due and cached.ever_fetched and age <= self._config.max_stale_key_s:
+        # A negative age is a backward wall-clock step. Without `age < 0` here the cache would
+        # read as fresh until the clock caught up again, extending the stale-key bound by the
+        # size of the step, so it is due now; and backoff applies only to a known, bounded age.
+        due = not cached.ever_fetched or age < 0 or age >= self._config.jwks_refresh_s
+        if due and cached.ever_fetched and 0 <= age <= self._config.max_stale_key_s:
             with self._lock:
                 backing_off = now < self._retry_after
             # A refresh just failed: serve the still-valid stale keys until the retry instant
@@ -632,7 +646,9 @@ class OidcValidator:
         floor = self._config.jwks_refresh_s / _FORCED_REFRESH_DIVISOR
         with self._lock:
             recently_missing = kid in self._missing_kids
-            too_soon = now - self._last_forced_at < floor
+            # `0 <=`: after a backward clock step the last forced refresh is in the "future", and
+            # without the bound no forced refresh would run until the clock caught up.
+            too_soon = 0 <= now - self._last_forced_at < floor
             if not (recently_missing or too_soon):
                 self._last_forced_at = now
                 forced = True
@@ -647,6 +663,11 @@ class OidcValidator:
         return keys
 
     def validate(self, token: str) -> Principal:
+        """Return the `Principal` a valid token names.
+
+        Raises `TokenRejected` for a token that is refused, or its subclass
+        `IdentityProviderUnavailable` when the IdP cannot be consulted. Nothing else escapes.
+        """
         cfg = self._config
         if not isinstance(token, str) or not token.strip():
             raise TokenRejected("malformed", "empty bearer token")
@@ -862,7 +883,7 @@ def oidc_non_issuer_env_keys() -> tuple[str, ...]:
     Two things the first attempt at this got wrong, both found by mutation:
 
     - It filtered on the NAME prefix `ENV_` and not on the VALUE. Importing `auth.ENV_TOKENS_FILE`
-      into this module — one plausible line, and `server.py` already imports that alias — would
+      into this module — one plausible line, and `server_auth.py` already imports that alias — would
       have added `RECALL_AUTH_TOKENS_FILE` to the list and refused **every static deployment** as
       a partial OIDC block. The value predicate is the load-bearing one.
     - It was a module-level constant, so it saw only the constants defined ABOVE it. That replaced
@@ -996,22 +1017,14 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
     if raw_algorithms:
         # Present-but-unparseable is refused rather than falling back (SEC-006, ENV-003). A bare
         # `or DEFAULT_ALGORITHMS` cannot tell "unset" from "set to something meaningless", so an
-        # operator NARROWING the allowlist and mistyping it silently got the WIDEST one. And an
-        # entry outside the serviceable set boots healthy and then rejects every token: `rs256`
-        # never matches a header compared case-sensitively, and `EdDSA` passes the weak-algorithm
-        # filter while `_usable_keys` loads no OKP key for it to match.
+        # operator NARROWING the allowlist and mistyping it silently got the WIDEST one. An entry
+        # outside the serviceable set (`EdDSA`, a typo) is refused by `OidcConfig` itself, and the
+        # ValueError rewrap below turns that into an AuthConfigError.
         algorithms = tuple(a.upper() for a in _csv(raw_algorithms))
         if not algorithms:
             raise AuthConfigError(
                 f"{ENV_ALGORITHMS} is set but names no algorithm. Unset it to accept the "
                 f"defaults ({', '.join(DEFAULT_ALGORITHMS)}); an empty list rejects every token."
-            )
-        unknown = sorted(set(algorithms) - set(DEFAULT_ALGORITHMS))
-        if unknown:
-            raise AuthConfigError(
-                f"{ENV_ALGORITHMS} names {unknown}, which this server cannot verify: its JWKS "
-                f"loader serves RSA and EC keys only. Accepted: {', '.join(DEFAULT_ALGORITHMS)}. "
-                f"Left in place these boot cleanly and then refuse every token."
             )
     else:
         algorithms = DEFAULT_ALGORITHMS
@@ -1051,6 +1064,18 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
             raise AuthConfigError(f"{name} must be a positive integer")
         return value
 
+    jwks_refresh_s = _positive_int(ENV_JWKS_REFRESH_SECONDS, DEFAULT_JWKS_REFRESH_S)
+    if jwks_refresh_s > DEFAULT_MAX_STALE_KEY_S:
+        # The stale-key window is not configurable from the environment, and it must be at least
+        # the refresh interval. Naming the variable here beats OidcConfig's generic message about
+        # `max_stale_key_s`, a field the operator never set; widening the window instead would let
+        # a withdrawn key keep working for longer.
+        raise AuthConfigError(
+            f"{ENV_JWKS_REFRESH_SECONDS}={jwks_refresh_s} exceeds the {DEFAULT_MAX_STALE_KEY_S} s "
+            f"ceiling: cached keys may be served at most {DEFAULT_MAX_STALE_KEY_S} s after the "
+            f"last successful fetch, so a longer refresh interval could never take effect."
+        )
+
     try:
         config = OidcConfig(
             issuer=issuer,
@@ -1058,7 +1083,7 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
             algorithms=algorithms,
             allowed_tenants=tenants,
             subject_tenants=subject_tenants,
-            jwks_refresh_s=_positive_int(ENV_JWKS_REFRESH_SECONDS, DEFAULT_JWKS_REFRESH_S),
+            jwks_refresh_s=jwks_refresh_s,
             # Opt-in: unset applies no lifetime cap, and the schema documents no default.
             max_token_lifetime_s=(
                 _positive_int(ENV_MAX_LIFETIME_SECONDS, 0)

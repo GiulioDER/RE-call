@@ -125,8 +125,8 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall_mcp/server.py",
         "per tenant rate limit check is removed",
-        b"                result = check(tenant, _SCOPE_BUDGETS[scope])\n",
-        b"                result = None\n",
+        b"                await _check_limiter_async(limiter, tenant, _SCOPE_BUDGETS[scope], 1.0)\n",
+        b"                pass\n",
         SERVER_TESTS,
     ),
     Mutation(

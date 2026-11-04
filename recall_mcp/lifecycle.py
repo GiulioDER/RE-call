@@ -11,6 +11,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from recall.current_state import MAX_CURRENT_STATE_RECORDS, project_current_state
+from recall.errors import RecallError
 from recall.fact_retraction import FactErasure, fact_ledger_for, prepare_fact_erasure
 from recall.guards import staleness
 from recall.observability import METRICS, get_logger
@@ -33,6 +34,22 @@ if TYPE_CHECKING:
 
 _log = get_logger("mcp.service")
 MAX_FORGET_SOURCES = 1000
+
+
+class ErasurePreflightRefused(RecallError):
+    """An erasure refused before its first write, so a caller may release its reservation.
+
+    Raised only at refusals that precede `_forget_retractions`; a plain `ValueError` or
+    `PermissionError` from later in the erasure may follow a write and must not be read as this.
+    """
+
+
+class ErasureRequestInvalid(ErasurePreflightRefused, ValueError):
+    """A forget or withdraw request refused as malformed or ambiguous before anything was written."""
+
+
+class ErasureNotAuthorized(ErasurePreflightRefused, PermissionError):
+    """A forget or withdraw refused by the source policy or tenant check before anything was written."""
 
 
 def _validate_security_context(
@@ -288,7 +305,7 @@ def _authorize_erasure(
     for source in to_delete:
         for name in sorted(subjects.get(source) or {source}):
             if not security_policy.decide(name, security_context).allowed:
-                raise PermissionError(f"source {name!r} is not authorized for erasure")
+                raise ErasureNotAuthorized(f"source {name!r} is not authorized for erasure")
 
 
 def _forget_memory_unlocked(
@@ -306,21 +323,23 @@ def _forget_memory_unlocked(
     lane; call one of those."""
     verb, did = ("withdrawal", "Withdrew") if withdraw else ("deletion", "Forgot")
     if not sources:
-        raise ValueError("sources must be a non-empty list")
+        raise ErasureRequestInvalid("sources must be a non-empty list")
     if len(sources) > MAX_FORGET_SOURCES:
-        raise ValueError(
+        raise ErasureRequestInvalid(
             f"{len(sources)} sources requested, over the {MAX_FORGET_SOURCES} limit for one "
             f"call. A {verb} is irreversible; split the request so each one stays reviewable."
         )
     requested = list(dict.fromkeys(sources))
     if security_policy is not None:
         if security_context is None:
-            raise ValueError("security_context is required when security_policy is configured")
+            raise ErasureRequestInvalid(
+                "security_context is required when security_policy is configured"
+            )
         if getattr(store, "tenant", None) != security_context.tenant:
-            raise PermissionError("source security context tenant does not match the store")
+            raise ErasureNotAuthorized("source security context tenant does not match the store")
         for source in requested:
             if not security_policy.decide(source, security_context).allowed:
-                raise PermissionError(f"source {source!r} is not authorized for erasure")
+                raise ErasureNotAuthorized(f"source {source!r} is not authorized for erasure")
     resolved = store.sources_for_identifiers(requested)
     if shadow_store is not None:
         shadow_resolved = shadow_store.sources_for_identifiers(requested)
@@ -348,7 +367,7 @@ def _forget_memory_unlocked(
     for identifier in found:
         matches = sorted(set(resolved[identifier]))
         if len(matches) > 1:
-            raise ValueError(
+            raise ErasureRequestInvalid(
                 f"source {identifier!r} is ambiguous; use an exact canonical source identifier "
                 f"from {matches!r}"
             )

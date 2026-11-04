@@ -218,9 +218,12 @@ def configure_logging(
 
     logger = get_logger()
     # Stripped like every other RECALL_* read: an EnvironmentFile value with trailing whitespace
-    # otherwise reads as an unknown format and falls back to text under a JSON collector.
-    level = (level or os.environ.get("RECALL_LOG_LEVEL", "").strip() or "INFO").upper()
-    fmt = (fmt or os.environ.get("RECALL_LOG_FORMAT", "").strip() or "text").lower()
+    # otherwise reads as an unknown format and falls back to text under a JSON collector. An
+    # argument is stripped too, since a caller may pass a raw setting through it.
+    level = (
+        (level or "").strip() or os.environ.get("RECALL_LOG_LEVEL", "").strip() or "INFO"
+    ).upper()
+    fmt = ((fmt or "").strip() or os.environ.get("RECALL_LOG_FORMAT", "").strip() or "text").lower()
     for handler in list(logger.handlers):  # idempotent: re-configuring must not double-log
         logger.removeHandler(handler)
     handler = logging.StreamHandler(stream if stream is not None else sys.stderr)
