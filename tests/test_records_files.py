@@ -145,6 +145,34 @@ def test_invalid_memo_is_skipped(tmp_path: Path) -> None:
     assert {m.record["id"] for m in loaded} == {r["id"] for r in EXPECTED.values()}
 
 
+@pytest.mark.parametrize(("value", "kept"), [("race", True), (None, True), ("dry", False)])
+def test_a_bug_record_with_a_defect_class_is_kept_only_when_listed(
+    tmp_path: Path, value: str | None, kept: bool
+) -> None:
+    """The auditor brief reads ledger memos through this loader, which skips an invalid record
+    silently. A listed `defect_class` (or null) must keep the memo; an unlisted one must not.
+
+    Red proof 2026-11-04 on the remote test host: against `recall_record.v1.json` before this change, the
+    `race` and `None` cases failed at the `kept` assertion (the memo was skipped); with the
+    `defect_class` enum widened to any string, the `dry` case failed the same way."""
+    memos = copy_memos(tmp_path / "memos")
+    name = "RE-call__0123456789ab__BUG-001.md"
+    golden = (memos / name).read_text(encoding="utf-8")
+    old = '"category":"concurrency",'
+    assert golden.count(old) == 1
+    (memos / name).write_text(
+        golden.replace(old, old + f'"defect_class":{json.dumps(value)},'), encoding="utf-8"
+    )
+
+    loaded = load_memo_records(memos)
+
+    skipped = [Path(source).name for source, _reason in loaded.skipped]
+    assert (name not in skipped) is kept, f"skipped: {loaded.skipped}"
+    if kept:
+        record = next(m.record for m in loaded if Path(m.source).name == name)
+        assert record["defect_class"] == value
+
+
 def test_future_retraction_does_not_hide_yet(tmp_path: Path) -> None:
     """F3: the lesson's retraction is valid from 2026-10-23."""
     loaded = load_memo_records(copy_memos(tmp_path / "memos"))

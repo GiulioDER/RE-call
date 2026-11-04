@@ -8,6 +8,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- A `recall_record` of kind `bug` may carry `defect_class`, one of the fixed classes cca-audit's
+  `audit-fix.md` lists ("Defect classes"), or null, and `defect_class_reason`. Both are optional,
+  so every existing record stays valid; an unlisted class is refused like any other invalid
+  record (the memo is indexed, or loaded, without it).
 - API correction for the trust failure codes: with `RECALL_DEPENDENCY_INVALIDATION=enforce`, a
   dependency projection read that raises is now `DEPENDENCY_UNAVAILABLE`, refused under every
   policy, instead of `DEPENDENCY_GRAPH_NOT_READY`. A generation with no projection is still
