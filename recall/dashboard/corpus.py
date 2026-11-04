@@ -13,9 +13,10 @@ it, plus three fields that say where it came from (`origin`, `tenant`, `generati
 edge kind:
 
 - `supersedes`: the newer file to the one it replaces, as for memo files;
-- `link`: an authored `references` or `depends_on` relation between two files;
-- `shares`: two files mentioning the same uncommon entity. A code corpus has no relations, so
-  without these it would be stars with no lines. An entity mentioned by more than
+- `link`: an authored `references` or `depends_on` relation, or a Python import
+  (`relation: imports`), between two files;
+- `shares`: two files mentioning the same uncommon entity. A corpus with few relations and
+  no Python would otherwise be stars with no lines. An entity mentioned by more than
   `SHARE_MAX_FILES` files is too common to say anything and is skipped, and each file keeps only
   its `SHARE_PER_FILE` strongest partners, so a common name cannot join everything to everything.
 
@@ -27,8 +28,6 @@ from __future__ import annotations
 
 import sys
 from collections import Counter, defaultdict
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from pathlib import PurePosixPath
 from typing import Any
@@ -36,8 +35,8 @@ from typing import Any
 from psycopg import sql
 
 from recall.dashboard.db import DashboardDB
-from recall.db_constants import TENANT_GUC
-from recall.frontmatter import validity_bounds
+from recall.dashboard.graph import HUB_OUT_LINKS
+from recall.frontmatter import supersedes_targets, validity_bounds
 from recall.supersession import SupersessionGraph, resolve_supersession_graph, supersession_rows_sql
 from recall.supersession_records import pg_records
 
@@ -47,9 +46,9 @@ __all__ = ["HUB_LINKS", "SHARE_MAX_FILES", "SHARE_PER_FILE", "assemble_graph", "
 SHARE_MAX_FILES = 8
 #: The strongest shared-entity partners each file keeps.
 SHARE_PER_FILE = 4
-#: A file with at least this many outgoing links is an index page, hidden by default as on the
-#: memo graph.
-HUB_LINKS = 40
+#: A file with at least this many outgoing links is an index page, hidden by default: the memo
+#: graph's own threshold, so the two graphs agree.
+HUB_LINKS = HUB_OUT_LINKS
 #: Bounds on what one View 2 page reads.
 MAX_CHUNKS = 200
 MAX_ENTITIES = 60
@@ -63,14 +62,6 @@ _SUPERSESSION_ROWS = sql.SQL(
         scope="c.tenant_id = %s AND c.generation_id = %s",
     )
 )
-
-
-@contextmanager
-def _tenant(db: DashboardDB, tenant: str) -> Iterator[Any]:
-    """A read-only connection whose row-level security tenant is `tenant`."""
-    with db.connect() as c:
-        c.execute("select set_config(%s, %s, false)", (TENANT_GUC, tenant))
-        yield c
 
 
 def _generation(c: Any, tenant: str) -> str | None:
@@ -167,6 +158,8 @@ def resolve_imports(rows: Any, files: set[str]) -> list[tuple[str, str]]:
                 if not importer.endswith("__init__.py"):
                     package = package[:-1]
                 dots = len(base) - len(base.lstrip("."))
+                if dots - 1 > len(package):
+                    continue  # climbs above the indexed tree: no file here is its target
                 package = package[: len(package) - (dots - 1)] if dots > 1 else package
                 rest = base.lstrip(".")
                 base = ".".join([*package, rest] if rest else package)
@@ -193,6 +186,15 @@ def _title(file: str, hierarchy: Any) -> str:
             if isinstance(heading, str) and heading.strip():
                 return heading.strip()[:160]
     return PurePosixPath(file).stem or file
+
+
+def _iso_day(value: Any) -> Any:
+    """A validity date as `YYYY-MM-DD` when it parses as one, else the value as written."""
+    try:
+        start, _ = validity_bounds({"valid_from": value}) if value else (None, None)
+    except ValueError:
+        return value
+    return start.date().isoformat() if start else value
 
 
 def _instant(today: str) -> datetime:
@@ -228,10 +230,10 @@ def _state(file: str, graph: SupersessionGraph, valid_from: str | None, valid_un
 
 
 def corpus_graph(db: DashboardDB, tenant: str, *, today: date | None = None) -> dict[str, Any]:
-    """Every file of `tenant`'s active generation as a node; supersession, relations and shared
-    entities as edges. The shape of `build_graph`, see the module docstring."""
+    """Every file of `tenant`'s active generation as a node; supersession, relations, Python
+    imports and shared entities as edges. The shape of `build_graph`, see the module docstring."""
     now = (today or datetime.now(UTC).date()).isoformat()
-    with _tenant(db, tenant) as c:
+    with db.connect(tenant=tenant) as c:
         generation = _generation(c, tenant)
         if generation is None:
             return {"nodes": [], "edges": [], "counts": {"memos": 0, "edges": 0}, "notes": [f"{tenant} has no active generation"],
@@ -297,7 +299,7 @@ def assemble_graph(
     """
     now = today
     graph = winner if isinstance(winner, SupersessionGraph) else SupersessionGraph.from_parts(winner)
-    winner = graph.edges
+    replaced_by = graph.edges
     nodes: dict[str, dict[str, Any]] = {}
     path_keys: dict[str, set[str]] = defaultdict(set)
     for file, chunks, first, kind, valid_from, valid_until, hierarchy, *sources in files:
@@ -306,7 +308,9 @@ def assemble_graph(
         nodes[key] = {
             "id": key, "title": _title(file, hierarchy), "description": f"{chunks} chunk(s)", "type": kind or "",
             "state": _state(key, graph, valid_from, valid_until, now), "born": _day(first) or now,
-            "valid_from": valid_from, "valid_until": valid_until,
+            # ISO dates, as the memo graph sends: the page compares them as strings, and an
+            # unpadded `2026-9-30` would sort after `2026-10-05`.
+            "valid_from": _iso_day(valid_from), "valid_until": _iso_day(valid_until),
             "folder": file.split("/", 1)[0] if "/" in file else "", "issues": [], "chunks": chunks,
         }
     def node_of(path: str, source: str | None = None) -> str | None:
@@ -328,7 +332,7 @@ def assemble_graph(
             seen.add(key)
             edges.append({"source": source, "target": target, "kind": kind, **extra})
 
-    for replaced, newer in sorted(winner.items()):
+    for replaced, newer in sorted(replaced_by.items()):
         add(newer, replaced, "supersedes")
     for relation, subject, obj in sorted(relations):
         add(node_of(str(subject)), node_of(str(obj)), "link", relation=relation)
@@ -408,7 +412,7 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
     shared by several sources is ambiguous; its source URI selects one copy explicitly.
     """
     now = (today or datetime.now(UTC).date()).isoformat()
-    with _tenant(db, tenant) as c:
+    with db.connect(tenant=tenant) as c:
         generation = _generation(c, tenant)
         if generation is None:
             return None
@@ -432,13 +436,15 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
         if not chunks:
             return None
         canonical = str(chunks[0][7])
-        total = c.execute(
-            "select count(*) from recall_chunks_v1 c where c.tenant_id = %s and c.generation_id = %s "
+        total, first_indexed, last_indexed = c.execute(
+            "select count(*), min(coalesce(c.first_indexed_at, c.indexed_at)), max(c.indexed_at) "
+            "from recall_chunks_v1 c where c.tenant_id = %s and c.generation_id = %s "
             "and c.source_uri = %s",
             (tenant, generation, source),
-        ).fetchone()[0]
+        ).fetchone()
         graph = _winners(c, tenant, generation)
         key = graph.key(canonical, source)
+        collided = key != canonical
         entities = c.execute(
             "select e.canonical_name, e.entity_kind, count(*) from recall_graph_mentions_v1 m "
             "join recall_graph_entities_v1 e on e.tenant_id = m.tenant_id and e.generation_id = m.generation_id and e.entity_id = m.entity_id "
@@ -488,8 +494,7 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
 
     first_meta = chunks[0][4] if isinstance(chunks[0][4], dict) else {}
     valid_from, valid_until = first_meta.get("valid_from"), first_meta.get("valid_until")
-    declared = first_meta.get("supersedes")
-    declared_list = [str(d) for d in (declared if isinstance(declared, list) else ([declared] if declared else []))]
+    declared_list = list(supersedes_targets(first_meta.get("supersedes")))
     return {
         "tenant": tenant,
         "generation": generation,
@@ -512,8 +517,8 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
         # (`SupersessionGraph.ambiguous_claims`). Before #970 this field compared resolved paths with
         # the references as written and was always empty.
         "unresolved_claims": sorted(graph.ambiguous_claims.get(key, ())),
-        "first_indexed": _day(min(row[6] for row in chunks)),
-        "last_indexed": _day(max(row[5] for row in chunks)),
+        "first_indexed": _day(first_indexed),
+        "last_indexed": _day(last_indexed),
         "chunk_count": total,
         "chunks": [
             {
@@ -525,8 +530,11 @@ def source_detail(db: DashboardDB, tenant: str, file: str, *, today: date | None
         "entities": [{"name": n, "kind": k, "mentions": m} for n, k, m in entities],
         "relations": [
             {"relation": rel, "status": status, "subject": sn, "subject_kind": sk, "object": on, "object_kind": ok}
-            for rel, status, sn, sk, on, ok in relations
+            for rel, status, sn, sk, on, ok in ([] if collided else relations)
         ],
+        # Relations and imports name the bare path, which several roots can hold: for one copy of
+        # such a path they cannot be attributed, so they are left out, as the graph leaves them out.
+        "collided": collided,
         "imports": sorted(target for importer, target in imports if importer == canonical),
-        "imported_by": sorted(importer for importer, target in imported_by if target == canonical),
+        "imported_by": [] if collided else sorted(importer for importer, target in imported_by if target == canonical),
     }

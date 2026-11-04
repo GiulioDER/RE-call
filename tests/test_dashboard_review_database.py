@@ -259,7 +259,7 @@ def test_the_queue_page_reads_the_database_and_reject_closes_it(corpus: Path, mo
     page = app.handle("GET", "/queue", SIGNED).body.decode()
     assert asked and set(asked) == {("memory",)}, "the queue read reports from tenants this folder is not bound to"
     assert "review?" + urlencode({"claim": KEY}) in page
-    form = urlencode({"csrf": "tok123", "claim": KEY, "reviewer": "giulio", "note": "not the same release"}).encode()
+    form = urlencode({"csrf": app.csrf, "claim": KEY, "reviewer": "giulio", "note": "not the same release"}).encode()
     assert app.handle("POST", "/reject", SIGNED, form).status == 303
     assert "Nothing to review" in app.handle("GET", "/queue", SIGNED).body.decode()
 

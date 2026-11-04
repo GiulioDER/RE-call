@@ -11,7 +11,8 @@ quote-checked against, these files first. Three kinds of edge:
 * `pending`: a claim waiting in the review queue (an agent report or a cached arbiter proposal).
 
 A node's state: `superseded` when a memo declares it replaced, `expired` when its `valid_until`
-has passed, `pending` when a queued claim would supersede it, else `current`. Titles and
+has passed, `not_yet_valid` before its `valid_from`, `pending` when a queued claim would
+supersede it, else `current`. Titles and
 descriptions are read for display only and never decide anything.
 """
 
@@ -20,13 +21,13 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Any
 
-from recall.dashboard.review import build_queue, memo_files
+from recall.dashboard.review import anchored, build_queue, memo_files
 from recall.document import parse_document
-from recall.frontmatter import supersedes_key, supersedes_targets, validity_bounds
-from recall.lint import lint_corpus
+from recall.frontmatter import encodable_name, supersedes_key, supersedes_targets, validity_bounds
+from recall.lint import LintIssue, lint_corpus
 
 #: A memo linking to at least this many others is an index page. It is kept, but flagged so the
 #: page can hide it: one hub joined to every memo pulls the whole picture into a single knot.
@@ -60,20 +61,6 @@ def _born(text: str, name: str, path: Path) -> str:
 _memo_files = memo_files
 
 
-def anchored(text: str) -> bool:
-    """Whether a path names its own root, drive or share, so joining it would leave the memo folder.
-
-    Checked before any filesystem call: on Windows `resolve()` opens a UNC path such as
-    `\\\\host\\share\\x` (or `//host/share/x`) to follow links, which contacts that host and sends the
-    user's credentials, so a containment check that follows the resolve comes too late.
-    """
-    for flavour in (PureWindowsPath, PurePosixPath):
-        candidate = flavour(text)
-        if candidate.anchor or candidate.drive:
-            return True
-    return False
-
-
 def _display(text: str, stem: str) -> tuple[str, str]:
     """Title and description for display only: a top-level heading, else the file stem."""
     front = _FRONT.match(text)
@@ -95,6 +82,7 @@ def build_graph(
     include_queue: bool = True,
     database_reports: Callable[[], Sequence[Mapping[str, object]]] | None = None,
     lint: bool = True,
+    issues: list[LintIssue] | None = None,
 ) -> dict[str, Any]:
     """Nodes, edges and counts for the page, as plain JSON-ready data.
 
@@ -104,7 +92,8 @@ def build_graph(
     root = root.resolve()
     now = today or datetime.now(UTC)
     files = _memo_files(root)
-    names = [path.relative_to(root).as_posix() for path in files]
+    # Stand-ins for names that are not UTF-8, as the editor uses: a raw surrogate breaks the page encode.
+    names = [encodable_name(path.relative_to(root).as_posix()) for path in files]
 
     by_key: dict[str, list[str]] = {}
     for name in names:
@@ -125,14 +114,21 @@ def build_graph(
             edges.append({"source": source, "target": target, "kind": kind})
 
     for path, name in zip(files, names, strict=True):
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
+        try:
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
+            born = _born(text, name, path)
+        except OSError:
+            continue  # unreadable or gone since the listing: one such file must not break every page
         meta = parse_document(text).meta
         title, description = _display(text, path.stem)
-        expired = False
+        state = "current"
         start = end = None
         try:
             start, end = validity_bounds(meta)
-            expired = end is not None and end < now
+            if end is not None and end < now:
+                state = "expired"
+            elif start is not None and start > now:
+                state = "not_yet_valid"  # as search and the corpus graph say: not in force yet
         except ValueError:
             pass
         nodes[name] = {
@@ -140,8 +136,8 @@ def build_graph(
             "title": title,
             "description": description,
             "type": str(meta.get("type") or ""),
-            "state": "expired" if expired else "current",
-            "born": _born(text, name, path),
+            "state": state,
+            "born": born,
             "valid_from": start.date().isoformat() if start else None,
             "valid_until": end.date().isoformat() if end else None,
             "folder": name.split("/", 1)[0] if "/" in name else "",
@@ -203,7 +199,8 @@ def build_graph(
 
     from recall.dashboard.triage import CODE as CLOSURE_CODE, closure_findings
 
-    issues = lint_corpus(root) if lint else []
+    if issues is None:  # a caller that also needs the issues lints once and passes them
+        issues = lint_corpus(root) if lint else []
     silenced = {f.file for f in closure_findings(root, issues) if f.dismissed} if lint else set()
     for issue in issues:
         if issue.code == CLOSURE_CODE and issue.file in silenced:
@@ -217,8 +214,8 @@ def build_graph(
     counts: dict[str, int] = {"memos": len(nodes), "edges": len(edges)}
     counts["issues"] = sum(len(node["issues"]) for node in nodes.values())
     counts["isolated"] = sum(1 for node in nodes.values() if node["isolated"])
-    for state in ("current", "superseded", "expired", "pending"):
-        counts[state] = sum(1 for node in nodes.values() if node["state"] == state)
+    for state_name in ("current", "superseded", "expired", "not_yet_valid", "pending"):
+        counts[state_name] = sum(1 for node in nodes.values() if node["state"] == state_name)
     for kind in ("supersedes", "link", "pending"):
         counts[kind] = sum(1 for edge in edges if edge["kind"] == kind)
     counts["hubs"] = sum(1 for node in nodes.values() if node["hub"])

@@ -198,7 +198,7 @@ def _accept_form(app: DashboardApp, root: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(review, "corpus_proposals", lambda *a, **k: _no_arbiter(root))
     (item,) = app._queue().items
     shown = review.memo_digest(root, review.preview(root, item, NOW).edit_file)
-    return urlencode({"csrf": "tok", "claim": item.claim, "reviewer": "p", "note": "n", "digest": shown}).encode()
+    return urlencode({"csrf": app.csrf, "claim": item.claim, "reviewer": "p", "note": "n", "digest": shown}).encode()
 
 
 def test_bug002_an_accept_that_wrote_is_never_reported_as_nothing_written(reported: Path, monkeypatch: pytest.MonkeyPatch) -> None:

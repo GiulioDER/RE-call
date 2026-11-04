@@ -107,7 +107,7 @@ def test_the_queue_moved_and_a_decision_returns_to_it(corpus: Path) -> None:
     app = DashboardApp(corpus, port=8765, token="tok")
     assert "Review queue" in app.handle("GET", "/queue", SIGNED).body.decode()
     (item,) = review.build_queue(corpus).items
-    form = urlencode({"csrf": "tok", "claim": item.claim, "reviewer": "giulio", "note": "no", "digest": review.memo_digest(corpus, "new.md")})
+    form = urlencode({"csrf": app.csrf, "claim": item.claim, "reviewer": "giulio", "note": "no", "digest": review.memo_digest(corpus, "new.md")})
     response = app.handle("POST", "/reject", SIGNED, form.encode())
     assert response.status == 303
     assert dict(response.headers)["Location"].startswith("/queue?"), "a decision did not return to the queue"

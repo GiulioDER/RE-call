@@ -264,7 +264,8 @@ recall setup --lite --memory ./notes
 ```
 
 Setup creates `.recall/memory.db`, attempts automatic calibration, and registers Claude Code for
-this project. Use the printed doctor and read-only dashboard commands, and add `.recall/` to
+this project. Use the printed doctor and dashboard commands (the dashboard reads the store
+read-only; accepting a review or saving an edit there writes the memo file), and add `.recall/` to
 `.gitignore`. For CLI or manual client wiring, add `--no-register`.
 
 The MCP server refreshes changed memos automatically. To check or refresh explicitly:

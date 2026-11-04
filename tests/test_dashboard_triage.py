@@ -109,7 +109,7 @@ def test_the_dismiss_form_needs_the_token(store: Path) -> None:
     fields = {"file": "new-port.md", "sha": shown.sentence_sha, "reviewer": "giulio"}
     assert app.handle("POST", "/lint/dismiss", SIGNED, urlencode(fields).encode()).status == 403
     assert not _finding(store, "new-port.md").dismissed
-    done = app.handle("POST", "/lint/dismiss", SIGNED, urlencode({**fields, "csrf": "tok"}).encode())
+    done = app.handle("POST", "/lint/dismiss", SIGNED, urlencode({**fields, "csrf": app.csrf}).encode())
     assert done.status == 303 and _finding(store, "new-port.md").dismissed
-    app.handle("POST", "/lint/restore", SIGNED, urlencode({"file": "new-port.md", "sha": shown.sentence_sha, "csrf": "tok"}).encode())
+    app.handle("POST", "/lint/restore", SIGNED, urlencode({"file": "new-port.md", "sha": shown.sentence_sha, "csrf": app.csrf}).encode())
     assert not _finding(store, "new-port.md").dismissed

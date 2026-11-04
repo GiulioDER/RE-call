@@ -8,8 +8,9 @@ This is a person's tool, and it is shaped so it cannot become an agent's:
 
 * it is reachable only from `recall dashboard` (this machine, a per-launch session, a form token);
   the MCP surface has no edit tool, and this module is not imported by `recall_mcp`;
-* every edit names an editor and a reason, is shown as an exact diff first, and is refused when the
-  memo changed after the diff was shown;
+* every edit names an editor and a reason, is shown as an exact diff first (an undo excepted: it
+  restores the recorded bytes, and is refused unless the memo is exactly what its edit wrote), and
+  is refused when the memo changed after the diff was shown;
 * every edit is recorded with the bytes before and after in `<root>/.recall/edits.sqlite3`, so it
   can be undone, and an undo is refused when the memo was changed again since. Recovery bytes
   are committed before replacement; reopening the ledger reconciles an interrupted edit whose memo
@@ -22,13 +23,14 @@ line endings and every line nobody asked to change survive an edit.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import hashlib
 import json
 import os
 import sqlite3
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -66,6 +68,14 @@ class EditRefused(ReviewRefused):
     """An edit that was not made, with the reason to show the person."""
 
 
+class EditOutcomeUnknown(EditRefused):
+    """The memo may hold the new bytes although the edit could not be completed: never "nothing was written"."""
+
+
+#: The summary every undo record starts with; `EditRecord.is_undo` reads it.
+UNDO_PREFIX = "undo of edit"
+
+
 @dataclass(frozen=True)
 class MemoValues:
     name: str
@@ -87,6 +97,10 @@ class EditPlan:
     def before_sha(self) -> str:
         return hashlib.sha256(self.before).hexdigest()
 
+    @property
+    def after_sha(self) -> str:
+        return hashlib.sha256(self.after).hexdigest()
+
 
 @dataclass(frozen=True)
 class EditRecord:
@@ -98,7 +112,10 @@ class EditRecord:
     edited_at: str
     undone_at: str | None = None
     undone_by: str | None = None
-    extra: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def is_undo(self) -> bool:
+        return bool(self.summary) and self.summary[0].startswith(UNDO_PREFIX)
 
 
 def _memo(root: Path, name: str) -> tuple[str, Path]:
@@ -107,6 +124,10 @@ def _memo(root: Path, name: str) -> tuple[str, Path]:
         _corpus_name, path = resolve_memo(root, name)
     except StaleReportRefused as exc:
         raise EditRefused(str(exc)) from exc
+    if path.suffix.lower() != ".md" or any(part.startswith(".") for part in path.relative_to(root).parts):
+        # The editor lists `memo_files` only: never write front matter into `.git/config`, an
+        # `.obsidian` settings file or a text file that a typed URL names.
+        raise EditRefused(f"{name} is not a memo in this corpus")
     listed = _as_listed(root, path)
     return encodable_name(listed.relative_to(root).as_posix()), listed
 
@@ -227,7 +248,10 @@ def plan_edit(
     added: list[str] = []
 
     for target in remove_supersedes:
-        changed = remove_supersedes_target(after, target)
+        try:
+            changed = remove_supersedes_target(after, target)
+        except ValueError as exc:  # a memo that is not UTF-8 is refused, as the add path refuses it
+            raise EditRefused(str(exc)) from exc
         if changed is None:
             raise EditRefused(f"{corpus_name} does not declare that it supersedes {target}")
         after = changed
@@ -238,6 +262,12 @@ def plan_edit(
         if not target:
             continue
         matches = names.get(supersedes_key(target), [])
+        if "/" in target:
+            # A folder-qualified reference names one path, as the trust resolver reads it: match
+            # the path, never a same-named memo in another folder, and never refuse a unique path
+            # because its stem is shared.
+            wanted = target.casefold().removesuffix(".md")
+            matches = [m for m in matches if m.casefold().removesuffix(".md") == wanted]
         if not matches:
             raise EditRefused(f"{target} is not a memo in this corpus")
         if len(matches) > 1:
@@ -301,6 +331,20 @@ def plan_edit(
         )
     )
     return EditPlan(name=corpus_name, before=before, after=after, summary=tuple(summary), diff=diff)
+
+
+def _history_rows(conn: sqlite3.Connection, name: str | None, limit: int) -> list[EditRecord]:
+    query = "SELECT edit_id, file, editor, note, summary, edited_at, undone_at, undone_by FROM edits"
+    args: tuple[object, ...] = ()
+    if name is not None:
+        query += " WHERE file = ?"
+        args = (name,)
+    rows = conn.execute(query + " ORDER BY edit_id DESC LIMIT ?", (*args, limit)).fetchall()
+    return [
+        EditRecord(edit_id=r[0], name=r[1], editor=r[2], note=r[3], summary=tuple(json.loads(r[4])),
+                   edited_at=r[5], undone_at=r[6], undone_by=r[7])
+        for r in rows
+    ]
 
 
 class EditLedger:
@@ -369,19 +413,10 @@ class EditLedger:
         return int(cursor.lastrowid or 0)
 
     def history(self, name: str | None = None, limit: int = 50) -> list[EditRecord]:
-        query = "SELECT edit_id, file, editor, note, summary, edited_at, undone_at, undone_by FROM edits"
-        args: tuple[object, ...] = ()
-        if name is not None:
-            query += " WHERE file = ?"
-            args = (name,)
-        rows = self._conn.execute(query + " ORDER BY edit_id DESC LIMIT ?", (*args, limit)).fetchall()
-        return [
-            EditRecord(edit_id=r[0], name=r[1], editor=r[2], note=r[3], summary=tuple(json.loads(r[4])),
-                       edited_at=r[5], undone_at=r[6], undone_by=r[7])
-            for r in rows
-        ]
+        return _history_rows(self._conn, name, limit)
 
     def bytes_of(self, edit_id: int) -> tuple[str, bytes, bytes, str | None] | None:
+        """(file, bytes before, bytes after, when it was undone or None) of one recorded edit."""
         row = self._conn.execute(
             "SELECT file, before, after, undone_at FROM edits WHERE edit_id = ?", (edit_id,)
         ).fetchone()
@@ -431,8 +466,9 @@ class EditLedger:
                 self._conn.rollback()
                 pending = self._pending(operation_id)
             except (sqlite3.Error, OSError) as exc:
-                raise EditRefused(
-                    "the edit's commit could not be checked; reopen its ledger to recover the durable outcome"
+                raise EditOutcomeUnknown(
+                    f"{name} may already hold the edit: its commit could not be checked; reopen the memo "
+                    "to reconcile the recorded outcome"
                 ) from exc
             if edit_id is not None and pending is None:
                 return edit_id
@@ -468,8 +504,13 @@ class EditLedger:
                 # history; the row stays, and `replace` refuses this memo alone.
                 self._stuck[name] = (
                     f"{name} changed during an interrupted edit; recovery bytes are retained in the "
-                    f"edit_recovery table of {_LEDGER}"
+                    f"edit_recovery table of {_LEDGER}. Put back its bytes from before or after the "
+                    "edit to reconcile it"
                 )
+
+    def refusal(self, name: str) -> str | None:
+        """Why `name` may not be written now (an interrupted edit of it cannot be reconciled), or None."""
+        return self._stuck.get(name)
 
     def replace(
         self, plan: EditPlan, *, editor: str, note: str, at: datetime, undo_id: int | None = None,
@@ -502,8 +543,9 @@ class EditLedger:
                     raise EditRefused("the memo changed again; automatic restoration was refused")
                 self._discard(operation_id)
             except (sqlite3.Error, OSError, EditRefused) as recovery_exc:
-                raise EditRefused(
-                    f"{plan.name}: edit storage failed; recovery bytes are retained in {_LEDGER}: {recovery_exc}"
+                raise EditOutcomeUnknown(
+                    f"{plan.name} may hold the new bytes: edit storage failed and restoring it failed too; "
+                    f"recovery bytes are retained in {_LEDGER}: {recovery_exc}"
                 ) from exc
             raise EditRefused(f"{plan.name}: edit storage failed; the memo was not changed: {exc}") from exc
 
@@ -513,8 +555,15 @@ def _require_person(editor: str, note: str) -> None:
         raise EditRefused("an edit needs your name and a note")
 
 
-def apply_edit(root: Path, name: str, *, editor: str, note: str, shown_sha: str, now: datetime, **changes: object) -> EditRecord:
-    """Make the edit if the memo is still the one the person saw, and record it."""
+def apply_edit(
+    root: Path, name: str, *, editor: str, note: str, shown_sha: str, now: datetime,
+    shown_after_sha: str | None = None, **changes: object,
+) -> EditRecord:
+    """Make the edit if the memo is still the one the person saw, and record it.
+
+    `shown_after_sha` is the hash of the bytes the confirmed diff showed: an added reference is
+    resolved again here, and a memo moved meanwhile would otherwise be written under a name never shown.
+    """
     _require_person(editor, note)
     root = root.resolve()
     with _DECISION_LOCK:
@@ -523,6 +572,8 @@ def apply_edit(root: Path, name: str, *, editor: str, note: str, shown_sha: str,
                 plan = plan_edit(root, name, **changes)  # type: ignore[arg-type]
                 if plan.before_sha != shown_sha:
                     raise EditRefused(f"{plan.name} changed since you reviewed the edit; review it again")
+                if shown_after_sha is not None and plan.after_sha != shown_after_sha:
+                    raise EditRefused(f"the edit to {plan.name} would now write something else; review it again")
                 edit_id = ledger.replace(plan, editor=editor, note=note, at=now)
         except (sqlite3.Error, OSError) as exc:
             raise EditRefused(f"{name}: edit storage is unavailable: {exc}") from exc
@@ -548,7 +599,7 @@ def undo_edit(root: Path, edit_id: int, *, editor: str, note: str, now: datetime
             # the reverse since: the same cycle `plan_edit` refuses, reached the other way round.
             _refuse_cycles(root, path, before, _restored_targets(before, after))
             ledger.replace(
-                EditPlan(name=name, before=after, after=before, summary=(f"undo of edit {edit_id}: {note}",), diff=()),
+                EditPlan(name=name, before=after, after=before, summary=(f"{UNDO_PREFIX} {edit_id}: {note}",), diff=()),
                 editor=editor, note=note, at=now, undo_id=edit_id,
             )
     except (sqlite3.Error, OSError) as exc:
@@ -556,12 +607,45 @@ def undo_edit(root: Path, edit_id: int, *, editor: str, note: str, now: datetime
     return name
 
 
+def _recovery_names(path: Path) -> set[str] | None:
+    """The memos with an interrupted edit, read without a lock; None when the ledger cannot be read so."""
+    try:
+        with contextlib.closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=5.0)) as conn:
+            return {str(row[0]) for row in conn.execute("SELECT file FROM edit_recovery")}
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+
+
 def history(root: Path, name: str | None = None, limit: int = 50) -> list[EditRecord]:
+    """The recorded edits, newest first.
+
+    A plain read while no edit is interrupted, so a page never waits behind a decision for it.
+    When one is, the ledger is opened under the decision lock, which reconciles interrupted edits
+    (and can complete or discard them) before reading.
+    """
     path = root.resolve() / _LEDGER
     if not path.exists():
         return []
+    if _recovery_names(path) == set():
+        try:
+            with contextlib.closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=5.0)) as conn:
+                return _history_rows(conn, name, limit)
+        except (sqlite3.Error, OSError):
+            pass  # fall through to the locked open, which reports a storage failure properly
     try:
         with _DECISION_LOCK, EditLedger(root.resolve()) as ledger:
             return ledger.history(name, limit)
+    except (sqlite3.Error, OSError) as exc:
+        raise EditRefused(f"edit history storage is unavailable: {exc}") from exc
+
+
+def pending_refusal(root: Path, name: str) -> str | None:
+    """Why edits of `name` are refused because an interrupted edit of it cannot be reconciled, or None."""
+    path = root.resolve() / _LEDGER
+    if not path.exists() or not (_recovery_names(path) or set()) & {name}:
+        return None
+    try:
+        with _DECISION_LOCK, EditLedger(root.resolve()) as ledger:
+            return ledger.refusal(name)
     except (sqlite3.Error, OSError) as exc:
         raise EditRefused(f"edit history storage is unavailable: {exc}") from exc

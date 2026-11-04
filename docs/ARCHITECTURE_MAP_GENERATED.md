@@ -40,15 +40,15 @@ Cross package edges: 375
 | 138 | `recall_agent._sdk` |
 | 138 | `recall_agent.memory` |
 | 135 | `recall.dashboard.activity` |
+| 135 | `recall.dashboard.corpus` |
 | 134 | `recall.cli_commands.provenance_cmd` |
+| 134 | `recall.dashboard.graph` |
+| 134 | `recall.dashboard.triage` |
 | 133 | `recall.cli_commands.lite_cmd` |
-| 133 | `recall.dashboard.graph` |
-| 133 | `recall.dashboard.triage` |
 | 133 | `recall_mcp.assistant` |
 | 132 | `recall.dashboard.edit` |
+| 132 | `recall.dashboard.review` |
 | 131 | `recall.cli_commands.extract_rewrite` |
-| 131 | `recall.dashboard.corpus` |
-| 131 | `recall.dashboard.review` |
 | 131 | `recall.wizard.projects` |
 | 130 | `recall.dashboard.db` |
 | 130 | `recall.dashboard.lite_db` |
@@ -77,12 +77,12 @@ Cross package edges: 375
 | 16 | `recall.generation_store` |
 | 16 | `recall.wizard.headless` |
 | 16 | `recall_mcp.semantic_graph_cache` |
+| 15 | `recall.dashboard.server` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.lifecycle` |
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.calibration_v2` |
 | 14 | `recall.cli_commands.provenance_cmd` |
-| 14 | `recall.dashboard.server` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall.lite.store` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
@@ -539,15 +539,15 @@ They are observations, not automatic failures.
 | `recall.dashboard` | 0 | 0 |
 | `recall.dashboard.activity` | 5 | 135 |
 | `recall.dashboard.config` | 2 | 129 |
-| `recall.dashboard.corpus` | 5 | 131 |
+| `recall.dashboard.corpus` | 5 | 135 |
 | `recall.dashboard.db` | 5 | 130 |
 | `recall.dashboard.edit` | 9 | 132 |
-| `recall.dashboard.graph` | 5 | 133 |
+| `recall.dashboard.graph` | 5 | 134 |
 | `recall.dashboard.lite_db` | 5 | 130 |
 | `recall.dashboard.markdown` | 0 | 0 |
-| `recall.dashboard.review` | 9 | 131 |
-| `recall.dashboard.server` | 14 | 162 |
-| `recall.dashboard.triage` | 6 | 133 |
+| `recall.dashboard.review` | 9 | 132 |
+| `recall.dashboard.server` | 15 | 162 |
+| `recall.dashboard.triage` | 6 | 134 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 106 |
 | `recall.declared_keys` | 2 | 24 |

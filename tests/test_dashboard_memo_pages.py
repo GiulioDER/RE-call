@@ -56,7 +56,7 @@ def test_a_preview_writes_nothing_and_a_post_without_the_token_is_refused(app: D
     before = (corpus / "new.md").read_bytes()
     fields = [("path", "new.md"), ("add", "old.md"), ("status", "active")]
     assert _post(app, "/memo/preview", fields).status == 403
-    page = _post(app, "/memo/preview", [("csrf", "tok"), *fields])
+    page = _post(app, "/memo/preview", [("csrf", app.csrf), *fields])
     assert page.status == 200
     text = page.body.decode()
     assert "+supersedes: old.md" in text and "status active" in text
@@ -66,24 +66,26 @@ def test_a_preview_writes_nothing_and_a_post_without_the_token_is_refused(app: D
 def test_apply_writes_what_was_previewed_and_undo_puts_it_back(app: DashboardApp, corpus: Path) -> None:
     before = (corpus / "new.md").read_bytes()
     fields = [("path", "new.md"), ("add", "old.md"), ("status", "active")]
-    preview = _post(app, "/memo/preview", [("csrf", "tok"), *fields]).body.decode()
+    preview = _post(app, "/memo/preview", [("csrf", app.csrf), *fields]).body.decode()
     shown = re.search(r"name='shown_sha' value='([0-9a-f]+)'", preview).group(1)
-    saved = _post(app, "/memo/apply", [("csrf", "tok"), ("shown_sha", shown), ("editor", "giulio"), ("note", "<script>x</script>"), *fields])
+    after = re.search(r"name='shown_after' value='([0-9a-f]+)'", preview).group(1)
+    saved = _post(app, "/memo/apply", [("csrf", app.csrf), ("shown_sha", shown), ("shown_after", after), ("editor", "giulio"), ("note", "<script>x</script>"), *fields])
     assert saved.status == 303
     assert _derived_value((corpus / "new.md").read_bytes(), "status") == "active"
     page = app.handle("GET", "/memo?path=new.md", SIGNED).body.decode()
     assert "<script>x</script>" not in page and "&lt;script&gt;x&lt;/script&gt;" in page
     (record,) = edit.history(corpus, "new.md")
-    undone = _post(app, "/memo/undo", [("csrf", "tok"), ("path", "new.md"), ("edit_id", str(record.edit_id)), ("editor", "giulio"), ("note", "wrong")])
+    undone = _post(app, "/memo/undo", [("csrf", app.csrf), ("path", "new.md"), ("edit_id", str(record.edit_id)), ("editor", "giulio"), ("note", "wrong")])
     assert undone.status == 303
     assert (corpus / "new.md").read_bytes() == before
 
 
 def test_apply_with_a_stale_preview_writes_nothing(app: DashboardApp, corpus: Path) -> None:
     fields = [("path", "new.md"), ("status", "draft")]
-    preview = _post(app, "/memo/preview", [("csrf", "tok"), *fields]).body.decode()
+    preview = _post(app, "/memo/preview", [("csrf", app.csrf), *fields]).body.decode()
     shown = re.search(r"name='shown_sha' value='([0-9a-f]+)'", preview).group(1)
+    after = re.search(r"name='shown_after' value='([0-9a-f]+)'", preview).group(1)
     (corpus / "new.md").write_text("# New\nedited meanwhile\n", encoding="utf-8")
-    response = _post(app, "/memo/apply", [("csrf", "tok"), ("shown_sha", shown), ("editor", "giulio"), ("note", "x"), *fields])
+    response = _post(app, "/memo/apply", [("csrf", app.csrf), ("shown_sha", shown), ("shown_after", after), ("editor", "giulio"), ("note", "x"), *fields])
     assert response.status == 409
     assert _derived_value((corpus / "new.md").read_bytes(), "status") is None

@@ -162,7 +162,7 @@ class LiteSetupReport:
             lines.append(f"claude code  NOT registered: {reg.skipped_reason}")
         lines.extend(f"note         {note}" for note in self.notes)
         if self.followup_env:
-            lines.append("\nFrom this project, check the store and open its read-only dashboard:")
+            lines.append("\nFrom this project, check the store and open its dashboard (it reads the store read-only):")
             lines.extend(f"  {command}" for command in _followup_commands(self.followup_env, self.memory))
         return "\n".join(lines)
 
