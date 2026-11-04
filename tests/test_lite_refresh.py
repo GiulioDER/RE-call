@@ -783,6 +783,45 @@ def test_refresh_of_a_store_without_a_recorded_spec_asks_instead_of_crashing(
     assert code == -1, "refresh did not stop with a message"
 
 
+def test_check_is_current_straight_after_setup(project: Path) -> None:
+    """`recall lite refresh --check` straight after `recall setup --lite` said "never refreshed"
+    and exited 1: setup indexed through its own copy of the pipeline and wrote no refresh state.
+    Setup now indexes through the refresh itself, so the folder it just indexed is current.
+
+    Red proof, 2026-11-04 on the remote test host: against `recall/lite/setup.py` as it was before
+    this change, this failed at the `current` assertion with "memos  never refreshed"; with the
+    change, it passed."""
+    from recall.lite.setup import run_lite_setup
+
+    report = run_lite_setup(
+        project_root=project, memory=project / "memory", embedder=ContentWordEmbedder(),  # type: ignore[arg-type]
+        embedder_name="content-words", register=False,
+    )
+    status = check(report.store, [project / "memory"])
+    assert status.current, f"not current straight after setup:\n{status.render()}"
+
+
+def test_setup_applies_the_source_policy(project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Setup's copy of the pipeline passed no source policy, so it stored memos the operator's
+    policy denies, which every later refresh refuses (CCA SEC-001 for the refresh). Only the memo
+    under `notes` is allowed here.
+
+    Red proof, 2026-11-04 on the remote test host: against `recall/lite/setup.py` before this
+    change, and against this change with `security_policy=None` passed to `_refresh_locked`, this
+    failed at the `sources` assertion, listing all four memos; with the change, it passed."""
+    from recall.lite.setup import run_lite_setup
+
+    _write_memos(project / "memory" / "notes", 1)
+    monkeypatch.setenv("RECALL_SOURCE_POLICY_FILE", str(_policy_file(tmp_path, "notes")))
+    report = run_lite_setup(
+        project_root=project, memory=project / "memory", embedder=ContentWordEmbedder(),  # type: ignore[arg-type]
+        embedder_name="content-words", register=False,
+    )
+    with LiteStore(report.store, dim=DIM) as opened:
+        sources = {c.source for c in opened.iter_chunks()}
+    assert sources and all("notes" in Path(s).parts for s in sources), f"setup stored denied memos: {sorted(sources)}"
+
+
 def test_a_future_dated_memo_does_not_keep_every_snapshot_racy(store: LiteStore, project: Path) -> None:
     """D4b (deferred BUG-007, found at L5.5): a whole-second mtime far ahead is not "just written"."""
     memo = project / "memory" / "memo-000.md"
