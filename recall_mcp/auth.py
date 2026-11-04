@@ -51,10 +51,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import get_args
 
 from recall.observability import get_logger
 from recall.store import DEFAULT_TENANT
 from recall.errors import RecallError
+from recall.security_policy import Classification
 
 _log = get_logger("mcp.auth")
 
@@ -115,6 +117,11 @@ class Principal:
     tenant: str
     scopes: frozenset[str] = field(default_factory=lambda: frozenset({SCOPE_READ}))
     expires_at: datetime | None = None
+    #: The source-policy clearance and egress permission this caller is evaluated with. Set from
+    #: server-side configuration only (the token file, or `RECALL_OIDC_SUBJECT_CLEARANCE`), never
+    #: from a claim the caller's IdP chose; the default is the policy's own default.
+    clearance: str = "internal"
+    egress_allowed: bool = False
 
     def has_scope(self, scope: str) -> bool:
         return scope in self.scopes
@@ -231,6 +238,29 @@ def _parse_expiry(raw: object, *, who: str) -> datetime | None:
     return parsed
 
 
+#: The clearance levels the source policy understands, from its own type.
+CLEARANCE_LEVELS: frozenset[str] = frozenset(get_args(Classification))
+
+
+def _parse_clearance(raw: object, *, who: str) -> str:
+    if raw is None:
+        return "internal"
+    if not isinstance(raw, str) or raw not in CLEARANCE_LEVELS:
+        raise AuthConfigError(
+            f"{who}: 'clearance' must be one of {sorted(CLEARANCE_LEVELS)}, not {raw!r}"
+        )
+    return raw
+
+
+def _parse_egress(raw: object, *, who: str) -> bool:
+    if raw is None:
+        return False
+    if not isinstance(raw, bool):
+        # A string "false" is truthy; only a JSON boolean says what the operator meant.
+        raise AuthConfigError(f"{who}: 'egress_allowed' must be a JSON boolean")
+    return raw
+
+
 def _parse_scopes(raw: object, *, who: str) -> frozenset[str]:
     if raw is None:
         return frozenset({SCOPE_READ})  # least privilege by default: read, nothing else
@@ -326,6 +356,8 @@ def parse_principals(payload: object) -> dict[str, Principal]:
             tenant=tenant,
             scopes=_parse_scopes(entry.get("scopes"), who=who),
             expires_at=_parse_expiry(entry.get("expires_at"), who=who),
+            clearance=_parse_clearance(entry.get("clearance"), who=who),
+            egress_allowed=_parse_egress(entry.get("egress_allowed"), who=who),
         )
     return by_digest
 

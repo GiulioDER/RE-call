@@ -349,7 +349,8 @@ def test_a_valid_static_token_is_not_refused_while_the_throttle_is_closed():
         def verify(self, token):
             if token == "good":
                 return SimpleNamespace(
-                    name="agent", tenant="acme", scopes=frozenset({"recall:read"}), expires_at=None
+                    name="agent", tenant="acme", scopes=frozenset({"recall:read"}), expires_at=None,
+                    clearance="internal", egress_allowed=False,
                 )
             return None
 

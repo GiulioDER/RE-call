@@ -67,6 +67,7 @@ from recall.declared_keys import subject_view
 from recall.lineage import canonical_sha256
 from recall.trust_policy import TrustPolicy, TrustRefusal
 from recall_mcp.auth import (
+    CLEARANCE_LEVELS,
     SCOPE_ADMIN,
     SCOPE_FORGET,
     SCOPE_FACT_WRITE,
@@ -3349,14 +3350,16 @@ def build_server(settings: Settings | None = None) -> MCPServer:
         )
         tenant = str((claims or {}).get("tenant") or getattr(store, "tenant", ""))
         clearance = str((claims or {}).get("clearance", "internal"))
-        if clearance not in {"public", "internal", "confidential", "restricted"}:
+        if clearance not in CLEARANCE_LEVELS:
             raise PermissionError("authenticated principal carries an invalid clearance")
+        # Only a real True grants egress: a string such as "false" is truthy under bool().
+        egress_allowed = (claims or {}).get("egress_allowed", False) is True
         return AccessContext(
             principal=principal,
             tenant=tenant,
             purpose=purpose,
             clearance=clearance,  # type: ignore[arg-type]
-            egress_allowed=bool((claims or {}).get("egress_allowed", False)),
+            egress_allowed=egress_allowed,
         )
 
     def _state(ctx: Context[dict, object]) -> dict:

@@ -146,6 +146,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_OIDC_TENANTS", "Authentication", "OIDC tenant allowlist"),
     EnvironmentSpec("RECALL_OIDC_ALGORITHMS", "Authentication", "OIDC algorithm allowlist"),
     EnvironmentSpec("RECALL_OIDC_SUBJECT_TENANTS", "Authentication", "OIDC subject bindings"),
+    EnvironmentSpec("RECALL_OIDC_SUBJECT_CLEARANCE", "Authentication", "OIDC subject source-policy clearance"),
     EnvironmentSpec("RECALL_OIDC_TRUST_TENANT_CLAIM", "Authentication", "trust IdP tenant claim"),
     EnvironmentSpec("RECALL_OIDC_JWKS_REFRESH_SECONDS", "Authentication", "OIDC JWKS refresh interval", "900"),
     EnvironmentSpec(

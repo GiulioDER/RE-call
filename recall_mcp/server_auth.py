@@ -114,7 +114,14 @@ class RecallTokenVerifier:
             client_id=principal.name,
             scopes=sorted(principal.scopes),
             expires_at=(int(principal.expires_at.timestamp()) if principal.expires_at else None),
-            claims={"tenant": principal.tenant, "principal": principal.name},
+            claims={
+                "tenant": principal.tenant,
+                "principal": principal.name,
+                # Read by `_access_context` for the source policy. From the token file, never
+                # from the request.
+                "clearance": principal.clearance,
+                "egress_allowed": principal.egress_allowed,
+            },
         )
 
 
@@ -194,6 +201,10 @@ class OidcTokenVerifier:
             "tenant": principal.tenant,
             "principal": principal.name,
             "iss": self._validator.config.issuer,
+            # From RECALL_OIDC_SUBJECT_CLEARANCE by verified `sub` (or the policy default), never
+            # from an IdP claim; `_access_context` hands them to the source policy.
+            "clearance": principal.clearance,
+            "egress_allowed": principal.egress_allowed,
         }
         subject_tenants = self._validator.config.subject_tenants
         if subject_tenants is not None:
