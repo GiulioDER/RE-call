@@ -132,7 +132,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "RECALL_ENV=production a PERMANENT TOMBSTONE is also written, and no future generation "
             "build will re-admit that URI even if the file is there; nothing deletes a tombstone "
             "and there is no `unforget`. Name a source exactly as stored, which is the `source` "
-            "field printed by `recall search`; a source this store has never seen is reported as NOT "
+            "field printed by `recall search`; a name matching more than one stored source (a `recall index` path and a generation's file:// URI for one memo) is refused as ambiguous, and the refusal lists the exact names to pass. A source this store has never seen is reported as NOT "
             "erased and NOT tombstoned rather than acted on, though the facts it supplied are still "
             "erased, which is how a forget whose fact erasure failed is completed. The fact values "
             "these sources supplied are erased with them: a fact whose only evidence they were is "
