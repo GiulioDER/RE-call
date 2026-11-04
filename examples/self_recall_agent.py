@@ -1,8 +1,8 @@
 """Example: an agent that consults its own memory before acting (anti-re-litigation).
 
 Run standalone against the demo corpus, or import `decide` in tests. In a real MCP client
-the same pattern is: call the `recall_search` tool before proposing, and back off if a closed
-decision or falsified hypothesis surfaces (unless it's a `gap_warning`).
+the same pattern is: call the `recall_search` tool before proposing, and back off only when a
+trustworthy closed decision or falsified hypothesis surfaces (a verdict-`ok` hit).
 """
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ def decide(
     """Decide whether to proceed with `proposal`, consulting memory first.
 
     Proceeds only when a WORKING, certified gate reports no strongly-relevant prior record. If a
-    relevant memory exists (no gap), the agent backs off and cites it — the anti-re-litigation
-    guard.
+    trustworthy memory exists, the agent backs off and cites it. A working-gate abstention
+    allows the proposal to proceed without citing a rejected candidate.
 
     The `TrustRefusal` branch is the one worth copying. Without it this function has a silent
     worst case: the trust system goes down, the search returns nothing, "nothing" reads as "no
@@ -31,8 +31,8 @@ def decide(
     opposite in meaning, so the outage has to be caught as its own case and must NOT proceed.
     Failing closed here costs a retry; failing open costs the guard this example exists to show.
 
-    `search_kwargs` is forwarded to `search_memory`. It exists so a local run can pass
-    `policy=TrustPolicy.development()` against a corpus with no published calibration; leaving it
+    `search_kwargs` is forwarded to `search_memory`. Local evaluations may pass an explicit
+    `calibration` with `policy=TrustPolicy.development()`; leaving `search_kwargs`
     empty gives the production default, which is strict.
     """
     try:
@@ -46,9 +46,18 @@ def decide(
             ),
             "failure_code": refusal.code.value,
         }
-    if result.gap_warning or not result.hits:
-        return {"proceed": True, "reason": "No relevant prior memory — safe to proceed."}
-    top = result.hits[0]
+    if result.abstained:
+        return {
+            "proceed": True,
+            "reason": f"No trustworthy prior memory: {result.reason}. Safe to proceed.",
+        }
+    top = next((hit for hit in result.hits if hit.verdict == "ok"), None)
+    if top is None:
+        return {
+            "proceed": False,
+            "reason": "Memory could not be consulted: no trustworthy decision was established.",
+            "failure_code": result.failure_code,
+        }
     return {
         "proceed": False,
         "reason": (

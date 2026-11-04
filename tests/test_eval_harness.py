@@ -113,3 +113,24 @@ def test_run_trust_eval_baseline_trusts_stale_and_trust_layer_does_not(tmp_path)
     assert r.str_recency == 1.0
     # while the trust layer, reading the declared relation, still never trusts it (same run)
     assert r.str_trust == 0.0
+
+
+def test_report_qualifies_the_single_gold_precision_ceiling():
+    """DOC-002: a multi-gold result can exceed the bundled dataset's P@5 ceiling.
+
+    Red proof: e5f7892b8 results_to_markdown() emits an unconditional cap and
+    fails the bundled-dataset qualification assertion below.
+    """
+    from recall.eval.metrics import precision_at_k
+
+    precision = precision_at_k(["a", "b", "c", "d", "e"], {"a", "b"}, k=5)
+    result = AblationResult(
+        embedder="custom", fusion="dense", p_at_5=precision, r_at_5=1.0,
+        mrr=1.0, ndcg_at_10=1.0, fcr_no_guard=1.0, fcr_with_guard=0.0,
+    )
+
+    report = results_to_markdown([result])
+
+    assert "| custom | dense | 0.400 |" in report
+    assert "bundled evaluation dataset" in report
+    assert "custom query sets" in report

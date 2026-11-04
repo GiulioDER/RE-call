@@ -1,4 +1,7 @@
 from examples.self_recall_agent import decide
+import pytest
+
+from recall_mcp.models import SearchHit, SearchResult
 from recall.types import Chunk
 
 from recall.calibration import Calibration
@@ -71,3 +74,56 @@ def test_agent_refuses_to_proceed_when_the_trust_system_is_unavailable(make_stor
     }
     # And it must be distinguishable from the working-gate-found-nothing answer.
     assert "no relevant prior memory" not in d["reason"].lower()
+
+
+@pytest.mark.parametrize("verdict", ["ambiguous_supersession", "superseded", "expired"])
+def test_agent_does_not_cite_a_working_gate_abstention(monkeypatch, verdict):
+    """BUG-001: a successful abstention cannot make an untrusted hit authoritative.
+
+    Red proof: unchanged e5f7892b8 decide() returns proceed=False and quotes the
+    rejected text. The exact parametrized nodes must pass after fixing decide().
+    """
+    result = SearchResult(
+        query="proposal", abstained=True, reason="No trustworthy candidates",
+        calibrated=True, gap_warning=False, stale=False, advice="Do not cite these hits",
+        hits=[SearchHit(
+            source="old.md", text="Rejected memory must not become a blocker",
+            score=0.99, confidence=0.99, verdict=verdict,
+        )],
+    )
+    monkeypatch.setattr(
+        "examples.self_recall_agent.search_memory", lambda *args, **kwargs: result
+    )
+
+    decision = decide(None, None, "proposal")
+
+    assert decision["proceed"] is True
+    assert result.hits[0].text not in decision["reason"]
+    assert "No trustworthy" in decision["reason"]
+
+
+@pytest.mark.parametrize("has_hits", [True, False])
+def test_agent_refuses_an_unavailable_calibration_gate(monkeypatch, has_hits):
+    """BUG-001: missing calibration cannot license a decision or absence claim.
+
+    Red proof: e5f7892b8 decide() omits the failure code for both unverified-only
+    and empty degraded results, failing the first assertion below.
+    """
+    result = SearchResult(
+        query="proposal", abstained=False, reason="", calibrated=False,
+        trust_state="degraded", failure_code="CALIBRATION_MISSING",
+        gap_warning=not has_hits, stale=False, advice="Trust gate unavailable",
+        hits=[SearchHit(
+            source="old.md", text="Unverified memory must not become authority",
+            score=0.99, confidence=0.99, verdict="unverified",
+        )] if has_hits else [],
+    )
+    monkeypatch.setattr(
+        "examples.self_recall_agent.search_memory", lambda *args, **kwargs: result
+    )
+
+    decision = decide(None, None, "proposal")
+
+    assert decision.get("failure_code") == "CALIBRATION_MISSING"
+    assert decision["proceed"] is False
+    assert "Unverified memory" not in decision["reason"]
