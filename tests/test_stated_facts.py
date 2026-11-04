@@ -12,6 +12,7 @@ Invariants and the failure each one catches: in each test's docstring, with its 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -842,3 +843,41 @@ def test_cca946_recall_apply_fact_checks_served_memos_strictly(
             writer="model",
         )
     assert asked and asked[0].get("strict") is True, f"the write path checked served memos leniently: {asked}"
+
+
+def _value_rows(store: LiteStore) -> list[str]:
+    """Every value-bearing column of the store's fact ledger and card table, as text."""
+    queries = (
+        "SELECT event_id, request_id, fact_id, fact, evidence_cards FROM recall_fact_ledger_events",
+        "SELECT card_id, card FROM recall_evidence_cards",
+    )
+    return [" ".join(map(str, row)) for sql in queries for row in store._metadata_values(sql)]
+
+
+def test_cca_a_memo_forgotten_while_reconcile_runs_leaves_no_value_behind(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CCA 2026-11-03 SEC-001. A forget that completes while `reconcile_stated_facts` runs (after
+    it read the memos, before it read the ledger; nothing serialises the two on PostgreSQL, and
+    here the lite lane is simply not taken) must not see its erased value recorded again.
+
+    Red: pre-fix `_reconcile` (recall/stated_facts.py) writes from its stale snapshot: the forget
+    re-keyed the memo's request ids, so its facts read as new, and the value assertion fails.
+    """
+    import recall.stated_facts as stated
+
+    memo(folder, "door.md", facts=[DOOR])
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
+    refreshed(store, folder)  # indexed, nothing stated yet
+    monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
+    real = stated._fact_stores
+
+    def stores(target: Any, env: Any = None) -> tuple[Any, Any]:
+        forget_memory(store, ["door.md"])  # type: ignore[arg-type]
+        return real(target, env)
+
+    monkeypatch.setattr(stated, "_fact_stores", stores)
+    reconcile(store, folder)
+    left = [row for row in _value_rows(store) if re.search(r"(?<![0-9A-Za-z])4512(?![0-9A-Za-z])", row)]
+    assert not left, f"the forgotten memo's value is recorded again: {left}"
+    assert listed(store) == []

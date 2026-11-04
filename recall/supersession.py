@@ -278,6 +278,11 @@ def _fold(value: str) -> str:
     return unicodedata.normalize("NFC", value).casefold()
 
 
+def _nfc(value: str) -> str:
+    """One spelling of a stored name for comparing names of the same file: NFC, case kept."""
+    return unicodedata.normalize("NFC", value)
+
+
 def _strip_document_extension(value: str) -> str:
     lowered = value.lower()
     for extension in _DOCUMENT_EXTENSIONS:
@@ -696,6 +701,26 @@ def _row_parts(
     )
 
 
+def _claim_rows(
+    rows: Sequence[SupersessionRow],
+) -> list[tuple[str | None, str | None, datetime | None, str | None, object, object, bool]]:
+    """Each row's parts (`_row_parts`), once per reference its claim declares.
+
+    A chunk indexed before `supersedes` could hold a list stores a flow sequence as one string,
+    which the PostgreSQL scan returns as one row (`SUPERSEDES_TARGET_ROWS_SQL`); read through
+    `supersedes_targets`, as `chunk_supersedes_targets` reads it, it claims each target on
+    every store alike. A claim of one reference is kept exactly as stored.
+    """
+    out: list[tuple[str | None, str | None, datetime | None, str | None, object, object, bool]] = []
+    for parts in map(_row_parts, rows):
+        targets = supersedes_targets(parts[1]) if parts[1] else ()
+        if len(targets) > 1:
+            out.extend((parts[0], target, *parts[2:]) for target in targets)
+        else:
+            out.append(parts)
+    return out
+
+
 def resolve_supersession_graph(
     rows: Sequence[SupersessionRow],
     records: Iterable[SupersessionRecord] = (),
@@ -861,21 +886,30 @@ def _standing_records(
     """
     if not records:
         return []
+    # NFC-normalised, so the memo re-indexed under another Unicode form of its name (a macOS
+    # checkout writes NFD) is the memo, and its live claims decide again. Not case-folded: on a
+    # case-sensitive file system `Notes.md` beside `notes.md` is another memo, and must not void
+    # a forget.
+    def root_key(source: str, file: str) -> str | None:
+        root = root_of(source_location(source), file)
+        return None if root is None else _nfc(root)
+
     by_root: dict[str | None, set[str]] = {}
     for file, source in pairs:
-        root = root_of(source_location(source), file) if source else None
-        by_root.setdefault(root, set()).add(file)
-    elsewhere = {file for file, source in pairs - staged}
+        by_root.setdefault(root_key(source, file) if source else None, set()).add(_nfc(file))
+    elsewhere = {_nfc(file) for file, source in pairs - staged}
+    live = {_nfc(source) for source in sources}
     standing = []
     for record in records:
-        if record.source in sources:
+        if _nfc(record.source) in live:
             continue
-        held = by_root.get(root_of(source_location(record.source), record.file))
+        name = _nfc(record.file)
+        held = by_root.get(root_key(record.source, record.file))
         if held is not None:
             # Its own root is still indexed: only the memo itself, back under that root, decides.
-            if record.file in held:
+            if name in held:
                 continue
-        elif record.file in elsewhere:
+        elif name in elsewhere:
             # Its own root is gone: the corpus was re-indexed under another root.
             continue
         standing.append(record)
@@ -923,7 +957,7 @@ def _resolve_rows(
     whose own claims are void: each document claiming it is spliced onto what it claimed, through
     withdrawn targets in turn, dated by that document's claim on it.
     """
-    parsed = [_row_parts(row) for row in rows]
+    parsed = _claim_rows(rows)
     removed = list(records)
     pairs = {(file, source) for file, _s, _w, source, _vf, _vu, _h in parsed if file}
     staged: set[tuple[str, str | None]] = set()
@@ -950,6 +984,7 @@ def _resolve_rows(
     collided = index.collided
     withdrawn = {identity(r.file, r.source) for r in standing if r.kind == WITHDRAWN_RECORD}
     withdrawn_targets: dict[str, list[str]] = {}
+    withdrawn_ambiguous: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
 
     windows: dict[str, Window] = {}
     unknown: set[str] = set()
@@ -975,9 +1010,16 @@ def _resolve_rows(
         if kind == "self":
             continue
         if claimant in withdrawn:
-            # Void: what it claimed is kept only as where its own claimants are spliced to.
+            # Void: what it claimed is kept only as where its own claimants are spliced to, an
+            # ambiguous or dangling claim as much as a resolved one.
             if kind == "resolved":
                 withdrawn_targets.setdefault(claimant, []).append(found[0])
+            elif kind == "ambiguous":
+                withdrawn_ambiguous.setdefault(claimant, []).append((supersedes, tuple(found)))
+            else:
+                dangling = supersedes.replace("\\", "/").rsplit("/", 1)[-1]
+                if dangling != claimant:
+                    withdrawn_targets.setdefault(claimant, []).append(dangling)
             continue
         if kind == "ambiguous":
             # Ambiguous: don't guess, but don't stay silent either. Dropping the edge alone would
@@ -1014,7 +1056,17 @@ def _resolve_rows(
         else:
             when[pair] = first_indexed
 
+    claimants_of = {key: list(order.get(key, ())) for key in withdrawn_ambiguous}
     _splice_withdrawn(withdrawn, withdrawn_targets, winner, order, when)
+    for key, claims in withdrawn_ambiguous.items():
+        # The withdrawn memo's claimants take over its ambiguous claim: its candidates stay
+        # unresolved, so the read path still fails closed. Unclaimed, it simply goes.
+        for claimant in claimants_of[key]:
+            for reference, candidates_of_claim in claims:
+                unresolved.update(candidates_of_claim)
+                refs = ambiguous_claims.setdefault(claimant, [])
+                if reference not in refs:
+                    refs.append(reference)
     candidates: EdgeCandidates = {
         target: [(f, when[(target, f)]) for f in claimants] for target, claimants in order.items()
     }

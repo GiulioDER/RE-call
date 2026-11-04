@@ -61,6 +61,23 @@ from recall.types import AtomicFact, EvidenceCard, is_redaction_marker
 
 FACT_LEDGER_TABLE = "recall_fact_ledger_events"
 
+
+def fact_key_lock(tenant_id: str, key: str) -> str:
+    """The advisory lock string every PostgreSQL writer of conflict key `key` holds."""
+    return f"fact\x1f{tenant_id}\x1f{key}"
+
+
+def lock_fact_keys(conn: psycopg.Connection, tenant_id: str, keys: Sequence[str]) -> None:
+    """Take the transaction's advisory lock on each conflict key in `keys`, in sorted order.
+
+    One definition for the ledger's writers, forget's retraction and withdrawal, the redactor and
+    the current-facts tables: they exclude each other only while they lock the same strings.
+    """
+    for key in sorted(set(keys)):
+        conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (fact_key_lock(tenant_id, key),)
+        )
+
 #: The SQLite stand-in for PostgreSQL's transaction-local `recall.redaction` setting (migration
 #: 0029): a row exists only inside the transaction `recall.fact_redaction` erases values in, so no
 #: other connection ever sees one. A main-schema table, because SQLite refuses a trigger in the
@@ -410,9 +427,13 @@ def assertion_is_duplicate(
     return False
 
 
+#: The suffix of the `superseded` event's id after its assertion's (`supersession_ids`).
+SUPERSESSION_EVENT_SUFFIX = "_sup"
+
+
 def supersession_ids(event_id: str, request_id: str) -> tuple[str, str]:
     """The event id and request id of the `superseded` event that follows an applied assertion."""
-    return event_id + "_sup", request_id + SUPERSESSION_REQUEST_SUFFIX
+    return event_id + SUPERSESSION_EVENT_SUFFIX, request_id + SUPERSESSION_REQUEST_SUFFIX
 
 
 def decision_event_type(decision_code: str) -> str:
@@ -994,10 +1015,7 @@ class PostgresFactLedger:
                 fact=fact,
                 cards=cards,
             )
-            conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                (f"fact\x1f{self.tenant_id}\x1f{fact_conflict_key(fact)}",),
-            )
+            lock_fact_keys(conn, self.tenant_id, (fact_conflict_key(fact),))
             prior = self._events(conn, request_id=request_id)
             if prior:
                 if not replays_request(prior[0], fact, cards):
@@ -1083,11 +1101,7 @@ class PostgresFactLedger:
         moment = _as_utc(now or datetime.now(UTC))
         with self._connect() as conn, conn.transaction():
             first = plan_retractions(self._events(conn), touched=touched, gone=gone)
-            for key in sorted({fact_conflict_key(event.fact) for event in first if event.fact}):
-                conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    (f"fact\x1f{self.tenant_id}\x1f{key}",),
-                )
+            lock_fact_keys(conn, self.tenant_id, [fact_conflict_key(event.fact) for event in first if event.fact])
             written: list[FactEvent] = []
             for assertion in plan_retractions(self._events(conn), touched=touched, gone=gone):
                 event_id, request_id = retraction_ids(self.tenant_id, assertion)
@@ -1116,11 +1130,7 @@ class PostgresFactLedger:
         moment = _as_utc(now or datetime.now(UTC))
         with self._connect() as conn, conn.transaction():
             first = plan_withdrawals(self._events(conn), touched=touched, gone=gone)
-            for key in sorted({fact_conflict_key(event.fact) for event in first if event.fact}):
-                conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    (f"fact\x1f{self.tenant_id}\x1f{key}",),
-                )
+            lock_fact_keys(conn, self.tenant_id, [fact_conflict_key(event.fact) for event in first if event.fact])
             written: list[FactEvent] = []
             for assertion in plan_withdrawals(self._events(conn), touched=touched, gone=gone):
                 event_id, request_id = withdrawal_ids(self.tenant_id, assertion)

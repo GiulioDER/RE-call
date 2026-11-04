@@ -425,6 +425,7 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
     generation_id = store.generation_id
     cards: list[EvidenceCard] = []
     pending: list[tuple[AtomicFact, EvidenceCard, str]] = []
+    source_of: dict[str, str] = {}  # card id -> the absolute source its memo is stored under
     for name, chunk in memos:
         # One memo's failure is that memo's, never the store's: an error nobody anticipated (a
         # RecursionError from JSON nested deeper than a recursive walk survives) counts it
@@ -450,7 +451,11 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
             report.facts_malformed += 1
             continue
         cards.append(card)
+        source_of[card.card_id] = chunk.source
         pending.extend(requests)
+    if not pending:
+        report.reason = "no admitted memo states a fact"
+        return report
     ledger, card_store = _fact_stores(store, write_env)
     known, removed = _current_request_ids(ledger.events)
     todo = [
@@ -458,6 +463,12 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
         for fact, card, request_id in pending
         if (rid := _next_request_id(request_id, removed)) not in known
     ]
+    # A forget that ran after the memos were read erased their request ids, so their facts would
+    # read as new and be recorded again; nothing serialises the two on PostgreSQL. What is no
+    # longer served is dropped here. A forget landing between this check and the writes below is
+    # not excluded: that needs a lock forget shares with this reconcile.
+    gone = _vanished(store, {source_of[card.card_id] for _fact, card, _rid in todo})
+    todo = [item for item in todo if source_of[item[1].card_id] not in gone]
     if not todo:
         report.reason = "every stated fact is already recorded"
         return report
@@ -492,3 +503,9 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
             return report
     report.reason = f"recorded {len(todo)} statement(s)"
     return report
+
+
+def _vanished(store: Any, sources: set[str]) -> set[str]:
+    """The `sources` the store no longer holds a chunk of."""
+    found = store.sources_for_identifiers(sorted(sources)) if sources else {}
+    return {source for source in sources if not found.get(source)}

@@ -734,7 +734,7 @@ They are observations, not automatic failures.
 | `recall.store_receipts` | 5 | 19 |
 | `recall.store_supersession` | 6 | 25 |
 | `recall.supersession` | 2 | 17 |
-| `recall.supersession_arbiter` | 4 | 20 |
+| `recall.supersession_arbiter` | 5 | 24 |
 | `recall.supersession_cues` | 0 | 0 |
 | `recall.supersession_records` | 1 | 18 |
 | `recall.support` | 1 | 1 |

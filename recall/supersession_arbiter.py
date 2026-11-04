@@ -76,8 +76,9 @@ from pathlib import Path
 from typing import Any
 
 from recall.document import parse_document
-from recall.frontmatter import frontmatter_span, supersedes_key, supersedes_targets
+from recall.frontmatter import frontmatter_span, supersedes_targets
 from recall.observability import get_logger
+from recall.supersession import reference_stem_key
 from recall.truth_extraction._openai_engine import ChatClient, _host_of, _setting
 
 _log = get_logger("supersession_arbiter")
@@ -243,10 +244,15 @@ def orient(left: Note, right: Note) -> tuple[Note, Note, str] | None:
 
 
 def declared_pair(left: Note, right: Note) -> bool:
-    """Whether either memo already declares the other as the one it supersedes."""
+    """Whether either memo already declares the other as the one it supersedes.
+
+    Compared on the resolver's stem rule (`recall.supersession.reference_stem_key`: NFC, case
+    and any markdown extension folded), so a pair the trust layer already links is never sent
+    to the model again.
+    """
     for note, other in ((left, right), (right, left)):
-        other_key = supersedes_key(basename(other.name))
-        if any(supersedes_key(target) == other_key for target in note.declares):
+        other_key = reference_stem_key(basename(other.name))
+        if any(reference_stem_key(target) == other_key for target in note.declares):
             return True
     return False
 
