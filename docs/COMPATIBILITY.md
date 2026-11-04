@@ -62,7 +62,11 @@ applying the ordered migrations in [MIGRATIONS.md](MIGRATIONS.md). Operators mus
 3. Run `recall schema status` with the serving DSN to inspect state.
 4. Run `recall schema apply` with the migration DSN before starting or rolling out the new
    serving package.
-5. Run readiness and a representative tenant smoke test before routing traffic.
+5. Run the post-migration steps the upgrade notes name. Migration 0030 creates the current-facts
+   tables empty, so on a database whose fact ledger already holds events, run `recall provenance
+   rebuild` once per tenant, after re-applying the grants on a two-role deployment; until then
+   every fact read replays the ledger ([MIGRATIONS.md](MIGRATIONS.md)).
+6. Run readiness and a representative tenant smoke test before routing traffic.
 
 Applied migration bytes are immutable. Their committed SHA256 checksums must remain unchanged. A
 schema correction is a new ordered migration, never an edit to an applied SQL file. The migrator

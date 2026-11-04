@@ -127,6 +127,20 @@ Recent release detail is in [CHANGELOG.md](../CHANGELOG.md), and the full histor
 operator sequence are in [COMPATIBILITY.md](COMPATIBILITY.md). Only the changes that can make
 something currently working start failing are listed here.
 
+**→ Unreleased: a ledger that already holds facts needs `recall provenance rebuild`.** The
+current-facts migration creates its tables empty and nothing fills them from existing events, so after
+`recall schema apply` every fact read and conflict check replays the tenant's ledger until it is
+rebuilt. Answers stay correct; the speedup never arrives. On a two-role deployment re-apply
+`recall schema grants --role <controller role> --controller` and `recall schema grants --role
+<serving role> --strict` first, then run `recall provenance rebuild` once per tenant and confirm
+`recall provenance rebuild --check` reports `current: true` ([MIGRATIONS.md](MIGRATIONS.md)).
+
+**→ Unreleased: `recall forget` refuses a name that matches more than one stored source.** A
+tenant built as `docs/FIRST_CALIBRATION.md` describes holds each memo twice: the path `recall
+index` stored and the `file://` URI the generation stored. A short name such as `notes.md` that
+matches both is refused as ambiguous, and the refusal lists the exact names; pass all of them. A
+script that forgets by the short name now exits non-zero with that refusal.
+
 **→ Unreleased: an embedding library upgrade can refuse existing generations.** Serving and
 calibration compare a generation's recorded embedding profile and its fingerprint with the
 runtime embedder. The fingerprint includes the version of the client library the profile names

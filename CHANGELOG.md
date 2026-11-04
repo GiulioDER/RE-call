@@ -8,6 +8,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
+- Upgrade note (#1149): `recall forget` and `recall_forget` refuse a name that matches more than
+  one stored source, and list the exact names to pass. A tenant built as
+  `docs/FIRST_CALIBRATION.md` describes stores each memo under its `recall index` path and its
+  generation `file://` URI, so the short name (`notes.md`) is refused there; a script that forgets
+  by it now exits 1. The forget help says so.
+- Upgrade docs: `docs/COMPATIBILITY.md` and the upgrade notes in `docs/PRODUCTION.md` now include
+  the `recall provenance rebuild` step that migration 0030 needs on a ledger that already holds
+  events (it was only in `docs/MIGRATIONS.md` and the 0030 entry below).
+
 - `recall forget` (and `recall_forget`) on a generation tenant without the enterprise
   control-plane tables no longer logs an ERROR and warns that the erased text "may be restored".
   `recall schema apply` does not create the migration outbox, so there is nothing pending to
