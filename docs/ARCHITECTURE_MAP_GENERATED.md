@@ -41,6 +41,7 @@ Cross package edges: 374
 | 138 | `recall_agent.memory` |
 | 135 | `recall.dashboard.activity` |
 | 134 | `recall.cli_commands.provenance_cmd` |
+| 133 | `recall.cli_commands.lite_cmd` |
 | 133 | `recall.dashboard.graph` |
 | 133 | `recall.dashboard.triage` |
 | 133 | `recall_mcp.assistant` |
@@ -49,7 +50,6 @@ Cross package edges: 374
 | 131 | `recall.dashboard.corpus` |
 | 131 | `recall.dashboard.review` |
 | 131 | `recall.wizard.projects` |
-| 130 | `recall.cli_commands.lite_cmd` |
 | 130 | `recall.dashboard.db` |
 | 130 | `recall.dashboard.lite_db` |
 | 130 | `recall_mcp.federation_adapter` |
@@ -522,7 +522,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.idempotency_cmd` | 2 | 37 |
 | `recall.cli_commands.index_search` | 29 | 128 |
 | `recall.cli_commands.lint_check` | 7 | 119 |
-| `recall.cli_commands.lite_cmd` | 8 | 130 |
+| `recall.cli_commands.lite_cmd` | 9 | 133 |
 | `recall.cli_commands.manifest_cmd` | 4 | 106 |
 | `recall.cli_commands.provenance_cmd` | 14 | 134 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 164 |
