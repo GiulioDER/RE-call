@@ -236,6 +236,11 @@ async def _probe(step: str, call) -> dict[str, list[list]]:
         _require_trusted(step, topic, payload)
         probes[topic] = _scored(payload)
         print(f"    {topic}: {probes[topic]} ({payload.get('trust_state')})")
+        if os.environ.get("UPGRADE_SMOKE_DEBUG"):
+            for hit in payload.get("hits") or []:
+                print("      DEBUG " + json.dumps({k: v for k, v in hit.items() if k != "text"}, sort_keys=True)[:900])
+            print("      DEBUG result " + json.dumps(
+                {k: v for k, v in payload.items() if k not in ("hits", "advice")}, sort_keys=True)[:1500])
     return probes
 
 
