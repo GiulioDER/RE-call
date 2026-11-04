@@ -50,6 +50,11 @@ from pathlib import Path
 TENANT = "upgrade-smoke"
 # The control: the same notes installed fresh by the new release, in a tenant of their own.
 FRESH_TENANT = "upgrade-smoke-fresh"
+# Set for the two-role leg: RECALL_SERVING_DSN then logs in as this unprivileged role (no
+# superuser, no BYPASSRLS, no schema CREATE), and RECALL_MIGRATION_DSN stays the owner. Each phase
+# grants it what that release's `recall schema grants --role` prints, after its `schema apply`, as
+# docs/MIGRATIONS.md ("Role split") tells an operator to.
+SERVING_ROLE = os.environ.get("UPGRADE_SMOKE_SERVING_ROLE")
 EMBEDDER = "hashing"
 
 # 24 memos: certification needs at least 20 answerable and 20 unanswerable queries, and each memo
@@ -220,6 +225,20 @@ def _packaged_migrations() -> list[str]:
     return sorted(p.name for p in files("recall.migrations").joinpath("sql").iterdir() if p.name.endswith(".sql"))
 
 
+def _grant(step: str, workdir: Path, env: dict[str, str]) -> None:
+    """Apply, as the owner, the serving grants this release generates; a no-op with one role."""
+    if not SERVING_ROLE:
+        return
+    import psycopg
+
+    sql = _run(step, _recall("schema", "grants", "--role", SERVING_ROLE), env=env, cwd=workdir)
+    statements = [line for line in sql.splitlines() if line.strip()]
+    with psycopg.connect(env["RECALL_MIGRATION_DSN"], autocommit=True) as conn:
+        for statement in statements:
+            conn.execute(statement)
+    print(f"    applied {len(statements)} grant statement(s) to {SERVING_ROLE}")
+
+
 def _install(step: str, workdir: Path, tenant: str, *, legacy_index: bool = True) -> str:
     """0.14.0's docs/FIRST_CALIBRATION.md, steps 1 to 6, for the notes in `workdir`.
 
@@ -275,6 +294,7 @@ def seed(workdir: Path) -> None:
 
     print(f"seed 1: apply the schema with recall {version}", flush=True)
     _run("seed 1", _recall("schema", "apply"), env=dev, cwd=workdir)
+    _grant("seed 1", workdir, dev)
 
     print("seed 2: write the memo folder and its labelled queries", flush=True)
     notes = workdir / "notes"
@@ -383,6 +403,8 @@ def verify(workdir: Path) -> None:
 
     print("verify 2: `recall schema apply`", flush=True)
     _run("verify 2", _recall("schema", "apply"), env=prod, cwd=workdir)
+    if os.environ.get("UPGRADE_SMOKE_SKIP_REGRANT") != "1":  # set only to red-prove the two-role leg
+        _grant("verify 2", workdir, prod)
 
     print("verify 3: `recall schema status` reports compatible", flush=True)
     out = _run("verify 3", _recall("schema", "status"), env=prod, cwd=workdir)
@@ -508,15 +530,52 @@ def verify(workdir: Path) -> None:
     print("upgrade verified")
 
 
+def floor(workdir: Path) -> None:
+    """The pgvector floor: on pgvector older than 0.8.0 the upgrade refuses before migrating.
+
+    Run with the new wheel against a database whose `vector` extension is 0.7.x and whose schema
+    an earlier release already applied. `recall schema apply` must refuse and name the floor,
+    the schema must stay exactly where the earlier release left it, and `recall doctor` must
+    report the old pgvector as a blocking problem.
+    """
+    env = _env(workdir, production=True)
+    print("floor 1: `recall schema status` before (the earlier release's schema)", flush=True)
+    before = _run("floor 1", _recall("schema", "status"), env=env, cwd=workdir, ok_codes=(0, 1))
+    current = re.search(r"^current: (\S+)", before, re.MULTILINE)
+    if not current or current.group(1) == "none":
+        raise StepFailed("floor 1: no earlier schema to protect; the job did not seed one")
+
+    print("floor 2: `recall schema apply` refuses, naming the floor", flush=True)
+    proc = subprocess.run(_recall("schema", "apply"), cwd=workdir, env=env, capture_output=True,
+                          text=True, timeout=600)
+    print("    " + (proc.stdout + proc.stderr).strip().replace("\n", "\n    "))
+    if proc.returncode == 0:
+        raise StepFailed("floor 2: `schema apply` succeeded on pgvector older than 0.8.0")
+    if "older than 0.8.0" not in proc.stdout + proc.stderr:
+        raise StepFailed("floor 2: `schema apply` failed without naming the pgvector floor")
+
+    print("floor 3: nothing was migrated", flush=True)
+    after = _run("floor 3", _recall("schema", "status"), env=env, cwd=workdir, ok_codes=(0, 1))
+    still = re.search(r"^current: (\S+)", after, re.MULTILINE)
+    if not still or still.group(1) != current.group(1):
+        raise StepFailed(f"floor 3: the schema moved from {current.group(1)} despite the refusal")
+
+    print("floor 4: `recall doctor` reports the old pgvector as blocking", flush=True)
+    out = _run("floor 4", _recall("doctor"), env=env, cwd=workdir, ok_codes=(1,))
+    if not re.search(r"FAIL\s+pgvector", out):
+        raise StepFailed("floor 4: doctor does not fail the pgvector check")
+    print("floor verified")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("phase", choices=("seed", "verify"))
+    parser.add_argument("phase", choices=("seed", "verify", "floor"))
     parser.add_argument("--workdir", required=True, type=Path)
     args = parser.parse_args()
     workdir = args.workdir.resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     try:
-        (seed if args.phase == "seed" else verify)(workdir)
+        {"seed": seed, "verify": verify, "floor": floor}[args.phase](workdir)
     except StepFailed as exc:
         print(f"\nUPGRADE FAILED at {exc}", file=sys.stderr)
         return 1
