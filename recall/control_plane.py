@@ -485,7 +485,8 @@ class ControlPlane:
         # through here. Without the table no event can be pending, so there is nothing to scrub;
         # querying it anyway made each such forget log an ERROR and warn that the erased text
         # "may be restored".
-        if conn.execute("SELECT to_regclass('recall_migration_events')").fetchone()[0] is None:
+        outbox = conn.execute("SELECT to_regclass('recall_migration_events')").fetchone()
+        if outbox is None or outbox[0] is None:
             return 0
         with conn.transaction():
             self._set_tenant(conn, tenant)

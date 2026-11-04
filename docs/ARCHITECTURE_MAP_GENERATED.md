@@ -27,10 +27,10 @@ Cross package edges: 376
 | 161 | `recall.desktop.install_ui` |
 | 160 | `recall.desktop.ui` |
 | 160 | `recall_mcp.reasoning_api` |
-| 156 | `recall.cli_commands.doctor_cmd` |
+| 157 | `recall.cli_commands.doctor_cmd` |
+| 156 | `recall.doctor` |
 | 156 | `recall.wizard.headless` |
 | 156 | `recall.wizard.state` |
-| 155 | `recall.doctor` |
 | 152 | `recall.wizard.uninstall` |
 | 144 | `recall_mcp.reasoning_engine` |
 | 142 | `recall_mcp.graph_first_api` |
@@ -83,6 +83,7 @@ Cross package edges: 376
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.calibration_v2` |
 | 14 | `recall.cli_commands.provenance_cmd` |
+| 14 | `recall.doctor` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall.lite.store` |
 | 14 | `recall_mcp.reasoning_diagnostics` |
@@ -93,7 +94,6 @@ Cross package edges: 376
 | 13 | `recall_mcp.reasoning_api` |
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.desktop.ui` |
-| 12 | `recall.doctor` |
 | 12 | `recall.eval.harness` |
 | 12 | `recall.setup` |
 | 12 | `recall.stated_facts` |
@@ -517,7 +517,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.backup_cmd` | 1 | 8 |
 | `recall.cli_commands.calibration_cmd` | 17 | 206 |
 | `recall.cli_commands.dashboard_cmd` | 4 | 163 |
-| `recall.cli_commands.doctor_cmd` | 1 | 156 |
+| `recall.cli_commands.doctor_cmd` | 1 | 157 |
 | `recall.cli_commands.extract_rewrite` | 12 | 131 |
 | `recall.cli_commands.generation_cmd` | 11 | 119 |
 | `recall.cli_commands.graph_cmd` | 1 | 105 |
@@ -566,7 +566,7 @@ They are observations, not automatic failures.
 | `recall.desktop.ui` | 12 | 160 |
 | `recall.desktop.updates` | 2 | 2 |
 | `recall.desktop.uploads` | 3 | 17 |
-| `recall.doctor` | 12 | 155 |
+| `recall.doctor` | 14 | 156 |
 | `recall.document` | 2 | 15 |
 | `recall.drift` | 6 | 106 |
 | `recall.dsn_security` | 1 | 1 |
