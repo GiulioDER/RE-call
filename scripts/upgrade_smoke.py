@@ -231,7 +231,7 @@ def seed(workdir: Path) -> None:
     _run("seed 5", _recall("calibration", "calibrate", "--generation", generation,
                            "--queries", str(workdir / "queries.json"), "--publish"), env=dev, cwd=workdir)
 
-    print("seed 6: search and apply a fact through the 0.14.0 MCP server", flush=True)
+    print("seed 6: search, and mint an evidence card, through the 0.14.0 MCP server", flush=True)
 
     async def calls(call):
         probes = {}
@@ -251,18 +251,34 @@ def seed(workdir: Path) -> None:
 
     probes, cards = asyncio.run(_server_calls(prod, workdir, calls))
 
-    # Applied with the CLI, not `recall_apply_fact`: 0.14.0's generation-mode server reports its
-    # store's generation as `legacy`, so the controller refuses every card the same server minted
-    # (GENERATION_MISMATCH, then FRESH_SEARCH_INSUFFICIENT). `recall provenance apply
-    # --generation` binds the generation explicitly and is the route a 0.14.0 user had.
-    print("seed 7: apply a fact with `recall provenance apply`, from a card the server minted", flush=True)
-    (workdir / "claim.json").write_text(json.dumps(FACT), encoding="utf-8")
-    (workdir / "cards.json").write_text(json.dumps({"cards": cards}), encoding="utf-8")
-    out = _run("seed 7", _recall("provenance", "apply", "--claim", str(workdir / "claim.json"),
-                                 "--cards", str(workdir / "cards.json"), "--request-id", "upgrade-smoke-1",
-                                 "--generation", generation), env=prod, cwd=workdir)
-    if json.loads(out).get("decision_code") != "APPLIED":
-        raise StepFailed("seed 7: the fact was not applied")
+    # Neither public surface of 0.14.0 can apply a fact on a generation-backed PostgreSQL tenant,
+    # measured on this job's first runs: `recall_apply_fact` refuses because that release's
+    # generation-mode server reports its store's generation as `legacy` (GENERATION_MISMATCH,
+    # then FRESH_SEARCH_INSUFFICIENT; fixed on master by #852 and #1033), and
+    # `recall provenance apply --generation` revalidates the card against the legacy table and
+    # then refuses its fresh search for want of a calibration (FRESH_SEARCH_UNAVAILABLE). So the
+    # fact goes through 0.14.0's own controller and ledger, bound to the active generation, with
+    # the card the server minted: the rows are the ones 0.14.0 writes, which is what the
+    # fact-ledger migrations since have to carry.
+    print("seed 7: apply a fact with 0.14.0's provenance controller, from a card the server minted", flush=True)
+    from recall.fact_ledger import PostgresFactLedger
+    from recall.provenance_cards import PostgresEvidenceCardStore
+    from recall.provenance_controller import FactApplicationRequest, ProvenanceController
+    from recall.types import AtomicFact
+
+    dsn = prod["RECALL_SERVING_DSN"]
+    decision = ProvenanceController(
+        tenant_id=TENANT,
+        generation_id=generation,
+        cards=PostgresEvidenceCardStore(dsn, tenant_id=TENANT),
+        ledger=PostgresFactLedger(dsn, tenant_id=TENANT),
+        writer="upgrade-smoke",
+    ).apply_fact(FactApplicationRequest(
+        AtomicFact.from_payload(FACT), (cards[0]["card_id"],), "upgrade-smoke-1"
+    ))
+    print(f"    {decision.code} fact_id={decision.fact_id}")
+    if str(decision.code) != "APPLIED":
+        raise StepFailed(f"seed 7: the fact was not applied: {decision.code} {decision.detail}")
 
     async def read_facts(call):
         return await call("recall_current_facts", {})
