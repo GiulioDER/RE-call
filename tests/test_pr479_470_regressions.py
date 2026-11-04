@@ -198,6 +198,7 @@ def test_oidc_reserves_failure_budget_before_yielding(monkeypatch, initial):
                 if token == "success":
                     return SimpleNamespace(
                         name="agent", tenant="acme", scopes=frozenset(), expires_at=None,
+                        clearance="internal", egress_allowed=False,
                     )
                 if token == "outage":
                     raise IdentityProviderUnavailable("unavailable")

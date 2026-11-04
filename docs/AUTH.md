@@ -301,6 +301,22 @@ figures, together with the number of readiness probes, are logged at startup.
 > warning and continues (see [SECURITY_MODEL.md](SECURITY_MODEL.md)). Connect as an unprivileged
 > role.
 
+## Source-policy clearance
+
+A source policy (`RECALL_SOURCE_POLICY`) admits a source only when the caller's clearance reaches
+the rule's classification and, for a rule with `allow_egress`, the caller may egress. Over MCP
+both come from server-side configuration, never from a claim the caller or its IdP chose:
+
+- **Token file:** optional `"clearance"` (`public`, `internal`, `confidential` or `restricted`)
+  and `"egress_allowed"` (a JSON boolean) on each principal. An unknown value refuses to load.
+- **OIDC:** `RECALL_OIDC_SUBJECT_CLEARANCE=alice@corp:confidential,svc-etl:internal+egress`, keyed
+  on the verified `sub` and split on the last colon like `RECALL_OIDC_SUBJECT_TENANTS`. `+egress`
+  allows egress. A malformed entry, an unknown clearance or a subject named twice refuses at boot.
+
+A principal or subject not listed is `internal` with no egress, the policy's own default. An IdP
+`clearance` claim is ignored for the same reason the tenant claim needs a binding: the server
+cannot tell how it was minted.
+
 ## Limits of the static token scheme
 
 Stated plainly, because the alternative is discovering them in production. Every one of these is a

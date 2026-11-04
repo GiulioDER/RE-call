@@ -83,7 +83,7 @@ import jwt
 from jwt.algorithms import RSAAlgorithm
 
 from recall.observability import get_logger
-from recall_mcp.auth import ALL_SCOPES, AuthConfigError, Principal
+from recall_mcp.auth import ALL_SCOPES, CLEARANCE_LEVELS, AuthConfigError, Principal
 from recall.errors import RecallError
 from recall._env import truthy
 
@@ -177,6 +177,11 @@ class OidcConfig:
     #: None unless `RECALL_OIDC_TRUST_TENANT_CLAIM=1` makes trusting the claim an explicit choice,
     #: rather than `build_auth`.
     subject_tenants: dict[str, frozenset[str]] | None = None
+    #: `sub` -> (clearance, egress_allowed) for the source policy. Server-side for the same reason
+    #: as `subject_tenants`: a clearance taken from an IdP claim is only as trustworthy as however
+    #: that claim was minted. An unlisted subject keeps the policy default, `internal` and no
+    #: egress. None binds nobody.
+    subject_clearance: dict[str, tuple[str, bool]] | None = None
 
     def __post_init__(self) -> None:
         if not self.issuer.strip() or not self.audience.strip():
@@ -330,6 +335,26 @@ class OidcConfig:
                             f"subject_tenants[{subject!r}] names {outside}, which is not in "
                             f"allowed_tenants; that subject could never reach it"
                         )
+        if self.subject_clearance is not None:
+            if not isinstance(self.subject_clearance, Mapping) or not self.subject_clearance:
+                raise ValueError("subject_clearance must be a non-empty mapping of sub -> clearance")
+            for subject, grant in self.subject_clearance.items():
+                if not isinstance(subject, str) or not subject or subject != subject.strip():
+                    raise ValueError(f"subject_clearance key {subject!r} is empty, padded or not a string")
+                if (
+                    not isinstance(grant, tuple)
+                    or len(grant) != 2
+                    or grant[0] not in CLEARANCE_LEVELS
+                    or not isinstance(grant[1], bool)
+                ):
+                    raise ValueError(
+                        f"subject_clearance[{subject!r}] must be (clearance, egress_allowed) with a "
+                        f"clearance in {sorted(CLEARANCE_LEVELS)}"
+                    )
+            # Frozen like subject_tenants, so a binding cannot be widened after validation.
+            object.__setattr__(
+                self, "subject_clearance", MappingProxyType(dict(self.subject_clearance))
+            )
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -818,6 +843,10 @@ class OidcValidator:
                 "exp is not a representable epoch-second value (milliseconds, perhaps?)",
             ) from exc
 
+        clearance, egress_allowed = "internal", False
+        if cfg.subject_clearance is not None and isinstance(subject, str):
+            # Looked up by the verified `sub`, never read from a claim: see `subject_clearance`.
+            clearance, egress_allowed = cfg.subject_clearance.get(subject, ("internal", False))
         return Principal(
             name=str(subject or raw_tenant),
             tenant=raw_tenant,
@@ -826,6 +855,8 @@ class OidcValidator:
             # that travels; without this a five-minute JWT becomes a credential downstream code
             # believes never expires.
             expires_at=expires_at,
+            clearance=clearance,
+            egress_allowed=egress_allowed,
         )
 
     def _check_authorized_party(self, claims: dict) -> None:
@@ -868,6 +899,7 @@ ENV_AUDIENCE = "RECALL_OIDC_AUDIENCE"
 ENV_TENANTS = "RECALL_OIDC_TENANTS"
 ENV_ALGORITHMS = "RECALL_OIDC_ALGORITHMS"
 ENV_SUBJECT_TENANTS = "RECALL_OIDC_SUBJECT_TENANTS"
+ENV_SUBJECT_CLEARANCE = "RECALL_OIDC_SUBJECT_CLEARANCE"
 ENV_TRUST_TENANT_CLAIM = "RECALL_OIDC_TRUST_TENANT_CLAIM"
 ENV_JWKS_REFRESH_SECONDS = "RECALL_OIDC_JWKS_REFRESH_SECONDS"
 ENV_MAX_LIFETIME_SECONDS = "RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS"
@@ -950,6 +982,39 @@ def _parse_subject_tenants(raw: str) -> dict[str, frozenset[str]] | None:
     if not mapping:
         raise AuthConfigError(f"{ENV_SUBJECT_TENANTS} is set but names no subject")
     return {s: frozenset(t) for s, t in mapping.items()}
+
+
+def _parse_subject_clearance(raw: str) -> dict[str, tuple[str, bool]] | None:
+    """`sub:clearance[+egress],...` into a mapping, or None when unset.
+
+    Split on the LAST colon, as `RECALL_OIDC_SUBJECT_TENANTS` is, so a subject may contain
+    colons. A malformed entry or an unknown clearance refuses: a skipped entry would leave that
+    subject silently at the default, and a typo in a clearance would read as `internal`. A subject
+    named twice refuses too, because two grants for one subject have no safe merge.
+    """
+    if not raw:
+        return None
+    mapping: dict[str, tuple[str, bool]] = {}
+    for entry in _csv(raw):
+        subject, separator, grant = entry.rpartition(":")
+        subject, grant = subject.strip(), grant.strip()
+        level, plus, flag = grant.partition("+")
+        if not separator or not subject or subject.endswith(":") or level not in CLEARANCE_LEVELS:
+            raise AuthConfigError(
+                f"{ENV_SUBJECT_CLEARANCE} entry {entry!r} is malformed; expected `sub:clearance` "
+                f"or `sub:clearance+egress` pairs separated by commas, with a clearance in "
+                f"{sorted(CLEARANCE_LEVELS)}, e.g. alice@corp:confidential,svc-etl:internal+egress"
+            )
+        if plus and flag != "egress":
+            raise AuthConfigError(
+                f"{ENV_SUBJECT_CLEARANCE} entry {entry!r}: the only suffix is `+egress`"
+            )
+        if subject in mapping:
+            raise AuthConfigError(f"{ENV_SUBJECT_CLEARANCE} names {subject!r} more than once")
+        mapping[subject] = (level, bool(plus))
+    if not mapping:
+        raise AuthConfigError(f"{ENV_SUBJECT_CLEARANCE} is set but names no subject")
+    return mapping
 
 
 def oidc_env_present(env: dict[str, str] | None = None) -> bool:
@@ -1083,6 +1148,9 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
             algorithms=algorithms,
             allowed_tenants=tenants,
             subject_tenants=subject_tenants,
+            subject_clearance=_parse_subject_clearance(
+                source.get(ENV_SUBJECT_CLEARANCE, "").strip()
+            ),
             jwks_refresh_s=jwks_refresh_s,
             # Opt-in: unset applies no lifetime cap, and the schema documents no default.
             max_token_lifetime_s=(
@@ -1120,6 +1188,7 @@ __all__ = [
     "OidcConfig",
     "OidcValidator",
     "TokenRejected",
+    "ENV_SUBJECT_CLEARANCE",
     "ENV_SUBJECT_TENANTS",
     "ENV_TRUST_TENANT_CLAIM",
     "discover_jwks_uri",
