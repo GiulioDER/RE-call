@@ -1,0 +1,79 @@
+name: Upgrade scratch
+
+on:
+  push:
+    branches: [claude/ci-upgrade-from-0-14-92c69e]
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade-from-release:
+    name: Upgrade from 0.14.0 (PostgreSQL ${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: [18]
+    services:
+      db:
+        image: pgvector/pgvector:pg${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      RECALL_SERVING_DSN: postgresql://recall:recall@localhost:5432/recall
+      RECALL_MIGRATION_DSN: postgresql://recall:recall@localhost:5432/recall
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+
+      - name: Install the previous release from PyPI
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --quiet "recall-rag[mcp]==0.14.0"
+          echo "PY=$RUNNER_TEMP/venv/bin/python" >> "$GITHUB_ENV"
+          cp scripts/upgrade_smoke.py "$RUNNER_TEMP/"
+
+      - name: Seed the database with 0.14.0
+        working-directory: ${{ runner.temp }}
+        run: '"$PY" -I upgrade_smoke.py seed --workdir "$RUNNER_TEMP/upgrade"'
+
+      - name: Build the wheel from this commit
+        run: uv build --wheel --out-dir "$RUNNER_TEMP/dist"
+
+      - name: Install it over the same venv
+        run: |
+          set -euo pipefail
+          wheel=$(ls "$RUNNER_TEMP"/dist/*.whl)
+          # Until the release bump the wheel carries the same version number as the PyPI
+          # release, so `--upgrade` alone would keep the old files. Replace the package, then
+          # let pip add whatever dependencies the new one needs.
+          "$PY" -m pip install --quiet --force-reinstall --no-deps "$wheel"
+          "$PY" -m pip install --quiet "${wheel}[mcp]"
+          "$PY" -I -c "import recall; print(recall.__version__, recall.__file__)"
+
+      - name: Upgrade and verify with the new wheel
+        working-directory: ${{ runner.temp }}
+        run: '"$PY" -I upgrade_smoke.py verify --workdir "$RUNNER_TEMP/upgrade"'
+
