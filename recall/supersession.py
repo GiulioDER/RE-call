@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import cast
 
-from recall.frontmatter import MARKDOWN_SUFFIXES, supersedes_key, supersedes_targets, validity_bounds
+from recall.frontmatter import MARKDOWN_SUFFIXES, supersedes_targets, validity_bounds
 from recall.uploads import in_upload_staging, source_location
 
 
@@ -216,13 +216,6 @@ def latest_records(
     return latest
 
 
-def _basename(file: str) -> str:
-    """Stem of a root-relative (posix) file identifier — the key a `supersedes:` target resolves
-    to. A stem rather than a full basename so `name`, `name.md`, `[name]` and `[[name]]` all
-    designate the same document; see `supersedes_key`."""
-    return supersedes_key(file)
-
-
 #: A superseded file -> every document claiming to supersede it, in scan order, each with when
 #: that claim was first written (``None`` when unknown). A LIST rather than one winner, because
 #: choosing a single superseder discards the information a point-in-time replay needs: where two
@@ -312,6 +305,13 @@ def reference_path_key(value: str) -> str:
 def reference_stem_key(value: str) -> str:
     """The folded stem of a reference or file: its last path segment without the extension."""
     return reference_path_key(value).rsplit("/", 1)[-1]
+
+
+def _dangling_key(reference: str) -> str:
+    """The key a claim that matches no file is filed under: its raw last segment, a backslash
+    read as a slash. One rule, so a withdrawn memo's dangling target is spliced under the key
+    its live claimants' winner uses."""
+    return reference.replace("\\", "/").rsplit("/", 1)[-1]
 
 
 def root_of(source: object, file: str) -> str | None:
@@ -728,9 +728,11 @@ def resolve_supersession_graph(
 ) -> SupersessionGraph:
     """The one resolution pass every store and reader goes through; see `_resolve_rows`.
 
-    `records` are the store's latest `SupersessionRecord` per removed memo; each one counts only
-    while no memo by its name is among `rows`. A store passes its `tenant`, so an upload staged
-    for it cannot stand for a forgotten memo.
+    `records` are the store's latest `SupersessionRecord` per removed memo; each one stands in
+    while its memo is not indexed, by the per-root rule `SupersessionRecord` states: its source
+    has no rows, nor its file under the record's own root, and under another root the file counts
+    only once the record's own root holds no rows, and never under an upload staging root. A
+    store passes its `tenant`, so an upload staged for it cannot stand for a forgotten memo.
     """
     return _resolve_rows(rows, records, tenant)
 
@@ -836,7 +838,7 @@ class ReferenceIndex:
                 return self._pick(others, claimant_root)
             if found:
                 return "self", []
-        stem = reference_stem_key(reference)
+        stem = path.rsplit("/", 1)[-1]
         if not stem:
             return "dangling", []
         found = self._by_stem.get(stem, [])
@@ -879,7 +881,9 @@ def _standing_records(
     staged: set[tuple[str, str | None]],
 ) -> list[SupersessionRecord]:
     """The `records` whose memo is not indexed: its source is not in `sources`, nor its file in
-    `pairs` as `SupersessionRecord` reads them, with the `staged` (upload) pairs never counting.
+    `pairs` under the record's own root, as `SupersessionRecord` reads them. Under another root
+    the `staged` (upload) pairs never count; at the record's own source or root every pair
+    counts, an upload included (the memo itself back).
 
     Roots are read on the decoded location (`recall.uploads.source_location`), so an escaped
     `file://` source ends in the file it records, as `recall.dependency_invalidation` reads them.
@@ -1017,7 +1021,7 @@ def _resolve_rows(
             elif kind == "ambiguous":
                 withdrawn_ambiguous.setdefault(claimant, []).append((supersedes, tuple(found)))
             else:
-                dangling = supersedes.replace("\\", "/").rsplit("/", 1)[-1]
+                dangling = _dangling_key(supersedes)
                 if dangling != claimant:
                     withdrawn_targets.setdefault(claimant, []).append(dangling)
             continue
@@ -1037,7 +1041,7 @@ def _resolve_rows(
             # Dangling: key on the raw name as written. Normalisation exists to make MATCHING
             # tolerant of how humans spell a reference; this key matches no indexed file either
             # way, so it keeps the author's form rather than inventing a normalised one.
-            key = supersedes.replace("\\", "/").rsplit("/", 1)[-1]
+            key = _dangling_key(supersedes)
             if key == claimant:
                 continue
         winner[key] = claimant  # last row wins, exactly as before
@@ -1056,7 +1060,26 @@ def _resolve_rows(
         else:
             when[pair] = first_indexed
 
-    claimants_of = {key: list(order.get(key, ())) for key in withdrawn_ambiguous}
+    # A withdrawn claimant's claim is in `withdrawn_targets`, never in `order`, so the live
+    # claimants of a withdrawn memo reached only through other withdrawn ones are found by walking
+    # back up that chain (D -> withdrawn C -> withdrawn A leaves D holding A's ambiguity).
+    withdrawn_claimants: dict[str, list[str]] = {}
+    for withdrawn_claimant, its_targets in withdrawn_targets.items():
+        for target in its_targets:
+            withdrawn_claimants.setdefault(target, []).append(withdrawn_claimant)
+    claimants_of: dict[str, list[str]] = {}
+    for key in withdrawn_ambiguous:
+        live: list[str] = []
+        seen = {key}
+        stack = [key]
+        while stack:
+            memo = stack.pop()
+            live.extend(claimant for claimant in order.get(memo, ()) if claimant not in live)
+            for withdrawn_claimant in withdrawn_claimants.get(memo, ()):
+                if withdrawn_claimant not in seen:
+                    seen.add(withdrawn_claimant)
+                    stack.append(withdrawn_claimant)
+        claimants_of[key] = live
     _splice_withdrawn(withdrawn, withdrawn_targets, winner, order, when)
     for key, claims in withdrawn_ambiguous.items():
         # The withdrawn memo's claimants take over its ambiguous claim: its candidates stay

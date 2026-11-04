@@ -43,6 +43,7 @@ from typing import Any, Protocol
 import psycopg
 
 from recall.fact_ledger import (
+    CREATED_AT_COLUMN,
     FACT_LEDGER_TABLE,
     LEDGER_COLUMNS,
     _event_from_row,
@@ -543,9 +544,22 @@ def _placeholders(count: int) -> str:
 #: SQLite's default host-parameter limit is 32,766; ids are fetched in batches well under it.
 _SQLITE_BATCH = 900
 
+#: `named_key`'s two reads, written once for both backends (`{p}` is the placeholder, `?` or
+#: `%s`): they decide which key a redacted fact's assertion was filed under, and a fix landing
+#: in one backend only would file one ledger two ways.
+_NAMED_KEY_FACT_SQL = (
+    f"SELECT fact FROM {FACT_LEDGER_TABLE} WHERE tenant_id = {{p}} AND fact_id = {{p}} "
+    "AND fact IS NOT NULL ORDER BY created_at, event_id LIMIT 1"
+)
+_NAMED_KEY_FILED_SQL = (
+    f"SELECT conflict_key FROM {CURRENT_EVENTS_TABLE} WHERE tenant_id = {{p}} AND fact_id = {{p}} "
+    "AND event_type = 'asserted' AND conflict_key IS NOT NULL LIMIT 1"
+)
+
 
 class SQLiteTables:
-    """`Tables` on a SQLite connection that holds the ledger: a lite file, or `--sqlite-path`'s."""
+    """`Tables` on a lite store's SQLite file, which holds the ledger (`recall.lite.facts`). The
+    `--sqlite-path` adapter keeps no current-facts tables."""
 
     def __init__(self, conn: sqlite3.Connection, tenant_id: str) -> None:
         self._conn = conn
@@ -574,7 +588,7 @@ class SQLiteTables:
             ).fetchall())
         # Batches cannot be ordered in SQL; `created_at, event_id` under SQLite's BINARY collation
         # is Python's string order, so this is the ledger's `ORDER BY created_at, event_id`.
-        found.sort(key=lambda row: (row[12], row[0]))
+        found.sort(key=lambda row: (row[CREATED_AT_COLUMN], row[0]))
         return [decode_ledger_row(row) for row in found]
 
     def key_events(self, key: str) -> list[FactEvent] | None:
@@ -603,18 +617,14 @@ class SQLiteTables:
 
     def named_key(self, fact_id: str) -> tuple[bool, str | None]:
         row = self._conn.execute(
-            f"SELECT fact FROM {FACT_LEDGER_TABLE} WHERE tenant_id = ? AND fact_id = ? "
-            "AND fact IS NOT NULL ORDER BY created_at, event_id LIMIT 1",
-            (self.tenant_id, fact_id),
+            _NAMED_KEY_FACT_SQL.format(p="?"), (self.tenant_id, fact_id)
         ).fetchone()
         if row is None:
             return False, None
         key = _payload_key(row[0])
         if key is None:  # a redacted value: the key its assertion was filed under (`NamedKey`)
             filed = self._conn.execute(
-                f"SELECT conflict_key FROM {CURRENT_EVENTS_TABLE} WHERE tenant_id = ? AND fact_id = ? "
-                "AND event_type = 'asserted' AND conflict_key IS NOT NULL LIMIT 1",
-                (self.tenant_id, fact_id),
+                _NAMED_KEY_FILED_SQL.format(p="?"), (self.tenant_id, fact_id)
             ).fetchone()
             key = None if filed is None else str(filed[0])
         return True, key
@@ -765,18 +775,14 @@ class PostgresTables:
 
     def named_key(self, fact_id: str) -> tuple[bool, str | None]:
         row = self._conn.execute(
-            f"SELECT fact FROM {FACT_LEDGER_TABLE} WHERE tenant_id = %s AND fact_id = %s "
-            "AND fact IS NOT NULL ORDER BY created_at, event_id LIMIT 1",
-            (self.tenant_id, fact_id),
+            _NAMED_KEY_FACT_SQL.format(p="%s"), (self.tenant_id, fact_id)
         ).fetchone()
         if row is None:
             return False, None
         key = _payload_key(row[0])
         if key is None:  # a redacted value: the key its assertion was filed under (`NamedKey`)
             filed = self._conn.execute(
-                f"SELECT conflict_key FROM {CURRENT_EVENTS_TABLE} WHERE tenant_id = %s AND fact_id = %s "
-                "AND event_type = 'asserted' AND conflict_key IS NOT NULL LIMIT 1",
-                (self.tenant_id, fact_id),
+                _NAMED_KEY_FILED_SQL.format(p="%s"), (self.tenant_id, fact_id)
             ).fetchone()
             key = None if filed is None else str(filed[0])
         return True, key
@@ -1034,8 +1040,10 @@ class PostgresCurrentFacts:
         """Delete the tenant's rows: reads replay until `rebuild`.
 
         `recall_forget`'s redaction (`recall.fact_redaction`) rewrites event ids, fact ids and
-        payloads in place, so the rows naming the old ones go in the same transaction: it rebuilds
-        them there. `purge_in` and `rebuild_in` take a caller's connection for the same purpose.
+        payloads in place, so the rows naming the old ones go in the same transaction:
+        `recall.fact_redaction._rebuild_pg_current_facts` rebuilds them there with
+        `rebuild_tables`. `purge_in` and `rebuild_in` take a caller's connection; nothing in the
+        erasure path calls them.
         """
         with self._connect() as conn, conn.transaction():
             self.purge_in(conn)

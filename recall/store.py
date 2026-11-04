@@ -21,7 +21,6 @@ from recall.supersession import (  # noqa: F401  # re-exported: public names of 
     SupersessionGraph,
     resolve_supersession_graph,
     supersession_rows_sql,
-    _basename,
     _resolve_rows,
     resolve_supersession,
     SUPERSEDES_TARGET_ROWS_SQL,

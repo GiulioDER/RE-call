@@ -63,7 +63,8 @@ FACT_LEDGER_TABLE = "recall_fact_ledger_events"
 
 
 def fact_key_lock(tenant_id: str, key: str) -> str:
-    """The advisory lock string every PostgreSQL writer of conflict key `key` holds."""
+    """The advisory lock string a PostgreSQL writer of conflict key `key` holds (`lock_fact_keys`).
+    `record_decision` takes none: a refusal or abstention changes no interval."""
     return f"fact\x1f{tenant_id}\x1f{key}"
 
 
@@ -156,7 +157,9 @@ def _decode_fact(payload: object) -> tuple[AtomicFact | None, str | None, str | 
     """`(fact, fact_id, redaction_id)` for a stored fact payload.
 
     A payload `recall_forget` erased (`recall.fact_redaction`) has no fact; its id is the fresh one
-    the redaction recorded, which the `retracted` and `superseded` events naming it were given too.
+    the redaction recorded, which every event naming it was given too: the `retracted`,
+    `withdrawn` and `superseded` events, and every `supersedes_fact_ids` naming the fact, a
+    successor's assertion included.
     """
     if isinstance(payload, Mapping):
         if is_redaction_marker(payload):
@@ -254,19 +257,25 @@ def _event_from_payload(payload: dict[str, Any]) -> FactEvent:
     )
 
 
-LEDGER_COLUMNS = (
-    "event_id, event_type, tenant_id, generation_id, fact, evidence_cards, "
-    "supersedes_fact_ids, request_id, writer, decision_code, policy_version, "
-    "controller_version, created_at"
+LEDGER_COLUMN_NAMES = (
+    "event_id", "event_type", "tenant_id", "generation_id", "fact", "evidence_cards",
+    "supersedes_fact_ids", "request_id", "writer", "decision_code", "policy_version",
+    "controller_version", "created_at",
 )
+LEDGER_COLUMNS = ", ".join(LEDGER_COLUMN_NAMES)
+# Positions read by index, named so a column added before them cannot silently shift the reads.
+_FACT_AT = LEDGER_COLUMN_NAMES.index("fact")
+_EVIDENCE_CARDS_AT = LEDGER_COLUMN_NAMES.index("evidence_cards")
+_SUPERSEDES_AT = LEDGER_COLUMN_NAMES.index("supersedes_fact_ids")
+CREATED_AT_COLUMN = LEDGER_COLUMN_NAMES.index("created_at")
 
 
 def decode_ledger_row(row: Sequence[Any]) -> FactEvent:
     """A ledger row whose JSON columns are TEXT (SQLite) rather than decoded JSONB."""
     values = list(row)
-    values[4] = json.loads(values[4]) if values[4] else None
-    values[5] = json.loads(values[5])
-    values[6] = json.loads(values[6])
+    values[_FACT_AT] = json.loads(values[_FACT_AT]) if values[_FACT_AT] else None
+    values[_EVIDENCE_CARDS_AT] = json.loads(values[_EVIDENCE_CARDS_AT])
+    values[_SUPERSEDES_AT] = json.loads(values[_SUPERSEDES_AT])
     return _event_from_row(tuple(values))
 
 
@@ -518,10 +527,14 @@ class SQLiteFactLedger(InMemoryFactLedger):
                 self._conn.execute("COMMIT")
                 return result
             except Exception:  # BROAD-CATCH: fail-closed
-                self._conn.execute("ROLLBACK")
+                # Restored first, and ROLLBACK only while a transaction is open: after SQLITE_FULL
+                # or an I/O error SQLite has already rolled back, and a bare ROLLBACK raised "no
+                # transaction is active", masking the error and leaving unpersisted events served.
                 self._events[:] = old_events
                 self._by_request.clear()
                 self._by_request.update(old_requests)
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
                 raise
 
     def record_decision(self, **kwargs: Any) -> FactEvent:
@@ -539,10 +552,14 @@ class SQLiteFactLedger(InMemoryFactLedger):
                 self._conn.execute("COMMIT")
                 return event
             except Exception:  # BROAD-CATCH: fail-closed
-                self._conn.execute("ROLLBACK")
+                # Restored first, and ROLLBACK only while a transaction is open: after SQLITE_FULL
+                # or an I/O error SQLite has already rolled back, and a bare ROLLBACK raised "no
+                # transaction is active", masking the error and leaving unpersisted events served.
                 self._events[:] = old_events
                 self._by_request.clear()
                 self._by_request.update(old_requests)
+                if self._conn.in_transaction:
+                    self._conn.execute("ROLLBACK")
                 raise
 
     def request_event(self, *, tenant_id: str, request_id: str) -> FactEvent | None:
@@ -786,7 +803,8 @@ class SQLiteMaterializationOutbox(InMemoryMaterializationOutbox):
                 self._conn.execute("COMMIT")
                 return tuple(events)
             except Exception:  # BROAD-CATCH: fail-closed
-                self._conn.execute("ROLLBACK")
+                if self._conn.in_transaction:  # SQLite may have rolled back already (BUG-006)
+                    self._conn.execute("ROLLBACK")
                 raise
 
     def mark_applied(self, *, tenant_id: str, event_id: str, lease_token: str | None = None) -> None:
@@ -841,8 +859,14 @@ class SQLiteMaterializationOutbox(InMemoryMaterializationOutbox):
         self.close()
 
 
+def _planned_keys(events: Sequence[FactEvent]) -> list[str]:
+    """The conflict keys a forget's first plan locks: one rule for retraction and withdrawal."""
+    return [fact_conflict_key(event.fact) for event in events if event.fact]
+
+
 class PostgresFactLedger:
-    """Production append-only ledger with serializable per-fact application.
+    """Production append-only ledger; applications of one conflict key are serialized by its
+    advisory lock (`lock_fact_keys`).
 
     Reads and conflict checks are answered from the materialized current facts
     (`recall.fact_current`) whenever those reflect every event of the tenant, and replay the
@@ -1090,9 +1114,11 @@ class PostgresFactLedger:
 
         `decision_code` is one of `RETRACTION_CODES`: why the evidence is gone for good.
 
-        The plan is made twice: once to learn which facts to lock, and again under the same
-        per-fact advisory locks `apply_assertion` takes, so an application that lands between the
-        two reads is seen before anything is retracted.
+        The plan is made twice: once to learn which conflict keys to lock, and again under those
+        keys' advisory locks (the ones `apply_assertion` takes), so an application of a locked key
+        that lands between the two reads is seen before anything is retracted. Only the first
+        plan's keys are locked: an assertion first selected by the second read is retracted
+        without its key's lock.
         """
         if tenant_id != self.tenant_id:
             raise ValueError("ledger tenant mismatch")
@@ -1101,7 +1127,7 @@ class PostgresFactLedger:
         moment = _as_utc(now or datetime.now(UTC))
         with self._connect() as conn, conn.transaction():
             first = plan_retractions(self._events(conn), touched=touched, gone=gone)
-            lock_fact_keys(conn, self.tenant_id, [fact_conflict_key(event.fact) for event in first if event.fact])
+            lock_fact_keys(conn, self.tenant_id, _planned_keys(first))
             written: list[FactEvent] = []
             for assertion in plan_retractions(self._events(conn), touched=touched, gone=gone):
                 event_id, request_id = retraction_ids(self.tenant_id, assertion)
@@ -1122,15 +1148,17 @@ class PostgresFactLedger:
     ) -> tuple[FactEvent, ...]:
         """Append a `withdrawn` event for each assertion `plan_withdrawals` selects; return them.
 
-        Planned twice under the per-fact locks, as `retract_forgotten` is. A withdrawn event
-        carries no fact and no card: its request id names the assertion (`withdrawal_ids`).
+        Planned twice under the conflict-key locks of the first plan, as `retract_forgotten` is,
+        with the same limit; an assertion whose value a redaction erased carries no key and is
+        withdrawn unlocked. A withdrawn event carries no fact and no card: its request id names the
+        assertion (`withdrawal_ids`).
         """
         if tenant_id != self.tenant_id:
             raise ValueError("ledger tenant mismatch")
         moment = _as_utc(now or datetime.now(UTC))
         with self._connect() as conn, conn.transaction():
             first = plan_withdrawals(self._events(conn), touched=touched, gone=gone)
-            lock_fact_keys(conn, self.tenant_id, [fact_conflict_key(event.fact) for event in first if event.fact])
+            lock_fact_keys(conn, self.tenant_id, _planned_keys(first))
             written: list[FactEvent] = []
             for assertion in plan_withdrawals(self._events(conn), touched=touched, gone=gone):
                 event_id, request_id = withdrawal_ids(self.tenant_id, assertion)
@@ -1241,15 +1269,19 @@ class PostgresMaterializationOutbox:
                 return ()
             lease_until = moment + timedelta(seconds=self.lease_seconds)
             events: list[FactEvent] = []
+            updates: list[tuple[Any, ...]] = []
             for row_event_id, payload in rows:
                 token = uuid4().hex
-                conn.execute(
+                updates.append((lease_until, token, moment, row_event_id, self.tenant_id))
+                events.append(replace(_event_from_payload(payload), lease_token=token))
+            # One batch, not a round trip per row while the FOR UPDATE locks are held (up to 1000).
+            with conn.cursor() as cursor:
+                cursor.executemany(
                     f"UPDATE {self.TABLE} SET status = 'processing', attempts = attempts + 1, "
                     "lease_until = %s, lease_token = %s, updated_at = %s "
                     "WHERE event_id = %s AND tenant_id = %s",
-                    (lease_until, token, moment, row_event_id, self.tenant_id),
+                    updates,
                 )
-                events.append(replace(_event_from_payload(payload), lease_token=token))
             return tuple(events)
 
     def mark_applied(self, *, tenant_id: str, event_id: str, lease_token: str | None = None) -> None:

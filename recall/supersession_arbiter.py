@@ -79,7 +79,12 @@ from recall.document import parse_document
 from recall.frontmatter import frontmatter_span, supersedes_targets
 from recall.observability import get_logger
 from recall.supersession import reference_stem_key
-from recall.truth_extraction._openai_engine import ChatClient, _host_of, _setting
+from recall.truth_extraction._openai_engine import (
+    DEFAULT_EXTRACTION_BASE_URL,
+    ChatClient,
+    _host_of,
+    _setting,
+)
 
 _log = get_logger("supersession_arbiter")
 
@@ -91,7 +96,9 @@ PROMPT_REVISION = "stated-probability-v1"
 #: The same, for `DIRECTION_PROMPT` and `current_note`.
 DIRECTION_PROMPT_REVISION = "current-note-v1"
 DEFAULT_ARBITER_MODEL = "openai/gpt-6.1-sol"
-DEFAULT_ARBITER_BASE_URL = "https://openrouter.ai/api/v1"
+#: The engine's own default, not a copy: `_client_from_env` calls it when the base URL is unset,
+#: and the cache key and audit identity must name the endpoint actually called.
+DEFAULT_ARBITER_BASE_URL = DEFAULT_EXTRACTION_BASE_URL
 DEFAULT_THRESHOLD = 0.90
 DEFAULT_NEIGHBOURS = 10
 DEFAULT_MAX_PAIRS = 200
@@ -100,6 +107,9 @@ WORKERS = 8
 #: Characters of each body shown to the model. Long memos are cut, not summarised.
 BODY_CHARS = 6000
 MIN_QUOTE_CHARS = 20
+#: The stated probability from which an answer must show grounded quotes (`score`). The threshold
+#: may not go below it, so every verdict past the threshold had its quotes checked.
+QUOTE_REQUIRED_AT = 0.5
 SLUG_JACCARD = 0.3
 
 ENV_ENABLED = "RECALL_SUPERSESSION_ARBITER"
@@ -356,7 +366,7 @@ def score(answer: Mapping[str, Any] | None, shown_a: str, shown_b: str) -> float
     if isinstance(value, bool) or not isinstance(value, (int, float)) or math.isnan(value):
         return 0.0
     probability = min(max(float(value), 0.0), 100.0) / 100.0
-    if probability >= 0.5 and not (
+    if probability >= QUOTE_REQUIRED_AT and not (
         grounded(answer.get("quote_a"), shown_a) and grounded(answer.get("quote_b"), shown_b)
     ):
         return 0.0
@@ -427,7 +437,7 @@ def arbiter_settings(env: Mapping[str, str] | None = None) -> ArbiterSettings | 
         revision=_setting(source, f"{ENV_PREFIX}_REVISION", "unpinned"),
         base_url=_setting(source, f"{ENV_PREFIX}_BASE_URL", DEFAULT_ARBITER_BASE_URL),
         # Zero is refused: it would propose every candidate the model answered at all.
-        threshold=_bounded(source, f"{ENV_PREFIX}_THRESHOLD", str(DEFAULT_THRESHOLD), float, 0.5, 1.0),
+        threshold=_bounded(source, f"{ENV_PREFIX}_THRESHOLD", str(DEFAULT_THRESHOLD), float, QUOTE_REQUIRED_AT, 1.0),
         neighbours=_bounded(source, f"{ENV_PREFIX}_NEIGHBOURS", str(DEFAULT_NEIGHBOURS), int, 1, 100),
         max_pairs=_bounded(source, f"{ENV_PREFIX}_MAX_PAIRS", str(DEFAULT_MAX_PAIRS), int, 1, 100_000),
         direction_check=_switch(source, ENV_DIRECTION_CHECK, default=True),
@@ -451,7 +461,10 @@ def default_cache_path(env: Mapping[str, str] | None = None) -> Path | None:
     source = env if env is not None else os.environ
     raw = source.get(ENV_CACHE_PATH)
     if raw is not None:
-        if raw.strip().lower() in _CACHE_DISABLED:
+        # Stripped once: a stray leading space defeated `expanduser` and put the cache under a
+        # relative ' ~' directory of whatever the working directory was.
+        raw = raw.strip()
+        if raw.lower() in _CACHE_DISABLED:
             return None
         return Path(raw).expanduser()
     if os.name == "nt":
