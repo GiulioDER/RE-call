@@ -85,6 +85,15 @@ class Question:
     metadata: Mapping[str, str] = field(default_factory=dict)
 
 
+#: The documents and code corpora are calibrated, and a calibration needs enough material to
+#: measure: a missing or near-empty folder is REFUSED and the install reports itself incomplete.
+#: This used to say an empty folder was fine, which is true only of the memory folder.
+CALIBRATED_ROOT_HELP = (
+    "It must already hold enough content to calibrate on (roughly twenty distinct sections or "
+    "files); a missing or nearly empty folder is refused and the install reports incomplete."
+)
+
+
 def question_plan(*, default_root: Path) -> tuple[Question, ...]:
     """Every question the installer can ask, in order, including both sides of the branch.
 
@@ -153,25 +162,27 @@ def question_plan(*, default_root: Path) -> tuple[Question, ...]:
             key="fact_write_dsn",
             prompt="Optional isolated fact-controller connection string",
             help=(
-                "Leave blank for legacy single-role mode. When supplied, the wizard creates or "
-                "uses a separate controller role and makes the serving role read-only for facts."
+                "Leave blank for legacy single-role mode. Isolated fact control needs three "
+                "distinct PostgreSQL roles (serving, migration and controller), and this interview "
+                "asks for one connection string, so a value here is refused when the install runs. "
+                "To use it, write a config by hand that also sets migration_dsn and serving_role."
             ),
             depends_on=("database", "existing"),
             optional=True,
         ),
         Question(
             key="docs_root",
-            prompt="Documents folder (notes, markdown, PDFs)",
+            prompt="Documents folder (Markdown notes, *.md)",
             kind="directory",
             default=_root_default("docs"),
-            help="An empty folder is fine and can be filled later.",
+            help=CALIBRATED_ROOT_HELP,
         ),
         Question(
             key="code_root",
             prompt="Code folder",
             kind="directory",
             default=_root_default("code"),
-            help="An empty folder is fine and can be filled later.",
+            help=CALIBRATED_ROOT_HELP,
         ),
         Question(
             key="memory_root",

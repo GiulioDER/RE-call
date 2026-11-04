@@ -100,10 +100,13 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         required=False,
         help="JSON config to run. Omit it to be asked the questions instead, in which case the "
         "answers are WRITTEN to a config file and that file is what runs, so the install is "
-        "repeatable. Required keys: dsn, migration_dsn, embedder, corpus_version, "
-        "docs_root, code_root, memory_root (roots must be absolute). Optional: project, and "
-        "serving_role, which is required when dsn and migration_dsn authenticate as different "
-        "roles, because no migration emits a GRANT.",
+        "repeatable. Required keys: embedder, corpus_version, docs_root, code_root, "
+        "memory_root (roots must be absolute), and exactly one of data_root (a Docker stack the "
+        "wizard creates) or dsn (an existing database). Optional: project; project_root, the "
+        "project whose MCP client config gets the servers (without it none is registered); and, "
+        "with dsn only, migration_dsn (defaults to dsn), serving_role, which is required when dsn "
+        "and migration_dsn authenticate as different roles, because no migration emits a GRANT, "
+        "and fact_write_dsn.",
     )
     p_wizard.add_argument(
         "--state",
@@ -135,7 +138,7 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "folders it was indexing.",
         description=(
             "Undo what an install created: its Docker containers and volumes, its generated stack "
-            "files, the MCP server registrations and the session hooks. It never touches the "
+            "files and the MCP server registrations. It never touches the "
             "folders you pointed it at, and never the memos in them. Requires --data-root, "
             "because the thing being removed is one install rather than every install on the "
             "machine, and guessing which would be the wrong way to be convenient."
@@ -514,10 +517,15 @@ def _cmd_wizard(args: argparse.Namespace) -> None:
         try:
             prompter = stdin_prompter()
             document = ask_config(prompter, default_root=default_root)
+            # Beside the stack when there is one: `recall uninstall --data-root` reads
+            # `<data_root>/wizard.json` and nowhere else, as the desktop installer writes it, so a
+            # config saved under ~/.recall for another data folder could never be found again, and
+            # a second install would overwrite the first one's.
+            save_root = Path(str(document.get("data_root") or default_root)).expanduser()
             target = Path(
                 prompter.ask(
                     "\nWhere should this configuration be saved?",
-                    default=str(default_root / "wizard.json"),
+                    default=str(save_root / "wizard.json"),
                 )
             ).expanduser()
             config_written = write_config(document, target)

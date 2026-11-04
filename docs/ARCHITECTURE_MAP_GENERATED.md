@@ -40,10 +40,10 @@ Cross package edges: 376
 | 138 | `recall_agent._sdk` |
 | 138 | `recall_agent.memory` |
 | 135 | `recall.dashboard.corpus` |
+| 134 | `recall.cli_commands.lite_cmd` |
 | 134 | `recall.cli_commands.provenance_cmd` |
 | 134 | `recall.dashboard.activity` |
 | 134 | `recall.dashboard.graph` |
-| 133 | `recall.cli_commands.lite_cmd` |
 | 133 | `recall.dashboard.triage` |
 | 133 | `recall_mcp.assistant` |
 | 132 | `recall.dashboard.edit` |
@@ -62,7 +62,7 @@ Cross package edges: 376
 |---:|---|
 | 60 | `recall_mcp.server` |
 | 59 | `recall_mcp.service` |
-| 29 | `recall.cli_commands.index_search` |
+| 28 | `recall.cli_commands.index_search` |
 | 26 | `recall.generations` |
 | 23 | `recall_mcp.retrieval` |
 | 22 | `recall.trust` |
@@ -73,9 +73,9 @@ Cross package edges: 376
 | 19 | `recall.index` |
 | 19 | `recall_mcp.provenance` |
 | 17 | `recall.cli_commands.calibration_cmd` |
+| 17 | `recall.wizard.headless` |
 | 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall.generation_store` |
-| 16 | `recall.wizard.headless` |
 | 16 | `recall_mcp.semantic_graph_cache` |
 | 15 | `recall.dashboard.server` |
 | 15 | `recall_mcp.graph_first_api` |
@@ -522,9 +522,9 @@ They are observations, not automatic failures.
 | `recall.cli_commands.generation_cmd` | 11 | 119 |
 | `recall.cli_commands.graph_cmd` | 1 | 105 |
 | `recall.cli_commands.idempotency_cmd` | 2 | 37 |
-| `recall.cli_commands.index_search` | 29 | 128 |
+| `recall.cli_commands.index_search` | 28 | 128 |
 | `recall.cli_commands.lint_check` | 7 | 119 |
-| `recall.cli_commands.lite_cmd` | 9 | 133 |
+| `recall.cli_commands.lite_cmd` | 10 | 134 |
 | `recall.cli_commands.manifest_cmd` | 4 | 106 |
 | `recall.cli_commands.provenance_cmd` | 14 | 134 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 164 |
@@ -763,7 +763,7 @@ They are observations, not automatic failures.
 | `recall.wizard.config_lock` | 0 | 0 |
 | `recall.wizard.corpora` | 4 | 107 |
 | `recall.wizard.database` | 1 | 37 |
-| `recall.wizard.headless` | 16 | 156 |
+| `recall.wizard.headless` | 17 | 156 |
 | `recall.wizard.identity` | 1 | 1 |
 | `recall.wizard.interactive` | 5 | 110 |
 | `recall.wizard.inventory` | 2 | 105 |
@@ -776,7 +776,7 @@ They are observations, not automatic failures.
 | `recall.wizard.stack` | 3 | 128 |
 | `recall.wizard.state` | 3 | 156 |
 | `recall.wizard.uninstall` | 6 | 152 |
-| `recall.wizard.wiring` | 5 | 128 |
+| `recall.wizard.wiring` | 6 | 128 |
 | `recall_agent` | 1 | 139 |
 | `recall_agent._descriptions` | 0 | 0 |
 | `recall_agent._sdk` | 2 | 138 |

@@ -38,6 +38,7 @@ minutes into the first build.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import textwrap
@@ -490,6 +491,7 @@ class _Services(Protocol):
         self, spec: CorpusSpec, *, progress: Callable[[str], None] | None = None
     ) -> CorpusOutcome: ...
     def index_legacy(self, spec: CorpusSpec) -> LegacyIndex: ...
+    def active_generation(self, tenant: str) -> str | None: ...
     def smoke(self, block: ServerBlock) -> SmokeResult: ...
 
 
@@ -516,6 +518,17 @@ class _RealServices:
         the opposite of what injecting services is for.
         """
         return self.embedder().dim
+
+    def active_generation(self, tenant: str) -> str | None:
+        """The generation `tenant` serves now in the configured database, or None if it serves none."""
+        from recall.generation_types import NoActiveGeneration
+
+        try:
+            return GenerationManager(
+                self.config.resolved_dsn, tenant, actor="recall-wizard"
+            ).active_generation_id()
+        except NoActiveGeneration:
+            return None
 
     def apply_schema(self, dsn: str, *, dim: int) -> None:
         from recall.schema import apply_migrations
@@ -563,7 +576,6 @@ class _RealServices:
 
         from recall.schema import controller_grants, serving_grants
 
-        created = False
         with psycopg.connect(dsn) as conn:
             role_state = conn.execute(
                 "SELECT rolcanlogin FROM pg_roles WHERE rolname = %s",
@@ -578,31 +590,41 @@ class _RealServices:
             if role_state is not None:
                 with psycopg.connect(controller_dsn, connect_timeout=10) as controller:
                     controller.execute("SELECT 1")
-            with conn.transaction():
-                if role_state is None:
+            if role_state is None:
+                with conn.transaction():
                     conn.execute(
                         sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
                             sql.Identifier(controller_role), sql.Literal(controller_password)
                         )
                     )
-                    created = True
+                # Verified BEFORE anything is granted to it. PostgreSQL refuses `DROP ROLE` for a
+                # role that still holds privileges, so when the grants committed first this
+                # rollback raised DependentObjectsStillExist, hid the real login failure and left
+                # a LOGIN role holding the fact-ledger grants behind.
+                try:
+                    with psycopg.connect(controller_dsn, connect_timeout=10) as controller:
+                        controller.execute("SELECT 1")
+                except Exception as login_error:  # BROAD-CATCH: fail-closed
+                    try:
+                        with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as cleanup:
+                            cleanup.execute(
+                                sql.SQL("DROP ROLE IF EXISTS {}").format(
+                                    sql.Identifier(controller_role)
+                                )
+                            )
+                    except Exception as cleanup_error:  # BROAD-CATCH: fail-closed
+                        # The login failure is the cause the operator must see; the failed
+                        # cleanup rides along with it rather than replacing it.
+                        login_error.add_note(
+                            f"also could not remove the new role {controller_role!r}: "
+                            f"{scrub_dsn_secrets(str(cleanup_error))}"
+                        )
+                    raise
+            with conn.transaction():
                 for statement in serving_grants(serving_role, strict=True):
                     conn.execute(statement)
                 for statement in controller_grants(controller_role):
                     conn.execute(statement)
-
-        if created:
-            try:
-                with psycopg.connect(controller_dsn, connect_timeout=10) as controller:
-                    controller.execute("SELECT 1")
-            except Exception:  # BROAD-CATCH: fail-closed
-                # A newly created role has no owned application objects, so removing it is a safe
-                # rollback for an authentication failure after the DDL transaction committed.
-                with psycopg.connect(dsn, autocommit=True) as cleanup:
-                    cleanup.execute(
-                        sql.SQL("DROP ROLE IF EXISTS {}").format(sql.Identifier(controller_role))
-                    )
-                raise
 
     def index_legacy(self, spec: CorpusSpec) -> LegacyIndex:
         """Index an uncalibrated corpus into the legacy `chunks` table, under ITS OWN tenant.
@@ -1179,7 +1201,10 @@ def _write_stack(
                 continue
             services[name] = service
         document = {**document, **existing, "services": services}
-    write_compose(compose_path, document, dockerfile_name=dockerfile_name)
+    try:
+        write_compose(compose_path, document, dockerfile_name=dockerfile_name)
+    except RuntimeError as exc:
+        raise ConfigRefusal(str(exc), ("data_root",)) from exc
 
 
 def _provision(
@@ -1353,7 +1378,20 @@ def run_headless(
     failures: list[Failure] = []
     reused: list[str] = []
     for spec in plan.calibrated:
-        if (recorded := state.outcome_for(spec.tenant)) is not None:
+        recorded = state.outcome_for(spec.tenant)
+        if recorded is not None and wiring.active_generation(spec.tenant) != recorded.generation_id:
+            # The state file says what a previous run promoted, not what the database holds now. A
+            # purged volume, a recreated database or a later promote all keep the config digest, and
+            # reusing the record then wired strict servers over a tenant with no such generation and
+            # still reported the install complete. So the database is asked, and a stale record is
+            # rebuilt rather than trusted.
+            if progress:
+                progress(
+                    f"{spec.tenant}: the recorded generation {recorded.generation_id} is no "
+                    "longer active in the database; rebuilding"
+                )
+            recorded = None
+        if recorded is not None:
             # Only a PROMOTED outcome is recorded, so this cannot silently reuse a degraded corpus:
             # that one was left unpromoted precisely so re-running would retry it.
             outcomes.append(recorded)
@@ -1512,6 +1550,19 @@ def run_headless(
         # 🔁 This comment said the opposite until the local-scope switch was audited. It was written
         # for USER scope, where a project file genuinely does win (2 beats 3), and stayed behind when
         # the code moved to local (1). Correct sentence, wrong scope, and nothing failed.
+        if importlib.util.find_spec("mcp") is None:
+            # Every block runs `python -m recall_mcp.server`, which imports `mcp` at its top, so
+            # without the extra each registered server dies on start and the client just shows no
+            # tools. Registration still happens, so installing the extra is the whole repair.
+            failures.append(
+                Failure(
+                    tenant="wiring",
+                    error=(
+                        "the MCP servers were registered, but this Python lacks the `mcp` extra "
+                        "they need to start: run pip install \"recall-rag[mcp]\""
+                    ),
+                )
+            )
         try:
             registration = register_local_scope(
                 blocks,

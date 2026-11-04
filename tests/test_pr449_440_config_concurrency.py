@@ -30,7 +30,7 @@ def test_cooperating_configuration_writers_do_not_restore_removed_registration(
     config = tmp_path / "client.json"
     config.write_text(json.dumps({"unrelated": "kept", "projects": {
         str(project): {"mcpServers": {name: {"command": "python", "cwd": str(project)}}}
-        for project, name in zip(projects, ("recall-a", "recall-b"), strict=True)
+        for project, name in zip(projects, ("acme-docs", "acme-docs"), strict=True)
     }}), encoding="utf-8")
     plans = [plan_uninstall(data_root=root, claude_config_path=config, runner=_docker(),
                             profile_path=tmp_path / "absent-profile") for root in roots]
@@ -86,6 +86,6 @@ def test_cooperating_configuration_writers_do_not_restore_removed_registration(
         "the later writer restored a removed registration"
     )
     servers_a = result["projects"][str(projects[0])]["mcpServers"]
-    assert ("recall-a" in servers_a) == (first_operation == "register")
+    assert ("acme-docs" in servers_a) == (first_operation == "register")
     assert ("recall-new" in servers_a) == (first_operation == "register")
     assert result["unrelated"] == "kept"

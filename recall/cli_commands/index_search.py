@@ -35,8 +35,6 @@ from recall.types import TrustedResult
 from recall_mcp.translation import provider_from_env, translate_for_display
 from recall.security_policy import access_context_from_environment, load_source_policy
 from recall.control_plane import ControlPlane
-from recall_mcp.lifecycle import forget_memory, withdraw_memory
-from recall._env import env_is_production
 
 from recall.cli_commands._shared import (
     _cli_trust,
@@ -412,6 +410,12 @@ def _cmd_index(args: argparse.Namespace) -> None:
                         # Same reasoning: this is an expected outcome of two sessions closing at once,
                         # not a defect, and its message names the holder and what to do about it.
                         raise SystemExit(str(exc)) from exc
+                    except (ValueError, PermissionError) as exc:
+                        # A missing path, a file outside the scan or a source the policy denies:
+                        # each message was written for the person running the command (it names
+                        # `--glob` or the policy), so it is printed rather than buried in a
+                        # traceback.
+                        raise SystemExit(f"recall index: {exc}") from exc
                 # `files` counts what was RE-indexed, not what is in the index, so an unchanged
                 # re-run reports 0/0 — which reads as "the index is empty" unless `skipped` is shown
                 # beside it. `deleted` matters more: pruning is the destructive half of `index`, and
@@ -602,6 +606,10 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
             # A withdraw does not: an unseen name has no record to withdraw.
             names = targets if withdraw else [*targets, *unseen]
             if names:
+                # Imported here, not at module top: it pulls in pydantic, which every `recall
+                # index` and `recall search` otherwise paid for at startup without using it.
+                from recall_mcp.lifecycle import forget_memory, withdraw_memory
+
                 control_plane = ControlPlane(args.dsn) if gen_store is not None else None
                 remove = withdraw_memory if withdraw else forget_memory
                 message = remove(
@@ -719,7 +727,15 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
             rows, undeclared = cast("LiteStore", store).scope_summary(args.dimension)
         _print_scopes(args.dimension, rows, undeclared)
         return
-    if env_is_production():
+    from recall.runtime_route import RouteConfigurationError
+
+    try:
+        # The same route `search` filters, so a folder listed here is one search can find; the
+        # environment alone disagreed with it under RECALL_INDEX_MODE=generation in development.
+        route = _runtime_route(args)
+    except RouteConfigurationError as exc:
+        raise SystemExit(f"recall scopes: {exc}") from exc
+    if route.uses_generation:
         from recall.generation_store import GenerationStore
 
         store_context: PgVectorStore = GenerationStore(
