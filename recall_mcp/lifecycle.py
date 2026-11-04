@@ -175,10 +175,21 @@ def forget_memory(
     erasing = store.erasing() if isinstance(store, LiteStore) else nullcontext()
     pending = control_plane.erasure_session(store.tenant) if control_plane else nullcontext(None)
     with write_session(store, "forget"), erasing, pending as scrub_pending:
-        return _forget_memory_unlocked(
+        result = _forget_memory_unlocked(
             store, sources, shadow_store, scrub_pending, security_policy, security_context,
             erase_memo_requests=erase_memo_requests,
         )
+    return result.model_copy(update={"message": _with_checkpoint_note(store, result.message)})
+
+
+def _with_checkpoint_note(store: object, message: str) -> str:
+    """`message`, saying so when a lite erase's closing checkpoint was blocked by a reader."""
+    if not getattr(store, "erase_checkpoint_blocked", False):
+        return message
+    return (
+        f"{message} Another reader kept the write-ahead log from being truncated, so erased bytes may "
+        "stay in it until the next checkpoint; run `recall forget --vacuum` once other readers close."
+    )
 
 
 def withdraw_memory(
@@ -214,7 +225,7 @@ def withdraw_memory(
         chunks_removed=result.chunks_removed,
         sources_withdrawn=result.sources_removed,
         sources_not_found=result.sources_not_found,
-        message=result.message,
+        message=_with_checkpoint_note(store, result.message),
         outbox_events_scrubbed=result.outbox_events_scrubbed,
         staged_files_removed=result.staged_files_removed,
         facts_withdrawn=result.facts_retracted,

@@ -937,7 +937,7 @@ def run_checks(
 def _lite_checks(dsn: str, *, tenant: str, table: str = DEFAULT_TABLE) -> Iterator[Check]:
     """The lite store's file, corpus and calibration, from a read-only look at the file."""
     from recall.calibration_v2 import CalibrationStatus
-    from recall.lite import LITE_DSN_PREFIX
+    from recall.lite import LiteStoreError, lite_dsn_path
     from recall.lite.inspect import inspect_lite_file
 
     if table != DEFAULT_TABLE:
@@ -947,7 +947,14 @@ def _lite_checks(dsn: str, *, tenant: str, table: str = DEFAULT_TABLE) -> Iterat
         )
         yield Check("corpus", "skip", "skipped: the requested table is unsupported")
         return
-    found = inspect_lite_file(dsn[len(LITE_DSN_PREFIX):])
+    try:
+        lite_path = lite_dsn_path(dsn)
+    except LiteStoreError as exc:
+        # The server refuses this DSN; reporting "no file yet" would send the user to `recall index`.
+        yield Check("database", "fail", str(exc), "set RECALL_SERVING_DSN (or RECALL_DSN) to sqlite:///<absolute path>")
+        yield Check("corpus", "skip", "skipped: the lite store address is refused")
+        return
+    found = inspect_lite_file(lite_path)
     if not found.exists:
         yield Check(
             "database",

@@ -351,7 +351,10 @@ On a lite store (a `sqlite:///` DSN), `list`, `show` and `export` work and the r
 name: a lite store calibrates itself when it is indexed, on questions it generates. It keeps those
 questions as evidence for carrying the calibration forward, and a forget, or a re-index that drops
 a memo, deletes them with the sources they came from; strict search then refuses until the next
-index or refresh refits the store. Its export is the artifact alone, flagged `artifact_only`, with
+index or refresh refits the store. A lite store also carries further than the 0.25 bound above:
+up to a corpus delta of 0.25 it carries a fit with no refit due, from 0.25 to 0.75 it keeps
+serving the carried threshold, while it still re-verifies, with a refit due, and above 0.75 it
+refuses until it is refitted. A PostgreSQL store stops carrying at 0.25. A lite store's export is the artifact alone, flagged `artifact_only`, with
 no labels, and no `import` accepts it. `list` reports every calibration but the newest as `superseded`,
 because a lite store serves only its newest one. A stored calibration that does not verify is
 skipped and reported, and when it is the one the store serves, none is reported in force.

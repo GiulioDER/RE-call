@@ -212,13 +212,16 @@ def run_lite_setup(
         "RECALL_ENV": "development", "RECALL_INDEX_MODE": "legacy",
         "RECALL_TRANSPORT": "stdio", "RECALL_TRUST_MODE": "strict",
     }
+    # Setup indexes under the embedding cache settings of this shell; the server's refreshes must
+    # too, or a cache the user switched off or moved here comes back at the default there.
+    local_env.update({key: os.environ[key] for key in ("RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB") if key in os.environ})
     if model_env is not None:
         local_env.update(model_env)
         safe_keys = {
             "RECALL_DSN", "RECALL_SERVING_DSN", "RECALL_INDEX_ROOT", "RECALL_TENANT",
             "RECALL_ENV", "RECALL_INDEX_MODE", "RECALL_TRANSPORT",
             "RECALL_TRUST_MODE", "RECALL_EMBEDDER", "RECALL_EMBED_PROFILE", "RECALL_MODEL_CACHE",
-            "RECALL_MODEL_SHA256", "RECALL_QWEN_MODEL_PATH",
+            "RECALL_MODEL_SHA256", "RECALL_QWEN_MODEL_PATH", "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB",
         }
         report.followup_env = {key: value for key, value in local_env.items() if key in safe_keys}
     with LiteStore(path, dim=embedder.dim) as store:
@@ -266,20 +269,21 @@ def run_lite_setup(
             literal = "\\" + literal
         target = ".recall/" if in_default_directory else f"{literal}*"
         patterns = {".recall", ".recall/", "/.recall", "/.recall/"} if in_default_directory else {target, f"/{target}"}
-        listed = ignore.exists() and any(
-            line.strip() in patterns
-            for line in ignore.read_text(encoding="utf-8", errors="replace").splitlines()
+        ignored = (
+            {line.strip() for line in ignore.read_text(encoding="utf-8", errors="replace").splitlines()}
+            if ignore.exists() else set()
         )
-        if not listed:
+        if not ignored & patterns:
             report.notes.append(
                 f"add `{target}` to .gitignore: the store holds your memory's text and vectors; "
                 "include its SQLite -wal and -shm sidecars"
             )
-            if not in_default_directory:
-                # `<store>*` does not match the refresh state file, which is named from the store's
-                # stem and records absolute paths.
-                from recall.lite.refresh import state_path
+        if not in_default_directory:
+            # `<store>*` does not match the refresh state file, which is named from the store's
+            # stem and records absolute paths, so it is checked on its own.
+            from recall.lite.refresh import state_path
 
-                state = state_path(path).relative_to(project_root).as_posix()
+            state = state_path(path).relative_to(project_root).as_posix()
+            if not ignored & {state, f"/{state}"}:
                 report.notes.append(f"also add `{state}` to .gitignore: it is the store's refresh state")
     return report

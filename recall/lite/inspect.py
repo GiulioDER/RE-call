@@ -15,7 +15,7 @@ import sqlite3
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from recall.calibration_v2 import CalibrationStatus
 from recall.lite.store import LATEST_CALIBRATION_ORDER, generation_id_for
@@ -82,10 +82,10 @@ class _ReadOnlyCorpus:
     def _vectors(self) -> Any:
         import numpy as np
 
-        blobs = self._conn.execute("SELECT embedding FROM chunks").fetchall()
-        vectors: Any = np.zeros((len(blobs), self._dim), dtype=np.float32)
-        for i, (blob,) in enumerate(blobs):
-            vectors[i] = np.frombuffer(blob, dtype=np.float32)
+        # The embeddings already read with the rows, not a second full read of every blob.
+        vectors: Any = np.zeros((len(self._rows), self._dim), dtype=np.float32)
+        for i, row in enumerate(self._rows):
+            vectors[i] = np.frombuffer(row[3], dtype=np.float32)
         from recall.lite.store import _normalize
 
         return _normalize(vectors)  # the store's own float64 normalisation, so doctor and store agree
@@ -132,6 +132,10 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
     except sqlite3.Error as exc:
         return LiteFileReport(target, exists=True, error=f"{type(exc).__name__}: {exc}")
     try:
+        # One read transaction for every read below, the stand-in's included: separate statements
+        # would each see their own snapshot, and a write between them would have the calibration
+        # judged against a corpus that never existed.
+        conn.execute("BEGIN")
         meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
         rows = conn.execute("SELECT id, text, source, embedding FROM chunks").fetchall()
         latest = conn.execute(f"SELECT payload FROM calibrations {LATEST_CALIBRATION_ORDER} LIMIT 1").fetchone()  # noqa: S608  # a module constant
@@ -161,7 +165,7 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
                 corpus = _ReadOnlyCorpus(
                     conn, str(meta.get("tenant", "")), dim, rows, fingerprint, str(latest[0])
                 )
-                carried = carry_forward(cast("Any", corpus), artifact)
+                carried = carry_forward(corpus, artifact)
                 if carried.artifact is not None:
                     status, separability = CalibrationStatus.CERTIFIED, carried.artifact.separability
                     carried_delta = float(carried.provenance["corpus_delta"])

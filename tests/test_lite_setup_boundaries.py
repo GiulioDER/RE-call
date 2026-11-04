@@ -324,4 +324,7 @@ def test_custom_store_ignore_advice_covers_literal_git_paths(tmp_path, monkeypat
         project_root=root, memory=root / "notes", embedder=model, embedder_name=model.name,
         store_path=root / filename, register=False,
     )
-    assert not any(".gitignore" in note for note in repeated.notes), "valid advice was not recognized"
+    # The store's advice is recognized once followed. The refresh state file is named on its own
+    # (CCA ENV-005, run 20261104T105718Z): `<store>*` does not cover it, so its note stays.
+    assert not any(note.startswith("add `") for note in repeated.notes), "valid advice was not recognized"
+    assert any(".refresh.json" in note for note in repeated.notes), "the uncovered refresh state file was not named"

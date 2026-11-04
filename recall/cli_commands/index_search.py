@@ -26,7 +26,7 @@ from recall.index_lock import ConcurrentIndex
 from recall.retriever import DocumentExpansionPolicy
 from recall.scope import Scope
 from recall.backends import lite_route_refusal, open_legacy_store, write_session
-from recall.lite import LiteStore, LiteWriterBusy, is_lite_dsn, lite_dsn_path
+from recall.lite import LiteStore, LiteStoreError, LiteWriterBusy, is_lite_dsn, lite_dsn_path
 from recall.lite.writer_lock import queued_notice
 from recall.store import PgVectorStore
 from recall.trust import terminal_safe, trusted_search
@@ -443,10 +443,12 @@ def _check_lite_forget_target(dsn: str, tenant: str, command: str = "forget") ->
     typo. A missing file, a file that is not a lite store, or another tenant's file is refused
     untouched instead.
     """
-    from recall.lite import LITE_DSN_PREFIX
     from recall.lite.inspect import lite_file_meta
 
-    path = Path(dsn[len(LITE_DSN_PREFIX):])
+    try:
+        path = lite_dsn_path(dsn)
+    except LiteStoreError as exc:
+        raise SystemExit(f"{command}: {exc}; nothing deleted or created") from None
     if not path.exists():
         raise SystemExit(f"{command}: {path} does not exist; nothing deleted or created")
     meta = lite_file_meta(path)

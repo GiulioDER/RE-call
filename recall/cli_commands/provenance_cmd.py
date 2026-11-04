@@ -145,13 +145,16 @@ def _lite_target(args: argparse.Namespace) -> tuple[Path, dict[str, str], set[st
     tenant and a width, which a later `recall index` at the real width then refuses.
     """
     from recall.backends import lite_route_refusal
-    from recall.lite import LITE_DSN_PREFIX
+    from recall.lite import LiteStoreError, lite_dsn_path
     from recall.runtime_route import resolve_runtime_route
 
     route = getattr(args, "_runtime_route", None) or resolve_runtime_route()
     if (refusal := lite_route_refusal(args.dsn, route)) is not None:
         raise SystemExit(refusal)
-    path = Path(args.dsn[len(LITE_DSN_PREFIX):])
+    try:
+        path = lite_dsn_path(args.dsn)
+    except LiteStoreError as exc:
+        raise SystemExit(f"{exc}; nothing was read or created") from None
     if not path.exists():
         raise SystemExit(f"{path} does not exist; nothing was read or created (build it with `recall setup --lite`)")
     meta, tables = _lite_file(path)
