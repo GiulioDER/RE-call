@@ -564,7 +564,7 @@ def test_a_file_with_two_claims_is_not_an_ambiguous_target():
 
 def test_a_bracketed_dangling_claim_is_still_dated():
     """`resolve_supersession` keys a RESOLVED edge on the target's path (matched through
-    `_basename`) and a DANGLING one on the raw `rsplit`. Those differ when the claim carries both
+    `reference_stem_key`) and a DANGLING one on the raw `rsplit`. Those differ when the claim carries both
     a path and brackets, so indexing only the normalised form left every bracketed dangling edge
     undated, which the per-file keying this replaced happened to get right."""
     rows = [("b.md", "[[dir/gone]]", WED)]

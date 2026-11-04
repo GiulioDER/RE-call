@@ -280,6 +280,8 @@ had been calling them `DECLARED`.
 | `RECALL_ARBITER_API_KEY` | none, required | key for the OpenAI-compatible endpoint |
 | `RECALL_ARBITER_BASE_URL` | OpenRouter | the endpoint |
 | `RECALL_ARBITER_MODEL` | `openai/gpt-6.1-sol` | the judge |
+| `RECALL_ARBITER_REVISION` | `unpinned` | a label for the model deployment; part of the cache key and of each proposal's provider revision |
+| `RECALL_ARBITER_TIMEOUT` | `60` | seconds per model call; must be greater than zero |
 | `RECALL_ARBITER_THRESHOLD` | `0.90` | stated probability at which a pair is proposed (0.5 to 1) |
 | `RECALL_ARBITER_NEIGHBOURS` | `10` | lexical neighbours per memo |
 | `RECALL_ARBITER_MAX_PAIRS` | `200` | most pairs judged per run, most similar first |
@@ -299,7 +301,8 @@ endpoint, model, revision, prompt text and both texts shown, so `apply` and `rej
 make no calls. With `RECALL_ARBITER_CACHE=off` every verb pays for the whole run again, and a model
 that answers differently the second time can make a planned proposal id disappear. A failed call is
 not cached. The run summary on stderr says how many pairs were judged from cache, by the model, and
-not at all (no direction, over budget).
+not at all (no direction, over budget). The cache keeps each raw answer, verbatim memo quotes
+included, with no expiry, and `recall forget` does not touch it: delete the file to erase them.
 
 The MCP surface is unchanged: `recall_rewrite_plan` derives proposals from the store graph and does
 not call the arbiter.

@@ -255,3 +255,123 @@ def test_perf003_a_store_whose_memos_state_nothing_never_reads_the_ledger(
     with LiteStore(tmp_path / "m.db", dim=4) as store:
         report = stated._reconcile(store, StatingRule(prefixes=(), tenant=store.tenant))
     assert report.facts_stated == 0 and "no admitted memo" in report.reason, report
+
+
+# ------------------------------------------------- 2026-11-04 deferred-pool hunt, same family
+
+
+def test_arch1_a_chain_of_withdrawn_claimants_hands_the_ambiguity_to_the_live_one() -> None:
+    """ARCH-1. Withdrawn a.md ambiguously claims two notes files, withdrawn c.md claims a.md and
+    live d.md claims c.md: d.md inherits a.md's ambiguity, so both notes stay unresolved.
+
+    Red: pre-fix `_resolve_rows` (recall/supersession.py) reads the inheritors from `order[a.md]`
+    alone, which a withdrawn claimant never enters, and fails on the unresolved assertion with an
+    empty set.
+    """
+    rows = [_row("x/notes.md", None), _row("y/notes.md", None), _row("d.md", "c")]
+    records = [
+        SupersessionRecord(WITHDRAWN_RECORD, "a.md", "/r/a.md", (("notes", T0, None, None),)),
+        SupersessionRecord(WITHDRAWN_RECORD, "c.md", "/r/c.md", (("a", T0, None, None),)),
+    ]
+    graph = resolve_supersession_graph(rows, records)
+    assert graph.unresolved == {"x/notes.md", "y/notes.md"}, f"ambiguity dropped: {sorted(graph.unresolved)}"
+    assert graph.ambiguous_claims == {"d.md": ("notes",)}, graph.ambiguous_claims
+
+
+def test_arch1_control_an_unclaimed_chain_of_withdrawn_memos_drops_the_claim() -> None:
+    """Control for ARCH-1: with nothing live at the end of the chain, the claim simply goes."""
+    records = [
+        SupersessionRecord(WITHDRAWN_RECORD, "a.md", "/r/a.md", (("notes", T0, None, None),)),
+        SupersessionRecord(WITHDRAWN_RECORD, "c.md", "/r/c.md", (("a", T0, None, None),)),
+    ]
+    graph = resolve_supersession_graph([_row("x/notes.md", None), _row("y/notes.md", None)], records)
+    assert (graph.edges, set(graph.unresolved), graph.ambiguous_claims) == ({}, set(), {})
+
+
+def test_bug006_a_failed_sqlite_commit_keeps_its_error_and_serves_no_unpersisted_event(tmp_path: Path) -> None:
+    """BUG-006. When SQLite ends the transaction itself (SQLITE_FULL at COMMIT), the original error
+    must propagate and the in-memory ledger must not keep the event that was never persisted.
+
+    Red: pre-fix `SQLiteFactLedger.apply_assertion` (recall/fact_ledger.py) runs a bare ROLLBACK,
+    which raises "cannot rollback - no transaction is active" and skips the restore, so the
+    message assertion fails (and the failed event stays in `ledger.events`).
+    """
+    import sqlite3
+
+    from recall.fact_ledger import SQLiteFactLedger
+
+    class _FullAtCommit:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._real = conn
+
+        def execute(self, sql: str, *args: Any) -> Any:
+            if sql == "COMMIT":
+                self._real.execute("ROLLBACK")  # what SQLite does on SQLITE_FULL
+                raise sqlite3.OperationalError("disk full")
+            return self._real.execute(sql, *args)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    with SQLiteFactLedger(str(tmp_path / "ledger.db"), tenant_id=TENANT) as ledger:
+        real = ledger._conn
+        ledger._conn = _FullAtCommit(real)  # type: ignore[assignment]
+        try:
+            with pytest.raises(sqlite3.OperationalError) as raised:
+                apply(ledger, PARIS, "r1")
+        finally:
+            ledger._conn = real
+        assert str(raised.value) == "disk full", f"the original error was masked: {raised.value}"
+        assert [event for event in ledger.events if event.request_id == "r1"] == [], ledger.events
+
+
+def test_env007_a_cache_path_with_a_stray_space_still_expands_home() -> None:
+    """ENV-007. `RECALL_ARBITER_CACHE` with a leading space must name the same absolute file.
+
+    Red: pre-fix `default_cache_path` (recall/supersession_arbiter.py) builds the Path from the
+    unstripped value, so `expanduser` sees " ~" and the result is relative.
+    """
+    from recall.supersession_arbiter import default_cache_path
+
+    spaced = default_cache_path({"RECALL_ARBITER_CACHE": " ~/c/a.sqlite3"})
+    plain = default_cache_path({"RECALL_ARBITER_CACHE": "~/c/a.sqlite3"})
+    assert spaced is not None and spaced.is_absolute(), spaced
+    assert spaced == plain, (spaced, plain)
+
+
+def test_code007_the_prompts_state_the_quote_rule_the_code_enforces() -> None:
+    """CODE-007, a nonbehavioural pin: the prompts' quote length and probability gate must match
+    `MIN_QUOTE_CHARS` and `QUOTE_REQUIRED_AT` in recall/supersession_arbiter.py, because the
+    prompt text cannot be templated (it is hashed into the cache key and must stay verbatim).
+
+    Red by mutation: `MIN_QUOTE_CHARS = 30` fails the first assertion.
+    """
+    from recall.supersession_arbiter import DIRECTION_PROMPT, MIN_QUOTE_CHARS, QUOTE_REQUIRED_AT, SYSTEM_PROMPT
+
+    length = f"at least {MIN_QUOTE_CHARS} characters"
+    assert length in SYSTEM_PROMPT and length in DIRECTION_PROMPT, length
+    assert f"{int(QUOTE_REQUIRED_AT * 100)} or more" in SYSTEM_PROMPT
+
+
+def test_perf004_admitted_memos_reads_the_text_free_scan_when_the_store_has_one() -> None:
+    """PERF-004. A store with `_iter_chunks_with_times` must be read through it with no text.
+
+    Red: pre-fix `_admitted_memos` (recall/stated_facts.py) calls `store.iter_chunks()`, which
+    this fake makes raise, so the call fails instead of returning the memo.
+    """
+    from recall.frontmatter import GRAPH_KEY
+    from recall.stated_facts import StatingRule, _admitted_memos
+    from recall.types import Chunk
+
+    memo = Chunk("c1", "/r/memos/a.md", "", {GRAPH_KEY: {"facts": []}, "file": "memos/a.md", "ord": 0})
+
+    class _Store:
+        def iter_chunks(self) -> Any:
+            raise AssertionError("the full-text scan was used")
+
+        def _iter_chunks_with_times(self, batch_size: int, *, include_text: bool) -> Any:
+            assert not include_text
+            yield memo, None
+
+    found = _admitted_memos(_Store(), StatingRule(prefixes=("memos",)))
+    assert [(name, chunk.id) for name, chunk in found] == [("memos/a.md", "c1")]

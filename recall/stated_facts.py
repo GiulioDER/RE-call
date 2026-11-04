@@ -316,7 +316,11 @@ class StatedFactsReport:
 def _admitted_memos(store: Any, rule: StatingRule) -> list[tuple[str, Chunk]]:
     """`(name, first chunk)` of every served memo with a `recall_graph` the rule admits, by name."""
     chosen: dict[str, tuple[int, str, Chunk]] = {}
-    for chunk in store.iter_chunks():
+    # Nothing here reads chunk text, so a store that can leave it out does: this runs after every
+    # index write and reads every row of the corpus.
+    reader = getattr(store, "_iter_chunks_with_times", None)
+    chunks = (c for c, _t in reader(1000, include_text=False)) if callable(reader) else store.iter_chunks()
+    for chunk in chunks:
         metadata = chunk.metadata or {}
         graph = metadata.get(GRAPH_KEY)
         if graph is None or (
@@ -386,10 +390,11 @@ def _current_request_ids(events: Sequence[Any]) -> tuple[set[str], set[str]]:
     gc retracts, for good, a fact whose memos no generation holds (SOURCE_REMOVED, PR 933). The
     same memo coming back byte for byte computes the same request id, which then counted as known,
     so its facts never returned. A request whose assertion gc retracted is recorded again under a
-    derived id (`_next_request_id`). A forget erases the value and replaces the request id with a
-    random one (`recall.fact_redaction`), so a forgotten memo indexed again byte for byte (lite and
-    the legacy table allow it; production's tombstone does not) states its facts again, with its
-    chunks: the ledger keeps nothing that could recognize it.
+    derived id (`_next_request_id`). A forget that erases a value replaces the request ids of the
+    events holding it with random ones (`recall.fact_redaction`), so a forgotten memo indexed again
+    byte for byte (lite and the legacy table allow it; production's tombstone does not) states
+    those facts again, with its chunks. A fact another memo still supports keeps its value and its
+    request ids, so the same re-index records nothing for it until that value is erased.
     """
     retraction_prefix = RETRACTION_REQUEST_PREFIX
     removed_events = {
@@ -468,9 +473,17 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
     # longer served is dropped here. A forget landing between this check and the writes below is
     # not excluded: that needs a lock forget shares with this reconcile.
     gone = _vanished(store, {source_of[card.card_id] for _fact, card, _rid in todo})
+    before = len(todo)
     todo = [item for item in todo if source_of[item[1].card_id] not in gone]
+    dropped = before - len(todo)
     if not todo:
-        report.reason = "every stated fact is already recorded"
+        # Two causes, two reasons: a statement dropped because its memo was forgotten mid-run is
+        # not one the ledger already holds.
+        report.reason = (
+            f"{dropped} statement(s) dropped: their memos are no longer served"
+            if dropped
+            else "every stated fact is already recorded"
+        )
         return report
     # Only the cards a new statement cites: a card's id includes its generation, so putting every
     # admitted memo's card on each activation filled an append-only table with cards nothing cites.

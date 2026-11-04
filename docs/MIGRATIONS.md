@@ -248,5 +248,8 @@ migrating a database whose ledger already holds events, run once per tenant:
 recall provenance rebuild
 ```
 
-`recall provenance rebuild --check` then reports `current: true`. Re-run
-`recall schema grants --controller` and `--strict` first, as the 0.15.0 notes say.
+Generate and apply the grants first, as two separate commands:
+`recall schema grants --role <controller role> --controller` and
+`recall schema grants --role <serving role> --strict` (see CHANGELOG.md). Then
+`recall provenance rebuild --check` reports `current: true`. Migration 0031 adds the ledger's
+ordering index, built CONCURRENTLY.

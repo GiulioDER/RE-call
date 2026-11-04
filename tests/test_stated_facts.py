@@ -881,3 +881,30 @@ def test_cca_a_memo_forgotten_while_reconcile_runs_leaves_no_value_behind(
     left = [row for row in _value_rows(store) if re.search(r"(?<![0-9A-Za-z])4512(?![0-9A-Za-z])", row)]
     assert not left, f"the forgotten memo's value is recorded again: {left}"
     assert listed(store) == []
+
+
+def test_cca_a_reconcile_whose_memos_were_forgotten_mid_run_says_they_were_dropped(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CCA 2026-11-04 ARCH-2. When the vanished-source check drops every new statement, the report
+    must say they were dropped, not that every stated fact is already recorded.
+
+    Red: pre-fix `_reconcile` (recall/stated_facts.py) sets one reason for both causes, "every
+    stated fact is already recorded", and the reason assertion fails.
+    """
+    import recall.stated_facts as stated
+
+    memo(folder, "door.md", facts=[DOOR])
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
+    refreshed(store, folder)  # indexed, nothing stated yet
+    monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
+    real = stated._fact_stores
+
+    def stores(target: Any, env: Any = None) -> tuple[Any, Any]:
+        forget_memory(store, ["door.md"])  # type: ignore[arg-type]
+        return real(target, env)
+
+    monkeypatch.setattr(stated, "_fact_stores", stores)
+    report = reconcile(store, folder)
+    assert report.facts_stated == 0, report
+    assert report.reason == "1 statement(s) dropped: their memos are no longer served", report.reason
