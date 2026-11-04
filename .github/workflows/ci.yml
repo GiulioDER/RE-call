@@ -595,6 +595,59 @@ jobs:
           compose="$RUNNER_TEMP/install/docker-compose.recall.yml"
           test -f "$compose" && docker compose -f "$compose" down -v || true
 
+  # The Lite first run, from the BUILT WHEEL, on each OS a new user brings.
+  #
+  # `clean-install` above covers the PostgreSQL wizard from an editable install on Linux, and the
+  # release workflow's `smoke` job only imports the wheel and runs `--help`. Neither does what
+  # docs/LITE.md tells a new user to do: install `recall-rag[fastembed,mcp]`, run
+  # `recall setup --lite`, refresh, and have Claude Code start the registered server and search.
+  # `scripts/first_run_smoke.py` does exactly that, in a temporary project with Claude Code's
+  # config pointed at a temporary directory, and starts the server from the entry setup wrote.
+  #
+  # The wheel goes into a venv outside the checkout and the script runs from `$RUNNER_TEMP`
+  # with `-I`, so no import can resolve to the source tree. fastembed downloads its model on
+  # each run, as it does for a new user. Required by merge-gate: one red leg fails the gate.
+  first-run-lite:
+    name: First run, Lite from the wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+
+      - name: Build the wheel
+        run: uv build --wheel --out-dir "$RUNNER_TEMP/dist"
+
+      - name: Install it as a new user would
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          if [[ -x "$RUNNER_TEMP/venv/Scripts/python.exe" ]]; then py="$RUNNER_TEMP/venv/Scripts/python.exe"; else py="$RUNNER_TEMP/venv/bin/python"; fi
+          wheel=$(ls "$RUNNER_TEMP"/dist/*.whl)
+          "$py" -m pip install --quiet "${wheel}[fastembed,mcp]"
+          echo "PY=$py" >> "$GITHUB_ENV"
+          cp scripts/first_run_smoke.py "$RUNNER_TEMP/"
+
+      - name: Walk the first run
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$PY" -I -c "import recall; print(recall.__file__)"
+          "$PY" -I first_run_smoke.py
+
   # The desktop UI, which until now was tested only on a maintainer's machine.
   #
   # ⚠️ **No job installed the `desktop` extra, so every test guarding the UI silently SKIPPED on
@@ -1209,6 +1262,7 @@ jobs:
       - schema-migrations
       - test
       - clean-install
+      - first-run-lite
       - desktop
       - session-db
       - citations
@@ -1235,6 +1289,7 @@ jobs:
             "${{ needs.schema-migrations.result }}" \
             "${{ needs.test.result }}" \
             "${{ needs.clean-install.result }}" \
+            "${{ needs.first-run-lite.result }}" \
             "${{ needs.desktop.result }}" \
             "${{ needs.session-db.result }}" \
             "${{ needs.citations.result }}" \

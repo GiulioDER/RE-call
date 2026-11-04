@@ -1395,6 +1395,17 @@ class LiteStore:
                 (payload,),
             )
 
+    def record_embedder_spec(self, spec: str) -> None:
+        """Keep the embedder spec setup resolved (`fastembed`, `voyage:<model>`), so a refresh run
+        with no `--embedder` resolves the same one. `embedder_model` alone cannot: it is the model's
+        own name, which `recall.embeddings.resolve_embedder` does not accept."""
+        with self._write():
+            self._conn.execute(
+                "INSERT INTO meta(key, value) VALUES ('embedder_spec', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (spec,),
+            )
+
     def calibration_evidence(self, calibration_id: str) -> tuple[str, bytes, str] | None:
         """`(queries JSON, vectors, sources JSON)` stored with `calibration_id`, or None."""
         rows = self._metadata_values(

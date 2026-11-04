@@ -162,14 +162,21 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.embeddings import resolve_embedder
     from recall.lite import LiteStore
 
-    name = args.embedder or os.environ.get("RECALL_EMBEDDER", "").strip() or inspect_lite_file(db).embedder_model
+    given = args.embedder or os.environ.get("RECALL_EMBEDDER", "").strip()
+    info = inspect_lite_file(db)
+    name = given or info.embedder_spec or info.embedder_model
+    ask = f"which embedder built {db}? Pass --embedder or set RECALL_EMBEDDER"
     if not name:
         # A wrong embedder of the same width does not raise: it ranks nonsense. So never guess.
-        raise SystemExit(
-            f"which embedder built {db}? Pass --embedder or set RECALL_EMBEDDER (the store has not "
-            "recorded one yet)"
-        )
-    embedder = resolve_embedder(name)
+        raise SystemExit(f"{ask} (the store has not recorded one yet)")
+    try:
+        embedder = resolve_embedder(name)
+    except ValueError:
+        if given or info.embedder_spec:
+            raise
+        # A store set up before the spec was recorded holds only the model's own name, such as
+        # BAAI/bge-small-en-v1.5, which names no provider; guessing one is the nonsense above.
+        raise SystemExit(f"{ask} (the store recorded the model {name!r}, which names no embedder)") from None
     with LiteStore(db, dim=embedder.dim) as store:
         policy, context = _policy(store.tenant)
         result = refresh(
