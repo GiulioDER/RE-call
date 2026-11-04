@@ -247,17 +247,30 @@ def seed(workdir: Path) -> None:
         cards = [c for c in evidence.get("cards") or [] if c.get("structured_facts")]
         if not cards:
             raise StepFailed(f"seed 6: no evidence card carries the memo's fact: {json.dumps(evidence)[:1500]}")
-        applied = await call("recall_apply_fact", {
-            **FACT, "evidence_card_ids": [cards[0]["card_id"]], "request_id": "upgrade-smoke-1",
-        })
-        print(f"    apply_fact: {json.dumps(applied, sort_keys=True)[:600]}")
-        current = await call("recall_current_facts", {})
-        return probes, applied, current
+        return probes, cards[:1]
 
-    probes, applied, current = asyncio.run(_server_calls(prod, workdir, calls))
+    probes, cards = asyncio.run(_server_calls(prod, workdir, calls))
+
+    # Applied with the CLI, not `recall_apply_fact`: 0.14.0's generation-mode server reports its
+    # store's generation as `legacy`, so the controller refuses every card the same server minted
+    # (GENERATION_MISMATCH, then FRESH_SEARCH_INSUFFICIENT). `recall provenance apply
+    # --generation` binds the generation explicitly and is the route a 0.14.0 user had.
+    print("seed 7: apply a fact with `recall provenance apply`, from a card the server minted", flush=True)
+    (workdir / "claim.json").write_text(json.dumps(FACT), encoding="utf-8")
+    (workdir / "cards.json").write_text(json.dumps({"cards": cards}), encoding="utf-8")
+    out = _run("seed 7", _recall("provenance", "apply", "--claim", str(workdir / "claim.json"),
+                                 "--cards", str(workdir / "cards.json"), "--request-id", "upgrade-smoke-1",
+                                 "--generation", generation), env=prod, cwd=workdir)
+    if json.loads(out).get("decision_code") != "APPLIED":
+        raise StepFailed("seed 7: the fact was not applied")
+
+    async def read_facts(call):
+        return await call("recall_current_facts", {})
+
+    current = asyncio.run(_server_calls(prod, workdir, read_facts))
     facts = _fact_objects(current)
     if FACT["object"] not in facts:
-        raise StepFailed(f"seed 6: the applied fact is not current: {json.dumps(current)[:1500]}")
+        raise StepFailed(f"seed 7: the applied fact is not current: {json.dumps(current)[:1500]}")
     state["probes"] = probes
     state["facts"] = facts
     (workdir / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
