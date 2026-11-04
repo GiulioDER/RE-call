@@ -37,7 +37,8 @@ import functools
 import hashlib
 import sqlite3
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,19 +64,50 @@ from recall.rewrite import (
     default_ledger_path,
     plan_rewrite,
 )
-from recall.stale_reports import StaleReport, StaleReportQueue, default_queue_path, find_quote
+from recall.stale_reports import StaleReport, StaleReportQueue, StaleReportRefused, default_queue_path, find_quote
+from recall.state_dir import make_parent
 
 AGENT_RULE_ID = "agent_stale_report"
 AGENT_PROVIDER_ID = "recall_report_stale"
 AGENT_PROVIDER_REVISION = "stale_reports.v1"
 
 #: One decision at a time per process. `apply_rewrite` takes no lock, and two writes to one memo are
-#: last writer wins; the memo hash below catches a writer outside this process.
+#: last writer wins; across processes `memo_write_reservation` serializes an accept with every
+#: dashboard edit, and the memo hash below catches a writer that is not a dashboard.
 _DECISION_LOCK = threading.Lock()
+#: The reservation `edit.EditLedger` holds for each edit, undo and recovery (the same file).
+_EDIT_LOCK = ".recall/edits-lock.sqlite3"
 
 
 class ReviewRefused(ValueError, RecallError):
     """A decision that was not carried out, with the reason to show the reviewer."""
+
+
+class DecisionRecorded(RecallError):
+    """The decision was written, and a step after it failed: never shown as "nothing was written"."""
+
+
+@contextmanager
+def memo_write_reservation(root: Path) -> Iterator[None]:
+    """Hold the dashboard's cross-process memo-write reservation, as `edit.EditLedger` does.
+
+    Without it a second dashboard on the same folder (another port) can save an edit between this
+    accept's hash check and its write, and one of the two writes is silently lost.
+    """
+    path = root / _EDIT_LOCK
+    try:
+        make_parent(path)
+        connection = sqlite3.connect(str(path), timeout=30.0)
+    except (sqlite3.Error, OSError) as exc:
+        raise ReviewRefused(f"the memo write lock cannot be opened: {exc}") from exc
+    try:
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.Error as exc:
+            raise ReviewRefused(f"another dashboard is writing to this folder; try again: {exc}") from exc
+        yield
+    finally:
+        connection.close()
 
 
 @dataclass(frozen=True)
@@ -424,7 +456,7 @@ def accept(root: Path, item: QueueItem, *, reviewer: str, note: str, shown_diges
     """Write the declaration, if the memo is still the one the reviewer saw."""
     root = root.resolve()
     fact = _promoted(item, reviewer, note, now)
-    with _DECISION_LOCK:
+    with _DECISION_LOCK, memo_write_reservation(root):
         # Planned once, for the fact being written, and handed to `apply_rewrite`: planning reads
         # the whole corpus, and this lock holds every other decision while it does.
         try:
@@ -467,5 +499,6 @@ def _close_report(root: Path, claim: str, status: str, reviewer: str, note: str,
             report = queue.get(claim)
             if report is not None and report.status == "pending":
                 queue.mark_reviewed(claim, status=status, reviewer_id=reviewer, note=note, reviewed_at=now)
-    except sqlite3.Error as exc:
-        raise ReviewRefused(f"the decision was recorded but the report queue could not be updated: {exc}") from exc
+    except (sqlite3.Error, StaleReportRefused) as exc:
+        # The memo or the rejection ledger is already written, so this is not a refusal.
+        raise DecisionRecorded(f"the decision was recorded but the report queue could not be updated: {exc}") from exc

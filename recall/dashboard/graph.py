@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from recall.dashboard.review import build_queue, memo_files
@@ -58,6 +58,20 @@ def _born(text: str, name: str, path: Path) -> str:
 
 
 _memo_files = memo_files
+
+
+def anchored(text: str) -> bool:
+    """Whether a path names its own root, drive or share, so joining it would leave the memo folder.
+
+    Checked before any filesystem call: on Windows `resolve()` opens a UNC path such as
+    `\\\\host\\share\\x` (or `//host/share/x`) to follow links, which contacts that host and sends the
+    user's credentials, so a containment check that follows the resolve comes too late.
+    """
+    for flavour in (PureWindowsPath, PurePosixPath):
+        candidate = flavour(text)
+        if candidate.anchor or candidate.drive:
+            return True
+    return False
 
 
 def _display(text: str, stem: str) -> tuple[str, str]:
@@ -142,6 +156,8 @@ def build_graph(
             if resolved is not None:
                 add_edge(name, resolved, "link")
         for match in _MD_LINK.finditer(text):
+            if anchored(match.group(1)):
+                continue  # never resolve a UNC or absolute target: see `anchored`
             candidate = (path.parent / match.group(1)).resolve()
             if candidate.is_relative_to(root):
                 relative = candidate.relative_to(root).as_posix()
