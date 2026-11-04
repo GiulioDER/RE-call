@@ -5,6 +5,11 @@ opaque evidence-card identifiers. The controller resolves the cards from a serve
 store, checks their current lineage and source digests, verifies deterministic structured support,
 and only then asks a fact ledger to append the event.
 
+The card checks run before the append, outside the ledger's key lock, and no ledger repeats them
+under it. A `recall_forget` of a card's memo that lands between the two leaves the assertion
+appended after the forget's retraction pass: never retracted, its value never erased, hidden only
+while no memo of that name is served (STAKES-003, an open owner item; `ProvenanceController.apply_fact`).
+
 Arbitrary prose is not an authorization input. A prose passage can be useful evidence for a human
 or a proposal engine, but it cannot prove an atomic fact here without a structured source record.
 """
@@ -24,7 +29,7 @@ from types import MappingProxyType
 from typing import Any, Protocol, cast
 
 from recall import eval_clock
-from recall.supersession import reference_stem_key
+from recall.supersession import reference_path_key, reference_stem_key
 from recall.types import AtomicFact, EvidenceCard, FactCardinality, RedactedEvidenceCard, Verdict
 
 
@@ -876,8 +881,17 @@ def split_contested(
             by_key.setdefault(fact_conflict_key(event.fact), []).append(event)
     contested: set[str] = set()
     for group in by_key.values():
+        # Two values of one multi-valued cardinality never conflict (`facts_conflict`), so only a
+        # pair with a single-valued side, or of two different cardinalities, is compared. Every
+        # pair was: a subject's k emails or visits cost k^2 / 2 comparisons on each current-facts
+        # listing, about 53 s at k=1000 (2026-11-04 hunt, PERF-001).
+        kinds = [predicate_cardinality(event.fact) for event in group if event.fact is not None]
+        if "single" not in kinds and len(set(kinds)) == 1:
+            continue
         for index, left in enumerate(group):
-            for right in group[index + 1:]:
+            for offset, right in enumerate(group[index + 1:], start=index + 1):
+                if kinds[index] == kinds[offset] != "single":
+                    continue
                 if left.fact and right.fact and facts_conflict(left.fact, right.fact):
                     contested.update((left.event_id, right.event_id))
     standing = tuple(event for event in current if event.event_id not in contested)
@@ -899,6 +913,27 @@ def fact_conflict_key(fact: AtomicFact) -> str:
     }
     digest = hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
     return f"conflict_{digest[:32]}"
+
+
+def _link_names(link: str, sources: Sequence[str]) -> bool:
+    """Whether a `supersedes:` link designates one of `sources`, by the store's rule.
+
+    A link that names a folder designates the memo at that path (`recall.supersession`,
+    `ReferenceIndex.match`), read as root-relative, so `mem/user-drink.md` names a memo stored as
+    `/root/mem/user-drink.md`. Its file name alone designated every memo of that name, so
+    `supersedes: home/status.md` retired the fact of `work/status.md` (2026-11-04 hunt,
+    STAKES-002). A bare name is a stem: `User-Drink.md` designates `mem/user-drink.md`, which a
+    lite store, naming memos relative to RECALL_INDEX_ROOT, needs.
+    """
+    path = reference_path_key(link)
+    if not path:
+        return False
+    if "/" in path:
+        return any(
+            key == path or key.endswith("/" + path)
+            for key in (reference_path_key(source) for source in sources)
+        )
+    return any(reference_stem_key(source) == path for source in sources)
 
 
 def source_digest(text: str) -> str:
@@ -1758,15 +1793,11 @@ class ProvenanceController:
                 for card in evidence
                 for value in (card.card_id, card.chunk_id, card.source)
             }
-            # A memo names what it supersedes by file name, folded to a stem exactly as the
-            # store resolves `supersedes:` (`recall.supersession.reference_stem_key`), so a link
-            # `User-Drink.md` designates a memo stored as `mem/user-drink.md`. Without this a
-            # lite store, which names memos relative to RECALL_INDEX_ROOT, never matched one.
-            old_stems = {reference_stem_key(card.source) for card in evidence if card.source}
+            old_sources = [card.source for card in evidence if card.source]
             allowed = any(
                 event.fact_id in card.supersession_links
                 or old_source_ids.intersection(card.supersession_links)
-                or old_stems.intersection(reference_stem_key(link) for link in card.supersession_links)
+                or any(_link_names(link, old_sources) for link in card.supersession_links)
                 for card in cards
             )
             if allowed and event.fact_id is not None:
@@ -1841,7 +1872,14 @@ class ProvenanceController:
         )
 
     def apply_fact(self, request: FactApplicationRequest) -> ControllerDecision:
-        """Validate and append one fact, with at most one deterministic fresh-search retry."""
+        """Validate and append one fact, with at most one deterministic fresh-search retry.
+
+        The cards are resolved and checked (`_resolve`) before `apply_assertion` takes the ledger's
+        key lock, and the ledger does not check them again. A forget of a card's memo between the
+        two is therefore not excluded: the assertion lands after the forget's retraction pass and
+        keeps its value (STAKES-003, open; closing it needs a recheck under the lock in every
+        ledger and a lock the forget shares). `apply_stated` has the same window.
+        """
         if reserved_request_id(request.request_id):
             # Refused before the ledger is read, and not recorded: a refusal under the id would
             # itself take the slot the ledger keeps for its own event.
@@ -1879,6 +1917,18 @@ class ProvenanceController:
                 code,
                 cards=prior.evidence_cards,
                 event=prior,
+            )
+        if (
+            prior is not None
+            and prior.event_type == "asserted"
+            and {card.card_id for card in prior.evidence_cards} == set(request.evidence_card_ids)
+        ):
+            # The request sent again (`replays_request`): answered with the event it recorded, as
+            # every ledger answers it. Validated afresh, a retry after a later value superseded
+            # it, its memo changed or its card expired was refused while its APPLIED event stood
+            # (2026-11-04 hunt, BUG-002).
+            return self._delivered(
+                request, LedgerApplyResult(prior, duplicate=True), prior.evidence_cards, retried=False
             )
         resolved = self._resolve(request)
         retried = False
@@ -1987,7 +2037,19 @@ class ProvenanceController:
             return self._record_refusal(request, code, cards, retried=retried, detail=str(exc))
         except Exception as exc:  # BROAD-CATCH: fail-closed
             return self._record_refusal(request, DecisionCode.LEDGER_UNAVAILABLE, cards, retried=retried, detail=type(exc).__name__)
+        return self._delivered(request, result, cards, retried=retried)
+
+    def _delivered(
+        self,
+        request: FactApplicationRequest,
+        result: LedgerApplyResult,
+        cards: tuple[EvidenceCard, ...],
+        *,
+        retried: bool,
+    ) -> ControllerDecision:
+        """The decision for an appended (or replayed) `result`, after its materialization."""
         if self.materializer is not None:
+            leased: FactEvent | None = None
             try:
                 event = result.event
                 if self.materialization_outbox is not None:
@@ -2019,23 +2081,26 @@ class ProvenanceController:
                             retried=retried,
                             event=event,
                         )
-                    event = claimed[0]
+                    event = leased = claimed[0]
                 self.materializer.materialize(event)
                 if self.materialization_outbox is not None:
-                        self.materialization_outbox.mark_applied(
+                    self.materialization_outbox.mark_applied(
                         tenant_id=self.tenant_id, event_id=event.event_id,
                         lease_token=event.lease_token,
                     )
             except Exception as exc:  # BROAD-CATCH: fail-closed
                 # The append is the durable intent. Do not claim the downstream fact store was
                 # updated, and leave the outbox event available for an idempotent recovery retry.
-                if self.materialization_outbox is not None:
+                # Only a lease this call holds is released: an enqueue or claim that raised took
+                # none, and `mark_failed` without a token overwrote the row another worker held
+                # or had already applied (2026-11-04 hunt, BUG-003).
+                if self.materialization_outbox is not None and leased is not None:
                     try:
                         self.materialization_outbox.mark_failed(
                             tenant_id=self.tenant_id,
                             event_id=result.event.event_id,
-                        error=f"{type(exc).__name__}: {exc}"[:2000],
-                        lease_token=event.lease_token,
+                            error=f"{type(exc).__name__}: {exc}"[:2000],
+                            lease_token=leased.lease_token,
                         )
                     except Exception:  # BROAD-CATCH: fail-closed
                         # The durable ledger remains the source of intent even if the outbox
@@ -2067,7 +2132,8 @@ class ProvenanceController:
         checked here is that the card is a stated card of this tenant and generation that carries
         exactly this fact. A disagreement with a current fact is appended, never refused: the
         projection lists both as contested. A refusal writes nothing, because a card failing these
-        checks is the caller's defect, not a decision about the fact.
+        checks is the caller's defect, not a decision about the fact. The memo is not checked
+        again under the ledger's lock, so a concurrent forget is not excluded (`apply_fact`).
         """
         request = FactApplicationRequest(fact, (card.card_id,), request_id)
         if (
@@ -2173,11 +2239,17 @@ def cards_from_trusted_result(result: Any, *, selected_only: bool = True) -> tup
         graph = metadata.get("recall_graph", {})
         if not isinstance(graph, Mapping):
             graph = {}
-        facts = tuple(
-            AtomicFact.from_payload(item)
-            for item in graph.get("facts", metadata.get("facts", []))
-            if isinstance(item, Mapping)
-        )
+        # One malformed authored fact (no subject, a bad date) is skipped, as `recall.evidence`
+        # skips it; it raised out of the public `recall.cards_from_trusted_result` and discarded
+        # every card of the result (2026-11-04 hunt, CODE-001).
+        facts: list[AtomicFact] = []
+        raw_facts = graph.get("facts", metadata.get("facts", []))
+        for item in raw_facts if isinstance(raw_facts, Sequence) and not isinstance(raw_facts, str) else ():
+            if isinstance(item, Mapping):
+                try:
+                    facts.append(AtomicFact.from_payload(item))
+                except (TypeError, ValueError, KeyError):
+                    continue
         file_name = hit.provenance.file or hit.chunk.source
         raw_digest = metadata.get("content_hash") or metadata.get("source_digest")
         digest = (
@@ -2207,7 +2279,7 @@ def cards_from_trusted_result(result: Any, *, selected_only: bool = True) -> tup
             supersession_links=_evidence_links(graph, metadata, "authored_supersedes"),
             contradiction_links=_evidence_links(graph, metadata, "authored_contradicts"),
             support_refs=_evidence_links(graph, metadata, "support_refs"),
-            structured_facts=facts,
+            structured_facts=tuple(facts),
         )
         if card.has_usable_support:
             cards.append(card)
