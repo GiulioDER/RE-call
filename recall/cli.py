@@ -106,6 +106,18 @@ _COMMAND_REGISTRATIONS: tuple[tuple[frozenset[str], str, str], ...] = (
 )
 
 
+class StoreGiven(argparse.Action):
+    """Store the value and set `<dest>_given`: the global `--embedder` defaults to RECALL_EMBEDDER
+    or fastembed, so a command that must prefer a store's recorded embedder (`lite refresh`) cannot
+    otherwise tell a typed flag from that default."""
+
+    def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+                 values: object, option_string: str | None = None) -> None:
+        del option_string  # part of argparse's call signature; which spelling was typed is irrelevant
+        setattr(namespace, self.dest, values)
+        setattr(namespace, f"{self.dest}_given", True)
+
+
 def build_parser(command: str | None = None) -> argparse.ArgumentParser:
     """Build the command tree without opening a database or resolving providers.
 
@@ -136,6 +148,7 @@ def build_parser(command: str | None = None) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--embedder",
+        action=StoreGiven,
         default=os.environ.get("RECALL_EMBEDDER", "fastembed"),
         help=(
             "hashing, fastembed[:model], st:<model>, st-prompted:<model>, voyage[:model], openai[:model]. "
