@@ -178,7 +178,7 @@ async def _server_calls(env: dict[str, str], cwd: Path, calls):
 
 
 def _top(payload: dict) -> list[str]:
-    return [source for source, _ in _scored(payload)]
+    return [hit[0] for hit in _scored(payload)]
 
 
 def _scored(payload: dict) -> list[list]:
