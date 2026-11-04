@@ -606,7 +606,7 @@ jobs:
   #
   # The wheel goes into a venv outside the checkout and the script runs from `$RUNNER_TEMP`
   # with `-I`, so no import can resolve to the source tree. fastembed downloads its model on
-  # each run, as it does for a new user.
+  # each run, as it does for a new user. Required by merge-gate: one red leg fails the gate.
   first-run-lite:
     name: First run, Lite from the wheel (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -1262,6 +1262,7 @@ jobs:
       - schema-migrations
       - test
       - clean-install
+      - first-run-lite
       - desktop
       - session-db
       - citations
@@ -1288,6 +1289,7 @@ jobs:
             "${{ needs.schema-migrations.result }}" \
             "${{ needs.test.result }}" \
             "${{ needs.clean-install.result }}" \
+            "${{ needs.first-run-lite.result }}" \
             "${{ needs.desktop.result }}" \
             "${{ needs.session-db.result }}" \
             "${{ needs.citations.result }}" \
