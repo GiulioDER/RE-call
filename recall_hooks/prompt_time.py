@@ -191,7 +191,8 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
     block = config.get("prompt_time")
     block = block if isinstance(block, dict) else {}
     return {
-        "enabled": bool(block.get("enabled", True)),
+        # Only a real bool: `bool("false")` is True. Anything else present fails closed.
+        "enabled": block.get("enabled", True) is True,
         "k": int(block.get("k", TOP_K)),
         "min_chars": int(block.get("min_chars", MIN_PROMPT_CHARS)),
         "store": str(block.get("store", "")),

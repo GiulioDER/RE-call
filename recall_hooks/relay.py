@@ -377,7 +377,10 @@ def _spawn(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            close_fds=os.name != "nt",
+            # On Windows too: with close_fds=False the helper inherits the hook's own stdout and
+            # stderr pipe handles despite DEVNULL, and holds the client's pipe open for its whole
+            # life. Supported with redirected standard handles since Python 3.7.
+            close_fds=True,
             start_new_session=os.name != "nt",
             creationflags=creationflags,
         )
