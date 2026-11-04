@@ -7,7 +7,9 @@ report later (`recall rewrite`, or the dashboard). That keeps the rule
 cannot be the one who edits a document.
 
 * **The sidecar queue** (`recall.stale_reports`, `<RECALL_INDEX_ROOT>/.recall/reports.sqlite3`),
-  when both memos are files under `RECALL_INDEX_ROOT` (default: the server's working directory).
+  when both memos are files under `RECALL_INDEX_ROOT` (default: the server's working directory),
+  and only on an unauthenticated (stdio or lite) server: an authenticated server shares that root
+  across tenants, so it passes `sidecar=False` and uses the ledger alone.
   The quotes are checked against those files. This is the local-only path, and it works with no
   database.
 * **The tenant's audit ledger**, as one `stale_report` row in `recall_audit_events`, when the

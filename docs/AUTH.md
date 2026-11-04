@@ -97,8 +97,9 @@ to the ones an operator sizes a token against.
 | Scope | Tools | Why separate |
 |---|---|---|
 | `recall:read` | `recall_search`, `recall_evidence`, `recall_stats`, and the reasoning/inspection tools (`recall_tenants`, `recall_job_status`, `recall_calibration_status`, `recall_rewrite_plan`, `recall_reasoning_*`) | |
-| `recall:write` | `recall_index`, `recall_ingest`, `recall_calibration_run` | Indexing burns embedding spend — with a paid embedder that is real money. |
-| `recall:forget` | `recall_forget` | Deletion is irreversible. |
+| `recall:write` | `recall_index`, `recall_ingest`, `recall_calibration_run`, `recall_report_stale`, `recall_report_use`, and the lite `recall_remember` | Indexing burns embedding spend — with a paid embedder that is real money. |
+| `recall:fact_write` | `recall_apply_fact` | Applies a reviewed structured fact through the provenance controller. Deliberately NOT implied by `recall:write`: adding memory and asserting a fact the ledger will serve are different grants. |
+| `recall:forget` | `recall_forget`, `recall_withdraw`, and the lite `recall_forget_memo` | Deletion is irreversible. |
 | `recall:admin` | `recall_calibration_publish` | Publication changes the serve/abstain decision for the whole tenant. Deliberately NOT implied by write: a principal that may add memory should not be able to change what every query trusts. |
 | `recall:federate` | Configured cross tenant retrieval routes | Explicitly permits a route plan to select more than the authenticated principal's owning tenant. The process allowlist and each selected route generation remain mandatory. |
 
@@ -202,9 +203,9 @@ Two limits, stated because discovering them mid-cutover is the expensive way:
   somewhere the token file is allowed, and treat production as the flip alone.
 - **Rollback needs two things kept.** Flipping `mode` back to `static` is a rollback only while the
   token file still exists, so do not remove it until you have renounced rollback. Set
-  `RECALL_AUTH_ISSUER_URL` explicitly for the duration too, rather than leaning on the OIDC default;
-  it is defaulted from the OIDC block whenever one is present, but an explicit value is one less
-  thing that changes meaning when the mode does.
+  `RECALL_AUTH_ISSUER_URL` explicitly for the duration too. It is defaulted from the OIDC block
+  only while `RECALL_AUTH_MODE` selects OIDC; under `mode=static` an HTTP transport requires it,
+  so leaving it unset makes the static half of the cutover refuse to start.
 
 Without `RECALL_AUTH_MODE`, both-set still refuses. The guard was never wrong, only too broad.
 
@@ -295,8 +296,10 @@ tenants are provisioned**, because the tenants share one pool (`StoreRegistry.ma
 figures, together with the number of readiness probes, are logged at startup.
 
 > **RLS does not apply to superusers.** A role with `SUPERUSER` or `BYPASSRLS` ignores the policy
-> entirely, leaving only the query predicates. The server checks this at startup and warns.
-> Connect as an unprivileged role.
+> entirely, leaving only the query predicates. The server checks this at startup: authenticated
+> multi-tenant HTTP refuses to start on such a role, and single-tenant or stdio serving logs a
+> warning and continues (see [SECURITY_MODEL.md](SECURITY_MODEL.md)). Connect as an unprivileged
+> role.
 
 ## Limits of the static token scheme
 
@@ -314,8 +317,11 @@ property of the **token file**, and the OIDC path above exists because of them:
   disk.
 - **Rate limits are per process.** Per-tenant call budgets and an indexing byte quota do ship
   (`recall_mcp/limits.py`, tuned with `RECALL_RATE_*_PER_MIN` and `RECALL_INDEX_BYTES_PER_HOUR`;
-  see [SECURITY_MODEL.md](SECURITY_MODEL.md)), but the buckets are in-memory and unshared, so N worker
-  processes admit roughly N times each rate. A fleet needs a shared limiter.
+  see [SECURITY_MODEL.md](SECURITY_MODEL.md)). With `RECALL_RATE_LIMIT_BACKEND=local`, the default,
+  the buckets are in-memory and unshared, so N worker processes admit roughly N times each rate.
+  `RECALL_RATE_LIMIT_BACKEND=redis` (with `RECALL_REDIS_URL`) shares them across workers, and
+  `RECALL_ENV=production` refuses any backend but `redis`. The Redis backend also requires an
+  `idempotency_key` on every write, forget and admin call.
 
 Against [the OIDC path](#taking-identity-from-an-oidc-provider), item by item, since the split is
 not a clean prefix:
@@ -326,7 +332,8 @@ not a clean prefix:
   check on multi-audience tokens) and an enforced `exp` carried onto the principal. It does not add
   proof-of-possession: a stolen JWT still works until it expires.
 - **The `token_sha256` length floor** does not exist under OIDC — there is no token file.
-- **Per-process rate limits** are unchanged. That one is orthogonal to identity.
+- **Rate limits** are unchanged: per process with the local backend, shared with Redis. That one
+  is orthogonal to identity.
 
 ## Production secret rotation
 
