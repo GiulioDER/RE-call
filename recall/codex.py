@@ -171,18 +171,31 @@ def _write_hook_config(
     table: str,
     write_time: bool,
     prompt_time: bool,
+    write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
 ) -> None:
+    """The same document the Claude Code installer writes, at the Codex integration path."""
+    from recall.claude_code import hook_config_document
+
     destination = codex_hook_config_path()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    document = {
-        "dsn": dsn,
-        "tenant": tenant,
-        "embedder": embedder,
-        "table": table,
-        "write_time": {"enabled": write_time},
-        "prompt_time": {"enabled": prompt_time},
-    }
+    document = hook_config_document(
+        destination,
+        dsn=dsn,
+        tenant=tenant,
+        embedder=embedder,
+        table=table,
+        write_time=write_time,
+        write_time_connection_mode=write_time_connection_mode,
+        project_root=project_root,
+        prompt_time=prompt_time,
+    )
     atomic_write_bytes(destination, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
+    try:
+        destination.chmod(0o600)
+    except OSError:
+        # As in the Claude Code installer: Windows ACLs do not model the POSIX bits.
+        pass
 
 
 def _hook_entries(python_executable: str | None = None) -> dict[str, list[dict[str, Any]]]:
@@ -198,7 +211,10 @@ def _hook_entries(python_executable: str | None = None) -> dict[str, list[dict[s
         hook: dict[str, Any] = {
             "type": "command",
             "command": command,
-            "args": ["-m", CODEX_HOOK_MARKER, event],
+            # `-P`, as the Claude Code installer does: without it `python -m` puts the session's
+            # directory first on sys.path, so a checkout holding another `recall_hooks` or
+            # `recall` (another branch of this repository, say) would run instead.
+            "args": ["-P", "-m", CODEX_HOOK_MARKER, event],
         }
         if async_:
             hook["async"] = True
@@ -264,13 +280,21 @@ def install_codex_integration(
     table: str = "chunks",
     write_time: bool = True,
     prompt_time: bool = True,
+    write_time_connection_mode: str = "relay",
+    project_root: Path | None = None,
     python_executable: str | None = None,
     hooks_path: Path | None = None,
     marketplace_path: Path | None = None,
     plugin_destination: Path | None = None,
     print_fn: Callable[..., None] = print,
 ) -> None:
-    """Install the plugin, personal marketplace entry, shared config, and Codex hooks."""
+    """Install the plugin, personal marketplace entry, shared config, and Codex hooks.
+
+    `project_root` (default: the current directory) is the project allowed to use the hook
+    config, as for Claude Code: the write-time hook and the session-end memory index refuse an
+    event outside it, and refuse a config that names none.
+    """
+    root = (project_root or Path.cwd()).resolve()
     source = codex_plugin_source()
     if source is None:
         raise FileNotFoundError("the RE-call Codex plugin bundle is not present in this install")
@@ -289,6 +313,8 @@ def install_codex_integration(
             table=table,
             write_time=write_time,
             prompt_time=prompt_time,
+            write_time_connection_mode=write_time_connection_mode,
+            project_root=root,
         )
         target.parent.mkdir(parents=True, exist_ok=True)
         settings: dict[str, Any] = {}
@@ -304,6 +330,13 @@ def install_codex_integration(
     print_fn(
         f"Installed RE-call for Codex: plugin={destination}, marketplace={marketplace}, hooks={target}"
     )
+    if write_time:
+        # As in the Claude Code installer: one hook config per machine, so say which project it
+        # answers in, since installing in another project moves it.
+        print_fn(
+            f"Write-time memory search is bound to {root}. It is the only project it answers in, "
+            "and installing in another one moves it."
+        )
 
 
 __all__ = [

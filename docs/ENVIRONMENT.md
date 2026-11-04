@@ -31,6 +31,32 @@ means the default, with a warning for the last two, and text that is not a numbe
 the indexing budgets; `--check` writes nothing. A refresh failure appears in `refresh_warning`,
 doctor, and `recall_stats`. See [API.md](API.md) for command results and refusal behavior.
 
+## Claude Code and Codex hooks
+
+The `recall-hooks` and `recall-codex-hooks` entry points (package `recall_hooks`) read these from
+the environment the client gives the hook process. None is needed for a normal install: the
+installers write everything else into the hook config file (`recall-hook.json`).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RECALL_HOOK_CONFIG_HOME` | `CLAUDE_CONFIG_DIR`, else `~/.claude` | Where the hook config, its caches, logs and the write-time cooldown live. The Codex adapter sets it to the Codex integration folder for the duration of each event. |
+| `RECALL_PROJECT_CONFIG_HOME` | `CLAUDE_CONFIG_DIR`, else `~/.claude` | Where the client's project memory stores (`projects/<slug>/memory`) and the general knowledge files are found. Independent of the hook config home on purpose. |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's own config folder; the fallback for both homes above. |
+| `RECALL_HOOK_CLIENT` | `claude` | The client name written into the general knowledge event log. The Codex adapter sets `codex`. |
+| `RECALL_GENERAL_KNOWLEDGE_HOME` | `<project config home>/general-knowledge` | The general knowledge index folder. |
+| `RECALL_GENERAL_KNOWLEDGE_LOG` | `<project config home>/logs/general-knowledge.jsonl` | The general knowledge event log. |
+| `RECALL_AUDITOR_TYPES` | the built-in auditor list | Comma-separated subagent types that receive the auditor brief, matched case-insensitively. A value naming no type falls back to the default and logs. |
+| `RECALL_AUDITOR_MEMOS` | `$CCA_BUGS_DIR/memos`, else `~/.claude/cca-bugs/memos` | The CCA memo folder the auditor brief reads. |
+| `CCA_BUGS_DIR` | unset | The CCA ledger folder, read exactly as CCA reads it (no `~` expansion). |
+| `RECALL_AUDITOR_BRIEF_BUDGET` | `3` seconds | Wall clock for the auditor brief, at most 4 (below the 5 s Codex SubagentStart timeout); an unusable value is logged and replaced. |
+| `CLAUDE_PID` | set by Claude Code | The client process whose MCP transports SessionEnd closes. |
+| `RECALL_MCP_CLIENT`, `RECALL_MCP_SESSION_ID` | set by `scripts/session-mcp.sh` | MCP transport identity markers SessionEnd uses when no client pid is available. |
+
+Test seams, never for a real environment: `RECALL_MCP_PS_FILE` (a process table read from a
+file) and `RECALL_MCP_KILL_FILE` (a log written instead of a kill, with `RECALL_MCP_KILL_RC` as
+its result) are honoured only together, and `RECALL_MCP_PATTERN` (which command lines count as
+MCP transports) only while both of them are set.
+
 ## Unknown-term vocabulary gate
 
 `RECALL_UNKNOWN_TERM_GATE` defaults to `1`. Set it to `0`, `false`, `no`, or `off` to disable it;

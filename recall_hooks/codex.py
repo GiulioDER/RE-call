@@ -95,7 +95,7 @@ def _failure(data: dict[str, Any]) -> dict[str, Any] | None:
 
 def _auditor_type(data: dict[str, Any]) -> str:
     """Recover named default children only from metadata linked to this parent."""
-    from recall_hooks.auditor_brief import auditor_types
+    from recall_hooks.auditor_brief import _bare, auditor_types
 
     role = data.get("agent_type")
     if role == "default":
@@ -132,7 +132,8 @@ def _auditor_type(data: dict[str, Any]) -> str:
             if isinstance(name, str) and name == meta.get("agent_path"):
                 role = name.rsplit("/", 1)[-1].replace("_", "-")
                 break
-    if isinstance(role, str) and role.rsplit(":", 1)[-1].casefold() in auditor_types():
+    # `_bare`, the Claude path's own normaliser, so the two clients brief the same roles.
+    if isinstance(role, str) and _bare(role) in auditor_types():
         return role
     return ""
 

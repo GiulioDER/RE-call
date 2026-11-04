@@ -34,6 +34,8 @@ STATE_PREFIX = "relay-"
 # The client hook is configured with a five-second timeout.  Keep both relay waits below that
 # ceiling so a failed helper cannot outlive the hook invocation that owns it.
 REQUEST_TIMEOUT_SECONDS = 4.0
+#: The helper's own query bound, below REQUEST_TIMEOUT_SECONDS by design.
+RELAY_STATEMENT_TIMEOUT_SECONDS = 3.0
 START_TIMEOUT_SECONDS = 4.0
 STOP_WAIT_SECONDS = 6.0
 SEARCH_BUDGET_SECONDS = 4.5
@@ -734,7 +736,9 @@ def _serve(state_path_value: Path, expected_token_digest: str | None = None) -> 
             str(config["dsn"]),
             autocommit=True,
             connect_timeout=options["connect_timeout"],
-            options="-c statement_timeout=5s",
+            # Below the client's REQUEST_TIMEOUT_SECONDS, so a slow query ends here as an error
+            # the helper answers, instead of timing the client out and retiring a healthy helper.
+            options=f"-c statement_timeout={int(RELAY_STATEMENT_TIMEOUT_SECONDS * 1000)}ms",
         )
 
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

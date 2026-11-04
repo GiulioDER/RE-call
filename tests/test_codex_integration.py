@@ -123,12 +123,19 @@ def test_codex_install_is_idempotent_and_preserves_user_configuration(tmp_path, 
         assert sum("recall_hooks.codex" in json.dumps(group) for group in groups) == 1
 
     config = json.loads((codex_home / "re-call" / "recall-hook.json").read_text(encoding="utf-8"))
+    # Since CCA ENV-001 (2026-11-04) the Codex installer writes the Claude Code installer's
+    # document: this assertion used to pin the reduced one, whose missing `project_root` turned
+    # the Codex write-time hook and session-end index off.
+    from pathlib import Path
+
     assert config == {
         "dsn": "postgresql://example/recall",
         "tenant": "memory",
         "embedder": "fastembed:BAAI/bge-large-en-v1.5",
         "table": "chunks",
-        "write_time": {"enabled": True},
+        "chunks": 0,
+        "project_root": str(Path.cwd().resolve()),
+        "write_time": {"enabled": True, "connection_mode": "relay"},
         "prompt_time": {"enabled": True},
     }
 

@@ -16,8 +16,12 @@ _LAUNCHER_RE = re.compile(r"(?<!\S)(?:\S*[\\/])?recall-(?:codex-)?mcp(?:\s|$)")
 
 
 def _mcp_pattern() -> str:
-    # An empty or blank override would match every command line and select every descendant of
-    # the client for termination, so it falls back to the default.
+    # RECALL_MCP_PATTERN is a test seam like the two below, honoured only while both of them are
+    # set: left in a real environment, a short value would widen the kill selector to every
+    # descendant of the client whose command line contains it. An empty or blank override would
+    # match every command line, so it falls back to the default too.
+    if not (os.environ.get("RECALL_MCP_PS_FILE") and os.environ.get("RECALL_MCP_KILL_FILE")):
+        return MCP_PATTERN
     override = os.environ.get("RECALL_MCP_PATTERN", "").strip()
     return override or MCP_PATTERN
 
@@ -34,9 +38,11 @@ def _process_table() -> list[tuple[str, str, str]] | None:
         except OSError:
             return None
     elif os.name == "nt":
+        # CommandLine is flattened to one line: a multi-line command line (a shell heredoc) could
+        # otherwise carry a line shaped like a row and name an arbitrary pid as the client's.
         command = [
             "powershell", "-NoProfile", "-Command",
-            'Get-CimInstance Win32_Process | ForEach-Object { "$(($_.ProcessId)) $(($_.ParentProcessId)) $(($_.CommandLine))" }',
+            r'''Get-CimInstance Win32_Process | ForEach-Object { "$(($_.ProcessId)) $(($_.ParentProcessId)) $(($_.CommandLine) -replace '[\r\n]+', ' ')" }''',
         ]
         try:
             # Measured 2026-11-04 on a Windows 11 workstation: this listing takes 2.2 to 9 s, so
@@ -65,7 +71,12 @@ def _process_table() -> list[tuple[str, str, str]] | None:
         parts = line.strip().split(None, 2)
         if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
             rows.append((parts[0], parts[1], parts[2] if len(parts) > 2 else ""))
-    return rows
+    # A pid listed twice means one of its rows is not a process (a forged line, however it got
+    # in); neither row can be trusted for a parent chain that decides a kill.
+    seen: dict[str, int] = {}
+    for pid, _ppid, _command in rows:
+        seen[pid] = seen.get(pid, 0) + 1
+    return [row for row in rows if seen[row[0]] == 1]
 
 
 def _descends_from(pid: str, want: str, parents: dict[str, str]) -> bool:
@@ -91,9 +102,15 @@ def _identity_from_config(cwd: str) -> tuple[str, str]:
     for directory in (current, *current.parents):
         path = directory / ".mcp.json"
         try:
-            document: Any = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            # `utf-8-sig`: Windows PowerShell 5.1 writes a BOM, and a BOM'd config is still ours.
+            text = path.read_text(encoding="utf-8-sig")
+            document: Any = json.loads(text)
+        except OSError:
             continue
+        except (ValueError, RecursionError):  # UnicodeDecodeError and JSONDecodeError included
+            # A nearest config that exists but cannot be read is a boundary like an ambiguous
+            # one: walking past it would adopt an ENCLOSING checkout's identity as this session's.
+            return "", ""
         markers: set[str] = set()
         session_ids: set[str] = set()
 
@@ -145,7 +162,10 @@ def close_own_mcp_transports(
 
     Ownership is decided in this order: descent from the client pid; without a pid, an exact
     RECALL_MCP_SESSION_ID on the transport's command line; without either, an exact
-    RECALL_MCP_CLIENT marker. A conflicting nearest `.mcp.json` yields no identity. Returns
+    RECALL_MCP_CLIENT marker. Conflicting session IDs in the nearest `.mcp.json`, or a nearest
+    one that cannot be parsed, yield no identity; conflicting markers alone drop only the marker,
+    and a single session ID still counts. RECALL_MCP_PATTERN is honoured only with the two test
+    seams below. Returns
     (status, detail) with status one of skipped, unknown, none, closed, partial or failed.
 
     RECALL_MCP_PS_FILE (a process table read from a file) and RECALL_MCP_KILL_FILE (a log written

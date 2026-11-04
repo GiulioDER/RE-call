@@ -36,9 +36,10 @@ The project config home is `RECALL_PROJECT_CONFIG_HOME`, else `CLAUDE_CONFIG_DIR
 `~/.claude`, so all three rows move with those two variables as well as with their own.
 
 A MISSING `recall-hook.json`, or one without the block, means enabled with `min_score` 0.0. Every
-other departure from the documented shape means DISABLED: a file that cannot be read or parsed, a
-document that is not an object, a block that is not an object, or an `enabled` that is not a real
-bool. This is the injection switch, so a hand edit that meant "off" may not turn it on by being
+other departure from the shape of the SWITCH means DISABLED: a file that cannot be read or
+parsed, a document that is not an object, a block that is not an object, or an `enabled` that is
+not a real bool. A `min_score` of the wrong type or a non-finite one is not a switch: it falls back
+to 0.0, the loosest threshold, and leaves injection on. This is the injection switch, so a hand edit that meant "off" may not turn it on by being
 broken. All three resolve from the project config home, never from `recall_hooks.load_config`,
 because the Codex adapter redirects `load_config` to Codex's own directory and Claude and Codex
 must share one corpus, one switch and one log.
@@ -878,9 +879,11 @@ def log_event(record: dict[str, Any], path: Path | None = None) -> None:
 # ---------------------------------------------------------------------------------------------
 
 #: The most error text the failure path looks at, for both the signature and the ranking. A failed
-#: command can print megabytes; the first few kilobytes hold the failure, and the 800 ms budget of
-#: the failure path (spec 7.3) is only met if the rest is never touched.
+#: command can print megabytes; its header and its last few kilobytes hold the failure, and the
+#: 800 ms budget of the failure path (spec 7.3) is only met if the rest is never touched.
 MAX_ERROR_CHARS = 4096
+#: Of those, how many the failure ranker takes from the START of a long error; the rest is its end.
+FAILURE_HEAD_CHARS = 512
 #: The longest normalised detail line in a signature.
 SIGNATURE_CHARS = 160
 #: The longest command family in a signature. A family is a program name or `ssh:<alias>`, so a
@@ -1314,7 +1317,11 @@ def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list
 
     A lexical BM25 (`prompt_time.rank`, unchanged), never an embedder. Each entry's document is its
     symptoms repeated `SYMPTOM_WEIGHT` times followed by its body, so a symptom phrase counts for
-    more than the same words in the body. Kept when `score >= min_score`. `prompt_time` is imported
+    more than the same words in the body. Kept when `score >= min_score`, AFTER the three gates
+    `prompt_time.rank` applies on its own: an error with fewer than `MIN_QUERY_TOKENS` (3) distinct
+    content tokens matches nothing, an entry must match at least `MIN_MATCHED_TOKENS` (2) of them,
+    and an entry under `RELATIVE_FLOOR` (45%) of the top score is dropped. So a `min_score` of 0.0
+    does not inject on any overlap at all. `prompt_time` is imported
     here, not at module level, so the `pre-tool-use` path never pays for it. Never raises: a broken
     entry list or an error that is not text gives `[]`.
 
@@ -1325,7 +1332,11 @@ def rank_for_failure(entries: list[Entry], error: str, min_score: float) -> list
     try:
         if not isinstance(error, str) or not entries:
             return []
-        query = _without_exit_header(_without_ansi(error[:MAX_ERROR_CHARS]))
+        # Head AND tail: the `Exit code N` header is at the start, but a long failure is printed
+        # at the END (which is also what `failure_signature` reads), after any amount of progress.
+        if len(error) > MAX_ERROR_CHARS:
+            error = error[:FAILURE_HEAD_CHARS] + "\n" + error[-(MAX_ERROR_CHARS - FAILURE_HEAD_CHARS):]
+        query = _without_exit_header(_without_ansi(error))
         if not query.strip():
             return []
         from . import prompt_time

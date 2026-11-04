@@ -107,7 +107,9 @@ LOG_LINE_CHARS = 500
 #: Windows workstation, nine hooks at once against a 21-file diff spent 0.75 to 1.14 s in git and
 #: 0.3 s on anchors, so 1 s briefed 0 of 9 and 3 s 9 of 9, still inside a 5 s client timeout.
 BUDGET_SECONDS = 3.0
-MAX_BUDGET_SECONDS = 30.0
+#: Below the shortest client timeout an installer writes (Codex SubagentStart: 5 s), less the
+#: interpreter start that comes before the budget begins; a larger budget only buys a silent kill.
+MAX_BUDGET_SECONDS = 4.0
 LOG_NAME = "recall-auditor-brief.log"
 #: The parsed-memo cache, one file per memo directory, beside the log under the client's config home.
 CACHE_PREFIX = "recall-auditor-brief-memos-"
@@ -221,18 +223,27 @@ def warm_command() -> str:
     """The warm command as the hook itself runs: this interpreter, `-P`, and this copy of
     `recall_hooks` on `PYTHONPATH`, so it imports the code (and so writes the cache) the hook reads."""
     package_parent = Path(__file__).resolve().parent.parent
+    home = os.environ.get("RECALL_HOOK_CONFIG_HOME", "").strip()
     if sys.platform == "win32":
         def literal(value: str) -> str:
             return "'" + value.replace("'", "''") + "'"
 
         # The inline block comment labels the shell even after the diagnostic log flattens lines.
+        # The config home goes in too when it is redirected (the Codex adapter does that), since
+        # the cache lives under it: warming the default home would fill a cache nothing reads.
+        home_set = (
+            f"$recallPriorHome = $env:RECALL_HOOK_CONFIG_HOME; $env:RECALL_HOOK_CONFIG_HOME = {literal(home)}; "
+            if home else ""
+        )
+        home_reset = "; $env:RECALL_HOOK_CONFIG_HOME = $recallPriorHome" if home else ""
         return (
             "& { <# PowerShell #> $recallPriorPythonPath = $env:PYTHONPATH; "
-            f"try {{ $env:PYTHONPATH = {literal(str(package_parent))}; "
+            f"try {{ {home_set}$env:PYTHONPATH = {literal(str(package_parent))}; "
             f"& {literal(sys.executable)} -P -m recall_hooks warm-auditor-brief "
-            "} finally { $env:PYTHONPATH = $recallPriorPythonPath } }"
+            f"}} finally {{ $env:PYTHONPATH = $recallPriorPythonPath{home_reset} }} }}"
         )
-    return f'PYTHONPATH="{package_parent}" "{sys.executable}" -P -m recall_hooks warm-auditor-brief'
+    home_prefix = f'RECALL_HOOK_CONFIG_HOME="{home}" ' if home else ""
+    return f'{home_prefix}PYTHONPATH="{package_parent}" "{sys.executable}" -P -m recall_hooks warm-auditor-brief'
 
 
 def _log(reason: str) -> None:
@@ -728,13 +739,21 @@ def _collect(
         # `cat-file` streams a blob whole, so a file whose work-tree copy is over `MAX_FILE_BYTES`,
         # or absent, is not requested at all (the pre-fix code skipped it on the same stat); it is
         # anchored at file level with `UNKNOWN_SHA`, which never matches a hash exactly.
-        specs = [f"{base}:{file}" for file in found.named if base and file.endswith(".py") and _small(root, file)]
-        specs += [
-            f"HEAD:{file}"
+        # The cap and the deadline apply BEFORE `_small`, which costs one lstat per path component:
+        # a branch adding thousands of files must not spend the budget on files the cap drops.
+        candidates = [(f"{base}:{file}", file) for file in found.named if base and file.endswith(".py")]
+        candidates += [
+            (f"HEAD:{file}", file)
             for file, lines in found.changes.items()
-            if lines is not None and file not in found.named and _small(root, file)
+            if lines is not None and file not in found.named
         ]
-        specs = [spec for spec in specs if "\n" not in spec][: len(found.named) + MAX_QUERY_ANCHORS]
+        limit = len(found.named) + MAX_QUERY_ANCHORS
+        specs: list[str] = []
+        for spec, file in candidates:
+            if len(specs) >= limit or time.monotonic() > deadline:
+                break
+            if "\n" not in spec and _small(root, file):
+                specs.append(spec)
         if specs:
             batch = _start_git(cwd, "cat-file", "--batch", stdin=True)
             processes.append(batch)

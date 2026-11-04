@@ -115,7 +115,7 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
         except Exception:  # BROAD-CATCH: fail-open
             # CONNECT failed: the database is down or unreachable, which is transient by
             # nature. Fail open with the cached count — the documented behaviour.
-            return int(config.get("chunks", 0) or 0)
+            return _cached_count(config)
         with connection as conn:
             row = conn.execute(statement, (str(config.get("tenant", "default")),)).fetchone()
         count = int(row[0]) if row else 0
@@ -135,7 +135,7 @@ def refresh_stats(config: dict[str, Any] | None = None) -> int:
             )
         except Exception:  # BROAD-CATCH: fail-open
             pass
-        return int(config.get("chunks", 0) or 0)
+        return _cached_count(config)
 
     # Re-read rather than write back the snapshot: indexing can take minutes, and an install or
     # a hand edit made meanwhile must survive. A count taken against another corpus is dropped.
@@ -187,6 +187,26 @@ def _save_config(config: dict[str, Any]) -> None:
             pass
 
 
+def _cached_count(config: dict[str, Any]) -> int:
+    """The cached chunk count, or 0 for any value that is not a whole number.
+
+    SessionStart runs with no guard and promises to fail open, and `chunks` can be hand-edited.
+    """
+    try:
+        return int(config.get("chunks", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _listed(names: list[str]) -> str:
+    """The first three names, each quoted and cut to 80 characters.
+
+    These names come from memory directories that may sit in a repository nobody here wrote, and
+    they are printed into the model's context, so each is quoted as data and bounded.
+    """
+    return ", ".join(repr(name if len(name) <= 80 else name[:77] + "...") for name in names[:3])
+
+
 def _unsynced_notice(config: dict[str, Any]) -> str:
     """One sentence when memos have not reached hosted memory, or "".
 
@@ -226,10 +246,12 @@ def _unsynced_notice(config: dict[str, Any]) -> str:
             "until this is fixed. "
         )
     if withheld:
-        # 🔑 Reported whether or not anything else went wrong, and FIRST. A withheld file is the
-        # one outcome here that needs a person rather than a retry: nothing about the next session
-        # will change it, and the file is silently absent from the corpus until somebody acts.
-        names = ", ".join(sorted(withheld)[:3])
+        # 🔑 Reported whether or not a sync error was recorded, and before every outcome except
+        # the two above (a broken screen or a blocked transport, which are said instead, so a
+        # withheld memo stays unnamed until they clear). A withheld file is the one outcome here
+        # that needs a person rather than a retry: nothing about the next session will change it,
+        # and the file is silently absent from the corpus until somebody acts.
+        names = _listed(sorted(withheld))
         more = f" and {len(withheld) - 3} more" if len(withheld) > 3 else ""
         return (
             f"WARNING: {len(withheld)} memo(s) were NOT uploaded because they look like they "
@@ -247,7 +269,7 @@ def _unsynced_notice(config: dict[str, Any]) -> str:
     if stranded:
         # Like a withheld file, these will never fix themselves, so they are reported without
         # waiting for a sync error. An empty file is left out: it holds nothing to lose.
-        names = ", ".join(stranded[:3])
+        names = _listed(stranded)
         more = f" and {len(stranded) - 3} more" if len(stranded) > 3 else ""
         return (
             f"WARNING: {len(stranded)} memo(s) can never be uploaded to hosted memory as they "
@@ -272,15 +294,15 @@ def session_start(payload: dict[str, Any]) -> int:
 
     A digest and not a retrieval, deliberately. `SessionStart` carries no user prompt, so there is
     no query to retrieve against, and a similarity search with nothing to be similar to returns
-    whatever happens to be nearest. The event that has a query is `UserPromptSubmit`, and that is
-    where per-turn retrieval belongs once this is proven out.
+    whatever happens to be nearest. The event that has a query is `UserPromptSubmit`; per-turn
+    retrieval lives there, in `prompt_time.user_prompt_submit`.
 
     Fails open, always: a hook that runs before every session must never be the reason Claude does
     not start, so anything unexpected is silence and exit 0.
     """
     config = load_config()
     stuck = _unsynced_notice(config)
-    count = int(config.get("chunks", 0) or 0)
+    count = _cached_count(config)
     if not count and not stuck:
         return 0
     cwd = str(payload.get("cwd", ""))
@@ -448,9 +470,11 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
 def session_end(payload: dict[str, Any]) -> int:
     """Index what this session produced, then refresh the cached count for the next start.
 
-    Runs with `async: true`, so nothing waits on it and nothing reads its output. That is the
-    honest configuration rather than a concession: `SessionEnd` cannot block termination, so a
-    synchronous index would be a promise the client is not obliged to keep.
+    In Claude Code it runs with `async: true`, so nothing waits on it and nothing reads its
+    output. That is the honest configuration rather than a concession: `SessionEnd` cannot block
+    termination, so a synchronous index would be a promise the client is not obliged to keep.
+    ⚠️ Codex runs this same handler SYNCHRONOUSLY with a 15 s timeout (`recall/codex.py`), so
+    there the client does wait, and kills whatever is still running at 15 s.
     """
     # MCP transports belong to the client session, not to the checkout. Keep this before the
     # memory refresh so a slow or missing corpus cannot skip transport cleanup. The import stays
