@@ -1850,7 +1850,9 @@ class ProvenanceController:
         #: hunt, SEC-002).
         self.card_permitted = card_permitted
 
-    def _resolve(self, request: FactApplicationRequest) -> tuple[EvidenceCard, ...] | DecisionCode:
+    def _resolve(
+        self, request: FactApplicationRequest, instant: datetime
+    ) -> tuple[EvidenceCard, ...] | DecisionCode:
         resolved: list[EvidenceCard] = []
         for card_id in request.evidence_card_ids:
             try:
@@ -1881,7 +1883,7 @@ class ProvenanceController:
                 return DecisionCode.UNSUPPORTED_CLAIM
             if not card.trusted_for_application:
                 return DecisionCode.TRUST_UNAVAILABLE
-            validity = _valid_now(card, self.now())
+            validity = _valid_now(card, instant)
             if validity is not None:
                 return validity
             if self.source_digest_for is not None:
@@ -1946,7 +1948,7 @@ class ProvenanceController:
             return self.ledger.current(tenant_id=self.tenant_id, now=instant)
         return self.ledger.current(tenant_id=self.tenant_id, now=instant, served=self.served_sources)
 
-    def _in_force(self, claim: AtomicFact) -> _ConflictSet:
+    def _in_force(self, claim: AtomicFact, instant: datetime) -> _ConflictSet:
         """The tenant's values in force at some instant, with the index that says when.
 
         From the ledger's own events where it exposes them, as `apply_assertion` reads them: the
@@ -1964,8 +1966,8 @@ class ProvenanceController:
         `test_ledger_read_outage_fails_closed_without_asserting` and the provenance evaluation's
         `ledger_outage` case). One clock reading, and the absent set computed once, inside the
         fail-closed read; the second was computed outside it (2026-10-21 audit, CODE-004).
+        `instant` is the pass's one reading, which also checked the cards' validity (ENV-004).
         """
-        instant = self.now()
         current: tuple[FactEvent, ...] | None = None
         if callable(getattr(self.ledger, "conflict_history", None)):
             history: object = cast(ConflictHistoryLedger, self.ledger).conflict_history(
@@ -2009,11 +2011,11 @@ class ProvenanceController:
         )
 
     def _resolve_fresh(
-        self, request: FactApplicationRequest, fresh_ids: tuple[str, ...]
+        self, request: FactApplicationRequest, fresh_ids: tuple[str, ...], instant: datetime
     ) -> tuple[EvidenceCard, ...] | ControllerDecision:
         """The cards the one bounded fresh search found, or the refusal that ends the retry."""
         refreshed = FactApplicationRequest(request.claim, fresh_ids, request.request_id)
-        resolved = self._resolve(refreshed)
+        resolved = self._resolve(refreshed, instant)
         if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
             # A card failure after the retry keeps its own code; an unsupported claim, from
             # either branch, is the retry finding too little.
@@ -2121,8 +2123,13 @@ class ProvenanceController:
             return self._delivered(
                 request, LedgerApplyResult(prior, duplicate=True), prior.evidence_cards, retried=False
             )
+        # One clock reading for the pass: the cards' validity is checked at the instant the
+        # assertion is stamped with. Read per card and again for the stamp, a card checked valid
+        # just before its `valid_until` could be stamped at or after it, which a file-backed eval
+        # clock makes a step rather than a tick (2026-11-04 owner decision, ENV-004).
+        instant = self.now()
         if fresh_ids is None:
-            resolved = self._resolve(request)
+            resolved = self._resolve(request, instant)
             retried = False
             if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
                 if self.fresh_search is None:
@@ -2130,7 +2137,7 @@ class ProvenanceController:
                     return self._record_refusal(request, code, (), retried=False)
                 return _FreshSearch()
         else:
-            retry = self._resolve_fresh(request, fresh_ids)
+            retry = self._resolve_fresh(request, fresh_ids, instant)
             if isinstance(retry, ControllerDecision):
                 return retry
             resolved, retried = retry, True
@@ -2140,7 +2147,7 @@ class ProvenanceController:
             # instant of the claim's window, not only the ones current now. Deriving it from
             # `current` let an expired or future value block an authored correction, because the
             # link that names it was never read (2026-10-21 supersession audit, P2 #12).
-            in_force = self._in_force(request.claim)
+            in_force = self._in_force(request.claim, instant)
         except Exception as exc:  # BROAD-CATCH: fail-closed
             # The read that establishes the conflict set is part of authorization.  Treating a
             # failed read as an empty set would turn an outage into an authorization bypass, so

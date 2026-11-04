@@ -497,3 +497,37 @@ def test_deploy002_an_apply_that_cannot_take_the_lock_releases_its_reservation(
         holder.kill()
         holder.wait(10)
     assert "r-busy" in released, f"a busy apply kept its reservation (released: {released})"
+
+
+def test_env004_a_card_is_checked_at_the_instant_its_assertion_is_stamped():
+    """ENV-004 (owner decision 2026-11-04, option a): one clock reading per application pass.
+    The controller read the clock per card in `_resolve` and again in `_in_force`, whose reading
+    stamps the assertion, so a card checked valid just before its `valid_until` was stamped at or
+    after it. A file-backed eval clock (lite MCP) turns that gap from a tick into a step, which
+    this clock models: the first reading is inside the card's validity, every later one past it.
+
+    Red proof: against the per-card reads (commit 866380d4e) the assertion was stamped at
+    NOW + 2h, after the card's valid_until of NOW + 1h, and the stamp assertion failed.
+    """
+    claim = _fact("20")
+    card = replace(
+        evidence_card(claim, tenant="tenant-a", generation="gen-a", chunk="c", source="a.md"),
+        card_id="", valid_until=NOW + timedelta(hours=1),
+    )
+    store = EvidenceCardStore()
+    store.put([card])
+    readings = iter([NOW])
+
+    def clock() -> datetime:
+        return next(readings, NOW + timedelta(hours=2))
+
+    decision = ProvenanceController(
+        tenant_id="tenant-a", generation_id="gen-a", cards=store, ledger=InMemoryFactLedger(),
+        source_digest_for=lambda _card: "digest", now=clock, writer="test",
+    ).apply_fact(FactApplicationRequest(claim, (card.card_id,), "r-1"))
+    assert decision.event is not None
+    assert decision.event.created_at < card.valid_until, (
+        f"stamped at {decision.event.created_at}, after the card's validity ended "
+        f"at {card.valid_until} (decision {decision.code})"
+    )
+    assert decision.code == DecisionCode.APPLIED
