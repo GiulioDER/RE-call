@@ -272,7 +272,13 @@ Claude settings is approved.
   `~/.claude`. `python -m recall_hooks warm-auditor-brief` fills the cache with no deadline; run it
   with the hook's own interpreter and `PYTHONPATH` (the hook's timeout log prints the exact
   command), because a cache written by another copy of RE-call is ignored.
-- **Codex** has no equivalent launch step, so it is out of scope for this version.
+- **Codex** has no launch input a hook can rewrite, so it gets the brief as advisory context
+  instead: `SubagentStart` runs `recall_hooks.codex`, which recovers the auditor type (for an
+  agent type of `default`, from the child transcript's parent link), sends the shared
+  `pre-agent` path an empty prompt, so the scope is the changed files, and returns the block as
+  `additionalContext`. The holdout-arm check above applies here too, and is the only check that
+  can see a holdout run, since the prompt is empty. (Corrected 2026-11-04: this said Codex was
+  out of scope.)
 - **Measurement:** ships unmeasured, as context; no benefit is claimed until a pre-registered
   comparison supports one.
 

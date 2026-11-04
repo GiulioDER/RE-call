@@ -188,7 +188,7 @@ def read_refresh_token(config: dict[str, Any]) -> str | None:
             pass
     try:
         stored = json.loads(fallback_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # ValueError: undecodable bytes as well as bad JSON
         return None
     value = stored.get(account) if isinstance(stored, dict) else None
     return str(value) if value else None
@@ -218,7 +218,7 @@ def write_refresh_token(config: dict[str, Any], token: str) -> str:
         stored = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(stored, dict):
             stored = {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # ValueError: undecodable bytes as well as bad JSON
         stored = {}
     stored[account] = token
     _write_private_json(path, stored)
@@ -234,7 +234,7 @@ def cached_access_token(config: dict[str, Any], *, now: float | None = None) -> 
     """
     try:
         raw = json.loads(token_cache_path(config).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # ValueError: undecodable bytes as well as bad JSON
         return None
     if not isinstance(raw, dict):
         return None
@@ -501,7 +501,7 @@ def logout(config: dict[str, Any], *, out: Any = None) -> int:
                 del stored[account]
             _write_private_json(path, stored)
             removed.append(str(path))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):  # ValueError: undecodable bytes as well as bad JSON
         pass
     try:
         token_cache_path(config).unlink(missing_ok=True)

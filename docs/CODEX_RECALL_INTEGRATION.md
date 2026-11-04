@@ -40,8 +40,8 @@ shared RE-call lifecycle:
   Successful commands, interrupted calls and outputs without a proven exit status stay quiet.
 * `SubagentStart` sends the shared auditor brief to recognized auditors as advisory child
   context. It neither rewrites the launch input nor makes a permission decision.
-* `PreCompact` queues the docs and code refresh and serialized memory refresh; `SessionEnd` runs the
-  bounded memory refresh synchronously because Codex treats that lifecycle event as synchronous.
+* `PreCompact` indexes this project's `memory/` (or syncs it in hosted mode), asynchronously; it
+  refreshes no docs or code tenant. `SessionEnd` runs the bounded memory refresh synchronously because Codex treats that lifecycle event as synchronous.
   `SessionEnd` also invokes RE-call's repository-owned `recall_hooks.mcp_cleanup` module, closing
     only the local MCP transports descended from this Codex client, using the client process identity
     rather than a Claude-only `CLAUDE_PID` variable. Its 15-second bound covers process inspection

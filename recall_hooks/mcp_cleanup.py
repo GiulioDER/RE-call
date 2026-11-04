@@ -105,11 +105,12 @@ def _identity_from_config(cwd: str) -> tuple[str, str]:
             # `utf-8-sig`: Windows PowerShell 5.1 writes a BOM, and a BOM'd config is still ours.
             text = path.read_text(encoding="utf-8-sig")
             document: Any = json.loads(text)
-        except OSError:
+        except FileNotFoundError:
             continue
-        except (ValueError, RecursionError):  # UnicodeDecodeError and JSONDecodeError included
-            # A nearest config that exists but cannot be read is a boundary like an ambiguous
-            # one: walking past it would adopt an ENCLOSING checkout's identity as this session's.
+        except (OSError, ValueError, RecursionError):  # ValueError: undecodable text, bad JSON
+            # A nearest config that EXISTS but cannot be read (no permission, a directory of that
+            # name) or parsed is a boundary like an ambiguous one: walking past it would adopt an
+            # ENCLOSING checkout's identity as this session's. Only an absent file walks on.
             return "", ""
         markers: set[str] = set()
         session_ids: set[str] = set()
