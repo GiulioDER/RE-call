@@ -648,7 +648,7 @@ They are observations, not automatic failures.
 | `recall.lite.memo_requests` | 3 | 17 |
 | `recall.lite.receipts` | 3 | 104 |
 | `recall.lite.refresh` | 13 | 104 |
-| `recall.lite.setup` | 10 | 129 |
+| `recall.lite.setup` | 11 | 129 |
 | `recall.lite.store` | 13 | 104 |
 | `recall.lite.writer_lock` | 1 | 104 |
 | `recall.manifest` | 3 | 15 |

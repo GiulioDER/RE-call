@@ -70,6 +70,14 @@ from recall.types import Chunk, ScoredChunk
 #: A DSN naming a lite store: ``sqlite:///path/to/memory.db``.
 LITE_DSN_PREFIX = "sqlite:///"
 SCHEMA_VERSION = "1"
+#: The order that makes the first `calibrations` row the one in force, shared by every reader
+#: (the store, `recall.lite.inspect`) so the doctor reports the calibration search serves.
+LATEST_CALIBRATION_ORDER = "ORDER BY created_at DESC, rowid DESC"
+
+
+def generation_id_for(fingerprint: str) -> str:
+    """The lite generation id of a corpus fingerprint, in the place a Postgres generation id goes."""
+    return "lite-" + fingerprint[:16]
 _log = get_logger("lite.store")
 
 #: PostgreSQL's English stop word list (`english.stop`), so both stores drop the same words from a
@@ -83,7 +91,7 @@ ENGLISH_STOP_WORDS = frozenset(
     there when where why how all any both each few more most other some such no nor not only own same
     so than too very s t can will just don should now""".split()
 )
-_TERM = re.compile(r"\w+", re.UNICODE)
+_TERM = re.compile(r"[^\W_]+", re.UNICODE)
 _NUMERIC_TOKEN = re.compile(
     r"(?<![\w.])[+-]?(?:[1-9]\d{0,2}(?:,\d{3})+(?:\.\d+)?|\d+(?:[.,]\d+)?)%?(?![\w.])"
 )
@@ -122,8 +130,19 @@ def is_lite_dsn(dsn: str | None) -> bool:
 
 
 def lite_dsn_path(dsn: str) -> Path:
-    """The file a `sqlite:///<path>` DSN names."""
-    return Path(dsn[len(LITE_DSN_PREFIX):])
+    """The file a `sqlite:///<path>` DSN names, which must be absolute.
+
+    A relative path would resolve against whatever working directory a client starts the server
+    in, and opening it creates a new, empty store there; `sqlite:///home/me/x.db` is that mistake
+    for the POSIX path `/home/me/x.db`, whose DSN has four slashes.
+    """
+    path = Path(dsn[len(LITE_DSN_PREFIX):])
+    if not path.is_absolute():
+        raise LiteStoreError(
+            f"a lite DSN names an absolute path, and {dsn!r} does not: write sqlite:////home/me/memory.db "
+            "(four slashes) on macOS or Linux, sqlite:///C:/Users/me/memory.db on Windows"
+        )
+    return path
 
 
 def _now() -> str:
@@ -147,7 +166,11 @@ def _numeric_terms(text: str) -> list[str]:
 
 
 def _query_terms(text: str) -> list[str]:
-    """The query's words in order, lower-cased, stop words and repeats dropped."""
+    """The query's words in order, lower-cased, stop words and repeats dropped.
+
+    A word is split where FTS5's unicode61 tokenizer splits it (an underscore included), so a stop
+    word inside `is_lite_dsn` is dropped as PostgreSQL's parser drops it.
+    """
     terms: list[str] = []
     for term in _TERM.findall(text.lower()):
         if term in ENGLISH_STOP_WORDS or term in terms:
@@ -249,7 +272,7 @@ class CorpusSnapshot:
 
     @property
     def generation_id(self) -> str:
-        return "lite-" + self._matrix.fingerprint[:16]
+        return generation_id_for(self._matrix.fingerprint)
 
     def texts(self) -> list[str]:
         """Non-blank chunk texts in chunk-id order, the order `LiteStore.iter_chunks` reads them."""
@@ -691,6 +714,9 @@ class LiteStore:
         A memo that declared `supersedes:` leaves a `SupersessionRecord` in the same transaction,
         as `PgVectorStore.delete_sources` does: a forget keeps retired what it retired, `withdraw`
         gives it back and splices its chain (also for a source a record stands in for).
+
+        The calibration evidence of any fit measured on one of `sources` is deleted too, in the same
+        transaction, since its stored test questions quote that source's text.
         """
         if not sources:
             return 0
@@ -712,6 +738,15 @@ class LiteStore:
             removed = self._conn.execute(
                 "DELETE FROM chunks WHERE source IN (SELECT value FROM json_each(?))", (wanted,)
             ).rowcount
+            # A fit's test questions are built from its corpus's headings and terms, so the evidence
+            # of every fit measured on one of these sources goes with them. Its calibration then
+            # refuses to carry forward (fails closed) until the next refit.
+            self._conn.execute(
+                "DELETE FROM calibration_evidence WHERE json_valid(sources) AND EXISTS ("
+                "SELECT 1 FROM json_each(calibration_evidence.sources) AS fitted "
+                "WHERE fitted.key IN (SELECT value FROM json_each(?)))",
+                (wanted,),
+            )
             self._bump()
         return int(removed)
 
@@ -1298,7 +1333,7 @@ class LiteStore:
 
     def lite_generation_id(self) -> str:
         """A stable name for the corpus as it is now, in the place a Postgres generation id goes."""
-        return "lite-" + self.corpus_fingerprint()[:16]
+        return generation_id_for(self.corpus_fingerprint())
 
     def source_manifest(self) -> dict[str, str]:
         """`{source: digest of its chunks' ids and texts}`: the corpus by source, cached per version.
@@ -1343,7 +1378,7 @@ class LiteStore:
                     "VALUES (?, ?, ?, ?)",
                     evidence,
                 )
-            selected = self._conn.execute("SELECT rowid FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
+            selected = self._conn.execute(f"SELECT rowid FROM calibrations {LATEST_CALIBRATION_ORDER} LIMIT 1").fetchone()  # noqa: S608  # a module constant
             if selected is not None and selected[0] == inserted.lastrowid:
                 self._conn.executemany(
                     "INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1390,7 +1425,7 @@ class LiteStore:
         if calibration_id is not None:
             sql += " WHERE json_valid(payload) AND json_extract(payload, '$.calibration_id') = ?"
             params.append(calibration_id)
-        sql += " ORDER BY created_at DESC, rowid DESC"
+        sql += f" {LATEST_CALIBRATION_ORDER}"
         if limit is not None:
             sql += " LIMIT ?"
             params.append(limit)

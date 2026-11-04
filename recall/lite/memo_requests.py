@@ -307,7 +307,9 @@ def _create(path: Path, body: bytes) -> None:
             _create_exclusive(path, body)
         _flush_directory(path.parent)
     finally:
-        staged.unlink(missing_ok=True)
+        # The memo may already be published; a staging file held open elsewhere (Windows) is left
+        # for `sweep_staged` rather than turning that success into an error.
+        _discard(staged)
 
 
 def _read_regular(path: Path) -> bytes | None:

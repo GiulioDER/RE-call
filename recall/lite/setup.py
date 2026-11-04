@@ -14,6 +14,7 @@ launches the interpreter running this command, so the client cannot pick up a di
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import shlex
 from collections.abc import Callable
@@ -198,6 +199,13 @@ def run_lite_setup(
     path = (store_path or default_store_path(project_root)).resolve()
     report = LiteSetupReport(store=path, memory=memory)
     model_env = _embedding_environment(embedder, embedder_name, registration_required=register)
+    if register and importlib.util.find_spec("mcp") is None:
+        # The registered server imports the MCP SDK at start, so without it the client would show
+        # a server with no tools while this report said it was registered.
+        raise ValueError(
+            'registering the server needs the MCP extra: pip install "recall-rag[fastembed,mcp]", '
+            "or pass --no-register"
+        )
     local_env = {
         "RECALL_DSN": lite_dsn(path), "RECALL_SERVING_DSN": lite_dsn(path),
         "RECALL_INDEX_ROOT": str(memory), "RECALL_TENANT": "default",
@@ -214,7 +222,10 @@ def run_lite_setup(
         }
         report.followup_env = {key: value for key, value in local_env.items() if key in safe_keys}
     with LiteStore(path, dim=embedder.dim) as store:
-        existing_model = store.generation_binding().get("embedder_model")
+        # Read from meta, not `generation_binding()`: that resolves the calibration, and a newest
+        # row this release cannot read must not stop setup before the refit that replaces it.
+        rows = store._metadata_values("SELECT value FROM meta WHERE key = 'embedder_model'")
+        existing_model = str(rows[0][0]) if rows else None
         if existing_model and existing_model != embedder.name:
             raise ValueError("this store was calibrated with another embedder; choose a different --store file")
         # Typed as the Postgres store, as everywhere the shared Indexer takes a lite one: it calls
@@ -264,4 +275,11 @@ def run_lite_setup(
                 f"add `{target}` to .gitignore: the store holds your memory's text and vectors; "
                 "include its SQLite -wal and -shm sidecars"
             )
+            if not in_default_directory:
+                # `<store>*` does not match the refresh state file, which is named from the store's
+                # stem and records absolute paths.
+                from recall.lite.refresh import state_path
+
+                state = state_path(path).relative_to(project_root).as_posix()
+                report.notes.append(f"also add `{state}` to .gitignore: it is the store's refresh state")
     return report

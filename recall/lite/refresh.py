@@ -628,7 +628,12 @@ def check(
     policy: str | None = None,
     budget: IndexBudget | None = None,
 ) -> CheckReport:
-    """Report what `refresh` would find. Opens the store read-only and writes nothing anywhere.
+    """Report whether the memo files, the store and the policy still match the last refresh.
+    Opens the store read-only and writes nothing anywhere.
+
+    It does not see a change to the facts a refresh would state (a stating rule changed by an
+    upgrade, with no memo edited): `refresh` compares that marker and this cannot without opening
+    the store, so it can report current where a refresh would still record facts.
 
     `policy` is the `policy_key` a refresh would apply (None for no policy): a refresh under a
     different policy or context is not current.
