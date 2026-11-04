@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
+from recall.confinement import within
 from recall.extraction import DOCUMENT_EXTENSIONS as EXTRACTABLE_DOCUMENT_EXTENSIONS
 from recall.desktop.models import SourceCategory
 
@@ -53,7 +54,7 @@ def collect_files(paths: list[str | Path], category: SourceCategory | None = Non
             root = _resolved(path)
             candidates = sorted(
                 item for item in path.rglob("*")
-                if item.is_file() and _resolved(item).is_relative_to(root)
+                if item.is_file() and within(root, item) is not None
             )
         else:
             candidates = [path]
@@ -153,8 +154,8 @@ def scan_files(
                 path = Path(current) / filename
                 if path.suffix.casefold() not in allowed:
                     continue
-                resolved = _resolved(path)
-                if not resolved.is_relative_to(resolved_root):
+                resolved = within(resolved_root, path)
+                if resolved is None:
                     continue
                 config_base = next(
                     (base for base in config_directories if resolved == base or base in resolved.parents),

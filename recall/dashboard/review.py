@@ -44,9 +44,11 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path
 from typing import Any
 
+from recall.confinement import anchored as anchored
+from recall.confinement import confined, within
 from recall.dashboard.db import MAX_STALE_REPORTS, DatabaseUnavailable
 from recall.document import parse_document
 from recall.errors import RecallError
@@ -92,20 +94,6 @@ class ReviewRefused(ValueError, RecallError):
 
 class DecisionRecorded(RecallError):
     """The decision was written, and a step after it failed: never shown as "nothing was written"."""
-
-
-def anchored(text: str) -> bool:
-    """Whether a path names its own root, drive or share, so joining it would leave the memo folder.
-
-    Checked before any filesystem call: on Windows `resolve()` opens a UNC path such as
-    `\\\\host\\share\\x` (or `//host/share/x`) to follow links, which contacts that host and sends the
-    user's credentials, so a containment check that follows the resolve comes too late.
-    """
-    for flavour in (PureWindowsPath, PurePosixPath):
-        candidate = flavour(text)
-        if candidate.anchor or candidate.drive:
-            return True
-    return False
 
 
 @contextmanager
@@ -199,14 +187,13 @@ def memo_path(root: Path, name: str) -> Path | None:
     An anchored name (absolute, drive, UNC) is refused before any filesystem call, then the
     resolved path must stay inside the root, be a file, and be a name `memo_files` lists.
     """
-    if anchored(name):
-        return None  # never a memo here, and resolving it could reach another host
+    path = confined(root, name)  # anchored names refused before any filesystem call
+    if path is None:
+        return None
     try:
-        boundary = root.resolve()
-        path = (root / name).resolve()
-        if not path.is_relative_to(boundary) or not path.is_file():
+        if not path.is_file():
             return None
-        return path if is_memo_name(boundary, path) else None
+        return path if is_memo_name(root.resolve(), path) else None
     except (OSError, ValueError):  # ValueError: a NUL in a name stand-in
         return None
 
@@ -226,12 +213,11 @@ def already_declared(root: Path, stale: str, replacing: str) -> bool:
 
 def memo_files(root: Path) -> list[Path]:
     """Every memo under the root, skipping dot directories such as the `.recall` sidecar."""
-    boundary = root.resolve()
     return sorted(
         path
         for path in root.rglob("*.md")
         if path.is_file()
-        and path.resolve().is_relative_to(boundary)
+        and within(root, path) is not None
         and not any(part.startswith(".") for part in path.relative_to(root).parts)
     )
 

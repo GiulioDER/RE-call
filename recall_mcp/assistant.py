@@ -34,6 +34,7 @@ from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, cast
 
 from recall.backends import write_session
+from recall.confinement import within
 from recall.errors import RecallError
 from recall.lite.assistant_memos import ASSISTANT_AUTHOR, MEMO_ID, MemoFolder
 from recall.lite.memo_requests import cancel_requests, restore_requests
@@ -137,7 +138,7 @@ def assistant_memos_from_env(env: Mapping[str, str], *, lite: bool) -> Assistant
     if not root:
         raise AssistantSurfaceError(f"{ASSISTANT_ENV} needs RECALL_INDEX_ROOT, the folder it lies in")
     folder, index_root = Path(raw).resolve(), Path(root).resolve()
-    if not folder.is_relative_to(index_root):
+    if within(index_root, folder) is None:
         raise AssistantSurfaceError(
             f"{ASSISTANT_ENV}={str(folder)!r} is outside RECALL_INDEX_ROOT={str(index_root)!r}; the "
             "server's refresh would not follow it"
@@ -348,6 +349,8 @@ class AssistantMemos(MemoFolder):
             path = self.path_of(memo_id)
             if path is None:
                 return None
+            # Computes a memo key under the index root; no file is read.
+            # ast-grep-ignore: containment-via-confined
             rel = path.relative_to(self.index_root) if path.is_relative_to(self.index_root) else None
             return graph.key(rel.as_posix() if rel is not None else path.name, str(path))
 
@@ -368,6 +371,8 @@ class AssistantMemos(MemoFolder):
         """
         from recall.lite.memo_requests import revision
 
+        # Computes a memo key under the index root; no file is read.
+        # ast-grep-ignore: containment-via-confined
         key = path.relative_to(self.index_root).as_posix() if path.is_relative_to(self.index_root) else path.name
         if store.sources_for_identifiers([key]):
             return True
@@ -387,6 +392,8 @@ class AssistantMemos(MemoFolder):
             path = self.index_root / path
         if path.parent == self.folder:
             return path.stem
+        # Computes a memo id under the index root; no file is read.
+        # ast-grep-ignore: containment-via-confined
         if path.is_absolute() and path.is_relative_to(self.index_root):
             return path.relative_to(self.index_root).as_posix().removesuffix(".md")
         return path.stem

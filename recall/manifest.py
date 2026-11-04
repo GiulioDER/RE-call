@@ -346,6 +346,8 @@ class LocalObjectReader:
         path = local_path_for(entry.uri)
         # `is_relative_to` on the RESOLVED path, so `..` and symlinks cannot escape a root. This is
         # the local analogue of the S3 allowlist: without it a manifest names any file on disk.
+        # Several allowlisted roots, checked on the path local_path_for has already resolved.
+        # ast-grep-ignore: containment-via-confined
         if not any(path.is_relative_to(root) for root in self._roots):
             raise ObjectNotAllowed(
                 f"local object {entry.uri!r} is outside RECALL_LOCAL_ALLOWLIST"

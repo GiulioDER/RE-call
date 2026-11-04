@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from recall._env import strict_bool
 from recall.cache import default_cache
+from recall.confinement import within
 from recall.context import context_policy_for_profile
 from recall.embeddings import Embedder, embedding_profile_id
 # The budget lives in `recall.index_budget`, shared with the lite store's automatic refresh; the
@@ -148,13 +149,14 @@ def _index_memory_unlocked(
         )
 
     root = Path(values.get("RECALL_INDEX_ROOT", ".")).resolve()
-    target = Path(path).resolve()
-    if not target.is_relative_to(root):
+    confined_target = within(root, path)
+    if confined_target is None:
         _log.warning("refused index path %r: outside the index root %s", path, root)
         raise IndexPreflightError(
             f"path {path!r} is outside the directory this server is allowed to index; "
             "an operator can widen it with RECALL_INDEX_ROOT."
         )
+    target = confined_target
     if not target.exists():
         raise IndexPreflightError(f"path not found: {path!r}")
 
@@ -214,11 +216,9 @@ def _index_memory_unlocked(
         if not target.is_dir():
             raise IndexPreflightError("namespaced uploads require a staged directory")
         stable = target.parent / f"sync-memory-{_publication_namespace}"
-        destination = stable.resolve()
+        destination = within(root, stable)
         published_files = [stable / file.relative_to(target) for file in files]
-        if not destination.is_relative_to(root) or any(
-            not file.resolve().is_relative_to(destination) for file in published_files
-        ):
+        if destination is None or any(within(destination, file) is None for file in published_files):
             raise IndexPreflightError("stable upload destination escapes the index root")
         try:
             _promote_staged(target, stable)

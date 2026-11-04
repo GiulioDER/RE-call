@@ -9,6 +9,7 @@ import shutil
 import uuid
 from pathlib import Path
 
+from recall.confinement import within
 from recall.errors import RecallError
 from recall.observability import get_logger
 from recall.uploads import _tenant_uploads_root, delete_staged_sources
@@ -274,7 +275,7 @@ def stage_uploads(
             # Belt and braces after normalisation: `_safe_relative_name` has already refused
             # every traversal shape, so this can only fire if that function is weakened. It is
             # cheap, and it is the check that would notice.
-            if not target.resolve().is_relative_to(root.resolve()):
+            if within(root, target) is None:
                 raise UploadError(f"upload name escapes the staging root: {name!r}")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)

@@ -368,6 +368,8 @@ def install_user_skill(
         for path in source_dir.rglob("*")
         if path.is_file()
         and not path.is_symlink()
+        # Skips the copy's own destination inside the source tree; not an access decision.
+        # ast-grep-ignore: containment-via-confined
         and not path.is_relative_to(dest_dir)
     )
     if source_files and all(

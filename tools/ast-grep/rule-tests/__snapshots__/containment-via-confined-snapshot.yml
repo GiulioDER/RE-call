@@ -1,0 +1,44 @@
+id: containment-via-confined
+snapshots:
+  ok = (root / name).resolve().is_relative_to(root.resolve()):
+    labels:
+    - source: (root / name).resolve().is_relative_to(root.resolve())
+      style: primary
+      start: 5
+      end: 59
+    - source: is_relative_to
+      style: secondary
+      start: 29
+      end: 43
+    - source: (root / name).resolve().is_relative_to
+      style: secondary
+      start: 5
+      end: 43
+  outside = not path.is_relative_to(root):
+    labels:
+    - source: path.is_relative_to(root)
+      style: primary
+      start: 14
+      end: 39
+    - source: is_relative_to
+      style: secondary
+      start: 19
+      end: 33
+    - source: path.is_relative_to
+      style: secondary
+      start: 14
+      end: 33
+  return any(path.is_relative_to(r) for r in roots):
+    labels:
+    - source: path.is_relative_to(r)
+      style: primary
+      start: 11
+      end: 33
+    - source: is_relative_to
+      style: secondary
+      start: 16
+      end: 30
+    - source: path.is_relative_to
+      style: secondary
+      start: 11
+      end: 30

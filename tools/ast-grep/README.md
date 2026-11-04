@@ -15,6 +15,7 @@ ast-grep scan          # the tree; exits 1 on an error-level match
 | `benchmark-indexer-without-cache` | no `Indexer` in `benchmarks/` gets the embedding cache unless a suppression says why |
 | `python-module-run-with-safe-path` | in the production packages, a `python -m` launch passes `-P` or `-I`, so the working directory cannot shadow the installed package |
 | `root-of-only-in-source-identity` | a document's root is derived only through `recall.source_identity.source_identity`, never by calling `root_of` directly |
+| `containment-via-confined` | in the production packages, whether a path lies under a root is decided by `recall.confinement.confined` or `within`, not a hand-written `is_relative_to` |
 
 ## Adding a rule
 
@@ -49,3 +50,10 @@ belongs in a Python checker under `scripts/`.
   (`[Missing]`).
 - Deleting the rule's `ignores:` entry made `scan` exit 1 on `recall/source_identity.py`, the one
   place the call belongs.
+
+## Red proof for `containment-via-confined` (2026-11-04, ast-grep 0.51.0)
+
+- Changing the matched node from `attribute` to `identifier` failed all three invalid cases
+  (`[Missing]`).
+- Deleting the rule's `ignores:` entry made `scan` exit 1 on `recall/confinement.py`.
+- Deleting the suppression above `recall/manifest.py`'s allowlist check made `scan` exit 1 there.
