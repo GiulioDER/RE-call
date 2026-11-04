@@ -161,10 +161,12 @@ async def _server_calls(env: dict[str, str], cwd: Path, calls):
     async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
         await asyncio.wait_for(session.initialize(), timeout=300)
 
-        async def call(tool: str, arguments: dict) -> dict:
+        async def call(tool: str, arguments: dict, *, refusal_ok: bool = False) -> dict:
             result = await asyncio.wait_for(session.call_tool(tool, arguments), timeout=300)
             text = "".join(getattr(part, "text", "") for part in result.content)
             is_error = getattr(result, "is_error", getattr(result, "isError", False))
+            if is_error and refusal_ok and "{" in text:
+                return {"refused": True, **json.loads(text[text.index("{"):text.rindex("}") + 1])}
             if is_error:
                 raise StepFailed(f"{tool} returned an error: {text[:1500]}")
             try:
@@ -435,19 +437,39 @@ def verify(workdir: Path) -> None:
     # By both canonical names. The tenant holds the memo twice, as 0.14.0's FIRST_CALIBRATION.md
     # leaves it: `recall index` stored the path, the generation stored the file:// URI. Since
     # #1149 a forget refuses the short name `recall_search` prints (`hiring.md`) as ambiguous
-    # and lists these two; 0.14.0 had no such refusal (measured on this job).
+    # and lists these two; 0.14.0 has no such refusal.
     print(f"verify 8: forget {FORGET_TOPIC}.md, a memo {state['seeded_by']} indexed", flush=True)
     memo = workdir / "notes" / f"{FORGET_TOPIC}.md"
-    _run("verify 8", _recall("forget", str(memo), memo.as_uri(), "--yes"), env=prod, cwd=workdir)
+    out = _run("verify 8", _recall("forget", str(memo), memo.as_uri(), "--yes"), env=prod, cwd=workdir)
+    if "outbox failed" in out:
+        # Not gated: the chunks are gone, and the table it could not scrub is a control-plane
+        # one `recall schema apply` does not create, so there was nothing pending to scrub.
+        print("    NOTE: forget warned that scrubbing the migration outbox failed")
 
-    async def after_forget(call):
-        return await call("recall_search", {"query": _query(FORGET_TOPIC), "k": 3})
+    # The erasure changes the generation's corpus fingerprint, so strict search must refuse
+    # (CALIBRATION_STALE) until a recalibration: refusing serves nothing, which is correct.
+    async def search_forgotten(call):
+        return await call("recall_search", {"query": _query(FORGET_TOPIC), "k": 3}, refusal_ok=True)
 
-    payload = asyncio.run(_server_calls(prod, workdir, after_forget))
-    remaining = _top(payload)
-    print(f"    {FORGET_TOPIC} after forget: {remaining} ({payload.get('trust_state')})")
-    if any(s.endswith(f"{FORGET_TOPIC}.md") for s in remaining):
-        raise StepFailed(f"verify 8: {FORGET_TOPIC}.md still searchable after forget: {remaining}")
+    def require_forgotten(step: str, payload: dict) -> None:
+        remaining = _top(payload)
+        print(f"    {FORGET_TOPIC}: {remaining} (trust_state={payload.get('trust_state')!r}, "
+              f"code={payload.get('code')!r})")
+        if any(s.endswith(f"{FORGET_TOPIC}.md") for s in remaining):
+            raise StepFailed(f"{step}: {FORGET_TOPIC}.md still searchable after forget: {remaining}")
+
+    payload = asyncio.run(_server_calls(prod, workdir, search_forgotten))
+    require_forgotten("verify 8", payload)
+    if payload.get("refused") and payload.get("code") != "CALIBRATION_STALE":
+        raise StepFailed(f"verify 8: search after forget refused for an unexpected reason: {payload.get('code')!r}")
+
+    print("verify 9: recalibrate as the refusal advises, then search again", flush=True)
+    _run("verify 9", _recall("calibration", "auto", "--generation", state["generation"]), env=prod, cwd=workdir)
+    payload = asyncio.run(_server_calls(prod, workdir, search_forgotten))
+    if payload.get("refused"):
+        raise StepFailed(f"verify 9: search still refused after recalibrating: {payload.get('code')!r}")
+    _require_trusted("verify 9", FORGET_TOPIC, payload)
+    require_forgotten("verify 9", payload)
     print("upgrade verified")
 
 
