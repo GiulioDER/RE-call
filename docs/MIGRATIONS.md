@@ -236,3 +236,17 @@ expansion and does not affect `recall_search` or `recall_evidence`.
 Migration `0025_allow_supersedes_graph_relations.sql` extends the semantic graph relation check to
 include the documented `supersedes` relation. This matches the deterministic supersession edges
 already produced from frontmatter metadata and allows graph rebuilds to persist them.
+
+### Migrations 0030 and 0031: Materialized current facts
+
+Migration `0030_fact_current_table.sql` creates the current-facts tables empty; nothing fills them
+from the events a tenant's ledger already holds. Until they file every event, every read and
+conflict check replays the ledger, so answers stay correct but the speedup never arrives. After
+migrating a database whose ledger already holds events, run once per tenant:
+
+```bash
+recall provenance rebuild
+```
+
+`recall provenance rebuild --check` then reports `current: true`. Re-run
+`recall schema grants --controller` and `--strict` first, as the 0.15.0 notes say.

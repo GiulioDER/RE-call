@@ -717,3 +717,52 @@ def test_t11_the_current_facts_tables_are_rebuilt(backend: Backend) -> None:
     listed = [e.fact.object for e in ledger.current(tenant_id=backend.tenant, now=NOW) if e.fact]
     assert listed == ["Turin"]
     assert ledger.last_read == "table", "the read after the redaction was not answered by the tables"
+
+
+@requires_db
+def test_t12_a_card_only_redaction_waits_for_the_facts_key_lock(make_store: Callable[[int], PgVectorStore]) -> None:
+    """Node tests/test_fact_redaction.py::test_t12_a_card_only_redaction_waits_for_the_facts_key_lock.
+
+    CCA 2026-11-03 STAKES-001. A fact two memos support keeps its value when one is forgotten,
+    but that memo's card is rewritten in the assertion. Forget's retraction holds the fact's key
+    lock while it copies an assertion's cards, so the redaction must take the same lock, or a
+    retraction read before the rewrite keeps the raw card (the value with it) where no later
+    redaction reaches. Here a transaction holding the key lock stands in for that retraction.
+
+    Red: pre-fix `conflict_keys` (recall/fact_redaction.py) locks only the keys of values it
+    erases, so the redaction finishes while the lock is held and fails on "did not wait".
+    """
+    import threading
+
+    import psycopg
+
+    from recall.fact_current import PostgresTables
+    from recall.fact_redaction import PostgresFactRedactor
+    from recall.provenance_controller import fact_conflict_key
+
+    tenant = f"redact-{uuid4().hex}"
+    table = make_store(DIM).table
+    store = PgVectorStore(TEST_DSN, dim=DIM, table=table, tenant=tenant)
+    try:
+        backend = Backend("pg", store, tenant, PostgresEvidenceCardStore(TEST_DSN, tenant_id=tenant))
+        backend.remember("a.md")
+        backend.remember("s.md")
+        assert backend.apply(PET, "a.md", "r1") == "APPLIED"
+        assert backend.apply(PET, "s.md", "r2") == "DUPLICATE"
+        reports: list[Any] = []
+        redactor = PostgresFactRedactor(TEST_DSN, tenant_id=tenant)
+        with psycopg.connect(TEST_DSN) as holder:
+            # The key lock every writer of PET's key takes (here, as the current-facts tables do).
+            PostgresTables(holder, tenant).lock_keys([fact_conflict_key(PET)])
+            worker = threading.Thread(
+                target=lambda: reports.append(redactor.redact(erased=lambda name: name == "a.md", names=["a.md"]))
+            )
+            worker.start()
+            worker.join(timeout=3)
+            waited = worker.is_alive()
+            holder.rollback()
+        worker.join(timeout=30)
+        assert waited, "the redaction rewrote the card without waiting for the fact's key lock"
+        assert reports and reports[0].events_rewritten >= 1 and reports[0].facts_redacted == 0, reports
+    finally:
+        store.close()

@@ -47,6 +47,7 @@ from recall.fact_ledger import (
     LEDGER_COLUMNS,
     _event_from_row,
     decode_ledger_row,
+    lock_fact_keys,
 )
 from recall.observability import get_logger
 from recall.provenance_controller import (
@@ -331,16 +332,35 @@ def materialize_events(tables: Tables, event_ids: Sequence[str]) -> None:
     rows: list[tuple[str, str | None, str | None, str]] = []
     affected: set[str] = set()
     reasons: list[str] = []
+    # The keys this batch files redacted successors under, consulted before the tables: an event
+    # naming one in the same batch (its retraction or withdrawal) is filed with it, as
+    # `derive_tables` files it, or that key's history keeps it as a successor.
+    batch: dict[str, str] = {}
+
+    def named_key(fact_id: str) -> tuple[bool, str | None]:
+        if fact_id in batch:
+            return True, batch[fact_id]
+        return tables.named_key(fact_id)
+
     for event in events:
-        keys, reason = event_keys(event, tables.named_key)
+        keys, reason = event_keys(event, named_key)
         if reason is not None:
             reasons.append(reason)
         key = min(keys) if keys else None
         rows.append((event.event_id, key, event.fact_id, event.event_type))
         if key is not None and event.event_type not in _INERT:
             affected.add(key)
+        if key is not None and event.event_type == "asserted" and event.fact is None and event.fact_id is not None:
+            batch.setdefault(event.fact_id, key)
     tables.lock_keys(sorted(affected))
     tables.lock_tenant(exclusive=False)
+    # Read again under the locks: a redaction that committed since the first read rewrote the ids
+    # (and the fact ids, which hash the erased value), and filing the old ones would keep them. An
+    # event of an affected key is caught below, when its key's history is read; one filed under no
+    # key, or inert (a refusal, an abstention), is checked here.
+    unchecked = [event_id for event_id, key, _fact_id, event_type in rows if key is None or event_type in _INERT]
+    if unchecked and len(tables.events(unchecked)) != len(unchecked):
+        raise LookupError("events were rewritten while they were materialized; reconcile again")
     tables.file(rows)
     for key in sorted(affected):
         history = tables.key_events(key)
@@ -699,11 +719,6 @@ class SQLiteTables:
         """Nothing: a SQLite writer holds the whole file (`BEGIN IMMEDIATE`)."""
 
 
-def fact_key_lock(tenant_id: str, key: str) -> str:
-    """The advisory lock string every PostgreSQL writer of `key` holds (`PostgresFactLedger`)."""
-    return f"fact\x1f{tenant_id}\x1f{key}"
-
-
 class PostgresTables:
     """`Tables` on a PostgreSQL connection with the tenant GUC set; the caller owns the transaction."""
 
@@ -857,10 +872,7 @@ class PostgresTables:
             self._conn.execute(f"DELETE FROM {table} WHERE tenant_id = %s", (self.tenant_id,))
 
     def lock_keys(self, keys: Sequence[str]) -> None:
-        for key in keys:
-            self._conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (fact_key_lock(self.tenant_id, key),)
-            )
+        lock_fact_keys(self._conn, self.tenant_id, keys)
 
     def lock_tenant(self, *, exclusive: bool) -> None:
         function = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"

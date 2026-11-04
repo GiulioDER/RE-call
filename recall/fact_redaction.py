@@ -43,7 +43,13 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from recall.fact_ledger import FACT_LEDGER_TABLE, decision_event_id
+from recall.fact_ledger import (
+    FACT_LEDGER_TABLE,
+    SUPERSESSION_EVENT_SUFFIX,
+    decision_event_id,
+    lock_fact_keys,
+    supersession_ids,
+)
 from recall.observability import get_logger
 from recall.provenance_controller import (
     RETRACTION_REQUEST_PREFIX,
@@ -71,7 +77,6 @@ _HOLDERS = frozenset({"asserted", "rejected", "abstained"})
 #: event id is `decision_event_id` of that request id (`recall.fact_ledger.retraction_ids`,
 #: `withdrawal_ids`), so both follow a renamed assertion.
 _NAMING_PREFIXES = {"retracted": RETRACTION_REQUEST_PREFIX, "withdrawn": WITHDRAWAL_REQUEST_PREFIX}
-_SUPERSESSION_SUFFIX = "_sup"
 
 
 def _token() -> str:
@@ -245,10 +250,11 @@ def plan_redaction(
             if named in event_map:
                 new_request = prefix + event_map[named]
                 return decision_event_id(tenant_id, new_request, event_type), new_request
-        if event_type == "superseded" and event_id.endswith(_SUPERSESSION_SUFFIX):
-            holder = event_id[: -len(_SUPERSESSION_SUFFIX)]
+        if event_type == "superseded" and event_id.endswith(SUPERSESSION_EVENT_SUFFIX):
+            holder = event_id[: -len(SUPERSESSION_EVENT_SUFFIX)]
             if holder in event_map:
-                return event_map[holder] + _SUPERSESSION_SUFFIX, request_map[holder] + ":supersession"
+                # Minted as the ledger mints them, so the pair migration 0029 checks always holds.
+                return supersession_ids(event_map[holder], request_map[holder])
         return event_id, request_id
 
     def new_cards(cards: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -297,12 +303,18 @@ def plan_redaction(
 
 
 def conflict_keys(rows: Sequence[LedgerRow], plan: RedactionPlan) -> list[str]:
-    """The per-fact advisory lock keys of the values `plan` erases, as `apply_assertion` takes them."""
-    erased = {item.event_id for item in plan.events if is_redaction_marker(item.fact)}
+    """The conflict-key advisory locks of every event with a value that `plan` rewrites.
+
+    Not only the values it erases: an assertion whose cards it rewrites while its value survives
+    (another memo still supports it) is locked too, because forget's retraction (`retract_forgotten`,
+    which holds the key's lock) copies an assertion's cards. Unlocked, a retraction read before this
+    rewrite commits keeps the forgotten memo's raw card, value and all, where no redaction reaches it.
+    """
+    rewritten = {item.event_id for item in plan.events}
     keys = {
         fact_conflict_key(AtomicFact.from_payload(row.fact))
         for row in rows
-        if row.event_id in erased and row.fact is not None and not is_redaction_marker(row.fact)
+        if row.event_id in rewritten and row.fact is not None and not is_redaction_marker(row.fact)
     }
     return sorted(keys)
 
@@ -341,7 +353,9 @@ class PostgresFactRedactor:
 
     def __init__(
         self, ledger_dsn: str, *, tenant_id: str, card_dsn: str | None = None,
-        statement_timeout_ms: int = 15000,
+        # The rebuild it runs is `PostgresCurrentFacts.rebuild`'s, so it gets that one's timeout:
+        # a forget whose redaction times out has retracted the fact and erased no value.
+        statement_timeout_ms: int = 60000,
     ) -> None:
         if not ledger_dsn or not tenant_id:
             raise ValueError("dsn and tenant_id must be non-empty")
@@ -412,11 +426,7 @@ class PostgresFactRedactor:
             )
             if first.empty:
                 return RedactionReport()
-            for key in conflict_keys(rows, first):
-                conn.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-                    (f"fact\x1f{self.tenant_id}\x1f{key}",),
-                )
+            lock_fact_keys(conn, self.tenant_id, conflict_keys(rows, first))
             rows = [_pg_row(row) for row in conn.execute(_LEDGER_ROW_SQL, (self.tenant_id,)).fetchall()]
             plan = plan_redaction(self.tenant_id, rows, stored, erased=erased, everything=everything, token=token)
             if plan.empty:
