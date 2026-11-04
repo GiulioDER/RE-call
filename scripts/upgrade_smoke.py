@@ -463,8 +463,17 @@ def verify(workdir: Path) -> None:
     if payload.get("refused") and payload.get("code") != "CALIBRATION_STALE":
         raise StepFailed(f"verify 8: search after forget refused for an unexpected reason: {payload.get('code')!r}")
 
+    # `recall calibration auto` does not apply: it re-establishes a calibration on a REBUILT
+    # generation and skips when the published one is bound to the same generation, which a
+    # forget leaves in place. So this is the labelled refit, with the forgotten memo's question
+    # taken out of the set, since nothing answers it any more.
     print("verify 9: recalibrate as the refusal advises, then search again", flush=True)
-    _run("verify 9", _recall("calibration", "auto", "--generation", state["generation"]), env=prod, cwd=workdir)
+    labels = [q for q in json.loads((workdir / "queries.json").read_text(encoding="utf-8"))
+              if q["query"] != _query(FORGET_TOPIC)]
+    (workdir / "queries-after-forget.json").write_text(json.dumps(labels), encoding="utf-8")
+    _run("verify 9", _recall("calibration", "calibrate", "--generation", state["generation"],
+                             "--queries", str(workdir / "queries-after-forget.json"), "--publish"),
+         env=prod, cwd=workdir)
     payload = asyncio.run(_server_calls(prod, workdir, search_forgotten))
     if payload.get("refused"):
         raise StepFailed(f"verify 9: search still refused after recalibrating: {payload.get('code')!r}")
