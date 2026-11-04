@@ -69,8 +69,9 @@ _CLEARANCE_ORDER: dict[Classification, int] = {
     "confidential": 2,
     "restricted": 3,
 }
-#: The word that makes a name a credential.
-_CREDENTIAL_WORD = r"(?:api[_ -]?key|token|secret|password)"
+#: The word that makes a name a credential. `pgpassword` because libpq's own variable has no
+#: separator before the word (`PGPASSWORD=`), so the prefix rule below never reached it.
+_CREDENTIAL_WORD = r"(?:api[_ -]?key|token|secret|pgpassword|password)"
 #: A credential name: the word with an optional prefix (`OPENAI_API_KEY`, `DB_PASSWORD`: `_` is a
 #: word character, so a bare `\b` never matched inside one) and an optional suffix from a closed
 #: list that must END in key, token, secret or value (`AWS_SECRET_ACCESS_KEY`), or `_id`
