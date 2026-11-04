@@ -195,7 +195,7 @@ def seed(workdir: Path) -> None:
     print(f"seed 1: apply the schema with recall {version}", flush=True)
     _run("seed 1", _recall("schema", "apply"), env=dev, cwd=workdir)
 
-    print("seed 2: write the memo folder", flush=True)
+    print("seed 2: write the memo folder and index it", flush=True)
     notes = workdir / "notes"
     notes.mkdir(parents=True)
     for topic, words in TOPICS:
@@ -206,6 +206,10 @@ def seed(workdir: Path) -> None:
     queries = [{"query": _query(t), "answerable": True, "relevant_ids": []} for t, _ in TOPICS]
     queries += [{"query": q, "answerable": False, "relevant_ids": []} for q in ABSENT]
     (workdir / "queries.json").write_text(json.dumps(queries), encoding="utf-8")
+    # Step 1 of 0.14.0's FIRST_CALIBRATION.md, which also leaves the legacy `chunks` rows that
+    # `recall doctor` counts: on a tenant whose corpus is only a promoted generation, doctor FAILS
+    # "holds NO chunks" while the same tenant serves trusted answers (measured on this job).
+    _run("seed 2", _recall("index", str(notes), "--project", "upgrade-smoke"), env=dev, cwd=workdir)
 
     print("seed 3: build a file:// manifest", flush=True)
     _run("seed 3", _recall("manifest", "inventory", str(notes), "--output", str(workdir / "inventory.json")),
