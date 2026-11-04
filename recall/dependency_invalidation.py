@@ -13,14 +13,13 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Literal, cast
-from urllib.parse import unquote, urlsplit
 
 from psycopg.types.json import Jsonb
 
 from recall.frontmatter import authority_from_metadata, dependencies_from_metadata
 from recall.lineage import canonical_sha256
-from recall.supersession import root_of
-from recall.uploads import in_upload_staging, source_location
+from recall.source_identity import source_identity
+from recall.uploads import in_upload_staging
 from recall.types import Authority, Chunk, DependencyCause, InvalidationReason
 
 AUTHORITY_VALUES: tuple[Authority, ...] = (
@@ -64,14 +63,7 @@ def source_file(chunk: Chunk) -> str:
 
 
 def _source_root(source: str, file: str) -> str | None:
-    # Generation files retain URI escapes; indexed files may already be decoded. Decode the
-    # file only when it matches the URI's raw path, never a plain path's literal percent name.
-    if "://" in source:
-        path = urlsplit(source).path
-        posix_file = file.replace("\\", "/")
-        if path == posix_file or path.endswith("/" + posix_file):
-            file = unquote(file)
-    return root_of(source_location(source), file)
+    return source_identity(source, file).root
 
 
 def dependency_key(chunk: Chunk, collided: frozenset[str]) -> str:

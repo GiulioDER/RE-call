@@ -14,7 +14,9 @@ from datetime import UTC, datetime
 from typing import cast
 
 from recall.frontmatter import MARKDOWN_SUFFIXES, supersedes_targets, validity_bounds
-from recall.uploads import in_upload_staging, source_location
+from recall.source_identity import nfc as _nfc
+from recall.source_identity import source_identity
+from recall.uploads import in_upload_staging
 
 
 def chunk_supersedes_targets(metadata: Mapping[str, object]) -> tuple[str, ...]:
@@ -271,11 +273,6 @@ def _fold(value: str) -> str:
     return unicodedata.normalize("NFC", value).casefold()
 
 
-def _nfc(value: str) -> str:
-    """One spelling of a stored name for comparing names of the same file: NFC, case kept."""
-    return unicodedata.normalize("NFC", value)
-
-
 def _strip_document_extension(value: str) -> str:
     lowered = value.lower()
     for extension in _DOCUMENT_EXTENSIONS:
@@ -312,25 +309,6 @@ def _dangling_key(reference: str) -> str:
     read as a slash. One rule, so a withdrawn memo's dangling target is spliced under the key
     its live claimants' winner uses."""
     return reference.replace("\\", "/").rsplit("/", 1)[-1]
-
-
-def root_of(source: object, file: str) -> str | None:
-    """The root a chunk was indexed under: its absolute `source` less the root-relative `file`.
-
-    None when the row carries no source (no root is known, and every such file shares one).
-    A source that does not end in its file (a URI with percent-escapes, a hand-built fixture)
-    stands for its own root: two such files never share a root, which only matters when they
-    also share a root-relative path, and then keeping them apart is the point.
-    """
-    if not isinstance(source, str) or not source:
-        return None
-    posix_source = source.replace("\\", "/")
-    posix_file = file.replace("\\", "/")
-    if posix_source == posix_file:
-        return ""
-    if posix_source.endswith("/" + posix_file):
-        return posix_source[: -len(posix_file)]
-    return posix_source
 
 
 @dataclass(frozen=True)
@@ -796,7 +774,7 @@ class ReferenceIndex:
         # Each distinct pair is rooted once and each file folded once: a store's scan has a row
         # per chunk, and doing both per row made a cache miss several times slower (2026-10-21
         # audit, PERF-004).
-        pairs = {(file, source): root_of(source, file) for file, source in files}
+        pairs = {(file, source): source_identity(source, file).root for file, source in files}
         roots: dict[str, set[str]] = {}
         for (file, _source), root in pairs.items():
             members = roots.setdefault(file, set())
@@ -895,8 +873,7 @@ def _standing_records(
     # case-sensitive file system `Notes.md` beside `notes.md` is another memo, and must not void
     # a forget.
     def root_key(source: str, file: str) -> str | None:
-        root = root_of(source_location(source), file)
-        return None if root is None else _nfc(root)
+        return source_identity(source, file).root
 
     by_root: dict[str | None, set[str]] = {}
     for file, source in pairs:
