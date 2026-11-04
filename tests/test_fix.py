@@ -1533,12 +1533,17 @@ def _old_sentence_around(text, start, end):
 
 
 def _old_is_reported_speech(body, marker_start):
-    """`recall.fix._is_reported_speech` as it was before PERF-002."""
+    """Full-scan oracle, with STAKES-001's reference-aware clause boundaries."""
     import recall.fix as fix
+    from recall.supersession_cues import _REFERENCE
 
-    head = body[:marker_start]
+    masked = list(body)
+    for pattern in (_REFERENCE, fix._OTHER_DOC, fix._REF_MASK_RE):
+        for match in pattern.finditer(body):
+            masked[match.start():match.end()] = "\0" * len(match.group())
+    head = "".join(masked[:marker_start])
     cut = max((head.rfind(c) for c in fix._CLAUSE_END), default=-1)
-    return bool(fix._OTHER_DOC.search(head[cut + 1:]))
+    return bool(fix._OTHER_DOC.search(body, cut + 1, marker_start))
 
 
 def _old_hedged_before(body, marker_start):

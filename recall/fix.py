@@ -67,7 +67,7 @@ from recall.lint import (
 )
 from recall.observability import get_logger
 from recall.errors import RecallError
-from recall.supersession_cues import unasserted
+from recall.supersession_cues import _window, unasserted
 
 _log = get_logger("fix")
 
@@ -189,6 +189,9 @@ _OTHER_DOC = re.compile(
     r"\[\[[^\]\n]+\]\]|\b[\w\-]{6,}\.md\b|\b(?:memo|doc|document|note|entry|file|index)s?\b",
     re.IGNORECASE,
 )
+_SUBJECT_MASK_RE = re.compile(
+    f"{_REF_MASK_RE.pattern}|{_OTHER_DOC.pattern}", re.IGNORECASE
+)
 #: "supersedes the <noun> in X" — a part of X, not X.
 _PARTIAL_SCOPE = re.compile(r"\bthe\b.+\bin\b", re.IGNORECASE | re.DOTALL)
 #: Clause boundaries; the subject of a marker lives after the nearest one.
@@ -208,16 +211,22 @@ def _is_reported_speech(body: str, marker_start: int) -> bool:
     """
     # The clause end is looked for in the `SENTENCE_LOOKBACK` characters behind the marker first,
     # so a memo with many cues is read once rather than once per cue; failing that, all of it.
-    lo = max(0, marker_start - SENTENCE_LOOKBACK)
-    near = body[lo:marker_start]
+    # Reference punctuation belongs to the subject, not to the surrounding clause.
+    window = _window(body, marker_start, marker_start, _SUBJECT_MASK_RE, ())
+    if window is None:
+        return True
+    offset, masked = window
+    marker = marker_start - offset
+    lo = max(0, marker - SENTENCE_LOOKBACK)
+    near = masked[lo:marker]
     cut = max((near.rfind(c) for c in _CLAUSE_END), default=-1)
     if cut >= 0:
         cut += lo
     elif lo:
-        cut = max((body.rfind(c, 0, lo) for c in _CLAUSE_END), default=-1)
+        cut = max((masked.rfind(c, 0, lo) for c in _CLAUSE_END), default=-1)
     # Searched in place: the character before `cut + 1` is a clause end, never a word character,
     # so `\b` there reads as it did at the start of the sliced head.
-    return bool(_OTHER_DOC.search(body, cut + 1, marker_start))
+    return bool(_OTHER_DOC.search(body, offset + cut + 1, marker_start))
 
 
 #: Qualifiers that weaken the claim from "replaces" to "relates to".

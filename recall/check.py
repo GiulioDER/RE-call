@@ -21,14 +21,14 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from recall.fix import _REF, _is_index
+from recall.fix import _REF_MASK_RE, _is_index
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key
 from recall.lint import CLOSURE_MARKERS, DEFAULT_GLOB
 
 #: Any document reference anywhere in the body — no marker proximity required. At write time the
 #: author picks, so a wide net beats a precise one.
-_ANY_REF = re.compile(_REF)
+_ANY_REF = re.compile(_REF_MASK_RE.pattern)
 
 
 @dataclass(frozen=True)
