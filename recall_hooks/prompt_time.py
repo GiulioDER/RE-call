@@ -65,6 +65,19 @@ staleness bug in exchange: the memo written by the session that is running right
 one the next prompt should find. A cache invalidated wrongly here fails silently and looks like
 "nothing matched", which is the failure this hook exists to remove.
 
+🔁 **Revised 2026-11-04: each memo's parsed result is cached, and the reasoning above still holds
+for what is not.** The store had grown to about 1,350 memos (5.6 MB of `*.md`), and `load_memos`
+to 1.2 to 2.8 s of a 10 s client timeout, growing with every memo (PERF-001 of that day's CCA hunt). The
+cache (`load_memos`, `cache_path`) answers the staleness argument by not being an index: it holds
+each file's `(stem, summary, tokens)` keyed on its name, `st_mtime_ns` and `st_size`, the listing
+still comes from the directory on every prompt, with every memo's size and mtime (`_listing`). So a
+memo written or edited by the running session has a new stamp and is read again, and a deleted one
+is gone from the listing, whatever the cache says. The ranker still builds its statistics fresh
+from the whole list. What it cannot see is an edit that keeps both the size and the nanosecond
+mtime, which needs a filesystem with a coarse clock and a same-length rewrite inside one tick. A
+cache that is missing, corrupt, too large, or written by another version of this module is
+ignored, and the store is read in full exactly as before.
+
 ⛔ **Three properties this must never lose:**
 
 1. **It never blocks a prompt.** Exit 2 on `UserPromptSubmit` discards the user's message. A memory
@@ -77,16 +90,22 @@ one the next prompt should find. A cache invalidated wrongly here fails silently
 
 from __future__ import annotations
 
+import fnmatch
+import hashlib
 import json
 import math
+import os
 import re
+import stat
 import sys
+import tempfile
+import time
 from datetime import date, datetime, tzinfo
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from . import load_config, project_config_home
+from . import claude_config_home, load_config, project_config_home
 
 #: The four hub and sub-index files. They are pointers to memos rather than memos, they repeat
 #: every memo's hook line, and in the first prototype they out-scored the memos they point at.
@@ -109,6 +128,19 @@ RELATIVE_FLOOR = 0.45
 SUMMARY_CHARS = 220
 #: Ranking never reads more of a prompt than this. A pasted stack trace is not a better query.
 MAX_QUERY_CHARS = 4096
+
+#: The parsed-memo cache, one file per store, beside `auditor_brief`'s under the hook config home.
+CACHE_PREFIX = "recall-prompt-time-memos-"
+#: Bumped whenever what an entry holds changes; `_cache_tag` also covers edits to this module.
+CACHE_FORMAT = 1
+#: A cache past this is neither read nor written, and the store is read in full as before.
+#: Measured 2026-11-04: the 1,354-memo, 5.6 MB store that motivated it makes a 4.4 MB cache, so
+#: this is about seven times that (re-measure: the size of `cache_path(store)` after one call).
+MAX_CACHE_BYTES = 32 * 1024 * 1024
+#: A temporary file left by a killed write is removed by the next write past this age.
+_STALE_TEMP_SECONDS = 60.0
+#: `(st_mtime_ns, st_size, summary, tokens joined on single spaces)`, per memo file name.
+_CacheEntry = tuple[int, int, str, str]
 
 BM25_K1 = 1.2
 BM25_B = 0.75
@@ -283,14 +315,130 @@ def find_store(cwd: str, override: str = "") -> Path | None:
     return None
 
 
-def load_memos(store: Path) -> list[tuple[str, str, list[str]]]:
-    """`(stem, one-line summary, tokens)` per memo. Index files are skipped, see INDEX_STEMS."""
+def cache_path(store: Path) -> Path:
+    """The parsed-memo cache for `store`, named as `auditor_brief.cache_path` names its own: one
+    file per store under `<claude config home>/cache/`, so two stores never evict each other."""
 
+    try:
+        key = str(Path(store).resolve())
+    except OSError:
+        key = str(store)
+    digest = hashlib.sha256(key.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+    return claude_config_home() / "cache" / f"{CACHE_PREFIX}{digest}.json"
+
+
+def _cache_tag() -> str:
+    """The format, plus this module's own size and mtime: a change to the tokenizer, the stopwords
+    or the field weighting changes what an entry should hold, so it re-reads every memo."""
+
+    try:
+        found = os.stat(__file__)
+    except OSError:
+        return f"{CACHE_FORMAT}:?"
+    return f"{CACHE_FORMAT}:{found.st_size}:{found.st_mtime_ns}"
+
+
+def _read_cache(path: Path, tag: str) -> dict[str, _CacheEntry]:
+    """The cached entries by file name, or `{}` for a cache that is absent, too large, corrupt or
+    from another tag. Never raises."""
+
+    try:
+        if path.stat().st_size > MAX_CACHE_BYTES:
+            return {}
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("tag") != tag:
+            return {}
+        entries: dict[str, _CacheEntry] = {}
+        for name, (mtime_ns, size, summary, tokens) in document["entries"].items():
+            if not (isinstance(summary, str) and isinstance(tokens, str)):
+                raise ValueError("not a cache entry")
+            entries[str(name)] = (int(mtime_ns), int(size), summary, tokens)
+        return entries
+    except Exception:  # BROAD-CATCH: fail-open  (an unreadable cache is a cold cache, never an error)
+        return {}
+
+
+def _write_cache(path: Path, tag: str, entries: dict[str, _CacheEntry]) -> None:
+    """Replace the cache atomically, as `recall.records_files._write_cache_file` does. A document
+    past MAX_CACHE_BYTES is not written. Never raises: the cache is an optimisation."""
+
+    try:
+        text = json.dumps(
+            {"tag": tag, "entries": {name: list(entry) for name, entry in entries.items()}},
+            separators=(",", ":"),
+        )
+        if len(text) > MAX_CACHE_BYTES:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cutoff = time.time() - _STALE_TEMP_SECONDS
+        for stale in path.parent.glob(f".{path.name}.*.tmp"):
+            try:
+                if stale.stat().st_mtime < cutoff:
+                    stale.unlink()
+            except OSError:
+                continue
+        fd, temp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as handle:
+                handle.write(text)
+            os.replace(temp, path)
+        except BaseException:
+            Path(temp).unlink(missing_ok=True)
+            raise
+    except Exception:  # BROAD-CATCH: fail-open  (the cache is an optimisation, never a failure)
+        pass
+
+
+def _listing(store: Path) -> list[tuple[Path, os.stat_result]]:
+    """The `*.md` entries of `store` in `sorted(store.glob("*.md"))` order, each with its lstat.
+
+    One `os.scandir` rather than a glob and a stat per file: on Windows a directory entry already
+    carries the size and mtime, and the per-file `lstat` was 278 ms of a 1,500-memo store's warm
+    load (2026-11-04). `fnmatch` applies the platform's case rule, as the glob did. NTFS updates a
+    directory entry's size and mtime when the writer closes the file, so a memo still open for
+    writing is seen as it was; the next prompt after the write ends reads it.
+    """
+
+    found: list[tuple[Path, os.stat_result]] = []
+    try:
+        with os.scandir(store) as entries:
+            for entry in entries:
+                if not fnmatch.fnmatch(entry.name, "*.md"):
+                    continue
+                try:
+                    found.append((store / entry.name, entry.stat(follow_symlinks=False)))
+                except OSError:
+                    continue
+    except OSError:
+        # A store that is not a readable directory has no memos, as the glob returned none.
+        return []
+    return sorted(found, key=lambda row: row[0])
+
+
+def load_memos(store: Path) -> list[tuple[str, str, list[str]]]:
+    """`(stem, one-line summary, tokens)` per memo. Index files are skipped, see INDEX_STEMS.
+
+    A memo whose name, `st_mtime_ns` and `st_size` match its entry in `cache_path(store)` is not
+    read; any other is read and tokenized, and the cache is rewritten when anything changed. The
+    module docstring says why this is not the stale index it once declined to build.
+    """
+
+    cache_file = cache_path(store)
+    tag = _cache_tag()
+    cached = _read_cache(cache_file, tag)
+    current: dict[str, _CacheEntry] = {}
+    changed = False
     memos: list[tuple[str, str, list[str]]] = []
-    for path in sorted(store.glob("*.md")):
+    for path, found in _listing(store):
         if path.stem in INDEX_STEMS:
             continue
-        if path.is_symlink() or not path.is_file():
+        # A regular file and not a symlink: what `is_file()` and not `is_symlink()` decided.
+        if not stat.S_ISREG(found.st_mode):
+            continue
+        entry = cached.get(path.name)
+        if entry is not None and entry[:2] == (found.st_mtime_ns, found.st_size):
+            current[path.name] = entry
+            memos.append((path.stem, entry[2], entry[3].split()))
             continue
         try:
             raw = path.read_text(encoding="utf-8", errors="replace")
@@ -300,7 +448,13 @@ def load_memos(store: Path) -> list[tuple[str, str, list[str]]]:
         summary = _description(raw)
         title = path.stem.replace("-", " ")
         tokens = tokenize(title) * FIELD_WEIGHT + tokenize(summary) * FIELD_WEIGHT + tokenize(raw)
+        # Joined on spaces, which no token contains (TOKEN_RE): a string parses far faster than
+        # a list of a million short ones.
+        current[path.name] = (found.st_mtime_ns, found.st_size, summary or title, " ".join(tokens))
+        changed = True
         memos.append((path.stem, summary or title, tokens))
+    if changed or current.keys() != cached.keys():
+        _write_cache(cache_file, tag, current)
     return memos
 
 
@@ -589,6 +743,7 @@ def user_prompt_submit(payload: dict[str, Any]) -> int:
 
 
 __all__ = [
+    "cache_path",
     "find_store",
     "load_memos",
     "project_slug",
