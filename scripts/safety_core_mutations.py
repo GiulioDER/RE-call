@@ -205,8 +205,8 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall/provenance_controller.py",
         "materialization failure handling is skipped",
-        b"        if self.materializer is not None:\n            try:",
-        b"        if False:\n            try:",
+        b"        if self.materializer is not None:\n            leased: FactEvent | None = None\n            try:",
+        b"        if False:\n            leased: FactEvent | None = None\n            try:",
         PROVENANCE_TESTS,
     ),
 )
