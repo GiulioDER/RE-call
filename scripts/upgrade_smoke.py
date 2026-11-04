@@ -40,6 +40,8 @@ import sys
 from pathlib import Path
 
 TENANT = "upgrade-smoke"
+# The control: the same notes installed fresh by the new release, in a tenant of their own.
+FRESH_TENANT = "upgrade-smoke-fresh"
 EMBEDDER = "hashing"
 
 # 24 memos: certification needs at least 20 answerable and 20 unanswerable queries, and each memo
@@ -105,17 +107,17 @@ def _query(topic: str) -> str:
     return _memo_text(topic, dict(TOPICS)[topic])
 
 
-def _recall(*args: str) -> list[str]:
+def _recall(*args: str, tenant: str = TENANT) -> list[str]:
     scripts = Path(sys.executable).parent
     exe = scripts / ("recall.exe" if os.name == "nt" else "recall")
-    return [str(exe), "--tenant", TENANT, "--embedder", EMBEDDER, *args]
+    return [str(exe), "--tenant", tenant, "--embedder", EMBEDDER, *args]
 
 
-def _env(workdir: Path, *, production: bool) -> dict[str, str]:
+def _env(workdir: Path, *, production: bool, tenant: str = TENANT) -> dict[str, str]:
     env = dict(os.environ)
     env["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", "")
     env["RECALL_EMBEDDER"] = EMBEDDER
-    env["RECALL_TENANT"] = TENANT
+    env["RECALL_TENANT"] = tenant
     env["RECALL_LOCAL_ALLOWLIST"] = str(workdir / "notes")
     env["RECALL_EMBED_CACHE"] = "off"
     env.pop("RECALL_TRUST_MODE", None)
@@ -192,6 +194,51 @@ def _packaged_migrations() -> list[str]:
     return sorted(p.name for p in files("recall.migrations").joinpath("sql").iterdir() if p.name.endswith(".sql"))
 
 
+def _install(step: str, workdir: Path, tenant: str) -> str:
+    """0.14.0's docs/FIRST_CALIBRATION.md, steps 1 to 6, for the notes in `workdir`.
+
+    Run by whichever release is installed: by the old one to seed, and by the new one for the
+    fresh-install control. Returns the promoted generation.
+    """
+    dev = _env(workdir, production=False, tenant=tenant)
+    notes = workdir / "notes"
+    files = workdir / tenant
+    files.mkdir()
+
+    def recall(*args: str) -> str:
+        return _run(step, _recall(*args, tenant=tenant), env=dev, cwd=workdir)
+
+    # Step 1 also leaves the legacy `chunks` rows that `recall doctor` counts: on a tenant whose
+    # corpus is only a promoted generation, doctor FAILS "holds NO chunks" while the same tenant
+    # serves trusted answers (measured on this job).
+    recall("index", str(notes), "--project", "upgrade-smoke")
+    recall("manifest", "inventory", str(notes), "--output", str(files / "inventory.json"))
+    recall("manifest", "create", "--corpus-version", "2026-09-17",
+           "--objects", str(files / "inventory.json"), "--output", str(files / "manifest.json"))
+    out = recall("generation", "build", str(files / "manifest.json"), "--unverified-development",
+                 "--project", "upgrade-smoke", "--no-commit-stamp")
+    match = re.search(r"^built (\S+?):", out, re.MULTILINE)
+    if not match:
+        raise StepFailed(f"{step}: `generation build` printed no generation id")
+    generation = match.group(1)
+    recall("generation", "validate", generation)
+    recall("generation", "promote", generation, "--unsafe-development-promotion")
+    recall("calibration", "calibrate", "--generation", generation,
+           "--queries", str(workdir / "queries.json"), "--publish")
+    return generation
+
+
+async def _probe(step: str, call) -> dict[str, list[list]]:
+    """Each probe's top hits through the server, which must answer trusted."""
+    probes = {}
+    for topic in PROBES:
+        payload = await call("recall_search", {"query": _query(topic), "k": 3})
+        _require_trusted(step, topic, payload)
+        probes[topic] = _scored(payload)
+        print(f"    {topic}: {probes[topic]} ({payload.get('trust_state')})")
+    return probes
+
+
 def seed(workdir: Path) -> None:
     import recall
 
@@ -203,7 +250,7 @@ def seed(workdir: Path) -> None:
     print(f"seed 1: apply the schema with recall {version}", flush=True)
     _run("seed 1", _recall("schema", "apply"), env=dev, cwd=workdir)
 
-    print("seed 2: write the memo folder and index it", flush=True)
+    print("seed 2: write the memo folder and its labelled queries", flush=True)
     notes = workdir / "notes"
     notes.mkdir(parents=True)
     for topic, words in TOPICS:
@@ -214,51 +261,21 @@ def seed(workdir: Path) -> None:
     queries = [{"query": _query(t), "answerable": True, "relevant_ids": []} for t, _ in TOPICS]
     queries += [{"query": q, "answerable": False, "relevant_ids": []} for q in ABSENT]
     (workdir / "queries.json").write_text(json.dumps(queries), encoding="utf-8")
-    # Step 1 of 0.14.0's FIRST_CALIBRATION.md, which also leaves the legacy `chunks` rows that
-    # `recall doctor` counts: on a tenant whose corpus is only a promoted generation, doctor FAILS
-    # "holds NO chunks" while the same tenant serves trusted answers (measured on this job).
-    _run("seed 2", _recall("index", str(notes), "--project", "upgrade-smoke"), env=dev, cwd=workdir)
-
-    print("seed 3: build a file:// manifest", flush=True)
-    _run("seed 3", _recall("manifest", "inventory", str(notes), "--output", str(workdir / "inventory.json")),
-         env=dev, cwd=workdir)
-    _run("seed 3", _recall("manifest", "create", "--corpus-version", "2026-09-17",
-                           "--objects", str(workdir / "inventory.json"),
-                           "--output", str(workdir / "manifest.json")), env=dev, cwd=workdir)
-
-    print("seed 4: build, validate and promote a generation", flush=True)
-    out = _run("seed 4", _recall("generation", "build", str(workdir / "manifest.json"),
-                                 "--unverified-development", "--project", "upgrade-smoke",
-                                 "--no-commit-stamp"), env=dev, cwd=workdir)
-    match = re.search(r"^built (\S+?):", out, re.MULTILINE)
-    if not match:
-        raise StepFailed("seed 4: `generation build` printed no generation id")
-    generation = match.group(1)
+    print("seed 3: index, build, validate, promote and calibrate, as FIRST_CALIBRATION.md says", flush=True)
+    generation = _install("seed 3", workdir, TENANT)
     state["generation"] = generation
-    _run("seed 4", _recall("generation", "validate", generation), env=dev, cwd=workdir)
-    _run("seed 4", _recall("generation", "promote", generation, "--unsafe-development-promotion"),
-         env=dev, cwd=workdir)
 
-    print("seed 5: calibrate the generation and publish it", flush=True)
-    _run("seed 5", _recall("calibration", "calibrate", "--generation", generation,
-                           "--queries", str(workdir / "queries.json"), "--publish"), env=dev, cwd=workdir)
-
-    print("seed 6: search, and mint an evidence card, through the 0.14.0 MCP server", flush=True)
+    print("seed 4: search, and mint an evidence card, through the 0.14.0 MCP server", flush=True)
 
     async def calls(call):
-        probes = {}
-        for topic in PROBES:
-            payload = await call("recall_search", {"query": _query(topic), "k": 3})
-            _require_trusted("seed 6", topic, payload)
-            top = _top(payload)
-            if not top or not top[0].endswith(f"{topic}.md"):
-                raise StepFailed(f"seed 6: {topic}.md is not the top hit for its own query: {top}")
-            probes[topic] = _scored(payload)
-            print(f"    {topic}: {probes[topic]} ({payload.get('trust_state')})")
+        probes = await _probe("seed 4", call)
+        for topic, hits in probes.items():
+            if not hits or not hits[0][0].endswith(f"{topic}.md"):
+                raise StepFailed(f"seed 4: {topic}.md is not the top hit for its own query: {hits}")
         evidence = await call("recall_evidence", {"query": _query(FACT_TOPIC), "k": 3})
         cards = [c for c in evidence.get("cards") or [] if c.get("structured_facts")]
         if not cards:
-            raise StepFailed(f"seed 6: no evidence card carries the memo's fact: {json.dumps(evidence)[:1500]}")
+            raise StepFailed(f"seed 4: no evidence card carries the memo's fact: {json.dumps(evidence)[:1500]}")
         return probes, cards[:1]
 
     probes, cards = asyncio.run(_server_calls(prod, workdir, calls))
@@ -272,7 +289,7 @@ def seed(workdir: Path) -> None:
     # fact goes through 0.14.0's own controller and ledger, bound to the active generation, with
     # the card the server minted: the rows are the ones 0.14.0 writes, which is what the
     # fact-ledger migrations since have to carry.
-    print("seed 7: apply a fact with 0.14.0's provenance controller, from a card the server minted", flush=True)
+    print("seed 5: apply a fact with 0.14.0's provenance controller, from a card the server minted", flush=True)
     from recall.fact_ledger import PostgresFactLedger
     from recall.provenance_cards import PostgresEvidenceCardStore
     from recall.provenance_controller import FactApplicationRequest, ProvenanceController
@@ -290,7 +307,7 @@ def seed(workdir: Path) -> None:
     ))
     print(f"    {decision.code} fact_id={decision.fact_id}")
     if str(decision.code) != "APPLIED":
-        raise StepFailed(f"seed 7: the fact was not applied: {decision.code} {decision.detail}")
+        raise StepFailed(f"seed 5: the fact was not applied: {decision.code} {decision.detail}")
 
     async def read_facts(call):
         return await call("recall_current_facts", {})
@@ -298,7 +315,7 @@ def seed(workdir: Path) -> None:
     current = asyncio.run(_server_calls(prod, workdir, read_facts))
     facts = _fact_objects(current)
     if FACT["object"] not in facts:
-        raise StepFailed(f"seed 7: the applied fact is not current: {json.dumps(current)[:1500]}")
+        raise StepFailed(f"seed 5: the applied fact is not current: {json.dumps(current)[:1500]}")
     state["probes"] = probes
     state["facts"] = facts
     (workdir / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
@@ -346,35 +363,46 @@ def verify(workdir: Path) -> None:
     print("verify 5: the old memos search the same, still trusted, and the old fact reads", flush=True)
 
     async def read_calls(call):
-        for topic, before in state["probes"].items():
-            payload = await call("recall_search", {"query": _query(topic), "k": 3})
-            _require_trusted("verify 5", topic, payload)
-            after = _scored(payload)
-            print(f"    {topic}: {after} ({payload.get('trust_state')})")
-            # What the upgrade must preserve is the data: the memo that answers stays first, and
-            # the same memos come back with the same dense cosines, which only identical stored
-            # vectors can give. The order of the lower, near-tied hits is retrieval policy, which
-            # a release may change; a change there is printed, not failed.
-            if after[0][0] != before[0][0]:
-                raise StepFailed(f"verify 5: the top hit for {topic!r} changed: before {before}, after {after}")
-            if sorted(map(tuple, after)) != sorted(map(tuple, before)):
-                raise StepFailed(
-                    f"verify 5: hits or cosines for {topic!r} changed: before {before}, after {after}"
-                )
-            if after != before:
-                print(f"    NOTE: {topic!r} reordered below the top hit: before {before}")
-        return await call("recall_current_facts", {})
+        return await _probe("verify 5", call), await call("recall_current_facts", {})
 
-    current = asyncio.run(_server_calls(prod, workdir, read_calls))
+    upgraded, current = asyncio.run(_server_calls(prod, workdir, read_calls))
     if _fact_objects(current) != state["facts"]:
         raise StepFailed(
             f"verify 5: facts written by {state['seeded_by']} do not read back: "
             f"before {state['facts']}, after {json.dumps(current)[:1500]}"
         )
+    for topic, before in state["probes"].items():
+        after = upgraded[topic]
+        if after[0][0] != before[0][0]:
+            raise StepFailed(f"verify 5: the top hit for {topic!r} changed: before {before}, after {after}")
+        # A memo returned both before and after must score the same dense cosine, which only an
+        # unchanged stored vector gives.
+        old = dict(map(tuple, before))
+        moved = {s: (old[s], c) for s, c in after if s in old and old[s] != c}
+        if moved:
+            raise StepFailed(f"verify 5: cosines for {topic!r} changed (before, after): {moved}")
 
-    print(f"verify 6: forget {FORGET_TOPIC}.md, a memo {state['seeded_by']} indexed", flush=True)
+    # The control. Below the top hit, which memos come back and in what order is retrieval
+    # policy, and a release may change it; what an upgrade must not do is answer differently
+    # from a fresh install of the same release. So the same notes are installed fresh, by this
+    # release, into a tenant of their own, and the upgraded tenant must match it exactly.
+    print("verify 6: the same notes installed fresh by this release, as the control", flush=True)
+    _install("verify 6", workdir, FRESH_TENANT)
+    fresh_env = _env(workdir, production=True, tenant=FRESH_TENANT)
+    fresh = asyncio.run(_server_calls(fresh_env, workdir, lambda call: _probe("verify 6", call)))
+    for topic, before in state["probes"].items():
+        if upgraded[topic] != fresh[topic]:
+            raise StepFailed(
+                f"verify 6: the upgraded tenant answers {topic!r} differently from a fresh install "
+                f"of this release: upgraded {upgraded[topic]}, fresh {fresh[topic]}"
+            )
+        if upgraded[topic] != before:
+            print(f"    NOTE: below the top hit, {topic!r} differs from {state['seeded_by']} "
+                  f"({before}) and matches a fresh install")
+
+    print(f"verify 7: forget {FORGET_TOPIC}.md, a memo {state['seeded_by']} indexed", flush=True)
     source = next(s for s, _ in state["probes"][FORGET_TOPIC] if s.endswith(f"{FORGET_TOPIC}.md"))
-    _run("verify 6", _recall("forget", source, "--yes"), env=prod, cwd=workdir)
+    _run("verify 7", _recall("forget", source, "--yes"), env=prod, cwd=workdir)
 
     async def after_forget(call):
         return await call("recall_search", {"query": _query(FORGET_TOPIC), "k": 3})
@@ -383,7 +411,7 @@ def verify(workdir: Path) -> None:
     remaining = _top(payload)
     print(f"    {FORGET_TOPIC} after forget: {remaining} ({payload.get('trust_state')})")
     if any(s.endswith(f"{FORGET_TOPIC}.md") for s in remaining):
-        raise StepFailed(f"verify 6: {FORGET_TOPIC}.md still searchable after forget: {remaining}")
+        raise StepFailed(f"verify 7: {FORGET_TOPIC}.md still searchable after forget: {remaining}")
     print("upgrade verified")
 
 
