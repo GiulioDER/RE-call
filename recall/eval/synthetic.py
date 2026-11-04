@@ -163,10 +163,10 @@ def _write(root: Path, rel: str, text: str) -> None:
     p.write_text(text, encoding="utf-8")
 
 
-def _subjects(rng: random.Random, n: int, nouns: list[str]) -> list[str]:
+def _subjects(rng: random.Random, n: int, nouns: list[str], start: int = 0) -> list[str]:
     """`n` distinct subject tokens. Uniqueness is what makes the ground truth unambiguous, so it
     is enforced by construction (an index suffix) rather than hoped for from sampling."""
-    return [f"{rng.choice(_ADJECTIVES)}-{rng.choice(nouns)}-{i:04d}" for i in range(n)]
+    return [f"{rng.choice(_ADJECTIVES)}-{rng.choice(nouns)}-{i:04d}" for i in range(start, start + n)]
 
 
 def generate(
@@ -185,6 +185,22 @@ def generate(
     Counts are exact, not approximate: an eval that silently generated fewer queries than asked
     would report a tighter interval than its sample supports.
     """
+    counts = {
+        "n_answerable": n_answerable, "n_unanswerable": n_unanswerable,
+        "n_successor": n_successor, "n_abstain": n_abstain, "n_filler_chunks": n_filler_chunks,
+    }
+    for name, count in counts.items():
+        if not isinstance(count, int) or count < 0:
+            raise ValueError(f"{name} must be a nonnegative integer")
+    if not isinstance(filler_chunks_per_file, int) or filler_chunks_per_file <= 0:
+        raise ValueError("filler_chunks_per_file must be a positive integer")
+    capacity = len(_OFFTOPIC_SUBJECTS) * len(_OFFTOPIC_TEMPLATES)
+    if n_unanswerable > capacity:
+        raise ValueError(
+            f"n_unanswerable={n_unanswerable} exceeds the {capacity} distinct off-topic queries "
+            f"available; add subjects to _OFFTOPIC_SUBJECTS rather than reusing one, since "
+            f"duplicate gap queries would understate the variance of any rate measured on them"
+        )
     root = Path(out_dir)
     _prepare_root(root)
     rng = random.Random(seed)
@@ -211,13 +227,6 @@ def generate(
         })
 
     # --- unanswerable: a subject from a domain the corpus never touches ------------------------
-    capacity = len(_OFFTOPIC_SUBJECTS) * len(_OFFTOPIC_TEMPLATES)
-    if n_unanswerable > capacity:
-        raise ValueError(
-            f"n_unanswerable={n_unanswerable} exceeds the {capacity} distinct off-topic queries "
-            f"available; add subjects to _OFFTOPIC_SUBJECTS rather than reusing one, since "
-            f"duplicate gap queries would understate the variance of any rate measured on them"
-        )
     for i in range(n_unanswerable):
         subj = _OFFTOPIC_SUBJECTS[i % len(_OFFTOPIC_SUBJECTS)]
         template = _OFFTOPIC_TEMPLATES[(i // len(_OFFTOPIC_SUBJECTS)) % len(_OFFTOPIC_TEMPLATES)]
@@ -230,7 +239,7 @@ def generate(
         })
 
     # --- successor: adversarial v1/v2 supersession pairs ---------------------------------------
-    for i, subj in enumerate(_subjects(rng, n_successor, _NOUNS)):
+    for i, subj in enumerate(_subjects(rng, n_successor, _NOUNS, start=n_answerable)):
         aspect, unit = _ASPECTS[i % len(_ASPECTS)]
         old, new = rng.randint(2, 400), rng.randint(401, 900)
         incident = rng.choice(_INCIDENTS)
@@ -261,7 +270,7 @@ def generate(
 
     # --- abstain: the only document about the subject has expired ------------------------------
     expired_on = (date.today() - timedelta(days=30)).isoformat()
-    for i, subj in enumerate(_subjects(rng, n_abstain, _NOUNS)):
+    for i, subj in enumerate(_subjects(rng, n_abstain, _NOUNS, start=n_answerable + n_successor)):
         aspect, unit = _ASPECTS[i % len(_ASPECTS)]
         value = rng.randint(2, 900)
         rel = f"expired/{subj}.md"

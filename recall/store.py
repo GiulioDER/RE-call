@@ -730,6 +730,9 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                 tenant=self._tenant,
                 statement_timeout_ms=self._statement_timeout_ms,
             ),
+            # Recover idle disconnects before an operation can commit. This pool is
+            # autocommit, so the checker probes the connection without changing its attributes.
+            check=partial(_observed_db_call, operation=ConnectionPool.check_connection),
             open=False,
         )
         pool.open(wait=True, timeout=self._connect_timeout_s or 30)
@@ -802,6 +805,9 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
     def _with_retry(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
         """Run ``op(conn)``; on a broken-connection error, reconnect once and retry.
 
+        Per-store pools recover idle connections during checkout and execute the operation
+        once: an operation error cannot establish whether its writes committed.
+
         A single long-lived autocommit connection can be severed by the server (idle timeout,
         restart, transient network blip). Rather than failing every subsequent call, transparently
         reconnect and retry the operation exactly once — a second failure propagates. Safe because
@@ -842,43 +848,29 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             return _observed_db_call(self._direct, op)
 
     def _with_retry_pooled(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
-        """Pooled variant: borrow a connection per operation, retry once on a dead one.
+        """Borrow a checked connection and execute the operation exactly once.
 
-        The pool already replaces connections it knows are broken, but it can hand out one that
-        died while idle and has not been probed yet, so the first use still fails. Retrying
-        borrows a DIFFERENT connection — the pooled equivalent of reconnecting.
-
-        The same narrow predicate as the single-connection path applies, and for the same
-        reason: `QueryCanceled` from `statement_timeout` is an `OperationalError` raised on a
-        perfectly live connection, and retrying it on a fresh session would silently escape the
-        timeout that fired. So a retry additionally requires the connection to be observably
-        dead. Nothing here is a `nonlocal` on shared state: each borrow is thread-confined,
-        which is the whole point of the mode.
+        Checkout replaces idle connections that fail the pool's health check. Once an operation
+        begins, a connection error may mean its COMMIT succeeded but the acknowledgement was
+        lost. Replaying it could overwrite a newer concurrent write. Propagate that unknown
+        outcome, and live-connection timeouts, without replaying the operation.
         """
         pool = self._pool
         assert pool is not None  # caller checked; restates the mode invariant for the checker
-        for attempt in (0, 1):
-            with pool.connection() as conn:
-                try:
-                    return _observed_db_call(conn, op)
-                except self._CONN_ERRORS:
-                    dead = conn.closed or getattr(conn, "broken", False)
-                    if not dead or attempt == 1:
-                        raise
-                    _log.warning("pooled database connection lost — retrying on another")
-                    METRICS.increment("recall_db_reconnects_total", pooled="true")
-        raise AssertionError("unreachable: the loop either returns or raises")  # pragma: no cover
+        with pool.connection() as conn:
+            return _observed_db_call(conn, op)
 
     def _with_retry_shared(self, op: Callable[["psycopg.Connection"], _T]) -> _T:
         """Shared-pool variant: one transaction per operation, tenant scoped to that transaction.
 
-        The difference from `_with_retry_pooled` is not the retry, it is what the borrow means. A
-        per-tenant pool could set the tenant once per CONNECTION because no other tenant would
+        Unlike the execute-once per-store pool, this mode can retry a dead connection inside
+        its transaction body, before COMMIT. A per-tenant pool could set the tenant once per
+        CONNECTION because no other tenant would
         ever use it. A shared pool cannot, so the tenant is set per TRANSACTION with `SET LOCAL`
         and the database discards it at COMMIT or ROLLBACK. `recall.pool` explains why that is the
         property that makes sharing safe at all.
 
-        The retry predicate is deliberately the same narrow one as both other modes: an
+        The retry predicate is deliberately the same narrow one as single-connection mode: an
         `OperationalError` is only retried when the connection is observably dead. `QueryCanceled`
         from `statement_timeout` is an `OperationalError` on a perfectly live connection, and
         retrying it would silently escape the guard that fired.

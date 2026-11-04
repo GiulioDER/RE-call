@@ -514,7 +514,7 @@ class NearMissEvalFixture:
     script: dict[str, list[tuple[str, float]]]
 
 
-#: Shared plain (non-trust) queries every SURFACE_C / SURFACE_D member calibrates against: one
+#: Plain (non-trust) queries every SURFACE_C member calibrates against: one
 #: answerable sample at SCORE_CONFIDENT and one unanswerable sample at SCORE_GAP.
 #:
 #: `recall.calibration.best_threshold` fits from these via its `_quantile` (lower tail) and
@@ -522,7 +522,8 @@ class NearMissEvalFixture:
 #: collapse to index 0 for ANY percentile: so the 5th-percentile answerable floor is just
 #: SCORE_CONFIDENT and the 95th-percentile unanswerable ceiling is just SCORE_GAP. The fitted
 #: threshold is therefore the exact midpoint: `floor((0.80 + 0.20) / 2 * 1000) / 1000 == 0.5`.
-#: Every closed form in SURFACE_C and SURFACE_D assumes this threshold.
+#: Every closed form in SURFACE_C assumes this threshold. SURFACE_D uses two samples per
+#: class at the same scores so each leave-one-out fold retains both classes and this midpoint.
 _PLAIN_QUERIES: list[dict] = [
     {"id": "p1", "query": "plain query", "answerable": True, "relevant_ids": ["plain_gold.md:0"]},
     {"id": "p2", "query": "plain gap query", "answerable": False, "relevant_ids": []},
@@ -648,20 +649,20 @@ SURFACE_C: tuple[FleetMember, ...] = (
 
 
 def _nearmiss_above_threshold_fools_cosine_guard() -> NearMissEvalFixture:
-    script = dict(_PLAIN_SCRIPT)
+    queries, script = _combine(_answerable(rank=1, n=2), _unanswerable([SCORE_GAP] * 2))
     script["near miss query"] = [("distractor.md:0", SCORE_CONFIDENT)]
     return NearMissEvalFixture(
-        queries=list(_PLAIN_QUERIES),
+        queries=queries,
         nearmiss=[{"id": "nm1", "query": "near miss query"}],
         script=script,
     )
 
 
 def _nearmiss_below_threshold_reads_as_an_ordinary_gap() -> NearMissEvalFixture:
-    script = dict(_PLAIN_SCRIPT)
+    queries, script = _combine(_answerable(rank=1, n=2), _unanswerable([SCORE_GAP] * 2))
     script["near miss query"] = [("distractor.md:0", SCORE_GAP)]
     return NearMissEvalFixture(
-        queries=list(_PLAIN_QUERIES),
+        queries=queries,
         nearmiss=[{"id": "nm1", "query": "near miss query"}],
         script=script,
     )
@@ -677,14 +678,16 @@ SURFACE_D: tuple[FleetMember, ...] = (
         defect="none: the clean twin — a near-miss distractor scores ABOVE the gap threshold, "
                "exactly the failure class near-miss testing exists to name",
         build=_nearmiss_above_threshold_fools_cosine_guard,
-        # threshold=0.5 (same derivation as SURFACE_C). The near-miss distractor scores 0.80: it
+        # DOC-001: each held-out fold retains scores 0.80 and 0.20, so threshold=0.5.
+        # Red control: rejecting two-sample folds makes these finite-rate assertions fail.
+        # The near-miss distractor scores 0.80: it
         # clears the threshold on cosine alone, so ARM_THRESHOLD never abstains on it ->
         # nearmiss_fcr = 1/1 = 1.0 — a cosine threshold cannot tell a confident distractor from a
         # confident answer.
-        # gap_fcr / false_abstain / mrr_answerable come from the SHARED plain/gap queries and do
-        # not depend on the near-miss score at all: the far-gap query (0.20) stays below the
-        # threshold and abstains (gap_fcr 0.0). The answerable query (0.80) is never wrongly
-        # abstained on -> false_abstain 0.0, and its gold is the query's only hit ->
+        # gap_fcr / false_abstain / mrr_answerable come from the held-out plain/gap queries and
+        # do not depend on the near-miss score: each far-gap query (0.20) stays below the
+        # threshold and abstains (gap_fcr 0.0). Each answerable query (0.80) is never wrongly
+        # abstained on -> false_abstain 0.0, and its gold is ranked first ->
         # mrr_answerable 1.0.
         expected={
             ARM_THRESHOLD: {
