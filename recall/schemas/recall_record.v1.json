@@ -81,6 +81,36 @@
             "null"
           ]
         },
+        "defect_class": {
+          "description": "The fixed class of the defect, as cca-audit's audit-fix.md \"Defect classes\" lists them in precedence order; null or absent for a finding recorded before the list. Optional, so a record written before it stays valid.",
+          "enum": [
+            "secret-exposure",
+            "injection",
+            "access-control",
+            "fail-open",
+            "race",
+            "identity-mismatch",
+            "data-integrity",
+            "numeric",
+            "logic-error",
+            "input-validation",
+            "error-handling",
+            "resource-leak",
+            "performance",
+            "config-drift",
+            "packaging-deploy",
+            "test-weakness",
+            "doc-drift",
+            "duplication",
+            "maintainability",
+            "other",
+            null
+          ]
+        },
+        "defect_class_reason": {
+          "description": "Why no class fits, when defect_class is other.",
+          "type": "string"
+        },
         "severity": {
           "type": [
             "string",

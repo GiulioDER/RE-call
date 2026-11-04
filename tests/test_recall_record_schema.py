@@ -99,6 +99,37 @@ def test_unknown_field_is_invalid(validator: jsonschema.Draft202012Validator) ->
     assert list(validator.iter_errors(record))
 
 
+@pytest.mark.parametrize("value", ["fail-open", "other", None])
+def test_a_bug_record_may_carry_a_listed_defect_class(
+    validator: jsonschema.Draft202012Validator, value: str | None
+) -> None:
+    """`defect_class` is optional on a bug record and, when present, one of cca-audit's classes
+    (or null). Both validators must agree: jsonschema and RE-call's own `record_problem`, which
+    admits records at index time. Red proof 2026-11-04 on the remote test host: against the schema
+    before this change, all three cases failed at the jsonschema assertion."""
+    from recall.records import record_problem
+
+    record = _by_kind("bug")
+    record["defect_class"] = value
+    record["defect_class_reason"] = "none fits" if value == "other" else ""
+    assert not list(validator.iter_errors(record))
+    assert record_problem(record) is None
+
+
+def test_a_bug_record_with_an_unlisted_defect_class_is_invalid(
+    validator: jsonschema.Draft202012Validator,
+) -> None:
+    """A free-text category slug in `defect_class` is refused, so the field stays countable.
+    Red proof 2026-11-04 on the remote test host: with the enum widened to any string, failed at
+    the jsonschema assertion (no errors)."""
+    from recall.records import record_problem
+
+    record = _by_kind("bug")
+    record["defect_class"] = "dry"
+    assert list(validator.iter_errors(record))
+    assert record_problem(record) is not None
+
+
 def test_false_positive_with_null_code_sha_is_invalid(validator: jsonschema.Draft202012Validator) -> None:
     record = _by_kind("false_positive")
     record["anchors"][0]["code_sha"] = None
