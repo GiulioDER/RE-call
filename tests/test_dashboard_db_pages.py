@@ -144,7 +144,7 @@ def test_the_chosen_tenant_scopes_the_queries_and_is_remembered(app: DashboardAp
     chosen = app.handle("GET", "/retrieval?tenant=re-call-code-gen", SIGNED)
     assert ("searches", "re-call-code-gen") in fake.asked
     assert "where is the router?" in chosen.body.decode()
-    cookies = [value for name, value in chosen.headers if name == "Set-Cookie" and value.startswith("recall_tenant=")]
+    cookies = [value for name, value in chosen.headers if name == "Set-Cookie" and value.startswith("recall_tenant_8765=")]
     assert len(cookies) == 1, "the chosen tenant was not remembered"
     assert "SameSite=Strict" in cookies[0] and "re-call-code-gen" in cookies[0]
     fake.asked.clear()
@@ -158,7 +158,7 @@ def test_a_tenant_that_is_not_a_slug_is_ignored(app: DashboardApp, fake: FakeCor
     assert page.status == 200
     assert all(tenant == "memory" for _, tenant in fake.asked)
     assert "evil" not in page.body.decode()
-    assert not [value for name, value in page.headers if name == "Set-Cookie" and value.startswith("recall_tenant=")]
+    assert not [value for name, value in page.headers if name == "Set-Cookie" and value.startswith("recall_tenant_8765=")]
 
 
 def test_a_search_is_looked_up_within_the_current_tenant(app: DashboardApp) -> None:

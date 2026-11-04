@@ -538,13 +538,13 @@ They are observations, not automatic failures.
 | `recall.dashboard` | 0 | 0 |
 | `recall.dashboard.activity` | 5 | 135 |
 | `recall.dashboard.config` | 2 | 129 |
-| `recall.dashboard.corpus` | 4 | 131 |
+| `recall.dashboard.corpus` | 5 | 131 |
 | `recall.dashboard.db` | 5 | 130 |
 | `recall.dashboard.edit` | 9 | 132 |
 | `recall.dashboard.graph` | 5 | 133 |
 | `recall.dashboard.lite_db` | 5 | 130 |
 | `recall.dashboard.markdown` | 0 | 0 |
-| `recall.dashboard.review` | 8 | 131 |
+| `recall.dashboard.review` | 9 | 131 |
 | `recall.dashboard.server` | 14 | 162 |
 | `recall.dashboard.triage` | 6 | 133 |
 | `recall.db_constants` | 1 | 1 |

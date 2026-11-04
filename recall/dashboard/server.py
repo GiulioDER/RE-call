@@ -41,6 +41,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit
 from recall.dashboard import db as dbq
 from recall.dashboard import edit, review
 from recall.dashboard import triage
+from recall.dashboard.graph import anchored as _anchored
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key
 from recall.dashboard.db import DashboardDB
@@ -67,6 +68,11 @@ TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 # The corpora this project serves, first in the switcher, by what they hold.
 PRIMARY_TENANTS = (("memory", "memory"), ("re-call-code-gen", "code"), ("re-call-docs", "docs"), (MULTIMODAL_TENANT, "multimodal"))
 MAX_MEMO_CHARS = 20_000
+#: The overview counts recorded searches by reading at most this many; above it the tile says so.
+MAX_COUNTED_SEARCHES = 500
+#: A failed tenant listing is remembered this long, so a role that can never list tenants (or a
+#: database that is down) costs one connection attempt per interval rather than one per page.
+TENANT_FAILURE_CACHE_SECONDS = 15
 STATIC = Path(__file__).resolve().parent / "static"
 _STATIC_FILES = {"/static/graph.js": ("graph.js", "text/javascript; charset=utf-8")}
 _CSP = (
@@ -424,9 +430,16 @@ class DashboardApp:
         # any other tenant is never shown here, whatever memo names it carries.
         self.reports_tenants = tuple(reports_tenants)
         self._hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        # Browsers scope cookies by host, never by port, so a dashboard on another port would
+        # overwrite a fixed-name session cookie (logging this one out) and hand it its tenant.
+        # The plain names are still read, never written; a plain session cookie authenticates only
+        # with this process's own token, so another dashboard's cannot.
+        self._cookie = f"{COOKIE}_{port}"
+        self._tenant_cookie = f"{TENANT_COOKIE}_{port}"
         # Per request, so concurrent requests on the threading server never share a tenant.
         self._request = threading.local()
         self._tenant_cache: tuple[float, list[dict[str, Any]]] | None = None
+        self._tenant_failure: tuple[float, dbq.DatabaseUnavailable] | None = None
         self._tenant_lock = threading.Lock()
         self._corpus_graphs: dict[str, tuple[float, bytes]] = {}
         self._corpus_graph_lock = threading.Lock()
@@ -455,6 +468,7 @@ class DashboardApp:
             if self._auto_reports_tenant:
                 self.reports_tenants = (tenant,)
             self._tenant_cache = None
+            self._tenant_failure = None
             self._recover_lite_tenant = False
 
     def _current_tenant(self) -> str:
@@ -467,7 +481,14 @@ class DashboardApp:
         with self._tenant_lock:
             if self._tenant_cache and time.monotonic() - self._tenant_cache[0] < TENANT_CACHE_SECONDS:
                 return self._tenant_cache[1]
-            found = dbq.tenants(self.db)
+            if self._tenant_failure and time.monotonic() - self._tenant_failure[0] < TENANT_FAILURE_CACHE_SECONDS:
+                raise self._tenant_failure[1]
+            try:
+                found = dbq.tenants(self.db)
+            except dbq.DatabaseUnavailable as exc:
+                self._tenant_failure = (time.monotonic(), exc)
+                raise
+            self._tenant_failure = None
             self._tenant_cache = (time.monotonic(), found)
             return found
 
@@ -533,15 +554,15 @@ class DashboardApp:
     def handle(self, method: str, target: str, headers: Mapping[str, str], body: bytes = b"") -> Response:
         host = headers.get("Host") or headers.get("host") or ""
         if host not in self._hosts:
-            return self._error(HTTPStatus.FORBIDDEN, "This page only answers on this machine's own address.")
+            return _bare_error(HTTPStatus.FORBIDDEN, "This page only answers on this machine's own address.")
         url = urlsplit(target)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         cookies = SimpleCookie(headers.get("Cookie") or headers.get("cookie") or "")
-        has_cookie = COOKIE in cookies and secrets.compare_digest(cookies[COOKIE].value, self.token)
+        has_cookie = any(name in cookies and self._same_token(cookies[name].value) for name in (self._cookie, COOKIE))
 
         if method == "GET" and "token" in query:
-            if not secrets.compare_digest(query["token"], self.token):
-                return self._error(HTTPStatus.FORBIDDEN, "That link is not this session's. Use the one `recall dashboard` printed.")
+            if not self._same_token(query["token"]):
+                return _bare_error(HTTPStatus.FORBIDDEN, "That link is not this session's. Use the one `recall dashboard` printed.")
             rest = {k: v for k, v in query.items() if k != "token"}
             location = url.path + (("?" + urlencode(rest)) if rest else "")
             return Response(
@@ -549,31 +570,38 @@ class DashboardApp:
                 b"",
                 (
                     ("Location", location),
-                    ("Set-Cookie", f"{COOKIE}={self.token}; HttpOnly; SameSite=Strict; Path=/"),
+                    ("Set-Cookie", f"{self._cookie}={self.token}; HttpOnly; SameSite=Strict; Path=/"),
                 ),
             )
         if not has_cookie:
-            return self._error(HTTPStatus.FORBIDDEN, "Open the link `recall dashboard` printed to start a session.")
+            return _bare_error(HTTPStatus.FORBIDDEN, "Open the link `recall dashboard` printed to start a session.")
 
         self._resolve_pending_lite_tenant()
         chosen = query.get("tenant", "")
         chosen = chosen if TENANT_NAME.fullmatch(chosen) else ""
-        remembered = cookies[TENANT_COOKIE].value if TENANT_COOKIE in cookies else ""
+        tenant_cookie = next((name for name in (self._tenant_cookie, TENANT_COOKIE) if name in cookies), "")
+        remembered = cookies[tenant_cookie].value if tenant_cookie else ""
         remembered = remembered if TENANT_NAME.fullmatch(remembered) else ""
         if getattr(self.db, "lite", False):
             remembered = ""  # one tenant per file; a cookie from another dashboard on this port would hide it
         self._request.tenant = chosen or remembered or self.default_tenant
         self._request.path = url.path
         self._request.query = dict(query)
+        self._request.memo_names = None
         self._request.find = query.get("q", "") if url.path == "/find" else ""
         response = self._route(method, url.path, query, cookies, body)
         if chosen:
             cookie = SimpleCookie()
-            cookie[TENANT_COOKIE] = chosen
-            cookie[TENANT_COOKIE]["samesite"] = "Strict"
-            cookie[TENANT_COOKIE]["path"] = "/"
+            cookie[self._tenant_cookie] = chosen
+            cookie[self._tenant_cookie]["samesite"] = "Strict"
+            cookie[self._tenant_cookie]["path"] = "/"
             response = Response(response.status, response.body, response.headers + (("Set-Cookie", cookie.output(header="").strip()),))
         return response
+
+    def _same_token(self, value: str) -> bool:
+        # compare_digest raises TypeError on a str holding non-ASCII, which a query value or a
+        # cookie tossed from another localhost port can carry; bytes compare without raising.
+        return secrets.compare_digest(value.encode("utf-8", "surrogatepass"), self.token.encode("utf-8"))
 
     def _route(self, method: str, path: str, query: Mapping[str, str], cookies: SimpleCookie, body: bytes) -> Response:
         url = urlsplit(path)
@@ -617,7 +645,7 @@ class DashboardApp:
         if method == "POST" and url.path in ("/accept", "/reject", "/memo/preview", "/memo/apply", "/memo/undo", "/lint/dismiss", "/lint/restore"):
             fields = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
             form = {k: v[0] for k, v in fields.items()}
-            if not secrets.compare_digest(form.get("csrf", ""), self.token):
+            if not self._same_token(form.get("csrf", "")):
                 return self._error(HTTPStatus.FORBIDDEN, "This form did not come from this page.")
             if url.path.startswith("/memo/"):
                 return self._memo_action(url.path[len("/memo/"):], form, fields.get("remove", []))
@@ -825,6 +853,8 @@ class DashboardApp:
         from recall.dashboard.markdown import render
 
         try:
+            if _anchored(name):
+                return self._error(HTTPStatus.NOT_FOUND, "No memo by that name in this folder.")
             path = (self.root / name).resolve()
             if not path.is_relative_to(self.root) or not path.is_file():
                 return self._error(HTTPStatus.NOT_FOUND, "No memo by that name in this folder.")
@@ -849,9 +879,10 @@ class DashboardApp:
             text = target.strip()
             if not text or "://" in text:
                 return None
-            candidate = (self.root / Path(name).parent / text).resolve()
-            if candidate.is_relative_to(self.root) and candidate.relative_to(self.root).as_posix() in names:
-                return candidate.relative_to(self.root).as_posix()
+            if not _anchored(text):
+                candidate = (self.root / Path(name).parent / text).resolve()
+                if candidate.is_relative_to(self.root) and candidate.relative_to(self.root).as_posix() in names:
+                    return candidate.relative_to(self.root).as_posix()
             found = by_key.get(supersedes_key(Path(text).name), [])
             return found[0] if len(found) == 1 else None
 
@@ -1085,7 +1116,13 @@ class DashboardApp:
             "<button type='submit' class='accept'>Preview the change</button></form>"
         )
         rows = []
-        for record in edit.history(self.root, values.name, limit=20):
+        try:
+            records = edit.history(self.root, values.name, limit=20)
+        except edit.EditRefused as exc:
+            # The memo and its values still show; the history and undo forms cannot, and why is said.
+            records = []
+            rows.append(f"<div class='card error'>{_e(exc)}</div>")
+        for record in records:
             undo = (
                 f"<form method='post' action='/memo/undo' class='inline'>{token}{path_field}"
                 f"<input type='hidden' name='edit_id' value='{record.edit_id}'>"
@@ -1203,7 +1240,12 @@ class DashboardApp:
     def _activity_page(self) -> Response:
         from recall.dashboard.activity import Event, instant, recent_activity
 
-        events = recent_activity(self.root)
+        try:
+            events = recent_activity(self.root)
+            edits_note = ""
+        except edit.EditRefused as exc:
+            events = []
+            edits_note = f"<div class='card error'>{_e(exc)}</div>"
         corpus_note = "Index builds, calibrations and searches come from the corpus database and appear once it is connected."
         if self.db is not None:
             tenant = self._current_tenant()
@@ -1227,7 +1269,7 @@ class DashboardApp:
                 f"<div><div class='names'>{title}</div>{memo}<div class='muted'>{_e(event.detail)}{who}</div></div>"
                 f"<time>{_e(when)}</time></div>"
             )
-        body = (
+        body = edits_note + (
             "".join(rows)
             or "<div class='card empty'><b>Nothing yet</b>Edits, review decisions, agent reports and changed memos appear here.</div>"
         ) + f"<p class='muted'>Memo events come from the files and the dashboard's own records. {corpus_note}</p>"
@@ -1479,7 +1521,9 @@ class DashboardApp:
             chosen = next((t for t in every if t["tenant"] == tenant), None)
             history = dbq.generations(self.db, tenant) if chosen else []
             events = dbq.lifecycle_events(self.db, tenant, limit=12) if chosen else []
-            recorded = len(dbq.searches(self.db, tenant, limit=500)) if chosen else 0
+            # One past the cap tells a full page from a total: past it the tile says "500+".
+            recorded_rows = len(dbq.searches(self.db, tenant, limit=MAX_COUNTED_SEARCHES + 1)) if chosen else 0
+            recorded = f"{MAX_COUNTED_SEARCHES}+" if recorded_rows > MAX_COUNTED_SEARCHES else str(recorded_rows)
         except dbq.DatabaseUnavailable:
             return self._not_connected("RE-call · overview", "overview", "Overview")
         migrations = ", ".join(f"{table} {version}" for table, version in status["migrations"] if not table.startswith(("bench_", "comparison_", "locomo_", "recall_aml_", "structural_", "selective_", "voyage4_", "category4_", "chunks_bge")))
@@ -1543,12 +1587,17 @@ class DashboardApp:
         ))
 
     def _memo_for_source(self, source: str | None) -> str | None:
-        """The local memo a hit came from, matched by file name, when this dashboard has it."""
-        if not source:
+        """The local memo a hit came from, when it was served from a tenant bound to this folder.
+
+        Matched by the longest trailing path, as the review queue matches reports, so a memo in a
+        subfolder is found and a same-named file of another corpus never gets an edit link here.
+        """
+        if not source or self._current_tenant() not in self.reports_tenants:
             return None
-        name = source.replace("\\", "/").rsplit("/", 1)[-1]
-        candidate = (self.root / name)
-        return name if candidate.is_file() else None
+        names = getattr(self._request, "memo_names", None)
+        if names is None:  # once per request: the Control page asks for every row
+            names = self._request.memo_names = self._memo_names()
+        return review.local_memo(source, names)
 
     def _verdict_chips(self, counts: Mapping[str, Any]) -> str:
         return "".join(f"<span class='chip v-{_e(k)}'>{_e(k)} · {_e(v)}</span>" for k, v in sorted(counts.items()))
@@ -1744,10 +1793,10 @@ class DashboardApp:
                 "so the claim replaces none of them: "
                 + ", ".join(f"<code>{_e(name)}</code>" for name in found["unresolved_claims"]) + ".</p>"
             )
-        local = self._memo_for_source(found["source_uri"]) if tenant == DEFAULT_TENANT else None
+        local = self._memo_for_source(found["source_uri"])
         links = " · ".join(
             part for part in (
-                f"<a href='/graph?{_e(urlencode({'corpus': tenant}))}#memo={_e(found['file'])}'>see it in the corpus graph</a>",
+                f"<a href='/graph?{_e(urlencode({'corpus': tenant}))}#memo={_e(quote(found['file'], safe=''))}'>see it in the corpus graph</a>",
                 f"<a href='/control/memo?{_e(urlencode({'source': found['source_uri']}))}'>how search used it</a>",
                 f"<a href='/read?{_e(urlencode({'path': local}))}'>read the memo file</a>" if local else "",
             ) if part
@@ -1891,6 +1940,8 @@ class DashboardApp:
                 done = f"Rejected: {item.replacing} does not replace {item.stale}."
         except review.ReviewRefused as exc:
             return self._error(HTTPStatus.CONFLICT, f"Nothing was written: {exc}")
+        except review.DecisionRecorded as exc:
+            done = f"{'Declared' if action == 'accept' else 'Rejected'}: {exc}."
         cookie = SimpleCookie()
         cookie[REVIEWER_COOKIE] = reviewer
         cookie[REVIEWER_COOKIE]["samesite"] = "Strict"
@@ -1912,6 +1963,16 @@ class DashboardApp:
             heading="Not available", lede="", body=f"<div class='card error'>{_e(message)}</div><p class='muted'><a href='/'>Go home</a></p>",
         )
         return self._html(page, status)
+
+
+def _bare_error(status: int, message: str) -> Response:
+    """A refusal sent before the session is known: no shell, so no memo root and no tenant list.
+
+    A DNS-rebinding page can read this body, and so can any local process without the token, so it
+    carries the message alone and makes no database call.
+    """
+    body = f"<!doctype html><meta charset='utf-8'><title>RE-call dashboard</title><p>{_e(message)}</p>"
+    return Response(status, body.encode("utf-8"), (("Content-Type", "text/html; charset=utf-8"),))
 
 
 def security_headers() -> tuple[tuple[str, str], ...]:
@@ -1941,7 +2002,17 @@ def serve(app: DashboardApp) -> ThreadingHTTPServer:
                 response = Response(status, b"Invalid request body length.", ())
             else:
                 body = self.rfile.read(length) if length else b""
-                response = app.handle(method, self.path, dict(self.headers.items()), body)
+                try:
+                    response = app.handle(method, self.path, dict(self.headers.items()), body)
+                except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: error-translation; a page that raises must still answer
+                    # Without this the connection drops with no response and the person sees
+                    # nothing; the traceback still goes to stderr through socketserver's handler.
+                    self.server.handle_error(self.request, self.client_address)
+                    first = str(exc).splitlines()[0] if str(exc) else ""
+                    response = _bare_error(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        f"The dashboard could not build this page: {type(exc).__name__}: {first}",
+                    )
             self.send_response(response.status)
             for name, value in response.headers + security_headers():
                 self.send_header(name, value)

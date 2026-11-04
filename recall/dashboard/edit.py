@@ -12,7 +12,9 @@ This is a person's tool, and it is shaped so it cannot become an agent's:
   memo changed after the diff was shown;
 * every edit is recorded with the bytes before and after in `<root>/.recall/edits.sqlite3`, so it
   can be undone, and an undo is refused when the memo was changed again since. Recovery bytes
-  are committed before replacement; reopening the ledger reconciles interrupted edits.
+  are committed before replacement; reopening the ledger reconciles an interrupted edit whose memo
+  still holds its before or after bytes. One that changed since, or is gone, is never guessed at:
+  its recovery row stays in `edit_recovery` and only that memo's edits and undos are refused.
 
 The writers are the byte-preserving ones in `recall.frontmatter` and `recall.rewrite`, so a BOM,
 line endings and every line nobody asked to change survive an edit.
@@ -314,6 +316,8 @@ class EditLedger:
         connection: sqlite3.Connection | None = None
         self._root = root
         self._defer_commit = False
+        # Memos whose interrupted edit cannot be reconciled, with the refusal to give for each.
+        self._stuck: dict[str, str] = {}
         try:
             self._lock_conn.execute("BEGIN IMMEDIATE")
             connection = sqlite3.connect(str(path), timeout=30.0)
@@ -450,21 +454,29 @@ class EditLedger:
             if row is None:
                 continue
             name, before, after, *_ = row
-            _, path = _memo(self._root, name)
-            current = path.read_bytes()
+            try:
+                _, path = _memo(self._root, name)
+                current: bytes | None = path.read_bytes()
+            except (EditRefused, OSError):
+                current = None  # renamed, deleted or unreadable: neither state can be proved
             if current == bytes(before):
                 self._discard(operation_id)
             elif current == bytes(after):
                 self._complete(operation_id)
             else:
-                raise EditRefused(
-                    f"{name} changed during an interrupted edit; recovery bytes are retained in {_LEDGER}"
+                # Refusing here, in the constructor, would refuse every memo's edits, undos and
+                # history; the row stays, and `replace` refuses this memo alone.
+                self._stuck[name] = (
+                    f"{name} changed during an interrupted edit; recovery bytes are retained in the "
+                    f"edit_recovery table of {_LEDGER}"
                 )
 
     def replace(
         self, plan: EditPlan, *, editor: str, note: str, at: datetime, undo_id: int | None = None,
     ) -> int:
         """Durably prepare recovery before replacement; publish history only after it succeeds."""
+        if plan.name in self._stuck:
+            raise EditRefused(self._stuck[plan.name])
         operation_id = os.urandom(16).hex()
         _, path = _memo(self._root, plan.name)
         if path.read_bytes() != plan.before:

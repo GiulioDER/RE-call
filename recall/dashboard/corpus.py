@@ -37,6 +37,7 @@ from psycopg import sql
 
 from recall.dashboard.db import DashboardDB
 from recall.db_constants import TENANT_GUC
+from recall.frontmatter import validity_bounds
 from recall.supersession import SupersessionGraph, resolve_supersession_graph, supersession_rows_sql
 from recall.supersession_records import pg_records
 
@@ -207,6 +208,18 @@ def _state(file: str, graph: SupersessionGraph, valid_from: str | None, valid_un
         return "ambiguous"
     if graph.successor(file, now=_instant(today)) is not None:
         return "superseded"
+    try:
+        # The trust gate's own parse: it accepts `2026-9-30`, which a string comparison orders
+        # after `2026-11-04`, drawing an expired file current.
+        start, end = validity_bounds({"valid_from": valid_from, "valid_until": valid_until})
+    except ValueError:
+        pass  # not a plain date (or an empty window): compared as written, below
+    else:
+        if end is not None and end < _instant(today):
+            return "expired"
+        if start is not None and start > _instant(today):
+            return "not_yet_valid"
+        return "current"
     if valid_until and valid_until[:10] < today:
         return "expired"
     if valid_from and valid_from[:10] > today:
