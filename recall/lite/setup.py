@@ -20,13 +20,12 @@ import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from recall.lite import LITE_DSN_PREFIX, LiteStore
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
-    from recall.store import PgVectorStore
     from recall.wizard.wiring import LocalScopeRegistration
 
 __all__ = ["LiteSetupReport", "SERVER_NAME", "default_store_path", "lite_dsn", "run_lite_setup"]
@@ -185,12 +184,9 @@ def run_lite_setup(
     `on_queued` is passed to the store's write lane (`recall.lite.writer_lock.lite_lane`): it is
     called once if another writer holds the store and this setup has to wait.
     """
-    from recall.index import Indexer
-    from recall.cache import default_cache
-    from recall.context import context_policy_for_profile
-    from recall.embeddings import embedding_profile_id
-    from recall.lite.calibration import ensure_calibrated
+    from recall.lite.refresh import Outcome, RefreshReport, _refresh_locked, refresh_access_context
     from recall.lite.writer_lock import lite_lane
+    from recall.security_policy import load_source_policy
 
     project_root = project_root.resolve()
     memory = memory.resolve()
@@ -231,21 +227,27 @@ def run_lite_setup(
         existing_model = str(rows[0][0]) if rows else None
         if existing_model and existing_model != embedder.name:
             raise ValueError("this store was calibrated with another embedder; choose a different --store file")
-        # Typed as the Postgres store, as everywhere the shared Indexer takes a lite one: it calls
-        # only the indexing methods `LiteStore` implements (see `recall.backends`).
+        # Indexed by the refresh itself, under setup's own lane, so setup is the store's first
+        # refresh rather than a partial copy of one: the operator's source policy applies, the
+        # facts the memos state are recorded, and the state file says the folder is current. A
+        # copy here had skipped all three, so `recall lite refresh --check` said "never
+        # refreshed" straight after setup, and setup stored files the policy denies.
+        policy = load_source_policy()
+        context = refresh_access_context(store.tenant) if policy is not None else None
         with lite_lane(store.path, purpose="setup", on_queued=on_queued):
-            # The context policy every other indexer of this store uses (the refresh,
-            # recall_index): with a different one the index fingerprints differ, and the first
-            # automatic refresh would re-embed every memo (CCA STAKES-005).
-            with default_cache() as cache:
-                stats = Indexer(
-                    cast("PgVectorStore", store), embedder, cache=cache,
-                    context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
-                ).index_path(memory)
-            report.files, report.chunks, report.skipped = stats.files, stats.chunks, stats.skipped
+            refreshed = _refresh_locked(
+                store, store.path.resolve(), [memory], embedder,
+                RefreshReport(Outcome.UNCHANGED, ""),
+                background_calibration=False, allow_prune=False,
+                security_policy=policy, security_context=context, budget=None, key_root=memory,
+            )
+            if refreshed.outcome is not Outcome.REFRESHED:
+                raise ValueError(f"indexing {memory} failed: {refreshed.reason}")
             store.record_embedder_spec(embedder_name)
-            outcome = ensure_calibrated(store, embedder)
-        report.calibration, report.calibration_reason = outcome.status.value, outcome.reason
+        report.files, report.chunks, report.skipped = (
+            refreshed.indexed_files, refreshed.chunks_written, refreshed.skipped,
+        )
+        report.calibration, report.calibration_reason = refreshed.calibration, refreshed.calibration_reason
     if register:
         from recall.wizard.wiring import ServerBlock, register_local_scope
 

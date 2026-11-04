@@ -10,8 +10,8 @@ tree, and fails on the first step that would fail for them:
    directory with `CLAUDE_CONFIG_DIR`, so nothing real is touched.
 2. The registration is read back from that `.claude.json`: the server entry must exist for this
    project, launch an interpreter that exists, and name this store.
-3. `recall lite refresh` must succeed, and `recall lite refresh --check` must then report the
-   store current.
+3. `recall lite refresh --check` must report the store current straight after setup, and
+   `recall lite refresh` must then succeed.
 4. The server is started EXACTLY as Claude Code would start it (that entry's command, args and env)
    and spoken to over stdio with the MCP SDK: it must list `recall_search`, and a search for one
    memo's subject must return that memo among its hits.
@@ -327,13 +327,12 @@ def main() -> int:
         server = _registered_server(config, project)
         _check_registration(server, store, notes)
 
-        # Setup does not write the refresh state, so `--check` straight after it reports "never
-        # refreshed" and exits 1 (its help says so). What a user needs is that the documented
-        # refresh succeeds and leaves the store current.
-        print("step 3: recall lite refresh, then --check")
+        # Setup is the store's first refresh, so the folder it just indexed must already be
+        # current; until setup indexed through the refresh, this said "never refreshed" and exited 1.
+        print("step 3: recall lite refresh --check straight after setup, then a refresh")
         refresh = [recall, *embedder, "lite", "refresh", "--store", str(store), "--memory", str(notes)]
+        status = _run([*refresh, "--check"], cwd=project, env=env, step="step 3 (--check after setup)")
         _run(refresh, cwd=project, env=env, step="step 3 (refresh)")
-        status = _run([*refresh, "--check"], cwd=project, env=env, step="step 3 (--check)")
         print("  " + status.strip().replace("\n", "\n  "))
         calibration = next((line.split(None, 1)[1] for line in status.splitlines() if line.startswith("calibration ")), "")
         certified = calibration.startswith("certified")
