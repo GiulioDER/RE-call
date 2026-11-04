@@ -26,6 +26,10 @@ def _git(repo, *args):
     env = dict(os.environ, PYTHONPATH=str(ROOT), GIT_CONFIG_GLOBAL=os.devnull,
                GIT_CONFIG_NOSYSTEM="1", GIT_AUTHOR_NAME="Test", GIT_COMMITTER_NAME="Test",
                GIT_AUTHOR_EMAIL="test@example.invalid", GIT_COMMITTER_EMAIL="test@example.invalid")
+    # Stats profiling cannot discover its configuration from the temporary Git cwd.
+    # Retain real mutant selectors so child behavior remains covered.
+    if env.get("MUTANT_UNDER_TEST") == "stats":
+        env.pop("MUTANT_UNDER_TEST")
     return subprocess.run(
         ["git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=.git/hooks", *args],
         cwd=repo, env=env, capture_output=True, text=True, check=False,
