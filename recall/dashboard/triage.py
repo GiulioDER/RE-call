@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from recall.dashboard.graph import _memo_files
+from recall.dashboard.review import memo_files
 from recall.document import parse_document
 from recall.errors import RecallError
 from recall.frontmatter import supersedes_key
@@ -79,6 +79,12 @@ class DismissalLedger:
                 "sentence_sha TEXT NOT NULL, sentence TEXT NOT NULL, reviewer TEXT NOT NULL, note TEXT NOT NULL, "
                 "dismissed_at TEXT NOT NULL, PRIMARY KEY (file, code, sentence_sha))"
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS restorations (file TEXT NOT NULL, code TEXT NOT NULL, "
+                "sentence_sha TEXT NOT NULL, sentence TEXT NOT NULL, dismissed_by TEXT NOT NULL, "
+                "dismissed_note TEXT NOT NULL, dismissed_at TEXT NOT NULL, restored_by TEXT NOT NULL, "
+                "restored_note TEXT NOT NULL, restored_at TEXT NOT NULL)"
+            )
             return connection
         return sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True, timeout=10.0)
 
@@ -118,15 +124,41 @@ class DismissalLedger:
         finally:
             connection.close()
 
-    def remove(self, file: str, sentence_sha: str) -> bool:
+    def remove(self, file: str, sentence_sha: str, *, reviewer: str, note: str, at: datetime) -> bool:
+        """Take a dismissal back, keeping who reversed it and the decision reversed, in one transaction."""
         connection = self._connect(write=True)
         assert connection is not None
         try:
             with connection:
-                cursor = connection.execute(
+                row = connection.execute(
+                    "SELECT sentence, reviewer, note, dismissed_at FROM dismissals WHERE file = ? AND code = ? AND sentence_sha = ?",
+                    (file, CODE, sentence_sha),
+                ).fetchone()
+                if row is None:
+                    return False
+                connection.execute(
+                    "INSERT INTO restorations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (file, CODE, sentence_sha, row[0], row[1], row[2], row[3], reviewer, note, at.isoformat()),
+                )
+                connection.execute(
                     "DELETE FROM dismissals WHERE file = ? AND code = ? AND sentence_sha = ?", (file, CODE, sentence_sha)
                 )
-            return cursor.rowcount > 0
+            return True
+        finally:
+            connection.close()
+
+    def restorations(self) -> list[tuple[str, str, str, str, str]]:
+        """(file, sentence, restored by, note, restored at), newest first."""
+        connection = self._connect(write=False)
+        if connection is None:
+            return []
+        try:
+            return list(connection.execute(
+                "SELECT file, sentence, restored_by, restored_note, restored_at FROM restorations WHERE code = ? "
+                "ORDER BY restored_at DESC", (CODE,)
+            ))
+        except sqlite3.Error:
+            return []  # a ledger written before restorations were recorded has no such table
         finally:
             connection.close()
 
@@ -137,7 +169,7 @@ def closure_findings(root: Path, issues: list[LintIssue] | None = None) -> list[
     `issues` is `lint_corpus(root)` when the caller already ran it; linting a store is the cost here.
     """
     root = root.resolve()
-    names = [path.relative_to(root).as_posix() for path in _memo_files(root)]
+    names = [path.relative_to(root).as_posix() for path in memo_files(root)]
     by_key: dict[str, list[str]] = {}
     for name in names:
         by_key.setdefault(supersedes_key(Path(name).name), []).append(name)
@@ -193,6 +225,14 @@ def dismiss(root: Path, file: str, sentence_sha: str, *, reviewer: str, note: st
     return current
 
 
-def restore(root: Path, file: str, sentence_sha: str) -> bool:
-    """Take a dismissal back, so the warning shows again."""
-    return DismissalLedger(default_dismissal_path(root.resolve())).remove(file, sentence_sha)
+def restore(root: Path, file: str, sentence_sha: str, *, reviewer: str, note: str, now: datetime) -> bool:
+    """Take a dismissal back, so the warning shows again: a recorded decision, named like a dismissal.
+
+    False when there was nothing to take back (already restored, or never dismissed).
+    """
+    reviewer = reviewer.strip()
+    if not reviewer:
+        raise TriageRefused("Say who decided: the reviewer field is required.")
+    return DismissalLedger(default_dismissal_path(root.resolve())).remove(
+        file, sentence_sha, reviewer=reviewer, note=note.strip()[:MAX_NOTE], at=now
+    )

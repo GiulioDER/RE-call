@@ -21,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from recall.dashboard.edit import history
-from recall.dashboard.graph import _memo_files
+from recall.dashboard.review import memo_files
 from recall.rewrite import default_ledger_path
 from recall.stale_reports import default_queue_path
 
@@ -82,10 +82,13 @@ def recent_activity(root: Path, limit: int = 200) -> list[Event]:
 
     from recall.dashboard.triage import DismissalLedger, default_dismissal_path
 
-    for file, sentence, reviewer, note, at in DismissalLedger(default_dismissal_path(root)).history():
+    dismissals = DismissalLedger(default_dismissal_path(root))
+    for file, sentence, reviewer, note, at in dismissals.history():
         events.append(Event(at, "dismissed", f"not a supersession: {sentence[:120]}", note, reviewer, file))
+    for file, sentence, reviewer, note, at in dismissals.restorations():
+        events.append(Event(at, "restored", f"shown again: {sentence[:120]}", note, reviewer, file))
 
-    files = sorted(_memo_files(root), key=lambda p: p.stat().st_mtime, reverse=True)[:RECENT_FILES]
+    files = sorted(memo_files(root), key=lambda p: p.stat().st_mtime, reverse=True)[:RECENT_FILES]
     for path in files:
         stamp = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC).isoformat()
         name = path.relative_to(root).as_posix()

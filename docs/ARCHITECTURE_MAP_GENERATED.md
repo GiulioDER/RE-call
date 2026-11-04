@@ -39,12 +39,12 @@ Cross package edges: 376
 | 139 | `recall_agent` |
 | 138 | `recall_agent._sdk` |
 | 138 | `recall_agent.memory` |
-| 135 | `recall.dashboard.activity` |
 | 135 | `recall.dashboard.corpus` |
 | 134 | `recall.cli_commands.provenance_cmd` |
+| 134 | `recall.dashboard.activity` |
 | 134 | `recall.dashboard.graph` |
-| 134 | `recall.dashboard.triage` |
 | 133 | `recall.cli_commands.lite_cmd` |
+| 133 | `recall.dashboard.triage` |
 | 133 | `recall_mcp.assistant` |
 | 132 | `recall.dashboard.edit` |
 | 132 | `recall.dashboard.review` |
@@ -538,7 +538,7 @@ They are observations, not automatic failures.
 | `recall.control_plane` | 5 | 38 |
 | `recall.current_state` | 5 | 23 |
 | `recall.dashboard` | 0 | 0 |
-| `recall.dashboard.activity` | 5 | 135 |
+| `recall.dashboard.activity` | 5 | 134 |
 | `recall.dashboard.config` | 2 | 129 |
 | `recall.dashboard.corpus` | 5 | 135 |
 | `recall.dashboard.db` | 5 | 130 |
@@ -548,7 +548,7 @@ They are observations, not automatic failures.
 | `recall.dashboard.markdown` | 0 | 0 |
 | `recall.dashboard.review` | 9 | 132 |
 | `recall.dashboard.server` | 15 | 162 |
-| `recall.dashboard.triage` | 6 | 134 |
+| `recall.dashboard.triage` | 6 | 133 |
 | `recall.db_constants` | 1 | 1 |
 | `recall.decision_ledger` | 3 | 106 |
 | `recall.declared_keys` | 2 | 24 |

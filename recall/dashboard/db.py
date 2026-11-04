@@ -281,17 +281,20 @@ group by 1, 2, 3, 4
 """
 
 
-def control(db: DashboardDB, tenant: str) -> dict[str, Any]:
+def control(db: DashboardDB, tenant: str, *, retrievals: bool = True) -> dict[str, Any]:
     """Per memory: how often search returned it, and what agents reported it did for their task.
 
     Retrieval comes from the decision ledger; "used", "wrong" and "helped" come only from
     `use_report` rows, which agents write with `recall_report_use`. The summary says how many
     searches there were beside how many reports, so a reader can see how much is testimony.
+
+    `retrievals=False` skips the per-memory retrieval counts, which expand every recorded
+    search's hits: a caller that shows only the summary and the reports pays nothing for them.
     """
     if db.lite:
         from recall.dashboard import lite_db
 
-        return lite_db.control(db.dsn, tenant)
+        return lite_db.control(db.dsn, tenant, retrievals=retrievals)
     memos: dict[str, dict[str, Any]] = {}
 
     def memo(source: str) -> dict[str, Any]:
@@ -302,7 +305,7 @@ def control(db: DashboardDB, tenant: str) -> dict[str, Any]:
         })
 
     with db.connect(tenant) as c:
-        for source, n, first, last, ok, superseded, low in c.execute(_RETRIEVALS, (tenant,)).fetchall():
+        for source, n, first, last, ok, superseded, low in (c.execute(_RETRIEVALS, (tenant,)).fetchall() if retrievals else ()):
             row = memo(source)
             row.update(retrieved=n, first=first, last_retrieved=last, ok=ok, superseded=superseded, low_confidence=low)
         for role in ("used", "wrong"):
