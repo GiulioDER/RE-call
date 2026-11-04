@@ -666,9 +666,10 @@ def results_to_markdown(results: list[AblationResult]) -> str:
     )
     lines.append("")
     lines.append(
-        "_P@5 is mechanically capped at 0.20: each query has exactly one relevant doc, so the "
-        "best possible precision@5 is 1/5. Read it as \"answer found in the top 5\" (binary), not "
-        "as classical precision — R@5 / MRR / nDCG@10 are the informative ranking metrics._"
+        "_For the bundled evaluation dataset, each answerable query has one relevant document, "
+        "so P@5 is capped at 0.20. This ceiling does not apply to custom query sets with multiple "
+        "relevant documents. For the bundled dataset, read P@5 as \"answer found in the top 5\" "
+        "(binary); R@5 / MRR / nDCG@10 are the informative ranking metrics._"
     )
     lines.append("")
     lines.append("Cost/latency (mean wall time per call):")

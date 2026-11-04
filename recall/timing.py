@@ -18,7 +18,8 @@ class TimingStats:
 
     Cost is reported as latency + call count, NOT a modeled dollar figure: provider pricing
     lives outside this codebase and drifts, whereas wall time and call count are measured facts.
-    For a cloud embedder, ``calls`` (batches) × batch size is the lever on the actual bill.
+    ``calls`` counts invocations of the wrapped operation. Internal provider batches, retries,
+    token usage and billing are not counted.
     """
 
     calls: int = 0
