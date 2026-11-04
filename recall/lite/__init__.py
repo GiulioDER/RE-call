@@ -1,9 +1,11 @@
 """RE-call on one SQLite file: a local store that needs no database server.
 
 `LiteStore` stores chunks and ranks them; the rules that decide trust (verdicts, supersession
-resolution, calibration maths, indexing) stay in the shared code the Postgres store also uses. One
-rule is copied rather than shared: `Scope.predicate` is SQL, so the lite store evaluates the same
-scope arms in Python (`recall.lite.store._matches`), and its tests pin the copy to the original.
+resolution, calibration maths, indexing) stay in the shared code the Postgres store also uses. A
+few rules are copied rather than shared, because the originals are SQL or live in a module that
+loads psycopg, and tests pin each copy to its original: `Scope.predicate` (evaluated in Python by
+`recall.lite.store._matches`), `recall.store._numeric_query_terms` (`_numeric_terms`),
+`recall.store._chunk_identity` (`_chunk_identity`), and PostgreSQL's `ts_rank` (the keyword leg).
 """
 
 from recall.lite.store import (

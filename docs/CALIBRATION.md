@@ -348,9 +348,11 @@ An imported v2 artifact returns to `draft` or `rejected`; import never publishes
 A legacy file needs neither `--labels` nor a working embedder.
 
 On a lite store (a `sqlite:///` DSN), `list`, `show` and `export` work and the rest are refused by
-name: a lite store calibrates itself when it is indexed, on questions it generates and keeps only
-the digest of. Its export is therefore the artifact alone, flagged `artifact_only`, with no labels,
-and no `import` accepts it. `list` reports every calibration but the newest as `superseded`,
+name: a lite store calibrates itself when it is indexed, on questions it generates. It keeps those
+questions as evidence for carrying the calibration forward, and a forget, or a re-index that drops
+a memo, deletes them with the sources they came from; strict search then refuses until the next
+index or refresh refits the store. Its export is the artifact alone, flagged `artifact_only`, with
+no labels, and no `import` accepts it. `list` reports every calibration but the newest as `superseded`,
 because a lite store serves only its newest one. A stored calibration that does not verify is
 skipped and reported, and when it is the one the store serves, none is reported in force.
 

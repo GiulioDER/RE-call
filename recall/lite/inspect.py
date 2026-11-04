@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from recall.calibration_v2 import CalibrationStatus
+from recall.lite.store import LATEST_CALIBRATION_ORDER, generation_id_for
 
 __all__ = ["LiteFileReport", "inspect_lite_file"]
 
@@ -44,7 +45,7 @@ class LiteFileReport:
     @property
     def generation_id(self) -> str:
         """The id `LiteStore.lite_generation_id` gives this corpus."""
-        return "lite-" + self.fingerprint[:16]
+        return generation_id_for(self.fingerprint)
 
 
 class _ReadOnlyCorpus:
@@ -61,7 +62,7 @@ class _ReadOnlyCorpus:
         return self._fingerprint
 
     def lite_generation_id(self) -> str:
-        return "lite-" + self._fingerprint[:16]
+        return generation_id_for(self._fingerprint)
 
     def source_manifest(self) -> dict[str, str]:
         from recall.lite.calibration import source_digests
@@ -133,7 +134,7 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
     try:
         meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
         rows = conn.execute("SELECT id, text, source, embedding FROM chunks").fetchall()
-        latest = conn.execute("SELECT payload FROM calibrations ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
+        latest = conn.execute(f"SELECT payload FROM calibrations {LATEST_CALIBRATION_ORDER} LIMIT 1").fetchone()  # noqa: S608  # a module constant
     except sqlite3.Error as exc:
         conn.close()
         return LiteFileReport(target, exists=True, error=f"not a lite store ({type(exc).__name__}: {exc})")

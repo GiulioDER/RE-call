@@ -131,7 +131,7 @@ client configuration, not into your shell. Use the same root and embedder as set
 has recorded its roots, the command can reuse them, but explicit paths make scheduled jobs easier
 to inspect.
 
-With `--check`, exit code `0` means current and `1` means changed, never refreshed, or missing input.
+With `--check`, exit code `0` means current and `1` means changed, never refreshed, or missing input. It compares the memo files, the store and the policy; it does not detect a change to the facts a refresh would state (an upgraded stating rule with no memo edited), which only a refresh records.
 A writing refresh returns `0` for refreshed, unchanged, or coalesced work, `1` for failure, and `3`
 when the write queue is busy. A successful refresh is not itself proof of certification; read its
 calibration result.

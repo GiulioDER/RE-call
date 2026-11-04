@@ -407,8 +407,7 @@ def auto_calibrate(
     now: datetime | None = None,
     queries: Sequence[Mapping[str, Any]] | None = None,
 ) -> CalibrationOutcome:
-    """Fit a calibration to the corpus as it is now and store it, certified or not, refusing
-    publication if the corpus changes during the fit.
+    """Fit a calibration to the corpus as it is now and store it, certified or not.
 
     `queries` is a labelled set (`{"query", "answerable"}` entries) to fit on instead of the
     questions generated from the corpus; it is checked and canonicalised like any stored set.
@@ -540,7 +539,13 @@ def ensure_calibrated(store: LiteStore, embedder: Embedder, *, background: bool 
     raw = store.latest_calibration_json()
     if raw is None:
         return auto_calibrate(store, embedder)
-    fit = artifact_from_json(raw)
+    try:
+        fit = artifact_from_json(raw)
+    except (CalibrationError, ValueError, KeyError, TypeError) as exc:
+        # A newest row this release cannot read (written by a newer one, or damaged) has no
+        # threshold to keep, and refitting is the way out: the new fit becomes the newest row.
+        _log.warning("the newest lite calibration does not verify (%s); refitting", type(exc).__name__)
+        return auto_calibrate(store, embedder)
     if fit.corpus_fingerprint == store.corpus_fingerprint():
         if fit.certified:
             return CalibrationOutcome(CalibrationStatus.CERTIFIED, "already certified for this corpus", fit)
@@ -587,7 +592,10 @@ def _refit_wanted(store: LiteStore) -> bool:
     raw = store.latest_calibration_json()
     if raw is None:
         return True
-    fit = artifact_from_json(raw)
+    try:
+        fit = artifact_from_json(raw)
+    except (CalibrationError, ValueError, KeyError, TypeError):
+        return True
     if fit.corpus_fingerprint == store.corpus_fingerprint():
         return False
     carried = carry_forward(store, fit)
@@ -864,9 +872,10 @@ def show_record(store: LiteStore, calibration_id: str) -> dict[str, Any]:
 def export_artifact(store: LiteStore, calibration_id: str, path: str | Path) -> Path:
     """`recall calibration export` on a lite store: the artifact alone, flagged as such.
 
-    A PostgreSQL bundle carries the labelled query set; a lite store never kept one (it fits on
-    questions it generates and keeps only their digest), so the bundle says `artifact_only` rather
-    than shipping a `query_set` it does not have. The artifact carries its state now, as
+    A PostgreSQL bundle carries the labelled query set. A lite store keeps the questions it
+    generates as evidence for `carry_forward` (a fit made before that table existed has none, and a
+    forget, or a re-index that drops a source, deletes them with it), and its export still ships
+    the artifact only, flagged `artifact_only`, rather than a `query_set`. The artifact carries its state now, as
     PostgreSQL's export does: a replaced calibration exports `superseded`, not the `published` it
     was saved with (the state is outside the artifact's checksum).
     """
