@@ -707,9 +707,10 @@ def test_refresh_after_setup_needs_no_embedder_flag(
     embedder setup used. It crashed on every OS in CI (PR 1169) with `unknown embedder:
     'BAAI/bge-small-en-v1.5'`, because refresh fell back to the recorded model name.
 
-    Red proof, 2026-11-04: with `store.record_embedder_spec(embedder_name)` removed from
-    `recall.lite.setup.run_lite_setup`, this fails at the `asked` assertion with
-    `['org/model-name']`."""
+    Red proof: NOT YET RUN. The planned mutation removes `store.record_embedder_spec(embedder_name)`
+    from `recall.lite.setup.run_lite_setup`; the expected failure is the `asked` assertion with
+    `['org/model-name']`. The behaviour itself was seen red end to end: the first-run-lite job of
+    PR 1169 failed on all three OSes at this refresh before the fix."""
     db, asked = _setup_with_model_name(project, monkeypatch)
     try:
         code = _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"))
@@ -726,8 +727,8 @@ def test_refresh_of_a_store_without_a_recorded_spec_asks_instead_of_crashing(
     """A store set up before the spec was recorded holds only the model name. Refresh must say
     which flag to pass, not raise the resolver's ValueError as a traceback.
 
-    Red proof, 2026-11-04: with the `except ValueError` branch removed from
-    `recall.cli_commands.lite_cmd._cmd_refresh`, this fails at `pytest.fail` with the
+    Red proof: NOT YET RUN. The planned mutation removes the `except ValueError` branch from
+    `recall.cli_commands.lite_cmd._cmd_refresh`; the expected failure is `pytest.fail` with the
     resolver's "unknown embedder: 'org/model-name'"."""
     import sqlite3
 
