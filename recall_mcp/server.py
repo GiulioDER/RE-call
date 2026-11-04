@@ -1925,7 +1925,7 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     access_context=_access_context(state, store),
                 )
             )
-        except Exception:
+        except Exception:  # BROAD-CATCH: cleanup-only
             # No answer to keep: the erasure lock could not be taken (a busy lite lane, a
             # PostgreSQL lock timeout) or the call failed. The reservation is released so the same
             # request id can be sent again, which the ledger answers by its own record of the id
