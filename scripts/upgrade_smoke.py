@@ -93,6 +93,17 @@ FACT = {
     "object": "team:platform",
 }
 PROBES = ["caching", "billing", "deploys", "search", FORGET_TOPIC]
+# Near-duplicates of two probed memos: each shares six of its seven tokens, so it scores about
+# 6/7 against that probe, above the fitted threshold and below the original. Those two probes
+# therefore have two trusted hits in a fixed order, which is what makes "the same top hits" a
+# statement about ranking and not only about rank 1. Everything below the threshold in this
+# fixture is an exact tie (hashing-64 cosines come in steps of 1/7, and every memo shares one
+# token with every query), ordered by chunk id, which a new generation changes; so only the
+# trusted hits are compared in order.
+FOLLOWUPS = {
+    "caching-followup": "caching decision: redis eviction ttl warmup jitter",
+    "deploys-followup": "deploys decision: canary rollback bluegreen pipeline freeze",
+}
 
 
 class StepFailed(Exception):
@@ -169,11 +180,16 @@ def _top(payload: dict) -> list[str]:
 
 
 def _scored(payload: dict) -> list[list]:
-    """The top three hits as [source, dense cosine], the cosine rounded past float noise."""
+    """The top three hits as [source, dense cosine, verdict], the cosine rounded past float noise."""
     return [
-        [str(hit.get("source", "")), round(float(hit.get("score") or 0.0), 6)]
+        [str(hit.get("source", "")), round(float(hit.get("score") or 0.0), 6), str(hit.get("verdict"))]
         for hit in payload.get("hits") or []
     ][:3]
+
+
+def _trusted_hits(hits: list[list]) -> list[list]:
+    """The hits the trust layer admitted (verdict ok), in order: what a user is told to use."""
+    return [hit for hit in hits if hit[2] == "ok"]
 
 
 def _require_trusted(step: str, query: str, payload: dict) -> None:
@@ -263,7 +279,10 @@ def seed(workdir: Path) -> None:
         if topic == FACT_TOPIC:
             front = "---\nrecall_graph: " + json.dumps({"facts": [FACT]}) + "\n---\n"
         (notes / f"{topic}.md").write_text(front + _memo_text(topic, words) + "\n", encoding="utf-8")
+    for name, text in FOLLOWUPS.items():
+        (notes / f"{name}.md").write_text(text + "\n", encoding="utf-8")
     queries = [{"query": _query(t), "answerable": True, "relevant_ids": []} for t, _ in TOPICS]
+    queries += [{"query": text, "answerable": True, "relevant_ids": []} for text in FOLLOWUPS.values()]
     queries += [{"query": q, "answerable": False, "relevant_ids": []} for q in ABSENT]
     (workdir / "queries.json").write_text(json.dumps(queries), encoding="utf-8")
     print("seed 3: index, build, validate, promote and calibrate, as FIRST_CALIBRATION.md says", flush=True)
@@ -277,6 +296,9 @@ def seed(workdir: Path) -> None:
         for topic, hits in probes.items():
             if not hits or not hits[0][0].endswith(f"{topic}.md"):
                 raise StepFailed(f"seed 4: {topic}.md is not the top hit for its own query: {hits}")
+            followup = f"{topic}-followup.md"
+            if f"{topic}-followup" in FOLLOWUPS and [h[0] for h in _trusted_hits(hits)][1:2] != [followup]:
+                raise StepFailed(f"seed 4: {followup} is not the second trusted hit for {topic!r}: {hits}")
         evidence = await call("recall_evidence", {"query": _query(FACT_TOPIC), "k": 3})
         cards = [c for c in evidence.get("cards") or [] if c.get("structured_facts")]
         if not cards:
@@ -378,35 +400,34 @@ def verify(workdir: Path) -> None:
         )
     for topic, before in state["probes"].items():
         after = upgraded[topic]
-        if after[0][0] != before[0][0]:
-            raise StepFailed(f"verify 5: the top hit for {topic!r} changed: before {before}, after {after}")
+        if _trusted_hits(after) != _trusted_hits(before):
+            raise StepFailed(
+                f"verify 5: the trusted hits for {topic!r} changed: before {before}, after {after}"
+            )
         # A memo returned both before and after must score the same dense cosine, which only an
-        # unchanged stored vector gives.
-        old = dict(map(tuple, before))
-        moved = {s: (old[s], c) for s, c in after if s in old and old[s] != c}
+        # unchanged stored vector gives; this covers the below-threshold hits too.
+        old = {hit[0]: hit[1] for hit in before}
+        moved = {hit[0]: (old[hit[0]], hit[1]) for hit in after if hit[0] in old and old[hit[0]] != hit[1]}
         if moved:
             raise StepFailed(f"verify 5: cosines for {topic!r} changed (before, after): {moved}")
 
-    # The control. Below the top hit, which memos come back and in what order is retrieval
-    # policy, and a release may change it; what an upgrade must not do is answer differently
-    # from a fresh install of the same release. So the same notes are installed fresh, by this
-    # release, into a tenant of their own, and the upgraded tenant must match it exactly.
+    # The control. A release may change retrieval policy, so matching 0.14.0 is not enough on
+    # its own; what an upgrade must not do is answer differently from a fresh install of the
+    # same release. So the same notes are installed fresh, by this release, into a tenant of
+    # their own, and the upgraded tenant's trusted hits must match it exactly.
     print("verify 6: the same notes installed fresh by this release, as the control", flush=True)
     _install("verify 6", workdir, FRESH_TENANT)
     fresh_env = _env(workdir, production=True, tenant=FRESH_TENANT)
     fresh = asyncio.run(_server_calls(fresh_env, workdir, lambda call: _probe("verify 6", call)))
-    for topic, before in state["probes"].items():
-        if upgraded[topic] != fresh[topic]:
+    for topic in PROBES:
+        if _trusted_hits(upgraded[topic]) != _trusted_hits(fresh[topic]):
             raise StepFailed(
-                f"verify 6: the upgraded tenant answers {topic!r} differently from a fresh install "
-                f"of this release: upgraded {upgraded[topic]}, fresh {fresh[topic]}"
+                f"verify 6: the upgraded tenant's trusted hits for {topic!r} differ from a fresh "
+                f"install of this release: upgraded {upgraded[topic]}, fresh {fresh[topic]}"
             )
-        if upgraded[topic] != before:
-            print(f"    NOTE: below the top hit, {topic!r} differs from {state['seeded_by']} "
-                  f"({before}) and matches a fresh install")
 
     print(f"verify 7: forget {FORGET_TOPIC}.md, a memo {state['seeded_by']} indexed", flush=True)
-    source = next(s for s, _ in state["probes"][FORGET_TOPIC] if s.endswith(f"{FORGET_TOPIC}.md"))
+    source = next(h[0] for h in state["probes"][FORGET_TOPIC] if h[0].endswith(f"{FORGET_TOPIC}.md"))
     _run("verify 7", _recall("forget", source, "--yes"), env=prod, cwd=workdir)
 
     async def after_forget(call):
