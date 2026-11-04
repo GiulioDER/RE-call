@@ -192,7 +192,7 @@ def test_oidc_reserves_failure_budget_before_yielding(monkeypatch, initial):
             return fn()
 
         class Validator:
-            config = SimpleNamespace(issuer="https://issuer.example")
+            config = SimpleNamespace(issuer="https://issuer.example", subject_tenants=None)
 
             def validate(self, token):
                 if token == "success":

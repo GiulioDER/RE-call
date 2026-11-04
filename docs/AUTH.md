@@ -101,7 +101,7 @@ to the ones an operator sizes a token against.
 | `recall:fact_write` | `recall_apply_fact` | Applies a reviewed structured fact through the provenance controller. Deliberately NOT implied by `recall:write`: adding memory and asserting a fact the ledger will serve are different grants. |
 | `recall:forget` | `recall_forget`, `recall_withdraw`, and the lite `recall_forget_memo` | Deletion is irreversible. |
 | `recall:admin` | `recall_calibration_publish` | Publication changes the serve/abstain decision for the whole tenant. Deliberately NOT implied by write: a principal that may add memory should not be able to change what every query trusts. |
-| `recall:federate` | Configured cross tenant retrieval routes | Explicitly permits a route plan to select more than the authenticated principal's owning tenant. The process allowlist and each selected route generation remain mandatory. |
+| `recall:federate` | Configured cross tenant retrieval routes | Explicitly permits a route plan to select more than the authenticated principal's owning tenant. The owning tenant must itself be on the route, and under `RECALL_OIDC_SUBJECT_TENANTS` every tenant the route selects must be bound to the subject. The process allowlist and each selected route generation remain mandatory. |
 
 A principal holding only `recall:read` gets a `PermissionError` from `recall_index`, and the
 denial is logged with the principal name.

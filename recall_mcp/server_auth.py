@@ -179,6 +179,17 @@ class OidcTokenVerifier:
             _log.warning("rejected a bearer token (reason=validator_error)", exc_info=True)
             return None
         self._throttle.refund()
+        claims: dict[str, object] = {
+            "tenant": principal.tenant,
+            "principal": principal.name,
+            "iss": self._validator.config.issuer,
+        }
+        subject_tenants = self._validator.config.subject_tenants
+        if subject_tenants is not None:
+            # With a binding the validator required `sub` and named the principal after it, so
+            # this is the subject's bound set. Federated retrieval may not select a tenant outside
+            # it (`_retrieval_plan_for`), so the binding bounds every leg, not only the token's own.
+            claims["bound_tenants"] = sorted(subject_tenants.get(principal.name, ()))
         return AccessToken(
             token=token,
             client_id=principal.name,
@@ -188,11 +199,7 @@ class OidcTokenVerifier:
             # comparison is built from client_id + subject + claims["iss"], and silently degrades
             # to whichever of those the verifier supplied. Both are known here, verified.
             subject=principal.name,
-            claims={
-                "tenant": principal.tenant,
-                "principal": principal.name,
-                "iss": self._validator.config.issuer,
-            },
+            claims=claims,
         )
 
 

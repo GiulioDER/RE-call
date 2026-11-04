@@ -1186,6 +1186,20 @@ def _retrieval_plan_for(
             raise PermissionError(
                 "federated retrieval requires the recall:federate scope"
             )
+        if plan.selected_tenants != (tenant,):
+            # recall:federate widens a search to the caller's ROUTES, not to every route: the
+            # caller's own tenant must be on the route, and with a subject binding every leg must
+            # be a tenant the subject is bound to (owner decision 2026-11-04).
+            if tenant not in plan.allowed_tenants:
+                raise PermissionError(
+                    f"retrieval route {plan.route_id!r} does not include the caller's tenant"
+                )
+            bound = ((token.claims if token is not None else None) or {}).get("bound_tenants")
+            if bound is not None and not set(plan.selected_tenants) <= set(bound):
+                raise PermissionError(
+                    f"retrieval route {plan.route_id!r} selects a tenant this subject is not "
+                    "bound to"
+                )
         return registry.validate_retrieval_plan(plan)
     if plan.selected_tenants != (tenant,):
         raise PermissionError(
