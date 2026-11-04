@@ -290,3 +290,46 @@ def test_perf001_control_mixed_cardinalities_split_as_every_pair_would():
     # two tags are one set and stand.
     assert contested == {f"e{i}" for i in range(10)}
     assert {e.event_id for e in standing} == {"e10", "e11"}
+
+
+def test_code013_a_bad_card_id_is_named_as_such():
+    """CODE-013 (deferred pass, run 20261104T151220Z): a blank, non-string or over-long card id
+    was refused with "at least one evidence card id is required", the message of no card at all.
+
+    Red proof: against the pre-fix controller the raised message did not name the bound and
+    failed the `match` below.
+    """
+    import pytest
+
+    busy = fact("busy")
+    for bad in (" ", "x" * 257, 7):
+        with pytest.raises(ValueError, match="non-empty strings of at most 256 characters"):
+            FactApplicationRequest(busy, (bad,), "r-1")
+    with pytest.raises(ValueError, match="evidence card count is outside the supported bound"):
+        FactApplicationRequest(busy, (), "r-1")
+
+
+def test_perf002_the_claim_is_hashed_once_per_support_check(monkeypatch):
+    """PERF-002 (deferred pass, run 20261104T151220Z): `_supported` hashed the claim again for
+    every structured fact of every card.
+
+    Red proof: against the pre-fix controller `claim_hashes` was 40 (40 card facts), not 1.
+    """
+    import recall.provenance_controller as pc
+
+    busy = fact("busy")
+    others = [fact(f"other-{i}") for i in range(39)]
+    # The card states an equal fact, not the claim object itself, so only the claim is counted.
+    cards = [card(f, source=f"m{i}.md") for i, f in enumerate([*others, fact("busy")])]
+    claim_hashes = 0
+    real = pc.fact_identity
+
+    def counting(value):
+        nonlocal claim_hashes
+        if value is busy:
+            claim_hashes += 1
+        return real(value)
+
+    monkeypatch.setattr(pc, "fact_identity", counting)
+    assert pc.ProvenanceController._supported(busy, cards)
+    assert claim_hashes == 1

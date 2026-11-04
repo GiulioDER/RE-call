@@ -42,7 +42,10 @@ CLI backend. The MCP service uses PostgreSQL, or, on a lite `sqlite:///` store, 
 kept in that file (`recall.lite.facts`), with the same event ids and projection.
 
 The low level ledger adapters also require a single use permit minted by the controller. A direct
-ledger assertion without that capability is refused, even if the caller can import the adapter.
+ledger assertion without one is refused. The permit guards against accidental direct appends by
+in-process code; it is not a boundary against code that imports the controller module, which can
+mint one. That boundary is the controller database role and the protected append functions
+described below.
 
 Before application, the service also rebuilds source-derived card fields from the current
 generation. A changed source identity, validity window, structured fact, authored link, or
@@ -55,17 +58,20 @@ The decision code vocabulary is fixed: `APPLIED`, `DUPLICATE`, `CARD_NOT_FOUND`,
 `SOURCE_CHANGED`, `VALIDITY_EXPIRED`, `VALIDITY_NOT_STARTED`, `GENERATION_MISMATCH`,
 `LINEAGE_MISMATCH`, `TRUST_UNAVAILABLE`, `UNSUPPORTED_CLAIM`,
 `CONTRADICTION_WITHOUT_SUPERSESSION`, `FRESH_SEARCH_UNAVAILABLE`, `FRESH_SEARCH_INSUFFICIENT`,
-`LEDGER_UNAVAILABLE`, `MATERIALIZATION_UNAVAILABLE`, `REQUEST_ID_REUSED` and
-`REQUEST_ID_RESERVED`.
+`LEDGER_UNAVAILABLE`, `MATERIALIZATION_UNAVAILABLE`, `REQUEST_ID_REUSED`,
+`REQUEST_ID_RESERVED`, and the codes of the events forget, generation gc and withdraw write:
+`SOURCE_FORGOTTEN`, `SOURCE_REMOVED` and `WITHDRAWN`.
 
 A request id names one application, a fact on a set of cards. Reusing it for another fact is
-refused `REQUEST_ID_REUSED`. Previously asserted applications pass normal evidence revalidation
-and conflict authorization before reaching ledger replay. At that point, the same fact and cards
-return the recorded event as `DUPLICATE`, while different cards are refused `REQUEST_ID_REUSED`.
-Changed or expired evidence, or a later conflicting assertion, can prevent replay at those guards.
-For the same fact, a recorded refusal instead replays its original decision before comparing cards;
-a corrected attempt needs a new request id. An id of a form the ledger mints for its own
-events (ending `:supersession`, or starting `retraction:` or `stated:`) is refused
+refused `REQUEST_ID_REUSED`. The same fact on the same cards as a recorded assertion is the
+request sent again: it is answered with the recorded event as `DUPLICATE`, without revalidating
+the evidence or the conflict set, so a retry after the memo changed, the card expired or a later
+value superseded it still learns that its fact was applied. The same fact on other cards (an
+original that a fresh search completed) passes normal revalidation and authorization, and the
+ledger then answers it as `DUPLICATE` or refuses it `REQUEST_ID_REUSED`. For the same fact, a
+recorded refusal instead replays its original decision before comparing cards; a corrected
+attempt needs a new request id. An id of a form the ledger mints for its own events (ending
+`:supersession`, or starting `retraction:`, `withdrawal:` or `stated:`) is refused
 `REQUEST_ID_RESERVED` before the ledger is read. Neither refusal is recorded: the id already names
 another event, or belongs to one the ledger will write.
 
@@ -100,7 +106,8 @@ value past a single-valued one. Multiplicity is never inferred from retrieval ou
 ## Ledger
 
 `recall_fact_ledger_events` is append-only and tenant-isolated. It stores asserted, superseded,
-rejected, and abstained events, including immutable evidence-card snapshots. Current facts are a
+retracted, withdrawn, rejected, and abstained events, including immutable evidence-card
+snapshots. Current facts are a
 projection over the event stream, so generation garbage collection cannot remove the provenance of
 an applied fact.
 
