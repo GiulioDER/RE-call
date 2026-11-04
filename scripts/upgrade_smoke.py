@@ -252,11 +252,6 @@ async def _probe(step: str, call) -> dict[str, list[list]]:
         _require_trusted(step, topic, payload)
         probes[topic] = _scored(payload)
         print(f"    {topic}: {probes[topic]} ({payload.get('trust_state')})")
-        if os.environ.get("UPGRADE_SMOKE_DEBUG"):
-            for hit in payload.get("hits") or []:
-                print("      DEBUG " + json.dumps({k: v for k, v in hit.items() if k != "text"}, sort_keys=True)[:900])
-            print("      DEBUG result " + json.dumps(
-                {k: v for k, v in payload.items() if k not in ("hits", "advice")}, sort_keys=True)[:1500])
     return probes
 
 
@@ -384,51 +379,66 @@ def verify(workdir: Path) -> None:
     if "compatible: yes" not in out:
         raise StepFailed("verify 3: schema status does not say `compatible: yes`")
 
-    print("verify 4: `recall doctor` passes", flush=True)
-    _run("verify 4", [*_recall("doctor")], env=prod, cwd=workdir)
+    # CHANGELOG.md and docs/MIGRATIONS.md: migration 0030 creates the current-facts tables empty,
+    # and a ledger that already holds events needs one rebuild per tenant, or every read replays.
+    print("verify 4: `recall provenance rebuild`, which 0030 requires for a ledger 0.14.0 wrote", flush=True)
+    before = json.loads(_run("verify 4", _recall("provenance", "rebuild", "--check"), env=prod, cwd=workdir))
+    print(f"    before the rebuild: current={before.get('current')!r}")
+    _run("verify 4", _recall("provenance", "rebuild"), env=prod, cwd=workdir)
+    after = json.loads(_run("verify 4", _recall("provenance", "rebuild", "--check", "--verify"),
+                            env=prod, cwd=workdir))
+    if after.get("current") is not True or (after.get("verify") or {}).get("matches") is not True:
+        raise StepFailed("verify 4: the current-facts tables are not current and verified after the rebuild")
 
-    print("verify 5: the old memos search the same, still trusted, and the old fact reads", flush=True)
+    print("verify 5: `recall doctor` passes", flush=True)
+    _run("verify 5", _recall("doctor"), env=prod, cwd=workdir)
+
+    print("verify 6: the old memos search the same, still trusted, and the old fact reads", flush=True)
 
     async def read_calls(call):
-        return await _probe("verify 5", call), await call("recall_current_facts", {})
+        return await _probe("verify 6", call), await call("recall_current_facts", {})
 
     upgraded, current = asyncio.run(_server_calls(prod, workdir, read_calls))
     if _fact_objects(current) != state["facts"]:
         raise StepFailed(
-            f"verify 5: facts written by {state['seeded_by']} do not read back: "
+            f"verify 6: facts written by {state['seeded_by']} do not read back: "
             f"before {state['facts']}, after {json.dumps(current)[:1500]}"
         )
     for topic, before in state["probes"].items():
         after = upgraded[topic]
         if _trusted_hits(after) != _trusted_hits(before):
             raise StepFailed(
-                f"verify 5: the trusted hits for {topic!r} changed: before {before}, after {after}"
+                f"verify 6: the trusted hits for {topic!r} changed: before {before}, after {after}"
             )
         # A memo returned both before and after must score the same dense cosine, which only an
         # unchanged stored vector gives; this covers the below-threshold hits too.
         old = {hit[0]: hit[1] for hit in before}
         moved = {hit[0]: (old[hit[0]], hit[1]) for hit in after if hit[0] in old and old[hit[0]] != hit[1]}
         if moved:
-            raise StepFailed(f"verify 5: cosines for {topic!r} changed (before, after): {moved}")
+            raise StepFailed(f"verify 6: cosines for {topic!r} changed (before, after): {moved}")
 
     # The control. A release may change retrieval policy, so matching 0.14.0 is not enough on
     # its own; what an upgrade must not do is answer differently from a fresh install of the
     # same release. So the same notes are installed fresh, by this release, into a tenant of
     # their own, and the upgraded tenant's trusted hits must match it exactly.
-    print("verify 6: the same notes installed fresh by this release, as the control", flush=True)
-    _install("verify 6", workdir, FRESH_TENANT)
+    print("verify 7: the same notes installed fresh by this release, as the control", flush=True)
+    _install("verify 7", workdir, FRESH_TENANT)
     fresh_env = _env(workdir, production=True, tenant=FRESH_TENANT)
-    fresh = asyncio.run(_server_calls(fresh_env, workdir, lambda call: _probe("verify 6", call)))
+    fresh = asyncio.run(_server_calls(fresh_env, workdir, lambda call: _probe("verify 7", call)))
     for topic in PROBES:
         if _trusted_hits(upgraded[topic]) != _trusted_hits(fresh[topic]):
             raise StepFailed(
-                f"verify 6: the upgraded tenant's trusted hits for {topic!r} differ from a fresh "
+                f"verify 7: the upgraded tenant's trusted hits for {topic!r} differ from a fresh "
                 f"install of this release: upgraded {upgraded[topic]}, fresh {fresh[topic]}"
             )
 
-    print(f"verify 7: forget {FORGET_TOPIC}.md, a memo {state['seeded_by']} indexed", flush=True)
-    source = next(h[0] for h in state["probes"][FORGET_TOPIC] if h[0].endswith(f"{FORGET_TOPIC}.md"))
-    _run("verify 7", _recall("forget", source, "--yes"), env=prod, cwd=workdir)
+    # By both canonical names. The tenant holds the memo twice, as 0.14.0's FIRST_CALIBRATION.md
+    # leaves it: `recall index` stored the path, the generation stored the file:// URI. Since
+    # #1149 a forget refuses the short name `recall_search` prints (`hiring.md`) as ambiguous
+    # and lists these two; 0.14.0 had no such refusal (measured on this job).
+    print(f"verify 8: forget {FORGET_TOPIC}.md, a memo {state['seeded_by']} indexed", flush=True)
+    memo = workdir / "notes" / f"{FORGET_TOPIC}.md"
+    _run("verify 8", _recall("forget", str(memo), memo.as_uri(), "--yes"), env=prod, cwd=workdir)
 
     async def after_forget(call):
         return await call("recall_search", {"query": _query(FORGET_TOPIC), "k": 3})
@@ -437,7 +447,7 @@ def verify(workdir: Path) -> None:
     remaining = _top(payload)
     print(f"    {FORGET_TOPIC} after forget: {remaining} ({payload.get('trust_state')})")
     if any(s.endswith(f"{FORGET_TOPIC}.md") for s in remaining):
-        raise StepFailed(f"verify 7: {FORGET_TOPIC}.md still searchable after forget: {remaining}")
+        raise StepFailed(f"verify 8: {FORGET_TOPIC}.md still searchable after forget: {remaining}")
     print("upgrade verified")
 
 

@@ -30,7 +30,6 @@ jobs:
           --health-timeout 3s
           --health-retries 30
     env:
-      UPGRADE_SMOKE_DEBUG: "1"
       RECALL_SERVING_DSN: postgresql://recall:recall@localhost:5432/recall
       RECALL_MIGRATION_DSN: postgresql://recall:recall@localhost:5432/recall
     defaults:
