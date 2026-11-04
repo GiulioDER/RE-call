@@ -121,6 +121,24 @@ def test_the_sidecar_and_paths_outside_the_corpus_cannot_be_edited(corpus: Path)
             edit.plan_edit(corpus, name, status="draft")
 
 
+def test_only_a_name_the_memo_list_shows_can_be_edited(corpus: Path) -> None:
+    """The editor writes front matter only into a `.md` file outside every dot directory.
+
+    `.recall/x.md` above is refused by `stale_reports.resolve_memo` before this rule is reached, so
+    it cannot show the rule works. Red proof, 2026-11-04: `recall.dashboard.review.is_memo_name`
+    mutated to `return True` let `plan_edit` and `current_values` open both names below (DID NOT
+    RAISE); this test was added after `tests/test_dashboard_edit.py` stayed green under that mutation.
+    """
+    (corpus / ".obsidian").mkdir()
+    (corpus / ".obsidian" / "app.md").write_text("# settings\n", encoding="utf-8")
+    (corpus / "notes.txt").write_text("# Notes\n", encoding="utf-8")
+    for name in (".obsidian/app.md", "notes.txt"):
+        with pytest.raises(edit.EditRefused, match="is not a memo in this corpus"):
+            edit.plan_edit(corpus, name, status="draft")
+        with pytest.raises(edit.EditRefused, match="is not a memo in this corpus"):
+            edit.current_values(corpus, name)
+
+
 def test_an_edit_that_closes_a_supersession_cycle_is_refused_in_the_preview(corpus: Path) -> None:
     """`new.md` supersedes `older.md`; letting `older.md` supersede `new.md` would close a cycle.
 
