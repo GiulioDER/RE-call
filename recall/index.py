@@ -549,7 +549,7 @@ def _confined_with_stats(root: Path, paths: Iterable[Path]) -> list[tuple[Path, 
     for p in paths:
         try:
             resolved = p.resolve()
-        except OSError:  # pragma: no cover - broken symlink / permission
+        except (OSError, RuntimeError):  # pathlib before 3.13 raises RuntimeError for link loops
             continue
         if not resolved.is_relative_to(root):
             continue
@@ -830,7 +830,7 @@ def _index_fingerprint(
 class IndexStats:
     files: int    # files actually (re)indexed
     chunks: int   # chunks written
-    skipped: int = 0   # files unchanged since last index, so not re-read or re-embedded
+    skipped: int = 0   # files unchanged since last index, so not re-embedded or rewritten
     deleted: int = 0   # files gone from disk whose rows were pruned
     undecodable: int = 0   # files whose contents are not valid UTF-8, so not read
     unrepresentable: int = 0   # files whose name is not valid UTF-8, so not stored

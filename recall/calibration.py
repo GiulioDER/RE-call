@@ -156,8 +156,6 @@ def _upper_quantile(sorted_values: list[float], q: float) -> float:
     return sorted_values[max(0, n - 1 - int((1 - q) * n))]
 
 
-#: Fitted thresholds lie on this grid, so a stored threshold reads the same everywhere it is shown.
-_GRID_STEP = 0.001
 #: The threshold for an empty sample set. The same value as `recall.guards.DEFAULT_GAP_THRESHOLD`,
 #: the uncalibrated floor, written here rather than imported to keep this module's imports as
 #: they are; `tests/test_trust_hunt_fixes.py` pins the two together.
@@ -220,7 +218,8 @@ def best_threshold(answerable: list[float], unanswerable: list[float]) -> float:
         # Only negatives: one grid step strictly ABOVE their ceiling (clamped to 1.0).
         # Serving confirms at score >= threshold (see recall.trust_gate), so a threshold placed
         # ON the ceiling would confirm every sample sitting exactly there.
-        return min(1.0, _floor_to_grid(_upper_quantile(u, UNANSWERABLE_CEILING_Q)) + _GRID_STEP)
+        ceiling = _upper_quantile(u, UNANSWERABLE_CEILING_Q)
+        return min(1.0, (math.floor(ceiling * 1000) + 1) / 1000)
     floor = _quantile(a, ANSWERABLE_FLOOR_Q)
     if not u:
         return _floor_to_grid(floor)

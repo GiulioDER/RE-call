@@ -863,7 +863,7 @@ def test_upsert_uses_one_round_trip_per_batch_not_per_row(make_store, monkeypatc
         [[1.0, 0.0, 0.0]] * 50,
     )
     assert calls["executemany"] == 1
-    assert calls["execute"] == 0
+    assert calls["execute"] == 1  # one tenant revision update, independent of batch size
 
 
 @requires_db

@@ -157,8 +157,23 @@ def redacted_dsn(dsn: str) -> str:
         return "<dsn>"
 
 
+def _connection_parameters(dsn: str) -> dict[str, str]:
+    """Parse libpq parameters, refusing a service absent from the resolved ambient defaults."""
+    from psycopg.conninfo import conninfo_to_dict
+    from psycopg.pq import Conninfo
+
+    explicit = conninfo_to_dict(dsn)
+    if explicit.get("service") and explicit["service"] != os.environ.get("PGSERVICE"):
+        raise LookupError("cannot establish safety for the selected connection service")
+    defaults = {
+        option.keyword.decode(): option.val.decode()
+        for option in Conninfo.get_defaults() if option.val is not None
+    }
+    return defaults | {name: str(value) for name, value in explicit.items() if value is not None}
+
+
 def warn_if_insecure_dsn(dsn: str) -> str | None:
-    """Warn (to stderr) when the built-in ``recall:recall`` credentials target a NON-local host.
+    """Warn when published-credential safety cannot be established for the destination.
 
     A shared, well-known password is fine against localhost but a footgun the moment the DSN
     points at a real remote database. This warns loudly and returns the message; it never blocks
@@ -170,9 +185,22 @@ def warn_if_insecure_dsn(dsn: str) -> str | None:
     from psycopg.conninfo import conninfo_to_dict
 
     try:
-        parts = conninfo_to_dict(dsn)
+        explicit = conninfo_to_dict(dsn)
+        if "user" in explicit and "password" in explicit and (
+            explicit["user"], explicit["password"]
+        ) != _DEFAULT_CREDS:
+            return None
     except (ProgrammingError, ValueError):
         return None  # malformed connection strings are refused by the connection itself
+    try:
+        parts = _connection_parameters(dsn)
+    except LookupError:
+        msg = (
+            "recall: WARNING: cannot establish credential safety for the selected connection "
+            "service. Supply explicit non-default credentials or accept the risk deliberately."
+        )
+        _log.warning(msg)
+        return msg
     # Use libpq's interpretation: keyword syntax and URI query parameters can override userinfo.
     if (parts.get("user", ""), parts.get("password", "")) != _DEFAULT_CREDS:
         return None
@@ -225,10 +253,11 @@ def require_secure_dsn(dsn: str) -> None:
     # be read as permission.
     if _env_opt_out(INSECURE_DSN_OPT_OUT):
         return
-    if warn_if_insecure_dsn(dsn) is None:
+    warning = warn_if_insecure_dsn(dsn)
+    if warning is None:
         return
     raise PermissionError(
-        f"refusing to start against {redacted_dsn(dsn)}: the default 'recall:recall' credentials "
-        f"are published in this project's README and this DSN points at a non-local host. Set a "
-        f"real password, or set {INSECURE_DSN_OPT_OUT}=1 to accept the risk deliberately."
+        f"refusing to start against {redacted_dsn(dsn)}: {warning} The built-in credentials "
+        f"are published in this project's README. Set a real password, "
+        f"or set {INSECURE_DSN_OPT_OUT}=1 to accept the risk deliberately."
     )

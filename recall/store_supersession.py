@@ -91,14 +91,14 @@ class SupersessionMixin:
         `ok` until someone restarted the process — the trust layer returning exactly the wrong
         answer, silently, which is the failure it exists to prevent.
 
-        Freshness is established by a cheap fingerprint — `(max(indexed_at), count(*))` for this
-        tenant — and the expensive grouped scan runs only when that fingerprint moves. Both
+        Freshness is established by `(max(indexed_at), count(*), tenant mutation revision)` and
+        the expensive grouped scan runs only when that fingerprint moves. The first two
         halves are needed: `max(indexed_at)` alone cannot see a DELETE, and deleting a superseding
         document must stop its edge from applying, or the reader keeps demoting a memory that is
         current again.
 
-        Measured on a 50k-row table: fingerprint ~12 ms, full scan ~80 ms. So this is cheaper than
-        rescanning on every call and, unlike caching indefinitely, it is correct.
+        The transactionally incremented revision also sees metadata updates that commit out of
+        timestamp order, and record-only withdrawals that change no chunk row.
 
         Fingerprint and scan share ONE connection, so they cannot straddle a concurrent write and
         cache a result under a fingerprint that never described it.
