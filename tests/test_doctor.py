@@ -152,8 +152,12 @@ class _FakeConn:
         tables: dict[str, list[tuple[str, int]]],
         shapes: dict[str, tuple[str, ...]] | None = None,
         can_bypass_rls: bool = True,
+        generation: tuple[str, int] | None = None,
     ) -> None:
         self.tables = tables
+        #: The tenant's active generation and its chunk count in `recall_chunks_v1`, or None for
+        #: a tenant with none.
+        self.generation = generation
         #: Columns each table has. Absent means "a full corpus". A table listed here with fewer
         #: columns is one the shape filter must EXCLUDE, which is the bookkeeping-table case.
         self.shapes = shapes or {}
@@ -215,6 +219,13 @@ class _FakeConn:
             return _FakeCursor(rows)
         if "rolsuper" in text:
             return _FakeCursor([(self.can_bypass_rls,)])
+        if "to_regclass('recall_tenant_state')" in text:
+            return _FakeCursor([("recall_tenant_state",)])
+        if "FROM recall_tenant_state" in text:
+            return _FakeCursor([(self.generation[0],)] if self.generation else [])
+        if "FROM recall_chunks_v1" in text:
+            assert self.generation is not None and params == ("default", self.generation[0])
+            return _FakeCursor([(self.generation[1],)])
         if "GROUP BY tenant_id" in text:
             for name, counts in self.tables.items():
                 if f'"{name}"' in text:
@@ -252,6 +263,56 @@ def test_an_empty_configured_corpus_names_the_one_that_is_populated() -> None:
     assert "quickstart_chunks/quickstart (22)" in corpus.detail, corpus.detail
     assert "not counted in time" not in corpus.detail, corpus.detail
     assert corpus.fix is not None and "--table" in corpus.fix
+
+
+def test_a_generation_only_tenant_passes_on_the_generation_route() -> None:
+    """A tenant served from its active generation is not an empty corpus.
+
+    `recall generation build` writes `recall_chunks_v1` and nothing in `chunks`, so the corpus
+    check FAILED "holds NO chunks" on a tenant that served trusted answers (measured by the 0.14.0
+    upgrade job, `scripts/upgrade_smoke.py`). On the legacy route it still fails, because there
+    the server reads `chunks`.
+
+    Red proof, 2026-11-04: with the `_active_generation` branch in `doctor._corpus_checks`
+    removed, the first assertion fails (`'fail' == 'ok'`); restored, it passes.
+    """
+    conn = _FakeConn(tables={"chunks": []}, generation=("gen_abc", 24))
+
+    served = list(doctor._corpus_checks(conn, table="chunks", tenant="default", generation_route=True))
+    corpus = next(c for c in served if c.name == "corpus")
+    assert corpus.status == "ok", corpus.detail
+    assert "24 chunk(s) in active generation gen_abc" in corpus.detail
+
+    legacy = list(doctor._corpus_checks(conn, table="chunks", tenant="default"))
+    assert next(c for c in legacy if c.name == "corpus").status == "fail"
+
+
+@pytest.mark.parametrize(("status", "expected"), [("certified", "ok"), ("stale", "warn")])
+def test_a_generation_tenant_reports_its_own_calibration(
+    monkeypatch: pytest.MonkeyPatch, status: str, expected: str
+) -> None:
+    """The calibration a generation tenant serves by is in the database, not `calibration.json`.
+
+    The legacy check read the file and said "none fitted" beside a certified, published
+    calibration. Red proof, 2026-11-04: with `_generation_calibration_check` returning the legacy
+    `_calibration_check` result instead, the `certified` case fails (`'warn' == 'ok'`).
+    """
+    from recall.generations import GenerationManager
+
+    asked: list[str] = []
+
+    def status_for(self, generation_id: str, **_: object) -> str:
+        asked.append(generation_id)
+        return status
+
+    monkeypatch.setattr(GenerationManager, "calibration_status_for", status_for)
+    check = doctor._generation_calibration_check(
+        "postgresql://u@localhost/db", "default", "gen_abc", strict=True
+    )
+    assert asked == ["gen_abc"]
+    assert check.status == expected, check.detail
+    if expected == "warn":
+        assert check.fix is not None and "--generation gen_abc" in check.fix
 
 
 def test_a_populated_configured_corpus_passes_and_says_how_many() -> None:

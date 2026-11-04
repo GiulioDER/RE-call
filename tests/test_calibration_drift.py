@@ -434,6 +434,36 @@ def test_auto_skips_rather_than_inventing_a_first_calibration(carry_tenant) -> N
     assert "human decision" in outcome.reason
 
 
+@requires_db
+def test_auto_after_a_forget_names_the_superseded_calibration_and_the_refit(carry_tenant) -> None:  # noqa: F811, E501
+    """A forget supersedes the generation's published calibration in place; auto must say so.
+
+    `GenerationManager.forget` changes the corpus fingerprint of the generation it erases from
+    and supersedes that generation's published calibration. `auto` then found nothing published
+    and reported "no certified published calibration ... the first calibration on a corpus is a
+    human decision", which reads as "you never calibrated" (seen by the 0.14.0 upgrade job,
+    `scripts/upgrade_smoke.py`, verify 9). The labelled refit is the command that works.
+
+    Red proof, 2026-11-04: with the `_superseded_on` branch in `recall.drift.auto_recalibrate`
+    removed, this fails on `outcome.calibration_id == published.calibration_id` (None); restored,
+    it passes.
+    """
+    tenant, manager = carry_tenant
+    embedder = _CarryEmbedder()
+    repository = CalibrationRepository(TEST_DSN, tenant, actor="pytest")
+    generation = _ready(manager, embedder, _bodies(), "v1")
+    published = repository.publish(
+        repository.calibrate(generation, _labels(), embedder).calibration_id
+    )
+    manager.forget(f"s3://approved/corpora/{tenant}/memo-0.md")
+
+    outcome = auto_recalibrate(repository, generation, embedder)
+    assert outcome.action == "skipped"
+    assert outcome.calibration_id == published.calibration_id
+    assert f"calibration calibrate --generation {generation}" in outcome.reason
+    assert "human decision" not in outcome.reason
+
+
 # --------------------------------------------------------------------------------------------
 # The CLI wiring. The tests above exercise the decision; these exercise the dispatch, which is
 # where a feature that works is still unreachable.

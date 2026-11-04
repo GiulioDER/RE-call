@@ -297,6 +297,14 @@ def _published_calibration(repository: CalibrationRepository) -> CalibrationArti
     return None
 
 
+def _superseded_on(repository: CalibrationRepository, generation_id: str) -> str | None:
+    """The newest calibration superseded on `generation_id` itself, or None."""
+    for record in repository.list_records(generation_id):
+        if str(record.get("lifecycle_state")) == "superseded":
+            return str(record["calibration_id"])
+    return None
+
+
 def _probe(
     repository: CalibrationRepository,
     artifact: CalibrationArtifactV2,
@@ -582,6 +590,23 @@ def auto_recalibrate(
     """
     artifact = _published_calibration(repository)
     if artifact is None:
+        superseded = _superseded_on(repository, generation_id)
+        if superseded is not None:
+            # `GenerationManager.forget` supersedes the published calibration of a generation whose
+            # corpus it changed, in place. Saying "no certified published calibration" there read
+            # as "you never calibrated" and sent the operator away from the one command that works
+            # (found by the 0.14.0 upgrade job, `scripts/upgrade_smoke.py`).
+            return AutoCalibrationOutcome(
+                action="skipped",
+                calibration_id=superseded,
+                reason=(
+                    f"calibration {superseded} was superseded on {generation_id} itself (a forget "
+                    "changes a generation's corpus in place), and auto only carries a calibration "
+                    "forward to a new generation; refit it on your labelled queries: recall "
+                    f"calibration calibrate --generation {generation_id} --queries <labelled "
+                    "queries.json> --publish"
+                ),
+            )
         return AutoCalibrationOutcome(
             action="skipped",
             calibration_id=None,

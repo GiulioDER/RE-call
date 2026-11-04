@@ -220,11 +220,13 @@ def _packaged_migrations() -> list[str]:
     return sorted(p.name for p in files("recall.migrations").joinpath("sql").iterdir() if p.name.endswith(".sql"))
 
 
-def _install(step: str, workdir: Path, tenant: str) -> str:
+def _install(step: str, workdir: Path, tenant: str, *, legacy_index: bool = True) -> str:
     """0.14.0's docs/FIRST_CALIBRATION.md, steps 1 to 6, for the notes in `workdir`.
 
     Run by whichever release is installed: by the old one to seed, and by the new one for the
-    fresh-install control. Returns the promoted generation.
+    fresh-install control. `legacy_index=False` skips step 1, leaving a tenant whose corpus is
+    only its promoted generation, as the wizard builds its docs and code tenants. Returns the
+    promoted generation.
     """
     dev = _env(workdir, production=False, tenant=tenant)
     notes = workdir / "notes"
@@ -234,10 +236,8 @@ def _install(step: str, workdir: Path, tenant: str) -> str:
     def recall(*args: str) -> str:
         return _run(step, _recall(*args, tenant=tenant), env=dev, cwd=workdir)
 
-    # Step 1 also leaves the legacy `chunks` rows that `recall doctor` counts: on a tenant whose
-    # corpus is only a promoted generation, doctor FAILS "holds NO chunks" while the same tenant
-    # serves trusted answers (measured on this job).
-    recall("index", str(notes), "--project", "upgrade-smoke")
+    if legacy_index:
+        recall("index", str(notes), "--project", "upgrade-smoke")
     recall("manifest", "inventory", str(notes), "--output", str(files / "inventory.json"))
     recall("manifest", "create", "--corpus-version", "2026-09-17",
            "--objects", str(files / "inventory.json"), "--output", str(files / "manifest.json"))
@@ -405,8 +405,20 @@ def verify(workdir: Path) -> None:
 
     print("verify 6: the old memos search the same, still trusted, and the old fact reads", flush=True)
 
+    # Then a fact through the NEW server's `recall_apply_fact`, which 0.14.0's server refused on
+    # a generation tenant (seed 5). The same fact again, so APPLIED or DUPLICATE both pass.
     async def read_calls(call):
-        return await _probe("verify 6", call), await call("recall_current_facts", {})
+        probes = await _probe("verify 6", call)
+        current = await call("recall_current_facts", {})
+        evidence = await call("recall_evidence", {"query": _query(FACT_TOPIC), "k": 3})
+        cards = [c["card_id"] for c in evidence.get("cards") or [] if c.get("structured_facts")]
+        applied = await call("recall_apply_fact", {
+            **FACT, "evidence_card_ids": cards[:1], "request_id": "upgrade-smoke-2",
+        })
+        print(f"    recall_apply_fact: {applied.get('decision_code')}")
+        if applied.get("allowed") is not True:
+            raise StepFailed(f"verify 6: recall_apply_fact refused on the upgraded tenant: {applied}")
+        return probes, current
 
     upgraded, current = asyncio.run(_server_calls(prod, workdir, read_calls))
     if _fact_objects(current) != state["facts"]:
@@ -432,7 +444,7 @@ def verify(workdir: Path) -> None:
     # same release. So the same notes are installed fresh, by this release, into a tenant of
     # their own, and the upgraded tenant's trusted hits must match it exactly.
     print("verify 7: the same notes installed fresh by this release, as the control", flush=True)
-    _install("verify 7", workdir, FRESH_TENANT)
+    _install("verify 7", workdir, FRESH_TENANT, legacy_index=False)
     fresh_env = _env(workdir, production=True, tenant=FRESH_TENANT)
     fresh = asyncio.run(_server_calls(fresh_env, workdir, lambda call: _probe("verify 7", call)))
     for topic in PROBES:
@@ -441,6 +453,11 @@ def verify(workdir: Path) -> None:
                 f"verify 7: the upgraded tenant's trusted hits for {topic!r} differ from a fresh "
                 f"install of this release: upgraded {upgraded[topic]}, fresh {fresh[topic]}"
             )
+    # The control tenant has no legacy rows: doctor must judge it by its active generation and
+    # that generation's calibration, which is what the server serves by.
+    out = _run("verify 7", _recall("doctor", tenant=FRESH_TENANT), env=fresh_env, cwd=workdir)
+    if "certified for active generation" not in out:
+        raise StepFailed("verify 7: doctor does not report the generation's certified calibration")
 
     # By both canonical names. The tenant holds the memo twice, as 0.14.0's FIRST_CALIBRATION.md
     # leaves it: `recall index` stored the path, the generation stored the file:// URI. Since
@@ -450,9 +467,7 @@ def verify(workdir: Path) -> None:
     memo = workdir / "notes" / f"{FORGET_TOPIC}.md"
     out = _run("verify 8", _recall("forget", str(memo), memo.as_uri(), "--yes"), env=prod, cwd=workdir)
     if "outbox failed" in out:
-        # Not gated: the chunks are gone, and the table it could not scrub is a control-plane
-        # one `recall schema apply` does not create, so there was nothing pending to scrub.
-        print("    NOTE: forget warned that scrubbing the migration outbox failed")
+        raise StepFailed("verify 8: forget warned that scrubbing the migration outbox failed")
 
     # The erasure changes the generation's corpus fingerprint, so strict search must refuse
     # (CALIBRATION_STALE) until a recalibration: refusing serves nothing, which is correct.
@@ -471,11 +486,14 @@ def verify(workdir: Path) -> None:
     if payload.get("refused") and payload.get("code") != "CALIBRATION_STALE":
         raise StepFailed(f"verify 8: search after forget refused for an unexpected reason: {payload.get('code')!r}")
 
-    # `recall calibration auto` does not apply: it re-establishes a calibration on a REBUILT
-    # generation and skips when the published one is bound to the same generation, which a
-    # forget leaves in place. So this is the labelled refit, with the forgotten memo's question
-    # taken out of the set, since nothing answers it any more.
+    # `recall calibration auto` does not apply: a forget supersedes the generation's calibration
+    # in place, and auto only carries one forward to a new generation. It must say so and name
+    # the labelled refit, which follows, with the forgotten memo's question taken out of the set.
     print("verify 9: recalibrate as the refusal advises, then search again", flush=True)
+    out = _run("verify 9", _recall("calibration", "auto", "--generation", state["generation"]),
+               env=prod, cwd=workdir, ok_codes=(0, 1))
+    if f"calibration calibrate --generation {state['generation']}" not in out:
+        raise StepFailed("verify 9: `calibration auto` after a forget does not name the labelled refit")
     labels = [q for q in json.loads((workdir / "queries.json").read_text(encoding="utf-8"))
               if q["query"] != _query(FORGET_TOPIC)]
     (workdir / "queries-after-forget.json").write_text(json.dumps(labels), encoding="utf-8")
