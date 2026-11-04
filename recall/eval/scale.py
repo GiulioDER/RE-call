@@ -84,6 +84,9 @@ def measure_retrieval(
     """
     retr = HybridRetriever(store, embedder)
     answerable = [q for q in queries if not q.get("trust") and q["answerable"]]
+    sources = store.sources_for_identifiers(
+        [q["relevant_ids"][0].rsplit(":", 1)[0] for q in answerable]
+    )
     unfiltered_flags: list[bool] = []
     filtered_flags: list[bool] = []
     latencies: list[float] = []
@@ -95,16 +98,13 @@ def measure_retrieval(
         got = [f"{h.chunk.metadata['file']}:{h.chunk.metadata['ord']}" for h in res.hits]
         unfiltered_flags.append(recall_at_k(got, q["relevant_ids"], k) == 1.0)
 
-        # the source column stores the resolved absolute path; recover it from the hit set so
-        # the filter is exactly the one Postgres indexed, not a reconstructed guess
+        # Resolve the indexed source independently: the filtered arm must still run when
+        # unfiltered retrieval misses the answer.
         target_rel = q["relevant_ids"][0].rsplit(":", 1)[0]
-        src = next(
-            (h.chunk.source for h in res.hits if h.chunk.metadata["file"] == target_rel), None
-        )
-        if src is None:
-            filtered_flags.append(False)  # never surfaced unfiltered either
-            continue
-        fres = retr.search(q["query"], k=k, source=src)
+        matches = sources.get(target_rel, [])
+        if len(matches) != 1:
+            raise ValueError(f"expected one indexed source for {target_rel!r}, found {len(matches)}")
+        fres = retr.search(q["query"], k=k, source=matches[0])
         fgot = [f"{h.chunk.metadata['file']}:{h.chunk.metadata['ord']}" for h in fres.hits]
         filtered_flags.append(recall_at_k(fgot, q["relevant_ids"], k) == 1.0)
 

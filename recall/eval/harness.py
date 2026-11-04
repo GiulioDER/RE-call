@@ -245,9 +245,8 @@ def _loo_calibrations(
 
     An entry is ``None`` when the class has fewer than two samples: the fold would fit on an
     empty class, and a threshold fitted to nothing is not a more honest number than the
-    in-sample one — it is a different fabrication. The caller falls back to the full-sample
-    calibration and the result stays in-sample, which is why the published table needs the
-    sample counts beside it.
+    in-sample one — it is a different fabrication. The caller omits such folds from held-out
+    metrics, which remain unavailable rather than falling back to in-sample scores.
     """
     if len(held_out) < 2:
         return [None] * len(held_out)
@@ -275,7 +274,7 @@ def run_nearmiss_eval(
     `false_abstain` are measured on the very queries the threshold is fitted to, so a threshold
     that merely memorised them would score perfectly. Both are therefore measured under
     LEAVE-ONE-OUT: the calibration judging a query is refitted with that query's sample removed
-    (`_loo_calibrations`), so no query is ever scored by a threshold that saw it.
+    (`_loo_calibrations`). Classes with fewer than two samples have unavailable held-out rates.
 
     `store_factory` is a TEST SEAM, not a serving feature. Every existing caller omits it and
     gets EXACTLY today's behaviour: `None` (the default) builds the same corpus-indexed
@@ -331,9 +330,8 @@ def run_nearmiss_eval(
                     _emb: Embedder = emb,
                     _q_times: list[float] = q_times,
                 ) -> TrustedResult:
-                    # loo_cal is the refit that never saw this query; fall back to the fitted
-                    # calibration when the class was too small to hold a sample out (see
-                    # _loo_calibrations).
+                    # Only the independent near-miss challenge uses the full calibration.
+                    # Other queries are scored only when a held-out refit exists.
                     use = loo_cal if loo_cal is not None else _cal
                     t0 = time.perf_counter()
                     res = research_search(store, _emb, text, k=k, calibration=use)
@@ -345,9 +343,12 @@ def run_nearmiss_eval(
                 nm_confident = [not _search(q["query"]).abstained for q in nearmiss]
                 gap_confident = [
                     not _search(q["query"], gap_cals[i]).abstained for i, q in enumerate(gaps)
+                    if gap_cals[i] is not None
                 ]
                 abst_flags, mrrs = [], []
                 for i, q in enumerate(answerable):
+                    if ans_cals[i] is None:
+                        continue
                     res = _search(q["query"], ans_cals[i])
                     abst_flags.append(res.abstained)
                     ok_keys = [_tkey(h) for h in res.hits if h.verdict == "ok"]
@@ -359,7 +360,7 @@ def run_nearmiss_eval(
                         nearmiss_fcr=near_miss_false_confident_rate(nm_confident),
                         gap_fcr=gap_false_confident_rate(gap_confident),
                         false_abstain=false_abstain_rate(abst_flags),
-                        mrr_answerable=mean(mrrs) if mrrs else 0.0,
+                        mrr_answerable=mean(mrrs) if mrrs else float("nan"),
                         query_latency_ms_mean=mean(q_times) if q_times else 0.0,
                     )
                 )
