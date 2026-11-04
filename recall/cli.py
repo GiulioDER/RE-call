@@ -113,6 +113,7 @@ class StoreGiven(argparse.Action):
 
     def __call__(self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
                  values: object, option_string: str | None = None) -> None:
+        del option_string  # part of argparse's call signature; which spelling was typed is irrelevant
         setattr(namespace, self.dest, values)
         setattr(namespace, f"{self.dest}_given", True)
 
