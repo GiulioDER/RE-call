@@ -1291,12 +1291,24 @@
       "readOnlyHint": false,
       "title": "Report a memory that another replaces"
     },
-    "description": "Report that one memory you used is replaced by another, newer one you also saw.\n\nUse it only when two memories state different versions of the same fact, decision or\nstatus and one clearly replaces the other. Not for a memory that is merely old, partial or\noff topic. Name both by their source path, and copy at least 20 characters exactly from\neach: the outdated statement and the one that replaces it. The report is queued for a\nperson to review; nothing in memory changes until they accept it.",
+    "description": "Report that one memory you used is replaced by another, newer one you also saw.\n\nUse it only when two memories state different versions of the same fact, decision or\nstatus and one clearly replaces the other. Not for a memory that is merely old, partial or\noff topic. Name both by their source path, and copy at least 20 characters exactly from\neach: the outdated statement and the one that replaces it. The report is queued for a\nperson to review; nothing in memory changes until they accept it. A server with a\nshared rate limiter requires `idempotency_key`, as for every write.",
     "inputSchema": {
       "properties": {
         "current_quote": {
           "title": "Current Quote",
           "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "replacing_source": {
           "title": "Replacing Source",
@@ -1358,12 +1370,24 @@
       "readOnlyHint": false,
       "title": "Report what memory did for a task"
     },
-    "description": "After a task that searched memory, say what the memories did for it.\n\n`effect` is one of helped, no_difference or misled. List in `used` the memories you\nactually relied on, and in `wrong` any that were retrieved but wrong, outdated or\nmisleading; name each by its source as search returned it. Set `task_succeeded` when you\nknow whether the task itself succeeded, and `query` to the search you made. Report once\nper task, honestly, including when memory did not help: the counts are only useful if\nthe no-difference cases are in them. Nothing in memory or search changes.",
+    "description": "After a task that searched memory, say what the memories did for it.\n\n`effect` is one of helped, no_difference or misled. List in `used` the memories you\nactually relied on, and in `wrong` any that were retrieved but wrong, outdated or\nmisleading; name each by its source as search returned it. Set `task_succeeded` when you\nknow whether the task itself succeeded, and `query` to the search you made. Report once\nper task, honestly, including when memory did not help: the counts are only useful if\nthe no-difference cases are in them. Nothing in memory or search changes. A server with\na shared rate limiter requires `idempotency_key`, as for every write.",
     "inputSchema": {
       "properties": {
         "effect": {
           "title": "Effect",
           "type": "string"
+        },
+        "idempotency_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotency Key"
         },
         "note": {
           "anyOf": [

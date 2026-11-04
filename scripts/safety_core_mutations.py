@@ -132,7 +132,7 @@ MUTATIONS = (
     Mutation(
         ROOT / "recall_mcp/server.py",
         "authorised tenant is replaced by the process default",
-        b"        store = registry.get(tenant)\n        if scope != SCOPE_READ and idempotency_key:",
+        b"        store = await _to_thread(lambda: registry.get(tenant))\n        if scope != SCOPE_READ and idempotency_key:",
         b"        store = state[\"store\"]\n        if scope != SCOPE_READ and idempotency_key:",
         SERVER_TESTS,
     ),

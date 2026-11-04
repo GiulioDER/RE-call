@@ -513,6 +513,13 @@ class OidcValidator:
         self._fetch_lock = threading.Lock()
         self._last_forced_at = 0.0
         self._missing_kids: set[str] = set()
+        #: Bumped under `_lock` on every failed fetch. A cold waiter that wakes to a changed value
+        #: shares that failure instead of repeating it, so N callers during an outage cost one
+        #: fetch rather than N serial timeouts (BUG-003).
+        self._failure_seq = 0
+        #: No scheduled refresh before this instant after a failed one while stale keys are still
+        #: inside the window (PERF-005). It never moves `fetched_at`, so the stale bound holds.
+        self._retry_after = 0.0
 
     @property
     def config(self) -> OidcConfig:
@@ -557,13 +564,24 @@ class OidcValidator:
             # that reads as a forgery while the IdP is merely slow. So wait for the fetch that is
             # already in flight. Latent until the verifier moved off the event loop (PERF-001):
             # serialised coroutines never raced, real threads do.
+            with self._lock:
+                seen_failures = self._failure_seq
             self._fetch_lock.acquire()
             cached = self._snapshot()
             if cached.ever_fetched:
                 self._fetch_lock.release()
                 return cached.keys
-            # The thread we waited for failed. We hold the lock now, so try ourselves rather than
-            # inherit its failure — and `age` must be recomputed against the cache we just read.
+            with self._lock:
+                failed_meanwhile = self._failure_seq != seen_failures
+            if failed_meanwhile:
+                # The fetch we waited for failed. Repeating it would make every queued caller pay
+                # a full timeout in turn while holding a worker thread (BUG-003).
+                self._fetch_lock.release()
+                raise IdentityProviderUnavailable(
+                    "jwks_unavailable", "identity provider unreachable and no keys are cached"
+                )
+            # We hold the lock and nobody failed while we waited, so fetch ourselves; `age` must
+            # be recomputed against the cache we just read.
             now = self._clock()
             age = now - cached.fetched_at
         try:
@@ -573,6 +591,9 @@ class OidcValidator:
                 # Every fetch-side failure lands here, including the TokenRejected subclasses this
                 # module raises for a malformed document. Routing those around the stale window
                 # would mean a JSON error page causes a total outage while an HTML one is survived.
+                with self._lock:
+                    self._failure_seq += 1
+                    self._retry_after = now + self._config.jwks_refresh_s / _FORCED_REFRESH_DIVISOR
                 if cached.ever_fetched and age <= self._config.max_stale_key_s:
                     _log.warning("serving stale JWKS: identity provider unreachable")
                     return cached.keys
@@ -584,15 +605,22 @@ class OidcValidator:
                 # the stale window at every failed attempt, so a withdrawn key would work forever.
                 self._cache = _CachedKeys(keys=keys, fetched_at=now, ever_fetched=True)
                 self._missing_kids.clear()
+                self._retry_after = 0.0
                 return keys
         finally:
             self._fetch_lock.release()
 
     def _keys_for(self, kid: str) -> dict[str, Any]:
         cached = self._snapshot()
-        due = not cached.ever_fetched or (
-            self._clock() - cached.fetched_at >= self._config.jwks_refresh_s
-        )
+        now = self._clock()
+        age = now - cached.fetched_at
+        due = not cached.ever_fetched or age >= self._config.jwks_refresh_s
+        if due and cached.ever_fetched and age <= self._config.max_stale_key_s:
+            with self._lock:
+                backing_off = now < self._retry_after
+            # A refresh just failed: serve the still-valid stale keys until the retry instant
+            # rather than send every request to an unreachable IdP (PERF-005).
+            due = not backing_off
         keys = self._refresh(cached) if due else cached.keys
         if kid in keys:
             return keys
@@ -661,7 +689,9 @@ class OidcValidator:
                 # exactly one, and handing PyJWT the full list lets the header re-select a family.
                 algorithms=[alg],
                 audience=cfg.audience,
-                issuer=cfg.issuer,
+                # Both spellings: the config strips a trailing slash, and some IdPs (Auth0) put
+                # one in `iss`; PyJWT compares a str exactly (STAKES-002).
+                issuer=(cfg.issuer, cfg.issuer + "/"),
                 leeway=cfg.clock_skew_s,
                 options={"require": ["exp", "iss", "aud"], "verify_signature": True},
             )
@@ -818,6 +848,8 @@ ENV_TENANTS = "RECALL_OIDC_TENANTS"
 ENV_ALGORITHMS = "RECALL_OIDC_ALGORITHMS"
 ENV_SUBJECT_TENANTS = "RECALL_OIDC_SUBJECT_TENANTS"
 ENV_TRUST_TENANT_CLAIM = "RECALL_OIDC_TRUST_TENANT_CLAIM"
+ENV_JWKS_REFRESH_SECONDS = "RECALL_OIDC_JWKS_REFRESH_SECONDS"
+ENV_MAX_LIFETIME_SECONDS = "RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS"
 
 def oidc_non_issuer_env_keys() -> tuple[str, ...]:
     """Every OIDC env key EXCEPT the issuer, which is the one that switches the mechanism on.
@@ -1026,11 +1058,11 @@ def oidc_validator_from_env(env: dict[str, str] | None = None) -> OidcValidator 
             algorithms=algorithms,
             allowed_tenants=tenants,
             subject_tenants=subject_tenants,
-            jwks_refresh_s=_positive_int("RECALL_OIDC_JWKS_REFRESH_SECONDS", DEFAULT_JWKS_REFRESH_S),
+            jwks_refresh_s=_positive_int(ENV_JWKS_REFRESH_SECONDS, DEFAULT_JWKS_REFRESH_S),
             # Opt-in: unset applies no lifetime cap, and the schema documents no default.
             max_token_lifetime_s=(
-                _positive_int("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS", 0)
-                if source.get("RECALL_OIDC_MAX_TOKEN_LIFETIME_SECONDS")
+                _positive_int(ENV_MAX_LIFETIME_SECONDS, 0)
+                if source.get(ENV_MAX_LIFETIME_SECONDS)
                 else None
             ),
         )
@@ -1056,6 +1088,8 @@ __all__ = [
     "ENV_ALGORITHMS",
     "ENV_AUDIENCE",
     "ENV_ISSUER",
+    "ENV_JWKS_REFRESH_SECONDS",
+    "ENV_MAX_LIFETIME_SECONDS",
     "ENV_TENANTS",
     "IdentityProviderUnavailable",
     "OidcConfig",

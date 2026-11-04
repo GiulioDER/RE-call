@@ -143,11 +143,16 @@ def report_stale(
     task: str | None,
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
+    sidecar: bool = True,
 ) -> dict[str, Any]:
     """Record one report, or raise `StaleReportRefused` with the reason.
 
     `store` is the one `_require` authorised. It names the reporting tenant, and when it is
     database-backed it is also where the ledger row goes.
+
+    `sidecar=False` skips the local queue. An authenticated multi-tenant server passes it: the
+    root is the process's, shared by every tenant and not held to the corpus glob, so reading
+    named files there would let any writer test quotes against `.env` or a token file.
     """
     for field, quote in (("stale_quote", stale_quote), ("current_quote", current_quote)):
         if isinstance(quote, str) and len(quote) > MAX_QUOTE_CHARS:
@@ -163,11 +168,14 @@ def report_stale(
     # Resolve before opening the queue: opening it creates `.recall/` under the root, and on a
     # server whose root holds no memos (a serving checkout) that would only leave litter behind.
     local_refusal: StaleReportRefused | None = None
-    try:
-        resolve_memo(root, stale_source)
-        resolve_memo(root, replacing_source)
-    except StaleReportRefused as exc:
-        local_refusal = exc
+    if not sidecar:
+        local_refusal = StaleReportRefused("this server records stale reports only in the tenant's audit ledger")
+    else:
+        try:
+            resolve_memo(root, stale_source)
+            resolve_memo(root, replacing_source)
+        except StaleReportRefused as exc:
+            local_refusal = exc
     report = None
     if local_refusal is None:
         with StaleReportQueue(default_queue_path(root)) as queue:
