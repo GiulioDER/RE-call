@@ -4,6 +4,18 @@ Red proof, 2026-10-28: all five nodes failed their intended assertions on
 master a0a09650a9ff30ae31460af5f1b6a202466d1d5b in isolated remote execution. The three
 preflight parameters failed at the deadline assertion, the parse queue at its
 deadline assertion, and the ledger test at the suppression assertion.
+
+Recovery flake, 2026-11-04 (CI runs 41839327205 and 41869536951, ``assert 503 == 200``):
+the recovery Add was sent once and is itself bound by the 0.3 s response budget, so on a
+loaded runner it was answered pending (its own compile, or its wait for the single Add slot
+that the parse test's still-running ``queued`` flight held). The four budget nodes now send it
+through ``_recovered``, which resends while answered pending. Proof on a remote test host against 311510bf9,
+all four nodes each time: with an induced load (a pytest plugin adding 0.5 s to
+``GatedCompiler.compile_anchored_v3`` and ``ReceiptRepository.record_receipt``) the old test
+failed 4 of 4 at the recovery ``status_code == 200`` and the new one passed 4 of 4; with the
+mutation ``async with parse_slots:`` replaced by a never released ``parse_slots.acquire()``
+in ``recall_aml.app.create_app.run_within_budget``, old and new both failed 4 of 4 at that
+same assertion; unmutated and unloaded, the new test passed 4 of 4 in five runs.
 """
 from __future__ import annotations
 
@@ -23,6 +35,30 @@ from tests.test_aml_add_response_budget import (
     _pending, _service, _until,
 )
 from tests.test_aml_forget import _hit, _messages, _service as _forget_service
+
+#: How many times a recovery Add is resent while answered pending. Each attempt lasts at most
+#: one response budget, so this bounds a test whose admission really leaked to about 5 s.
+RECOVERY_ATTEMPTS = 16
+
+
+async def _recovered(client: httpx.AsyncClient, request_id: str = "recovery") -> httpx.Response:
+    """Send one Add the way AML does: resend it while the service answers it pending.
+
+    The recovery Add is itself bound by the 0.3 s response budget, so a single attempt measured
+    the runner's speed, not admission. Two CI flakes on 2026-11-04 (``assert 503 == 200``) were
+    exactly that: on a loaded runner the recovery's own work, or its wait for the one Add slot
+    that a still-running earlier flight held, outlived 0.3 s and was answered pending. The
+    service's pending answer is the explicit "not yet" signal: a resend joins the running flight
+    or reads its receipt, so it never enters ``service.add`` again. Any other answer is returned
+    at once. Admission that really leaked keeps every attempt pending, so the caller's
+    ``status_code == 200`` still fails.
+    """
+    response = await _add(client, request_id)
+    for _ in range(RECOVERY_ATTEMPTS - 1):
+        if not _pending(response):
+            return response
+        response = await _add(client, request_id)
+    return response
 
 
 class HeldBody(httpx.AsyncByteStream):
@@ -97,7 +133,7 @@ def test_add_preflight_respects_the_response_budget(stage: str, monkeypatch) -> 
                 # A fresh Add uses clean hooks while the original work remains blocked.
                 monkeypatch.setattr(app_module, "add_identity", real_identity)
                 monkeypatch.setattr(service, "stored_add", real_stored)
-                assert (await _add(client, "recovery")).status_code == 200
+                assert (await _recovered(client)).status_code == 200
                 assert service.add_calls == 1
                 assert (tenant_for("u"), "recovery") in repository.stored
             finally:
@@ -141,7 +177,7 @@ def test_add_waiting_for_a_parse_slot_respects_its_budget() -> None:
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(first, second, return_exceptions=True)
-            assert (await _add(client, "recovery")).status_code == 200
+            assert (await _recovered(client)).status_code == 200
 
     asyncio.run(scenario())
 
