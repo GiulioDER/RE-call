@@ -68,6 +68,7 @@ import psycopg
 import pytest
 
 from recall.dashboard import corpus
+from recall.db_constants import TENANT_GUC
 from recall.dashboard import db as dbq
 from recall.dashboard.db import DashboardDB
 from recall.dashboard import server as dashboard_server
@@ -546,8 +547,10 @@ class _RecordingDB(DashboardDB):
     statements: list[tuple[str, Any]]
 
     @contextmanager
-    def connect(self):  # type: ignore[no-untyped-def,override]
+    def connect(self, tenant=None):  # type: ignore[no-untyped-def,override]
         recorded = self.statements
+        if tenant is not None:  # what DashboardDB.connect runs first for a tenant-bound connection
+            recorded.append(("select set_config(%s, %s, false)", (TENANT_GUC, tenant)))
 
         class _Cursor:
             def fetchone(self) -> None:
@@ -568,11 +571,13 @@ def test_every_corpus_query_runs_under_the_tenant_setting() -> None:
     """R1: a role under row-level security sees only its tenant's rows because the first statement
     on every connection sets `recall.tenant_id`. Red proof, recorded 2026-10-27 on branch
     claude/cca-pr910-descending: deleting the `set_config` call in `corpus._tenant` failed at "a
-    corpus query ran before the tenant was set". Restored, passes."""
+    corpus query ran before the tenant was set". Restored, passes. Since the second dashboard hunt
+    (CODE-004) the setting is `DashboardDB.connect(tenant=...)`'s, so the stub records it when a
+    read asks for its tenant, and a read that connected without one fails the same assertion."""
     for read in (lambda db: corpus.corpus_graph(db, "acme"), lambda db: corpus.source_detail(db, "acme", "a.md")):
         db = _RecordingDB("postgresql://fake")
         object.__setattr__(db, "statements", [])
         read(db)
-        assert db.statements and db.statements[0] == ("select set_config(%s, %s, false)", (corpus.TENANT_GUC, "acme")), (
+        assert db.statements and db.statements[0] == ("select set_config(%s, %s, false)", (TENANT_GUC, "acme")), (
             "a corpus query ran before the tenant was set"
         )

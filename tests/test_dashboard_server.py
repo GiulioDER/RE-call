@@ -105,7 +105,7 @@ def test_memo_and_report_text_is_escaped_never_rendered(app: DashboardApp, corpu
 def test_accept_through_the_page_declares_the_edge(app: DashboardApp, corpus: Path) -> None:
     claim = _claim(corpus)
     digest = review.memo_digest(corpus, "new.md")
-    form = urlencode({"csrf": "tok123", "claim": claim, "reviewer": "giulio", "note": "confirmed", "digest": digest}).encode()
+    form = urlencode({"csrf": app.csrf, "claim": claim, "reviewer": "giulio", "note": "confirmed", "digest": digest}).encode()
     response = app.handle("POST", "/accept", _signed(), form)
     assert response.status == 303
     meta = parse_document((corpus / "new.md").read_text(encoding="utf-8")).meta

@@ -147,7 +147,8 @@ problem. A manual refresh warns and proceeds over budget, so inspect the chosen 
 running it. A large unexpected deletion is guarded; restore the missing folder before considering
 `--allow-prune`. The switches and queue limits are listed in [ENVIRONMENT.md](ENVIRONMENT.md).
 
-Use the doctor and read-only dashboard commands printed by setup. A plain `recall doctor` in a new
+Use the doctor and dashboard commands printed by setup. The dashboard reads the store read-only;
+accepting a review or saving an edit there writes the memo file. A plain `recall doctor` in a new
 shell can inspect PostgreSQL instead, because the CLI does not read the MCP client's environment.
 Apply setup's printed environment to CLI searches as well:
 

@@ -148,7 +148,7 @@ def test_the_chosen_tenant_scopes_the_queries_and_is_remembered(app: DashboardAp
     assert len(cookies) == 1, "the chosen tenant was not remembered"
     assert "SameSite=Strict" in cookies[0] and "re-call-code-gen" in cookies[0]
     fake.asked.clear()
-    again = app.handle("GET", "/retrieval", {**HOST, "Cookie": "recall_dashboard=tok; recall_tenant=re-call-code-gen"})
+    again = app.handle("GET", "/retrieval", {**HOST, "Cookie": "recall_dashboard=tok; recall_tenant_8765=re-call-code-gen"})
     assert fake.asked == [("searches", "re-call-code-gen")]
     assert "where is the router?" in again.body.decode()
 

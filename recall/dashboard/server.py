@@ -33,17 +33,16 @@ from typing import Any
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from http import HTTPStatus
-from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
-from urllib.parse import parse_qs, quote, urlencode, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 
 from recall.dashboard import db as dbq
 from recall.dashboard import edit, review
 from recall.dashboard import triage
-from recall.dashboard.graph import anchored as _anchored
+from recall.dashboard.review import anchored as _anchored
 from recall.document import parse_document
-from recall.frontmatter import supersedes_key
+from recall.frontmatter import encodable_name, supersedes_key
 from recall.dashboard.db import DashboardDB
 from recall.multimodal import MULTIMODAL_TENANT
 from recall.truth_extraction.types import STATUS_VOCABULARY
@@ -57,6 +56,8 @@ TENANT_CACHE_SECONDS = 60
 #: 2 s on the database host and 7 s over a tunnel for the memory tenant (measured 2026-10-08). A
 #: forget or withdraw inside the active generation shows on it only once the entry expires.
 CORPUS_GRAPH_CACHE_SECONDS = 300
+#: At most this many corpus graphs are kept at once.
+MAX_CACHED_CORPUS_GRAPHS = 8
 #: Said instead of "the database did not answer": the corpus graph and View 2 read PostgreSQL
 #: tables (chunks, graph entities and relations) that a `sqlite:///` store does not have.
 LITE_CORPUS_MESSAGE = (
@@ -92,16 +93,38 @@ def _e(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+def parse_cookies(header: str) -> dict[str, str]:
+    """Every `name=value` pair of a Cookie header; the first value of a name wins.
+
+    Not `http.cookies.SimpleCookie`: it raises on a name it dislikes and drops the whole header at a
+    key-only or space-holding cookie, and the browser sends this page every cookie any other app on
+    127.0.0.1 set, whatever its port, so one of them would lock the person out.
+    """
+    found: dict[str, str] = {}
+    for piece in header.split(";"):
+        name, sep, value = piece.partition("=")
+        name = name.strip()
+        if sep and name and name not in found:
+            value = value.strip()
+            found[name] = value[1:-1] if len(value) >= 2 and value[0] == value[-1] == '"' else value
+    return found
+
+
+def _set_cookie(name: str, value: str) -> tuple[str, str]:
+    """A Set-Cookie header for a page preference: percent-encoded, so any name is a valid Latin-1 header."""
+    return ("Set-Cookie", f"{name}={quote(value, safe='')}; SameSite=Strict; Path=/")
+
+
 EXCERPT_CHARS = 600
 
 
-def excerpt(text: str, quote: str) -> str:
+def excerpt(text: str, evidence: str) -> str:
     """The lines around the quote, escaped and marked, so the evidence is on screen without scrolling.
 
     Whole lines, at most about EXCERPT_CHARS either side; an ellipsis line marks what was cut. Falls
     back to the opening of the memo when the quote is not found.
     """
-    words = quote.split()
+    words = evidence.split()
     match = re.search(r"\s+".join(re.escape(word) for word in words), text) if words else None
     newline = "\n"
     if match is None:
@@ -113,12 +136,12 @@ def excerpt(text: str, quote: str) -> str:
     window = text[start:end]
     head = "…" + newline if start > 0 else ""
     tail = newline + "…" if end < len(text) else ""
-    return head + highlight(window, quote) + tail
+    return head + highlight(window, evidence) + tail
 
 
-def highlight(text: str, quote: str) -> str:
-    """`text` escaped, with the first whitespace-insensitive match of `quote` wrapped in <mark>."""
-    words = quote.split()
+def highlight(text: str, evidence: str) -> str:
+    """`text` escaped, with the first whitespace-insensitive match of `evidence` wrapped in <mark>."""
+    words = evidence.split()
     if not words:
         return _e(text)
     match = re.search(r"\s+".join(re.escape(word) for word in words), text)
@@ -425,17 +448,24 @@ class DashboardApp:
         self._auto_reports_tenant = auto_reports_tenant
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
+        # The form secret is independent of the cookie value and is never sent as a cookie: browsers
+        # send a 127.0.0.1 cookie to every port, so another local service can learn the session
+        # token, and a secret computable from it would let that service forge every POST.
+        self.csrf = secrets.token_urlsafe(32)
         self.db = db
         # The tenants whose agent reports belong to this folder's review queue; a report filed in
         # any other tenant is never shown here, whatever memo names it carries.
         self.reports_tenants = tuple(reports_tenants)
         self._hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if port == 80:  # a browser leaves the default port out of Host
+            self._hosts |= {"127.0.0.1", "localhost"}
         # Browsers scope cookies by host, never by port, so a dashboard on another port would
         # overwrite a fixed-name session cookie (logging this one out) and hand it its tenant.
         # The plain names are still read, never written; a plain session cookie authenticates only
         # with this process's own token, so another dashboard's cannot.
         self._cookie = f"{COOKIE}_{port}"
         self._tenant_cookie = f"{TENANT_COOKIE}_{port}"
+        self._reviewer_cookie = f"{REVIEWER_COOKIE}_{port}"
         # Per request, so concurrent requests on the threading server never share a tenant.
         self._request = threading.local()
         self._tenant_cache: tuple[float, list[dict[str, Any]]] | None = None
@@ -482,7 +512,8 @@ class DashboardApp:
             if self._tenant_cache and time.monotonic() - self._tenant_cache[0] < TENANT_CACHE_SECONDS:
                 return self._tenant_cache[1]
             if self._tenant_failure and time.monotonic() - self._tenant_failure[0] < TENANT_FAILURE_CACHE_SECONDS:
-                raise self._tenant_failure[1]
+                # A fresh exception each time: re-raising one instance grows its traceback per request.
+                raise dbq.DatabaseUnavailable(str(self._tenant_failure[1]))
             try:
                 found = dbq.tenants(self.db)
             except dbq.DatabaseUnavailable as exc:
@@ -503,7 +534,8 @@ class DashboardApp:
         keep = {} if path in corpus_scoped else {k: v for k, v in getattr(self._request, "query", {}).items() if k not in ("tenant", "done")}
         path = corpus_scoped.get(path, path)
         try:
-            names = [t["tenant"] for t in self._tenants() if t["generation"]]
+            # Only ids this page will accept when picked; another one would silently show the default.
+            names = [t["tenant"] for t in self._tenants() if t["generation"] and TENANT_NAME.fullmatch(t["tenant"])]
         except dbq.DatabaseUnavailable:
             return "<span class='pill warn-text'>corpus database unreachable</span>"
 
@@ -557,8 +589,8 @@ class DashboardApp:
             return _bare_error(HTTPStatus.FORBIDDEN, "This page only answers on this machine's own address.")
         url = urlsplit(target)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
-        cookies = SimpleCookie(headers.get("Cookie") or headers.get("cookie") or "")
-        has_cookie = any(name in cookies and self._same_token(cookies[name].value) for name in (self._cookie, COOKIE))
+        cookies = parse_cookies(headers.get("Cookie") or headers.get("cookie") or "")
+        has_cookie = any(name in cookies and self._same_token(cookies[name]) for name in (self._cookie, COOKIE))
 
         if method == "GET" and "token" in query:
             if not self._same_token(query["token"]):
@@ -579,8 +611,8 @@ class DashboardApp:
         self._resolve_pending_lite_tenant()
         chosen = query.get("tenant", "")
         chosen = chosen if TENANT_NAME.fullmatch(chosen) else ""
-        tenant_cookie = next((name for name in (self._tenant_cookie, TENANT_COOKIE) if name in cookies), "")
-        remembered = cookies[tenant_cookie].value if tenant_cookie else ""
+        # Only this port's: a plain `recall_tenant` was written by older dashboards on any port.
+        remembered = unquote(cookies.get(self._tenant_cookie, ""))
         remembered = remembered if TENANT_NAME.fullmatch(remembered) else ""
         if getattr(self.db, "lite", False):
             remembered = ""  # one tenant per file; a cookie from another dashboard on this port would hide it
@@ -591,19 +623,24 @@ class DashboardApp:
         self._request.find = query.get("q", "") if url.path == "/find" else ""
         response = self._route(method, url.path, query, cookies, body)
         if chosen:
-            cookie = SimpleCookie()
-            cookie[self._tenant_cookie] = chosen
-            cookie[self._tenant_cookie]["samesite"] = "Strict"
-            cookie[self._tenant_cookie]["path"] = "/"
-            response = Response(response.status, response.body, response.headers + (("Set-Cookie", cookie.output(header="").strip()),))
+            response = Response(response.status, response.body, response.headers + (_set_cookie(self._tenant_cookie, chosen),))
         return response
+
+    def _reviewer(self, cookies: Mapping[str, str]) -> str:
+        """The name the person last decided under, for prefilling; read back from its encoded form."""
+        return unquote(cookies.get(self._reviewer_cookie, cookies.get(REVIEWER_COOKIE, "")))
+
+    def _reviewer_header(self, name: str) -> tuple[str, str]:
+        # Built only after the decision is written, so it must never fail: a name outside Latin-1
+        # sent raw made http.server raise while sending headers, and the write looked lost.
+        return _set_cookie(self._reviewer_cookie, name.strip())
 
     def _same_token(self, value: str) -> bool:
         # compare_digest raises TypeError on a str holding non-ASCII, which a query value or a
         # cookie tossed from another localhost port can carry; bytes compare without raising.
         return secrets.compare_digest(value.encode("utf-8", "surrogatepass"), self.token.encode("utf-8"))
 
-    def _route(self, method: str, path: str, query: Mapping[str, str], cookies: SimpleCookie, body: bytes) -> Response:
+    def _route(self, method: str, path: str, query: Mapping[str, str], cookies: Mapping[str, str], body: bytes) -> Response:
         url = urlsplit(path)
         if method == "GET" and url.path == "/overview":
             return self._overview_page()
@@ -645,7 +682,7 @@ class DashboardApp:
         if method == "POST" and url.path in ("/accept", "/reject", "/memo/preview", "/memo/apply", "/memo/undo", "/lint/dismiss", "/lint/restore"):
             fields = parse_qs(body.decode("utf-8", "replace"), keep_blank_values=True)
             form = {k: v[0] for k, v in fields.items()}
-            if not self._same_token(form.get("csrf", "")):
+            if not secrets.compare_digest(form.get("csrf", "").encode("utf-8", "surrogatepass"), self.csrf.encode("ascii")):
                 return self._error(HTTPStatus.FORBIDDEN, "This form did not come from this page.")
             if url.path.startswith("/memo/"):
                 return self._memo_action(url.path[len("/memo/"):], form, fields.get("remove", []))
@@ -660,7 +697,8 @@ class DashboardApp:
         from recall.dashboard.graph import build_graph
 
         pending = len(self._queue().items)
-        counts = build_graph(self.root, database_reports=self._reports_source())["counts"]
+        # The queue is built once, above; the graph is only asked for its counts.
+        counts = build_graph(self.root, include_queue=False)["counts"]
         tenant = self._current_tenant()
         label = dict(PRIMARY_TENANTS).get(tenant, tenant)
         attention: list[tuple[str, str, str, str]] = []
@@ -747,8 +785,8 @@ class DashboardApp:
         tenant = self._current_tenant()
         try:
             data = dbq.control(self.db, tenant)
-        except dbq.DatabaseUnavailable:
-            return self._not_connected("RE-call · control", "control", "Control")
+        except dbq.DatabaseUnavailable as exc:
+            return self._not_connected("RE-call · control", "control", "Control", detail=str(exc))
         summary = data["summary"]
         sort = sort if sort in self._CONTROL_SORTS else "retrieved"
         memos = list(data["memos"])
@@ -757,12 +795,13 @@ class DashboardApp:
         if sort == "unused":
             memos = [m for m in memos if m["retrieved"] and not m["used"]]
         memos.sort(key=self._CONTROL_SORTS[sort][1])
-        share = f"{round(100 * summary['reports'] / summary['answered'])}% of answered searches" if summary["answered"] else "no searches yet"
+        # A report is per task, not per search, so the two counts are shown side by side, never as a share.
+        share = f"{summary['answered']} answered search(es)" if summary["answered"] else "no searches yet"
         tiles = "".join(
             f"<div class='card tile'><span class='eyebrow'>{_e(a)}</span><b>{_e(b)}</b><span class='muted'>{_e(c)}</span></div>"
             for a, b, c in (
                 ("searches", summary["searches"], f"{summary['answered']} answered, {summary['memos_retrieved']} memos returned"),
-                ("agent reports", summary["reports"], f"one per task · {share}"),
+                ("agent reports", summary["reports"], f"one per task · beside {share}"),
                 ("memory helped", summary["helped"], f"{summary['no_difference']} no difference · {summary['misled']} misled"),
                 ("task succeeded", summary["succeeded"], f"{summary['failed']} failed · the rest did not say"),
             )
@@ -811,8 +850,8 @@ class DashboardApp:
         try:
             data = dbq.control(self.db, tenant)
             reports = dbq.use_reports(self.db, tenant, limit=100, source=source)
-        except dbq.DatabaseUnavailable:
-            return self._not_connected("RE-call · one memory", "control", "One memory")
+        except dbq.DatabaseUnavailable as exc:
+            return self._not_connected("RE-call · one memory", "control", "One memory", detail=str(exc))
         found = next((m for m in data["memos"] if m["source"] == source), None)
         if found is None:
             return self._error(HTTPStatus.NOT_FOUND, "No search or report in this corpus mentions that memory.")
@@ -954,7 +993,9 @@ class DashboardApp:
                     text = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
-                at = text.lower().find(needle)
+                # Searched in the original text: lower() can lengthen it, which would shift the snippet.
+                found = re.search(re.escape(q.strip()), text, re.IGNORECASE)
+                at = found.start() if found else -1
                 if needle not in name.lower() and at < 0:
                     continue
                 snippet = " ".join(text[max(0, at - 80): at + 160].split()) if at >= 0 else " ".join(text[:200].split())
@@ -1011,12 +1052,18 @@ class DashboardApp:
         return next((i for i in self._queue().items if i.claim == claim), None)
 
     def _memo(self, name: str) -> str:
-        path = (self.root / name).resolve()
-        if not path.is_relative_to(self.root) or not path.is_file():
+        """The whole memo, so the evidence is found wherever it is; the full view is cut for display."""
+        if _anchored(name):
             return ""
-        return path.read_text(encoding="utf-8", errors="replace")[:MAX_MEMO_CHARS]
+        try:
+            path = (self.root / name).resolve()
+            if not path.is_relative_to(self.root) or not path.is_file():
+                return ""
+            return path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            return ""
 
-    def _review_page(self, claim: str, cookies: SimpleCookie) -> Response:
+    def _review_page(self, claim: str, cookies: Mapping[str, str]) -> Response:
         item = self._find(claim)
         if item is None:
             return self._error(HTTPStatus.NOT_FOUND, "That claim is no longer pending.")
@@ -1027,11 +1074,11 @@ class DashboardApp:
             planned = f"<div class='diff'>{_e(plan.edit_file)} <ins>+ {_e(plan.key)}: {_e(plan.value)}</ins></div>"
         except review.ReviewRefused as exc:
             digest, planned = "", f"<div class='card error'>Cannot be applied: {_e(exc)}</div>"
-        reviewer = cookies[REVIEWER_COOKIE].value if REVIEWER_COOKIE in cookies else ""
+        reviewer = self._reviewer(cookies)
         details = "".join(f"<div class='muted'>{_e(d)}</div>" for d in item.details)
         tags = "".join(f"<span class='tag'>{_e(o)}</span>" for o in item.origins)
         common = (
-            f"<input type='hidden' name='csrf' value='{_e(self.token)}'>"
+            f"<input type='hidden' name='csrf' value='{_e(self.csrf)}'>"
             f"<input type='hidden' name='claim' value='{_e(item.claim)}'>"
             f"<label>Your name</label><input name='reviewer' value='{_e(reviewer)}' required>"
             "<label>Note (why)</label><textarea name='note' rows='2' required></textarea>"
@@ -1063,12 +1110,14 @@ class DashboardApp:
             )
         )
 
-    def _memo_card(self, side: str, name: str, quote: str) -> str:
+    def _memo_card(self, side: str, name: str, evidence: str) -> str:
         text = self._memo(name)
+        full = text[:MAX_MEMO_CHARS]
+        cut = f"<p class='muted'>Shown up to {MAX_MEMO_CHARS} characters of {len(text)}.</p>" if len(text) > MAX_MEMO_CHARS else ""
         return (
             f"<div class='card memo-card {side}'><header><b>{_e(name)}</b><span class='tag'>{side}</span></header>"
-            f"<pre>{excerpt(text, quote)}</pre>"
-            f"<details class='full'><summary>Full memo</summary><pre>{highlight(text, quote)}</pre></details></div>"
+            f"<pre>{excerpt(text, evidence)}</pre>"
+            f"<details class='full'><summary>Full memo</summary><pre>{highlight(full, evidence)}</pre>{cut}</details></div>"
         )
 
     # ------------------------------------------------------------------ memo editing (a person's)
@@ -1076,15 +1125,15 @@ class DashboardApp:
     def _memo_names(self) -> list[str]:
         from recall.dashboard.graph import _memo_files
 
-        return [p.relative_to(self.root).as_posix() for p in _memo_files(self.root)]
+        return [encodable_name(p.relative_to(self.root).as_posix()) for p in _memo_files(self.root)]
 
-    def _memo_page(self, name: str, done: str | None, cookies: SimpleCookie, prefill: str = "") -> Response:
+    def _memo_page(self, name: str, done: str | None, cookies: Mapping[str, str], prefill: str = "") -> Response:
         try:
             values = edit.current_values(self.root, name)
         except edit.EditRefused as exc:
             return self._error(HTTPStatus.NOT_FOUND, str(exc))
-        editor = cookies[REVIEWER_COOKIE].value if REVIEWER_COOKIE in cookies else ""
-        token = f"<input type='hidden' name='csrf' value='{_e(self.token)}'>"
+        editor = self._reviewer(cookies)
+        token = f"<input type='hidden' name='csrf' value='{_e(self.csrf)}'>"
         path_field = f"<input type='hidden' name='path' value='{_e(values.name)}'>"
         options = "".join(f"<option value='{_e(n)}'>" for n in self._memo_names() if n != values.name)
         removals = "".join(
@@ -1128,7 +1177,7 @@ class DashboardApp:
                 f"<input type='hidden' name='edit_id' value='{record.edit_id}'>"
                 f"<input name='editor' value='{_e(editor)}' placeholder='your name' required>"
                 "<input name='note' placeholder='why undo' required><button type='submit'>Undo</button></form>"
-                if record.undone_at is None and not record.summary[0].startswith("undo of edit")
+                if record.undone_at is None and not record.is_undo
                 else f"<span class='muted'>{'undone by ' + _e(record.undone_by) if record.undone_at else ''}</span>"
             )
             rows.append(
@@ -1136,6 +1185,12 @@ class DashboardApp:
                 f"<div class='muted'>#{record.edit_id} · {_e(record.editor)} · {_e(record.edited_at[:16].replace('T', ' '))} · {_e(record.note)}</div></div>{undo}</div>"
             )
         flash = f"<div class='card ok'>{_e(done)}</div>" if done else ""
+        try:
+            stuck = edit.pending_refusal(self.root, values.name)
+        except edit.EditRefused as exc:
+            stuck = str(exc)
+        if stuck:  # said here, before the person fills the form, not only when an apply is refused
+            flash += f"<div class='card error'><b>Edits of this memo are refused.</b> {_e(stuck)}</div>"
         body = (
             f"<div class='muted'><a href='/graph#memo={_e(quote(values.name, safe=''))}'>← see it in the graph</a></div>{flash}"
             f"<div class='card'>{current}</div>{form}"
@@ -1145,7 +1200,7 @@ class DashboardApp:
             self._shell(
                 title="RE-call · edit a memo", active="graph", root=self.root, pending=0,
                 eyebrow="02 · graph · edit values", heading=values.name,
-                lede="Change what this memo declares: what it replaces, when it holds, its status. You see the exact edit before it is written; every edit is recorded and can be undone.",
+                lede="Change what this memo declares: what it replaces, when it holds, its status. You see the exact edit before it is written; every edit is recorded, and an edit (not an undo) can be undone while the memo is unchanged since.",
                 body=body,
             )
         )
@@ -1174,7 +1229,11 @@ class DashboardApp:
         now = datetime.now(UTC)
         try:
             if action == "undo":
-                edit.undo_edit(self.root, int(form.get("edit_id", "0") or 0), editor=form.get("editor", ""), note=form.get("note", ""), now=now)
+                try:
+                    edit_id = int(form.get("edit_id", "0") or 0)
+                except ValueError:
+                    return self._error(HTTPStatus.BAD_REQUEST, "That edit id is not a number.")
+                edit.undo_edit(self.root, edit_id, editor=form.get("editor", ""), note=form.get("note", ""), now=now)
                 return self._redirect_memo(name, "Undone. The memo is back to how it was before that edit.", form.get("editor", ""))
             values = edit.current_values(self.root, name)
             changes = self._changes(form, remove, values)
@@ -1183,13 +1242,14 @@ class DashboardApp:
                 return self._preview_page(plan, form, remove)
             record = edit.apply_edit(
                 self.root, name, editor=form.get("editor", ""), note=form.get("note", ""),
-                shown_sha=form.get("shown_sha", ""), now=now, **changes,
+                shown_sha=form.get("shown_sha", ""), shown_after_sha=form.get("shown_after", ""), now=now, **changes,
             )
             return self._redirect_memo(name, "Saved: " + "; ".join(record.summary) + ". Search serves it after the next index build.", form.get("editor", ""))
+        except edit.EditOutcomeUnknown as exc:
+            # The memo may already hold the change, so saying nothing was written would be false.
+            return self._error(HTTPStatus.CONFLICT, f"The edit could not be completed: {exc}")
         except edit.EditRefused as exc:
             return self._error(HTTPStatus.CONFLICT, f"Nothing was written: {exc}")
-        except ValueError:
-            return self._error(HTTPStatus.BAD_REQUEST, "That edit id is not a number.")
 
     def _preview_page(self, plan: edit.EditPlan, form: Mapping[str, str], remove: list[str]) -> Response:
         carried = "".join(
@@ -1205,8 +1265,9 @@ class DashboardApp:
             f"<div class='muted'><a href='/memo?{_e(urlencode({'path': plan.name}))}'>← back without saving</a></div>"
             "<div class='card'><ul class='summary'>" + "".join(f"<li>{_e(s)}</li>" for s in plan.summary) + "</ul></div>"
             f"<pre class='diffview card'>{diff}</pre>"
-            f"<form method='post' action='/memo/apply' class='card'><input type='hidden' name='csrf' value='{_e(self.token)}'>"
-            f"<input type='hidden' name='shown_sha' value='{_e(plan.before_sha)}'>{carried}"
+            f"<form method='post' action='/memo/apply' class='card'><input type='hidden' name='csrf' value='{_e(self.csrf)}'>"
+            f"<input type='hidden' name='shown_sha' value='{_e(plan.before_sha)}'>"
+            f"<input type='hidden' name='shown_after' value='{_e(plan.after_sha)}'>{carried}"
             "<label>Your name</label><input name='editor' required>"
             "<label>Note (why)</label><textarea name='note' rows='2' required></textarea>"
             "<button class='accept' type='submit'>Write this change</button></form>"
@@ -1220,14 +1281,10 @@ class DashboardApp:
         )
 
     def _redirect_memo(self, name: str, done: str, editor: str) -> Response:
-        cookie = SimpleCookie()
-        cookie[REVIEWER_COOKIE] = editor
-        cookie[REVIEWER_COOKIE]["samesite"] = "Strict"
-        cookie[REVIEWER_COOKIE]["path"] = "/"
         return Response(
             HTTPStatus.SEE_OTHER,
             b"",
-            (("Location", "/memo?" + urlencode({"path": name, "done": done})), ("Set-Cookie", cookie.output(header="").strip())),
+            (("Location", "/memo?" + urlencode({"path": name, "done": done})), self._reviewer_header(editor)),
         )
 
     # ------------------------------------------------------------------ activity and health
@@ -1282,10 +1339,10 @@ class DashboardApp:
             )
         )
 
-    def _triage_section(self, cookies: SimpleCookie) -> tuple[str, int]:
-        findings = triage.closure_findings(self.root)
-        reviewer = cookies[REVIEWER_COOKIE].value if REVIEWER_COOKIE in cookies else ""
-        token = f"<input type='hidden' name='csrf' value='{_e(self.token)}'>"
+    def _triage_section(self, cookies: Mapping[str, str], issues: list[Any] | None = None) -> tuple[str, int]:
+        findings = triage.closure_findings(self.root, issues)
+        reviewer = self._reviewer(cookies)
+        token = f"<input type='hidden' name='csrf' value='{_e(self.csrf)}'>"
 
         def declare(edit_file: str, target: str, primary: bool) -> str:
             href = "/memo?" + urlencode({"path": edit_file, "add": target})
@@ -1329,10 +1386,10 @@ class DashboardApp:
             "<p class='muted'>Each of these memos says “replaces” or “supersedes” in a sentence that names another memo, "
             "but declares nothing. Declaring makes search treat the older memo as replaced; a wrong declaration buries a good memo, so declare only a whole replacement.</p>"
         )
-        html = intro + ("".join(cards) or "<div class='card muted'>Nothing left to triage.</div>")
+        section = intro + ("".join(cards) or "<div class='card muted'>Nothing left to triage.</div>")
         if dismissed:
-            html += f"<details class='card'><summary>Marked not a supersession · {len(dismissed)}</summary><ul class='plain'>{restored}</ul></details>"
-        return html, len(cards)
+            section += f"<details class='card'><summary>Marked not a supersession · {len(dismissed)}</summary><ul class='plain'>{restored}</ul></details>"
+        return section, len(cards)
 
     def _lint_action(self, action: str, form: Mapping[str, str]) -> Response:
         file, sha = form.get("file", ""), form.get("sha", "")
@@ -1341,20 +1398,19 @@ class DashboardApp:
                 triage.dismiss(self.root, file, sha, reviewer=form.get("reviewer", ""), note=form.get("note", ""), now=datetime.now(UTC))
             except triage.TriageRefused as exc:
                 return self._error(HTTPStatus.CONFLICT, f"Nothing was recorded: {exc}")
-            cookie = SimpleCookie()
-            cookie[REVIEWER_COOKIE] = form.get("reviewer", "").strip()
-            cookie[REVIEWER_COOKIE]["samesite"] = "Strict"
-            cookie[REVIEWER_COOKIE]["path"] = "/"
-            return Response(HTTPStatus.SEE_OTHER, b"", (("Location", "/health"), ("Set-Cookie", cookie.output(header="").strip())))
+            return Response(HTTPStatus.SEE_OTHER, b"", (("Location", "/health"), self._reviewer_header(form.get("reviewer", ""))))
         if action == "restore":
             triage.restore(self.root, file, sha)
             return Response(HTTPStatus.SEE_OTHER, b"", (("Location", "/health"),))
         return self._error(HTTPStatus.NOT_FOUND, "No such action.")
 
-    def _health_page(self, cookies: SimpleCookie) -> Response:
+    def _health_page(self, cookies: Mapping[str, str]) -> Response:
         from recall.dashboard.graph import build_graph
 
-        graph = build_graph(self.root, include_queue=True, database_reports=self._reports_source())
+        from recall.lint import lint_corpus
+
+        issues = lint_corpus(self.root)  # once, for the graph and for triage: linting is this page's cost
+        graph = build_graph(self.root, include_queue=True, database_reports=self._reports_source(), issues=issues)
         nodes = graph["nodes"]
         counts = graph["counts"]
         tiles = "".join(
@@ -1386,7 +1442,7 @@ class DashboardApp:
             )
         isolated = [n["id"] for n in nodes if n["isolated"]]
         isolated_list = "".join(f"<li>{self._memo_link(name)}</li>" for name in isolated[:80])
-        triage_html, open_findings = self._triage_section(cookies)
+        triage_html, open_findings = self._triage_section(cookies, issues)
         body = (
             f"<div class='tiles'>{tiles}</div>"
             f"<h2 class='sec'>Prose that may name a supersession · {open_findings}</h2>{triage_html}"
@@ -1494,10 +1550,12 @@ class DashboardApp:
 
     # ------------------------------------------------------------------ database pages (read-only)
 
-    def _not_connected(self, title: str, active: str, heading: str) -> Response:
+    def _not_connected(self, title: str, active: str, heading: str, detail: str = "") -> Response:
         reason = "No database is configured for this dashboard."
         if self.db is not None:
             reason = "The corpus database did not answer."
+            if detail:  # a missing table or grant reads very differently from a dead tunnel
+                reason += f" It said: {detail.splitlines()[0]}"
         body = (
             f"<div class='card error'>{_e(reason)}</div>"
             "<div class='card'><p>Start the dashboard with a read-only connection, for example through an SSH tunnel:</p>"
@@ -1524,8 +1582,8 @@ class DashboardApp:
             # One past the cap tells a full page from a total: past it the tile says "500+".
             recorded_rows = len(dbq.searches(self.db, tenant, limit=MAX_COUNTED_SEARCHES + 1)) if chosen else 0
             recorded = f"{MAX_COUNTED_SEARCHES}+" if recorded_rows > MAX_COUNTED_SEARCHES else str(recorded_rows)
-        except dbq.DatabaseUnavailable:
-            return self._not_connected("RE-call · overview", "overview", "Overview")
+        except dbq.DatabaseUnavailable as exc:
+            return self._not_connected("RE-call · overview", "overview", "Overview", detail=str(exc))
         migrations = ", ".join(f"{table} {version}" for table, version in status["migrations"] if not table.startswith(("bench_", "comparison_", "locomo_", "recall_aml_", "structural_", "selective_", "voyage4_", "category4_", "chunks_bge")))
         avail = (
             "<div class='tiles'>"
@@ -1590,7 +1648,9 @@ class DashboardApp:
         """The local memo a hit came from, when it was served from a tenant bound to this folder.
 
         Matched by the longest trailing path, as the review queue matches reports, so a memo in a
-        subfolder is found and a same-named file of another corpus never gets an edit link here.
+        subfolder is found and a file of a corpus not bound to this folder never gets an edit link.
+        Within a bound tenant, two served files sharing a trailing path map to the same memo here
+        (see `review.local_memo`); View 2 refuses the link for a path several roots hold.
         """
         if not source or self._current_tenant() not in self.reports_tenants:
             return None
@@ -1608,8 +1668,8 @@ class DashboardApp:
         tenant = self._current_tenant()
         try:
             rows = dbq.searches(self.db, tenant, limit=200, contains=contains)
-        except dbq.DatabaseUnavailable:
-            return self._not_connected("RE-call · retrieval", "retrieval", "Retrieval")
+        except dbq.DatabaseUnavailable as exc:
+            return self._not_connected("RE-call · retrieval", "retrieval", "Retrieval", detail=str(exc))
         answered = sum(1 for r in rows if r["outcome"] == "answered")
         abstained = sum(1 for r in rows if r["outcome"] == "abstained")
         refused = sum(1 for r in rows if r["outcome"] == "refused")
@@ -1632,8 +1692,8 @@ class DashboardApp:
             for r in rows
         )
         empty = (
-            "<div class='card empty'><b>No searches recorded for this tenant</b>Recording needs RECALL_DECISION_LEDGER=1 on the "
-            "server; the RE-call MCP servers launched by session-mcp have it from 2026-10-06. Searches made before that were not kept.</div>"
+            "<div class='card empty'><b>No searches recorded for this tenant</b>Recording needs RECALL_DECISION_LEDGER=1 in the "
+            "environment of the MCP server that runs the searches; searches made before it was set were not kept.</div>"
         )
         search = (
             f"<form method='get' action='/retrieval' class='searchform'><input type='hidden' name='tenant' value='{_e(tenant)}'>"
@@ -1653,8 +1713,8 @@ class DashboardApp:
         tenant = self._current_tenant()
         try:
             found = dbq.search(self.db, tenant, event_id)
-        except dbq.DatabaseUnavailable:
-            return self._not_connected("RE-call · a search", "retrieval", "A search")
+        except dbq.DatabaseUnavailable as exc:
+            return self._not_connected("RE-call · a search", "retrieval", "A search", detail=str(exc))
         if found is None:
             return self._error(HTTPStatus.NOT_FOUND, "No such search for this tenant.")
         rows = []
@@ -1732,7 +1792,14 @@ class DashboardApp:
                 return Response(HTTPStatus.SERVICE_UNAVAILABLE, json.dumps({"error": str(exc)}).encode("utf-8"), headers)
             body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
             with self._corpus_graph_lock:
-                self._corpus_graphs[corpus] = (time.monotonic(), body)
+                now = time.monotonic()
+                # Expired bodies are dropped and the cache is bounded: a body can be megabytes.
+                for stale in [k for k, (at, _) in self._corpus_graphs.items() if now - at >= CORPUS_GRAPH_CACHE_SECONDS]:
+                    del self._corpus_graphs[stale]
+                while len(self._corpus_graphs) >= MAX_CACHED_CORPUS_GRAPHS:
+                    oldest = min(self._corpus_graphs, key=lambda k: self._corpus_graphs[k][0])
+                    del self._corpus_graphs[oldest]
+                self._corpus_graphs[corpus] = (now, body)
         return Response(HTTPStatus.OK, body, headers)
 
     def _corpus_source_link(self, file: str, label: str | None = None) -> str:
@@ -1755,8 +1822,8 @@ class DashboardApp:
             return self._error(HTTPStatus.NOT_FOUND, "Which file? Open one from the corpus graph or a search.")
         try:
             found = corpus_db.source_detail(self.db, tenant, file)
-        except dbq.DatabaseUnavailable:
-            return self._not_connected(title, "graph", "A source in the corpus")
+        except dbq.DatabaseUnavailable as exc:
+            return self._not_connected(title, "graph", "A source in the corpus", detail=str(exc))
         if found is None:
             return self._error(HTTPStatus.NOT_FOUND, f"No file {file!r} in the {tenant} corpus's active generation.")
         state = found["state"]
@@ -1793,7 +1860,8 @@ class DashboardApp:
                 "so the claim replaces none of them: "
                 + ", ".join(f"<code>{_e(name)}</code>" for name in found["unresolved_claims"]) + ".</p>"
             )
-        local = self._memo_for_source(found["source_uri"])
+        # A path several roots hold names no single memo here: linking it would open another file.
+        local = None if found.get("collided") else self._memo_for_source(found["source_uri"])
         links = " · ".join(
             part for part in (
                 f"<a href='/graph?{_e(urlencode({'corpus': tenant}))}#memo={_e(quote(found['file'], safe=''))}'>see it in the corpus graph</a>",
@@ -1942,14 +2010,10 @@ class DashboardApp:
             return self._error(HTTPStatus.CONFLICT, f"Nothing was written: {exc}")
         except review.DecisionRecorded as exc:
             done = f"{'Declared' if action == 'accept' else 'Rejected'}: {exc}."
-        cookie = SimpleCookie()
-        cookie[REVIEWER_COOKIE] = reviewer
-        cookie[REVIEWER_COOKIE]["samesite"] = "Strict"
-        cookie[REVIEWER_COOKIE]["path"] = "/"
         return Response(
             HTTPStatus.SEE_OTHER,
             b"",
-            (("Location", "/queue?" + urlencode({"done": done})), ("Set-Cookie", cookie.output(header="").strip())),
+            (("Location", "/queue?" + urlencode({"done": done})), self._reviewer_header(reviewer)),
         )
 
     # ------------------------------------------------------------------ helpers
@@ -1966,10 +2030,13 @@ class DashboardApp:
 
 
 def _bare_error(status: int, message: str) -> Response:
-    """A refusal sent before the session is known: no shell, so no memo root and no tenant list.
+    """A bare error page: no shell, so no memo root and no tenant list.
+
+    Used for refusals sent before the session is known and for the handler's 500 fallback, whose
+    message carries the exception's type and first line (sent only after the Host check).
 
     A DNS-rebinding page can read this body, and so can any local process without the token, so it
-    carries the message alone and makes no database call.
+    carries only the message it is given and makes no database call.
     """
     body = f"<!doctype html><meta charset='utf-8'><title>RE-call dashboard</title><p>{_e(message)}</p>"
     return Response(status, body.encode("utf-8"), (("Content-Type", "text/html; charset=utf-8"),))

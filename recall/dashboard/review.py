@@ -15,7 +15,8 @@ one memo in this folder whose path it ends with. The row carries each quote's fi
 text, and the quote is recovered from THIS folder's file (`stale_reports.find_quote`), which is the
 verbatim check: the person decides on the text in front of them, and a row whose memo is not here,
 or whose quote is not in it, is counted in the notes and not shown. Only the tenants this folder is
-bound to are read (`recall dashboard --reports-tenant`, default `memory`). The rows are
+bound to are read (`recall dashboard --reports-tenant`; default: a SQLite store's own tenant,
+else `memory`). The rows are
 append-only and the connection is read-only, so a database report is closed the way an arbiter
 proposal is: a rejection goes to the rejection ledger, and an accept writes the declaration, after
 which `already_declared` hides it.
@@ -27,12 +28,14 @@ or one the newer memo already declares, is not shown.
 Accepting runs the same chain as `recall rewrite apply`: `review_proposal`,
 `accept_reviewed_proposal`, `promote_accepted_proposal`, then `apply_rewrite`, which writes
 `supersedes:` into the newer memo. The page shows the planned edit first and sends back a hash of
-the memo it showed; if the file changed in between, the accept is refused and the reviewer sees the
-new plan. Rejecting records the claim in the rejection ledger, which both sources honour.
+the memo it showed; if the file changed in between, the accept is refused with a 409 page, and
+reopening the claim shows the new plan. Rejecting records the claim in the rejection ledger, which
+every source honours.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import hashlib
 import sqlite3
@@ -41,12 +44,13 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any
 
 from recall.dashboard.db import MAX_STALE_REPORTS, DatabaseUnavailable
 from recall.document import parse_document
 from recall.errors import RecallError
-from recall.frontmatter import supersedes_key, supersedes_targets
+from recall.frontmatter import encodable_name, supersedes_key, supersedes_targets
 from recall.promotion import (
     PromotedFact,
     accept_reviewed_proposal,
@@ -65,18 +69,15 @@ from recall.rewrite import (
     plan_rewrite,
 )
 from recall.stale_reports import StaleReport, StaleReportQueue, StaleReportRefused, default_queue_path, find_quote
-from recall.state_dir import make_parent
 
 AGENT_RULE_ID = "agent_stale_report"
 AGENT_PROVIDER_ID = "recall_report_stale"
 AGENT_PROVIDER_REVISION = "stale_reports.v1"
 
 #: One decision at a time per process. `apply_rewrite` takes no lock, and two writes to one memo are
-#: last writer wins; across processes `memo_write_reservation` serializes an accept with every
-#: dashboard edit, and the memo hash below catches a writer that is not a dashboard.
+#: last writer wins; across processes the edit ledger's reservation (`_edit_reservation`) serializes
+#: an accept with every dashboard edit, and the memo hash below catches a writer that is not a dashboard.
 _DECISION_LOCK = threading.Lock()
-#: The reservation `edit.EditLedger` holds for each edit, undo and recovery (the same file).
-_EDIT_LOCK = ".recall/edits-lock.sqlite3"
 
 
 class ReviewRefused(ValueError, RecallError):
@@ -87,27 +88,43 @@ class DecisionRecorded(RecallError):
     """The decision was written, and a step after it failed: never shown as "nothing was written"."""
 
 
-@contextmanager
-def memo_write_reservation(root: Path) -> Iterator[None]:
-    """Hold the dashboard's cross-process memo-write reservation, as `edit.EditLedger` does.
+def anchored(text: str) -> bool:
+    """Whether a path names its own root, drive or share, so joining it would leave the memo folder.
 
-    Without it a second dashboard on the same folder (another port) can save an edit between this
-    accept's hash check and its write, and one of the two writes is silently lost.
+    Checked before any filesystem call: on Windows `resolve()` opens a UNC path such as
+    `\\\\host\\share\\x` (or `//host/share/x`) to follow links, which contacts that host and sends the
+    user's credentials, so a containment check that follows the resolve comes too late.
     """
-    path = root / _EDIT_LOCK
+    for flavour in (PureWindowsPath, PurePosixPath):
+        candidate = flavour(text)
+        if candidate.anchor or candidate.drive:
+            return True
+    return False
+
+
+@contextmanager
+def _edit_reservation(root: Path) -> Iterator[Any]:
+    """The edit ledger, open: its cross-process reservation, and interrupted edits reconciled.
+
+    The same reservation every dashboard edit and undo holds, taken by opening the ledger itself so
+    there is one lock and one recovery: a decision that wrote a memo with an interrupted edit still
+    pending would leave that edit unreconcilable for good.
+    """
+    from recall.dashboard.edit import EditLedger, EditRefused
+
     try:
-        make_parent(path)
-        connection = sqlite3.connect(str(path), timeout=30.0)
+        ledger = EditLedger(root)
     except (sqlite3.Error, OSError) as exc:
-        raise ReviewRefused(f"the memo write lock cannot be opened: {exc}") from exc
-    try:
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-        except sqlite3.Error as exc:
-            raise ReviewRefused(f"another dashboard is writing to this folder; try again: {exc}") from exc
-        yield
-    finally:
-        connection.close()
+        raise ReviewRefused(f"the memo write lock cannot be taken; try again: {exc}") from exc
+    except EditRefused as exc:
+        raise ReviewRefused(str(exc)) from exc
+    with ledger:
+        yield ledger
+
+
+def _require_person(reviewer: str, note: str) -> None:
+    if not reviewer.strip() or not note.strip():
+        raise ReviewRefused("a decision needs your name and a note")
 
 
 @dataclass(frozen=True)
@@ -163,10 +180,12 @@ def rejected_claims(root: Path) -> frozenset[str]:
 
 def already_declared(root: Path, stale: str, replacing: str) -> bool:
     """Whether the newer memo already names the stale one in `supersedes:`."""
+    if anchored(replacing):
+        return False  # never a memo here, and opening it could reach another host
     path = root / replacing
     try:
         meta = parse_document(path.read_text(encoding="utf-8-sig")).meta
-    except (OSError, UnicodeDecodeError):
+    except (OSError, ValueError):  # ValueError: a decode failure, or a NUL in a name stand-in
         return False
     wanted = supersedes_key(stale)
     return any(supersedes_key(target) == wanted for target in supersedes_targets(meta.get("supersedes")))
@@ -196,14 +215,22 @@ def local_memo(source: str, names: Sequence[str]) -> str | None:
     quote check against this folder's file is what keeps a report about the other one off the page,
     and the review page names the served source beside the local one.
     """
-    parts = [part for part in source.replace("\\", "/").split("/") if part]
-    best: str | None = None
-    best_length = 0
-    for name in names:
-        tail = name.split("/")
-        if len(tail) <= len(parts) and parts[-len(tail):] == tail and len(tail) > best_length:
-            best, best_length = name, len(tail)
-    return best
+    return _local_in(source, _name_index(names))
+
+
+def _name_index(names: Sequence[str]) -> dict[tuple[str, ...], str]:
+    """Each memo name by its path components, so a source is matched in one lookup per suffix."""
+    return {tuple(name.split("/")): name for name in names}
+
+
+def _local_in(source: str, index: Mapping[tuple[str, ...], str]) -> str | None:
+    """`local_memo` over a prebuilt index: the longest trailing run of components that is a memo."""
+    parts = tuple(part for part in source.replace("\\", "/").split("/") if part)
+    for start in range(len(parts)):
+        found = index.get(parts[start:])
+        if found is not None:
+            return found
+    return None
 
 
 def _stamp(value: object) -> str:
@@ -240,8 +267,8 @@ def _quote(path: Path, sha256: object, chars: object) -> str | None:
     try:
         stat = path.stat()
         return _quote_in(str(path), stat.st_mtime_ns, stat.st_size, sha256, chars)
-    except OSError:
-        return None  # gone or unreadable right now: nothing to show this time, asked again next time
+    except (OSError, ValueError):
+        return None  # gone or unreadable right now (or a NUL stand-in name): asked again next time
 
 
 def database_items(
@@ -254,22 +281,29 @@ def database_items(
     `closed(claim, stale, replacing)` names the claims already decided (rejected, or declared in
     the newer memo); their rows are counted and skipped before any quote is searched for.
     """
-    names = [path.relative_to(root).as_posix() for path in memo_files(root)]
+    index = _name_index([encodable_name(path.relative_to(root).as_posix()) for path in memo_files(root)])
 
     # Each kept row with the local pair and the two quotes found for IT, so an item never shows
     # one row's quote under another row's memo.
     groups: dict[str, list[tuple[Mapping[str, object], str, str, str, str]]] = {}
-    elsewhere = unquoted = decided = 0
+    elsewhere = same = unquoted = decided = 0
+    verdicts: dict[str, bool] = {}  # one `closed` read per claim, not per row: rows repeat daily
     for row in rows:
-        stale = local_memo(str(row.get("stale_source") or ""), names)
-        replacing = local_memo(str(row.get("replacing_source") or ""), names)
-        if stale is None or replacing is None or stale == replacing:
+        stale = _local_in(str(row.get("stale_source") or ""), index)
+        replacing = _local_in(str(row.get("replacing_source") or ""), index)
+        if stale is None or replacing is None:
             elsewhere += 1
             continue
-        key = claim_key("supersedes", stale, replacing)
-        if closed is not None and closed(key, stale, replacing):
-            decided += 1
+        if stale == replacing:
+            same += 1
             continue
+        key = claim_key("supersedes", stale, replacing)
+        if closed is not None:
+            if key not in verdicts:
+                verdicts[key] = closed(key, stale, replacing)
+            if verdicts[key]:
+                decided += 1
+                continue
         stale_quote = _quote(root / stale, row.get("stale_quote_sha256"), row.get("stale_quote_chars"))
         current_quote = _quote(root / replacing, row.get("current_quote_sha256"), row.get("current_quote_chars"))
         if stale_quote is None or current_quote is None:
@@ -301,13 +335,18 @@ def database_items(
             )
             + ((f"task: {task}",) if task else ()),
         )
-    notes = [f"corpus database: {len(rows)} agent report(s) read, {sum(len(k) for k in groups.values())} about memos here"]
+    notes = [
+        f"corpus database: {len(rows)} agent report(s) read, {len(rows) - elsewhere} about memos here, "
+        f"{sum(len(k) for k in groups.values())} shown"
+    ]
     if len(rows) >= MAX_STALE_REPORTS:
         notes.append(f"corpus database: only the newest {MAX_STALE_REPORTS} reports were read; older ones are not shown")
     if decided:
         notes.append(f"corpus database: {decided} report(s) about claims already decided")
     if elsewhere:
         notes.append(f"corpus database: {elsewhere} report(s) name a memo this folder does not hold")
+    if same:
+        notes.append(f"corpus database: {same} report(s) name the same memo here on both sides")
     if unquoted:
         notes.append(f"corpus database: {unquoted} report(s) quote text that is not verbatim in this folder's memos")
     return items, notes
@@ -336,7 +375,13 @@ def build_queue(
     notes: list[str] = []
     by_claim: dict[str, QueueItem] = {}
 
+    unsafe = 0
     for report in pending_reports(root):
+        if anchored(report.stale_source) or anchored(report.replacing_source):
+            # Names are checked when a report is written, but a sidecar synced from another system
+            # is read back as is; an absolute or UNC name is never a memo of this folder.
+            unsafe += 1
+            continue
         by_claim[report.claim_key] = QueueItem(
             claim=report.claim_key,
             stale=report.stale_source,
@@ -348,16 +393,18 @@ def build_queue(
             details=(f"reported {report.report_count} time(s) by {report.client}",)
             + ((f"task: {report.task}",) if report.task else ()),
         )
+    if unsafe:
+        notes.append(f"report queue: {unsafe} report(s) name an absolute path, not a memo of this folder")
 
+    rejected = rejected_claims(root)  # read once, so both filters below see the same ledger
     if database_reports is not None:
         try:
             rows = database_reports()
         except DatabaseUnavailable as exc:
             notes.append(f"corpus database: unreachable, so only this folder's reports are shown ({exc})")
         else:
-            rejected_now = rejected_claims(root)
             found, found_notes = database_items(
-                root, rows, closed=lambda key, stale, replacing: key in rejected_now or already_declared(root, stale, replacing)
+                root, rows, closed=lambda key, stale, replacing: key in rejected or already_declared(root, stale, replacing)
             )
             notes.extend(found_notes)
             for key, item in found.items():
@@ -367,12 +414,7 @@ def build_queue(
                     continue
                 # The same reports may be in both, when the server that took them could also read
                 # this folder; the item keeps the sidecar's identity so a decision closes that row.
-                by_claim[key] = QueueItem(
-                    claim=current.claim, stale=current.stale, replacing=current.replacing,
-                    stale_quote=current.stale_quote, current_quote=current.current_quote,
-                    proposal=current.proposal, origins=current.origins,
-                    details=current.details + item.details[:1],
-                )
+                by_claim[key] = dataclasses.replace(current, details=current.details + item.details[:1])
 
     summaries: list[str] = []
     fetch = arbiter_proposals or (
@@ -391,16 +433,7 @@ def build_queue(
         detail = proposal.explanation
         if key in by_claim:
             current = by_claim[key]
-            by_claim[key] = QueueItem(
-                claim=current.claim,
-                stale=current.stale,
-                replacing=current.replacing,
-                stale_quote=current.stale_quote,
-                current_quote=current.current_quote,
-                proposal=current.proposal,
-                origins=current.origins + ("arbiter",),
-                details=current.details + (detail,),
-            )
+            by_claim[key] = dataclasses.replace(current, origins=current.origins + ("arbiter",), details=current.details + (detail,))
             continue
         by_claim[key] = QueueItem(
             claim=key,
@@ -413,7 +446,6 @@ def build_queue(
             details=(detail,),
         )
 
-    rejected = rejected_claims(root)
     items = tuple(
         item
         for key, item in sorted(by_claim.items())
@@ -424,18 +456,21 @@ def build_queue(
 
 def memo_digest(root: Path, name: str) -> str:
     """The hash of the memo a decision would edit, as the page showed it."""
-    path = (root / name).resolve()
-    if not path.is_relative_to(root.resolve()):
+    if anchored(name):
         raise ReviewRefused(f"{name!r} is outside the corpus")
     try:
+        path = (root / name).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise ReviewRefused(f"{name!r} is outside the corpus")
         return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, ReviewRefused):
+            raise
         raise ReviewRefused(f"{name!r} cannot be read: {exc}") from exc
 
 
 def _promoted(item: QueueItem, reviewer: str, note: str, now: datetime) -> PromotedFact:
-    if not reviewer.strip() or not note.strip():
-        raise ReviewRefused("a decision needs your name and a note")
+    _require_person(reviewer, note)
     try:
         reviewed = review_proposal(item.proposal, reviewer_id=reviewer, reviewed_at=now, audit_note=note)
         return promote_accepted_proposal(accept_reviewed_proposal(reviewed), promoted_at=now)
@@ -456,13 +491,16 @@ def accept(root: Path, item: QueueItem, *, reviewer: str, note: str, shown_diges
     """Write the declaration, if the memo is still the one the reviewer saw."""
     root = root.resolve()
     fact = _promoted(item, reviewer, note, now)
-    with _DECISION_LOCK, memo_write_reservation(root):
+    with _DECISION_LOCK, _edit_reservation(root) as edits:
         # Planned once, for the fact being written, and handed to `apply_rewrite`: planning reads
         # the whole corpus, and this lock holds every other decision while it does.
         try:
             plan = plan_rewrite(root, fact)
         except RewriteRefused as exc:
             raise ReviewRefused(str(exc)) from exc
+        stuck = edits.refusal(encodable_name(plan.edit_file))
+        if stuck is not None:
+            raise ReviewRefused(stuck)
         if memo_digest(root, plan.edit_file) != shown_digest:
             raise ReviewRefused(f"{plan.edit_file} changed since you reviewed it; review the new version")
         try:
@@ -477,11 +515,14 @@ def accept(root: Path, item: QueueItem, *, reviewer: str, note: str, shown_diges
 
 
 def reject(root: Path, item: QueueItem, *, reviewer: str, note: str, now: datetime) -> None:
-    """Record the claim as declined, so neither source shows it again."""
+    """Record the claim as declined, so no source shows it again."""
     root = root.resolve()
-    if not reviewer.strip() or not note.strip():
-        raise ReviewRefused("a decision needs your name and a note")
-    with _DECISION_LOCK:
+    _require_person(reviewer, note)
+    with _DECISION_LOCK, _edit_reservation(root):
+        # Checked again under the reservation an accept holds, so a reject racing an accept of the
+        # same claim (two tabs, two dashboards) cannot record a decline beside a written declaration.
+        if item.claim in rejected_claims(root) or already_declared(root, item.stale, item.replacing):
+            raise ReviewRefused("that claim was decided meanwhile; reload the queue")
         try:
             with RejectionLedger(default_ledger_path(root)) as ledger:
                 ledger.reject(item.claim, reviewer_id=reviewer, reason=note, rejected_at=now)
