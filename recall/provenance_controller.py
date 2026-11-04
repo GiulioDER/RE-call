@@ -30,7 +30,14 @@ from typing import Any, Protocol, cast
 
 from recall import eval_clock
 from recall.supersession import reference_path_key, reference_stem_key
-from recall.types import AtomicFact, EvidenceCard, FactCardinality, RedactedEvidenceCard, Verdict
+from recall.types import (
+    AtomicFact,
+    EvidenceCard,
+    FactCardinality,
+    RedactedEvidenceCard,
+    Verdict,
+    source_content_digest,
+)
 
 
 CONTROLLER_SCHEMA_VERSION = 1
@@ -46,6 +53,10 @@ _PERMIT_SENTINEL = object()
 MAX_PROVENANCE_CARD_IDS = 64
 MAX_PROVENANCE_IDENTIFIER_CHARS = 256
 MAX_PROVENANCE_REQUEST_BYTES = 64 * 1024
+#: The most outbox events one `MaterializationRecovery` pass claims.
+MAX_OUTBOX_CLAIM_LIMIT = 1000
+#: The longest delivery error an outbox row keeps.
+MAX_OUTBOX_ERROR_CHARS = 2000
 
 
 class DecisionCode(StrEnum):
@@ -610,7 +621,9 @@ class ServedState:
     checked against content; a lookup that FAILED answers an empty mapping, so no stated card
     lives), the names its supersession graph retires (`superseded`), and the names whose memos
     the operator's rule lets state facts now (`stated_admitted`; None means it was not asked, and
-    then no stated card is checked against the rule).
+    then no stated card is checked against the rule). A fourth hook, `superseded_at`, answers
+    the retired names at an instant (the claimant's own validity window, the window rule); when
+    given it takes precedence over `superseded`, which then retires at every instant.
     """
 
     def __init__(
@@ -936,8 +949,9 @@ def _link_names(link: str, sources: Sequence[str]) -> bool:
     return any(reference_stem_key(source) == path for source in sources)
 
 
-def source_digest(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+#: The digest a card's `source_digest` holds; one helper, so cards built here and by
+#: `recall.evidence` and the digests the MCP and CLI paths compare cannot drift apart.
+source_digest = source_content_digest
 
 
 def evidence_card_from_payload(payload: Mapping[str, Any]) -> EvidenceCard:
@@ -1000,11 +1014,12 @@ def _valid_now(card: EvidenceCard, now: datetime) -> DecisionCode | None:
 
 
 def intervals_overlap(left: AtomicFact, right: AtomicFact) -> bool:
-    """Whether two fact validity intervals overlap, treating missing ends as open."""
-    left_start = _as_utc(left.valid_from) if left.valid_from else datetime.min.replace(tzinfo=UTC)
-    right_start = _as_utc(right.valid_from) if right.valid_from else datetime.min.replace(tzinfo=UTC)
-    left_end = _as_utc(left.valid_until) if left.valid_until else datetime.max.replace(tzinfo=UTC)
-    right_end = _as_utc(right.valid_until) if right.valid_until else datetime.max.replace(tzinfo=UTC)
+    """Whether two fact validity intervals overlap, treating missing ends as open.
+
+    On the same bounds as the supersession index (`_span`), so a refusal and a projection agree
+    on what an open end means."""
+    left_start, left_end = _span(fact_window(left))
+    right_start, right_end = _span(fact_window(right))
     return max(left_start, right_start) < min(left_end, right_end)
 
 
@@ -1102,7 +1117,10 @@ class FactApplicationRequest:
             or len(item) > MAX_PROVENANCE_IDENTIFIER_CHARS
             for item in self.evidence_card_ids
         ):
-            raise ValueError("at least one evidence card id is required")
+            raise ValueError(
+                "evidence card ids must be non-empty strings of at most "
+                f"{MAX_PROVENANCE_IDENTIFIER_CHARS} characters"
+            )
         if len(set(self.evidence_card_ids)) != len(self.evidence_card_ids):
             raise ValueError("evidence card ids must be unique")
         encoded = canonical_json(self.claim.to_payload()).encode("utf-8")
@@ -1112,6 +1130,16 @@ class FactApplicationRequest:
 
 @dataclass(frozen=True)
 class FactEvent:
+    """One immutable ledger row.
+
+    `event_type` is one of `asserted` (an application; its `decision_code` is APPLIED, or
+    DUPLICATE for a new application of a fact already in force), `superseded` (the receipt of
+    a successor retiring `supersedes_fact_ids`), `retracted` (a forget or gc took every memo the
+    fact rested on), `withdrawn` (a withdraw gave a superseded value back), `rejected` and
+    `abstained` (refusals, coded by `decision_code`). `lease_token` is set only on an event an
+    outbox `claim` handed out, and names that lease.
+    """
+
     event_id: str
     event_type: str
     tenant_id: str
@@ -1139,7 +1167,13 @@ class LedgerApplyResult:
 
 
 class FactApplicationPermit:
-    """Single-use capability minted only after controller validation."""
+    """Single-use capability minted only after controller validation.
+
+    A guard against accidental direct appends by in-process code, not a security boundary: the
+    sentinel it carries is a module global, so code that imports this module can mint one. The
+    boundary against such code is the controller's database role and the protected append
+    functions (docs/PROVENANCE_CONTROLLER.md).
+    """
 
     def __init__(
         self,
@@ -1201,6 +1235,19 @@ def replays_request(prior: FactEvent, fact: AtomicFact, cards: Sequence[Evidence
 
 
 class FactLedger(Protocol):
+    """An append-only fact ledger, as `ProvenanceController` relies on one.
+
+    - `apply_assertion` consumes the permit (`_consume_permit`) inside its write, and refuses by
+      raising ``ValueError(str(DecisionCode))``; the controller reads the code from the message.
+    - A request id it already holds is answered with that event (`LedgerApplyResult(prior,
+      duplicate=True)`) when `replays_request` holds, else refused REQUEST_ID_REUSED.
+    - `record_decision` under a request id it already holds returns that event and writes
+      nothing, which is why a REQUEST_ID_REUSED refusal is never recorded.
+    - `stated` appends a disagreement with a current fact rather than refusing it; `served`
+      names the memos served now, for the absent set of the conflict and duplicate rules.
+    - Ids of the forms `reserved_request_id` names are the ledger's own.
+    """
+
     @property
     def events(self) -> tuple[FactEvent, ...]: ...
 
@@ -1242,6 +1289,22 @@ class FactLedger(Protocol):
     ) -> FactEvent: ...
 
 
+class ConflictHistoryLedger(Protocol):
+    """A ledger that answers one conflict key's history (`recall.fact_current`); the controller
+    reads it when present (`ProvenanceController._in_force`), else every event."""
+
+    def conflict_history(self, *, tenant_id: str, fact: AtomicFact) -> Sequence[FactEvent]: ...
+
+
+class OutboxAssertionLedger(Protocol):
+    """A ledger that appends an assertion and enqueues it for delivery in one transaction; used
+    when present and the controller has an outbox, else the two happen in turn."""
+
+    def apply_assertion_with_outbox(
+        self, *, materialization_outbox: FactMaterializationOutbox, **kwargs: Any
+    ) -> LedgerApplyResult: ...
+
+
 class FactMaterializer(Protocol):
     """Synchronous downstream writer for an already authorized ledger event.
 
@@ -1266,7 +1329,13 @@ class FactMaterializationOutbox(Protocol):
     fact event.  Implementations must scope every operation to the configured tenant.
     """
 
-    def enqueue(self, event: FactEvent) -> None: ...
+    def enqueue(self, event: FactEvent) -> None:
+        """Record `event` for delivery, idempotently by `event_id`.
+
+        An event already enqueued keeps its row and status (`reconcile` and every replay enqueue
+        again); a different payload under the same id raises.
+        """
+        ...
 
     def status(self, event_id: str) -> str | None: ...
 
@@ -1300,8 +1369,8 @@ class MaterializationRecovery:
 
     def run_once(self, *, limit: int = 100, now: datetime | None = None) -> int:
         """Deliver at most ``limit`` events and return the number marked applied."""
-        if not isinstance(limit, int) or not 1 <= limit <= 1000:
-            raise ValueError("limit must be between 1 and 1000")
+        if not isinstance(limit, int) or not 1 <= limit <= MAX_OUTBOX_CLAIM_LIMIT:
+            raise ValueError(f"limit must be between 1 and {MAX_OUTBOX_CLAIM_LIMIT}")
         delivered = 0
         for event in self.outbox.claim(tenant_id=self.tenant_id, limit=limit, now=now):
             try:
@@ -1310,7 +1379,7 @@ class MaterializationRecovery:
                 self.outbox.mark_failed(
                     tenant_id=self.tenant_id,
                     event_id=event.event_id,
-                    error=f"{type(exc).__name__}: {exc}"[:2000],
+                    error=f"{type(exc).__name__}: {exc}"[:MAX_OUTBOX_ERROR_CHARS],
                     lease_token=event.lease_token,
                 )
                 continue
@@ -1336,8 +1405,8 @@ class MaterializationRecovery:
         fact event. Event order is canonicalized so two recovery workers converge on the same
         enqueue order; the outbox claim lease still serializes actual delivery.
         """
-        if not isinstance(limit, int) or not 1 <= limit <= 1000:
-            raise ValueError("limit must be between 1 and 1000")
+        if not isinstance(limit, int) or not 1 <= limit <= MAX_OUTBOX_CLAIM_LIMIT:
+            raise ValueError(f"limit must be between 1 and {MAX_OUTBOX_CLAIM_LIMIT}")
         wanted = getattr(self.materializer, "materializes", DEFAULT_MATERIALIZED_TYPES)
         ordered = sorted(events, key=lambda event: (_as_utc(event.created_at), event.event_id))
         for event in ordered:
@@ -1526,9 +1595,6 @@ class InMemoryFactLedger:
             event = self._by_request.get((tenant_id, request_id))
             return event if event is not None and event.tenant_id == tenant_id else None
 
-    def _project_candidates(self, *, tenant_id: str) -> tuple[FactEvent, ...]:
-        return project_candidates([event for event in self._events if event.tenant_id == tenant_id])
-
     def apply_assertion(
         self,
         *,
@@ -1663,6 +1729,14 @@ class InMemoryFactLedger:
 
 @dataclass(frozen=True)
 class ControllerDecision:
+    """The controller's answer to one application.
+
+    `allowed` holds exactly for APPLIED and DUPLICATE. `event` is the ledger event the answer
+    rests on: this request's own, a replayed request's original, the refusal recorded for it, or
+    another application's event on REQUEST_ID_REUSED; it is None when nothing was recorded (a
+    reserved id, an unrecorded refusal, a ledger that failed to record).
+    """
+
     allowed: bool
     code: DecisionCode
     request_id: str
@@ -1769,7 +1843,8 @@ class ProvenanceController:
 
     @staticmethod
     def _supported(fact: AtomicFact, cards: Sequence[EvidenceCard]) -> bool:
-        return any(fact_identity(source_fact) == fact_identity(fact) for card in cards for source_fact in card.structured_facts)
+        target = fact_identity(fact)
+        return any(fact_identity(source_fact) == target for card in cards for source_fact in card.structured_facts)
 
     @staticmethod
     def _superseding_fact_ids(
@@ -1831,9 +1906,10 @@ class ProvenanceController:
         """
         instant = self.now()
         current: tuple[FactEvent, ...] | None = None
-        reader = getattr(self.ledger, "conflict_history", None)
-        if callable(reader):
-            history: object = reader(tenant_id=self.tenant_id, fact=claim)
+        if callable(getattr(self.ledger, "conflict_history", None)):
+            history: object = cast(ConflictHistoryLedger, self.ledger).conflict_history(
+                tenant_id=self.tenant_id, fact=claim
+            )
         else:
             current = self._current(instant)
             history = getattr(self.ledger, "events", None)
@@ -1870,6 +1946,37 @@ class ProvenanceController:
             retried=retried,
             detail=detail,
         )
+
+    def _retry_with_fresh_search(
+        self, request: FactApplicationRequest, resolved: tuple[EvidenceCard, ...] | DecisionCode
+    ) -> tuple[EvidenceCard, ...] | ControllerDecision:
+        """The cards of the one bounded fresh-search retry, or the refusal that ends it.
+
+        `resolved` is the first resolution, which failed or did not support the claim.
+        """
+        if self.fresh_search is None:
+            code = resolved if isinstance(resolved, DecisionCode) else DecisionCode.UNSUPPORTED_CLAIM
+            return self._record_refusal(request, code, (), retried=False)
+        try:
+            fresh_ids = tuple(self.fresh_search(request.claim, request))
+        except Exception as exc:  # BROAD-CATCH: fail-closed
+            return self._record_refusal(
+                request, DecisionCode.FRESH_SEARCH_UNAVAILABLE, (), retried=True, detail=type(exc).__name__
+            )
+        if not fresh_ids:
+            return self._record_refusal(request, DecisionCode.FRESH_SEARCH_INSUFFICIENT, (), retried=True)
+        refreshed = FactApplicationRequest(request.claim, fresh_ids, request.request_id)
+        resolved = self._resolve(refreshed)
+        if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
+            # A card failure after the retry keeps its own code; an unsupported claim, from
+            # either branch, is the retry finding too little.
+            code = (
+                resolved
+                if isinstance(resolved, DecisionCode) and resolved != DecisionCode.UNSUPPORTED_CLAIM
+                else DecisionCode.FRESH_SEARCH_INSUFFICIENT
+            )
+            return self._record_refusal(request, code, (), retried=True)
+        return resolved
 
     def apply_fact(self, request: FactApplicationRequest) -> ControllerDecision:
         """Validate and append one fact, with at most one deterministic fresh-search retry.
@@ -1908,13 +2015,9 @@ class ProvenanceController:
             DecisionCode.APPLIED,
             DecisionCode.DUPLICATE,
         }:
-            try:
-                code = DecisionCode(prior.decision_code)
-            except ValueError:
-                code = DecisionCode.LEDGER_UNAVAILABLE
             return self._decision(
                 request,
-                code,
+                _decision_code(prior.decision_code),
                 cards=prior.evidence_cards,
                 event=prior,
             )
@@ -1933,29 +2036,10 @@ class ProvenanceController:
         resolved = self._resolve(request)
         retried = False
         if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
-            if self.fresh_search is None:
-                code = resolved if isinstance(resolved, DecisionCode) else DecisionCode.UNSUPPORTED_CLAIM
-                return self._record_refusal(request, code, (), retried=False)
-            try:
-                fresh_ids = tuple(self.fresh_search(request.claim, request))
-            except Exception as exc:  # BROAD-CATCH: fail-closed
-                return self._record_refusal(
-                    request, DecisionCode.FRESH_SEARCH_UNAVAILABLE, (), retried=True, detail=type(exc).__name__
-                )
-            retried = True
-            if not fresh_ids:
-                return self._record_refusal(request, DecisionCode.FRESH_SEARCH_INSUFFICIENT, (), retried=True)
-            refreshed = FactApplicationRequest(request.claim, fresh_ids, request.request_id)
-            resolved = self._resolve(refreshed)
-            if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
-                code = (
-                    DecisionCode.FRESH_SEARCH_INSUFFICIENT
-                    if resolved == DecisionCode.UNSUPPORTED_CLAIM
-                    else resolved
-                    if isinstance(resolved, DecisionCode)
-                    else DecisionCode.FRESH_SEARCH_INSUFFICIENT
-                )
-                return self._record_refusal(request, code, (), retried=True)
+            retry = self._retry_with_fresh_search(request, resolved)
+            if isinstance(retry, ControllerDecision):
+                return retry
+            resolved, retried = retry, True
         cards = tuple(resolved)
         try:
             # The conflict set is the one the ledger refuses on: every value in force at SOME
@@ -2009,32 +2093,42 @@ class ProvenanceController:
                 card_ids=tuple(card.card_id for card in cards),
                 _token=_PERMIT_SENTINEL,
             )
-            assertion_kwargs = {
-                "tenant_id": self.tenant_id,
-                "generation_id": self.generation_id,
-                "fact": request.claim,
-                "cards": cards,
-                "request_id": request.request_id,
-                "writer": self.writer,
-                "permit": permit,
-                "supersedes_fact_ids": supersedes,
-                "now": in_force.instant,
-            }
-            if self.served_sources is not None:
-                assertion_kwargs["served"] = self.served_sources
-            atomic_apply = getattr(self.ledger, "apply_assertion_with_outbox", None)
-            if self.materialization_outbox is not None and callable(atomic_apply):
-                result = atomic_apply(
-                    materialization_outbox=self.materialization_outbox, **assertion_kwargs
+            # Keywords, not a dict, so a renamed `apply_assertion` parameter is a type error here
+            # rather than a TypeError that the catch below turns into LEDGER_UNAVAILABLE. `served`
+            # None is every ledger's default.
+            if self.materialization_outbox is not None and callable(
+                getattr(self.ledger, "apply_assertion_with_outbox", None)
+            ):
+                result = cast(OutboxAssertionLedger, self.ledger).apply_assertion_with_outbox(
+                    materialization_outbox=self.materialization_outbox,
+                    tenant_id=self.tenant_id,
+                    generation_id=self.generation_id,
+                    fact=request.claim,
+                    cards=cards,
+                    request_id=request.request_id,
+                    writer=self.writer,
+                    permit=permit,
+                    supersedes_fact_ids=supersedes,
+                    now=in_force.instant,
+                    served=self.served_sources,
                 )
             else:
-                result = self.ledger.apply_assertion(**assertion_kwargs)  # type: ignore[arg-type]
+                result = self.ledger.apply_assertion(
+                    tenant_id=self.tenant_id,
+                    generation_id=self.generation_id,
+                    fact=request.claim,
+                    cards=cards,
+                    request_id=request.request_id,
+                    writer=self.writer,
+                    permit=permit,
+                    supersedes_fact_ids=supersedes,
+                    now=in_force.instant,
+                    served=self.served_sources,
+                )
         except ValueError as exc:
-            try:
-                code = DecisionCode(str(exc))
-            except ValueError:
-                code = DecisionCode.LEDGER_UNAVAILABLE
-            return self._record_refusal(request, code, cards, retried=retried, detail=str(exc))
+            return self._record_refusal(
+                request, _decision_code(str(exc)), cards, retried=retried, detail=str(exc)
+            )
         except Exception as exc:  # BROAD-CATCH: fail-closed
             return self._record_refusal(request, DecisionCode.LEDGER_UNAVAILABLE, cards, retried=retried, detail=type(exc).__name__)
         return self._delivered(request, result, cards, retried=retried)
@@ -2099,7 +2193,7 @@ class ProvenanceController:
                         self.materialization_outbox.mark_failed(
                             tenant_id=self.tenant_id,
                             event_id=result.event.event_id,
-                            error=f"{type(exc).__name__}: {exc}"[:2000],
+                            error=f"{type(exc).__name__}: {exc}"[:MAX_OUTBOX_ERROR_CHARS],
                             lease_token=leased.lease_token,
                         )
                     except Exception:  # BROAD-CATCH: fail-closed
@@ -2151,29 +2245,25 @@ class ProvenanceController:
             card_ids=(card.card_id,),
             _token=_PERMIT_SENTINEL,
         )
-        assertion: dict[str, Any] = {
-            "tenant_id": self.tenant_id,
-            "generation_id": self.generation_id,
-            "fact": fact,
-            "cards": (card,),
-            "request_id": request_id,
-            "writer": self.writer,
-            "permit": permit,
-            "policy_version": STATED_POLICY_VERSION,
-            "now": self.now(),
-            "stated": True,
-        }
+        now = self.now()
         # No served lookup: a stated assertion ignores the absence set it would feed, and on
         # PostgreSQL that lookup is a scan of the served generation per fact.
         try:
-            result = self.ledger.apply_assertion(**assertion)
+            result = self.ledger.apply_assertion(
+                tenant_id=self.tenant_id,
+                generation_id=self.generation_id,
+                fact=fact,
+                cards=(card,),
+                request_id=request_id,
+                writer=self.writer,
+                permit=permit,
+                policy_version=STATED_POLICY_VERSION,
+                now=now,
+                stated=True,
+            )
         except ValueError as exc:
             # A ledger refuses with the decision code as the message, as `apply_fact` reads it.
-            try:
-                code = DecisionCode(str(exc))
-            except ValueError:
-                code = DecisionCode.LEDGER_UNAVAILABLE
-            return self._decision(request, code, cards=(card,), detail=str(exc))
+            return self._decision(request, _decision_code(str(exc)), cards=(card,), detail=str(exc))
         except Exception as exc:  # BROAD-CATCH: fail-closed
             return self._decision(
                 request, DecisionCode.LEDGER_UNAVAILABLE, cards=(card,), detail=type(exc).__name__
@@ -2208,6 +2298,15 @@ class ProvenanceController:
         except Exception:  # BROAD-CATCH: fail-closed
             event = None
         return self._decision(request, code, cards=cards, retried=retried, detail=detail, event=event)
+
+
+def _decision_code(value: str) -> DecisionCode:
+    """`value` as a decision code: a ledger refuses with the code as the message (`FactLedger`);
+    anything else is the ledger failing, LEDGER_UNAVAILABLE."""
+    try:
+        return DecisionCode(value)
+    except ValueError:
+        return DecisionCode.LEDGER_UNAVAILABLE
 
 
 def _evidence_links(
