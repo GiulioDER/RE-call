@@ -4,18 +4,26 @@ CI's `schema-migrations` job migrates an empty database, which says nothing abou
 user already has. This script is run twice against one database, with two interpreters:
 
     seed    run with the PREVIOUS release installed (0.14.0 from PyPI). It does what an operator
-            following that release's docs/FIRST_CALIBRATION.md does: schema apply, a file://
-            manifest, generation build, validate, promote, a published calibration. Then it starts
-            that release's MCP server exactly as a client would and records, through it, what a
-            user sees: the top hits for a few queries and their trust state, and one structured
-            fact applied through `recall_evidence` and `recall_apply_fact`.
+            following that release's docs/FIRST_CALIBRATION.md does: schema apply, `recall
+            index`, a file:// manifest, generation build, validate, promote, a published
+            calibration. Then it starts that release's MCP server exactly as a client would and
+            records, through it, what a user sees: the hits for a few queries with their cosines,
+            verdicts and trust state. One structured fact is applied with a card that server
+            minted through `recall_evidence` (see seed 5 for why not through `recall_apply_fact`).
 
     verify  run after the wheel built from this commit is installed over the same environment.
-            It runs the upgrade sequence docs/COMPATIBILITY.md gives (`recall schema status`,
-            `recall schema apply`, then readiness), and then asks the NEW server the same
-            questions: the schema reports compatible, the old memos return the same top hits and
-            are still trusted, the fact 0.14.0 wrote still reads, `recall doctor` passes, and
-            forgetting an old memo removes it from search.
+            It runs the upgrade sequence the docs give: `recall schema status`, `recall schema
+            apply` (docs/COMPATIBILITY.md), `recall provenance rebuild` (CHANGELOG.md and
+            docs/MIGRATIONS.md, for migration 0030), `recall doctor`. Then it asks the NEW server
+            the same questions: the old memos come back with the same trusted hits in the same
+            order and the same cosines, still trusted, matching a fresh install of this release
+            into a second tenant; the fact 0.14.0 wrote still reads; and forgetting an old memo
+            removes it (strict search refuses as stale until the labelled refit, then answers
+            without it).
+
+Red proof (2026-11-04, CI, PostgreSQL 18): see the pull request that added this script. Each
+mutation was applied to the installed new wheel before `verify`, and the job failed at the named
+step.
 
 No paid API is called: the embedder is `hashing`, which is deterministic and identical in both
 releases. Every step prints its name first, and a failure exits 1 naming the step that broke.
