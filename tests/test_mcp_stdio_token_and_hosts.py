@@ -64,7 +64,9 @@ def test_the_host_allowlist_is_normalised_and_accepts_the_default_port() -> None
     """
     settings = server._transport_security_settings(" https://Recall.Example.com:443 \n")
     assert settings.allowed_hosts == ["recall.example.com", "recall.example.com:443"]
-    assert "https://recall.example.com" in settings.allowed_origins
+    assert settings.allowed_origins == [
+        "https://recall.example.com", "https://recall.example.com:443",
+    ]
 
 
 def test_extra_allowed_hosts_are_added_and_validated() -> None:
@@ -75,7 +77,10 @@ def test_extra_allowed_hosts_are_added_and_validated() -> None:
     assert settings.allowed_hosts == [
         "recall.example.com", "recall.example.com:443", "recall.internal:8000", "recall-svc",
     ]
-    assert "https://recall.internal:8000" in settings.allowed_origins
+    assert settings.allowed_origins == [
+        "https://recall.example.com", "https://recall.example.com:443",
+        "https://recall.internal:8000", "https://recall-svc",
+    ]
     for bad in ("https://x.example", "user@host", "host:"):
         with pytest.raises(AuthConfigError, match="RECALL_ALLOWED_HOSTS"):
             server._transport_security_settings("https://recall.example.com", bad)
