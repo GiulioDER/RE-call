@@ -2004,7 +2004,7 @@ def serve(app: DashboardApp) -> ThreadingHTTPServer:
                 body = self.rfile.read(length) if length else b""
                 try:
                     response = app.handle(method, self.path, dict(self.headers.items()), body)
-                except Exception as exc:  # noqa: BLE001  # a page that raises must still answer
+                except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: error-translation; a page that raises must still answer
                     # Without this the connection drops with no response and the person sees
                     # nothing; the traceback still goes to stderr through socketserver's handler.
                     self.server.handle_error(self.request, self.client_address)
