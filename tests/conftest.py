@@ -219,22 +219,54 @@ def _reject_unsafe_test_dsn() -> None:
     pointing it at a remote host. Both are refused at import time rather than discovered
     afterwards, because the damage is not recoverable from a test report.
     """
-    from urllib.parse import urlsplit
+    from ipaddress import ip_address
+    from itertools import zip_longest
 
-    from recall.store import _is_local_host
+    from recall.dsn_security import _connection_parameters, _env_opt_out, _is_local_host
+
+    def canonical_host(host: str) -> str:
+        try:
+            return str(ip_address(host))
+        except ValueError:
+            return host if host.startswith("/") else host.lower()
+
+    def destinations(dsn: str) -> set[tuple[str, str, str]]:
+        parts = _connection_parameters(dsn)
+        hosts = parts.get("host", "").split(",")
+        addresses = parts.get("hostaddr", "").split(",")
+        ports = parts.get("port", "5432").split(",")
+        database = parts.get("dbname") or parts.get("user", "")
+        return {
+            (
+                canonical_host(host),
+                str(int(ports[min(index, len(ports) - 1)] or "5432")),
+                database,
+            )
+            for index, (name, address) in enumerate(zip_longest(hosts, addresses, fillvalue=""))
+            for host in [address or name]
+        }
 
     configured = os.environ.get("RECALL_TEST_DSN")
     if configured is None:
         return
-    if configured == os.environ.get("RECALL_DSN"):
+    production = os.environ.get("RECALL_DSN")
+    try:
+        targets = destinations(configured)
+        production_targets = destinations(production) if production is not None else set()
+    except LookupError as exc:
+        if production is None and _env_opt_out("RECALL_ALLOW_REMOTE_TEST_DB"):
+            return
+        raise RuntimeError(str(exc)) from exc
+    if targets.intersection(production_targets):
         raise RuntimeError(
             "RECALL_TEST_DSN is the same database as RECALL_DSN. These tests DROP TABLES — "
             "point RECALL_TEST_DSN at a throwaway database."
         )
-    host = (urlsplit(configured).hostname or "").lower()
-    if not _is_local_host(host) and not os.environ.get("RECALL_ALLOW_REMOTE_TEST_DB"):
+    if any(not _is_local_host(host) for host, _port, _database in targets) and not _env_opt_out(
+        "RECALL_ALLOW_REMOTE_TEST_DB"
+    ):
         raise RuntimeError(
-            f"RECALL_TEST_DSN points at the non-local host {host!r}. These tests DROP TABLES — "
+            "RECALL_TEST_DSN points at a non-local host. These tests DROP TABLES — "
             "set RECALL_ALLOW_REMOTE_TEST_DB=1 only if that database is genuinely disposable."
         )
 

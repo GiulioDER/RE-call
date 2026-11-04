@@ -1366,6 +1366,14 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
                     for c, e in zip(chunks, embeddings)
                 ],
             )
+            if chunks:
+                # Transaction-start timestamps can commit out of order; the revision cannot.
+                cur.execute(
+                    "INSERT INTO recall_supersession_revisions (tenant_id, revision) VALUES (%s, 1) "
+                    "ON CONFLICT (tenant_id) DO UPDATE "
+                    "SET revision = recall_supersession_revisions.revision + 1",
+                    (self._tenant,),
+                )
 
     def analyze(self) -> bool:
         """Refresh the planner's statistics for this table. Best-effort; never raises.

@@ -406,6 +406,9 @@ def test_serving_role_has_dml_but_cannot_run_ddl():
                     f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table} TO "{role}"'
                 )
                 conn.execute(f'GRANT SELECT ON TABLE {LEDGER_TABLE} TO "{role}"')
+                conn.execute(
+                    f'GRANT SELECT, INSERT, UPDATE ON TABLE recall_supersession_revisions TO "{role}"'
+                )
             with PgVectorStore(serving_dsn, dim=DIM, table=table) as store:
                 store.check_schema()
                 assert store.upsert(
@@ -421,7 +424,8 @@ def test_serving_role_has_dml_but_cannot_run_ddl():
         finally:
             with psycopg.connect(TEST_DSN, autocommit=True) as conn:
                 conn.execute(
-                    f'REVOKE ALL PRIVILEGES ON TABLE {table}, {LEDGER_TABLE} FROM "{role}"'
+                    f'REVOKE ALL PRIVILEGES ON TABLE {table}, {LEDGER_TABLE}, '
+                    f'recall_supersession_revisions FROM "{role}"'
                 )
                 conn.execute(f'REVOKE USAGE ON SCHEMA public FROM "{role}"')
                 conn.execute(f'DROP ROLE IF EXISTS "{role}"')

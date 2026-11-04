@@ -16,9 +16,9 @@ connect as it. Without that, this file would be theatre.
 from __future__ import annotations
 
 import uuid
-from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
+from psycopg.conninfo import make_conninfo
 import pytest
 
 from recall.schema import LEDGER_TABLE, apply_migrations
@@ -284,14 +284,14 @@ def unprivileged_dsn(tenant_table):
             conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD 'pw' NOSUPERUSER NOBYPASSRLS")
             conn.execute(f"GRANT ALL ON SCHEMA public TO {role}")
             conn.execute(f"GRANT SELECT ON {LEDGER_TABLE} TO {role}")
+            conn.execute(f"GRANT SELECT, INSERT, UPDATE ON recall_supersession_revisions TO {role}")
             conn.execute(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {tenant_table} TO {role}")
     except psycopg.errors.InsufficientPrivilege:
         pytest.skip(
             "cannot verify RLS: the configured role bypasses it and lacks CREATEROLE to make "
             "one that does not"
         )
-    parts = urlsplit(TEST_DSN)
-    dsn = urlunsplit(parts._replace(netloc=f"{role}:pw@{parts.hostname}:{parts.port or 5432}"))
+    dsn = make_conninfo(TEST_DSN, user=role, password="pw")
     yield role, dsn
     with psycopg.connect(TEST_DSN, autocommit=True) as conn:
         conn.execute(f"DROP TABLE IF EXISTS {tenant_table}")
