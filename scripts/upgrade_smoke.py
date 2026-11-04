@@ -50,11 +50,13 @@ from pathlib import Path
 TENANT = "upgrade-smoke"
 # The control: the same notes installed fresh by the new release, in a tenant of their own.
 FRESH_TENANT = "upgrade-smoke-fresh"
-# Set for the two-role leg: RECALL_SERVING_DSN then logs in as this unprivileged role (no
-# superuser, no BYPASSRLS, no schema CREATE), and RECALL_MIGRATION_DSN stays the owner. Each phase
-# grants it what that release's `recall schema grants --role` prints, after its `schema apply`, as
-# docs/MIGRATIONS.md ("Role split") tells an operator to.
+# Set for the split-role leg, the strict layout docs/MIGRATIONS.md describes: RECALL_SERVING_DSN
+# logs in as an unprivileged serving role (no superuser, no BYPASSRLS, no schema CREATE),
+# RECALL_FACT_WRITE_DSN as the fact controller role, and RECALL_MIGRATION_DSN stays the owner.
+# Each phase applies what that release's `recall schema grants` prints for both roles
+# (`--strict`, `--controller`), after its `schema apply`.
 SERVING_ROLE = os.environ.get("UPGRADE_SMOKE_SERVING_ROLE")
+CONTROLLER_ROLE = os.environ.get("UPGRADE_SMOKE_CONTROLLER_ROLE")
 EMBEDDER = "hashing"
 
 # 24 memos: certification needs at least 20 answerable and 20 unanswerable queries, and each memo
@@ -226,17 +228,20 @@ def _packaged_migrations() -> list[str]:
 
 
 def _grant(step: str, workdir: Path, env: dict[str, str]) -> None:
-    """Apply, as the owner, the serving grants this release generates; a no-op with one role."""
+    """Apply, as the owner, the grants this release generates for both roles; a no-op with one."""
     if not SERVING_ROLE:
         return
     import psycopg
 
-    sql = _run(step, _recall("schema", "grants", "--role", SERVING_ROLE), env=env, cwd=workdir)
-    statements = [line for line in sql.splitlines() if line.strip()]
-    with psycopg.connect(env["RECALL_MIGRATION_DSN"], autocommit=True) as conn:
-        for statement in statements:
-            conn.execute(statement)
-    print(f"    applied {len(statements)} grant statement(s) to {SERVING_ROLE}")
+    for role, flag in ((SERVING_ROLE, "--strict"), (CONTROLLER_ROLE, "--controller")):
+        if not role:
+            continue
+        sql = _run(step, _recall("schema", "grants", "--role", role, flag), env=env, cwd=workdir)
+        statements = [line for line in sql.splitlines() if line.strip()]
+        with psycopg.connect(env["RECALL_MIGRATION_DSN"], autocommit=True) as conn:
+            for statement in statements:
+                conn.execute(statement)
+        print(f"    applied {len(statements)} grant statement(s) to {role} ({flag})")
 
 
 def _install(step: str, workdir: Path, tenant: str, *, legacy_index: bool = True) -> str:
@@ -348,11 +353,14 @@ def seed(workdir: Path) -> None:
     from recall.types import AtomicFact
 
     dsn = prod["RECALL_SERVING_DSN"]
+    # The ledger on the fact-write DSN when one is set, as 0.14.0's own `apply_fact_memory` does
+    # (`recall_mcp/provenance.py::_fact_write_dsn`): a strict serving role cannot append.
+    fact_dsn = prod.get("RECALL_FACT_WRITE_DSN") or dsn
     decision = ProvenanceController(
         tenant_id=TENANT,
         generation_id=generation,
         cards=PostgresEvidenceCardStore(dsn, tenant_id=TENANT),
-        ledger=PostgresFactLedger(dsn, tenant_id=TENANT),
+        ledger=PostgresFactLedger(fact_dsn, tenant_id=TENANT),
         writer="upgrade-smoke",
     ).apply_fact(FactApplicationRequest(
         AtomicFact.from_payload(FACT), (cards[0]["card_id"],), "upgrade-smoke-1"

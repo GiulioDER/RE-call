@@ -657,10 +657,12 @@ jobs:
   # The embedder is `hashing`, so no model download and no paid API. Same PostgreSQL matrix as
   # `schema-migrations`. Required by merge-gate.
   #
-  # The `roles: two` leg is the role split docs/MIGRATIONS.md describes: the serving DSN logs in as
-  # an unprivileged `recall_server` (no superuser, no BYPASSRLS, no schema CREATE) while the owner
-  # migrates, and each release's `recall schema grants --role recall_server` output is applied
-  # after its `schema apply`. Every serving check then runs under row-level security.
+  # The `roles: two` leg is the strict role split docs/MIGRATIONS.md describes: the serving DSN logs
+  # in as an unprivileged `recall_server` (no superuser, no BYPASSRLS, no schema CREATE), fact
+  # writes go through `RECALL_FACT_WRITE_DSN` as `recall_controller`, and the owner migrates. After
+  # each release's `schema apply`, that release's `recall schema grants --role recall_server
+  # --strict` and `--role recall_controller --controller` output is applied. Every serving check
+  # then runs under row-level security.
   upgrade-from-release:
     name: Upgrade from 0.14.0 (PostgreSQL ${{ matrix.postgres }}${{ matrix.roles == 'two' && ', two roles' || '' }})
     runs-on: ubuntu-latest
@@ -712,20 +714,25 @@ jobs:
           echo "PY=$RUNNER_TEMP/venv/bin/python" >> "$GITHUB_ENV"
           cp scripts/upgrade_smoke.py "$RUNNER_TEMP/"
 
-      - name: Create the unprivileged serving role
+      - name: Create the unprivileged serving and controller roles
         if: matrix.roles == 'two'
         run: |
           set -euo pipefail
           "$PY" -I - <<'EOF'
           import os, psycopg
           with psycopg.connect(os.environ["RECALL_MIGRATION_DSN"], autocommit=True) as conn:
-              conn.execute("CREATE ROLE recall_server LOGIN PASSWORD 'recall_server' NOINHERIT NOBYPASSRLS")
-              conn.execute("GRANT CONNECT ON DATABASE recall TO recall_server")
-              conn.execute("GRANT USAGE ON SCHEMA public TO recall_server")
-              conn.execute("REVOKE CREATE ON SCHEMA public FROM recall_server")
+              for role in ("recall_server", "recall_controller"):
+                  conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD '{role}' NOINHERIT NOBYPASSRLS")
+                  conn.execute(f"GRANT CONNECT ON DATABASE recall TO {role}")
+                  conn.execute(f"GRANT USAGE ON SCHEMA public TO {role}")
+                  conn.execute(f"REVOKE CREATE ON SCHEMA public FROM {role}")
           EOF
-          echo "RECALL_SERVING_DSN=postgresql://recall_server:recall_server@localhost:5432/recall" >> "$GITHUB_ENV"
-          echo "UPGRADE_SMOKE_SERVING_ROLE=recall_server" >> "$GITHUB_ENV"
+          {
+            echo "RECALL_SERVING_DSN=postgresql://recall_server:recall_server@localhost:5432/recall"
+            echo "RECALL_FACT_WRITE_DSN=postgresql://recall_controller:recall_controller@localhost:5432/recall"
+            echo "UPGRADE_SMOKE_SERVING_ROLE=recall_server"
+            echo "UPGRADE_SMOKE_CONTROLLER_ROLE=recall_controller"
+          } >> "$GITHUB_ENV"
 
       - name: Seed the database with 0.14.0
         working-directory: ${{ runner.temp }}

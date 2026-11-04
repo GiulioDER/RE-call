@@ -56,12 +56,13 @@ jobs:
         cp scripts/upgrade_smoke.py "$RUNNER_TEMP/"
 
         '
-    - name: Create the unprivileged serving role
+    - name: Create the unprivileged serving and controller roles
       if: matrix.roles == 'two'
-      run: "set -euo pipefail\n\"$PY\" -I - <<'EOF'\nimport os, psycopg\nwith psycopg.connect(os.environ[\"RECALL_MIGRATION_DSN\"], autocommit=True) as conn:\n    conn.execute(\"CREATE ROLE recall_server\
-        \ LOGIN PASSWORD 'recall_server' NOINHERIT NOBYPASSRLS\")\n    conn.execute(\"GRANT CONNECT ON DATABASE recall TO recall_server\")\n    conn.execute(\"GRANT USAGE ON SCHEMA public TO recall_server\"\
-        )\n    conn.execute(\"REVOKE CREATE ON SCHEMA public FROM recall_server\")\nEOF\necho \"RECALL_SERVING_DSN=postgresql://recall_server:recall_server@localhost:5432/recall\" >> \"$GITHUB_ENV\"\necho\
-        \ \"UPGRADE_SMOKE_SERVING_ROLE=recall_server\" >> \"$GITHUB_ENV\"\n"
+      run: "set -euo pipefail\n\"$PY\" -I - <<'EOF'\nimport os, psycopg\nwith psycopg.connect(os.environ[\"RECALL_MIGRATION_DSN\"], autocommit=True) as conn:\n    for role in (\"recall_server\", \"recall_controller\"\
+        ):\n        conn.execute(f\"CREATE ROLE {role} LOGIN PASSWORD '{role}' NOINHERIT NOBYPASSRLS\")\n        conn.execute(f\"GRANT CONNECT ON DATABASE recall TO {role}\")\n        conn.execute(f\"GRANT\
+        \ USAGE ON SCHEMA public TO {role}\")\n        conn.execute(f\"REVOKE CREATE ON SCHEMA public FROM {role}\")\nEOF\n{\n  echo \"RECALL_SERVING_DSN=postgresql://recall_server:recall_server@localhost:5432/recall\"\
+        \n  echo \"RECALL_FACT_WRITE_DSN=postgresql://recall_controller:recall_controller@localhost:5432/recall\"\n  echo \"UPGRADE_SMOKE_SERVING_ROLE=recall_server\"\n  echo \"UPGRADE_SMOKE_CONTROLLER_ROLE=recall_controller\"\
+        \n} >> \"$GITHUB_ENV\"\n"
     - name: Seed the database with 0.14.0
       working-directory: ${{ runner.temp }}
       run: '"$PY" -I upgrade_smoke.py seed --workdir "$RUNNER_TEMP/upgrade"'
