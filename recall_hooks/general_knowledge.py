@@ -652,8 +652,12 @@ def _trigger_matches(
 
 
 def client() -> str:
-    """Which client wrote an event: `RECALL_HOOK_CLIENT` (the Codex adapter sets it) or `claude`."""
-    return os.environ.get("RECALL_HOOK_CLIENT", "claude")
+    """Which client wrote an event: `RECALL_HOOK_CLIENT` (the Codex adapter sets it) or `claude`.
+
+    An empty or blank value is unset, as for every other variable this package reads: it would
+    otherwise log events under an empty client name.
+    """
+    return os.environ.get("RECALL_HOOK_CLIENT", "").strip() or "claude"
 
 
 def _session_key(session_id: Any) -> str:

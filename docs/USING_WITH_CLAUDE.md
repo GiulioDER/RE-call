@@ -291,7 +291,8 @@ transports. Configs for remote stdio servers stamp the worktree claim as
 `RECALL_MCP_SESSION_ID`; a new session gets a new ID, and the legacy `RECALL_MCP_CLIENT` mark is
 used only when the session ID is unavailable.
 
-⚠️ The last two rows are the two retrieval hooks and they are **not** interchangeable.
+⚠️ The `UserPromptSubmit` and `PreToolUse` rows are the two retrieval hooks and they are **not**
+interchangeable.
 `PreToolUse` queries the corpus over the network with the DRAFT text, which is what reaches a
 hazard memo; `UserPromptSubmit` reads local memo files with the GOAL text, which is what reaches a
 prior decision. Each has its own switch in `~/.claude/recall-hook.json`, `write_time.enabled` and
@@ -305,7 +306,7 @@ not by evidence, and both are one config edit away from off.
 
 Three properties are deliberate and worth knowing before you edit them:
 
-- **`SessionStart` touches no database.** It reads a count cached by the other two hooks, so the
+- **`SessionStart` touches no database.** It reads a count cached by `PreCompact` and `SessionEnd`, so the
   digest still appears when your database is not running, and it adds about 66 ms to a session
   start rather than the ~1.2 s a database round trip and an embedder import would cost.
 - **`PreCompact` never blocks.** Exit code 2 on that event *blocks compaction*, so every path
