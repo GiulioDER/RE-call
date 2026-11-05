@@ -320,6 +320,7 @@ def test_the_fallback_hardware_probe_keeps_the_memory_it_measured(
     monkeypatch.setattr(P, "probe_hardware", broken)
     monkeypatch.setattr(P, "probe_ram", lambda: (5 * 1024**3, 1 * 1024**3))
     monkeypatch.setattr(P, "probe_docker", lambda: (True, True))
+    monkeypatch.setattr(P, "probe_compose", lambda: (False, (2, 29, 7)))
     monkeypatch.setattr(P, "probe_wsl2", lambda: None)
     monkeypatch.setattr(P, "probe_cuda_vram", lambda: None)
     monkeypatch.setattr(P, "probe_store_python", lambda: False)
@@ -398,5 +399,6 @@ def test_virtualization_is_unknown_rather_than_false_off_windows(
 def test_no_blockers_on_a_healthy_machine(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(P, "probe_ram", lambda: (32 * 1024**3, 16 * 1024**3))
     monkeypatch.setattr(P, "probe_docker", lambda: (True, True))
+    monkeypatch.setattr(P, "probe_compose", lambda: (False, (2, 29, 7)))
     monkeypatch.setattr(P, "probe_store_python", lambda: False)
     assert P.blockers(P.probe_system()) == []

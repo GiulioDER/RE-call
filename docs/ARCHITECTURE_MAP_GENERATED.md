@@ -22,15 +22,15 @@ Cross package edges: 384
 | 184 | `recall.dashboard.server` |
 | 183 | `recall_mcp.service` |
 | 181 | `recall.cli_commands.setup_wizard` |
-| 176 | `recall.desktop.main` |
-| 172 | `recall.desktop.ui` |
+| 177 | `recall.desktop.main` |
+| 173 | `recall.desktop.ui` |
 | 169 | `recall.cli_commands.reasoning_cmd` |
-| 168 | `recall.desktop.install_ui` |
+| 169 | `recall.desktop.install_ui` |
 | 166 | `recall_mcp.reasoning_api` |
-| 164 | `recall.wizard.projects` |
+| 165 | `recall.wizard.projects` |
+| 164 | `recall.wizard.headless` |
+| 164 | `recall.wizard.state` |
 | 163 | `recall.cli_commands.doctor_cmd` |
-| 163 | `recall.wizard.headless` |
-| 163 | `recall.wizard.state` |
 | 162 | `recall.cli_commands.lite_cmd` |
 | 162 | `recall.doctor` |
 | 159 | `recall.dashboard.config` |
@@ -71,11 +71,11 @@ Cross package edges: 384
 | 21 | `recall_mcp.indexing` |
 | 20 | `recall.index` |
 | 20 | `recall.rewrite` |
+| 19 | `recall.cli_commands.setup_wizard` |
 | 19 | `recall_mcp.provenance` |
+| 18 | `recall.wizard.headless` |
 | 17 | `recall.cli_commands.calibration_cmd` |
 | 17 | `recall.dashboard.server` |
-| 17 | `recall.wizard.headless` |
-| 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall.generation_store` |
 | 16 | `recall_mcp.lifecycle` |
 | 16 | `recall_mcp.semantic_graph_cache` |
@@ -539,7 +539,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.records_cmd` | 9 | 121 |
 | `recall.cli_commands.schema_cmd` | 2 | 122 |
 | `recall.cli_commands.secret_cmd` | 1 | 4 |
-| `recall.cli_commands.setup_wizard` | 16 | 181 |
+| `recall.cli_commands.setup_wizard` | 19 | 181 |
 | `recall.codex` | 2 | 158 |
 | `recall.confinement` | 0 | 0 |
 | `recall.constants` | 0 | 0 |
@@ -565,14 +565,14 @@ They are observations, not automatic failures.
 | `recall.derived_block` | 3 | 14 |
 | `recall.desktop` | 1 | 1 |
 | `recall.desktop.github` | 3 | 6 |
-| `recall.desktop.install_ui` | 7 | 168 |
+| `recall.desktop.install_ui` | 8 | 169 |
 | `recall.desktop.jobs` | 0 | 0 |
-| `recall.desktop.main` | 9 | 176 |
+| `recall.desktop.main` | 9 | 177 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
 | `recall.desktop.runtime` | 5 | 44 |
 | `recall.desktop.sources` | 3 | 5 |
-| `recall.desktop.ui` | 12 | 172 |
+| `recall.desktop.ui` | 12 | 173 |
 | `recall.desktop.updates` | 2 | 2 |
 | `recall.desktop.uploads` | 4 | 18 |
 | `recall.doctor` | 14 | 162 |
@@ -775,18 +775,18 @@ They are observations, not automatic failures.
 | `recall.wizard.config_lock` | 0 | 0 |
 | `recall.wizard.corpora` | 4 | 113 |
 | `recall.wizard.database` | 2 | 39 |
-| `recall.wizard.headless` | 17 | 163 |
+| `recall.wizard.headless` | 18 | 164 |
 | `recall.wizard.identity` | 1 | 1 |
 | `recall.wizard.interactive` | 5 | 116 |
 | `recall.wizard.inventory` | 2 | 111 |
 | `recall.wizard.llm` | 5 | 159 |
 | `recall.wizard.pipeline` | 11 | 116 |
 | `recall.wizard.probe` | 2 | 158 |
-| `recall.wizard.projects` | 4 | 164 |
+| `recall.wizard.projects` | 4 | 165 |
 | `recall.wizard.queryset` | 7 | 110 |
 | `recall.wizard.questions` | 1 | 114 |
 | `recall.wizard.stack` | 3 | 134 |
-| `recall.wizard.state` | 4 | 163 |
+| `recall.wizard.state` | 4 | 164 |
 | `recall.wizard.uninstall` | 6 | 158 |
 | `recall.wizard.wiring` | 7 | 158 |
 | `recall_agent` | 1 | 143 |
