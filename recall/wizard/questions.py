@@ -20,10 +20,10 @@ document itself would still produce a different artefact, and the failure would 
 engine refuses one step later — which is exactly what happened to the terminal flow once, and was
 found by round-tripping through `load_config` rather than by any of its ten passing question tests.
 
-**Conditional questions are declared, not branched.** `depends_on` marks the two that belong to one
-side of the database choice. A front end that renders every question in the plan and hides the ones
-`visible_questions` filters out cannot accidentally ask for a DSN on the Docker path, and cannot
-accidentally OMIT one on the other path either.
+**Conditional questions are declared, not branched.** `depends_on` marks the three that belong to
+one side of the database choice (`data_root`, `dsn` and `fact_write_dsn`). A front end that renders
+every question in the plan and hides the ones `visible_questions` filters out cannot accidentally
+ask for a DSN on the Docker path, and cannot accidentally OMIT one on the other path either.
 """
 
 from __future__ import annotations
@@ -34,7 +34,10 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
+from recall.wizard.corpora import CORPUS_ROOT_KEYS, DEFAULT_PROJECT
+
 __all__ = [
+    "DEFAULT_EMBEDDER",
     "Choice",
     "Question",
     "QuestionKind",
@@ -48,6 +51,10 @@ __all__ = [
 #: line edit for them: a folder picker, and a connection test. The terminal treats all three as a
 #: line of input, which is the right degradation rather than a missing feature.
 QuestionKind = Literal["text", "choice", "directory", "dsn"]
+
+#: The embedder offered first and used when none is answered. One name, because the terminal
+#: interview's dimension check and `build_config` must default to the same model the plan offers.
+DEFAULT_EMBEDDER = "fastembed"
 
 
 @dataclass(frozen=True)
@@ -78,7 +85,8 @@ class Question:
     help: str = ""
     #: `(key, value)` — this question applies only when a previous answer equals `value`.
     depends_on: tuple[str, str] | None = None
-    #: An empty answer is accepted and means "not set". Only `project_root` is optional today.
+    #: An empty answer is accepted and means "not set". `project_root` and `fact_write_dsn` are
+    #: optional today.
     optional: bool = False
     #: Extra keys this question's answer is stored under. Empty for all of them; kept because a
     #: front end iterating the plan must not have to know which answers are also config keys.
@@ -115,14 +123,14 @@ def question_plan(*, default_root: Path) -> tuple[Question, ...]:
         Question(
             key="project",
             prompt="Project name",
-            default=_DEFAULT_PROJECT,
+            default=DEFAULT_PROJECT,
             help="Names the tenants and is stamped on every chunk.",
         ),
         Question(
             key="embedder",
             prompt="Which embedder?",
             kind="choice",
-            default="fastembed",
+            default=DEFAULT_EMBEDDER,
             choices=(
                 Choice(
                     "fastembed",
@@ -246,8 +254,8 @@ def build_config(
     the assertion and the run is a flaky test, and worse, a value nobody can reproduce.
     """
     config: dict[str, object] = {
-        "project": answers.get("project") or _DEFAULT_PROJECT,
-        "embedder": answers.get("embedder") or "fastembed",
+        "project": answers.get("project") or DEFAULT_PROJECT,
+        "embedder": answers.get("embedder") or DEFAULT_EMBEDDER,
         "corpus_version": today(),
     }
 
@@ -271,7 +279,8 @@ def build_config(
         data_root = (answers.get("data_root") or "").strip()
         if not data_root:
             raise ValueError(
-                "a data folder is required: it is where the database and the stack files live. "
+                "a data folder is required: it is where the stack files live (the database itself is "
+                "kept in a Docker volume). "
                 "Choose one, or pick an existing PostgreSQL instead."
             )
         expanded = Path(data_root).expanduser()
@@ -282,7 +291,7 @@ def build_config(
             )
         config["data_root"] = str(expanded)
 
-    for key in ("docs_root", "code_root", "memory_root"):
+    for key in CORPUS_ROOT_KEYS:
         value = (answers.get(key) or "").strip()
         if not value:
             raise ValueError(
@@ -298,14 +307,3 @@ def build_config(
 
     return config
 
-
-def _default_project() -> str:
-    """Imported lazily so this module does not pull the corpus layer in at import time."""
-    from recall.wizard.corpora import DEFAULT_PROJECT
-
-    return str(DEFAULT_PROJECT)
-
-
-#: Read once at import. `corpora` is a light module and the value is a constant, but the indirection
-#: above keeps the import in one place if that stops being true.
-_DEFAULT_PROJECT = _default_project()

@@ -16,9 +16,11 @@ still possible (another client, an older build, a `subprocess` with `env=`), whi
 **The rule this module exists to enforce: a server block is only written for a tenant that can
 actually answer.** Three cases, and they are not interchangeable:
 
-* **Certified and promoted** → `RECALL_ENV=production` with strict trust. `RECALL_ENV` is what
-  selects `GenerationStore` (`recall_mcp/server.py:629`), so a calibrated generation is only reached
-  through it, and the published calibration is what makes strict trust answerable.
+* **Certified and promoted** → `RECALL_ENV=production` with strict trust. The runtime route is what
+  selects `GenerationStore`: `RECALL_INDEX_MODE=generation`, which the block pins, or the
+  `RECALL_ENV=production` default when that is unset (`recall.runtime_route.resolve_runtime_route`,
+  read by the `generation_mode` branch in `recall_mcp.server`). So a calibrated generation is only
+  reached through that route, and the published calibration is what makes strict trust answerable.
 
 * **Degraded with a predecessor still serving** → production, but development trust, and the block
   carries a note saying the generation just built is NOT the one serving. Relaxing trust here is a
@@ -207,6 +209,14 @@ def _base_env(spec: CorpusSpec, *, dsn: str, embedder: str) -> dict[str, str]:
         "RECALL_SERVING_DSN": "",
         "RECALL_EMBEDDER": embedder,
         "RECALL_TENANT": spec.tenant,
+        # The wizard indexes under this shell's embedding cache settings; the server's own index
+        # calls must too, or a cache the user switched off or moved comes back at the default, as
+        # `recall.lite.setup` records. `stack.tenant_service` drops them inside a container.
+        **{
+            key: os.environ[key]
+            for key in ("RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB")
+            if key in os.environ
+        },
     }
 
 
@@ -220,9 +230,10 @@ def _generation_block(
     rationale: str,
 ) -> ServerBlock:
     env = _base_env(spec, dsn=dsn, embedder=embedder)
-    # `RECALL_ENV=production` is what selects `GenerationStore`, so a calibrated corpus is only
-    # reachable through it. Without this the server would read the legacy `chunks` table, which a
-    # generation build never wrote to, and answer nothing while looking configured.
+    # The runtime route selects `GenerationStore`, from RECALL_INDEX_MODE or, when that is unset,
+    # the RECALL_ENV=production default, so this block pins both. Without the route the server
+    # would read the legacy `chunks` table, which a generation build never wrote to, and answer
+    # nothing while looking configured.
     env["RECALL_ENV"] = "production"
     # Pinned for the same reason the legacy block pins its own: the client lays this block over
     # its environment, and an inherited RECALL_INDEX_MODE=legacy beside production is refused by
@@ -376,12 +387,18 @@ def write_project_files(
     embedder: str,
     memory_dir: Path,
 ) -> tuple[Path, ...]:
-    """Write `.env`, the `CLAUDE.md` block and `memory/MEMORY.md`, returning what was touched.
+    """Write `.env`, the `CLAUDE.md` block and, when absent, `MEMORY.md`, returning what was touched.
 
     Every one of these reuses `recall.setup`'s writers rather than reimplementing them, and that
-    matters for a specific reason: all three are BLOCK-scoped, delimited by begin/end markers, so
-    they update an operator's existing file instead of replacing it. A wizard that overwrote a
-    project's `CLAUDE.md` would destroy work no installer has any business touching.
+    matters for a specific reason: `.env` and `CLAUDE.md` are BLOCK-scoped, delimited by begin/end
+    markers, so they update an operator's existing file instead of replacing it. A wizard that
+    overwrote a project's `CLAUDE.md` would destroy work no installer has any business touching.
+    `MEMORY.md` has no markers: it is created in `memory_dir`, the memory folder, only when it is
+    absent, and an existing one is never rewritten.
+
+    `.env` can carry a DSN with its password and the provider keys `recall setup` keeps there, so
+    inside a git work tree `.env` is added to `project_root/.gitignore` when that file does not
+    already ignore it; otherwise a `git add .` in the user's project commits the credentials.
 
     `.env` carries the serving DSN and embedder for the CLI, not for the MCP servers. The servers get
     their variables in their own `env` blocks, because the client's environment is not the shell
@@ -420,6 +437,19 @@ def write_project_files(
         {**_managed_env_values(env_path), "RECALL_DSN": dsn, "RECALL_EMBEDDER": embedder},
     )
     written.append(env_path)
+
+    # Read the way `recall.lite.setup` reads it for its store: the project's own `.gitignore`
+    # lines, not git, so a parent or global ignore rule is not seen and `.env` is added anyway,
+    # which is harmless.
+    if any((folder / ".git").exists() for folder in (project_root, *project_root.resolve().parents)):
+        ignore = project_root / ".gitignore"
+        existing = ignore.read_text(encoding="utf-8", errors="replace") if ignore.exists() else ""
+        patterns = {".env", "/.env", ".env*", "/.env*", "*.env"}
+        if not {line.strip() for line in existing.splitlines()} & patterns:
+            separator = "" if not existing or existing.endswith("\n") else "\n"
+            with ignore.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(f"{separator}.env\n")
+            written.append(ignore)
 
     claude_md = project_root / "CLAUDE.md"
     scaffold_claude_md(claude_md)
@@ -737,6 +767,13 @@ def _register_local_scope_locked(
             conflicts=tuple(conflicts),
             skipped_reason="cannot write private Claude Code configuration: the backup is a symlink",
         )
+    # ⛔ The fixed name is the copy from BEFORE recall was ever registered, which is what uninstall
+    # documents it to be, so it is written once. A re-run, or a second project's registration, gets
+    # a backup of its own under a name never reused, the one uninstall uses for its own backups.
+    if backup.exists():
+        from recall.wizard.uninstall import _backup_path
+
+        backup = _backup_path(target)
     # Preserve the protected body's I/O exception contract; only lock acquisition
     # failures and the explicit unsafe-backup refusal produce skip results.
     _write_private_configuration(backup, raw)

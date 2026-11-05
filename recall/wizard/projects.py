@@ -22,8 +22,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import get_args
 
 from recall.wizard.corpora import CorpusKind, DEFAULT_PROJECT, tenant_for
+from recall.wizard.headless import _provisional_env
 from recall.wizard.stack import (
     COMPOSE_NAME,
     add_tenant_services,
@@ -37,7 +39,7 @@ from recall.errors import RecallError
 #: The kinds every project gets, matching what `corpora.default_plan` builds for the install path.
 #: A project that arrived with fewer would be a second class of project, and the difference would
 #: only show up when something went looking for the missing corpus.
-_KINDS: tuple[CorpusKind, ...] = ("docs", "code", "memory")
+_KINDS: tuple[CorpusKind, ...] = get_args(CorpusKind)
 
 
 @dataclass(frozen=True)
@@ -128,17 +130,13 @@ def add_project(
     # The trust posture a NEW project genuinely has. It has no generation, no calibration and no
     # documents, so `production` would be a claim about a corpus that does not exist yet; a strict
     # server would refuse every query and the user would read that as the add having failed.
-    # The wizard's wiring stage rewrites this per tenant once something certifies.
-    env = {
-        tenant: {
-            "RECALL_DSN": container_dsn(),
-            "RECALL_EMBEDDER": embedder,
-            "RECALL_TENANT": tenant,
-            "RECALL_TRUST_MODE": "development",
-        }
-        for tenant in tenants
-        if tenant not in present
-    }
+    # Nothing rewrites it on certification: an added project stays on development trust until the
+    # wizard is re-run with that project. The mapping is the installer's own, so the two agree.
+    env = _provisional_env(
+        tuple(tenant for tenant in tenants if tenant not in present),
+        dsn=container_dsn(),
+        embedder=embedder,
+    )
 
     if not env:
         added: tuple[str, ...] = ()

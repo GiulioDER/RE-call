@@ -21,6 +21,7 @@ is represented as `None`; a traceback during preflight ends an install over a di
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
@@ -30,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from recall.setup import HardwareProbe, probe_hardware
+from recall.wizard.stack import _no_current_directory_search
 
 #: `docker info` against a dead daemon can sit for a long time. Preflight is allowed to be wrong
 #: about Docker; it is not allowed to hang, so the probe is bounded and a timeout reads as "not
@@ -94,6 +96,7 @@ def _torch() -> Any | None:
 
 def _run(command: list[str], timeout: float) -> subprocess.CompletedProcess[str] | None:
     """Run `command`, returning None on any failure at all. Never raises."""
+    _no_current_directory_search()
     try:
         return subprocess.run(
             command,
@@ -204,6 +207,8 @@ def probe_docker() -> tuple[bool, bool]:
     surprise: installing Docker Desktop does not start it, and the error a user then sees names
     the daemon rather than the application they need to launch.
     """
+    # `shutil.which` searches the current directory first on Windows too, unless this is set.
+    _no_current_directory_search()
     try:
         if not shutil.which("docker"):
             return False, False
@@ -218,6 +223,7 @@ def probe_wsl2() -> bool | None:
     try:
         if sys.platform != "win32":
             return None
+        _no_current_directory_search()
         if not shutil.which("wsl"):
             return False
     except Exception:  # BROAD-CATCH: fail-open
@@ -271,6 +277,7 @@ def probe_cuda_vram() -> int | None:
                     return int(torch.cuda.get_device_properties(0).total_memory)
             except Exception:  # BROAD-CATCH: fail-open
                 pass
+        _no_current_directory_search()
         if not shutil.which("nvidia-smi"):
             return None
     except Exception:  # BROAD-CATCH: fail-open
@@ -378,10 +385,16 @@ def blockers(system: SystemProbe) -> list[str]:
     `systeminfo` would fail closed on a diagnostic.
     """
     found: list[str] = []
-    if system.total_ram_bytes is not None and system.total_ram_bytes < MIN_RAM_BYTES:
-        gib = system.total_ram_bytes / 1024**3
+    # The same reporting slack as `heavy_local_models_are_feasible`, so a machine sold with 4 GB,
+    # which reads as somewhat under 4 GiB, is not refused; one GiB keeps it in and a 3 GB one out.
+    if (
+        system.total_ram_bytes is not None
+        and system.total_ram_bytes < MIN_RAM_BYTES - RAM_REPORTING_SLACK_BYTES
+    ):
+        # Floored, not rounded, so the figure printed can never reach the floor it is said to miss.
+        gib = math.floor(system.total_ram_bytes / 1024**3 * 10) / 10
         found.append(
-            f"This machine reports {gib:.1f} GB of memory, below the {MIN_RAM_BYTES // 1024**3} GB "
+            f"This machine reports {gib:.1f} GiB of memory, below the {MIN_RAM_BYTES // 1024**3} GiB "
             "needed to run PostgreSQL and an embedding model together."
         )
     if not system.docker_installed:

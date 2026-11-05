@@ -14,11 +14,11 @@ are withheld entirely rather than shown as unavailable, matching
 fix, whereas this is a decision they already made, and re-offering it invites undoing it by
 accident.
 
-**The catalogue is fetched, not hardcoded.** `recall/setup.py:625` already carries the reason as a
-comment — "a static list inside a released artifact, and the provider's roster is not ours" — and
-was proved right by its own `gpt-4o-mini` default going two generations stale. The pinned list here
-is a fallback for when the fetch fails, not the source of truth, and manual entry stays last on
-every provider.
+**The catalogue is fetched, not hardcoded.** `recall.setup.reasoning_model_choices` already carries
+the reason in its docstring ("a static list inside a released artifact, and the provider's roster
+is not ours"), and was proved right by its own `gpt-4o-mini` default going two generations
+stale. The pinned list here is a fallback for when the fetch fails, not the source of truth, and
+manual entry stays last on every provider.
 
 **Keys go to `.env` only.** Nothing at serving time needs one, and `.mcp.json` is a file users
 commit.
@@ -31,11 +31,13 @@ import re
 import random
 import urllib.error
 import urllib.request
+from collections import Counter
 from dataclasses import dataclass
 from collections.abc import Sequence
 from typing import Any, Protocol
 
 from recall.eval.synthetic import _OFFTOPIC_TEMPLATES
+from recall.eval.vocab import word_tokens
 from recall.observability import get_logger
 from recall.setup import (
     LOCAL_BASE_URL_DEFAULT,
@@ -86,9 +88,16 @@ DEFAULT_OPENAI_MODEL = "gpt-5.6-luna"
 CHUNKS_PER_PROMPT_MULTIPLIER = 3
 
 #: The real bound on prompt size. Counting chunks alone sent 120 of them at the default, which
-#: measured 75 000 characters (~18 800 tokens) on this repository's `docs/` — not the "roughly 8k
+#: measured 75 000 characters (~18 800 tokens) on this repository's `docs/`, not the "roughly 8k
 #: in" the docstring claimed, and more than an 8k or 16k context local endpoint can take. The
 #: local endpoint is offered first and unconditionally, so the budget has to suit it.
+#:
+#: 🔁 Corrected: this used to imply the budget suits an 8k endpoint, and the arithmetic does not
+#: support that. It bounds the EXCERPTS only: not the system prompt, not the separators, and not
+#: the reply, for which nothing is reserved (`generate_llm` asks for `2 * per_class` questions of
+#: each class, 160 at the default). Estimated, not measured against an endpoint: about 6k input
+#: tokens for prose at 4 characters per token, about 8k for code at 3, plus roughly 3k of output.
+#: So it suits a context of 16k or more; an 8k endpoint can truncate or refuse the reply.
 MAX_PROMPT_CHARS = 24_000
 
 #: How many entries the model menu shows. See `model_choices`.
@@ -470,7 +479,8 @@ def openai_catalogue(api_key: str) -> list[CatalogueModel]:
 def model_choices(base_url: str, *, api_key: str = "") -> list[Choice]:
     """A menu for `base_url`: the default first, live ids after it, manual entry last.
 
-    No price appears in a label. `recall/setup.py:631` states the convention and the reason: a
+    No price appears in a label. `recall.setup.reasoning_model_choices` states the convention and
+    the reason: a
     number in a shipped menu is a measurement nothing re-checks. The live catalogue carries prices
     for a caller that wants to show them next to the id it just fetched.
     """
@@ -628,11 +638,6 @@ def _corpus_subject_words(chunks: Sequence[str]) -> set[str]:
     default that raised `QuerySetError` on every real corpus — after the paid model call had
     already been made. A three-chunk test fixture with 24 word types cannot show this.
     """
-    from collections import Counter
-
-    from recall.eval.vocab import word_tokens
-    from recall.wizard.queryset import _is_prose, _STOPWORDS
-
     total = max(1, len(chunks))
     df: Counter[str] = Counter()
     tf: Counter[str] = Counter()
@@ -656,6 +661,16 @@ def _corpus_subject_words(chunks: Sequence[str]) -> set[str]:
     return subject_words
 
 
+#: The offline generator's reusable template vocabulary, which `_reuses_corpus_vocabulary` ignores.
+#: Built once: the templates are constants, and the check runs once per gap question.
+_TEMPLATE_WORDS = frozenset(
+    word
+    for template in _OFFTOPIC_TEMPLATES
+    for word in word_tokens([template.replace("{s}", "")])
+    if _is_prose(word) and word not in _STOPWORDS
+)
+
+
 def _reuses_corpus_vocabulary(query: str, subject_words: set[str]) -> bool:
     """Whether `query` leans on the corpus's SUBJECT MATTER.
 
@@ -666,17 +681,10 @@ def _reuses_corpus_vocabulary(query: str, subject_words: set[str]) -> bool:
     fixed offline generator uses the same subject test, so its reusable template vocabulary is
     removed before comparing the question with the corpus.
     """
-    from recall.eval.vocab import word_tokens
-    template_words = {
-        word
-        for template in _OFFTOPIC_TEMPLATES
-        for word in word_tokens([template.replace("{s}", "")])
-        if _is_prose(word) and word not in _STOPWORDS
-    }
     content = {
         w for w in word_tokens([query]) if _is_prose(w) and w not in _STOPWORDS
     }
-    return bool((content - template_words) & subject_words)
+    return bool((content - _TEMPLATE_WORDS) & subject_words)
 
 
 def generate_llm(
@@ -750,13 +758,13 @@ def generate_llm(
     corpus_words = _corpus_subject_words(chunks)
     entries: list[dict[str, Any]] = []
     for item in payload.get("answerable") or []:
-        query = (item or {}).get("query")
+        query = item.get("query")
         if isinstance(query, str) and query.strip():
             entries.append({"query": query.strip(), "answerable": True})
 
     dropped = 0
     for item in payload.get("unanswerable") or []:
-        query = (item or {}).get("query")
+        query = item.get("query")
         if not isinstance(query, str) or not query.strip():
             continue
         if _reuses_corpus_vocabulary(query, corpus_words):

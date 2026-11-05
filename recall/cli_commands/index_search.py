@@ -28,7 +28,7 @@ from recall.scope import Scope
 from recall.backends import lite_route_refusal, open_legacy_store, write_session
 from recall.lite import LiteStore, LiteStoreError, LiteWriterBusy, is_lite_dsn, lite_dsn_path
 from recall.lite.writer_lock import queued_notice
-from recall.store import PgVectorStore
+from recall.store import DEFAULT_TABLE, PgVectorStore
 from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustRefusal
 from recall.types import TrustedResult
@@ -77,8 +77,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         description=(
             "Read a folder, chunk and embed what is in it, and write the chunks into --table for "
             "--tenant. Incremental: a file whose content hash is unchanged is skipped, and a file "
-            "that has vanished from disk is PRUNED, which is why two corpora must never share one "
-            "tenant. The embedder must be the same one the table was built with; a mismatch in "
+            "under the indexed folder that has vanished from disk is PRUNED; rows indexed from "
+            "other folders are left alone. The embedder must be the same one the table was built with; a mismatch in "
             "width is refused, and a mismatch in model at the same width is not detectable here."
         ),
     )
@@ -126,8 +126,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         description=(
             "Permanently delete every chunk belonging to the named source(s). This is the "
             "right-to-erasure path and it is IRREVERSIBLE in both stores. On the legacy table the "
-            "rows are deleted, and only re-indexing a file still on disk restores them. Under "
-            "RECALL_ENV=production a PERMANENT TOMBSTONE is also written, and no future generation "
+            "rows are deleted, and only re-indexing a file still on disk restores them. On the "
+            "generation route (RECALL_INDEX_MODE=generation, the default under RECALL_ENV="
+            "production) a PERMANENT TOMBSTONE is also written, and no future generation "
             "build will re-admit that URI even if the file is there; nothing deletes a tombstone "
             "and there is no `unforget`. Name a source exactly as stored, which is the `source` "
             "field printed by `recall search`; a name matching more than one stored source (a `recall index` path and a generation's file:// URI for one memo) is refused as ambiguous, and the refusal lists the exact names to pass. A source this store has never seen is reported as NOT "
@@ -173,7 +174,8 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "withdraw",
         description=(
             "Withdraw memory that was a MISTAKE: erase the named source(s) exactly as `recall "
-            "forget` does (IRREVERSIBLE, tombstoned under RECALL_ENV=production), and give back "
+            "forget` does (IRREVERSIBLE, and tombstoned on the generation route, "
+            "RECALL_INDEX_MODE=generation, the default under RECALL_ENV=production), and give back "
             "what they superseded. `forget` keeps retired whatever a memo superseded; `withdraw` "
             "voids its `supersedes:` claims, so what it replaced is current again, and whatever "
             "superseded it now supersedes what it replaced (in a -> b -> c, withdrawing b leaves a "
@@ -246,6 +248,11 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "time, so a corpus indexed before this existed carries none and every facet filter "
         "returns nothing until it is rebuilt.",
     )
+    p_search.add_argument(
+        "--locale",
+        help="optional presentation language for an additive localized display; canonical text "
+        "and evidence remain unchanged",
+    )
     p_scopes = sub.add_parser(
         "scopes",
         help="list the folders or facets you can filter a search by",
@@ -267,12 +274,6 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "frontmatter declares. Default: folder.",
     )
 
-    p_search.add_argument(
-        "--locale",
-        help="optional presentation language for an additive localized display; canonical text "
-        "and evidence remain unchanged",
-    )
-
 
 def register_demo_code(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     sub.add_parser(
@@ -281,8 +282,10 @@ def register_demo_code(sub: argparse._SubParsersAction[argparse.ArgumentParser])
         description=(
             "Index the relative path `corpus` and run sample queries against it. ⚠️ That path "
             "exists in a git clone and NOT in a `pip install`, so from an installed package this "
-            "indexes an absent directory. `recall quickstart` is the pip-install equivalent: it "
-            "carries its corpus inside the wheel and provisions its own database."
+            "indexes an absent directory. It refuses the default table `chunks`, where real "
+            "memory lives: pass --table with a scratch table. `recall quickstart` is the "
+            "pip-install equivalent: it carries its corpus inside the wheel and provisions its "
+            "own database."
         ),
     ).set_defaults(
         _opens_db=True, func=_cmd_demo
@@ -595,6 +598,13 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
             )
             if unseen:
                 print(unseen_note)
+            if gen_store is not None and targets:
+                # The irreversible half of an erasure on this route, stated before --yes rather
+                # than discovered when a later build silently skips the URI (CCA DOC-021).
+                print(
+                    "on the generation route each of these is also TOMBSTONED: no future "
+                    "generation build re-admits it, and nothing deletes a tombstone."
+                )
             print("nothing deleted — re-run with --yes to actually delete.")
         else:
             # One source per call: `delete_sources` commits a separate transaction each,
@@ -640,7 +650,8 @@ def refusal_message(exc: TrustRefusal) -> str:
 
     - **The code, first and alone on its line.** `TrustFailureCode` is a published interface that
       callers automate on, and the spelling is pinned by test. Someone reading this error is one
-      grep away from the table in `docs/CALIBRATION.md` that explains it.
+      link away from the table in `docs/CALIBRATION.md` that explains it, printed by its
+      published URL because the wheel ships no `docs/`.
     - **`exc.advice`**, which already exists for precisely this and states, per code, that no
       trustworthy decision was possible. That distinction -- the gate could not run, as against
       the gate ran and found nothing -- is the whole reason the codes exist, so it must survive
@@ -677,38 +688,46 @@ def refusal_message(exc: TrustRefusal) -> str:
         # it without saying what it costs is how a workaround outlives the problem it solved.
         "To look at results while you finish setting up, RECALL_TRUST_MODE=development retrieves",
         "and marks every result degraded with no certified threshold behind it. It is for",
-        "inspection, not for serving. docs/CALIBRATION.md explains every code above.",
+        "inspection, not for serving. Every code above is explained in",
+        "https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md",
     ]
     return "\n".join(lines)
+
+
+def _refuse_under_source_policy(command: str, reason: str) -> None:
+    """Refuse `command` when a source policy is configured that `command` cannot enforce."""
+    try:
+        source_policy = load_source_policy()
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"{command}: cannot load source policy ({type(exc).__name__})"
+        ) from exc
+    if source_policy is not None:
+        raise SystemExit(f"{command}: source policy is configured, but {reason}")
 
 
 def _cmd_scopes(args: argparse.Namespace) -> None:
     # Inventory aggregates cannot currently apply source authorization. Refuse before reading
     # even Lite metadata: labels and counts can reveal sources that this caller cannot retrieve.
-    try:
-        source_policy = load_source_policy()
-    except (OSError, ValueError) as exc:
-        raise SystemExit(
-            f"recall scopes: cannot load source policy ({type(exc).__name__})"
-        ) from exc
-    if source_policy is not None:
-        raise SystemExit(
-            "recall scopes: source policy is configured, but scope inventory cannot enforce "
-            "source authorization"
-        )
+    _refuse_under_source_policy(
+        "recall scopes", "scope inventory cannot enforce source authorization"
+    )
     # Scope inventory reads only provenance and counts. It deliberately does not resolve an
     # embedder, because the command is documented as a cheap metadata listing and must work on a
     # minimal install without optional embedding packages. The sentinel dimension is unused here;
     # schema compatibility is checked by embedding commands that actually consume vectors.
     metadata_dimension = 1
+    from recall.runtime_route import RouteConfigurationError
+
+    try:
+        # The same route `search` filters, so a folder listed here is one search can find; the
+        # environment alone disagreed with it under RECALL_INDEX_MODE=generation in development.
+        route = _runtime_route(args)
+    except RouteConfigurationError as exc:
+        raise SystemExit(f"recall scopes: {exc}") from exc
     if is_lite_dsn(args.dsn):
         from recall.cli_commands._lite import lite_read_meta
-        from recall.runtime_route import RouteConfigurationError
 
-        try:
-            route = _runtime_route(args)
-        except RouteConfigurationError as exc:
-            raise SystemExit(f"recall scopes: {exc}") from exc
         if (refusal := lite_route_refusal(args.dsn, route)) is not None:
             raise SystemExit(refusal)
         meta = lite_read_meta("recall scopes", args)
@@ -727,14 +746,6 @@ def _cmd_scopes(args: argparse.Namespace) -> None:
             rows, undeclared = cast("LiteStore", store).scope_summary(args.dimension)
         _print_scopes(args.dimension, rows, undeclared)
         return
-    from recall.runtime_route import RouteConfigurationError
-
-    try:
-        # The same route `search` filters, so a folder listed here is one search can find; the
-        # environment alone disagreed with it under RECALL_INDEX_MODE=generation in development.
-        route = _runtime_route(args)
-    except RouteConfigurationError as exc:
-        raise SystemExit(f"recall scopes: {exc}") from exc
     if route.uses_generation:
         from recall.generation_store import GenerationStore
 
@@ -760,7 +771,8 @@ def _print_scopes(dimension: str, rows: list[tuple[str, int, int]], undeclared: 
         # printed as text, never interpreted. The root folder's value is the empty string, which
         # prints as nothing and reads as a rendering bug, so it is named.
         shown_rows = [(terminal_safe(value) if value else "(root)", chunks, documents) for value, chunks, documents in rows]
-        width = max(len(shown) for shown, _c, _d in shown_rows)
+        # The header is a row too: values shorter than it would leave its columns misaligned.
+        width = max(len(label), *(len(shown) for shown, _c, _d in shown_rows))
         print(f"{label:<{width}}  {'chunks':>7}  {'docs':>5}")
         for shown, chunks, documents in shown_rows:
             print(f"{shown:<{width}}  {chunks:>7}  {documents:>5}")
@@ -791,6 +803,12 @@ def _cmd_search(args: argparse.Namespace) -> None:
     # entailment judge is refused rather than served the wider, unjudged results.
     _refuse_removed_entailment()
     route = _runtime_route(args)
+    # Before the embedder and the store: an empty `--folder "$DIR"` is a typing mistake, and it
+    # must not cost a model load or a connection before it is reported (CCA BUG-010).
+    try:
+        scope = _search_scope(args)
+    except ValueError as exc:
+        raise SystemExit(f"recall search: {exc}") from exc
     embedder = _make_embedder(args.embedder)
     # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
     #
@@ -819,7 +837,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
         )
     with store_context as store:
         store.check_schema()
-        _search_policy, _search_calibration = _cli_trust(embedder, calibration)
+        policy, search_calibration = _cli_trust(embedder, calibration)
         source_security_policy = load_source_policy()
         source_access_context = (
             access_context_from_environment(args.tenant, purpose="retrieval")
@@ -834,7 +852,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
         # policy decision with a rendered form, while an exception from the printing below would
         # be a real bug and must keep its traceback.
         try:
-            _search_result = trusted_search(
+            result = trusted_search(
                 store,
                 embedder,
                 args.query,
@@ -843,9 +861,9 @@ def _cmd_search(args: argparse.Namespace) -> None:
                 # library before any of this command's own guards were reached. Clamped at
                 # the source; the clamp in `_print_evidence` stays as defence in depth.
                 k=max(1, args.k),
-                scope=_search_scope(args),
-                calibration=_search_calibration,
-                policy=_search_policy,
+                scope=scope,
+                calibration=search_calibration,
+                policy=policy,
                 security_policy=source_security_policy,
                 access_context=source_access_context,
                 document_expansion=(
@@ -856,12 +874,12 @@ def _cmd_search(args: argparse.Namespace) -> None:
         except TrustRefusal as exc:
             raise SystemExit(refusal_message(exc)) from exc
         print(f"  route: {route.describe()}")
-        _print_result(_search_result)
+        _print_result(result)
         if args.locale:
-            _print_localized_result(_search_result, args.locale)
+            _print_localized_result(result, args.locale)
         if args.evidence:
             _print_evidence(
-                _search_result,
+                result,
                 max_items=args.k,
                 document_mode=args.expand_documents,
             )
@@ -871,6 +889,22 @@ def _cmd_demo(args: argparse.Namespace) -> None:
     # Checked first, as `search` does: a configuration that still asks for the removed
     # entailment judge is refused before the embedder loads a model or probes a provider.
     _refuse_removed_entailment()
+    # The demo indexes, and prints names and previews of hits, without a source policy.
+    _refuse_under_source_policy(
+        "recall demo", "the demo indexes and prints hits without source authorization"
+    )
+    # `chunks` is where every real legacy corpus lives, so fictional demo documents (or whatever
+    # folder named `corpus` sits in the cwd) indexed there would be retrieved beside real memory
+    # (CCA STAKES-008). Refused rather than redirected: a scratch table is one flag away, and
+    # `recall quickstart` already isolates its own corpus.
+    # Compared case-folded: PostgreSQL folds an unquoted `Chunks` to the same table.
+    if args.table.lower() == DEFAULT_TABLE:
+        raise SystemExit(
+            f"recall demo: refusing to index the demo corpus into {DEFAULT_TABLE!r}, the table "
+            "real memory is kept in. Pass --table with a scratch table (prepared with "
+            "`recall --table <name> schema apply`), or run `recall quickstart`, which keeps its "
+            "corpus in a table and tenant of its own."
+        )
     route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     # Never auto-loaded; see the note beside `calibration = None` in `_cmd_search` above.
@@ -907,6 +941,9 @@ def _cmd_demo(args: argparse.Namespace) -> None:
 def _cmd_code(args: argparse.Namespace) -> None:
     # Checked first, as in `_cmd_demo`.
     _refuse_removed_entailment()
+    _refuse_under_source_policy(
+        "recall code", "it indexes and prints hits without source authorization"
+    )
     route = _runtime_route(args)
     embedder = _make_embedder(args.embedder)
     # Never auto-loaded; see the note beside `calibration = None` in `_cmd_search` above.
@@ -936,6 +973,8 @@ def _cmd_code(args: argparse.Namespace) -> None:
             ],
             calibration,
         )
+
+
 def _runtime_route(args: argparse.Namespace) -> RuntimeRoute:
     """Use the route resolved by `recall.cli`, with a library-test fallback."""
 

@@ -25,21 +25,21 @@ be distinguishable from "this is fine".
 from __future__ import annotations
 
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from itertools import zip_longest
+from typing import TYPE_CHECKING, LiteralString
 
+from recall.dsn_security import _connection_parameters, _is_local_host
 from recall.store import scrub_dsn_secrets
+
+if TYPE_CHECKING:
+    import psycopg
 
 __all__ = [
     "DatabaseReport",
     "Finding",
-    "LOCAL_HOSTS",
     "is_local_host",
     "probe_database",
 ]
-
-#: Hosts that mean "this machine". Kept beside `is_local_host` rather than inlined because the
-#: credentials guard in `recall.store` makes the same distinction, and two lists would drift.
-LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", ""})
 
 #: How long to wait for a connection before calling the host unreachable. Short: a person is
 #: watching, and a wrong hostname should not cost them a minute of silence.
@@ -73,8 +73,9 @@ class DatabaseReport:
 
     dsn: str
     findings: tuple[Finding, ...] = ()
-    #: Reported separately because the credentials guard keys on it and because a remote database
-    #: changes what advice makes sense.
+    #: Reported separately because a remote database changes what advice makes sense. Decided by
+    #: the credential guard's own predicate (`recall.dsn_security._is_local_host`), so the two
+    #: cannot disagree about what "this machine" is; nothing in the guard reads this field.
     remote: bool = False
     server_version: str = ""
     existing_dimension: int | None = None
@@ -105,14 +106,27 @@ def is_local_host(dsn: str) -> bool:
     Parsed rather than substring-matched: `postgresql://user@db.example.invalid/localhost` contains
     the word and is not local, and a database named after a local host is not a rare joke, it is
     what happens when somebody names a database after the machine it replaced.
+
+    Parsed as libpq parses it, through the same `_connection_parameters` and `_is_local_host` the
+    credential guard (`recall.dsn_security.warn_if_insecure_dsn`) uses, and every host must be
+    local. `urlsplit` read a keyword DSN (`host=db.example.com dbname=recall`) and a `?host=` URI
+    as hostless, and hostless counted as local, so a remote database was reported as this machine.
     """
+    from psycopg import ProgrammingError
+
     try:
-        host = urlsplit(dsn).hostname
-    except ValueError:
-        # An unparseable DSN is not local, because we cannot show that it is, and the consequence
-        # of guessing "local" is skipping the credentials guard.
+        parts = _connection_parameters(dsn)
+    except (ProgrammingError, ValueError, LookupError):
+        # An unparseable DSN, or one naming a service whose host cannot be established, is not
+        # local, because we cannot show that it is.
         return False
-    return (host or "") in LOCAL_HOSTS
+    # hostaddr is the actual destination when supplied, as in the credential guard.
+    hosts = str(parts.get("host") or "").split(",")
+    addresses = str(parts.get("hostaddr") or "").split(",")
+    return all(
+        _is_local_host((address or name).lower())
+        for name, address in zip_longest(hosts, addresses, fillvalue="")
+    )
 
 
 def probe_database(
@@ -206,7 +220,7 @@ def probe_database(
     )
 
 
-def _scalar(connection: object, sql: str) -> object:
+def _scalar(connection: psycopg.Connection, sql: LiteralString) -> object:
     """One value, or None if the statement fails for any reason.
 
     Swallowing here is deliberate and bounded: every caller treats None as "could not determine"
@@ -214,7 +228,7 @@ def _scalar(connection: object, sql: str) -> object:
     rather than ending the preflight.
     """
     try:
-        row = connection.execute(sql).fetchone()  # type: ignore[attr-defined]
+        row = connection.execute(sql).fetchone()
     except Exception:  # noqa: BLE001 - see the docstring; a failed probe is a finding, not a crash.  # BROAD-CATCH: fail-open
         return None
     if not row:
@@ -222,7 +236,7 @@ def _scalar(connection: object, sql: str) -> object:
     return row[0]
 
 
-def _check_vector(connection: object) -> Finding:
+def _check_vector(connection: psycopg.Connection) -> Finding:
     """Is pgvector usable, and if not, can this database install it?
 
     Three states, not two, because the advice differs completely. Installed is fine. Available but
@@ -257,7 +271,7 @@ def _check_vector(connection: object) -> Finding:
     )
 
 
-def _check_create_privilege(connection: object) -> Finding:
+def _check_create_privilege(connection: psycopg.Connection) -> Finding:
     """Can this role create the objects the schema needs?
 
     Asked of the current schema rather than assumed from the role name. A read-only user is a
@@ -290,7 +304,9 @@ def _check_create_privilege(connection: object) -> Finding:
     )
 
 
-def _check_dimension(connection: object, expected: int | None) -> tuple[int | None, Finding]:
+def _check_dimension(
+    connection: psycopg.Connection, expected: int | None
+) -> tuple[int | None, Finding]:
     """Does an existing `chunks.embedding` match the embedder we are about to use?
 
     ⚠️ **This is the check that pays for the module.** A dimension mismatch does not fail during

@@ -9,9 +9,12 @@ of any real provenance.
 Measured directly: a verified and an unverified generation over one corpus, both promoted, both
 searched under `RECALL_ENV=production`, both refused identically with `CALIBRATION_MISSING`.
 `verified` is not consulted on the serving path. `require_production_identity` does refuse an
-unverified pipeline, but only when BUILDING under `RECALL_ENV=production`, and that path is
-unreachable for a local corpus because the `file://` manifest check fires first. So this buys real
-provenance and a future S3 build, not a fix.
+unverified pipeline, but only when BUILDING under `RECALL_ENV=production`: it refuses an embedder
+with no immutable revision or artifact digest. 🔁 This used to say that path is unreachable for a
+local corpus because the `file://` manifest check fires first; nothing gates `file://` on the
+environment (`ManifestObjectV1` accepts it alongside `s3://` unconditionally), which is the
+correction `recall.wizard.pipeline._BUILD_ENVIRONMENTS` records. So this buys real provenance,
+not a fix.
 
 **Digesting what was downloaded is a better identity than a Hub revision, not a substitute for
 one.** fastembed serves `BAAI/bge-small-en-v1.5` out of `qdrant/bge-small-en-v1.5-onnx-q`, a
@@ -30,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -208,6 +212,13 @@ def _artifact_digest(directory: Path) -> str:
     return digest.hexdigest()
 
 
+#: One identity per embedder INSTANCE. The wizard holds one embedder for every calibrated corpus,
+#: and the digest streams the whole model directory, which for a large model is over a gigabyte
+#: read once per corpus for an identical answer. Weak keys, so an id reused by a later object can
+#: never return a stale identity, and a new instance (a re-downloaded model) is hashed afresh.
+_IDENTITIES: weakref.WeakKeyDictionary[Any, ArtifactIdentity | None] = weakref.WeakKeyDictionary()
+
+
 def artifact_identity_for(embedder: Any) -> ArtifactIdentity | None:
     """What `embedder` can prove about the weights it loaded, or `None`.
 
@@ -215,15 +226,27 @@ def artifact_identity_for(embedder: Any) -> ArtifactIdentity | None:
     `openai` keep theirs on somebody else's machine. The caller acts on it by building
     `--unverified-development` and saying so, rather than by failing.
     """
+    # Guarded on the class, because `provider` below is written verbatim into a lineage record
+    # that is treated as immutable evidence. The attribute chains probed by `_model_directory` are
+    # generic (`_model_dir` is not a fastembed-only name), so without this a
+    # SentenceTransformer-backed embedder that grew a model directory would be stamped with
+    # fastembed provenance.
+    if type(embedder).__name__ != "FastEmbedEmbedder":
+        return None
     try:
-        # Guarded on the class, because `provider` below is written verbatim into a lineage record
-        # that is treated as immutable evidence. The attribute chains probed by
-        # `_model_directory` are generic (`_model_dir` is not a fastembed-only name), so without
-        # this a SentenceTransformer-backed embedder that grew a model directory would be stamped
-        # with fastembed provenance.
-        if type(embedder).__name__ != "FastEmbedEmbedder":
-            return None
+        return _IDENTITIES[embedder]
+    except KeyError:
+        identity = _identity_of(embedder)
+    except TypeError:
+        # Not weakly referenceable or not hashable, so it cannot be a memo key: computed each time.
+        return _identity_of(embedder)
+    _IDENTITIES[embedder] = identity
+    return identity
 
+
+def _identity_of(embedder: Any) -> ArtifactIdentity | None:
+    """The uncached body of `artifact_identity_for`, for an embedder that passed its class guard."""
+    try:
         directory = _model_directory(embedder)
         if directory is None:
             return None

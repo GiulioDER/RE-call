@@ -166,6 +166,8 @@ class _FakeCursor:
 class _FakeConnection:
     def __init__(self, log: list[str]) -> None:
         self._log = log
+        # SEC-007 (second CCA hunt): the controller password is hashed client side first.
+        self.pgconn = SimpleNamespace(encrypt_password=lambda *_args: b"SCRAM-SHA-256$fake")
 
     def __enter__(self) -> _FakeConnection:
         return self
@@ -226,12 +228,15 @@ def test_a_failed_controller_login_grants_nothing_to_the_new_role(
 def test_registering_servers_without_the_mcp_extra_is_a_reported_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """DEPLOY-001. Invariant: when `mcp` is not importable, the wizard names the missing extra in
-    the report and the install is not ok. Failure caught: the registered servers each died on
-    `import mcp` while the wizard printed install complete. Target: `headless.run_headless`."""
+    """DEPLOY-001. Invariant: when `mcp` is not importable, the wizard names the missing extra and
+    the install does not complete. Failure caught: the registered servers each died on
+    `import mcp` while the wizard printed install complete. Target: `headless.run_headless`.
+
+    Since the second CCA hunt (DEPLOY-010) the refusal comes before anything is built, so this
+    control now expects the refusal rather than a failed report."""
     import importlib.util
 
-    from recall.wizard.headless import run_headless
+    from recall.wizard.headless import ConfigRefusal, run_headless
     from tests.test_wizard_state import _config, _CountingSpy
 
     real_find_spec = importlib.util.find_spec
@@ -245,15 +250,12 @@ def test_registering_servers_without_the_mcp_extra_is_a_reported_failure(
     client = tmp_path / ".claude.json"
     client.write_text(json.dumps({"projects": {}}), encoding="utf-8")
 
-    report = run_headless(
-        _config(tmp_path, project_root=str(root)),
-        services=_CountingSpy(),
-        claude_config_path=client,
-    )
-
-    wiring = [f.error for f in report.failures if f.tenant == "wiring"]
-    assert any('recall-rag[mcp]' in error for error in wiring), report.failures
-    assert report.ok is False
+    with pytest.raises(ConfigRefusal, match=r"recall-rag\[mcp\]"):
+        run_headless(
+            _config(tmp_path, project_root=str(root)),
+            services=_CountingSpy(),
+            claude_config_path=client,
+        )
 
 
 # ----------------------------------------------------------------------------------------------
