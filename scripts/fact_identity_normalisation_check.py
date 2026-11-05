@@ -144,6 +144,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.sqlite:
         counts: dict[str, Any] = _sqlite_counts(args.sqlite)
+        if not counts:
+            # A file holding none of the tables (the wrong file, or a store from before them)
+            # printed 0 and exited 0, which reads as nothing to re-key (2026-11-05, ENV-004).
+            tables = ", ".join(sorted({table for table, _column, _kind in TABLES}))
+            print(f"{args.sqlite}: none of {tables} found; not a fact ledger", file=sys.stderr)
+            return 2
     else:
         dsn = args.dsn or os.environ.get(args.dsn_env, "").strip()
         if not dsn:

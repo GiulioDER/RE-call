@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 355
-Cross package edges: 376
+Cross package edges: 377
 
 ## Highest fan in modules
 
@@ -77,9 +77,9 @@ Cross package edges: 376
 | 16 | `recall.cli_commands.setup_wizard` |
 | 16 | `recall.dashboard.server` |
 | 16 | `recall.generation_store` |
+| 16 | `recall_mcp.lifecycle` |
 | 16 | `recall_mcp.semantic_graph_cache` |
 | 15 | `recall_mcp.graph_first_api` |
-| 15 | `recall_mcp.lifecycle` |
 | 15 | `recall_mcp.query_construction_api` |
 | 14 | `recall.calibration_v2` |
 | 14 | `recall.cli_commands.provenance_cmd` |
@@ -253,6 +253,7 @@ They are observations, not automatic failures.
 | `recall_mcp.lifecycle` | `recall.lite` |
 | `recall_mcp.lifecycle` | `recall.lite.assistant_memos` |
 | `recall_mcp.lifecycle` | `recall.observability` |
+| `recall_mcp.lifecycle` | `recall.provenance_controller` |
 | `recall_mcp.lifecycle` | `recall.security_policy` |
 | `recall_mcp.lifecycle` | `recall.store` |
 | `recall_mcp.lifecycle` | `recall.uploads` |
@@ -679,7 +680,7 @@ They are observations, not automatic failures.
 | `recall.proof_provider` | 4 | 11 |
 | `recall.provenance_card_hash` | 0 | 0 |
 | `recall.provenance_cards` | 5 | 41 |
-| `recall.provenance_controller` | 4 | 23 |
+| `recall.provenance_controller` | 5 | 23 |
 | `recall.provenance_json` | 0 | 0 |
 | `recall.provider_metadata` | 0 | 0 |
 | `recall.query_anchor_admission` | 0 | 0 |
@@ -818,7 +819,7 @@ They are observations, not automatic failures.
 | `recall_mcp.graph_first_api` | 15 | 144 |
 | `recall_mcp.graph_projection` | 6 | 45 |
 | `recall_mcp.indexing` | 20 | 124 |
-| `recall_mcp.lifecycle` | 15 | 123 |
+| `recall_mcp.lifecycle` | 16 | 123 |
 | `recall_mcp.limits` | 5 | 15 |
 | `recall_mcp.lite_refresh` | 5 | 107 |
 | `recall_mcp.models` | 2 | 5 |

@@ -287,35 +287,57 @@ def test_num001_a_value_asserted_again_after_its_forgotten_successor_is_current(
     assert _current_objects(backend) == ["Turin"]
 
 
-def test_stakes003_an_application_racing_a_forget_is_retracted_and_erased(backend: Backend):  # noqa: F811
+def test_stakes003_an_application_racing_a_forget_is_retracted_and_erased(
+    backend: Backend, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+):
     """STAKES-003: a forget of a card's memo landing between the controller's card check and the
     append left the assertion appended after the forget's retraction: current, never retracted,
     its value never erased. The forget now waits for the application (its erasure lock), then
     retracts and erases what it appended.
 
-    The forget runs in a thread started from inside the card check; the check waits up to two
-    seconds for it. Pre-fix it completes there, before the append.
+    The forget runs in a thread started from inside the card check. The check waits briefly for
+    the forget to get past its locks (into `_forget_memory_unlocked`); if it does, nothing holds a
+    lock against it, and the check waits for the whole forget, so the forget completes before the
+    append however slow it is. If it does not, the application goes on and the forget follows it.
+    It used to wait for the whole forget for a flat two seconds, paid on every green run, and a
+    slow runner could let a regression pass (2026-11-05 deferred pass, CODE-006).
 
-    Red proof: against the pre-fix controller, lifecycle and ledgers (snapshot 2026-11-04) the
-    fact was still current after both finished and the first assertion failed, on lite and PostgreSQL.
+    Red proof: against the pre-fix controller, lifecycle and ledgers (snapshot 2026-11-04), and
+    with the erasure lock mutated to `nullcontext()` (2026-11-05: `recall_mcp.lifecycle._erasure_lock`
+    for PostgreSQL, `LiteFactLedger.erasure_lock` for lite), the forget ran first, the racer and
+    APPLIED assertions passed, and `assert _current_objects(backend) == []` failed with
+    `['Turin'] == []` (DOC-007).
     """
+    import recall_mcp.lifecycle as lifecycle
+
     backend.remember("a.md")
     card = evidence_card(CITY, tenant=backend.tenant, generation=GEN, chunk="chunk-a.md", source="a.md")
     backend.cards.put((card,))
     errors: list[BaseException] = []
+    started, done = threading.Event(), threading.Event()
+    real_unlocked = lifecycle._forget_memory_unlocked
+
+    def observed(*args, **kwargs):
+        started.set()
+        return real_unlocked(*args, **kwargs)
+
+    monkeypatch.setattr(lifecycle, "_forget_memory_unlocked", observed)
 
     def forget() -> None:
         try:
             forget_memory(backend.store, ["a.md"])
         except BaseException as exc:  # recorded and re-raised below
             errors.append(exc)
+        finally:
+            done.set()
 
     racer = threading.Thread(target=forget)
 
     def digest(_card) -> str:
-        if not racer.is_alive() and racer.ident is None:
+        if racer.ident is None:
             racer.start()
-            racer.join(timeout=2)
+            if started.wait(0.5):
+                done.wait(60)
         return "digest"
 
     decision = ProvenanceController(
@@ -531,3 +553,225 @@ def test_env004_a_card_is_checked_at_the_instant_its_assertion_is_stamped():
         f"at {card.valid_until} (decision {decision.code})"
     )
     assert decision.code == DecisionCode.APPLIED
+
+
+# The deferred pass over run 20261104T185256Z (run 20261105T095124Z).
+
+
+def test_bug003_a_reconcile_with_nothing_to_record_takes_no_erasure_lock(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """BUG-003: the stated reconcile took the erasure lock before finding it had nothing to
+    record, so every no-op reconcile opened a PostgreSQL connection and one waiting behind a
+    forget reported the reconcile failed.
+
+    Red proof: against the pre-fix stated_facts (snapshot of run 20261105T095124Z) the second
+    reconcile took the lock once and `assert taken == []` failed with `[True] == []`.
+    """
+    import recall.stated_facts as stated
+    from recall.lite import LiteStore
+    from recall.lite.facts import LiteFactLedger
+    from tests.test_stated_facts import DIM, memo, refreshed
+
+    with LiteStore(root.parent / ".recall" / "memory.db", dim=DIM) as store:
+        memo(root / "memory", "door.md", facts=[{"subject": "user", "predicate": "door_code", "object": "4512"}])
+        refreshed(store, root, key_root=root)
+        taken: list[bool] = []
+        real_lock = LiteFactLedger.erasure_lock
+
+        def recording(self, *, shared: bool):
+            taken.append(shared)
+            return real_lock(self, shared=shared)
+
+        monkeypatch.setattr(LiteFactLedger, "erasure_lock", recording)
+        report = stated.reconcile_stated_facts(store, roots=[root])
+    assert report.facts_stated == 0 and "already recorded" in report.reason, report
+    assert taken == []
+
+
+def test_code004_an_unknown_verdict_is_declared_in_a_warning(monkeypatch: pytest.MonkeyPatch):
+    """CODE-004 (owner, CODE-011: declare an unknown verdict, do not fail): `verdict_known` had no
+    caller, so an unknown verdict was read and declared nowhere. Reading such a card now warns,
+    naming the value; a known verdict does not.
+
+    Red proof: against the pre-fix controller (snapshot of run 20261105T095124Z) nothing was
+    logged and `assert warned == ["OK"]` failed with `[] == ['OK']`.
+    """
+    import recall.provenance_controller as controller
+
+    warned: list[object] = []
+
+    class Recorder:
+        def warning(self, _message: str, *args: object) -> None:
+            warned.extend(args)
+
+    monkeypatch.setattr(controller, "_log", Recorder(), raising=False)
+    claim = _fact("20")
+    for verdict in ("OK", "ok"):
+        written = replace(
+            evidence_card(claim, tenant="tenant-a", generation="gen-a", chunk="c", source="a.md"),
+            card_id="", verdict=verdict,
+        )
+        evidence_card_from_payload(json.loads(json.dumps(written.to_payload())))
+    assert warned == ["OK"]
+
+
+def test_code005_a_fact_call_for_another_tenant_is_refused_before_any_read(monkeypatch: pytest.MonkeyPatch):
+    """CODE-005: under a source policy `recall_apply_fact` with an access context for another
+    tenant read the ledger and answered CARD_NOT_FOUND, while `recall_current_facts` raised
+    `PermissionError`; one rule now refuses both before anything is read.
+
+    Red proof: against the pre-fix recall_mcp/provenance.py (snapshot of run 20261105T095124Z) the
+    call reached the ledger and `assert outcome == "refused"` failed with `'read' == 'refused'`.
+    """
+    from types import SimpleNamespace
+
+    import recall_mcp.provenance as provenance
+
+    def ledger_read(_store):
+        raise RuntimeError("the ledger was read")
+
+    monkeypatch.setattr(provenance, "_fact_backends", ledger_read)
+    try:
+        provenance.apply_fact_memory(
+            SimpleNamespace(tenant="acme"),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            claim={"subject": "user", "predicate": "city", "object": "Turin"},
+            evidence_card_ids=["card_" + "0" * 32],
+            request_id="r-1",
+            writer="test",
+            security_policy=object(),  # type: ignore[arg-type]
+            access_context=SimpleNamespace(tenant="other"),  # type: ignore[arg-type]
+        )
+        outcome = "returned"
+    except PermissionError:
+        outcome = "refused"
+    except RuntimeError:
+        outcome = "read"
+    assert outcome == "refused"
+
+
+def test_sec002_a_resend_the_caller_may_not_read_returns_no_event_and_records_nothing():
+    """SEC-002 (deferred pass): a principal kept from a memo resent another principal's request
+    id and got CARD_NOT_FOUND carrying the asserted event's id, which names the tenant, the fact
+    and the request id, so it confirmed that the request had applied that fact. It also recorded
+    a refusal under the id.
+
+    Red proof: against the pre-fix controller (snapshot of run 20261105T095124Z) the answer
+    carried the asserted event and `assert replay.event is None` failed.
+    """
+    claim = _fact("20")
+    card = evidence_card(claim, tenant="tenant-a", generation="gen-a", chunk="c", source="secret.md")
+    store = EvidenceCardStore()
+    store.put([card])
+    ledger = InMemoryFactLedger()
+
+    def controller(permitted):
+        return ProvenanceController(
+            tenant_id="tenant-a", generation_id="gen-a", cards=store, ledger=ledger,
+            source_digest_for=lambda _card: "digest", now=lambda: NOW, writer="test",
+            card_permitted=permitted,
+        )
+
+    assert controller(lambda c: True).apply_fact(FactApplicationRequest(claim, (card.card_id,), "r-ok")).allowed
+    recorded = len(ledger.events)
+    replay = controller(lambda c: c.source != "secret.md").apply_fact(
+        FactApplicationRequest(claim, (card.card_id,), "r-ok")
+    )
+    assert replay.event is None
+    assert replay.code == DecisionCode.CARD_NOT_FOUND and not replay.allowed and replay.cards == ()
+    assert len(ledger.events) == recorded
+
+
+def test_sec003_a_forget_the_caller_may_not_make_never_takes_the_erasure_lock(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """SEC-003: a forget of a memo the caller's policy does not allow took the exclusive erasure
+    lock, and so queued every fact application behind it, before it was refused. It is now
+    refused before the locks; the control, an allowed forget, still takes it.
+
+    Red proof: against the pre-fix recall_mcp/lifecycle.py (snapshot of run 20261105T095124Z) the
+    refused forget took the lock and `assert taken == []` failed with `[1] == []`.
+    """
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    import recall_mcp.lifecycle as lifecycle
+    from recall.lite import LiteStore
+    from tests.test_stated_facts import DIM
+
+    taken: list[int] = []
+    monkeypatch.setattr(lifecycle, "_erasure_lock", lambda _store: taken.append(1) or nullcontext())
+
+    class Policy:
+        def __init__(self, allowed: bool) -> None:
+            self.allowed = allowed
+
+        def decide(self, _name: str, _context: object) -> SimpleNamespace:
+            return SimpleNamespace(allowed=self.allowed, redactions=())
+
+    with LiteStore(root.parent / ".recall" / "memory.db", dim=DIM) as store:
+        context = SimpleNamespace(tenant=store.tenant)
+        with pytest.raises(lifecycle.ErasureNotAuthorized):
+            forget_memory(store, ["a.md"], security_policy=Policy(False), security_context=context)  # type: ignore[arg-type]
+        assert taken == []
+        forget_memory(store, ["a.md"], security_policy=Policy(True), security_context=context)  # type: ignore[arg-type]
+    assert taken == [1]
+
+
+def test_env004_a_file_with_no_fact_tables_is_not_a_clean_inventory(tmp_path: Path):
+    """ENV-004: a SQLite file holding none of the fact tables (the wrong file) printed 0 and
+    exited 0, which reads as nothing to re-key. It now exits 2 and names the missing tables; the
+    control, an empty but real ledger, is still clean.
+
+    Red proof: against the pre-fix script (snapshot of run 20261105T095124Z) the run exited 0 and
+    `assert wrong.returncode == 2` failed with `0 == 2`.
+    """
+    stranger = tmp_path / "notes.db"
+    conn = sqlite3.connect(stranger)
+    conn.execute("CREATE TABLE notes (body TEXT)")
+    conn.commit()
+    conn.close()
+    wrong = _check("--sqlite", str(stranger))
+    assert wrong.returncode == 2, (wrong.returncode, wrong.stdout, wrong.stderr)
+    assert "not a fact ledger" in wrong.stderr
+    ledger = tmp_path / "ledger.db"
+    conn = sqlite3.connect(ledger)
+    conn.execute("CREATE TABLE recall_fact_ledger_events (fact TEXT, evidence_cards TEXT)")
+    conn.commit()
+    conn.close()
+    assert _check("--sqlite", str(ledger)).returncode == 0
+
+
+def test_sec002_another_fact_under_a_request_id_the_caller_may_not_read_learns_nothing():
+    """SEC-002 (architect gate of run 20261105T095124Z): the REQUEST_ID_REUSED answer ran before
+    the access check and returned the recorded event, whose id hashes (tenant, fact, request id),
+    so a caller kept from the memo could send any fact under a known request id and test guesses
+    against the event offline, or by which code came back. It now gets CARD_NOT_FOUND with no
+    event either way; a permitted caller still gets REQUEST_ID_REUSED.
+
+    Red proof: with the access check after the REQUEST_ID_REUSED branch (the order before the
+    gate) the guess got REQUEST_ID_REUSED and `assert guess.code == DecisionCode.CARD_NOT_FOUND`
+    failed.
+    """
+    claim = _fact("20")
+    card = evidence_card(claim, tenant="tenant-a", generation="gen-a", chunk="c", source="secret.md")
+    store = EvidenceCardStore()
+    store.put([card])
+    ledger = InMemoryFactLedger()
+
+    def controller(permitted):
+        return ProvenanceController(
+            tenant_id="tenant-a", generation_id="gen-a", cards=store, ledger=ledger,
+            source_digest_for=lambda _card: "digest", now=lambda: NOW, writer="test",
+            card_permitted=permitted,
+        )
+
+    assert controller(lambda c: True).apply_fact(FactApplicationRequest(claim, (card.card_id,), "r-ok")).allowed
+    guess = controller(lambda c: c.source != "secret.md").apply_fact(
+        FactApplicationRequest(_fact("21"), (card.card_id,), "r-ok")
+    )
+    assert guess.code == DecisionCode.CARD_NOT_FOUND
+    assert guess.event is None and guess.cards == ()
+    permitted = controller(lambda c: True).apply_fact(FactApplicationRequest(_fact("21"), (card.card_id,), "r-ok"))
+    assert permitted.code == DecisionCode.REQUEST_ID_REUSED
