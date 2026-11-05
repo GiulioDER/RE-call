@@ -8,51 +8,488 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 
 ## [Unreleased]
 
-- Upgrade note (#1149): `recall forget` and `recall_forget` refuse a name that matches more than
-  one stored source, and list the exact names to pass. A tenant built as
-  `docs/FIRST_CALIBRATION.md` describes stores each memo under its `recall index` path and its
-  generation `file://` URI, so the short name (`notes.md`) is refused there; a script that forgets
-  by it now exits 1. The forget help says so.
-- Upgrade docs: `docs/COMPATIBILITY.md` and the upgrade notes in `docs/PRODUCTION.md` now include
-  the `recall provenance rebuild` step that migration 0030 needs on a ledger that already holds
-  events (it was only in `docs/MIGRATIONS.md` and the 0030 entry below).
+## [0.15.0] (unreleased)
 
-- `recall forget` (and `recall_forget`) on a generation tenant without the enterprise
-  control-plane tables no longer logs an ERROR and warns that the erased text "may be restored".
-  `recall schema apply` does not create the migration outbox, so there is nothing pending to
-  scrub; the scrub now reports 0 there.
-- `recall doctor` on the generation route (`RECALL_ENV=production`, or
-  `RECALL_INDEX_MODE=generation`) judges a tenant with no legacy rows by its active generation,
-  and reports that generation's calibration status from the database, the one the server serves
-  by, instead of `calibration.json`. It used to FAIL "holds NO chunks" on such a tenant while it
-  served trusted answers. The legacy route is unchanged.
-- `recall calibration auto` after a forget now names the calibration the forget superseded and
-  the labelled refit (`recall calibration calibrate --generation ... --publish`), instead of
-  reporting that no certified calibration was ever published.
+RE-call 0.15.0 adds Lite, a local store in one SQLite file that needs no Docker and no database
+server, and ships it in the PyPI wheel for the first time. It also adds the local memory dashboard,
+audit records looked up by exact key, stated facts in the fact ledger and the `recall withdraw`
+erasure counterpart, and it carries the fixes of pre-release audits of Lite, the MCP server and
+its authentication, the fact ledger, provenance, the dashboard, the hooks and the first-run code.
+The project license is now the AGPL-3.0 with a commercial license beside it (see Changed). Several
+changes are breaking; read the upgrade notes before upgrading a serving host.
 
-- A `recall_record` of kind `bug` may carry `defect_class`, one of the fixed classes cca-audit's
+### Upgrade notes
+
+Each item is described in full under its own heading below. `docs/PRODUCTION.md` has the same
+list as an ordered upgrade procedure.
+
+* **Migrations 0026 to 0035** (fact ledger retraction, value erasure, the materialized current
+  facts, withdrawal, the supersession revision table and its index) need `recall schema apply
+  --with-migrations` with the migration role, then `recall schema grants --controller`. On a
+  ledger that already holds events, run `recall provenance rebuild` after 0030. A database already
+  at 0033 applies 0029 last. PostgreSQL's pgvector must be 0.8.0 or later.
+* **Run `recall schema apply` before starting a server.** A non-enterprise multi-tenant server and
+  `recall quickstart --existing-dsn` no longer migrate a table on first use.
+* **Packaging:** `recall_aml`, the `hosted` extra and `recall-hosted` are gone from the wheel and
+  the sdist; numpy is a core dependency; the QNLI entailment judge and its `entail` extra are
+  removed, and a configuration that still sets `RECALL_ENTAILMENT` to a true value refuses.
+* **Corpora re-embed or re-index once.** Every FastEmbed profile fingerprint changes once, an
+  `st:` model loaded from a local directory or a pinned revision fingerprints its weights, the
+  structured document version and the code chunker version move, and document extraction moves to
+  v3. Upgrading `voyageai`, `fastembed`, `onnxruntime`, `tokenizers` or `sentence-transformers` on
+  a serving host turns every generation that recorded a profile into `LINEAGE_MISMATCH` until it
+  is rebuilt, so pin those libraries or rebuild before switching traffic (#909).
+* **Atomic rescue artifacts built by 0.14.0 are refused**: their `manifest.json` lacks
+  `embedding_fingerprint`. Rebuild them.
+* **Configuration that refuses now:** a source policy file with an unknown or misspelled key, an
+  enterprise control plane without `RECALL_SOURCE_POLICY_FILE`, `RECALL_OIDC_JWKS_REFRESH_SECONDS`
+  above 3600, and an unknown `RECALL_DEPENDENCY_INVALIDATION` value at startup. Source policies
+  whose redactions are not sorted get new digests, so rows filtered on the old digest return
+  nothing until a re-index.
+* **Calibration:** a labelled set that repeats a query, or labels one both ways, is refused; a v2
+  `recall calibration import` needs `--labels` and a matching `--embedder`; some v2 bundles fitted
+  before #1106 re-derive a different threshold and must be recalibrated.
+* **Behaviour that changes answers or scripts:** strict PostgreSQL searches refuse a term absent
+  from the generation (`unknown_term`, on by default); `recall_reasoning_query` answers with the
+  `dated` profile by default; a forget by a name that matches several sources refuses and lists
+  them; an explicit glob index skips `.git`, `.venv`, `venv`, `node_modules`, `site-packages` and
+  `__pycache__`; an `as_of` without an offset is read as UTC; a stdio server refuses a `tenant`
+  argument naming another tenant; a dependency projection read that raises is
+  `DEPENDENCY_UNAVAILABLE`; and every tool that writes a `supersedes:` edge is gated.
+* **Redis idempotency:** the request fingerprint is bound to the authenticated principal, so a key
+  in flight across the upgrade needs a new key.
+
+### Added
+
+* **RE-call runs with no Docker and no database server: a Lite store keeps one project's memory in
+  one SQLite file.** `recall setup --lite` indexes a memo folder (`--memory`, default
+  `RECALL_INDEX_ROOT`, else the current directory) into `.recall/memory.db` (`--store` to change
+  it), calibrates it and registers the MCP server for the project at Claude Code's local scope
+  (`--no-register` leaves the client config alone). Any `RECALL_DSN=sqlite:///<path>` serves `recall
+  index`, `recall search`, the stdio MCP server, `recall doctor`, which opens the file read-only and
+  reports a missing file, the corpus size and width, a tenant mismatch and the calibration state,
+  and `recall dashboard`, which without `--db-dsn-file` reads a `sqlite:///` DSN from
+  `RECALL_SERVING_DSN` or `RECALL_DSN` (never a PostgreSQL one) and refuses `--tunnel`. Trust
+  verdicts, supersession and strict trust work as on PostgreSQL: the store calibrates itself from a
+  query set generated offline from its own corpus, searching with another embedder is
+  `LINEAGE_MISMATCH`, and a write carries the calibration forward by re-verifying the fitted
+  threshold against stored evidence, refitting in the background once the corpus has moved by more
+  than a quarter or the check fails. The keyword leg reproduces PostgreSQL's `ts_rank`. A lite
+  strict search also refuses, with the new verdict `unknown_term`, a question naming an entity-like
+  token the store never contained (`RECALL_UNKNOWN_TERM_GATE=0` disables it), and each fit reports
+  synthetic near-miss coverage. Writes to one file queue in two lanes, `write` and `refit`
+  (`RECALL_LITE_WRITE_WAIT`, 300 s; `RECALL_LITE_REFIT_WAIT`, 120 s), and a busy MCP tool names the
+  holder. `recall_current_facts`, `recall_apply_fact`, `recall provenance current` and `apply`,
+  `recall forget`, `recall scopes` and `recall calibration list`, `show` and `export` are served,
+  with operation receipts for every keyed mutation; `recall_calibration_publish` is not, because a
+  certified lite calibration is in force when it is saved. A command a lite store cannot serve
+  (`generation`, `graph`, `reasoning`, `idempotency`, `schema status`, `plan` and `apply`,
+  `calibrate`, `demo`, `code`, `lint --semantic`, plain `setup`, `quickstart --existing-dsn
+  sqlite:///...`) exits naming itself, and a non-default `--table` is refused rather than ignored.
+  The plugin's DSN field is now "Database DSN" and accepts a `sqlite:///` address. See
+  `docs/LITE.md`. A relative `sqlite:///` path is refused by the server, `recall doctor` and the
+  dashboard; `recall setup --lite` indexes through the refresh, so the source policy and stated
+  facts apply and `recall lite refresh --check` reports the store current; it refuses to register
+  without the MCP SDK, and with neither `--memory` nor `RECALL_INDEX_ROOT` it refuses the home
+  folder or a filesystem root. Search and `recall_current_state` name the lite generation. A forget,
+  or an index that drops a source, deletes the calibration evidence quoting it, so strict search
+  refuses until the next refit. SQLite `secure_delete` is on for every connection. `recall
+  --embedder X lite refresh` uses X, and `recall lite refresh` follows a `sqlite:///` DSN without
+  `--store`.
+
+* **The lite store keeps itself current with its memo folder.** The MCP server refreshes a
+  `recall setup --lite` store when it starts and, before a search, when the folder changed (at most
+  every `RECALL_LITE_REFRESH_INTERVAL` seconds, thirty by default, waiting up to
+  `RECALL_LITE_REFRESH_WAIT`, three): it indexes what changed under the store's write lane and
+  refits the calibration. Like `recall_index`, it applies the source policy and refuses a folder
+  over `RECALL_INDEX_MAX_FILES` or `RECALL_INDEX_MAX_BYTES`. While refreshing fails, search answers
+  carry a `refresh_warning` and `recall doctor` reports it. `recall lite refresh [--check]` does the
+  same by hand; `RECALL_LITE_AUTO_REFRESH=0` turns the automatic refresh off. On a lite server,
+  `recall_index` now files every memo under its path relative to `RECALL_INDEX_ROOT`, as the refresh
+  does, so `recall_forget` takes that name whichever indexed the memo first.
+
+* **A local memory dashboard, `recall dashboard`.** It serves a page on 127.0.0.1 only for the memo
+  folder named by `--root` (default `RECALL_INDEX_ROOT`): a review queue of claims that one memo
+  replaces another (agent reports and cached arbiter judgements), where accepting writes
+  `supersedes:` into the newer memo as `recall rewrite apply` does and rejecting records the claim;
+  a reader for each memo (`/read`); a 3D memory graph; a person-only editor for `supersedes`,
+  validity dates and status, with a ledger and undo; activity, memory health and a memo search. With
+  `--db-dsn-file` (or `RECALL_DASHBOARD_DSN_FILE`), and optionally `--tunnel HOST` with
+  `--tunnel-ports`, it reads the corpus database in read-only sessions: tenants, generations and
+  calibration, searches recorded by the decision ledger (`RECALL_DECISION_LEDGER=1`), a Control page
+  per memory, one file's page (`/corpus/source`) and a graph of any corpus (`/graph?corpus=TENANT`)
+  with supersessions, authored links, Python imports and files sharing an uncommon name. A
+  Configuration page shows the settings in force on this machine, in each registered RE-call MCP
+  server and, with `--config-host` (and `--config-command`), on a remote host; every report comes
+  from `python -m recall_mcp.config_report --json` run where the values live, so secrets are
+  withheld before they leave it. `RECALL_DSN` and `RECALL_REASONING_API_KEY` are now flagged secret
+  in the settings schema. The page calls no model; a second dashboard on a port already in use
+  refuses to start. Every edit saves recovery bytes first and an interrupted one is reconciled; an
+  accept writes only over the bytes the reviewer saw and can be undone; the editor refuses files
+  that are not memos. The form secret is independent of the session cookie, so another application's
+  cookie on 127.0.0.1 no longer locks you out. With no tenant chosen the corpus pages read `default`
+  (pass `--reports-tenant memory` for another), they list the tenants you own, and
+  `RECALL_DASHBOARD_TENANTS` pins a labelled set. The dashboard is not read-only: accepting a review
+  or saving an edit writes the memo file.
+
+* **Agents can report what memory did, through two new MCP tools.** `recall_report_stale` reports,
+  with a verbatim quote from each, that one memory replaces another; the claim is queued for a
+  person (`recall dashboard`, `recall rewrite`) and lands in the `.recall` sidecar or as a
+  `stale_report` row in `recall_audit_events` that keeps a fingerprint of each quote, never the
+  text. `recall_report_use` records, after a task, whether memory `helped`, made `no_difference` or
+  `misled`, the memories used and any found wrong, as one `use_report` row; every memory named must
+  exist in the served generation. Both need `recall:write` and change no memo, verdict or ranking.
+  The tool surface grows from 22 to 24, and the re-call skill asks for one report after a task that
+  searched memory. Both take an optional `idempotency_key`, and on an authenticated server a stale
+  report is recorded only in the caller's own audit ledger.
+
+* **Memos can carry an audit record, looked up by exact key.** A one-line JSON `recall_record` front
+  matter key (schema `recall/schemas/recall_record.v1.json`: `bug`, `false_positive`, `lesson` and
+  retraction records) is validated at index time and stored exactly as authored; an invalid one is
+  dropped with a warning naming the file, and the memo is still indexed. The MCP tool
+  `recall_records` and the CLI `recall records` (`--anchors FILE` with `--repo`, `--id`, `--all`,
+  `--kind`, `--json`) return records by anchor (`exact`, `symbol_changed`, `file_only`) or by id
+  with no embedder, superseded and expired records marked rather than hidden; more than 200 anchors
+  or 500 matches is refused. `recall_related` gains the `caused_by` relation. Served on a lite
+  store. The chunk metadata rule version moves, so the next generation build re-derives every source
+  rather than reusing its chunks. `recall records` applies the source policy, every entry carries
+  `expired`, a call with neither anchors nor ids is refused, and a memo with two `recall_record`
+  lines is refused. A record holding text that cannot be stored is dropped with a warning and the
+  memo is indexed without it.
+
+* A `recall_record` of kind `bug` may carry `defect_class`, one of the fixed classes cca-audit's
   `audit-fix.md` lists ("Defect classes"), or null, and `defect_class_reason`. Both are optional,
   so every existing record stays valid; an unlisted class is refused like any other invalid
   record (the memo is indexed, or loaded, without it).
-- API correction for the trust failure codes: with `RECALL_DEPENDENCY_INVALIDATION=enforce`, a
-  dependency projection read that raises is now `DEPENDENCY_UNAVAILABLE`, refused under every
-  policy, instead of `DEPENDENCY_GRAPH_NOT_READY`. A generation with no projection is still
-  `DEPENDENCY_GRAPH_NOT_READY`. Automation that retried on the second code for an outage should
-  retry on the first.
-- `RECALL_TRUST_MODE=development` under `RECALL_ENV=production` now logs a warning naming both
-  variables when the policy is resolved (at MCP server startup, and on a `recall` search); the
-  relaxed gate is still honoured. An unknown `RECALL_DEPENDENCY_INVALIDATION` value is now refused
-  when the MCP server or a `recall` command starts, instead of on the first search.
 
-- Upgrade note for calibration fitting (#1106): when rounding the midpoint down to the 0.001 grid
-  would land on or below the unanswerable ceiling (a clean gap under about 0.002), the fitted
-  threshold now sits strictly above the ceiling and at or below the answerable floor. It used to
-  round down onto or below the ceiling, which confirmed the unanswerable samples sitting there.
-  A v2 bundle fitted before this change on such scores re-derives a different threshold, so
-  `recall calibration import` refuses it ("threshold disagrees"); recalibrate instead.
-- Calibration fitting (#1106) now refuses a sample that is not a finite number. A NaN top cosine,
-  which a zero-norm query vector produces, used to move the fitted threshold silently.
-- Upgrade note for calibration import (#1095): `recall calibration import` now authenticates a
+* **Facts a memo states in its `recall_graph` front matter reach the fact ledger when the memo is
+  indexed.** On a lite store this happens at refresh, `recall_index` and `recall index`, by default
+  for the folders the refresh follows. On PostgreSQL it is opt in: `RECALL_STATED_FACT_SOURCES`
+  names the places that may state facts (a URI, an absolute path, or a path under
+  `RECALL_INDEX_ROOT`), and facts are recorded at promote, rollback and a legacy index, or by the
+  new `recall generation stated-facts [GEN]` for a corpus promoted earlier; set the variable in both
+  the promoting and the serving process, since the rule is applied again at read time. An edited,
+  superseded or removed memo, or a narrower rule, hides its facts until the change is undone, a memo
+  whose content cannot be checked hides its fact, and an upload never states one.
+  `recall_current_facts` gains `sources`, the memos behind each fact, and `contested`, values two
+  memos state with no supersession between them, listed there and not under `facts`. A PostgreSQL
+  append the controller role refuses is reported as -1 with a warning naming
+  `RECALL_FACT_WRITE_DSN`.
+
+* Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
+  answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
+  a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for
+  a memo stating a `fact` gains `fact_key`: the key, its state, the values in force and the
+  supersession left to settle. The new deterministic rule `deterministic.stated_key_successor`
+  (`recall.declared_keys.successor_pairs`) proposes, for review only, that of the memos stating one
+  single-valued key each supersedes the one of the latest earlier `valid_from`, whatever the value;
+  it never writes an edge.
+
+* **An opt-in assistant memory surface for a lite server.** `RECALL_ASSISTANT_MEMOS=<folder>`
+  (inside `RECALL_INDEX_ROOT`) adds `recall_remember`, which writes and indexes one fact as one memo
+  (with `valid_from`, `valid_until`, `supersedes` and an optional structured `fact`) and returns
+  `{memo_id}`, and `recall_forget_memo`, which forgets one memo of the folder and deletes its file;
+  `recall_search`, `recall_evidence`, `recall_current_facts` and `recall_apply_fact` then answer in
+  a compact view that names each hit by its memo id. `RECALL_MCP_TOOLS=assistant` serves exactly
+  those six tools. `RECALL_EVAL_CLOCK=<file>` makes a lite server read "now" from a file holding one
+  ISO 8601 time with an offset, re-read on every call. With neither variable set nothing changes.
+  `recall_remember` refuses empty text and reports the key of a memo not yet or no longer in force
+  as `not_in_force`; the memo ledger is written as version 2 when it carries the request journal,
+  and a newer version is refused.
+
+* Add optional memo correction receipts, revision preconditions and persistent request identities;
+  refuse a missing or already superseded correction target, legacy calls included (a replay of a
+  request whose memo is already in place keeps its original reply); calls without the new parameters
+  keep the `{memo_id}` reply. `recall_remember` takes `request_id`, `expected_revision` and
+  `include_receipt`, and search hits carry the indexed revision a correction must name (see
+  `docs/MEMO_CORRECTIONS.md`).
+
+* **Multimodal memories live in their own opt in tenant.** `RECALL_MULTIMODAL_ENABLED=1` turns on
+  the isolated `re-call-multimodal` tenant with the registered profile `voyage-multimodal-3.5-v1`
+  (`RECALL_EMBEDDER=voyage-multimodal`, needs `VOYAGE_API_KEY`). `recall.multimodal.build_media_ref`
+  admits an image as bounded metadata (SHA256 digest, media type, size, and an `s3://` or `file://`
+  reference inside `RECALL_MULTIMODAL_OBJECT_ROOT`); media bytes never enter vector rows or
+  metadata, and a reference outside the root, including one that escapes it by traversal, is
+  refused. Limits: `RECALL_MULTIMODAL_MAX_MEDIA_BYTES`, `RECALL_MULTIMODAL_MAX_RESPONSE_BYTES`,
+  `RECALL_MULTIMODAL_MAX_ITEMS`; the tenant and profile are fixed by `RECALL_MULTIMODAL_TENANT` and
+  `RECALL_MULTIMODAL_EMBED_PROFILE`. The tenant needs its own generation and calibration and is
+  never mixed into the text tenants. See `docs/MULTIMODAL.md`.
+
+* **A search can be routed to a configured tenant by a versioned plan.**
+  `RECALL_RETRIEVAL_PLANS_JSON` holds routes, each naming an allowed tenant set, a primary tenant
+  and at most one rescue tenant, matched deterministically on scope, modality, source prefix or
+  query terms. MCP `recall_search` and `recall_evidence` take optional `scope`, `modality` and
+  `route_id`, and answer with `retrieval_plan`. Unset, search stays single tenant. Invalid
+  configuration, an unknown route, a tenant outside the allowlist, a retired generation or a
+  mismatched embedding profile refuses. A plan that selects any tenant other than the caller's own
+  needs the new OAuth scope `recall:federate`.
+
+* **Bounded federation across specialist tenants, off by default.** `recall.federation.federate`
+  (exported from `recall`) runs a route plan's legs independently and merges them by rank
+  (reciprocal rank fusion, never by comparing cosines across profiles), keeping a protected primary
+  prefix and a bounded rescue tail. `RECALL_FEDERATION_MODE` is `off` (default), `shadow` (runs the
+  plan without changing what is served) or `active`; bounds are `RECALL_FEDERATION_MAX_LEGS`,
+  `RECALL_FEDERATION_MAX_CONCURRENCY`, `RECALL_FEDERATION_CANDIDATE_K`,
+  `RECALL_FEDERATION_RESULT_K`, `RECALL_FEDERATION_PRIMARY_PREFIX`,
+  `RECALL_FEDERATION_RESCUE_SLOTS`, `RECALL_FEDERATION_RRF_K` and `RECALL_FEDERATION_INVALID_LEG`
+  (`omit` or `fail_closed`). `recall_evidence` always runs single tenant. See
+  `docs/FEDERATED_RETRIEVAL.md`. Legs share one process-wide pool of 16 workers, a refused primary
+  keeps its error type, shadow mode falls back on a slow primary, and `recall:federate` widens a
+  search only to the caller's routes and, with a subject binding, to its bound tenants.
+
+* **Experimental evidence proof mode for `recall_reasoning_query`.** `mode="evidence_proof"` checks
+  that every required slot of the question binds to an exact span of trusted evidence and returns a
+  `proof_obligations` receipt (decision, reason code, evidence chunk ids, missing slots), never a
+  generated answer. Off unless `RECALL_REASONING_PROOF_ENABLED=1`; it calls OpenRouter only, and
+  `RECALL_REASONING_PROOF_MODEL` and a pinned `RECALL_REASONING_PROOF_REVISION` are required
+  (`unpinned` is refused). Other settings: `RECALL_REASONING_PROOF_API_KEY`, `_BASE_URL`,
+  `_TIMEOUT`, `_MAX_TOKENS`, `_CONTEXT_TOKENS`, `_REASONING_EFFORT`, `_COST_PER_1K_TOKENS`. The
+  receipt carries `calibration_coverage`.
+
+* Add the opt-in `dated-premise` answer profile for `recall_reasoning_query`
+  (`RECALL_REASONING_ANSWER_PROFILE=dated-premise`): when a question assumes something the evidence
+  shows is no longer current, the response has outcome `corrected` and a cited `premise_correction`
+  instead of an answer built on the old state or an abstention. Whether a superseded memory matched
+  the question is decided structurally and its successor's evidence is named to the reader
+  (`diagnostics.premise_notice`). The default `dated` profile, its prompt and its three-key envelope
+  are unchanged.
+
+* `recall calibration near-miss` scores a held-out near-miss question set against a calibration and
+  reports a certificate (`near_miss_certificate` in status); `recall calibration served-gap`
+  compares the served top-k maximum with the exact maximum calibration sampled. Both report only.
+
+* Search and evidence now report unchecked semantic query support separately from retrieval
+  eligibility, and carry calibration-bound synthetic near-miss coverage when available. Missing
+  measurements remain unmeasured and report failures are unavailable. Existing retrieval decisions,
+  certification and citation eligibility are unchanged. The compact assistant surface and CLI
+  expose the same distinction. No verifier or additional model call is enabled.
+
+* **`recall generation build` shows its progress while it runs.** Before embedding it prints a
+  plan on stderr (an upper bound on the objects it can reuse, and a `FULL RE-EMBED` line when the
+  pipeline fingerprint moved and no retained generation shares it), then an update every 25
+  objects or 30 seconds, a heartbeat naming the stage and object while one embedding call holds
+  the build, and a final count. The summary line on stdout is unchanged. `GenerationManager.build`
+  and `build_generation` take an optional `progress` sink (`recall.build_progress`).
+
+* **A model arbiter proposes undeclared supersession edges for review.** With
+  `RECALL_SUPERSESSION_ARBITER=1` and `RECALL_ARBITER_API_KEY`, `recall rewrite plan` finds
+  candidate pairs (lexical neighbours, a file name trigger, direction from `modified:` or a dated
+  file name) and asks a model for a probability backed by two verbatim quotes; a pair at
+  `RECALL_ARBITER_THRESHOLD` (default 0.90) becomes a `requires_review` proposal that only `recall
+  rewrite apply` with a named reviewer writes. It sends an excerpt of both memos to
+  `RECALL_ARBITER_BASE_URL`; `RECALL_ARBITER_MODEL`, `RECALL_ARBITER_REVISION`,
+  `RECALL_ARBITER_NEIGHBOURS` and `RECALL_ARBITER_MAX_PAIRS` tune it, and answers are cached at
+  `RECALL_ARBITER_CACHE`, so apply and reject after a plan make no calls. Requires the `extract`
+  extra. `recall rewrite plan` now marks a proposal BLOCKED, naming the existing value, when the
+  memo already declares a different `supersedes:`, where it said DECLARED.
+
+* **`recall_evidence` can answer from 20 passages of a paged document.** With
+  `RECALL_PAGED_EVIDENCE=on` and no `k` from the client, it retrieves at the profile's new
+  `paged_returned_k` (20 on the legacy, fast, quality and code profiles) and keeps 20 items when at
+  least three of the first five hits come from PDF or PPTX documents, else the standard five. An
+  explicit `k` is never widened, `max_items` still only narrows, and hosted-quality does not opt in.
+  The choice is reported in `explanation.details.evidence_depth` and counted by
+  `recall_evidence_depth_total`. Off by default; `recall_search` and the CLI are unchanged.
+
+* **Voyage retrieval profiles that send `input_type`.** `voyage-4-retrieval-v1`,
+  `voyage-4-large-retrieval-v1` and `voyage-code-3-retrieval-v1` embed queries as `query` and
+  passages as `document`, as Voyage recommends. Select one with `RECALL_EMBEDDER=voyage` and
+  `RECALL_EMBED_PROFILE=<id>`. The existing ids and the `voyage:<model>` spelling stay untyped, and
+  a corpus is served under the id it was built with.
+
+* `RECALL_EMBEDDER=st-prompted:<hf-id>` (#908) encodes a local sentence-transformers model with
+  the query and document prompts it was published with, for the models pinned in
+  `recall/embedding_prompts.py`, each at a fixed Hugging Face revision. It has its own name
+  (`st-prompted:<hf-id>@<version>`) and profile, never the identity of `st:<hf-id>`.
+  `voyageai/voyage-4-nano` runs repository code and needs `RECALL_ACCEPT_REMOTE_MODEL_CODE=1`.
+  It refuses when a local path shadows the model id, and when the installed sentence-transformers
+  would route the model's text through a chat template. Behaviour change: `python -m
+  recall.eval.labelled --embedder` resolves any spelling other than `hashing`, `voyage`, `st:` and
+  `fastembed` through `RECALL_EMBEDDER`'s resolver and raises on an unknown one. It used to
+  measure `BAAI/bge-small-en-v1.5` for all of them and report the result under the name it was
+  given, so an earlier labelled result for any other spelling measured bge-small.
+
+* **Atomic rescue can place its winner after fusion.** `RECALL_ATOMIC_RESCUE_PLACEMENT=fused`
+  inserts the rescued parent at final rank six after fusion and reranking, so the retriever's top
+  five are untouched; `dense` (the default) keeps the 0.14.0 placement at dense rank six. Artifacts
+  are now loaded memory mapped and read only, so serving processes on one host share one copy.
+  `recall.atomizer.chunk_micro_views` (24 word windows, stride 12) and the content addressed view
+  store `recall.atomic_view_store` let an artifact be rebuilt embedding only chunk texts it has not
+  seen.
+
+* **Voyage embedding requests can overlap.** `RECALL_VOYAGE_PARALLEL_REQUESTS` (1 to 16, default 1)
+  lets one embed call keep that many independent Voyage requests in flight. The vectors and their
+  order are the ones a sequential call returns.
+
+* **New registered embedding profile `voyage-code-4-v1`** (`voyage-code-4`, 1,024 dimensions,
+  sending Voyage's `query` and `document` input types).
+
+* Add general knowledge hooks to `recall_hooks`: an operator-curated, prebuilt `index.json` of
+  procedures and warnings is injected as context before a matching `Bash` or `PowerShell` command
+  (`PreToolUse`, trigger keyed) and after a failed one (`PostToolUseFailure`, ranked against the
+  error by lexical BM25). At most two entries per call, each once per session, one event log line
+  per trigger or failure. Injection needs the operator's own index, and the repository ships no
+  entries. A registered failure hook still logs diagnostics without an index unless disabled. It
+  never denies a call, never raises, loads no embedder and makes no network call. The
+  `general_knowledge` block of `recall-hook.json` switches it off (`enabled: false`); a
+  `recall-hook.json` that cannot be read or parsed (or is not a JSON object), a block that is not an
+  object, or an `enabled` that is not a boolean also disables it, and only a missing file means the
+  enabled default. A reinstall keeps the block as it was, and over a file it cannot read it writes
+  the block as off. `recall setup` and the plugin register `PowerShell` in the `PreToolUse` matcher
+  and a `PostToolUseFailure` hook for `Bash` and `PowerShell`. Terminal colour codes (which
+  PowerShell puts in its error text) are removed before a failure is signed or ranked. A failure
+  signature names the program a command runs (past `cd`, `export`, `source` and the like, `timeout`,
+  and `python -m`) and the line that says what failed (a traceback's exception line, else the last
+  line with an error word), not the first line. It keeps no identifying data: an ssh host that is an
+  address or a dotted name is `ssh:<host>`, and addresses, mailboxes, key fingerprints, credential
+  values and long tokens become placeholders. An entry scoped `project:<folder>` must be rescoped to
+  `project:<owner>/<name>` in a checkout with an origin remote.
+
+* New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
+  subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
+  the local CCA memo directory with no network or embedding. Never false positives, never a
+  permission decision, fails open within about a second. Settings: `RECALL_AUDITOR_TYPES`,
+  `RECALL_AUDITOR_MEMOS`, `CCA_BUGS_DIR`, `RECALL_AUDITOR_BRIEF_BUDGET`; the command `python -m
+  recall_hooks warm-auditor-brief` fills its memo cache. See `docs/AUDIT_MEMORY_DESIGN.md`, "Auditor
+  brief hook". The hook never follows a symbolic link or junction inside the audited repository, so
+  a link committed there cannot make the machine contact another host, and it gives no block inside
+  a CCA run held out from memory. `recall setup` and the Claude Code plugin do not install it: add
+  the `PreToolUse` entry with matcher `Agent` to your Claude Code settings by hand. The Codex plugin
+  runs it from `SubagentStart`.
+
+* The auditor brief hook now labels and ranks a record anchored at a whole file (no symbol) as
+  `file_only`, below records anchored at a real symbol, and within a level lists symbol anchors
+  before symbol-less ones, then newest first. `recall_records` matching is unchanged.
+
+* The auditor brief hook's default budget is now 3 s, up from 1 s. A CCA dispatch launches its
+  auditors at once, and under that contention the hook's git calls timed out, so 0 of 9 auditors
+  got the brief (measured 2026-10-27); at 3 s all 9 did. `RECALL_AUDITOR_BRIEF_BUDGET` still
+  overrides it.
+
+* **Codex installs get the hooks Claude Code installs get.** The Codex bundle
+  and adapter now handle `PostToolUse` (a proven shell failure reaches the failure handler) and
+  `SubagentStart` (the auditor brief, as advisory child context), and the Codex installer writes
+  `project_root`, without which write-time retrieval and the SessionEnd and PreCompact index never
+  ran on Codex. Both plugin bundles ship portable `session-open` and `session-close` skills, and
+  startup guidance leaves calibration and freshness to the live MCP verdicts.
+
+* `recall_search` says what an answer may cite (#906). Its result carries `evidence`: `decision`,
+  `reason_code` and `citable`, the chunk ids of its own hits that `recall_evidence`'s rule admits,
+  built from the same trusted result with no extra retrieval and no card registration. When
+  something is citable the advice says to answer only from those hits; a result the trust gate
+  could not certify adds the same DEGRADED qualification `recall_evidence` gives. `recall_evidence`
+  remains the tool for card warrants, the rendered answer prompt and passages beyond the search's
+  hits. `RECALL_SEARCH_EVIDENCE=off` (also `0`, `false`, `no`) sets `evidence` and the later
+  `historical` field to null and drops their advice. A memo whose authored facts do not parse no
+  longer fails the search or evidence call that returns it: a malformed fact is left off its
+  evidence card, and a memo with no well-formed fact gets no card.
+
+* **Current facts are materialized, so a read no longer replays the tenant's history.** Migration
+  0030 adds `recall_fact_current` (one row per effective interval of each applied assertion: its own
+  window less the windows of the successors that hide it), `recall_fact_current_events` and
+  `recall_fact_current_state`, on PostgreSQL and in a lite file alike; migration 0031 builds the
+  ledger's `(tenant_id, created_at, event_id)` index CONCURRENTLY for the replay. `current()`, the
+  fact projection `recall_current_facts` serves and the conflict check of `recall_apply_fact` read
+  them whenever they reflect every event of the tenant, and replay the ledger otherwise, so the
+  answer is the same either way; the conflict check reads one conflict key instead of the tenant.
+  Each append materializes what it wrote in its own transaction, and a failure there leaves the
+  tables behind without failing the append. `recall provenance rebuild` rebuilds them from the
+  ledger (`--reconcile` files only what they lack, `--check` reports, and `--check --verify`
+  recomputes every row from the ledger and compares, exiting 1 on a difference, so an edited table
+  is found even when the counts agree), on PostgreSQL and on a `sqlite:///` store. The tables hold
+  ids and hashes, never a fact value. Grants: `recall schema grants --controller` now includes them,
+  and `--strict` serving grants read them only; re-run both after migrating. Migration 0030 creates
+  the tables empty: on a database whose ledger already holds events, run `recall provenance rebuild`
+  once per tenant after migrating, or every read keeps replaying (`docs/MIGRATIONS.md`).
+
+### Changed
+
+* **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
+  from this one on are open source under the GNU Affero General Public License v3.0, which permits
+  commercial use on its conditions; closed source products and proprietary hosted services can
+  take a separate commercial license instead (see `COMMERCIAL_LICENSE.md`). Outside contributions
+  are accepted under a Contributor License Agreement (`CLA.md`), so contributed code can be offered
+  under both. Release 0.14.0 remains under the PolyForm Noncommercial License 1.0.0 and, by the
+  grant in `LICENSE_GRANT_AGPL.md`, is also available under the AGPL-3.0, as is every other version
+  published under PolyForm. Earlier releases keep the MIT or Apache 2.0 terms they were published
+  under.
+
+* **BREAKING for atomic rescue: an artifact must name the embedder it was built with.**
+  `manifest.json` now carries `embedding_fingerprint`, and serving refuses an artifact that lacks
+  it or was built with another embedder ("atomic rescue manifest lacks embedding_fingerprint").
+  Rebuild artifacts made by 0.14.0. Builds now write into a staging directory first, and refuse
+  views whose parent identities disagree with their chunk ids.
+
+* **BREAKING: upgrading an embedding library on a serving host refuses its profiled generations
+  (#909).** Serving and calibration now compare a generation's recorded embedding profile and its
+  fingerprint with the runtime embedder, not only the model name and dimension. The fingerprint
+  includes the version of the client library the profile names (`voyageai`, `openai`, `fastembed` or
+  `sentence-transformers`, plus `transformers` for `st-prompted:` models), for fastembed also the
+  installed `onnxruntime` and `tokenizers` versions and its ONNX providers, and for a hosted profile
+  its backend, base URL and output dimensions. Changing any of these on a serving host turns every
+  generation that recorded a profile into `LINEAGE_MISMATCH`: refused in strict mode, served
+  degraded and uncalibrated in development mode. Calibrating that generation is refused too. Pin the
+  library on serving hosts, or build and calibrate a new generation under the new version before
+  switching traffic. Generations that recorded no profile are unaffected; legacy fastembed
+  generations record a fallback profile and are covered.
+
+* **BREAKING: every tool that writes a `supersedes:` edge is gated, so none demotes a current memo
+  by mistake.** `recall lint --fix`, the deterministic extraction engine behind `recall rewrite
+  plan`, and the deterministic proposal rule behind `recall reasoning proposals` and the MCP
+  `recall_rewrite_plan` tool no longer propose an edge from a cue the sentence does not assert
+  ("this never supersedes X", "nothing replaces X", "if the canary fails, this would be replaced by
+  Y", "if the canary fails; this is replaced by Y"); a cue more than 2,000 characters into an
+  unbroken line is refused rather than judged on part of it. The extraction engine's revision is now
+  `truth-extraction-rules-v2`, so cached extractions are recomputed. The `lint --fix` dry run shows
+  each edge with an id and the sentence it came from, and `--apply` now takes the ids to write,
+  directly after it (`recall lint <path> --fix --apply <id>,<id>`). A bare `--apply`, which wrote
+  every proposal, and `--apply` without `--fix`, which was ignored, now exit 2 and write nothing.
+  The direct-reference rule takes a document named right before the cue as the superseder ("new.md
+  replaces old.md" in meeting notes), proposes it as `requires_review` with that document among its
+  evidence ids, proposes nothing when another document is named elsewhere in the sentence, and skips
+  a stem two files share. `lint --fix --apply`, `rewrite apply` and the dashboard's edit, undo and
+  review actions refuse an edge that would close a supersession cycle in the whole corpus, before
+  the write. A negation is not hidden by an aside right before the cue or its `be`, `being` or
+  `been` ("this has not (as of today) been superseded by Y", "it is not, however, superseded by Y"),
+  and the direct-reference rule judges a condition that falls past the 4,000 characters it reads
+  cues from. `--apply` takes ids copied with the brackets the dry run prints, and refuses a repeated
+  `--apply` and an id two proposals share. `lint --fix --apply` skips a memo saved while its edge
+  was being checked rather than overwrite the save, and `recall.fix.apply_proposal` raises
+  `recall.fix.SupersessionCycle`, a subclass of `UnreadableMemo`, for a cycle. The dashboard judges
+  a memo named in another case, on a filesystem that ignores case, as the file it opens. `recall
+  lint`, `recall lint --fix` and the dashboard's triage read at most 2,000 characters behind each
+  cue to find its sentence when a sentence end lies within them, instead of the whole memo before
+  it, with the same results as before.
+
+* **BREAKING: schema migrations refuse pgvector older than 0.8.0.** Filtered queries set
+  `hnsw.iterative_scan`, a pgvector 0.8 setting, while the docs stated a 0.7 floor. `recall schema
+  apply` now refuses on an older extension and `recall doctor` fails it. Upgrade the extension to
+  0.8.0 or later before migrating.
+
+* **BREAKING: a non-enterprise multi-tenant server no longer migrates a tenant's table on
+  its first request.** It checks the schema, as single-store startup does, and a pending migration
+  refuses with `SchemaTooOld` naming `recall schema apply`. Under a least-privilege serving role
+  the old path failed with a permission error; under a privileged one it altered the live database
+  mid-request. Run `recall schema apply` with the migration role before starting the server.
+
+* **BREAKING: the enterprise control plane refuses to start without
+  `RECALL_SOURCE_POLICY_FILE` again**, as `docs/SECURITY_MODEL.md` says; a merge had dropped the
+  refusal. Redis idempotency also changes: a replayed key spends one rate-limit token, and the
+  request fingerprint is bound to the authenticated principal, so a key in flight across the
+  upgrade needs a new key. A Redis-backed index byte debit, which was refused on every call
+  ("attached to a different loop"), now works.
+
+* **BREAKING: calibration refuses a query set that scores one query twice.** Copies that
+  differed only in `relevant_ids` counted one cosine several times toward the certification
+  floor; `calibrate` now refuses them, and a query labelled both answerable and unanswerable.
+  Deduplicate the labelled set before calibrating. Also: a malformed bundle is a named refusal
+  instead of a raw `OSError`, `UnicodeDecodeError` or `TypeError`; bundle numbers are type-checked
+  so one that verified on import no longer fails every later read; a carry-forward chain exactly
+  at the documented bound is allowed; `publish` locks the generation row against a concurrent
+  forget; and `list`, `show`, `publish`, `export` and `import` on an unmigrated database report
+  `SchemaTooOld`.
+
+* Upgrade note for calibration import (#1095): `recall calibration import` now authenticates a
   v2 bundle, which its unkeyed checksums never did. It needs your own labelled query set
   (`--labels FILE`, the set the bundle was fitted on; its digest must equal the bundle's) and the
   embedder that wrote the generation's vectors (`--embedder`). Those queries are scored again on
@@ -65,54 +502,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   `CalibrationRepository.import_bundle(path)` needs `labels=` and `embedder` (or `make_embedder=`)
   for a v2 bundle. Legacy files need neither and still import unbound. The lite fit now also
   refuses a labelled set that repeats a query.
-- AML Add response budgets now include parsing admission, body reads, request fingerprinting and
-  receipt lookup. Expiry releases request admission while an already started Add keeps running.
-- AML forget ledger identities include the Add request id, preserving earlier suppression context
-  when distinct Adds repeat a target at the same message position in one session. Retries remain
-  idempotent.
 
-- Upgrade note for the embedding profile lineage check (#909): serving and calibration now
-  compare a generation's recorded embedding profile and its fingerprint with the runtime
-  embedder, not only the model name and dimension. The fingerprint includes the version of the
-  client library the profile names (`voyageai`, `openai`, `fastembed` or
-  `sentence-transformers`, plus `transformers` for `st-prompted:` models), for fastembed also the
-  installed `onnxruntime` and `tokenizers` versions and its ONNX providers, and for a hosted
-  profile its backend, base URL and output dimensions. Changing any
-  of these on a serving host turns every generation that recorded a profile into
-  `LINEAGE_MISMATCH`: refused in strict mode, served degraded and uncalibrated in development
-  mode. Calibrating that generation is refused too. Pin the library on serving hosts, or build
-  and calibrate a new generation under the new version before switching traffic. Generations
-  that recorded no profile are unaffected; legacy fastembed generations record a fallback
-  profile and are covered.
-- `RECALL_EMBEDDER=st-prompted:<hf-id>` (#908) encodes a local sentence-transformers model with
-  the query and document prompts it was published with, for the models pinned in
-  `recall/embedding_prompts.py`, each at a fixed Hugging Face revision. It has its own name
-  (`st-prompted:<hf-id>@<version>`) and profile, never the identity of `st:<hf-id>`.
-  `voyageai/voyage-4-nano` runs repository code and needs `RECALL_ACCEPT_REMOTE_MODEL_CODE=1`.
-  It refuses when a local path shadows the model id, and when the installed sentence-transformers
-  would route the model's text through a chat template. Behaviour change: `python -m
-  recall.eval.labelled --embedder` resolves any spelling other than `hashing`, `voyage`, `st:` and
-  `fastembed` through `RECALL_EMBEDDER`'s resolver and raises on an unknown one. It used to
-  measure `BAAI/bge-small-en-v1.5` for all of them and report the result under the name it was
-  given, so an earlier labelled result for any other spelling measured bge-small.
-- `recall_search` says what an answer may cite (#906). Its result carries `evidence`: `decision`,
-  `reason_code` and `citable`, the chunk ids of its own hits that `recall_evidence`'s rule admits,
-  built from the same trusted result with no extra retrieval and no card registration. When
-  something is citable the advice says to answer only from those hits; a result the trust gate
-  could not certify adds the same DEGRADED qualification `recall_evidence` gives. `recall_evidence`
-  remains the tool for card warrants, the rendered answer prompt and passages beyond the search's
-  hits. `RECALL_SEARCH_EVIDENCE=off` (also `0`, `false`, `no`) sets `evidence` and the later
-  `historical` field to null and drops their advice. A memo whose authored facts do not parse no
-  longer fails the search or evidence call that returns it: a malformed fact is left off its
-  evidence card, and a memo with no well-formed fact gets no card.
-- The auditor brief hook now labels and ranks a record anchored at a whole file (no symbol) as
-  `file_only`, below records anchored at a real symbol, and within a level lists symbol anchors
-  before symbol-less ones, then newest first. `recall_records` matching is unchanged.
-- The auditor brief hook's default budget is now 3 s, up from 1 s. A CCA dispatch launches its
-  auditors at once, and under that contention the hook's git calls timed out, so 0 of 9 auditors
-  got the brief (measured 2026-10-27); at 3 s all 9 did. `RECALL_AUDITOR_BRIEF_BUDGET` still
-  overrides it.
-- Every FastEmbed embedding profile now records the installed `onnxruntime` and `tokenizers`
+* Upgrade note for calibration fitting (#1106): when rounding the midpoint down to the 0.001 grid
+  would land on or below the unanswerable ceiling (a clean gap under about 0.002), the fitted
+  threshold now sits strictly above the ceiling and at or below the answerable floor. It used to
+  round down onto or below the ceiling, which confirmed the unanswerable samples sitting there.
+  A v2 bundle fitted before this change on such scores re-derives a different threshold, so
+  `recall calibration import` refuses it ("threshold disagrees"); recalibrate instead.
+
+* **BREAKING: `RECALL_OIDC_JWKS_REFRESH_SECONDS` above 3600 refuses, naming the
+  variable.** Every `as_of` tool argument without an offset is read as UTC, as
+  `recall_reasoning_query` already did. Set a refresh of at most one hour, and pass `as_of` with an
+  offset if it means local time.
+
+* **BREAKING: an explicit glob index skips vendored folders.** `recall index` with a glob
+  now prunes `.git`, `.venv`, `venv`, `node_modules`, `site-packages` and `__pycache__`, as the
+  default walk does, so files inside them are no longer indexed. `recall check`, `fix`, `lint` and
+  `rewrite` still walk them.
+
+* **BREAKING: `recall quickstart --existing-dsn` no longer migrates an older install's
+  `chunks` table.** Run `recall schema apply` on it first; the stack quickstart provisions itself
+  still migrates. `recall demo` refuses `--table chunks`, and `recall demo` and `recall code`
+  refuse while a source policy is configured.
+
+* Upgrade note (#1149): `recall forget` and `recall_forget` refuse a name that matches more than
+  one stored source, and list the exact names to pass. A tenant built as
+  `docs/FIRST_CALIBRATION.md` describes stores each memo under its `recall index` path and its
+  generation `file://` URI, so the short name (`notes.md`) is refused there; a script that forgets
+  by it now exits 1. The forget help says so.
+
+* **A single-tenant (stdio) server refuses a `tenant` argument that names another
+  tenant**, as the authenticated path does; it used to ignore it and act on its own tenant.
+  `RetrievalOverloaded` now reaches the client as a structured tool error with `reason` and
+  `retry_after_seconds`, and an OIDC issuer whose `iss` ends in `/` is accepted with or without
+  the slash.
+
+* API correction for the trust failure codes: with `RECALL_DEPENDENCY_INVALIDATION=enforce`, a
+  dependency projection read that raises is now `DEPENDENCY_UNAVAILABLE`, refused under every
+  policy, instead of `DEPENDENCY_GRAPH_NOT_READY`. A generation with no projection is still
+  `DEPENDENCY_GRAPH_NOT_READY`. Automation that retried on the second code for an outage should
+  retry on the first.
+
+* **PostgreSQL generations now refuse by name, as Lite does, a strict search naming an entity-like
+  term absent from the generation's vocabulary** (`unknown_term`). This changes verdicts: it is on
+  by default and `RECALL_UNKNOWN_TERM_GATE=0` disables it. Each `calibrate()` fit also measures
+  synthetic near-miss coverage, stored as an audit event and reported on search results as
+  `calibration_coverage`, and in `recall_calibration_status` as a new `near_miss_coverage` key and
+  a coverage line appended to `message`; it never gates. Measuring it embeds up to about twice as
+  many probe questions as the fit has answerable ones, which a hosted embedder bills.
+
+* **`recall_reasoning_query` answers with dates by default.** The new `dated` answer profile
+  gives the reader the question's date (`as_of`, else now), each evidence item's date
+  (`valid_from`, else the chunk's first write) and a fixed set of reading instructions after the
+  unchanged safety prompt. On 120 LongMemEval-S questions accuracy rose by 0.108 (95% CI 0.033 to
+  0.183), and on LoCoMo by 0.185 (0.150 to 0.221). `RECALL_REASONING_ANSWER_PROFILE=plain`
+  restores the previous prompt; an unknown value stops the MCP server and the CLI naming the
+  variable. The profile is recorded in the response diagnostics.
+
+* **numpy is a core dependency** (`numpy>=1.26`). A Lite store keeps its vectors in one numpy
+  matrix, and pgvector 0.5.0 no longer installs numpy, so a core-only install failed on its first
+  lite write.
+
+* Every FastEmbed embedding profile now records the installed `onnxruntime` and `tokenizers`
   versions in its `dependencies` (`onnxruntime-gpu` and the other builds are named in the value), on
   the registered and the unregistered construction path alike. Before this an upgrade of either with
   fastembed unchanged, such as onnxruntime 1.30.0 to 1.31.0, left the profile fingerprint
@@ -120,87 +571,736 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
   vectors computed by the old runtime or tokenizer. Every FastEmbed fingerprint changes once: the
   embedding cache re-embeds once, and existing FastEmbed index fingerprints and v1 calibration
   bindings need rebinding. Hosted and sentence-transformers profiles are unchanged.
-- Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
-  answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
-  a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for
-  a memo stating a `fact` gains `fact_key`: the key, its state, the values in force and the
-  supersession left to settle. The new deterministic rule `deterministic.stated_key_successor`
-  (`recall.declared_keys.successor_pairs`) proposes, for review only, that of the memos stating one
-  single-valued key each supersedes the one of the latest earlier `valid_from`, whatever the value;
-  it never writes an edge.
-- Add general knowledge hooks to `recall_hooks`: an operator-curated, prebuilt `index.json` of
-  procedures and warnings is injected as context before a matching `Bash` or `PowerShell` command
-  (`PreToolUse`, trigger keyed) and after a failed one (`PostToolUseFailure`, ranked against the
-  error by lexical BM25). At most two entries per call, each once per session, one event log line per
-  trigger or failure. Injection needs the operator's own index, and the repository ships no
-  entries. A registered failure hook still logs diagnostics without an index unless disabled.
-  It never denies a call, never raises, loads no
-  embedder and makes no network call. The `general_knowledge` block of `recall-hook.json` switches
-  it off (`enabled: false`); a `recall-hook.json` that cannot be read or parsed (or is not a JSON
-  object), a block that is not an object, or an `enabled` that is not a boolean also disables it,
-  and only a missing file means the enabled default. A reinstall keeps the block as it was, and
-  over a file it cannot read it writes the block as off. `recall setup` and the plugin register
-  `PowerShell` in the `PreToolUse` matcher and a `PostToolUseFailure` hook for `Bash` and
-  `PowerShell`. Terminal colour codes (which PowerShell puts in its error text) are removed before
-  a failure is signed or ranked. A failure signature names the program a command runs (past `cd`,
-  `export`, `source` and the like, `timeout`, and `python -m`) and the line that says what failed
-  (a traceback's exception line, else the last line with an error word), not the first line. It
-  keeps no identifying data: an ssh host that is an address or a dotted name is `ssh:<host>`, and
-  addresses, mailboxes, key fingerprints, credential values and long tokens become placeholders.
-- New Claude Code hook `python -m recall_hooks pre-agent` (`PreToolUse` on `Agent`): an auditor
-  subagent's prompt gains the prior bugs and lessons CCA recorded at the code in scope, read from
-  the local CCA memo directory with no network or embedding. Never false positives, never a
-  permission decision, fails open within about a second. Settings: `RECALL_AUDITOR_TYPES`,
-  `RECALL_AUDITOR_MEMOS`, `CCA_BUGS_DIR`, `RECALL_AUDITOR_BRIEF_BUDGET`; the command
-  `python -m recall_hooks warm-auditor-brief` fills its memo cache. See
-  `docs/AUDIT_MEMORY_DESIGN.md`, "Auditor brief hook".
-- Add the opt-in `dated-premise` answer profile for `recall_reasoning_query`
-  (`RECALL_REASONING_ANSWER_PROFILE=dated-premise`): when a question assumes something the evidence
-  shows is no longer current, the response has outcome `corrected` and a cited `premise_correction`
-  instead of an answer built on the old state or an abstention. Whether a superseded memory matched
-  the question is decided structurally and its successor's evidence is named to the reader
-  (`diagnostics.premise_notice`). The default `dated` profile, its prompt and its three-key envelope
-  are unchanged.
-- Search and evidence now report unchecked semantic query support separately from retrieval
-  eligibility, and carry calibration-bound synthetic near-miss coverage when available. Missing
-  measurements remain unmeasured and report failures are unavailable. Existing retrieval decisions,
-  certification and citation eligibility are unchanged. The compact assistant surface and CLI
-  expose the same distinction. No verifier or additional model call is enabled.
-- Add optional memo correction receipts, revision preconditions and persistent request identities;
-  refuse a missing or already superseded correction target, legacy calls included (a replay of a
-  request whose memo is already in place keeps its original reply); calls without the new
-  parameters keep the `{memo_id}` reply.
-- **PostgreSQL generations now refuse by name, as Lite does, a strict search naming an entity-like
-  term absent from the generation's vocabulary** (`unknown_term`). This changes verdicts: it is on
-  by default and `RECALL_UNKNOWN_TERM_GATE=0` disables it. Each `calibrate()` fit also measures
-  synthetic near-miss coverage, stored as an audit event and reported on search results as
-  `calibration_coverage`, and in `recall_calibration_status` as a new `near_miss_coverage` key and
-  a coverage line appended to `message`; it never gates. Measuring it embeds up to about twice as
-  many probe questions as the fit has answerable ones, which a hosted embedder bills.
-- `recall calibration near-miss` scores a held-out near-miss question set against a calibration and
-  reports a certificate (`near_miss_certificate` in status); `recall calibration served-gap`
-  compares the served top-k maximum with the exact maximum calibration sampled. Both report only.
-- **Forgetting a memo keeps retired what it superseded, in the document graph as in the fact
-  ledger; the new `recall withdraw` / `recall_withdraw` gives it back** (owner decision,
-  2026-10-22). A delete used to remove a memo's `supersedes:` claim with its chunks, so the memo it
-  replaced was served as current again (a privacy forget of "moved to Rome" brought Paris back, and
-  forgetting the middle of a chain left two current versions), while the fact ledger already kept
-  it retired. Every delete now writes a supersession record (names and dates, no text) to the audit
-  ledger in the same transaction: `recall_forget`, `recall forget`, the lite memo tools,
-  `GenerationManager.forget` on a generation tenant, the indexer's prune of a file gone from disk, and a source a promoted
-  generation leaves out all keep the memo's claims standing as a ghost while no memo by its name
-  is indexed. Withdraw voids them and splices the chain; in the ledger it appends a `withdrawn`
-  event (migrations 0032 and 0033) that also undoes the supersession the fact made. **Deploying
-  needs `--with-migrations`.**
+
+* **Three identities move once.** An `st:<model>` embedder built from a local
+  directory or a pinned revision now fingerprints the weights it loaded, so its fingerprint
+  changes once. Hugging Face artifact digests use a versioned framing for new builds (the
+  enterprise artifact digest is unchanged). Document extraction keeps complete, bounded text and
+  its identity moves to v3, so earlier extraction results are recomputed.
+
+* **Numbers with thousands separators match as numbers.** `1,500` is read as 1500, not
+  1.500, and `1,234,567` as one number, on the indexed and the query side alike; any other comma
+  stays decimal (`0,500` is 0.5). The structured document version moves to
+  `table-row-groups-v2`, so the next `recall index` re-extracts every file and a new generation
+  re-chunks (its pipeline fingerprint changes). Until a corpus is re-indexed, grouped figures in
+  its tables get no exact-match boost.
+
+* **Generation builds chunk Python files by symbol and anchor each chunk to it.** The `code` chunker
+  is now `recall.index.CodeChunker`: a `.py` file splits on its functions, classes and methods, and
+  each chunk carries `metadata["code_anchor"]` (`repo`, `file`, `symbol`, `code_sha`); a file that
+  does not parse, and every other file, is chunked as before. The chunker version moves to 2, which
+  changes the pipeline fingerprint, so a code tenant re-chunks on its next build. Text tenants are
+  unaffected.
+
+* **Voyage calls no longer import torch.** Embedding, contextualized embedding and reranking talk
+  to Voyage through RE-call's own HTTP client (`recall._voyage_http`), which reproduces the
+  SDK's requests and responses; `import voyageai` pulled in `transformers` and `torch` wherever
+  they were installed. Measured on a host with torch: 46 s to 1.3 s and 559 MB to 52 MB to a
+  constructed embedder. The `voyage` extra now declares `requests>=2.31`; `voyageai` stays
+  installed because its version is part of every Voyage profile's identity. The multimodal
+  embedder still uses the SDK.
+
+* **A trusted search on the generation store makes fewer round trips.** Six statements per search
+  instead of nine (one `set_config` for HNSW tuning, a cached generation binding and newest
+  `indexed_at` per generation and corpus fingerprint); median 26.7 ms to 21.0 ms on one measured
+  tenant. One `trusted_search` embeds each distinct query text once across its expansion
+  re-searches; `recall_evidence` writes evidence cards on the store's own connection instead of
+  opening a new one per call; a supersession `recall_related` reads no corpus when the seed has no
+  edges; the atomic rescue parent costs zero or one query
+  (`GenerationStore.scored_chunk_for_query`). The in memory evidence card store that
+  `recall_evidence` filled for the server's life is gone.
+
+* **Generation-scoped dense search is exact by design.** `GenerationStore.query_dense` now scans
+  the active generation exactly instead of walking the shared HNSW index, unless
+  `RECALL_GENERATION_DENSE_SEARCH=hnsw`. On a copy of a production table (753k rows across many
+  tenants and retained generations), the filtered HNSW walk returned 0.875 of one tenant's true
+  top 20 at the default tuning and 0.918 at the maximum `ef_search`, while the exact scan took 50
+  to 276 ms. Production was already served the exact plan, but only through a cached generic
+  plan; a planner statistic could have switched it to HNSW silently. Results now equal the exact
+  scan's by construction. `RECALL_HNSW_EF_SEARCH_FILTERED` and
+  `RECALL_HNSW_ITERATIVE_SCAN_FILTERED` now affect generation-scoped search only with
+  `RECALL_GENERATION_DENSE_SEARCH=hnsw`. That value ignores case and surrounding spaces, and empty
+  means `exact`; anything else refuses MCP server startup, naming the variable.
+  `scripts/check_hnsw_recall.py` measures the `hnsw` path whatever the variable says.
+
+* **`recall_apply_fact` no longer reads every fact current in the tenant.** On a ledger with a
+  key-scoped read (lite and PostgreSQL), the controller decided on the claim's conflict key but
+  first read and discarded the tenant's whole `current()`, which decoded every current fact. The key
+  read is now the read a write fails closed on, so a ledger that cannot answer it still refuses with
+  `ledger_unavailable` and appends nothing, and an apply no longer grows with the number of facts
+  current. A ledger without a key-scoped read is still read through `current()` first.
+
+* **A generation build refreshes planner statistics.** `GenerationManager.build` ends with a best
+  effort `ANALYZE` of `recall_chunks_v1 (tenant_id, generation_id)`, so validation, calibration and
+  serving plan against the new generation's real row count (estimated 1 row before, 5,026 of 5,176
+  after, in the measurement); it adds about 267 ms to a build and never fails one.
+
+* **The `re-call` skill focuses on applying evidence.** The skill shipped with the Claude Code and
+  Codex plugins follows a two call discovery and source scoped evidence path, and carries a
+  `references/tool-routing.md` map of every tool; `recall setup` now installs the whole skill
+  directory, not only `SKILL.md`.
+
+* **The sdist holds only what a build needs.** It is now built from an allowlist: the shipped
+  packages, the plugin trees, the README, the changelog and the licence files. From 0.11.0 to
+  0.14.0 it packed every tracked file, research traces included (91 MB against a 3.5 MB wheel). A
+  wheel built from the new sdist is byte identical to one built from the tree. The sdist no longer
+  contains `tests/` or `docs/`.
+
+* **Prompt time memory hits carry the dates each memo states about itself.** The `UserPromptSubmit`
+  hook starts each hit with a stamp such as `[written 2026-09-24; modified 2026-09-24; corrected 3x,
+  last 2026-09-25]`, or `[undated]`, and the block states today's date. Dates come only from the
+  file name, the frontmatter `valid_from` and `modified`, and dated correction markers; dates in the
+  body and file modification times are never used.
+
+* **The prompt-time hook no longer re-reads the whole memo store on every prompt.** Each
+  memo's parsed result is cached by file name, modification time and size, so only changed memos
+  are read again. (The PR measured 1.2 to 2.8 s per prompt before on about 1,350 memos.)
+
+* **`recall lint` warns `closure-marker-unlinked` only when the marker's sentence names a memo.** A
+  "replaces" or "supersedes" now needs a memo reference (`[[link]]`, `](name.md)` or a bare
+  `name.md`) in the same sentence, and a marker inside a reference is skipped. A memo that only says
+  "deprecated", or describes its successor without naming it, is no longer warned about.
+  `CLOSURE_MARKERS` and `recall check` are unchanged.
+
+* **Importing one `recall` module no longer imports the whole package.** `recall/__init__.py`
+  resolves its re-exports on first access (PEP 562), so importing a module such as `recall.errors`
+  no longer loads about fifty modules, psycopg and pgvector (about 1.2 s). `__all__`, `__version__`
+  and `recall.<submodule>` access are unchanged.
+
+* **`recall_search` advice lets a superseded or expired hit answer a question about the past.** When
+  a `superseded` or `expired` hit scores at or above the calibrated threshold, the advice ends with
+  a note: for a question about an earlier time, answer from that hit, cite its `chunk_id` and say it
+  no longer holds. The superseded advice now says to rely on the current version for the present
+  state.
+
+* **The `recall_search` description and its citation advice no longer name `recall_evidence`.** A
+  tool named there was called by small models on nearly every search, abstentions included; what
+  `recall_evidence` adds is stated in its own description.
+
+* **`recall provenance current` lists what `recall_current_facts` lists.** Its JSON gains `sources`
+  and `served_state` (`unchecked`, since the CLI reads the ledger without a store), cites the card
+  of every memo that restated a fact, and moves a fact that conflicts with another, with no
+  supersession between their memos, from `facts` to `contested`.
+
+* **Forgetting a memo keeps retired what it superseded, in the document graph as in the fact ledger;
+  the new `recall withdraw` / `recall_withdraw` gives it back** . A delete used to remove a memo's
+  `supersedes:` claim with its chunks, so the memo it replaced was served as current again (a
+  privacy forget of "moved to Rome" brought Paris back, and forgetting the middle of a chain left
+  two current versions), while the fact ledger already kept it retired. Every delete now writes a
+  supersession record (names and dates, no text) to the audit ledger in the same transaction:
+  `recall_forget`, `recall forget`, the lite memo tools, `GenerationManager.forget` on a generation
+  tenant, the indexer's prune of a file gone from disk, and a source a promoted generation leaves
+  out all keep the memo's claims standing as a ghost while no memo by its name is indexed. Withdraw
+  voids them and splices the chain; in the ledger it appends a `withdrawn` event (migrations 0032
+  and 0033) that also undoes the supersession the fact made. **Deploying needs
+  `--with-migrations`.**
+
+* The deterministic proposal rules behind `recall reasoning proposals` and `recall_rewrite_plan`
+  pair memos by different keys. A `status:` or `verdict:` line names a state, not a decision
+  subject, so two unrelated memos that both say "Status: done" are no longer paired, and a memo
+  whose only such line is a status now takes its file name (without folder or version) as its
+  subject, which the repeated-subject and contradictory-windows rules group by (so `flag_v1.md`
+  "Status: enabled" and `flag_v2.md` "Status: disabled" are now compared). A version is `v` and
+  digits after a separator, so `ipv4.md` and `ipv6.md` are not two versions of one memo. The
+  repeated-subject rule proposes only when both memos are dated and the later one starts strictly
+  later. Temporal ordering now groups by the file name without its version, in its folder, so it
+  pairs a file's versions whose decision lines are worded apart, and it no longer proposes again
+  an edge the repeated-subject rule proposes. The Session 3 control artifact drops its two
+  `temporal_ordering` proposals (referrals 4 to 2), and every other proposal id is unchanged.
+
+* **The deterministic proposal rules read a folder as the scope of a name.** A version series is
+  one folder's files (`a/plan_v1.md` and `b/plan_v2.md` are no longer two versions of one plan),
+  and a decision subject, or the file name a memo with no decision line falls back to, is shared
+  only inside one folder, so two folders' status-only `decisions.md`, or two teams'
+  `decision: retention`, are neither superseded nor contradicted by each other. Within a folder
+  the rules pair more in two places: `plan_V2.md` is a version, as `plan_v2.md` is, and two
+  memos with the same start now both get a later third as successor instead of one of them.
+  Two memos that share only a file name are proposed by temporal ordering (0.64) rather than as a
+  repeated decision subject (0.72). When the version and date rules emit exact opposite pairs,
+  the version proposal is `requires_review` and both proposals say the two disagree; a
+  disagreement across a longer chain is not detected. Version-only filenames such as
+  `a/V1.md` and `b/V2.md` also retain their folder scope despite their empty versionless base.
+  The rules' revision is now `session3-v3`, which changes every deterministic proposal
+  id; the Session 3 control artifact keeps its six proposals and its scores under new ids.
+
+* **A successor hides what it supersedes only while the successor itself is valid.** A memo
+  `supersedes:` another from next month leaves it current until then, an expired time-bounded
+  successor gives its predecessor back, and a correction for 2020 to 2022 leaves today's memo alone;
+  a successor whose window cannot be read still applies at every instant. The same rule holds in the
+  fact ledger, where a successor now hides the ASSERTIONS recorded before it, so a value asserted
+  again after its successor (Paris, Rome, Paris) is current again, and in memo-level retirement of
+  stated facts, which also follows the chain search follows. Search, `recall_current_state`, graph
+  expansion, related evidence, the reasoning graph and planner, the semantic graph and the
+  dashboard's corpus page now resolve `supersedes:` with one rule
+  (`recall.supersession.ReferenceIndex`): a reference naming a folder by its root-relative path, any
+  reference by its stem, case-insensitive and NFC, a self-claim dropped, and two roots holding one
+  path kept apart. A bare name is never matched by path, so several files sharing its stem stay
+  ambiguous. Semantic lint folds references the same way but matches by stem alone; `recall lint`
+  and the dashboard's graph and triage pages keep their own matcher. A low-scoring successor whose
+  dependency is invalidated is no longer promoted to `ok`. In dependency invalidation each root's
+  copy of a path is its own document, and a `depends_on` reference resolves to the dependent's own
+  root's copy first, else to the one copy outside an upload staging root; several such copies, or
+  only an upload's, leave it unresolved, which invalidates the dependent. A second value of a
+  set-valued predicate such as `email` is no contradiction, while a fact declaring a cardinality its
+  rival does not share still conflicts; facts are NFC-normalised when built; an authored link can
+  supersede an expired or future value it overlaps; and a value asserted again that names a
+  successor of its earlier assertion is recorded, not dropped as a DUPLICATE. New API:
+  `SupersessionGraph` with each store's `supersession_graph()`,
+  `recall.supersession.store_supersession_graph` and `stored_supersession_graph`,
+  `AtomicFact.cardinality` and `recall.provenance_controller.predicate_cardinality`.
+
+* **The supersession arbiter checks direction with the model.** A pair that passes the gate gets a
+  second question, which note holds the more current version, and is proposed only when the model's
+  answer, backed by a verbatim quote, matches the metadata's newer note. Direction from `modified:`
+  stamps put living memos backwards: on one memory store, 9 of 99 directed pairs. The check stopped
+  8 of those 9 and dropped 1 of the 90 correct pairs, for one extra call per proposal.
+  `RECALL_ARBITER_DIRECTION_CHECK=0` turns it off. Cached answers from earlier runs stay valid.
+
+* **`supersedes:` holds several references.** One memo may replace two: write `supersedes: [a.md,
+  b.md]`, a block sequence (`supersedes:` then `- a.md` lines), or the key repeated, as Validity
+  Frontmatter 1.0 section 5 allows. Every reader sees every reference: the store's supersession
+  scan, the reasoning graph, current state, `lint`, `rewrite verify`, `lint --fix`, `rewrite apply`
+  and the supersession arbiter. Before this, a block sequence read as "supersedes nothing", a
+  repeated key kept only its last line, and a memo that already declared one edge refused a second.
+  A memo that declares one reference keeps the plain string it always had, so existing chunk
+  metadata does not change.
+
+* `RECALL_TRUST_MODE=development` under `RECALL_ENV=production` now logs a warning naming both
+  variables when the policy is resolved (at MCP server startup, and on a `recall` search); the
+  relaxed gate is still honoured. An unknown `RECALL_DEPENDENCY_INVALIDATION` value is now refused
+  when the MCP server or a `recall` command starts, instead of on the first search.
+
+* **A stdio server ignores a leftover `RECALL_AUTH_TOKENS_FILE`**, with a warning, instead
+  of refusing to start under `RECALL_ENV=production`; HTTP still refuses it in production. The
+  DNS rebinding allowlist is the lowercased host of `RECALL_AUTH_RESOURCE_URL`, with or without
+  its default port, and the new `RECALL_ALLOWED_HOSTS` adds `host[:port]` names for an in-cluster
+  service or a proxy that rewrites `Host`; a malformed entry refuses at startup.
+
+* **The installers check their prerequisites before writing anything.** `recall wizard`
+  and the desktop installer first check for the Microsoft Store Python, Docker, Docker Compose v2
+  (at least 2.3.3), virtualization and RAM, with no network call; an unreadable answer does not
+  block, and an install onto an existing database skips the Docker checks. A set
+  `RECALL_EMBED_PROFILE` now reaches every registered server block. `recall setup --lite` with
+  neither `--memory` nor `RECALL_INDEX_ROOT` refuses the home folder or a filesystem root.
+
+* **Reasoning queries see more of the graph and stay in their source.** The temporal graph
+  budget is 12 nodes instead of 8 (the 8 trusted seeds used to fill it), and it is also the
+  planner's evidence cap for temporal queries. A source-scoped reasoning query no longer admits
+  graph neighbours from other sources. The desktop compose stack keeps the paid answer provider
+  opt in (`RECALL_REASONING_ANSWER_ENABLED`, default 0).
+
+* **`recall setup` withholds the two heaviest local models on machines under 8 GB of RAM.** The
+  bge-large embedder (~1.2 GB) and the bge reranker (~1.1 GB) stay in their menus but cannot be
+  picked when total memory is under 8 GB, or when it cannot be read, and the note says which. The
+  ms marco reranker and bge-base stay selectable. Picking a withheld embedder asks again rather
+  than falling back to `hashing`. An 8 GB machine counts as 8 GB although its OS reports a little
+  less (`RAM_REPORTING_SLACK_BYTES`, 1 GiB). This brings back `COMFORTABLE_RAM_BYTES` in
+  `recall.wizard.probe`, removed below as unused, now read by `heavy_local_models_are_feasible`;
+  `HardwareProbe` gains `total_ram_bytes`. The 4 GB floor, where the install is refused, is
+  unchanged.
+
+### Removed
+
+* **BREAKING: the benchmark service package `recall_aml` is no longer distributed.** The wheel
+  and the sdist no longer carry `recall_aml`, the `hosted` extra or the `recall-hosted` console
+  script, which served one benchmark deployment and are not needed to use RE-call. No shipped
+  module imports it, and its source stays in the repository. `pip install "recall-rag[hosted]"` now
+  only warns that the extra does not exist.
+
+* **The QNLI entailment judge is gone (breaking).** It was an optional, off by default stage that
+  demoted hits a `cross-encoder/qnli-distilroberta-base` model judged as not answering the query.
+  Measured as an evidence admission stage on a coding retrieval screen of 2026-09-19 it cut present
+  complete coverage from 0.92 to 0.42 and MRR from 0.50 to 0.36, and raised Search p95 from 0.5 s to
+  37 s, and no deployment ran it by default. Removed with it: `recall.entailment`, the `recall
+  search --entail` flag, the setup wizard's judge question, the desktop app's "Local entailment
+  judge" option, the `entail` extra, the `RECALL_ENTAILMENT`, `RECALL_ENTAILMENT_MODEL` and
+  `RECALL_ENTAILMENT_REVISION` variables, the `not_entailed` verdict, the `entailment` key in
+  per-stage timings, the `entailment=` parameter of `trusted_search` and of the LangChain and
+  LlamaIndex retrievers, and the `recall.eval` LoCoMo entailment sweep. **A configuration that still
+  sets `RECALL_ENTAILMENT` to anything but a false value now refuses**, naming the variable, at
+  `recall search`, `recall demo`, `recall code`, `recall quickstart` and MCP server startup, and
+  `recall setup` and `recall wizard` refuse to rewrite a `.env` that still holds it, because
+  silently dropping a stricter filter would widen what that deployment is served. A value that is
+  neither true nor false refuses too, as it did before. To upgrade, delete the `RECALL_ENTAILMENT`
+  line from your `.env` or environment, or set it to `0`; `RECALL_ENTAILMENT_MODEL` and
+  `RECALL_ENTAILMENT_REVISION` are ignored and can be deleted. A false value (`0`, the value `recall
+  setup` used to write) or an unset variable is accepted. `pip install "recall-rag[entail]"` now
+  only warns that the extra does not exist and installs nothing extra; install `[rerank]` if you
+  need `sentence-transformers`. Committed result artifacts that measured the judge are kept
+  unchanged.
+
+* **pypdf is no longer installed by the `documents` extra.** It was never imported: PDF text has
+  always come from pdfplumber, which does not depend on it. It stayed only because a capability
+  check confirmed it was present, and 6.16.1 carried eight denial-of-service advisories
+  (CVE-2026-102993 to CVE-2026-102999 and CVE-2026-103000). The capability check and the optional
+  import contract drop their pypdf row (both already checked pdfplumber), and the generated
+  Dockerfile's post-install import now asserts `pdfplumber` instead of `pypdf`, so a missing
+  `documents` extra still fails the image build. Nothing extracted changes.
+
+* **Unused definitions that nothing in the tree referenced:** `PerformanceTrace.set_if_absent`
+  (`recall.observability`), `RuntimeSecretState` (`recall.ops.secrets`), the `BaseState` type alias
+  (`recall.dependency_invalidation`), and the `COMFORTABLE_RAM_BYTES` constant
+  (`recall.wizard.probe`). The constant was documented as withholding heavier install options
+  below 8 GB of RAM, but no code ever read it; only the 4 GB `MIN_RAM_BYTES` floor is enforced.
+
+### Fixed
+
+* **Applying a fact on a generation store no longer refuses every evidence card.**
+  `GenerationStore.generation_id` returned `"legacy"`, so `recall_apply_fact` built its controller
+  for a generation that does not exist and refused each card as `GENERATION_MISMATCH`. It now names
+  the generation the store reads (pinned, fixed, else active), and MCP search reads it inside the
+  search's own snapshot, so `index_generation` always names the generation the hits came from.
+  `recall_current_facts` reports `generation_id: null` before any generation is promoted. Nine
+  inherited methods that address the legacy chunk table (`migrate_schema`, `delete_tenant_data`,
+  `delete_sources_across`, `upsert_sparse` and others) now refuse by name on a generation store
+  instead of failing in SQL, and `recall-enterprise readiness` builds its embedder as the server
+  does.
+
+* **`recall_apply_fact` reads one generation for the whole call**, so a promotion that
+  lands mid-call no longer refuses a valid card as `GENERATION_MISMATCH` or records a fact under a
+  generation other than the one its content was checked in.
+
+* **Forgetting a memo retracts the facts it was the only evidence for.** `recall_forget`, `recall
+  forget` and the lite memo tools append a `retracted` event (`SOURCE_FORGOTTEN`) for each fact
+  every one of whose evidence cards names a forgotten memo, so it leaves `recall_current_facts`; a
+  fact with a surviving memo stays, and a superseded fact never becomes current again.
+  `ForgetResult.facts_retracted` counts them, and is -1 with a warning when the retraction failed
+  (running the forget again completes it). The value stays in the append-only ledger and in the
+  evidence cards, as the `recall forget` help and the `recall_forget` description now say. Migration
+  0026 admits the event; a lite ledger is rebuilt in place on first use. **Deploying needs
+  `--with-migrations`.**
+
+* **A fact whose memos are no longer served is not current.** A memo pruned from disk or left out of
+  a promoted generation hides its facts from `recall_current_facts` and from the conflict check of
+  `recall_apply_fact`, and they return with the memo after a `generation rollback` or a restored
+  file. Nothing is written to the ledger.
+
+* **`recall generation gc` retracts for good the facts no remaining generation can bring back.**
+  When gc deletes the last generation holding every memo behind a fact, it appends `retracted`
+  events coded `SOURCE_REMOVED` and `recall generation gc` prints how many; a failed retraction
+  never fails the gc, and the next gc completes it. Migrations 0027 and 0028. **Deploying needs
+  `--with-migrations`.**
+
+* **`recall generation gc` no longer retracts a fact that a remaining generation
+  still serves**, which happened when a manifest named the memo by a different relative path. An
+  indexed file replaced by a directory is now pruned, so its old rows stop being searchable.
+
+* **Withdrawing a fact's first memo no longer gives back what a forgotten second memo retired.**
+  A fact stated by two memos is one application recorded APPLIED and one recorded DUPLICATE, and
+  projections listed only the APPLIED one. Forgetting the second memo and then withdrawing the
+  first made the value the fact superseded current again, where the other order kept it retired.
+  When the application a DUPLICATE repeats is withdrawn, the DUPLICATE now stands in for it, with
+  its supersession and at its point in the ledger, so it hides exactly what the withdrawn one hid
+  (`recall.provenance_controller.applications`), on PostgreSQL, lite and in memory, and in the
+  current-facts tables. A retraction needs no stand-in: it takes every application of the fact.
+
+* **A request id names one application.** A request id already used for another fact, or for the
+  same fact on other cards, was answered allowed `DUPLICATE` with the earlier event and recorded
+  nothing; it is now refused `REQUEST_ID_REUSED` and not recorded, while the same request sent again
+  is still an idempotent `DUPLICATE`. A request id of a form the ledger mints for its own events
+  (`<id>:supersession`, `retraction:<event id>`, `stated:<hash>`) is refused `REQUEST_ID_RESERVED`:
+  PostgreSQL, SQLite and lite answered it `DUPLICATE`, and the in-memory ledger appended a second
+  row under it. Neither code is ever written to the ledger, so no migration is needed.
+
+* **A memo that states a fact through a DUPLICATE is one of its sources.** A new value whose memo
+  links it now supersedes the fact, where it was refused `CONTRADICTION_WITHOUT_SUPERSESSION`, and
+  `recall_current_facts` cites in `evidence_card_ids` the live cards of every application of a
+  fact, as `sources` already did, so a first memo the store no longer serves is no longer cited.
+
+* **An empty validity window is invalid metadata.** A memo whose `valid_from` is after its
+  `valid_until` is verdicted `invalid_metadata`, as Validity Frontmatter 1.0 requires (test vector
+  4), where search reported `expired` or `not_yet_valid`. `recall index`, generation builds and the
+  lite refresh refuse it as they refuse a malformed date, `recall lint` reports it as
+  `invalid-date`, and the lite memo writer, `recall rewrite apply` and the dashboard refuse to write
+  one. A one-day window (both keys the same date) stays valid all day.
+
+* **A fact applied under several requests is listed once.** Applying a fact that is already in
+  force records a DUPLICATE event, and `recall_current_facts`, `recall provenance current` and the
+  controller's conflict check listed that event beside the original, so the fact appeared once per
+  request. Worse, a replacement that linked the original's evidence was then refused with
+  `CONTRADICTION_WITHOUT_SUPERSESSION`, because the one fact counted as two conflicts. The current
+  and candidate projections now skip DUPLICATE events on every ledger (PostgreSQL, SQLite and in
+  memory); the events stay in the ledger.
+
+* **A generation rebuild no longer re-dates the passages it rewrites (#835).** A generation-backed
+  store served `indexed_at`, the build that wrote or copied a row, as every hit's
+  `first_indexed_at`, and dated supersession edges the same way, so `known_as_of` replay and the
+  dated answer profile treated the last rebuild as every passage's first write. Every hit path and
+  supersession edge now reads the stored `first_indexed_at`. A build that rewrites a source, because
+  its bytes changed or the pipeline fingerprint moved, now gives each chunk the earliest
+  `first_indexed_at` any active, ready or retired generation holds for the same source and chunk
+  ordinal; an ordinal none of them holds is dated at the build. Rows an earlier rebuild already
+  stamped with its build time are not repaired: a later build corrects one only while a generation
+  written before that rebuild is still retained (by default `gc` keeps the two most recent retired
+  generations and any younger than seven days), and after that it carries the build time forward. No
+  backfill ships with this change. A source whose bytes are unchanged but which a changed chunker
+  splits into more chunks gives its new ordinals the earliest `first_indexed_at` held for those
+  bytes.
+
+* `recall forget` (and `recall_forget`) on a generation tenant without the enterprise
+  control-plane tables no longer logs an ERROR and warns that the erased text "may be restored".
+  `recall schema apply` does not create the migration outbox, so there is nothing pending to
+  scrub; the scrub now reports 0 there.
+
+* `recall doctor` on the generation route (`RECALL_ENV=production`, or
+  `RECALL_INDEX_MODE=generation`) judges a tenant with no legacy rows by its active generation,
+  and reports that generation's calibration status from the database, the one the server serves
+  by, instead of `calibration.json`. It used to FAIL "holds NO chunks" on such a tenant while it
+  served trusted answers. The legacy route is unchanged.
+
+* `recall calibration auto` after a forget now names the calibration the forget superseded and
+  the labelled refit (`recall calibration calibrate --generation ... --publish`), instead of
+  reporting that no certified calibration was ever published.
+
+* Calibration fitting (#1106) now refuses a sample that is not a finite number. A NaN top cosine,
+  which a zero-norm query vector produces, used to move the fitted threshold silently.
+
+* **A non-finite calibration value cannot certify an answer.** The trust gate treats
+  a non-finite threshold as low confidence (a NaN threshold verdicted any finite score `ok`);
+  `Calibration` refuses a non-finite threshold or a non-positive scale, and maps a non-finite
+  cosine to 0.0. Calibration JSON with an enormous sample count degrades to unknown instead of
+  raising `OverflowError`.
+
+* **`recall calibration served-gap` refuses inputs that invert it.** A negative or NaN
+  `--tolerance` is refused, and the report is withheld when a promotion lands mid-run.
+
+* **`recall setup` no longer drops an existing table it could not see into.** It counted
+  the rows of an existing relation, and dropped it when the count was zero, although rows hidden by
+  forced row-level security, or committed after the count, were still there; recreating a relation
+  also lost its explicit serving grants. Setup now refuses an existing relation of another
+  dimension before any destructive step and names a matching embedder or a fresh target.
+
+* **`recall setup` and `recall wizard` keep what
+  they did not write, across reruns and failures.** A rerun or a failed start no longer removes
+  other projects, replaces an existing serving route, or drops service environments and image
+  recipes. `recall wizard` no longer rebuilds the `# recall setup` block of `.env` from
+  `RECALL_DSN` and `RECALL_EMBEDDER` alone, which deleted the provider keys and the other managed
+  settings. A resumed run checks that a recorded promoted generation still exists. Uninstall
+  removes only this install's registrations and only a `Dockerfile` it wrote, and keeps the
+  `recall setup --lite` server. Setup no longer imports project-local hook modules, ingests
+  another project's memory, or ignores the selected database and table; refuses dotenv values
+  holding a line separator; refuses a missing embedder or `mcp` extra before provisioning; keeps
+  the pre-RE-call `~/.claude.json` backup once and never replaces it; reclaims unfinished
+  generations after a failure and prints recovery commands that work; and `recall index` and
+  `recall lite refresh` print their refusals instead of a traceback.
+
+* **`recall doctor` and server registration agree with the setup they check.**
+  `recall doctor` handles a malformed client config and equivalent project paths, and reports the
+  relation PostgreSQL actually resolves. MCP registration pins the selected table, `chunks`
+  included, setup forwards a custom table, and registering without the `mcp` extra is reported as
+  an install failure naming the extra. The calibrated server block pins
+  `RECALL_INDEX_MODE=generation` and sets `RECALL_INDEX_ROOT` to the memory folder.
+
+* **MCP servers registered by `recall setup` start under a client that passes only the registered
+  environment.** On Windows such a launch lost the user site-packages (`No module named
+  'recall_mcp'`) and the socket stack (`WinError 10106`). Each registered entry now carries
+  whichever of `APPDATA`, `LOCALAPPDATA`, `SystemRoot`, `TEMP`, `TMP`, `USERPROFILE`, `HOMEDRIVE`,
+  `HOMEPATH` and `HOME` are set, plus `PYTHONSAFEPATH=1`, and never `PATH`.
+
+* **Everything the MCP server builds reads its settings
+  snapshot.** The dual-write shadow embedder, an env-less `index_memory`, the lifespan and indexing
+  routes, Voyage reranking and the Agent SDK's paged evidence used the process environment, so a
+  key resolved from Secrets Manager (`VOYAGE_API_KEY`, `OPENROUTER_API_KEY`, `OPENAI_API_KEY`)
+  could be missing or different there.
+
+* **A refused write gives back its idempotency reservation.** An erasure refused
+  before its first write (no sources, a policy or tenant refusal, an ambiguous name) and a
+  `recall_apply_fact` that raises (a busy lock, for example) release their reservation, so a retry
+  is not told the change "may have committed". Startup refusals after the schema check close the
+  limiter, store and registry. A token in its last clock-skew window is no longer validated and
+  then refused.
+
+* **On PostgreSQL a forget waits for at most one chunk of a stated-facts
+  reconcile.** The reconcile holds the erasure lock per 100 statements, re-checking which memos
+  are still served, where a forget waited for a whole first activation and gave up after 300 s.
+  The lock's session sets its own lock and statement timeouts.
+
+* **Supersession cache freshness and latest-state reads no longer scan a tenant's whole
+  removal history.** Migration 0034 adds a per-tenant revision table and 0035 an index on the
+  audit ledger, built CONCURRENTLY. **Deploying needs `--with-migrations`.**
+
+* **One memo whose root is spelled two ways is one memo.** A row spelling its root in NFD
+  or as a `file://` URI no longer makes supersession resolution report the memo as collided
+  copies.
+
+* **A hand-edited `file://` manifest entry in uppercase hex no longer changes the corpus
+  fingerprint**; the version id is stored as its lowercase digest.
+
+* **Erasure retires every cache keyed on the generation.** After `GenerationManager.forget` the
+  supersession closure, graph readiness, calibration verdict, reasoning projection and semantic
+  graph kept serving the erased source until restart; they are now keyed on the generation and its
+  corpus fingerprint.
+
+* **Deleting a generation's semantic graph retires its readiness marker**, which kept reporting
+  the deleted graph as ready with its old counts. `recall_current_state` refuses an oversized
+  projection before building it and no longer reads chunk text.
+
+* **The reranker is loaded once per process again.** Since 0.14.0 every search, evidence and
+  reasoning call re-verified and reloaded it, and dropped the routed profile.
+
+* **`recall_related` and `recall_query_construction_challenge` report a trust refusal** as a
+  tool error, as `recall_search` does, instead of a bare "Error executing tool".
+
+* **An MCP write refused for a missing `idempotency_key` says so.** Under a limiter that requires
+  idempotency (the Redis rate limit backend) the refusal is now `IdempotencyKeyRequired`, a tool
+  error the client receives in full, where MCP reduced it to "Error executing tool".
+
+* **`explain=true` again returns the memory audit.** `recall_search` and `recall_evidence` put
+  the count only audit under `explanation.details.memory_audit`, which a server rewrite had left
+  without a caller. Its `context` carries the same four keys on both tools.
+
+* **The answer prompt names JSON, so OpenAI models can answer.** Every answer client that sends
+  `response_format: json_object` was refused with HTTP 400 by OpenAI and Azure, because no
+  message contained the word "json". The prompt digest label moves to `recall-answer-provider-v2`.
+
+* **`recall_related` applies supersession in every relatedness mode** and matches the
+  complete source identity before its SQL limit, so a stale or unrelated document no longer enters
+  its results. Graph components load from one PostgreSQL snapshot during a concurrent erasure.
+
+* **Reasoning queries no longer fail on concurrency, budgets or a stray
+  `0000`.** Concurrent requests no longer raise `KeyError` in the shared graph validation cache; a
+  standalone `0000` token (for example an entity label `v0000`) no longer fails every graph-first
+  query on a tenant; the planner enforces its wall-time budget after its last step; and trusted
+  chunks without file metadata match the graph's source fallback.
+
+* **A rescued parent is scored as a chunk.** Atomic rescue passed the 24 word view's cosine to the
+  trust layer, whose threshold was fitted on chunk cosines, so a rescue could jump the top five or
+  turn an abstention into an answer. The parent is now scored with its own cosine, and a parent the
+  generation cannot score is refused. View products run under a two thread BLAS limit
+  (`threadpoolctl>=3.1` joins the `atomic` extra), which cut p95 from 202 ms to 55 ms under a CPU
+  quota.
+
+* **Atomic rescue stays out of scoped searches.** Document, structural and successor expansion
+  re-searches re-ran the selection per source, could insert another source's parent, and raised
+  `AtomicRescueSelectionError` for a source with fewer than five dense hits.
+
+* **A long-lived server keeps at most two atomic rescue artifacts loaded**, where it kept
+  every one it had loaded as generations changed.
+
+* **An MCP server's first search no longer peaks at about 820 MB.** Loading the atomic rescue
+  matrix validated it with whole-matrix `np.isfinite` and `np.linalg.norm`, the norm building a
+  temporary as large as the matrix, in every serving process. The checks now run over 16 MiB row
+  blocks, in the same order and with the same errors. Measured on the memory corpus with
+  identical search results: first-search peak 820 MB to 509 MB; the resident set after the first
+  search was about 13 MB higher (494 to 507 MB).
+
+* **Voyage requests time out.** The Voyage embedder, multimodal embedder and reranker had no
+  timeout, so a hung socket blocked a query indefinitely; they now use
+  `RECALL_VOYAGE_TIMEOUT_SECONDS` (default 60).
+
+* **Voyage requests stay within the provider's limits.** `voyage-context-4` parts and requests are
+  bounded to 90% of the 32,000 token window, counted with Voyage's tokenizer (downloaded from
+  Hugging Face on first use, else a byte bound), so a token dense PDF no longer aborts a
+  generation build. A text batch refused with HTTP 400 is halved and retried instead of failing
+  every attempt. `VoyageMultimodalEmbedder` packs requests under 1,000 inputs and the token cap,
+  fits images to 16M pixels and 20 MB, and logs `voyage_multimodal_input_over_context`. No stored
+  vector changes.
+
+* **fastembed keeps its batch bound.** A `TypeError` raised while embedding was caught by the
+  guard for `batch_size=`, and the whole list was re-embedded at 256 silently. Whether the encoder
+  takes the argument is now read from its signature; an encoder that does not still embeds, with a
+  warning that `RECALL_FASTEMBED_BATCH` is ignored. Indexing also no longer grows quadratically in
+  the number of files, a rebuild no longer extracts an unchanged PDF before deciding to reuse it,
+  and a source's chunks go in one batched insert.
+
+* **Two processes opening a new embedding cache at once no longer crash.** Both could find the
+  `used_at` column missing and add it, and the second failed at startup with `duplicate column name:
+  used_at`. The cache now checks, takes the write lock and checks again.
+
+* **`RECALL_EMBED_CACHE_MAX_MB` holds across processes.** The bytes written since the last sweep
+  are kept in the cache file, so short lived instances add to one total; a cache already over its
+  cap is swept on its next write.
+
+* **The MCP `recall_index` tool now uses the shared embedding cache.** It was the one indexing entry
+  point that passed no cache, so every call re-embedded unchanged text. The Agent SDK's
+  `recall_index` goes through the same path and is fixed with it. `RECALL_EMBED_CACHE` moves or
+  disables the cache as before.
+
+* **The embedding cache and schema checks are sturdier.** A failed cache write rolls back
+  instead of holding its transaction open, a fresh hit takes no write lock, eviction walks the
+  `used_at` index, and a missing home directory disables the cache instead of failing the run. The
+  Voyage width probe retries a transient error. `recall schema status` runs the same drift checks
+  as serving startup and reports two migration files sharing a number. A bad `RECALL_EMBED_THREADS`
+  is reported and a padded `RECALL_ENV` is read as the serving route reads it.
+
+* **Explicit context groups keep their documents together.** Indexing preserves complete
+  groups and puts vectors back in source order for the active and shadow encoders, and an erased
+  member no longer lets its siblings reuse vectors computed with its text.
+
+* **Indexing keeps what was asked for.** Unversioned machine annotations are
+  excluded from authored evidence and contaminated cached chunks are rebuilt once; indented JSON
+  is accepted beside JSONL; single-file indexing and reused generation chunks keep the requested
+  provenance; custom statuses match whole values; and a failed LibreOffice profile allocation
+  returns its pool slot.
+
+* **Document extraction memory stays bounded.** PDF pages are closed as soon as they are read (a
+  198 page filing that peaked at 1.50 GB now stays near 157 MB for 468 pages), and XLS sheets are
+  parsed and released one at a time. Extracted text is unchanged.
+
+* **A NUL byte in an extracted document no longer aborts an index run.** Block text and string
+  metadata are cleaned before chunking in `recall index` and generation builds, and the source and
+  count are logged.
+
+* **Configuration and input errors are refused by name.** `recall lint`
+  reports an empty `valid_from` or `valid_until` (a date on the next indented line) as
+  `invalid-date` instead of passing a memo that never expires; `hashing-128` and `hashing:384`
+  are refused instead of building 64 dimensions; `RECALL_LOG_LEVEL` and `RECALL_LOG_FORMAT` are
+  stripped; a database without the `vector` type raises `SchemaTooOld` naming `recall schema
+  apply`; unreadable or invalid UTF-8 corpus input exits 2; serving refuses a schema without an
+  upsert key; and `recall doctor` names the real cause of a migration checksum mismatch.
+
+* **`python -m recall.eval.labelled` honours `RECALL_EMBED_PROFILE`** for fastembed
+  and Voyage, instead of constructing the default model, and refuses an incompatible backend.
+
+* **A local folder cannot stand in for a pinned model.** A directory shadowing the
+  reviewed Hub id of the pinned SFR embedder, the CoREB reranker or the built-in reranker is
+  refused before any loader runs. Empty legacy code-profile settings and whitespace-only reranker
+  flags read as unset.
+
+* **A pooled connection is checked before the caller's work runs**, so an indeterminate
+  commit is never replayed over a newer write.
+
+* **Writers that name one table by two spellings contend for one lock.** Accepted
+  PostgreSQL table aliases share a writer lock, primary corpus operations are bound to the session
+  that owns it, and a lost lock fails closed.
+
+* **The git pre-commit hook checks what will be committed**: index blobs, unusual file
+  names and renamed or type-changed Markdown destinations. Supersession parsing ignores
+  punctuation inside a reference.
+
+* **MCP transport cleanup never closes servers it cannot prove are its own.**
+  It stops at a configuration whose inferred ownership is ambiguous, does not treat pid 1 as an
+  owner, stops at an unreadable `.mcp.json`, and SessionEnd with reason `clear` or `resume` keeps
+  the live client's servers. On Windows the process listing gets 8 s instead of 2 s, which it
+  needed, so cleanup runs.
+
+* **Hook configuration and credentials fail soft.** `load_config` accepts a
+  UTF-8 BOM and never raises on undecodable bytes; a credentials or token cache file that is not
+  UTF-8 reads as corrupt; a `connect_timeout` below 1 s becomes 2 s instead of psycopg's default;
+  memo names printed into SessionStart context are quoted and cut to 80 characters; and a
+  non-numeric cached `chunks` no longer raises.
+
+* **The write-time relay binds to the configuration it was approved with**, nested
+  `MultiEdit` drafts are read at the hook boundary, Windows liveness checks no longer signal a
+  console, and the Agent SDK example is a complete async script.
+
+* **A manifest build parses the bytes whose checksum passed**, and a hosted embedder
+  revision pin is refused. The Agent SDK's indexing uses its own instance environment.
+
+* **Desktop ingestion stays inside what you picked.** Folder ingestion no
+  longer follows file links out of the folder, collides on equal file names or exceeds the upload
+  limits, and runs off the GUI thread; two upload names that differ only in case are refused
+  instead of overwriting one on Windows; a padded upload at the byte limit is accepted; a failed
+  staged-file deletion returns an incomplete-cleanup receipt; and desktop scans skip resolved
+  private configuration files.
+
+* **`fit_voyage_image(strict=True)` no longer decodes an image over Pillow's pixel limit.** Pillow
+  refuses an image declaring more than twice `PIL.Image.MAX_IMAGE_PIXELS` but only warns below that,
+  so a small compressed file declaring about 150M pixels was decoded in full before being scaled to
+  Voyage's limit. `fit_voyage_image(strict=True)` now raises
+  `DecompressionBombError` for anything over `MAX_IMAGE_PIXELS` (89,478,485 by default) before
+  decoding. The default mode, used by the core tenant, still fits it.
+
+* **The desktop update check looks for the installer the release pipeline publishes,
+  `recall-install-<tag>-windows-x64.zip`.** It looked for a `.exe`, which no release carries, so
+  it could not succeed. No release since v0.9.8 carries an installer, because the Windows build
+  is refused unless it is signed, and until one does the check says the latest release has no
+  Windows installer.
+
+* **The restore drill checks what it restored.** Its application smoke now fails unless the
+  search answer names the restored tenant and generation, where any HTTP 200 passed.
+
+* **The OIDC client closes a redirect it refuses**, and the desktop updater refuses an installer
+  URL that is not https or an asset name that is not a plain file name, before downloading.
+
+* **ATM-Bench Recall@10 is 90.0995, not 92.8924.** The figure published in `docs/ATM_BENCH.md`,
+  `docs/EVIDENCE.md`, the site and the board submission is Hit@10, the share of questions with at
+  least one gold item in the top 10, because `benchmarks/atm_bench.py::metrics_for` stores that
+  indicator under the key `Recall@10`. The board's Recall@10 is the mean fraction of gold items
+  found; the benchmark's own evaluator gives 90.0995 on the same frozen run
+  (`results/atm/atm_recall_rescore_20261004.json`). QS is unchanged. The board's maintainer found
+  it.
 
 ### Security
 
-* **`opentelemetry-api` is locked at 1.45.1, up from 1.44.0** (CVE-2026-114603). It reaches RE-call
-  only through `mcp`; the dependency audit refuses 1.44.0 since the advisory was published.
-* **`mcp` is pinned at 2.2.0, up from 2.1.0** (GHSA-84m7-p3x7-pcfv, CVE-2026-59951). In 2.1.0 a
-  stateful Streamable HTTP server never reclaimed session state, so a client able to reach the
-  endpoint could grow its memory without bound. RE-call's HTTP server runs stateless by default
-  and is exposed only when `RECALL_MCP_STATELESS=0` is set; the stdio servers are not affected.
+* **On Windows, no RE-call command runs an executable from the
+  current directory.** Every console script (`recall`, `recall-mcp`, the desktop entry points and
+  the hook launcher) sets `NoDefaultCurrentDirectoryInExePath` before doing anything else, and the
+  setup wizard, `recall uninstall` and the hardware probes set it for their own `docker`, `wsl`,
+  `systeminfo` and `nvidia-smi` launches. Before this, a `git.exe` or `docker.exe` committed to a
+  cloned repository ran in place of the real one when `recall index .`, the wizard or a hook ran
+  there. Production `python -m` launches, including the `UserPromptSubmit` hook, now use `-P`, so
+  a project-local package cannot shadow RE-call's own modules.
+
+* **A link or path outside a memo folder is refused before it is opened.** On
+  Windows, resolving a UNC target (`[[//host/share/x]]`, `[x](\\host\share\x.md)`, or a dashboard
+  `/read?path=` value) contacted the share and sent the user's credentials before any containment
+  check ran. The dashboard, and four other sites that resolved first, now refuse an anchored,
+  drive-relative or foreign UNC name before any filesystem call and decide on the resolved target
+  (`recall.confinement`). The dashboard memo reader also no longer follows a symbolic link out of
+  its corpus.
+
+* **A symbolic link in a corpus is judged by its target.** A link with a harmless name
+  (`notes.md -> .env`, or a link into a folder the source policy denies) had its target indexed and
+  made searchable. The scan and the source policy now judge the target, and under a policy a link
+  is indexed only when the same rule governs both paths; a link that crosses rules fails the run,
+  as a denied file does. `recall index` also warns, naming the file, when an indexed file has more
+  than one hard link (#1123).
+
+* **BREAKING: a source policy file with an unknown or misspelled key refuses to
+  load.** A misspelled `classification` used to load as `internal`, and a misspelled
+  `allow_egress` dropped the egress requirement. Any extra key, such as `$schema` or `comment`, now
+  refuses at startup, as does a misspelled redaction name and a rule that omits `principals`,
+  `purposes` or `redactions`. Policy digests now follow the order of the redactions, since
+  overlapping patterns give different text: a policy whose redactions are not already sorted gets
+  new `digest` and `content_digest` values, and rows filtered on the old digest return nothing
+  until a re-index or a generation rebuild. To upgrade, remove any key the policy schema does not
+  list.
+
+* **MCP callers get the source policy clearance and egress the server grants them.**
+  Clearance and egress were read from token claims no verifier sets, so every MCP caller was
+  judged `internal` without egress and could not reach a `confidential` or `restricted` source, or
+  a rule with `allow_egress` (it failed closed). A static token file entry may now carry
+  `"clearance"` (`public`, `internal`, `confidential` or `restricted`) and `"egress_allowed"` (a
+  JSON boolean), and `RECALL_OIDC_SUBJECT_CLEARANCE` (for example
+  `alice@corp:confidential,svc-etl:internal+egress`) grants them by verified `sub`. Any other value
+  refuses to load.
+
+* **The published-default credential guard reads the connection libpq will
+  actually make.** A libpq keyword DSN, a URI query override, the libpq environment defaults and
+  `hostaddr` could carry the published default password past the guard before migrations ran.
+  `recall quickstart` now applies the secure DSN policy to a database you supply, and a bare
+  PostgreSQL `recall setup` after a rejected `.env` needs an explicit target.
+
+* **Secret redaction catches more credential shapes.** Names with a credential
+  word that is not their last part (`AWS_SECRET_ACCESS_KEY`), quoted header and assignment values,
+  spaced separators, quoted JSON fields, letter-only IPv6 addresses and quoted mailboxes are now
+  masked, in logs and error text and in the hooks' failure signatures and event log.
+
+* **Fact and erasure checks no longer leak what a caller may not read.** A lite
+  forget or withdraw checks a JSON `metadata.file` that is a number, boolean, list or object
+  against the source policy, as retrieval reads it. A reused request id whose recorded event cites
+  a memo the caller may not read now answers `CARD_NOT_FOUND` and records nothing, where it
+  returned the event (whose id let a caller test which fact was applied), and `apply_fact_memory`
+  for another tenant under a source policy raises `PermissionError` before reading.
+
+* **The enterprise control plane holds the tenant outbox lock through an erasure**,
+  so a replay can no longer restore deleted text, and a stale JWKS key is not reused past the
+  stale window while another refresh holds the lock.
+
+* **Setup keeps credentials and memory state out of git and away from
+  other users.** A `.recall` directory RE-call creates gets a `.gitignore` of `*`, so `git add .`
+  in a memo repository no longer stages the store, and `.dockerignore` excludes `.recall` at any
+  depth. Inside a git work tree `recall setup` adds `.env` to `.gitignore`; the managed `.env`,
+  the wizard state file and client config copies holding credentials are written owner-only
+  (`0600`) through an atomic writer; a symbolic link backup target is refused.
+
+* **Forget and withdraw check the source policy against every name the erased rows are authorized
+  by.** `recall_forget`, `recall_withdraw`, `recall forget` and `recall withdraw` checked the names
+  they were given and then erased every row those names resolved to, so a caller allowed to erase a
+  memo by its absolute path could erase rows the policy denied under their root-relative `file`.
+  Every store now reports each row's names, one denied name refuses the whole call before anything
+  is deleted, and nothing changes when no source policy is configured.
 
 * **`recall forget` erases the fact values a forgotten memo supplied** (migration 0029). It used
   to retract them, which hid them, while the value stayed in the append-only fact ledger, in every
@@ -218,320 +1318,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 * **`recall_forget_memo` also erases the request journal's hashes of the memo.** The assistant's
   request journal (`.recall-authors.json`) kept a forgotten memo's request identity, an unsalted
   SHA-256 over its bytes, and a correction kept one over the corrected memo's revision, so a
-  guessable template turned either into an enumeration oracle for a short value. A forgotten
-  memo's requests now keep only their memo id, state and time, and any retry of one is refused as
+  guessable template turned either into an enumeration oracle for a short value. A forgotten memo's
+  requests now keep only their memo id, state and time, and any retry of one is refused as
   forgotten; a correction of it keeps a hash of its own content, so a lost reply is still replayed.
   A memo published but never indexed (a crash after publication with no refresh since) is now
-  forgotten instead of refused, so its retry can no longer store it.
-  The journal's hashes of a memo go however it leaves the index: the generic forget (`recall
-  forget`, `recall_forget`) erases them too, and so does the next index that prunes a memo deleted
-  by hand. `recall_forget_memo` also refuses when rows hold the memo's bytes under its file name
-  from another path, not only under its stored name. Since 2026-10-27 a forget erases the journal only of memos its own store held: the ones it deletes, and names it recorded deleting earlier (a `forget_memo_journal` audit event written before the rows go), so a re-run still completes a failed erasure while a forget in another store can no longer name this folder's memo.
+  forgotten instead of refused, so its retry can no longer store it. The journal's hashes of a memo
+  go however it leaves the index: the generic forget (`recall forget`, `recall_forget`) erases them
+  too, and so does the next index that prunes a memo deleted by hand. `recall_forget_memo` also
+  refuses when rows hold the memo's bytes under its file name from another path, not only under its
+  stored name. Since 2026-10-27 a forget erases the journal only of memos its own store held: the
+  ones it deletes, and names it recorded deleting earlier (a `forget_memo_journal` audit event
+  written before the rows go), so a re-run still completes a failed erasure while a forget in
+  another store can no longer name this folder's memo.
 
-### Added
+* **The hosted memory sync cannot leak or silently drop memos.** It sends a bearer token only to
+  an https endpoint or to loopback http, parsing the URL so that a user part cannot pose as
+  loopback; it screens the exact bytes it uploads; it skips and names files the server would
+  refuse; it budgets batches on wire bytes; and SessionStart reports a blocked sync. The screen
+  also catches AWS STS, npm and PyPI tokens.
 
-* **Current facts are materialized, so a read no longer replays the tenant's history.** Migration
-  0030 adds `recall_fact_current` (one row per effective interval of each applied assertion: its own
-  window less the windows of the successors that hide it), `recall_fact_current_events` and
-  `recall_fact_current_state`, on PostgreSQL and in a lite file alike; migration 0031 builds the
-  ledger's `(tenant_id, created_at, event_id)` index CONCURRENTLY for the replay. `current()`, the fact
-  projection `recall_current_facts` serves and the conflict check of `recall_apply_fact` read them
-  whenever they reflect every event of the tenant, and replay the ledger otherwise, so the answer is
-  the same either way; the conflict check reads one conflict key instead of the tenant. Each append
-  materializes what it wrote in its own transaction, and a failure there leaves the tables behind
-  without failing the append. `recall provenance rebuild` rebuilds them from the ledger (`--reconcile`
-  files only what they lack, `--check` reports, and `--check --verify` recomputes every row from the
-  ledger and compares, exiting 1 on a difference, so an edited table is found even when the counts
-  agree), on PostgreSQL and on a `sqlite:///` store. The tables hold ids and hashes, never a fact value. Grants: `recall schema grants --controller` now includes
-  them, and `--strict` serving grants read them only; re-run both after migrating. Migration 0030
-  creates the tables empty: on a database whose ledger already holds events, run `recall provenance
-  rebuild` once per tenant after migrating, or every read keeps replaying (`docs/MIGRATIONS.md`).
-* **The lite store keeps itself current with its memo folder.** The MCP server refreshes a
-  `recall setup --lite` store when it starts and, before a search, when the folder changed (at most
-  every `RECALL_LITE_REFRESH_INTERVAL` seconds, thirty by default, waiting up to
-  `RECALL_LITE_REFRESH_WAIT`, three): it indexes what changed under the store's write lane and
-  refits the calibration. Like `recall_index`, it applies the source policy and refuses a folder
-  over `RECALL_INDEX_MAX_FILES` or `RECALL_INDEX_MAX_BYTES`. While refreshing fails, search answers
-  carry a `refresh_warning` and `recall doctor` reports it. `recall lite refresh [--check]` does the
-  same by hand; `RECALL_LITE_AUTO_REFRESH=0` turns the automatic refresh off. On a lite server,
-  `recall_index` now files every memo under its path relative to `RECALL_INDEX_ROOT`, as the refresh
-  does, so `recall_forget` takes that name whichever indexed the memo first.
+* **A late write time relay child cannot take over a newer relay.** It receives a digest of the
+  token it was spawned for, never the token itself, and exits when the state holds another.
 
-### Changed
+* **`mcp` is pinned at 2.2.0, up from 2.1.0** (GHSA-84m7-p3x7-pcfv, CVE-2026-59951). In 2.1.0 a
+  stateful Streamable HTTP server never reclaimed session state, so a client able to reach the
+  endpoint could grow its memory without bound. RE-call's HTTP server runs stateless by default
+  and is exposed only when `RECALL_MCP_STATELESS=0` is set; the stdio servers are not affected.
 
-* **`recall_apply_fact` no longer reads every fact current in the tenant.** On a ledger with a
-  key-scoped read (lite and PostgreSQL), the controller decided on the claim's conflict key but
-  first read and discarded the tenant's whole `current()`, which decoded every current fact. The key
-  read is now the read a write fails closed on, so a ledger that cannot answer it still refuses with
-  `ledger_unavailable` and appends nothing, and an apply no longer grows with the number of facts
-  current. A ledger without a key-scoped read is still read through `current()` first.
-* **BREAKING: every tool that writes a `supersedes:` edge is gated, so none demotes a current memo
-  by mistake.** `recall lint --fix`, the deterministic extraction engine behind
-  `recall rewrite plan`, and the deterministic proposal rule behind `recall reasoning proposals`
-  and the MCP `recall_rewrite_plan` tool no longer propose an edge from a cue the sentence does
-  not assert ("this never supersedes X", "nothing replaces X", "if the canary fails, this would be
-  replaced by Y", "if the canary fails; this is replaced by Y"); a cue more than 2,000 characters
-  into an unbroken line is refused rather than judged on part of it. The extraction engine's
-  revision is now `truth-extraction-rules-v2`, so cached extractions are recomputed. The `lint --fix` dry run shows each edge with an id and the sentence
-  it came from, and `--apply` now takes the ids to write, directly after it
-  (`recall lint <path> --fix --apply <id>,<id>`). A bare `--apply`, which wrote every proposal,
-  and `--apply` without `--fix`, which was ignored, now exit 2 and write nothing. The
-  direct-reference rule takes a document named right before the cue as the superseder ("new.md
-  replaces old.md" in meeting notes), proposes it as `requires_review` with that document among
-  its evidence ids, proposes nothing when another document is named elsewhere in the sentence,
-  and skips a stem two files share. `lint --fix --apply`, `rewrite apply` and the dashboard's
-  edit, undo and review actions refuse an edge that would close a supersession cycle in the
-  whole corpus, before the write. A negation is not hidden by an aside right before the cue or its
-  `be`, `being` or `been` ("this has not (as of today) been superseded by Y", "it is not, however,
-  superseded by Y"), and the
-  direct-reference rule judges a condition that falls past the 4,000 characters it reads cues
-  from. `--apply` takes ids copied with the brackets the dry run prints, and refuses a repeated
-  `--apply` and an id two proposals share. `lint --fix --apply` skips a memo saved while its edge
-  was being checked rather than overwrite the save, and `recall.fix.apply_proposal` raises
-  `recall.fix.SupersessionCycle`, a subclass of `UnreadableMemo`, for a cycle. The dashboard
-  judges a memo named in another case, on a filesystem that ignores case, as the file it opens.
-  `recall lint`, `recall lint --fix` and the dashboard's triage read at most 2,000 characters
-  behind each cue to find its sentence when a sentence end lies within them, instead of the whole
-  memo before it, with the same results as before.
-* The deterministic proposal rules behind `recall reasoning proposals` and `recall_rewrite_plan`
-  pair memos by different keys. A `status:` or `verdict:` line names a state, not a decision
-  subject, so two unrelated memos that both say "Status: done" are no longer paired, and a memo
-  whose only such line is a status now takes its file name (without folder or version) as its
-  subject, which the repeated-subject and contradictory-windows rules group by (so `flag_v1.md`
-  "Status: enabled" and `flag_v2.md` "Status: disabled" are now compared). A version is `v` and
-  digits after a separator, so `ipv4.md` and `ipv6.md` are not two versions of one memo. The
-  repeated-subject rule proposes only when both memos are dated and the later one starts strictly
-  later. Temporal ordering now groups by the file name without its version, in its folder, so it
-  pairs a file's versions whose decision lines are worded apart, and it no longer proposes again
-  an edge the repeated-subject rule proposes. The Session 3 control artifact drops its two
-  `temporal_ordering` proposals (referrals 4 to 2), and every other proposal id is unchanged.
-* **The deterministic proposal rules read a folder as the scope of a name.** A version series is
-  one folder's files (`a/plan_v1.md` and `b/plan_v2.md` are no longer two versions of one plan),
-  and a decision subject, or the file name a memo with no decision line falls back to, is shared
-  only inside one folder, so two folders' status-only `decisions.md`, or two teams'
-  `decision: retention`, are neither superseded nor contradicted by each other. Within a folder
-  the rules pair more in two places: `plan_V2.md` is a version, as `plan_v2.md` is, and two
-  memos with the same start now both get a later third as successor instead of one of them.
-  Two memos that share only a file name are proposed by temporal ordering (0.64) rather than as a
-  repeated decision subject (0.72). When the version and date rules emit exact opposite pairs,
-  the version proposal is `requires_review` and both proposals say the two disagree; a
-  disagreement across a longer chain is not detected. Version-only filenames such as
-  `a/V1.md` and `b/V2.md` also retain their folder scope despite their empty versionless base.
-  The rules' revision is now `session3-v3`, which changes every deterministic proposal
-  id; the Session 3 control artifact keeps its six proposals and its scores under new ids.
-* **A successor hides what it supersedes only while the successor itself is valid.** A memo
-  `supersedes:` another from next month leaves it current until then, an expired time-bounded
-  successor gives its predecessor back, and a correction for 2020 to 2022 leaves today's memo alone;
-  a successor whose window cannot be read still applies at every instant. The same rule holds in
-  the fact ledger, where a successor now hides the ASSERTIONS recorded before it, so a value
-  asserted again after its successor (Paris, Rome, Paris) is current again, and in memo-level
-  retirement of stated facts, which also follows the chain search follows. Search,
-  `recall_current_state`, graph expansion, related evidence, the reasoning graph and planner, the
-  semantic graph and the dashboard's corpus page now resolve `supersedes:` with one rule
-  (`recall.supersession.ReferenceIndex`): a reference naming a folder by its root-relative path,
-  any reference by its stem, case-insensitive and NFC, a self-claim dropped, and two roots holding
-  one path kept apart. A bare name is never matched by path, so several files sharing its stem stay
-  ambiguous. Semantic lint folds references the same way but matches by stem alone; `recall lint`
-  and the dashboard's graph and triage pages keep their own matcher. A low-scoring successor whose
-  dependency is invalidated is no longer promoted to `ok`. In dependency invalidation each root's
-  copy of a path is its own document, and a `depends_on` reference resolves to the dependent's own
-  root's copy first, else to the one copy outside an upload staging root; several such copies, or
-  only an upload's, leave it unresolved, which invalidates the dependent. A second value of a set-valued predicate
-  such as `email` is no contradiction, while a fact declaring a cardinality its rival does not share
-  still conflicts; facts are NFC-normalised when built; an authored link can supersede an expired or
-  future value it overlaps; and a value asserted again that names a successor of its earlier
-  assertion is recorded, not dropped as a DUPLICATE. New API: `SupersessionGraph` with each store's
-  `supersession_graph()`, `recall.supersession.store_supersession_graph` and
-  `stored_supersession_graph`, `AtomicFact.cardinality`
-  and `recall.provenance_controller.predicate_cardinality`.
-* **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
-  from this one on are open source under the GNU Affero General Public License v3.0, which permits
-  commercial use on its conditions; closed source products and proprietary hosted services can
-  take a separate commercial license instead (see `COMMERCIAL_LICENSE.md`). Outside contributions
-  are accepted under a Contributor License Agreement (`CLA.md`), so contributed code can be offered
-  under both. Release 0.14.0 remains under the PolyForm Noncommercial License 1.0.0 and, by the
-  grant in `LICENSE_GRANT_AGPL.md`, is also available under the AGPL-3.0, as is every other version
-  published under PolyForm. Earlier releases keep the MIT or Apache 2.0 terms they were published
-  under.
+* **`opentelemetry-api` is locked at 1.45.1, up from 1.44.0** (CVE-2026-114603). It reaches RE-call
+  only through `mcp`; the dependency audit refuses 1.44.0 since the advisory was published.
 
-* **The supersession arbiter checks direction with the model.** A pair that passes the gate gets a
-  second question, which note holds the more current version, and is proposed only when the model's
-  answer, backed by a verbatim quote, matches the metadata's newer note. Direction from `modified:`
-  stamps put living memos backwards: on one memory store, 9 of 99 directed pairs. The check stopped
-  8 of those 9 and dropped 1 of the 90 correct pairs, for one extra call per proposal.
-  `RECALL_ARBITER_DIRECTION_CHECK=0` turns it off. Cached answers from earlier runs stay valid.
+* **`pyjwt` is locked at 2.15.1, up from 2.13.0** (CVE-2026-102274), and **`urllib3` at 2.8.0, up
+  from 2.7.0** (CVE-2026-97687, CVE-2026-97688, CVE-2026-97689). Only `uv.lock` changes.
 
-* **`supersedes:` holds several references.** One memo may replace two: write
-  `supersedes: [a.md, b.md]`, a block sequence (`supersedes:` then `- a.md` lines), or the key
-  repeated, as Validity Frontmatter 1.0 section 5 allows. Every reader sees every reference: the
-  store's supersession scan, the reasoning graph, current state, `lint`, `rewrite verify`,
-  `lint --fix`, `rewrite apply` and the supersession arbiter. Before this, a block sequence read
-  as "supersedes nothing", a repeated key kept only its last line, and a memo that already
-  declared one edge refused a second. A memo that declares one reference keeps the plain string
-  it always had, so existing chunk metadata does not change. Compiled AML records, which store a
-  list of record ids under the same key, declare nothing to these readers; see Fixed.
+* **`aiohttp` is locked at 3.14.5, up from 3.14.3** (CVE-2026-111063, CVE-2026-111064,
+  GHSA-2g87-pp6c-29x5); `yarl` moves to 1.25.1 with it.
 
-* **Generation-scoped dense search is exact by design.** `GenerationStore.query_dense` now scans
-  the active generation exactly instead of walking the shared HNSW index, unless
-  `RECALL_GENERATION_DENSE_SEARCH=hnsw`. On a copy of a production table (753k rows across many
-  tenants and retained generations), the filtered HNSW walk returned 0.875 of one tenant's true
-  top 20 at the default tuning and 0.918 at the maximum `ef_search`, while the exact scan took 50
-  to 276 ms. Production was already served the exact plan, but only through a cached generic
-  plan; a planner statistic could have switched it to HNSW silently. Results now equal the exact
-  scan's by construction. `RECALL_HNSW_EF_SEARCH_FILTERED` and
-  `RECALL_HNSW_ITERATIVE_SCAN_FILTERED` now affect generation-scoped search only with
-  `RECALL_GENERATION_DENSE_SEARCH=hnsw`. That value ignores case and surrounding spaces, and empty
-  means `exact`; anything else refuses MCP server startup, naming the variable.
-  `scripts/check_hnsw_recall.py` measures the `hnsw` path whatever the variable says.
+* **`certifi` is locked at 2026.10.19, up from 2026.6.17** (GHSA-6q48-6c7w-9gw2).
 
-### Fixed
-
-* **A generation rebuild no longer re-dates the passages it rewrites (#835).** A generation-backed
-  store served `indexed_at`, the build that wrote or copied a row, as every hit's
-  `first_indexed_at`, and dated supersession edges the same way, so `known_as_of` replay and the
-  dated answer profile treated the last rebuild as every passage's first write. Every hit path and
-  supersession edge now reads the stored `first_indexed_at`. A build that rewrites a source,
-  because its bytes changed or the pipeline fingerprint moved, now gives each chunk the earliest
-  `first_indexed_at` any active, ready or retired generation holds for the same source and chunk
-  ordinal; an ordinal none of them holds is dated at the build. Rows an earlier rebuild already
-  stamped with its build time are not repaired: a later build corrects one only while a
-  generation written before that rebuild is still retained (by default `gc` keeps the two most
-  recent retired generations and any younger than seven days), and after that it carries the
-  build time forward. No backfill ships with this change.
-* **Withdrawing a fact's first memo no longer gives back what a forgotten second memo retired.**
-  A fact stated by two memos is one application recorded APPLIED and one recorded DUPLICATE, and
-  projections listed only the APPLIED one. Forgetting the second memo and then withdrawing the
-  first made the value the fact superseded current again, where the other order kept it retired.
-  When the application a DUPLICATE repeats is withdrawn, the DUPLICATE now stands in for it, with
-  its supersession and at its point in the ledger, so it hides exactly what the withdrawn one hid
-  (`recall.provenance_controller.applications`), on PostgreSQL, lite and in memory, and in the
-  current-facts tables. A retraction needs no stand-in: it takes every application of the fact.
-* **A request id names one application.** A request id already used for another fact, or for the
-  same fact on other cards, was answered allowed `DUPLICATE` with the earlier event and recorded
-  nothing; it is now refused `REQUEST_ID_REUSED` and not recorded, while the same request sent again
-  is still an idempotent `DUPLICATE`. A request id of a form the ledger mints for its own events
-  (`<id>:supersession`, `retraction:<event id>`, `stated:<hash>`) is refused `REQUEST_ID_RESERVED`:
-  PostgreSQL, SQLite and lite answered it `DUPLICATE`, and the in-memory ledger appended a second
-  row under it. Neither code is ever written to the ledger, so no migration is needed.
-* **A memo that states a fact through a DUPLICATE is one of its sources.** A new value whose memo
-  links it now supersedes the fact, where it was refused `CONTRADICTION_WITHOUT_SUPERSESSION`, and
-  `recall_current_facts` cites in `evidence_card_ids` the live cards of every application of a
-  fact, as `sources` already did, so a first memo the store no longer serves is no longer cited.
-* **An empty validity window is invalid metadata.** A memo whose `valid_from` is after its
-  `valid_until` is verdicted `invalid_metadata`, as Validity Frontmatter 1.0 requires (test vector
-  4), where search reported `expired` or `not_yet_valid`. `recall index`, generation builds and the
-  lite refresh refuse it as they refuse a malformed date, `recall lint` reports it as
-  `invalid-date`, and the lite memo writer, `recall rewrite apply` and the dashboard refuse to write
-  one. A one-day window (both keys the same date) stays valid all day.
-* **A fact applied under several requests is listed once.** Applying a fact that is already in
-  force records a DUPLICATE event, and `recall_current_facts`, `recall provenance current` and the
-  controller's conflict check listed that event beside the original, so the fact appeared once per
-  request. Worse, a replacement that linked the original's evidence was then refused with
-  `CONTRADICTION_WITHOUT_SUPERSESSION`, because the one fact counted as two conflicts. The current
-  and candidate projections now skip DUPLICATE events on every ledger (PostgreSQL, SQLite and in
-  memory); the events stay in the ledger.
-
-* **ATM-Bench Recall@10 is 90.0995, not 92.8924.** The figure published in `docs/ATM_BENCH.md`,
-  `docs/EVIDENCE.md`, the site and the board submission is Hit@10, the share of questions with at
-  least one gold item in the top 10, because `benchmarks/atm_bench.py::metrics_for` stores that
-  indicator under the key `Recall@10`. The board's Recall@10 is the mean fraction of gold items found;
-  the benchmark's own evaluator gives 90.0995 on the same frozen run
-  (`results/atm/atm_recall_rescore_20261004.json`). QS is unchanged. The board's maintainer found it.
-
-* **Compiled AML records no longer make dangling supersession claims.** The store's scan read
-  their `supersedes` list of record ids as text, so every compiled record claimed to supersede a
-  file named `[]` or `["mem_…"]`. Nothing matched those names, but they filled
-  `supersession_all`'s edges and candidates, and a reasoning graph built from the store reported
-  edges its own in-memory fallback did not. Each compiled record now yields one row declaring
-  nothing, as the Python readers already read it. The array is deliberately not expanded either:
-  the ids name chunks whose files are `{chunk_id}.md`, so expanding would create live edges.
-  `recall_aml` resolves its own supersession and does not call this scan, so what it serves does
-  not change.
-
-* **An MCP server's first search no longer peaks at about 820 MB.** Loading the atomic rescue
-  matrix validated it with whole-matrix `np.isfinite` and `np.linalg.norm`, the norm building a
-  temporary as large as the matrix, in every serving process. The checks now run over 16 MiB row
-  blocks, in the same order and with the same errors. Measured on the memory corpus with
-  identical search results: first-search peak 820 MB to 509 MB; the resident set after the first
-  search was about 13 MB higher (494 to 507 MB).
-* **The AML adapter no longer decodes an image over Pillow's pixel limit.** Pillow refuses an
-  image declaring more than twice `PIL.Image.MAX_IMAGE_PIXELS` but only warns below that, so a
-  small compressed file declaring about 150M pixels was decoded in full before being scaled to
-  Voyage's limit. `fit_voyage_image(strict=True)`, which the AML adapter uses, now raises
-  `DecompressionBombError` for anything over `MAX_IMAGE_PIXELS` (89,478,485 by default) before
-  decoding; AML skips such an image on Add and answers 422 for it as a query, where it used to
-  embed it. The default mode, used by the core tenant, still fits it.
-* **The desktop update check looks for the installer the release pipeline publishes,
-  `recall-install-<tag>-windows-x64.zip`.** It looked for a `.exe`, which no release carries, so
-  it could not succeed. No release since v0.9.8 carries an installer, because the Windows build
-  is refused unless it is signed, and until one does the check says the latest release has no
-  Windows installer.
-
-### Removed
-
-* **The QNLI entailment judge is gone (breaking).** It was an optional, off by default stage that
-  demoted hits a `cross-encoder/qnli-distilroberta-base` model judged as not answering the query.
-  Measured as an evidence admission stage on the AML Coding screen of 2026-09-19 it cut present
-  complete coverage from 0.92 to 0.42 and MRR from 0.50 to 0.36, and raised Search p95 from 0.5 s
-  to 37 s, and no deployment ran it by default. Removed with it: `recall.entailment`, the
-  `recall search --entail` flag, the setup wizard's judge question, the desktop app's "Local
-  entailment judge" option, the `entail` extra, the `RECALL_ENTAILMENT`, `RECALL_ENTAILMENT_MODEL`
-  and `RECALL_ENTAILMENT_REVISION` variables, the `not_entailed` verdict, the `entailment` key in
-  per-stage timings, the `entailment=` parameter of `trusted_search` and of the LangChain and
-  LlamaIndex retrievers, and the `recall.eval` LoCoMo entailment sweep. **A configuration that still
-  sets `RECALL_ENTAILMENT` to anything but a false value now refuses**, naming the variable, at
-  `recall search`, `recall demo`, `recall code`, `recall quickstart` and MCP server startup, and
-  `recall setup` and `recall wizard` refuse to rewrite a `.env` that still holds it, because
-  silently dropping a stricter filter would widen what that deployment is served. A value that is
-  neither true nor false refuses too, as it did before. To upgrade, delete the `RECALL_ENTAILMENT`
-  line from your `.env` or environment, or set it to `0`; `RECALL_ENTAILMENT_MODEL` and
-  `RECALL_ENTAILMENT_REVISION` are ignored and can be deleted. A false value (`0`, the value
-  `recall setup` used to write) or an unset variable is accepted. `pip install "recall-rag[entail]"`
-  now only warns that the extra does not exist and installs nothing extra; install `[rerank]` if
-  you need `sentence-transformers`. Committed result artifacts that measured the judge are kept
-  unchanged.
-
-* **pypdf is no longer installed by the `documents` extra.** It was never imported: PDF text has
-  always come from pdfplumber, which does not depend on it. It stayed only because a capability
-  check confirmed it was present, and 6.16.1 carried eight denial-of-service advisories
-  (CVE-2026-102993 to CVE-2026-102999 and CVE-2026-103000). The capability check and the optional
-  import contract drop their pypdf row (both already checked pdfplumber), and the generated
-  Dockerfile's post-install import now asserts `pdfplumber` instead of `pypdf`, so a missing
-  `documents` extra still fails the image build. Nothing extracted changes.
-
-### Changed
-
-* **`recall setup` withholds the two heaviest local models on machines under 8 GB of RAM.** The
-  bge-large embedder (~1.2 GB) and the bge reranker (~1.1 GB) stay in their menus but cannot be
-  picked when total memory is under 8 GB, or when it cannot be read, and the note says which. The
-  ms marco reranker and bge-base stay selectable. Picking a withheld embedder asks again rather
-  than falling back to `hashing`. An 8 GB machine counts as 8 GB although its OS reports a little
-  less (`RAM_REPORTING_SLACK_BYTES`, 1 GiB). This brings back `COMFORTABLE_RAM_BYTES` in
-  `recall.wizard.probe`, removed below as unused, now read by `heavy_local_models_are_feasible`;
-  `HardwareProbe` gains `total_ram_bytes`. The 4 GB floor, where the install is refused, is
-  unchanged.
-
-### Fixed
-
-* **The MCP cleanup tests in `tests/test_codex_integration.py` no longer depend on the client that
-  runs them.** Two failed whenever pytest ran inside a Claude Code session, because
-  `close_own_mcp_transports` reads the session's real `CLAUDE_PID` ahead of the identity each test
-  sets up; two more failed the same way inside a Codex session through `RECALL_MCP_CLIENT` and
-  `RECALL_MCP_SESSION_ID`. A fixture now clears those variables for every test in the file. The
-  cleanup code is unchanged.
-
-* **The MCP `recall_index` tool now uses the shared embedding cache.** It was the one indexing entry
-  point that passed no cache, so every call re-embedded unchanged text. The Agent SDK's
-  `recall_index` goes through the same path and is fixed with it. `RECALL_EMBED_CACHE` moves or
-  disables the cache as before.
-
-### Removed
-
-* **Unused definitions that nothing in the tree referenced:** `PerformanceTrace.set_if_absent`
-  (`recall.observability`), `RuntimeSecretState` (`recall.ops.secrets`), the `BaseState` type alias
-  (`recall.dependency_invalidation`), and the `COMFORTABLE_RAM_BYTES` constant
-  (`recall.wizard.probe`). The constant was documented as withholding heavier install options
-  below 8 GB of RAM, but no code ever read it; only the 4 GB `MIN_RAM_BYTES` floor is enforced.
+* **`filelock` is locked at 4.2.4, up from 3.31.1, and `setuptools` at 84.2.1, up from 83.0.0**
+  (CVE-2026-112940, CVE-2026-112913, CVE-2026-112907; GHSA-xmj3-9gf7-h52w). Both reach RE-call only
+  transitively.
 
 ## [0.14.0] (2026-09-17)
 

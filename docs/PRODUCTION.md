@@ -127,7 +127,31 @@ Recent release detail is in [CHANGELOG.md](../CHANGELOG.md), and the full histor
 operator sequence are in [COMPATIBILITY.md](COMPATIBILITY.md). Only the changes that can make
 something currently working start failing are listed here.
 
-**→ Unreleased: a ledger that already holds facts needs `recall provenance rebuild`.** The
+**→ 0.15.0: upgrade a PostgreSQL deployment in this order.** The full list, with the reason for
+each step, is under "Upgrade notes" in [CHANGELOG.md](../CHANGELOG.md).
+
+1. Pin `voyageai`, `fastembed`, `onnxruntime`, `tokenizers` and `sentence-transformers` on serving
+   hosts at the versions that built your generations, or plan to rebuild (the embedding library
+   note below).
+2. Upgrade pgvector to 0.8.0 or later; migrations refuse an older extension.
+3. Check configuration that now refuses: a source policy file may hold only the keys its schema
+   lists, the enterprise control plane needs `RECALL_SOURCE_POLICY_FILE`,
+   `RECALL_OIDC_JWKS_REFRESH_SECONDS` may not exceed 3600, and `RECALL_ENTAILMENT` must be unset or
+   false (the QNLI judge is removed).
+4. Stop the servers, then run `recall schema apply --with-migrations` with the migration role
+   (migrations 0026 to 0035). A non-enterprise multi-tenant server no longer migrates on its first
+   request, so this step cannot be skipped.
+5. Re-apply the grants (`recall schema grants --controller` for the controller role and `--strict`
+   for the serving role) and run `recall provenance rebuild` per tenant (the note below).
+6. Rebuild atomic rescue artifacts made by 0.14.0: they lack `embedding_fingerprint` and are
+   refused.
+7. Re-index or rebuild generations whose identity moved (every FastEmbed profile, `st:` models
+   from a local directory or a pinned revision, structured documents, Python code chunks and
+   document extraction), recalibrate a v2 calibration that `recall calibration import` now
+   refuses, and deduplicate labelled query sets.
+8. Start the servers and check `recall doctor` and `recall schema status`.
+
+**→ 0.15.0: a ledger that already holds facts needs `recall provenance rebuild`.** The
 current-facts migration creates its tables empty and nothing fills them from existing events, so after
 `recall schema apply` every fact read and conflict check replays the tenant's ledger until it is
 rebuilt. Answers stay correct; the speedup never arrives. On a two-role deployment re-apply
@@ -135,13 +159,13 @@ rebuilt. Answers stay correct; the speedup never arrives. On a two-role deployme
 <serving role> --strict` first, then run `recall provenance rebuild` once per tenant and confirm
 `recall provenance rebuild --check` reports `current: true` ([MIGRATIONS.md](MIGRATIONS.md)).
 
-**→ Unreleased: `recall forget` refuses a name that matches more than one stored source.** A
+**→ 0.15.0: `recall forget` refuses a name that matches more than one stored source.** A
 tenant built as `docs/FIRST_CALIBRATION.md` describes holds each memo twice: the path `recall
 index` stored and the `file://` URI the generation stored. A short name such as `notes.md` that
 matches both is refused as ambiguous, and the refusal lists the exact names; pass all of them. A
 script that forgets by the short name now exits non-zero with that refusal.
 
-**→ Unreleased: an embedding library upgrade can refuse existing generations.** Serving and
+**→ 0.15.0: an embedding library upgrade can refuse existing generations.** Serving and
 calibration compare a generation's recorded embedding profile and its fingerprint with the
 runtime embedder. The fingerprint includes the version of the client library the profile names
 (`voyageai`, `openai`, `fastembed` or `sentence-transformers`, plus `transformers` for
@@ -154,7 +178,7 @@ the same check. Pin the library on serving hosts, or build and calibrate a new g
 the new version before switching traffic. Generations that recorded no profile are unaffected;
 legacy fastembed generations record a fallback profile and are covered.
 
-**→ Unreleased: generation hits now carry their first write date (#835).** A generation-backed
+**→ 0.15.0: generation hits now carry their first write date (#835).** A generation-backed
 store used to report the last rebuild as every passage's `first_indexed_at`, and now reports the
 stored first write, so `known_as_of` replay, the dated answer profile and supersession edge dates
 can change on an existing corpus. Dates a rebuild already overwrote are not repaired: a later
