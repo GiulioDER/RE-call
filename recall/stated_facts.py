@@ -473,12 +473,53 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
         report.reason = "every stated fact is already recorded"
         return report
     # A forget that ran after the memos were read erased their request ids, so their facts would
-    # read as new and be recorded again. What is no longer served is dropped here, and from this
-    # check to the last write the ledger's erasure lock is held shared, which a forget holds
-    # exclusively (`recall.fact_ledger.PostgresFactLedger.erasure_lock`): a forget either runs
-    # first, and the check sees its memos gone, or waits, and retracts what this wrote.
-    with erasure_lock_for(ledger, shared=True):
-        return _record_statements(store, generation_id, report, ledger, card_store, todo, cards, source_of)
+    # read as new and be recorded again. The statements go in chunks of `_STATED_LOCK_CHUNK`; each
+    # chunk drops what is no longer served and, from that check to its last write, holds the
+    # ledger's erasure lock shared, which a forget holds exclusively
+    # (`recall.fact_ledger.PostgresFactLedger.erasure_lock`): a forget either runs before a
+    # chunk, which then sees its memos gone, or waits for it, and retracts what it wrote. Held
+    # for a whole first activation (one connection per append), the lock made a forget wait for
+    # all of it and give up after `ERASURE_LOCK_WAIT_S`, with every fact application queued
+    # behind that forget (owner decision 2026-11-05, PERF-002).
+    dropped = 0
+    for start in range(0, len(todo), _STATED_LOCK_CHUNK):
+        batch = todo[start:start + _STATED_LOCK_CHUNK]
+        try:
+            with erasure_lock_for(ledger, shared=True):
+                dropped += _record_statements(store, generation_id, report, ledger, card_store, batch, cards, source_of)
+        except Exception as exc:  # BROAD-CATCH: error-translation
+            if start == 0:
+                raise  # nothing was written: the caller reports it as before
+            # Earlier chunks are recorded; the failure must not read as "nothing was written",
+            # which the caller's fresh report said (2026-11-05 audit, BUG-001). A re-run records
+            # the rest: request ids make every statement idempotent.
+            _log.warning(
+                "recording stated facts for tenant %r failed after %d statement(s): %s",
+                store.tenant, start, exc,
+            )
+            report.facts_stated = -1
+            report.reason = (
+                f"{type(exc).__name__}: {exc}; the first {start} statement(s) were processed "
+                f"before it (at least {start - dropped} recorded); a re-run records the rest"
+            )
+            return report
+        if report.facts_stated < 0:
+            return report
+    recorded = len(todo) - dropped
+    report.reason = (
+        f"recorded {recorded} statement(s)"
+        if recorded
+        else f"{dropped} statement(s) dropped: their memos are no longer served"
+    )
+    return report
+
+
+#: Statements recorded per hold of the erasure lock (`_reconcile`), each chunk checking again which
+#: memos are still served. On PostgreSQL a forget therefore waits at most this many appends. On lite
+#: every production caller (index, refresh, the MCP index path) already holds the file's write lane
+#: across the whole reconcile, and the lane is reentrant, so releasing it per chunk frees nothing: a
+#: forget there still waits for the whole run (2026-11-05 audit, ENV-001).
+_STATED_LOCK_CHUNK = 100
 
 
 def _record_statements(
@@ -490,8 +531,10 @@ def _record_statements(
     todo: list[tuple[AtomicFact, EvidenceCard, str]],
     cards: list[EvidenceCard],
     source_of: dict[str, str],
-) -> StatedFactsReport:
-    """Record `todo` once its memos are known still served, under the caller's erasure lock.
+) -> int:
+    """Record `todo` (one chunk) once its memos are known still served, under the caller's
+    erasure lock, counting into `report`; returns how many were dropped because their memo is no
+    longer served. A refusal sets `report.facts_stated` to -1 and its reason, and stops.
 
     `generation_id` is the one the cards were built with, read before the lock: on lite a forget
     the lock waited for changes the store's generation (its fingerprint), and a controller built
@@ -505,10 +548,7 @@ def _record_statements(
     todo = [item for item in todo if source_of[item[1].card_id] not in gone]
     dropped = before - len(todo)
     if not todo:
-        # The caller returns before the lock when nothing was new, so an empty list here means
-        # every statement was dropped: its memo was forgotten mid-run (BUG-003).
-        report.reason = f"{dropped} statement(s) dropped: their memos are no longer served"
-        return report
+        return dropped
     # Only the cards a new statement cites: a card's id includes its generation, so putting every
     # admitted memo's card on each activation filled an append-only table with cards nothing cites.
     cited = {card.card_id for _fact, card, _rid in todo}
@@ -537,9 +577,8 @@ def _record_statements(
                 "recording stated facts for tenant %r failed: %s; nothing more was recorded%s",
                 store.tenant, report.reason, hint,
             )
-            return report
-    report.reason = f"recorded {len(todo)} statement(s)"
-    return report
+            return dropped
+    return dropped
 
 
 def _vanished(store: Any, sources: set[str]) -> set[str]:

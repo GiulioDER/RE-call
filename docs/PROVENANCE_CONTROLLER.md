@@ -264,7 +264,8 @@ ledger keeps nothing that could recognize it. Production's tombstone keeps such 
 
 A forget or withdraw and a fact application are ordered by the ledger's erasure lock, one per
 tenant. An application holds it shared from its card checks to its append (the stated-facts
-reconcile from its served-memo check to its last write), and a forget or withdraw holds it
+reconcile for each chunk of 100 statements, from that chunk's served-memo check to its last write,
+so on PostgreSQL a forget waits for at most one chunk), and a forget or withdraw holds it
 exclusively for its whole erase, so an assertion is either in the forget's plan or checked after
 its memo is gone. Without it, an assertion checked before a forget deleted its memo was appended
 after the forget's retraction: never retracted, its value never erased. On PostgreSQL the lock is a

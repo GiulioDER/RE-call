@@ -11,9 +11,11 @@ the inventory that migration starts from (POST_AML_DEPLOY.md, step 1).
     python scripts/fact_identity_normalisation_check.py --sqlite PATH
     RECALL_FACT_WRITE_DSN=... python scripts/fact_identity_normalisation_check.py --tenant memory [--tenant ...]
 
-It prints one count per table and exits 1 when any stored row would change, 0 when none would.
+It prints one count per table and exits 1 when any stored row would change, 0 when none would,
+and 2 when nothing was checked (a SQLite file with none of the tables, or a PostgreSQL role that
+bypasses row-level security).
 PostgreSQL's tables enforce tenant isolation, so each tenant is read under its own setting, and a
-tenant not named is not read. The DSN comes from `--dsn-env` (default RECALL_FACT_WRITE_DSN), so
+tenant not named is not read; the output names the tenants it read. The DSN comes from `--dsn-env` (default RECALL_FACT_WRITE_DSN), so
 its password stays out of the process table; `--dsn` is an explicit override. Values are decoded as
 the ledger decodes them (`recall.provenance_json.decode_jsonb`), so a number PostgreSQL's jsonb
 rewrote (an exponent float) is judged as written.
@@ -117,12 +119,24 @@ def _sqlite_counts(path: str) -> dict[str, int]:
         conn.close()
 
 
+class RlsBypassed(Exception):
+    """The DSN's role is not bound by row-level security, so a tenant's read is every tenant's."""
+
+
 def _postgres_counts(dsn: str, tenants: list[str]) -> dict[str, int]:
     import psycopg
 
     counts: dict[str, int] = {}
     with psycopg.connect(dsn, autocommit=True, connect_timeout=10) as conn:
         conn.execute("SET default_transaction_read_only = on")
+        # Each tenant is read through row-level security alone; a superuser or BYPASSRLS role
+        # would count every tenant's rows under each name given, and the output would say the
+        # opposite of what was read (2026-11-05 audit, SEC-001).
+        row = conn.execute(
+            "SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user"
+        ).fetchone()
+        if row is None or row[0]:
+            raise RlsBypassed("the DSN's role bypasses row-level security; use the controller role")
         for tenant in tenants:
             conn.execute("SELECT set_config(%s, %s, false)", (TENANT_GUC, tenant))
             for table, column, kind in TABLES:
@@ -156,7 +170,16 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"pass --sqlite, or set {args.dsn_env} (or --dsn) for PostgreSQL")
         if not args.tenant:
             parser.error("PostgreSQL needs at least one --tenant")
-        counts = _postgres_counts(dsn, args.tenant)
+        try:
+            counts = _postgres_counts(dsn, args.tenant)
+        except RlsBypassed as exc:
+            print(f"not checked: {exc}", file=sys.stderr)
+            return 2
+        # Row-level security hides every other tenant, the tenant registry included, so the check
+        # cannot list them; it says which it read, so an unnamed tenant is not taken for a clean
+        # one (owner decision 2026-11-05, ENV-003).
+        tenants = ", ".join(dict.fromkeys(args.tenant))
+        print(f"tenants read: {tenants}; a tenant not named here was not read")
     for key, value in counts.items():
         print(f"{key}: {value}")
     changed = sum(counts.values())

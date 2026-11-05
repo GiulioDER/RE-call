@@ -775,3 +775,53 @@ def test_sec002_another_fact_under_a_request_id_the_caller_may_not_read_learns_n
     assert guess.event is None and guess.cards == ()
     permitted = controller(lambda c: True).apply_fact(FactApplicationRequest(_fact("21"), (card.card_id,), "r-ok"))
     assert permitted.code == DecisionCode.REQUEST_ID_REUSED
+
+
+def test_env003_the_postgres_check_names_the_tenants_it_read(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    """ENV-003 (owner decision 2026-11-05): on PostgreSQL the check reads only the tenants named,
+    since row-level security hides the rest, and its clean exit said nothing of the ones it never
+    read, so a tenant left off the command line passed the deploy gate unread. It now names the
+    tenants it read, once each.
+
+    Red proof: against the pre-fix script (master 03ba03586 for this file) the output held only
+    the counts, and the assertion on the "tenants read" line failed.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("normcheck", ROOT / "scripts/fact_identity_normalisation_check.py")
+    assert spec is not None and spec.loader is not None
+    check = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(check)
+    monkeypatch.setattr(check, "_postgres_counts", lambda dsn, tenants: {f"{t}:recall_evidence_cards.card": 0 for t in tenants})
+    monkeypatch.setenv("RECALL_FACT_WRITE_DSN", "postgresql://from-env/db")
+    assert check.main(["--tenant", "memory", "--tenant", "re-call-docs", "--tenant", "memory"]) == 0
+    out = capsys.readouterr().out
+    assert "tenants read: memory, re-call-docs; a tenant not named here was not read" in out, out
+
+
+@requires_db
+def test_sec001_the_check_refuses_a_role_that_bypasses_row_level_security(make_store, unprivileged_dsn):
+    """2026-11-05 audit SEC-001: the check reads each tenant through row-level security alone,
+    and a superuser or BYPASSRLS DSN counted every tenant's rows under each name given while the
+    output said a tenant not named was not read. Such a role is now refused with exit 2; the
+    control, a role bound by row-level security (`unprivileged_dsn`), is still read.
+
+    Red proof: against the pre-fix script (snapshot of run 20261105T194718Z) the privileged run
+    read the tables, exited 0 and `assert run.returncode == 2` failed with `0 == 2`.
+    """
+    import os
+
+    from tests.conftest import TEST_DSN, role_is_unprivileged
+
+    if role_is_unprivileged(TEST_DSN):
+        pytest.skip("RECALL_TEST_DSN's role is bound by row-level security; no privileged role to refuse")
+    make_store(8)  # the schema the check reads
+    run = _check("--tenant", "memory", env={**os.environ, "RECALL_FACT_WRITE_DSN": TEST_DSN})
+    assert run.returncode == 2, (run.returncode, run.stdout, run.stderr)
+    assert "bypasses row-level security" in run.stderr
+    assert "tenants read" not in run.stdout
+    control = _check("--tenant", "memory", env={**os.environ, "RECALL_FACT_WRITE_DSN": unprivileged_dsn})
+    assert control.returncode == 0, (control.returncode, control.stdout, control.stderr)
+    assert "tenants read: memory" in control.stdout
