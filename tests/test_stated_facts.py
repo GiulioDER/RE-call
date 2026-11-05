@@ -908,3 +908,88 @@ def test_cca_a_reconcile_whose_memos_were_forgotten_mid_run_says_they_were_dropp
     report = reconcile(store, folder)
     assert report.facts_stated == 0, report
     assert report.reason == "1 statement(s) dropped: their memos are no longer served", report.reason
+
+
+def test_perf002_a_forget_between_chunks_is_seen_by_the_next_chunk(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PERF-002 (owner decision 2026-11-05): the reconcile held the erasure lock across its whole
+    batch, so a forget waited for every append and gave up after ERASURE_LOCK_WAIT_S. It now holds
+    it per chunk of `_STATED_LOCK_CHUNK` statements; a forget can run between two chunks, and the
+    next chunk checks again what is served, so a forgotten memo's fact is not recorded after it.
+
+    Here two memos state one fact each, the chunk is one statement, and both memos are forgotten
+    as the second chunk asks for the lock: the first fact was recorded (and the forget retracted
+    it), the second is dropped, not recorded. The reconcile is called with no outer write lane,
+    which no production lite caller does: index, refresh and the MCP index path hold the lane
+    across it, so on lite the per-chunk release frees nothing (2026-11-05 audit, ENV-001). What
+    this pins is the chunking and the per-chunk re-check, the logic that bounds a forget's wait
+    on PostgreSQL, where each hold is a session lock on its own connection.
+
+    Red proof: against the pre-fix stated_facts (master 03ba03586) the lock was taken once for
+    both statements, the forget never ran between them, and `assert holds == [True, True]`
+    failed with `[True] == [True, True]`. With the per-chunk check mutated away (`_vanished`
+    skipped in `_record_statements`) the forgotten memo's fact was recorded after the forget and
+    `assert report.facts_stated == 1` failed with `2 == 1`.
+    """
+    import recall.stated_facts as stated
+
+    memo(folder, "door.md", facts=[DOOR])
+    memo(folder, "city.md", facts=[{"subject": "user", "predicate": "city", "object": "Turin"}])
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
+    refreshed(store, folder)  # indexed, nothing stated yet
+    monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
+    monkeypatch.setattr(stated, "_STATED_LOCK_CHUNK", 1, raising=False)
+    holds: list[bool] = []
+    real_lock = LiteFactLedger.erasure_lock
+
+    def lock(self: LiteFactLedger, *, shared: bool) -> Any:
+        if shared:  # the reconcile's holds; the forget's own exclusive one is not counted
+            holds.append(shared)
+            if len(holds) == 2:
+                forget_memory(store, ["door.md", "city.md"])  # type: ignore[arg-type]
+        return real_lock(self, shared=shared)
+
+    monkeypatch.setattr(LiteFactLedger, "erasure_lock", lock)
+    report = reconcile(store, folder)
+    assert holds == [True, True]
+    assert report.facts_stated == 1, report
+    assert report.reason == "recorded 1 statement(s)", report.reason
+    assert listed(store) == []
+
+
+def test_bug001_a_failure_after_a_recorded_chunk_says_what_was_recorded(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-05 audit BUG-001: with the lock taken per chunk, a lock that cannot be taken for a
+    later chunk (a PostgreSQL lock or connect timeout) raised out of the reconcile after earlier
+    chunks were recorded, and the caller's fresh report said only "FAILED: <error>", as if
+    nothing had been written. The report now keeps what was read and says how many statements
+    went in before the failure; a first-chunk failure is reported as before.
+
+    Red proof: against the stated_facts of this branch before the fix (snapshot of run
+    20261105T194718Z) the report was the caller's fresh one and `assert report.memos_read == 2`
+    failed with `0 == 2`.
+    """
+    import recall.stated_facts as stated
+
+    memo(folder, "door.md", facts=[DOOR])
+    memo(folder, "city.md", facts=[{"subject": "user", "predicate": "city", "object": "Turin"}])
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
+    refreshed(store, folder)  # indexed, nothing stated yet
+    monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
+    monkeypatch.setattr(stated, "_STATED_LOCK_CHUNK", 1)
+    holds: list[bool] = []
+    real_lock = LiteFactLedger.erasure_lock
+
+    def lock(self: LiteFactLedger, *, shared: bool) -> Any:
+        holds.append(shared)
+        if len(holds) == 2:
+            raise TimeoutError("lock wait exceeded")
+        return real_lock(self, shared=shared)
+
+    monkeypatch.setattr(LiteFactLedger, "erasure_lock", lock)
+    report = reconcile(store, folder)
+    assert report.memos_read == 2, report
+    assert report.facts_stated == -1, report
+    assert "the first 1 statement(s) were processed before it (at least 1 recorded)" in report.reason, report.reason
