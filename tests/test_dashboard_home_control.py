@@ -86,7 +86,7 @@ def _report(corpus: Path) -> None:
 
 @pytest.fixture
 def connected(corpus: Path, monkeypatch: pytest.MonkeyPatch) -> DashboardApp:
-    monkeypatch.setattr(dbq, "control", lambda db, tenant: CONTROL)
+    monkeypatch.setattr(dbq, "control", lambda db, tenant, **kwargs: CONTROL)
     monkeypatch.setattr(dbq, "use_reports", lambda db, tenant, limit=50, source="": [r for r in REPORTS if not source or source in r["used"] + r["wrong"]])
     monkeypatch.setattr(dbq, "tenants", lambda db: [])
     return DashboardApp(corpus, port=8765, token="tok", db=DashboardDB("postgresql://fake"))
