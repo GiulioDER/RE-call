@@ -1903,27 +1903,36 @@ def _register_fact_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         if token is not None:
             claims = token.claims or {}
             writer = str(claims.get("principal", token.client_id or "authenticated"))
-        result = await _to_thread(
-            lambda: apply_fact_memory(
-                store,
-                state["embedder"],
-                claim={
-                    "namespace": namespace,
-                    "subject": subject,
-                    "predicate": predicate,
-                    "object": object,
-                    "context": context or {},
-                    "valid_from": valid_from,
-                    "valid_until": valid_until,
-                },
-                evidence_card_ids=evidence_card_ids,
-                request_id=request_id,
-                writer=writer,
-                policy=_trust_policy_for(state),
-                security_policy=state.get("source_security_policy"),
-                access_context=_access_context(state, store),
+        try:
+            result = await _to_thread(
+                lambda: apply_fact_memory(
+                    store,
+                    state["embedder"],
+                    claim={
+                        "namespace": namespace,
+                        "subject": subject,
+                        "predicate": predicate,
+                        "object": object,
+                        "context": context or {},
+                        "valid_from": valid_from,
+                        "valid_until": valid_until,
+                    },
+                    evidence_card_ids=evidence_card_ids,
+                    request_id=request_id,
+                    writer=writer,
+                    policy=_trust_policy_for(state),
+                    security_policy=state.get("source_security_policy"),
+                    access_context=_access_context(state, store),
+                )
             )
-        )
+        except Exception:  # BROAD-CATCH: cleanup-only
+            # No answer to keep: the erasure lock could not be taken (a busy lite lane, a
+            # PostgreSQL lock timeout) or the call failed. The reservation is released so the same
+            # request id can be sent again, which the ledger answers by its own record of the id
+            # (a replay or a refusal), so a retry never appends twice (2026-11-04 audit,
+            # DEPLOY-002).
+            await _release_mutation_reservation(state, store.tenant, request_id)
+            raise
         payload = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
         await _record_mutation_result(
             state,

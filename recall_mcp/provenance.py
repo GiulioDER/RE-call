@@ -217,6 +217,18 @@ def apply_fact_memory(
         register_evidence_cards(cards, store=store)
         return tuple(card.card_id for card in cards)
 
+    card_permitted = None
+    if security_policy is not None:
+        source_policy, context = security_policy, access_context
+
+        def card_permitted(card: EvidenceCard) -> bool:
+            # The rule `current_facts_memory` lists by: a card is the caller's to cite only when
+            # its memo is readable whole, with no redaction.
+            if context is None or context.tenant != store.tenant:
+                return False
+            decision = source_policy.decide(card.source, context)
+            return decision.allowed and not decision.redactions
+
     with _applied_generation(store) as generation_id:
         controller = ProvenanceController(
             tenant_id=store.tenant,
@@ -230,6 +242,7 @@ def apply_fact_memory(
             # Strict: a stated fact whose content cannot be checked must refuse the write, not
             # drop out of the conflict set (`served_sources`).
             served_sources=served_sources(store, strict=True),
+            card_permitted=card_permitted,
         )
         decision = controller.apply_fact(request)
     return {

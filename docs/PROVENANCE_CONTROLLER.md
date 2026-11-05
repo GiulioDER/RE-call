@@ -243,6 +243,16 @@ does. `recall provenance erase` erases every value of a tenant. A memo forgotten
 the legacy table and indexed again byte for byte states its facts again, with its chunks: the
 ledger keeps nothing that could recognize it. Production's tombstone keeps such a memo out.
 
+A forget or withdraw and a fact application are ordered by the ledger's erasure lock, one per
+tenant. An application holds it shared from its card checks to its append (the stated-facts
+reconcile from its served-memo check to its last write), and a forget or withdraw holds it
+exclusively for its whole erase, so an assertion is either in the forget's plan or checked after
+its memo is gone. Without it, an assertion checked before a forget deleted its memo was appended
+after the forget's retraction: never retracted, its value never erased. On PostgreSQL the lock is a
+session advisory lock on a connection of its own, waiting up to `ERASURE_LOCK_WAIT_S` (300
+seconds); on a lite store it is the file's write lane, so applications there also take turns with
+each other and with index runs. The fresh search an application may make runs outside it.
+
 ## Failure behavior
 
 The controller makes at most one fresh search. The query is generated from canonical fact fields,
@@ -252,6 +262,8 @@ not reported as evidence absence. The ledger read that establishes the conflict 
 authorization: when it cannot answer, the controller refuses with `LEDGER_UNAVAILABLE` before
 minting a permit. On a ledger with a key-scoped read (`conflict_history`) that read is the one, and
 the tenant's `current()` is not read at all; a ledger without one is read through `current()` first.
+An erasure lock that cannot be taken in time raises instead of refusing: nothing was checked or
+recorded, so the same request id can be sent again.
 
 The existing `PromotedFact` and `apply_rewrite` path remains human reviewed and unchanged. It is a
 separate mechanism for corpus metadata rewrites, not an alternate route to structured fact

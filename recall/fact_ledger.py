@@ -13,7 +13,8 @@ import hashlib
 import json
 import sqlite3
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from typing import Any
@@ -66,6 +67,17 @@ def fact_key_lock(tenant_id: str, key: str) -> str:
     """The advisory lock string a PostgreSQL writer of conflict key `key` holds (`lock_fact_keys`).
     `record_decision` takes none: a refusal or abstention changes no interval."""
     return f"fact\x1f{tenant_id}\x1f{key}"
+
+
+def fact_erasure_lock(tenant_id: str) -> str:
+    """The advisory lock string that orders a tenant's fact applications against its erasures
+    (`PostgresFactLedger.erasure_lock`)."""
+    return f"fact-erasure\x1f{tenant_id}"
+
+
+#: How long an application or an erasure waits for the other before it gives up, in seconds. A
+#: forget erases values in place and can outlast the ledger's statement timeout.
+ERASURE_LOCK_WAIT_S = 300
 
 
 def lock_fact_keys(conn: psycopg.Connection, tenant_id: str, keys: Sequence[str]) -> None:
@@ -894,6 +906,37 @@ class PostgresFactLedger:
         conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (self.tenant_id,))
         conn.execute(f"SET statement_timeout = {int(self.statement_timeout_ms)}")
         return conn
+
+    @contextmanager
+    def erasure_lock(self, *, shared: bool) -> Iterator[None]:
+        """Order this tenant's fact applications against its erasures.
+
+        An application (`ProvenanceController.apply_fact`, and the stated reconcile in
+        `recall.stated_facts`; `apply_stated` itself takes none, because its caller holds it)
+        holds it shared from its card checks to its append; a forget or withdraw (`recall_mcp.lifecycle`) holds it
+        exclusively from its plan to its redaction. So a forget either sees an assertion in its
+        plan or runs first, and the application then finds the memo gone. Without it an
+        assertion checked before a forget deleted its memo was appended after the forget's
+        retraction, never retracted and its value never erased (STAKES-003, 2026-11-04 owner
+        decision). A session lock on a connection of its own, released when that closes; waits
+        up to `ERASURE_LOCK_WAIT_S` and then raises, before anything is written.
+        """
+        conn = self._connect()
+        try:
+            # The lock lives as long as this session, which sits idle while the forget or the
+            # application works on other connections: a server's idle-session timeout would end it
+            # and release the lock unseen (2026-11-04 audit, ENV-001; `recall.index_lock` does
+            # the same for its own lock).
+            conn.execute("SET idle_session_timeout = 0")
+            conn.execute(f"SET lock_timeout = {int(ERASURE_LOCK_WAIT_S * 1000)}")
+            conn.execute(f"SET statement_timeout = {int(ERASURE_LOCK_WAIT_S * 1000) + 1000}")
+            function = "pg_advisory_lock_shared" if shared else "pg_advisory_lock"
+            conn.execute(
+                f"SELECT {function}(hashtextextended(%s, 0))", (fact_erasure_lock(self.tenant_id),)
+            )
+            yield
+        finally:
+            conn.close()
 
     @staticmethod
     def _select_sql() -> str:

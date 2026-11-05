@@ -5,10 +5,12 @@ opaque evidence-card identifiers. The controller resolves the cards from a serve
 store, checks their current lineage and source digests, verifies deterministic structured support,
 and only then asks a fact ledger to append the event.
 
-The card checks run before the append, outside the ledger's key lock, and no ledger repeats them
-under it. A `recall_forget` of a card's memo that lands between the two leaves the assertion
-appended after the forget's retraction pass: never retracted, its value never erased, hidden only
-while no memo of that name is served (STAKES-003, an open owner item; `ProvenanceController.apply_fact`).
+The card checks run before the append, outside the ledger's key lock, but an application holds
+the ledger's erasure lock shared from its checks to its append and a forget or withdraw holds it
+exclusively for its whole erase (`ProvenanceController.apply_fact`,
+`recall.fact_ledger.PostgresFactLedger.erasure_lock`), so a forget either sees the assertion in
+its plan or runs first and the checks find the memo gone (STAKES-003). A ledger without the lock
+(the in-memory reference, `SQLiteFactLedger`) orders nothing.
 
 Arbitrary prose is not an authorization input. A prose passage can be useful evidence for a human
 or a proposal engine, but it cannot prove an atomic fact here without a structured source record.
@@ -26,7 +28,8 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Protocol, cast
+from contextlib import AbstractContextManager, nullcontext
+from typing import Any, Protocol, cast, get_args
 
 from recall import eval_clock
 from recall.supersession import reference_path_key, reference_stem_key
@@ -591,18 +594,27 @@ def ordered_after(moment: datetime, history: Sequence[FactEvent], fact: AtomicFa
     # The key is a hash of subject, predicate, namespace and context, so only an event that
     # shares the first three is hashed: hashing the whole history on every write, under the
     # key's lock, made writes six times slower at a thousand events (2026-10-21 audit, PERF-002).
-    latest = max(
-        (
-            _as_utc(event.created_at)
-            for event in history
-            if event.fact is not None
-            and event.fact.subject == fact.subject
-            and event.fact.predicate == fact.predicate
-            and event.fact.namespace == fact.namespace
-            and fact_conflict_key(event.fact) == key
-        ),
-        default=None,
-    )
+    members = [
+        event
+        for event in history
+        if event.fact is not None
+        and event.fact.subject == fact.subject
+        and event.fact.predicate == fact.predicate
+        and event.fact.namespace == fact.namespace
+        and fact_conflict_key(event.fact) == key
+    ]
+    # A `superseded` receipt carries no fact on the durable ledgers, and one whose successor a
+    # forget erased pairs with nothing: it hides what it names over the whole line. It belongs
+    # to the key of the facts it names, so it orders a new assertion of them too; without it a
+    # value asserted again after its successor was forgotten took the receipt's own time under a
+    # fixed clock and stayed hidden while the ledger answered APPLIED (2026-11-04 hunt, NUM-001).
+    key_ids = {event.fact_id for event in members} | {fact_identity(fact)}
+    members += [
+        event
+        for event in history
+        if event.fact is None and key_ids.intersection(event.supersedes_fact_ids)
+    ]
+    latest = max((_as_utc(event.created_at) for event in members), default=None)
     if latest is not None and instant <= latest:
         return latest + timedelta(microseconds=1)
     return instant
@@ -987,7 +999,7 @@ def evidence_card_from_payload(payload: Mapping[str, Any]) -> EvidenceCard:
         calibration_id=payload.get("calibration_id"),
         calibration_status=str(payload.get("calibration_status", "missing")),
         trust_state=str(payload.get("trust_state", "degraded")),
-        verdict=cast(Verdict, str(payload.get("verdict", "unverified"))),
+        verdict=stored_verdict(payload.get("verdict", "unverified")),
         confidence=float(payload.get("confidence", 0.0)),
         rank=int(payload["rank"]),
         supersession_links=tuple(payload.get("supersession_links", ())),
@@ -998,6 +1010,27 @@ def evidence_card_from_payload(payload: Mapping[str, Any]) -> EvidenceCard:
         ),
         schema_version=int(payload.get("schema_version", 1)),
     )
+
+
+#: The verdicts this release defines (`recall.types.Verdict`).
+KNOWN_VERDICTS: frozenset[str] = frozenset(get_args(Verdict))
+
+
+def stored_verdict(value: object) -> Verdict:
+    """A stored card's verdict, as written.
+
+    A value this release does not define (a newer release's, or a typo) is declared unknown
+    (`verdict_known` says so) and kept, never refused: the card's id covers its verdict, so
+    rewriting it would make the stored card read as tampered, and raising lost every card of a
+    ledger read. Only `ok` is trusted for application (`EvidenceCard.trusted_for_application`),
+    so an unknown verdict never authorizes a fact (2026-11-04 owner decision, CODE-011).
+    """
+    return cast(Verdict, str(value))
+
+
+def verdict_known(verdict: str) -> bool:
+    """Whether `verdict` is one this release defines (`KNOWN_VERDICTS`)."""
+    return verdict in KNOWN_VERDICTS
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -1046,7 +1079,7 @@ DEFAULT_PREDICATE_CARDINALITY: Mapping[str, PredicateCardinality] = MappingProxy
 def predicate_cardinality(fact: AtomicFact) -> PredicateCardinality:
     """The fact's own declared cardinality, else its predicate's, else ``single``."""
     if fact.cardinality is not None:
-        return cast(PredicateCardinality, fact.cardinality)
+        return fact.cardinality
     return DEFAULT_PREDICATE_CARDINALITY.get(fact.predicate.casefold(), "single")
 
 
@@ -1294,6 +1327,13 @@ class ConflictHistoryLedger(Protocol):
     reads it when present (`ProvenanceController._in_force`), else every event."""
 
     def conflict_history(self, *, tenant_id: str, fact: AtomicFact) -> Sequence[FactEvent]: ...
+
+
+class ErasureLockLedger(Protocol):
+    """A ledger that orders applications against erasures (`PostgresFactLedger.erasure_lock`);
+    the controller holds it shared around every application, a forget holds it exclusively."""
+
+    def erasure_lock(self, *, shared: bool) -> AbstractContextManager[Any]: ...
 
 
 class OutboxAssertionLedger(Protocol):
@@ -1747,6 +1787,11 @@ class ControllerDecision:
     detail: str = ""
 
 
+class _FreshSearch:
+    """`ProvenanceController._apply_fact`'s answer when the request's own cards failed and the
+    fresh search, run outside the erasure lock, is to propose others."""
+
+
 @dataclass(frozen=True)
 class _ConflictSet:
     """A tenant's ledger as `ProvenanceController.apply_fact` judges a claim on it, at one instant."""
@@ -1777,6 +1822,7 @@ class ProvenanceController:
         now: Callable[[], datetime] | None = None,
         writer: str = "unknown",
         served_sources: ServedSources | None = None,
+        card_permitted: Callable[[EvidenceCard], bool] | None = None,
     ) -> None:
         if not tenant_id or not generation_id:
             raise ValueError("tenant_id and generation_id must be non-empty")
@@ -1797,8 +1843,16 @@ class ProvenanceController:
         #: The memo names the store serves now; facts whose every memo it lacks are neither
         #: current nor a conflict (`absent_fact_ids`). None checks nothing.
         self.served_sources = served_sources
+        #: Whether the caller may read a card's memo (its source access policy); a card it may
+        #: not is refused as not found, so the answer does not say the card exists. None checks
+        #: nothing. Without it a principal the policy kept from a memo could apply or supersede a
+        #: fact with that memo's card, and learn from the answer what the memo states (2026-11-04
+        #: hunt, SEC-002).
+        self.card_permitted = card_permitted
 
-    def _resolve(self, request: FactApplicationRequest) -> tuple[EvidenceCard, ...] | DecisionCode:
+    def _resolve(
+        self, request: FactApplicationRequest, instant: datetime
+    ) -> tuple[EvidenceCard, ...] | DecisionCode:
         resolved: list[EvidenceCard] = []
         for card_id in request.evidence_card_ids:
             try:
@@ -1807,7 +1861,7 @@ class ProvenanceController:
                 # A malformed or tampered durable payload is a card failure, not a controller
                 # crash.  The caller may perform the one bounded fresh-search recovery.
                 return DecisionCode.CARD_TAMPERED
-            if card is None:
+            if card is None or not self._permitted(card):
                 return DecisionCode.CARD_NOT_FOUND
             if card.card_id != card_id:
                 return DecisionCode.CARD_TAMPERED
@@ -1829,7 +1883,7 @@ class ProvenanceController:
                 return DecisionCode.UNSUPPORTED_CLAIM
             if not card.trusted_for_application:
                 return DecisionCode.TRUST_UNAVAILABLE
-            validity = _valid_now(card, self.now())
+            validity = _valid_now(card, instant)
             if validity is not None:
                 return validity
             if self.source_digest_for is not None:
@@ -1840,6 +1894,15 @@ class ProvenanceController:
                     return DecisionCode.SOURCE_CHANGED
             resolved.append(card)
         return tuple(resolved)
+
+    def _permitted(self, card: EvidenceCard) -> bool:
+        """Whether the caller may read `card`'s memo (`card_permitted`); an error is a refusal."""
+        if self.card_permitted is None:
+            return True
+        try:
+            return bool(self.card_permitted(card))
+        except Exception:  # BROAD-CATCH: fail-closed
+            return False
 
     @staticmethod
     def _supported(fact: AtomicFact, cards: Sequence[EvidenceCard]) -> bool:
@@ -1885,7 +1948,7 @@ class ProvenanceController:
             return self.ledger.current(tenant_id=self.tenant_id, now=instant)
         return self.ledger.current(tenant_id=self.tenant_id, now=instant, served=self.served_sources)
 
-    def _in_force(self, claim: AtomicFact) -> _ConflictSet:
+    def _in_force(self, claim: AtomicFact, instant: datetime) -> _ConflictSet:
         """The tenant's values in force at some instant, with the index that says when.
 
         From the ledger's own events where it exposes them, as `apply_assertion` reads them: the
@@ -1903,8 +1966,8 @@ class ProvenanceController:
         `test_ledger_read_outage_fails_closed_without_asserting` and the provenance evaluation's
         `ledger_outage` case). One clock reading, and the absent set computed once, inside the
         fail-closed read; the second was computed outside it (2026-10-21 audit, CODE-004).
+        `instant` is the pass's one reading, which also checked the cards' validity (ENV-004).
         """
-        instant = self.now()
         current: tuple[FactEvent, ...] | None = None
         if callable(getattr(self.ledger, "conflict_history", None)):
             history: object = cast(ConflictHistoryLedger, self.ledger).conflict_history(
@@ -1947,26 +2010,12 @@ class ProvenanceController:
             detail=detail,
         )
 
-    def _retry_with_fresh_search(
-        self, request: FactApplicationRequest, resolved: tuple[EvidenceCard, ...] | DecisionCode
+    def _resolve_fresh(
+        self, request: FactApplicationRequest, fresh_ids: tuple[str, ...], instant: datetime
     ) -> tuple[EvidenceCard, ...] | ControllerDecision:
-        """The cards of the one bounded fresh-search retry, or the refusal that ends it.
-
-        `resolved` is the first resolution, which failed or did not support the claim.
-        """
-        if self.fresh_search is None:
-            code = resolved if isinstance(resolved, DecisionCode) else DecisionCode.UNSUPPORTED_CLAIM
-            return self._record_refusal(request, code, (), retried=False)
-        try:
-            fresh_ids = tuple(self.fresh_search(request.claim, request))
-        except Exception as exc:  # BROAD-CATCH: fail-closed
-            return self._record_refusal(
-                request, DecisionCode.FRESH_SEARCH_UNAVAILABLE, (), retried=True, detail=type(exc).__name__
-            )
-        if not fresh_ids:
-            return self._record_refusal(request, DecisionCode.FRESH_SEARCH_INSUFFICIENT, (), retried=True)
+        """The cards the one bounded fresh search found, or the refusal that ends the retry."""
         refreshed = FactApplicationRequest(request.claim, fresh_ids, request.request_id)
-        resolved = self._resolve(refreshed)
+        resolved = self._resolve(refreshed, instant)
         if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
             # A card failure after the retry keeps its own code; an unsupported claim, from
             # either branch, is the retry finding too little.
@@ -1978,15 +2027,55 @@ class ProvenanceController:
             return self._record_refusal(request, code, (), retried=True)
         return resolved
 
+    def _erasure_lock(self) -> AbstractContextManager[Any]:
+        """The ledger's application side of its erasure lock, or nothing for one without it."""
+        if callable(getattr(self.ledger, "erasure_lock", None)):
+            return cast(ErasureLockLedger, self.ledger).erasure_lock(shared=True)
+        return nullcontext()
+
     def apply_fact(self, request: FactApplicationRequest) -> ControllerDecision:
         """Validate and append one fact, with at most one deterministic fresh-search retry.
 
-        The cards are resolved and checked (`_resolve`) before `apply_assertion` takes the ledger's
-        key lock, and the ledger does not check them again. A forget of a card's memo between the
-        two is therefore not excluded: the assertion lands after the forget's retraction pass and
-        keeps its value (STAKES-003, open; closing it needs a recheck under the lock in every
-        ledger and a lock the forget shares). `apply_stated` has the same window.
+        Each pass, from the card checks (`_resolve`) to the append, holds the ledger's erasure lock
+        shared (`PostgresFactLedger.erasure_lock`), which a forget holds exclusively; the fresh
+        search between the two passes runs without it.
+        The cards were checked before the append took the ledger's key lock, so a forget of a
+        card's memo between the two left an assertion appended after the forget's retraction,
+        never retracted and its value never erased (STAKES-003). A ledger without the lock (the
+        in-memory reference) orders nothing. A lock that cannot be taken raises: nothing is
+        recorded, so the request can be sent again.
         """
+        with self._erasure_lock():
+            first = self._apply_fact(request, None)
+        if not isinstance(first, _FreshSearch):
+            return first
+        # The fresh search (an embed, a search, a rerank) runs without the lock: it only proposes
+        # card ids, which the second pass resolves and checks again under it. Held across the
+        # search, the lock made a forget wait for it, and every application queued behind that
+        # forget wait too (2026-11-04 audit of the owner-decision change, PERF-001).
+        assert self.fresh_search is not None
+        try:
+            fresh_ids = tuple(self.fresh_search(request.claim, request))
+        except Exception as exc:  # BROAD-CATCH: fail-closed
+            with self._erasure_lock():
+                return self._record_refusal(
+                    request, DecisionCode.FRESH_SEARCH_UNAVAILABLE, (), retried=True,
+                    detail=type(exc).__name__,
+                )
+        with self._erasure_lock():
+            if not fresh_ids:
+                return self._record_refusal(
+                    request, DecisionCode.FRESH_SEARCH_INSUFFICIENT, (), retried=True
+                )
+            decision = self._apply_fact(request, fresh_ids)
+        assert not isinstance(decision, _FreshSearch)
+        return decision
+
+    def _apply_fact(
+        self, request: FactApplicationRequest, fresh_ids: tuple[str, ...] | None
+    ) -> ControllerDecision | _FreshSearch:
+        """One pass of `apply_fact` under the erasure lock: with `fresh_ids` None the request's
+        own cards, else the fresh search's. A first pass whose cards fail asks for the search."""
         if reserved_request_id(request.request_id):
             # Refused before the ledger is read, and not recorded: a refusal under the id would
             # itself take the slot the ledger keeps for its own event.
@@ -2018,13 +2107,14 @@ class ProvenanceController:
             return self._decision(
                 request,
                 _decision_code(prior.decision_code),
-                cards=prior.evidence_cards,
+                cards=tuple(card for card in prior.evidence_cards if self._permitted(card)),
                 event=prior,
             )
         if (
             prior is not None
             and prior.event_type == "asserted"
             and {card.card_id for card in prior.evidence_cards} == set(request.evidence_card_ids)
+            and all(self._permitted(card) for card in prior.evidence_cards)
         ):
             # The request sent again (`replays_request`): answered with the event it recorded, as
             # every ledger answers it. Validated afresh, a retry after a later value superseded
@@ -2033,10 +2123,21 @@ class ProvenanceController:
             return self._delivered(
                 request, LedgerApplyResult(prior, duplicate=True), prior.evidence_cards, retried=False
             )
-        resolved = self._resolve(request)
-        retried = False
-        if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
-            retry = self._retry_with_fresh_search(request, resolved)
+        # One clock reading for the pass: the cards' validity is checked at the instant the
+        # assertion is stamped with. Read per card and again for the stamp, a card checked valid
+        # just before its `valid_until` could be stamped at or after it, which a file-backed eval
+        # clock makes a step rather than a tick (2026-11-04 owner decision, ENV-004).
+        instant = self.now()
+        if fresh_ids is None:
+            resolved = self._resolve(request, instant)
+            retried = False
+            if isinstance(resolved, DecisionCode) or not self._supported(request.claim, resolved):
+                if self.fresh_search is None:
+                    code = resolved if isinstance(resolved, DecisionCode) else DecisionCode.UNSUPPORTED_CLAIM
+                    return self._record_refusal(request, code, (), retried=False)
+                return _FreshSearch()
+        else:
+            retry = self._resolve_fresh(request, fresh_ids, instant)
             if isinstance(retry, ControllerDecision):
                 return retry
             resolved, retried = retry, True
@@ -2046,7 +2147,7 @@ class ProvenanceController:
             # instant of the claim's window, not only the ones current now. Deriving it from
             # `current` let an expired or future value block an authored correction, because the
             # link that names it was never read (2026-10-21 supersession audit, P2 #12).
-            in_force = self._in_force(request.claim)
+            in_force = self._in_force(request.claim, instant)
         except Exception as exc:  # BROAD-CATCH: fail-closed
             # The read that establishes the conflict set is part of authorization.  Treating a
             # failed read as an empty set would turn an outage into an authorization bypass, so
@@ -2226,8 +2327,10 @@ class ProvenanceController:
         checked here is that the card is a stated card of this tenant and generation that carries
         exactly this fact. A disagreement with a current fact is appended, never refused: the
         projection lists both as contested. A refusal writes nothing, because a card failing these
-        checks is the caller's defect, not a decision about the fact. The memo is not checked
-        again under the ledger's lock, so a concurrent forget is not excluded (`apply_fact`).
+        checks is the caller's defect, not a decision about the fact. It does not take the
+        ledger's erasure lock: its caller (`recall.stated_facts.reconcile_stated_facts`) holds it
+        from its served-memo check to its last write, and a second shared hold queued behind a
+        waiting forget would deadlock PostgreSQL.
         """
         request = FactApplicationRequest(fact, (card.card_id,), request_id)
         if (
