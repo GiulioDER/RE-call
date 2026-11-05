@@ -608,12 +608,14 @@ jobs:
   # with `-I`, so no import can resolve to the source tree. fastembed downloads its model on
   # each run, as it does for a new user. Required by merge-gate: one red leg fails the gate.
   first-run-lite:
-    name: First run, Lite from the wheel (${{ matrix.os }})
+    name: First run, Lite from the wheel (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        # The ends of `requires-python` and the classifiers (3.11 to 3.14), plus the 3.12 default.
+        python: ["3.11", "3.12", "3.14"]
     defaults:
       run:
         shell: bash
@@ -624,7 +626,7 @@ jobs:
 
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
