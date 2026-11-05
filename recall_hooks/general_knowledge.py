@@ -415,7 +415,9 @@ def _capped_regexes(records: list[Any]) -> list[Any]:
     capped: list[Any] = []
     for record in records:
         triggers = record.get("triggers") if isinstance(record, dict) else None
-        if not isinstance(triggers, list):
+        # An oversize list passes untouched: `_entry` rejects it before compiling anything, and
+        # trimming it here would let a record that is malformed today load.
+        if not isinstance(triggers, list) or len(triggers) > MAX_ENTRY_ITEMS:
             capped.append(record)
             continue
         kept = []

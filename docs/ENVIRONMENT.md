@@ -56,7 +56,8 @@ Two keys of the hook config file decide where the hooks act, and both are absolu
 
 - `project_root`: the one project the hooks serve. Write-time retrieval, the local memory index
   and the hosted sync all refuse an event whose working directory is outside it, and a config
-  without it serves none (in hosted mode SessionStart says so). The installers write it.
+  without it serves none (in hosted mode SessionStart says so). The local installers write it;
+  a hosted config needs it added by hand, or its sync stops.
 - `memory_root`: an override for the client's project memory store, read by the prompt-time
   hook and by the index and sync path alike. `prompt_time.store` is its deprecated alias, used
   only when `memory_root` is unset. A store that is itself a symbolic link or a junction is

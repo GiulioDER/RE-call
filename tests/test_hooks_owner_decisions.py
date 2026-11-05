@@ -234,6 +234,74 @@ def test_perf004_an_index_compiles_at_most_256_regexes(tmp_path: Path) -> None:
     assert count == 256, f"control: the first 256 are kept, got {count}"
 
 
+def test_perf004_the_cap_does_not_admit_an_oversize_record(tmp_path: Path) -> None:
+    """PERF-004, review follow-up. Invariant: a record with more than 32 triggers stays rejected
+    even when the regex cap would trim it to 32.
+
+    Defect caught: the cap ran before `_entry`'s size rejection and trimmed an oversize record's
+    regexes, so a record malformed before the change loaded after it.
+    Production line: the `MAX_ENTRY_ITEMS` pass-through in `general_knowledge._capped_regexes`.
+    Red proof: that pass-through removed, on the test host; the assertion below failed.
+    """
+    entries = [
+        {"id": f"gk-fill{i}", "body": "b", "scope": "global",
+         "triggers": [{"command_regex": f"^fill{i}x{j}$"} for j in range(32)]}
+        for i in range(8)
+    ]
+    entries.append({"id": "gk-oversize", "body": "b", "scope": "global",
+                    "triggers": [{"command_regex": "^over$"}] + [{"command": f"tool{j}"} for j in range(32)]})
+    (tmp_path / "index.json").write_text(json.dumps({"schema": gk.INDEX_SCHEMA, "entries": entries}),
+                                         encoding="utf-8")
+    ids = {entry.id for entry in gk.load_index(tmp_path)}
+    oversize_loaded = "gk-oversize" in ids
+    assert not oversize_loaded, "a record with 33 triggers loaded because the cap trimmed it"
+    assert len(ids) == 8, f"control: the eight in-bounds records load, got {len(ids)}"
+
+
+def test_sec005_a_late_hello_does_not_buy_the_query_a_second_timeout() -> None:
+    """SEC-005 / NUM-002, review follow-up. Invariant: one `_endpoint_request` takes at most its
+    timeout in total, however late the helper answers the hello.
+
+    Defect caught: each read had the full timeout, so a hello answered near the end left the query
+    read another full timeout, about twice the budget. Production line: the `settimeout(end - now)`
+    before the second read in `relay._endpoint_request`.
+    Red proof: that line removed, on the test host; the elapsed-time assertion failed.
+    """
+    token = "the-session-token-0123456789"
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+
+    def slow_helper() -> None:
+        listener.settimeout(5)
+        try:
+            client, _ = listener.accept()
+        except OSError:
+            return
+        with client:
+            client.settimeout(5)
+            try:
+                hello = json.loads(client.recv(65536).split(b"\n", 1)[0])
+                time.sleep(0.45)
+                proof = relay._server_proof(token, hello["nonce"])
+                client.sendall((json.dumps({"proof": proof}) + "\n").encode())
+                time.sleep(3)  # never answers the query within the budget
+            except (OSError, ValueError, KeyError):
+                pass
+
+    thread = threading.Thread(target=slow_helper, daemon=True)
+    thread.start()
+    state = {"host": "127.0.0.1", "port": listener.getsockname()[1], "token": token}
+    started = time.monotonic()
+    _response, raised = _raises(
+        lambda: relay._endpoint_request(state, {"op": "query", "token": token}, timeout=0.6))
+    elapsed = time.monotonic() - started
+    listener.close()
+    within_budget = elapsed < 0.85
+    assert raised, "control: an unanswered query must fail"
+    assert within_budget, f"the request took {elapsed:.2f}s against a 0.6s timeout"
+
+
 # --------------------------------------------------------------------------- SEC-006
 
 

@@ -226,6 +226,7 @@ def _endpoint_request(
     if host != "127.0.0.1" or not 1 <= port <= 65535:
         raise RelayUnavailable("relay endpoint is not a valid loopback address")
     timeout = max(0.01, min(float(timeout), REQUEST_TIMEOUT_SECONDS))
+    end = time.monotonic() + timeout
     with socket.create_connection((host, port), timeout=timeout) as connection:
         connection.settimeout(timeout)
         # The helper proves it holds the session token BEFORE the token or the draft is sent: a
@@ -239,6 +240,9 @@ def _endpoint_request(
         if not isinstance(hello, dict) or not hmac.compare_digest(str(hello.get("proof", "")), expected):
             raise RelayUnavailable("the relay helper did not prove it holds the session token")
         connection.sendall((json.dumps(message, separators=(",", ":")) + "\n").encode())
+        # One budget for the whole exchange: a hello answered late must not buy the query a
+        # second full timeout.
+        connection.settimeout(max(0.01, end - time.monotonic()))
         response = _read_line(connection)
     if not isinstance(response, dict):
         raise RelayUnavailable("relay returned a malformed response")
