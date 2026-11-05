@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://giulioder.github.io/RE-call/compare.html">
+<title>RE-call compared with Mem0, Graphiti, Zep, Letta and LangMem · RE-call</title>
+<meta name="description" content="When to choose RE-call, Mem0, Graphiti or Zep, Letta, LangMem, or plain pgvector as agent memory: what each does with a fact that stopped being true, what it needs to run, and the one paired measurement against Mem0.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300..900&family=Geist+Mono:wght@400..600&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="app.js" defer></script>
+<script src="translate.js" defer></script>
+<style>
+  .compare { max-width: 52rem; }
+  .compare h2 { font-size: 1.5rem; margin-top: 3rem; margin-bottom: 0.85rem; }
+  .compare p, .compare li { max-width: 65ch; }
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="shell masthead-inner">
+    <a class="wordmark" href="index.html"><img class="wordmark-mark" src="assets/re_call_logo.png" alt=""><span class="wordmark-name">RE-call</span><span>Compare</span></a>
+    <nav>
+      <a href="download.html">Download</a>
+      <a href="readme.html">README</a>
+      <a href="how-it-works.html">How it works</a>
+      <a href="start.html">Install</a>
+      <a href="corpus.html">Your memory</a>
+      <a href="claude-code.html">Claude Code</a>
+      <a href="integrations.html">Integrations</a>
+      <a href="calibration.html">Calibration</a>
+      <a href="troubleshooting.html">Troubleshooting</a>
+      <a href="blog/index.html">Blog</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<section class="shell compare" style="padding-block: clamp(3rem, 8vw, 5.5rem) clamp(4rem, 9vw, 7rem);">
+
+  <p class="eyebrow">Choosing an agent memory layer</p>
+  <h1 style="font-size: clamp(2rem, 5vw, 3.25rem); max-width: 22ch; margin-bottom: 1rem;">RE-call compared with other memory layers</h1>
+  <hr class="rule" style="width: min(100%, 22rem); margin-bottom: 2rem;">
+  <p class="lede">These projects solve different parts of agent memory, and several of them are further along than RE-call. The useful question is not which is best but what each one does when a remembered fact stops being true, and what it needs to run.</p>
+
+  <p>Descriptions of other projects come from their public repositories and documentation, checked on 2026-11-05. They change quickly; follow the links before relying on a detail. The sourced, per-capability record is the <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/PRIOR_ART.md">prior art comparison</a>.</p>
+
+  <h2 id="choose">Which one fits</h2>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Choose</th><th>When you want</th><th>What it needs</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>RE-call</strong></td><td>Memory that tells the agent a result is superseded, shows where it came from, and refuses (<code>ABSTAIN</code>) when nothing in memory supports an answer.</td><td>A local SQLite file (Lite) or PostgreSQL with pgvector. No LLM call in the memory layer by default.</td></tr>
+        <tr><td><a href="https://github.com/mem0ai/mem0">Mem0</a></td><td>An LLM that extracts memories from conversations for you, as a library, self-hosted or as a managed cloud service.</td><td>An LLM for extraction, plus a vector store.</td></tr>
+        <tr><td><a href="https://github.com/getzep/graphiti">Graphiti</a> (behind <a href="https://www.getzep.com/">Zep</a>)</td><td>A temporal knowledge graph whose ingestion infers entities and relations and invalidates contradicted facts.</td><td>A graph database (Neo4j, FalkorDB, Kuzu or Amazon Neptune) and LLM calls at ingestion.</td></tr>
+        <tr><td><a href="https://github.com/letta-ai/letta">Letta</a></td><td>A complete stateful agent runtime in which the agent edits its own memory blocks and searches archival memory.</td><td>The Letta server, self-hosted or on Letta Cloud. It is an agent layer, not a retrieval library.</td></tr>
+        <tr><td><a href="https://langchain-ai.github.io/langmem/">LangMem</a></td><td>Memory management tools inside a LangGraph application.</td><td>Usually LangGraph and its store.</td></tr>
+        <tr><td>Plain pgvector or a vector database</td><td>Nearest-neighbour text, where your own code decides whether a result is current or trustworthy.</td><td>The database alone.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="stale">What happens to a fact that stopped being true</h2>
+
+  <ul>
+    <li><strong>RE-call</strong> marks it <code>superseded</code> when a newer memory declares that it replaces it, and returns the current one ahead of it. The author declares the replacement; RE-call does not infer it.</li>
+    <li><strong>Graphiti</strong> infers the contradiction with an LLM at ingestion and invalidates the older edge rather than deleting it.</li>
+    <li><strong>Mem0</strong>, since its 2026 algorithm, adds memories without updating or deleting them on the add path, and handles time at retrieval. Explicit update and delete remain in its API.</li>
+    <li><strong>Letta</strong> leaves it to the agent, which rewrites its own memory blocks.</li>
+    <li><strong>A plain vector store</strong> returns the stale text whenever it is the nearest match.</li>
+  </ul>
+
+  <h2 id="tradeoffs">What RE-call gives up</h2>
+
+  <ul>
+    <li><strong>Coverage of supersession.</strong> Declared replacements are precise but rare: on the reference corpus, 2 of 792 memos declared one while 60 closed a decision only in prose. An LLM that infers replacements covers more and is sometimes confidently wrong; RE-call chooses precision.</li>
+    <li><strong>No entity reasoning.</strong> There is no knowledge graph of people and relations to reason over, which is where Graphiti is stronger.</li>
+    <li><strong>Abstention costs answers.</strong> Out of the box, default retrieval abstained on none of LoCoMo's 446 adversarial questions. The shipped levers raise that to between 0.37 and 0.77 only by refusing a quarter to half of legitimate questions.</li>
+    <li><strong>Lite installs from source for now.</strong> The SQLite edition is newer than the published 0.14.0 wheel; see the <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md">Lite guide</a>.</li>
+  </ul>
+
+  <h2 id="measured">The one paired measurement</h2>
+
+  <p>On LoCoMo's 1,540 answerable questions, with the same GPT-4o reader and judge and matched retrieval budgets, RE-call scored 48.4% judged answer accuracy against Mem0 OSS at 44.4%. RE-call ran this test itself, and the direction depends on the reader: a later Sonnet 4.5 subset reverses it. The method, artifact and limits are on the <a href="benchmarks.html#locomo">benchmark scorecard</a>.</p>
+
+  <p>RE-call has not been compared head to head with Graphiti, Zep, Letta or LangMem, so this page makes no score claim about them.</p>
+
+  <h2 id="next">Next</h2>
+
+  <ul>
+    <li><a href="start.html">Install RE-call</a>, Lite or PostgreSQL.</li>
+    <li><a href="how-it-works.html">How trusted search and the trust gate work</a>.</li>
+    <li><a href="https://github.com/GiulioDER/RE-call/blob/master/docs/EVIDENCE.md">Evidence and limits</a> of persistent memory.</li>
+  </ul>
+
+</section>
+
+</main>
+
+<footer class="footer">
+  <div class="shell footer-inner">
+    <nav>
+      <a href="https://github.com/GiulioDER/RE-call">Repository</a>
+      <a href="https://pypi.org/project/recall-rag/">PyPI</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/docs/README.md">Technical docs</a>
+      <a href="https://github.com/GiulioDER/RE-call/blob/master/README.md">README</a>
+    </nav>
+    <small>AGPL-3.0 or commercial license</small>
+  </div>
+</footer>
+
+</body>
+</html>

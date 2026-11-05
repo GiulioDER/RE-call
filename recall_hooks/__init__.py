@@ -473,6 +473,8 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
     configured = config.get("project_root")
     if not isinstance(configured, str) or not isinstance(cwd, str):
         return 0
+    from recall.confinement import within
+
     try:
         root_path = Path(configured).expanduser()
         event_path = Path(cwd).expanduser()
@@ -480,14 +482,15 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
             return 0
         root = root_path.resolve(strict=True)
         event_root = event_path.resolve(strict=True)
-        memory_dir = (event_root / "memory").resolve()
+        confined_memory_dir = within(root, event_root / "memory")
         if (
             not root.is_dir()
             or not event_root.is_dir()
-            or not event_root.is_relative_to(root)
-            or not memory_dir.is_relative_to(root)
+            or within(root, event_root) is None
+            or confined_memory_dir is None
         ):
             return 0
+        memory_dir = confined_memory_dir
     except (OSError, RuntimeError, ValueError):
         return 0
     if memory_dir.is_dir():

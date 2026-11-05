@@ -308,6 +308,8 @@ def evaluate(dsn: str, corpus: Path, questions: list[dict], embedder: Embedder, 
         # resolve too — otherwise a relative --corpus matches nothing and every run looks empty.
         corpus_root = Path(corpus).resolve()
         sources_indexed = sum(
+            # Counts stored sources under the corpus; no file is read.
+            # ast-grep-ignore: containment-via-confined
             1 for s in store.source_content_hashes() if Path(s).is_relative_to(corpus_root)
         )
         # Annotated because the literal is all-numeric, so an inferred dict[str, float] rejects

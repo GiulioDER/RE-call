@@ -266,9 +266,13 @@ def run_lite_setup(
         report.registration = register_local_scope(
             (block,), project_root=project_root, config_path=config_path, interpreter=interpreter
         )
+    # Classifies where a configured store lives; no file is read.
+    # ast-grep-ignore: containment-via-confined
     if path.is_relative_to(project_root):
         ignore = project_root / ".gitignore"
         relative = path.relative_to(project_root).as_posix()
+        # Classifies where a configured store lives; no file is read.
+        # ast-grep-ignore: containment-via-confined
         in_default_directory = path.is_relative_to(project_root / ".recall")
         literal = "".join("\\" + char if char in r"\*?[" else char for char in relative)
         if literal.startswith(("!", "#")):

@@ -29,6 +29,18 @@ would be served at `/RE-call/robots.txt`, but crawlers read `/robots.txt` at the
 root. A missing host-root robots file does not block crawling. Submit this project's
 sitemap directly in Search Console instead of relying on a project-path robots file.
 
+## Pages for agents
+
+`llms.txt` is a plain Markdown index for language models and agents, following the
+llms.txt convention: a one-paragraph summary, when to choose RE-call, the install facts, and
+links to the canonical guides. It repeats facts kept elsewhere, so update it when the install
+path, the licence, the package name or a linked page changes. It is linked from the homepage
+`<head>` and footer and is not listed in the sitemap, which holds HTML pages only.
+
+`compare.html` describes other memory projects from their public sources, with the check date in
+its text. Recheck those descriptions and update the date together; keep score claims to the
+paired measurements on the benchmark scorecard.
+
 ## Google Search Console
 
 1. Add the URL-prefix property `https://giulioder.github.io/RE-call/`.

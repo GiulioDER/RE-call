@@ -1,0 +1,31 @@
+id: containment-via-confined
+language: python
+severity: error
+files:
+  - recall/**/*.py
+  - recall_mcp/**/*.py
+  - recall_hooks/**/*.py
+  - recall_aml/**/*.py
+  - recall_agent/**/*.py
+  - recall_interop/**/*.py
+  - recall_consistency/**/*.py
+ignores:
+  - recall/confinement.py
+message: Decide whether a path is under a root with recall.confinement.confined or within, not is_relative_to.
+note: |
+  CCA counted 35 confirmed `access-control` findings in RE-call, 20 of them P1 (2026-11-04), and
+  about half were one shape: a containment check written by hand, made after resolve() had
+  already opened a UNC path, made on a link's name rather than its target, or skipped for a
+  drive-relative name. `confined(root, name)` (a caller's name) and `within(root, path)` (a
+  walked or absolute path) refuse those before any filesystem call and return the resolved
+  target to read. When the comparison is not an access decision (it computes a key or
+  classifies a configured path), put `# ast-grep-ignore: containment-via-confined` on the line
+  above, beside a comment that says what it decides instead.
+rule:
+  kind: call
+  has:
+    field: function
+    kind: attribute
+    has:
+      field: attribute
+      regex: ^is_relative_to$

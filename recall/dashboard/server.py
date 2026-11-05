@@ -41,7 +41,8 @@ from recall import db_constants
 from recall.dashboard import db as dbq
 from recall.dashboard import edit, review
 from recall.dashboard import triage
-from recall.dashboard.review import anchored as _anchored
+from recall.confinement import anchored as _anchored
+from recall.confinement import confined, within
 from recall.document import parse_document
 from recall.frontmatter import encodable_name, supersedes_key
 from recall.dashboard.db import DashboardDB
@@ -929,10 +930,8 @@ class DashboardApp:
         from recall.dashboard.markdown import render
 
         try:
-            if _anchored(name):
-                return self._error(HTTPStatus.NOT_FOUND, "No memo by that name in this folder.")
-            path = (self.root / name).resolve()
-            if not path.is_relative_to(self.root) or not path.is_file():
+            path = confined(self.root, name)
+            if path is None or not path.is_file():
                 return self._error(HTTPStatus.NOT_FOUND, "No memo by that name in this folder.")
         except (OSError, RuntimeError):
             return self._error(HTTPStatus.NOT_FOUND, "No memo by that name in this folder.")
@@ -956,8 +955,8 @@ class DashboardApp:
             if not text or "://" in text:
                 return None
             if not _anchored(text):
-                candidate = (self.root / Path(name).parent / text).resolve()
-                if candidate.is_relative_to(self.root) and candidate.relative_to(self.root).as_posix() in names:
+                candidate = within(self.root, self.root / Path(name).parent / text)
+                if candidate is not None and candidate.relative_to(self.root).as_posix() in names:
                     return candidate.relative_to(self.root).as_posix()
             found = by_key.get(supersedes_key(Path(text).name), [])
             return found[0] if len(found) == 1 else None

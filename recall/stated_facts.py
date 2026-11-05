@@ -71,6 +71,8 @@ STATED_FACT_SOURCES_ENV = "RECALL_STATED_FACT_SOURCES"
 
 
 def _under(path: Path, root: Path) -> bool:
+    # Matches a source against configured stating prefixes; no file is read.
+    # ast-grep-ignore: containment-via-confined
     return path == root or path.is_relative_to(root)
 
 
