@@ -6,28 +6,18 @@ immutable generations, multi-tenant serving, authentication, or a database share
 
 ## Install a build that contains Lite
 
-Lite is available in the repository source. The published `0.14.0` PyPI wheel predates Lite;
-installing or upgrading that wheel alone will not add `recall setup --lite`. Until a release includes
-Lite, use the source path below. It requires Python and Git, with no Docker or PostgreSQL server.
+Lite ships in the PyPI wheel from `0.15.0`. Earlier wheels do not contain it, so upgrading an
+older environment is enough only when it ends on `0.15.0` or later. It needs Python, with no
+Docker, Git or PostgreSQL server.
 
-Release status checked on 2026-10-19 against [PyPI package metadata](https://pypi.org/pypi/recall-rag/json)
-and the published wheel, which contains no `recall/lite/` package. To recheck, download the current
-wheel with `python -m pip download --no-deps recall-rag` and inspect it with
-`python -m zipfile -l <wheel-file>`; check `recall setup --help` after installing a newer release.
-
-Create a dedicated environment and install the package from a clone:
-
-```bash
-git clone https://github.com/GiulioDER/RE-call.git re-call
-cd re-call
-```
+Create a dedicated environment and install the package.
 
 On Windows PowerShell:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-python -m pip install ".[fastembed,mcp]"
+python -m pip install "recall-rag[fastembed,mcp]>=0.15.0"
 ```
 
 On macOS or Linux:
@@ -35,8 +25,12 @@ On macOS or Linux:
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install ".[fastembed,mcp]"
+python -m pip install "recall-rag[fastembed,mcp]>=0.15.0"
 ```
+
+To run unreleased changes instead, install from a clone of the repository with the same extras:
+`git clone https://github.com/GiulioDER/RE-call.git re-call`, then
+`python -m pip install "./re-call[fastembed,mcp]"` in the environment above.
 
 Keep this environment at its installed path: setup registers its Python interpreter with the MCP
 client. The first local embedding run downloads model files; subsequent runs reuse the model cache.
@@ -159,16 +153,16 @@ recall search "what did I decide about caching?"
 ## Update the software
 
 Back up first, stop every MCP client and dashboard using this environment, and activate the same
-environment used for installation. From the clean source clone:
+environment used for installation:
 
 ```bash
-git pull --ff-only
-python -m pip install --upgrade ".[fastembed,mcp]"
+python -m pip install --upgrade "recall-rag[fastembed,mcp]"
 ```
 
-Read [CHANGELOG.md](../CHANGELOG.md) before the update. Source installs follow the repository's
-current code; they do not imply that the same code is published on PyPI. Record the installed
-commit with `git rev-parse HEAD` when you need a reproducible deployment.
+For a source install, run `git pull --ff-only` in the clean clone and then
+`python -m pip install --upgrade "./re-call[fastembed,mcp]"`; record the installed commit with
+`git rev-parse HEAD` when you need a reproducible deployment. Read [CHANGELOG.md](../CHANGELOG.md)
+before the update.
 
 Return to your project, run setup again with the same `--memory` and `--store` choices, inspect its
 report, and restart clients. Reinstalling the package is necessary because this guide uses a regular
@@ -203,7 +197,7 @@ database, and memo paths in client configuration.
 
 | Symptom | Next step |
 |---|---|
-| `--lite` is unrecognized | Activate the source installation's environment and inspect `recall setup --help`. |
+| `--lite` is unrecognized | The environment holds a release older than `0.15.0`, or another environment is active. Activate the one you installed and check `python -m pip show recall-rag` and `recall setup --help`. |
 | Doctor tries PostgreSQL | Apply the environment printed by Lite setup; client configuration is not shell configuration. |
 | No tools after setup | Inspect registration results, restart the client in the configured project, and check its interpreter path. |
 | Store is indexed but searches refuse | Inspect calibration status; add useful memos and refresh while keeping strict trust enabled. After a forget, this is expected: forgetting a memo, or a refresh that prunes one, deletes the calibration test questions built from it, and the next refresh refits the store ([CALIBRATION.md](CALIBRATION.md)). |

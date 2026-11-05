@@ -210,9 +210,9 @@ For details, see the [architecture writeup](docs/WRITEUP.md), [provenance contro
 For one project's memory on your machine, start with **RE-call Lite**. It stores memory in
 `.recall/memory.db`, refreshes changed memos automatically, and needs no Docker or database server.
 
-**Install the source build first:** Lite is in the repository; the published `0.14.0` PyPI wheel
-predates it. Follow the [Lite installation guide](docs/LITE.md#install-a-build-that-contains-lite)
-to create an environment and install the source, then run this from your own project with an
+**Install 0.15.0 or later:** Lite ships in the PyPI wheel from `0.15.0`; earlier wheels do not
+contain it. Follow the [Lite installation guide](docs/LITE.md#install-a-build-that-contains-lite)
+to create an environment and install the package, then run this from your own project with an
 existing folder of notes:
 
 ```bash
@@ -256,7 +256,7 @@ demo is intentionally separate from a real install and is not calibrated for you
 
 ### Local, with no database server and no Docker
 
-Use the [Lite source installation](docs/LITE.md#install-a-build-that-contains-lite), then run
+Use the [Lite installation](docs/LITE.md#install-a-build-that-contains-lite), then run
 from the project whose notes you want to index:
 
 ```bash
