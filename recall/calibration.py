@@ -256,6 +256,14 @@ class Calibration:
     n_answerable: int | None = None
     n_unanswerable: int | None = None
 
+    def __post_init__(self) -> None:
+        # A NaN threshold compares False with every score, so the gate read every hit as above it,
+        # and `confidence` mapped every cosine to 1.0 through the clamp. Refused where it is built.
+        if not math.isfinite(self.threshold):
+            raise ValueError(f"calibration threshold must be finite, got {self.threshold!r}")
+        if not math.isfinite(self.scale) or self.scale <= 0:
+            raise ValueError(f"calibration scale must be finite and positive, got {self.scale!r}")
+
     @property
     def separability_ci(self) -> tuple[float, float] | None:
         """95% interval on `separability`, or None when there was nothing to judge."""
@@ -349,10 +357,11 @@ class Calibration:
     def confidence(self, cosine: float) -> float:
         """Monotone cosine -> [0, 1] mapping; exactly 0.5 at the calibrated threshold.
 
-        A NaN cosine (pgvector's distance to a zero-norm vector) carries no similarity, so it maps
-        to 0.0. Left to the clamp below it would read as 1.0, because `min(60.0, nan)` is 60.0.
+        A non-finite cosine (NaN is pgvector's distance to a zero-norm vector) carries no
+        similarity, so it maps to 0.0. Left to the clamp below a NaN would read as 1.0, because
+        `min(60.0, nan)` is 60.0, and so would infinity.
         """
-        if math.isnan(cosine):
+        if not math.isfinite(cosine):
             return 0.0
         x = (cosine - self.threshold) / self.scale
         x = max(-60.0, min(60.0, x))  # clamp: math.exp overflows past ~709; ±60 already saturates
