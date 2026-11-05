@@ -136,9 +136,10 @@ def _verdict(
         return "expired", validity
     if start is not None and now < start:
         return "not_yet_valid", validity
-    # A NaN compares False with the threshold, so without the isfinite test it would read as ok.
+    # A NaN compares False with the threshold, so without the isfinite tests a NaN score, or any
+    # score against a NaN threshold, would read as ok.
     if getattr(hit, "score_kind", "dense_cosine") == "dense_cosine" and (
-        not math.isfinite(hit.score) or hit.score < threshold
+        not math.isfinite(hit.score) or not math.isfinite(threshold) or hit.score < threshold
     ):
         return "low_confidence", validity
     return "ok", validity
