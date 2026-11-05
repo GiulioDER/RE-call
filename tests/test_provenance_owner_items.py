@@ -113,6 +113,17 @@ def _ledger_file(path: Path, facts: list[dict], cards: list[dict]) -> None:
     conn.close()
 
 
+def _normcheck() -> Any:
+    """The check script loaded as a module, for tests that call its functions directly."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("normcheck", ROOT / "scripts/fact_identity_normalisation_check.py")
+    assert spec is not None and spec.loader is not None
+    check = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(check)
+    return check
+
+
 def _check(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(ROOT / "scripts/fact_identity_normalisation_check.py"), *args],
@@ -148,14 +159,9 @@ def test_deploy001_the_check_reads_a_number_as_the_ledger_decodes_it():
 
     Red proof: against the pre-fix script (snapshot of run 20261104T185256Z) `count` returned 0.
     """
-    import importlib.util
-
     from recall.provenance_json import encode_jsonb
 
-    spec = importlib.util.spec_from_file_location("normcheck", ROOT / "scripts/fact_identity_normalisation_check.py")
-    assert spec is not None and spec.loader is not None
-    check = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(check)
+    check = _normcheck()
     fact = {"subject": "user", "predicate": "p", "namespace": "memory", "object": 1e20, "context": {}}
     stored = {**encode_jsonb(fact), "object": 10**20}  # what jsonb hands back
     assert check.count("fact", [stored]) == 1
@@ -168,12 +174,7 @@ def test_env002_the_check_takes_the_dsn_from_the_environment(monkeypatch: pytest
     Red proof: against the pre-fix script `main(["--tenant", "memory"])` exited with a usage
     error ("one of the arguments --sqlite --dsn is required") instead of reading the variable.
     """
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("normcheck", ROOT / "scripts/fact_identity_normalisation_check.py")
-    assert spec is not None and spec.loader is not None
-    check = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(check)
+    check = _normcheck()
     seen: list[tuple[str, list[str]]] = []
     monkeypatch.setattr(check, "_postgres_counts", lambda dsn, tenants: seen.append((dsn, tenants)) or {})
     monkeypatch.setenv("RECALL_FACT_WRITE_DSN", "postgresql://from-env/db")
@@ -788,12 +789,7 @@ def test_env003_the_postgres_check_names_the_tenants_it_read(
     Red proof: against the pre-fix script (master 03ba03586 for this file) the output held only
     the counts, and the assertion on the "tenants read" line failed.
     """
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("normcheck", ROOT / "scripts/fact_identity_normalisation_check.py")
-    assert spec is not None and spec.loader is not None
-    check = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(check)
+    check = _normcheck()
     monkeypatch.setattr(check, "_postgres_counts", lambda dsn, tenants: {f"{t}:recall_evidence_cards.card": 0 for t in tenants})
     monkeypatch.setenv("RECALL_FACT_WRITE_DSN", "postgresql://from-env/db")
     assert check.main(["--tenant", "memory", "--tenant", "re-call-docs", "--tenant", "memory"]) == 0

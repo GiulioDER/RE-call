@@ -302,3 +302,36 @@ def test_z6_the_listing_cites_the_cards_of_every_live_memo(store: LiteStore, fol
         f"the listing cites a card of a memo no longer served: {listed[0]['evidence_card_ids']}"
     )
     assert listed[0]["sources"] == [new.source]
+
+
+def test_perf001_sources_in_generation_reads_one_generation(manager: object) -> None:
+    """2026-11-05 deferred pass PERF-001: `GenerationStore.sources_in_generation`, the cheap first
+    question of the stated reconcile's served check, names the sources a generation holds and
+    nothing else: a source only another generation holds, and one no generation holds, are not
+    named.
+
+    Red proof: with the `generation_id = %s` predicate mutated away, the source only the first
+    generation holds was named for the second and `assert held == {other_uri}` failed.
+    """
+    from recall.generation_store import GenerationStore
+    from tests.conftest import TEST_DSN
+    from tests.test_generations import _Embedder, _pipeline
+
+    tenant = manager.tenant_id  # type: ignore[attr-defined]
+
+    def ready(memos: dict[str, bytes], version: str) -> str:
+        manifest, reader = _corpus(tenant, memos, version)
+        generation = manager.create(manifest, _pipeline("model-a"))  # type: ignore[attr-defined]
+        manager.build(generation.generation_id, reader, _Embedder(1), lambda text: [text])  # type: ignore[attr-defined]
+        manager.validate(generation.generation_id)  # type: ignore[attr-defined]
+        return str(generation.generation_id)
+
+    first = ready({"door.md": b"alpha door memo", "other.md": b"beta other memo"}, "corpus-v1")
+    second = ready({"other.md": b"beta other memo"}, "corpus-v2")
+    door_uri = f"s3://approved/corpora/{tenant}/door.md"
+    other_uri = f"s3://approved/corpora/{tenant}/other.md"
+    with GenerationStore(TEST_DSN, 64, tenant=tenant) as store:
+        assert store.sources_in_generation(first, [door_uri, other_uri]) == {door_uri, other_uri}
+        held = store.sources_in_generation(second, [door_uri, other_uri, "s3://approved/none.md"])
+        assert held == {other_uri}
+        assert store.sources_in_generation(second, []) == set()
