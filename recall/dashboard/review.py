@@ -16,7 +16,7 @@ text, and the quote is recovered from THIS folder's file (`stale_reports.find_qu
 verbatim check: the person decides on the text in front of them, and a row whose memo is not here,
 or whose quote is not in it, is counted in the notes and not shown. Only the tenants this folder is
 bound to are read (`recall dashboard --reports-tenant`; default: a SQLite store's own tenant,
-else `memory`). The rows are
+else `default`). The rows are
 append-only and the connection is read-only, so a database report is closed the way an arbiter
 proposal is: a rejection goes to the rejection ledger, and an accept writes the declaration, after
 which `already_declared` hides it.
@@ -56,7 +56,6 @@ from recall.frontmatter import (
     SupersedesDeclaresNothing,
     add_supersedes_target,
     encodable_name,
-    supersedes_key,
     supersedes_targets,
 )
 from recall.promotion import (
@@ -76,6 +75,7 @@ from recall.rewrite import (
     default_ledger_path,
     plan_rewrite,
 )
+from recall.supersession import reference_path_key, reference_stem_key
 from recall.stale_reports import StaleReport, StaleReportQueue, StaleReportRefused, default_queue_path, find_quote
 
 AGENT_RULE_ID = "agent_stale_report"
@@ -199,7 +199,13 @@ def memo_path(root: Path, name: str) -> Path | None:
 
 
 def already_declared(root: Path, stale: str, replacing: str) -> bool:
-    """Whether the newer memo already names the stale one in `supersedes:`."""
+    """Whether the newer memo already declares the stale one, by the rule search resolves it with.
+
+    A reference that names a folder matches by path when a memo has that path; otherwise a name
+    counts only when no other memo shares it (`recall.supersession.ReferenceIndex.match`). By file
+    name alone, a declaration of `a/notes.md` hid a claim about `b/notes.md` from the queue, as
+    "already decided", while search left `b/notes.md` live (DAT-005).
+    """
     path = memo_path(root, replacing)
     if path is None:
         return False
@@ -207,8 +213,33 @@ def already_declared(root: Path, stale: str, replacing: str) -> bool:
         meta = parse_document(path.read_text(encoding="utf-8-sig")).meta
     except (OSError, ValueError):  # ValueError: a decode failure, or a NUL in a name stand-in
         return False
-    wanted = supersedes_key(stale)
-    return any(supersedes_key(target) == wanted for target in supersedes_targets(meta.get("supersedes")))
+    wanted = reference_path_key(stale)
+    stem = reference_stem_key(stale)
+    targets = [t for t in supersedes_targets(meta.get("supersedes")) if reference_stem_key(t) == stem]
+    if not targets:
+        return False
+    claimant = reference_path_key(replacing)
+    others = [p for p in _paths_by_stem(root).get(stem, ()) if p != claimant]
+    if not others:
+        return True  # the stale memo is not in this folder: no other memo the name could mean
+    for target in targets:
+        target_path = reference_path_key(target)
+        if "/" in target_path and target_path in others:
+            if target_path == wanted:
+                return True
+            continue
+        if others == [wanted]:
+            return True
+    return False
+
+
+def _paths_by_stem(root: Path) -> dict[str, list[str]]:
+    """Every memo's folded path, by its folded stem, as search indexes them."""
+    by_stem: dict[str, list[str]] = {}
+    for path in memo_files(root):
+        name = encodable_name(path.relative_to(root).as_posix())
+        by_stem.setdefault(reference_stem_key(name), []).append(reference_path_key(name))
+    return by_stem
 
 
 def memo_files(root: Path) -> list[Path]:
@@ -470,7 +501,22 @@ def build_queue(
         for key, item in sorted(by_claim.items())
         if key not in rejected and not already_declared(root, item.stale, item.replacing)
     )
+    if items:
+        by_stem = _paths_by_stem(root)
+        items = tuple(_with_shared_name(item, by_stem) for item in items)
     return Queue(items=items, notes=tuple(notes))
+
+
+def _with_shared_name(item: QueueItem, by_stem: Mapping[str, list[str]]) -> QueueItem:
+    """The item, with a line saying so when its stale memo's name is shared by other memos."""
+    sharing = by_stem.get(reference_stem_key(item.stale), [])
+    if len(sharing) < 2:
+        return item
+    line = (
+        f"ambiguous name: {len(sharing)} memos are called {item.stale.rsplit('/', 1)[-1]}; "
+        "reject it here, or write `supersedes:` with the folder in the newer memo"
+    )
+    return dataclasses.replace(item, details=item.details + (line,))
 
 
 def memo_digest(root: Path, name: str) -> str:

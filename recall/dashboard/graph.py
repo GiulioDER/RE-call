@@ -10,9 +10,10 @@ quote-checked against, these files first. Three kinds of edge:
 * `link`: a `[[wiki link]]` or a relative markdown link to another memo in the corpus;
 * `pending`: a claim waiting in the review queue (an agent report or a cached arbiter proposal).
 
-A node's state: `superseded` when a memo declares it replaced, `expired` when its `valid_until`
-has passed, `not_yet_valid` before its `valid_from`, `pending` when a queued claim would
-supersede it, else `current`. Titles and
+A node's state: `invalid_metadata` when search cannot read its validity dates (ahead of
+everything, as the trust gate ranks it), `superseded` when a memo declares it replaced, `expired`
+when its `valid_until` has passed, `not_yet_valid` before its `valid_from`, `pending` when a queued
+claim would supersede it, else `current`. Titles and
 descriptions are read for display only and never decide anything.
 """
 
@@ -128,7 +129,9 @@ def build_graph(
             elif start is not None and start > now:
                 state = "not_yet_valid"  # as search and the corpus graph say: not in force yet
         except ValueError:
-            pass
+            # Search refuses a memo whose dates it cannot read, ahead of supersession
+            # (`recall.trust_gate`), and so does the corpus graph; this graph says the same.
+            state = "invalid_metadata"
         nodes[name] = {
             "id": name,
             "title": title,
@@ -169,7 +172,7 @@ def build_graph(
                 pending.append({"stale": item.stale, "replacing": item.replacing, "claim": item.claim})
 
     for edge in edges:
-        if edge["kind"] == "supersedes":
+        if edge["kind"] == "supersedes" and nodes[edge["target"]]["state"] != "invalid_metadata":
             nodes[edge["target"]]["state"] = "superseded"
     for claim in pending:
         if nodes[claim["stale"]]["state"] == "current":
@@ -212,7 +215,7 @@ def build_graph(
     counts: dict[str, int] = {"memos": len(nodes), "edges": len(edges)}
     counts["issues"] = sum(len(node["issues"]) for node in nodes.values())
     counts["isolated"] = sum(1 for node in nodes.values() if node["isolated"])
-    for state_name in ("current", "superseded", "expired", "not_yet_valid", "pending"):
+    for state_name in ("current", "superseded", "expired", "not_yet_valid", "pending", "invalid_metadata"):
         counts[state_name] = sum(1 for node in nodes.values() if node["state"] == state_name)
     for kind in ("supersedes", "link", "pending"):
         counts[kind] = sum(1 for edge in edges if edge["kind"] == kind)

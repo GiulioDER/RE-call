@@ -1460,7 +1460,8 @@ class DashboardApp:
                 ("memos", counts["memos"], f"{counts['hubs']} of them index pages"),
                 ("superseded", counts["superseded"], "declared replaced by a newer memo"),
                 ("pending review", counts["pending"], "claims waiting in the queue"),
-                ("expired", counts["expired"], "past their valid_until"),
+                # One state per memo, ranked as search ranks them: a replaced memo counts as superseded.
+                ("expired", counts["expired"], "past their valid_until, not replaced"),
                 ("lint issues", counts["issues"], "see below"),
                 ("linked only from index pages", counts["isolated"], "nothing else points at them"),
             )
