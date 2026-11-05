@@ -48,7 +48,7 @@ def test_the_dashboard_opens_the_tenant_every_surface_opens(tmp_path: Path, monk
     monkeypatch.setattr(dashboard_cmd, "_database", lambda path: None)
     args = argparse.Namespace(
         root=str(tmp_path), port=8765, reports_tenant=None, db_dsn_file=None, tunnel=None,
-        tunnel_ports="55433:55432", config_host="", config_command="",
+        tunnel_ports="55433:55432", config_host="", config_command="", tenants="",
     )
     with pytest.raises(_Stop):
         dashboard_cmd._cmd_dashboard(args)

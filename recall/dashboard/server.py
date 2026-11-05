@@ -68,10 +68,11 @@ LITE_CORPUS_MESSAGE = (
 )
 # A tenant id as RE-call writes them; anything else in a query or cookie is ignored, never echoed.
 TENANT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
-# The corpora this project serves, first in the switcher, by what they hold.
-PRIMARY_TENANTS = (("memory", "memory"), ("re-call-code-gen", "code"), ("re-call-docs", "docs"), (MULTIMODAL_TENANT, "multimodal"))
-PRIMARY_LABELS = dict(PRIMARY_TENANTS)
-PRIMARY_ORDER = tuple(name for name, _ in PRIMARY_TENANTS)
+# Labels for tenant names RE-call itself defines; a user's own tenants show by name unless pinned.
+KNOWN_LABELS = {MULTIMODAL_TENANT: "multimodal"}
+#: Up to this many corpora the graph's corpus switch lists every one; past it, the pinned ones,
+#: the default and the one shown, with a link to the overview for the rest.
+MAX_SWITCH_CORPORA = 8
 #: Display caps, each used both to cut a list and to say that it was cut.
 MAX_LINKS_LISTED = 40
 MAX_FIND_HITS = 60
@@ -445,6 +446,7 @@ class DashboardApp:
         default_tenant: str = DEFAULT_TENANT,
         recover_lite_tenant: bool = False,
         auto_reports_tenant: bool = False,
+        pinned_tenants: tuple[tuple[str, str], ...] = (),
     ) -> None:
         self.root = root.resolve()
         # Where the configuration page looks for registered MCP servers (the client keys them by
@@ -458,6 +460,11 @@ class DashboardApp:
         self.default_tenant = default_tenant
         self._recover_lite_tenant = recover_lite_tenant
         self._auto_reports_tenant = auto_reports_tenant
+        # The tenants the person running this dashboard named as their main ones, in their order,
+        # with a label each (`--tenants`, `RECALL_DASHBOARD_TENANTS`). Nothing else is ever listed
+        # as missing: a tenant that is not in the database is simply not shown.
+        self.pinned_tenants = tuple(pinned_tenants)
+        self._labels = {**KNOWN_LABELS, **dict(self.pinned_tenants)}
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
         # The form secret is independent of the cookie value and is never sent as a cookie: browsers
@@ -535,6 +542,18 @@ class DashboardApp:
             self._tenant_cache = (time.monotonic(), found)
             return found
 
+    def _label(self, tenant: str) -> str:
+        return self._labels.get(tenant, tenant)
+
+    def _main_tenants(self) -> list[str]:
+        """The pinned tenants, in their order, then the default one if it is not among them."""
+        main = [name for name, _ in self.pinned_tenants]
+        return main if self.default_tenant in main else [*main, self.default_tenant]
+
+    def _ordered(self, names: list[str]) -> list[str]:
+        main = self._main_tenants()
+        return sorted(names, key=lambda n: (main.index(n) if n in main else len(main), n))
+
     def _tenant_picker(self) -> str:
         if self.db is None:
             return "<span class='pill muted' title='Start with --db-dsn-file to read the corpus database.'>no corpus database</span>"
@@ -555,14 +574,19 @@ class DashboardApp:
             caption = f"{_e(label)} <span class='muted'>{_e(name)}</span>" if label != name else _e(name)
             return f"<a href='{_e(path)}?{_e(urlencode({**keep, 'tenant': name}))}' class='{'on' if name == current else ''}'>{caption}</a>"
 
+        pinned = {name for name, _ in self.pinned_tenants}
+        main_names = self._main_tenants()
         main = [
-            link(name, label) if name in names
-            else f"<span class='absent' title='{_e(name)} has no active generation in this database.'>{_e(label)} <span class='muted'>not built</span></span>"
-            for name, label in PRIMARY_TENANTS
+            link(name, self._label(name)) if name in names
+            # Only a tenant the user named is reported missing; the default one is just left out.
+            else f"<span class='absent' title='{_e(name)} has no active generation in this database.'>{_e(self._label(name))} <span class='muted'>not built</span></span>"
+            for name in main_names
+            if name in names or name in pinned
         ]
-        rest = [link(name, name) for name in names if name not in PRIMARY_LABELS]
-        others = f"<span class='eyebrow sub'>benchmarks and other projects · {len(rest)}</span>{''.join(rest)}" if rest else ""
-        label = PRIMARY_LABELS.get(current, current)
+        rest = [link(name, self._label(name)) for name in self._ordered([n for n in names if n not in main_names])]
+        heading = "other tenants" if main else "tenants"
+        others = f"<span class='eyebrow sub'>{heading} · {len(rest)}</span>{''.join(rest)}" if rest else ""
+        label = self._label(current)
         return (
             f"<details class='tenantpick'><summary title='Which corpus the search pages read'>corpus <b>{_e(label)}</b> ▾</summary>"
             f"<div class='tenantlist'>{''.join(main)}{others}</div></details>"
@@ -712,7 +736,7 @@ class DashboardApp:
         # The queue is built once, above; the graph is only asked for its counts.
         counts = build_graph(self.root, include_queue=False)["counts"]
         tenant = self._current_tenant()
-        label = PRIMARY_LABELS.get(tenant, tenant)
+        label = self._label(tenant)
         attention: list[tuple[str, str, str, str]] = []
         if pending:
             attention.append(("signal", f"{pending} change{'s' if pending != 1 else ''} waiting for your review",
@@ -851,7 +875,7 @@ class DashboardApp:
         body = f"<div class='tiles'>{tiles}</div>{explain}<div class='chips sortbar'>{chips}</div>{table}"
         return self._html(self._shell(
             title="RE-call · control", active="control", root=self.root, pending=0,
-            eyebrow=f"control · {PRIMARY_LABELS.get(tenant, tenant)}", heading="Is memory doing its job?",
+            eyebrow=f"control · {self._label(tenant)}", heading="Is memory doing its job?",
             lede="For each memory: how often search returned it, and what agents said it did for their task.",
             body=body,
         ))
@@ -1602,7 +1626,11 @@ class DashboardApp:
             recorded = f"{MAX_COUNTED_SEARCHES}+" if recorded_rows > MAX_COUNTED_SEARCHES else str(recorded_rows)
         except dbq.DatabaseUnavailable as exc:
             return self._not_connected("RE-call · overview", "overview", "Overview", detail=str(exc))
-        migrations = ", ".join(f"{table} {version}" for table, version in status["migrations"] if not table.startswith(("bench_", "comparison_", "locomo_", "recall_aml_", "structural_", "selective_", "voyage4_", "category4_", "chunks_bge")))
+        # RE-call's own table by name; any other migrated table (a benchmark's, another project's) is
+        # counted, so no deployment's naming decides what is shown.
+        own = [f"{table} {version}" for table, version in status["migrations"] if table == db_constants.DEFAULT_TABLE]
+        other_tables = len(status["migrations"]) - len(own)
+        migrations = ", ".join(own + ([f"and {other_tables} other table{'s' if other_tables != 1 else ''}"] if other_tables else []))
         avail = (
             "<div class='tiles'>"
             f"<div class='card tile'><span class='eyebrow'>database</span><b class='ok-text'>answering</b><span class='muted'>{_e(status.get('engine', 'PostgreSQL'))} {_e(status['server_version'].split()[0])}</span></div>"
@@ -1613,7 +1641,7 @@ class DashboardApp:
             f"<p class='muted mono'>schema: {_e(migrations or 'unknown')}</p>"
         )
         cards = []
-        order = list(PRIMARY_ORDER)
+        order = self._main_tenants()
         for t in sorted(every, key=lambda x: (not x["generation"], order.index(x["tenant"]) if x["tenant"] in order else len(order), -x["chunks"])):
             if not t["generation"]:
                 continue
@@ -1940,15 +1968,18 @@ class DashboardApp:
                 names = [t["tenant"] for t in self._tenants() if t["generation"]]
             except dbq.DatabaseUnavailable:
                 names = []
-        order = list(PRIMARY_ORDER)
-        # The main corpora only, plus the one shown if it is another: a deployment can hold dozens
-        # of benchmark tenants, and any of them is still reachable as `/graph?corpus=<name>`.
-        names = sorted((n for n in names if n in order or n == corpus), key=lambda n: (order.index(n) if n in order else len(order), n))
-        labels = PRIMARY_LABELS
+        # Every corpus while the list is short. A database can hold dozens of benchmark tenants, so
+        # past the cap it keeps the main ones and the one shown, and names how many more there are.
+        hidden = 0
+        if len(names) > MAX_SWITCH_CORPORA:
+            main = self._main_tenants()
+            kept = [n for n in names if n in main or n == corpus]
+            hidden = len(names) - len(kept)
+            names = kept
         links = [f"<a href='/graph' class='{'on' if not corpus else ''}'>memo files</a>"] + [
-            f"<a href='/graph?{_e(urlencode({'corpus': name}))}' class='{'on' if name == corpus else ''}'>{_e(labels.get(name, name))}</a>"
-            for name in names
-        ]
+            f"<a href='/graph?{_e(urlencode({'corpus': name}))}' class='{'on' if name == corpus else ''}'>{_e(self._label(name))}</a>"
+            for name in self._ordered(names)
+        ] + ([f"<a href='/overview' class='muted'>{hidden} more</a>"] if hidden else [])
         return f"<div class='corpus-switch'><span class='muted'>corpus</span> {' '.join(links)}</div>"
 
     def _graph_page(self, corpus: str = "") -> Response:

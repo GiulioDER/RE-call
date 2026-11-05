@@ -86,7 +86,31 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         "more (default: the SQLite file's tenant, else default). "
         "Reports filed in any other tenant are not shown.",
     )
+    parser.add_argument(
+        "--tenants",
+        default=os.environ.get("RECALL_DASHBOARD_TENANTS", ""),
+        metavar="NAME[=LABEL],...",
+        help="your main tenants, listed first in the corpus picker and switch, each with an optional "
+        "label, e.g. 'memory,code-gen=code' (default: RECALL_DASHBOARD_TENANTS, else none: every "
+        "tenant is listed by name, the default one first)",
+    )
     parser.set_defaults(func=_cmd_dashboard)
+
+
+def _parse_tenants(spec: str) -> tuple[tuple[str, str], ...]:
+    """`memory,code-gen=code` as `(('memory', 'memory'), ('code-gen', 'code'))`; a bad name stops the command."""
+    from recall.dashboard.server import TENANT_NAME
+
+    pinned: list[tuple[str, str]] = []
+    for item in (part.strip() for part in spec.split(",")):
+        if not item:
+            continue
+        name, _, label = (piece.strip() for piece in item.partition("="))
+        if not TENANT_NAME.fullmatch(name) or any(name == seen for seen, _ in pinned):
+            print(f"recall dashboard: --tenants {item!r} is not a tenant name, or names one twice", file=sys.stderr)
+            raise SystemExit(2)
+        pinned.append((name, label or name))
+    return tuple(pinned)
 
 
 def _cmd_dashboard(args: argparse.Namespace) -> None:
@@ -104,6 +128,7 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
         if not tenant:  # a bound parameter, so any name is safe to ask for; an empty one is a mistake
             print("recall dashboard: --reports-tenant needs a tenant name", file=sys.stderr)
             raise SystemExit(2)
+    pinned_tenants = _parse_tenants(args.tenants)
     db = _database(args.db_dsn_file)
     default_tenant = DEFAULT_TENANT
     recover_lite_tenant = False
@@ -132,6 +157,7 @@ def _cmd_dashboard(args: argparse.Namespace) -> None:
             root, port=args.port, db=db, reports_tenants=reports_tenants, project_root=Path.cwd(),
             config_host=args.config_host, config_command=args.config_command, default_tenant=default_tenant,
             recover_lite_tenant=recover_lite_tenant, auto_reports_tenant=args.reports_tenant is None,
+            pinned_tenants=pinned_tenants,
         )
         try:
             server = serve(app)
