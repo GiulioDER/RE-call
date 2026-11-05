@@ -19,7 +19,7 @@ from recall.calibration_v2 import (
 from recall.drift import DRIFT_SCREEN_DELTA
 from recall.setup import CalibrationResult
 
-from recall.cli_commands._shared import _make_embedder
+from recall.cli_commands._shared import CALIBRATION_DOC_URL, _make_embedder
 
 if TYPE_CHECKING:
     from recall.calibration_v2 import CalibrationRepository
@@ -705,7 +705,8 @@ def _cmd_calibrate(args: argparse.Namespace) -> None:
         f"      not by default and not via {ENV_VAR}, which is why no such instruction follows.\n"
         "      To make a threshold actually serve, bind one to an immutable generation:\n"
         "        recall --tenant T calibration calibrate --generation G --queries FILE --publish\n"
-        "      Read this file to judge whether your corpus separates at all; see docs/CALIBRATION.md."
+        "      Read this file to judge whether your corpus separates at all; see\n"
+        f"      {CALIBRATION_DOC_URL}."
     )
 
     # Exit non-zero on a threshold the data does not support. The file is still written: the

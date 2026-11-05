@@ -517,7 +517,7 @@ They are observations, not automatic failures.
 | `recall.calibration_v2_bounds` | 2 | 16 |
 | `recall.capabilities` | 0 | 0 |
 | `recall.check` | 4 | 30 |
-| `recall.claude_code` | 6 | 158 |
+| `recall.claude_code` | 7 | 158 |
 | `recall.cli` | 6 | 112 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._lite` | 3 | 111 |

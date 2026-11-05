@@ -37,6 +37,7 @@ from recall.security_policy import access_context_from_environment, load_source_
 from recall.control_plane import ControlPlane
 
 from recall.cli_commands._shared import (
+    CALIBRATION_DOC_URL,
     _cli_trust,
     _make_embedder,
     _print_result,
@@ -689,7 +690,7 @@ def refusal_message(exc: TrustRefusal) -> str:
         "To look at results while you finish setting up, RECALL_TRUST_MODE=development retrieves",
         "and marks every result degraded with no certified threshold behind it. It is for",
         "inspection, not for serving. Every code above is explained in",
-        "https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md",
+        CALIBRATION_DOC_URL,
     ]
     return "\n".join(lines)
 
