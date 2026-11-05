@@ -395,6 +395,7 @@ aware. See [docs/PRODUCTION.md](docs/PRODUCTION.md) for deployment boundaries.
 | Trust, architecture, and provenance | [docs/WRITEUP.md](docs/WRITEUP.md), [docs/PROVENANCE_CONTROLLER.md](docs/PROVENANCE_CONTROLLER.md) |
 | Security and operations | [docs/AUTH.md](docs/AUTH.md), [docs/PRODUCTION.md](docs/PRODUCTION.md), [docs/OPERATING_MODES.md](docs/OPERATING_MODES.md) |
 | Measurements and limits | [docs/EVIDENCE.md](docs/EVIDENCE.md), [results/FINDINGS.md](results/FINDINGS.md) |
+| How it compares with other agent memory layers | [Comparison page](https://giulioder.github.io/RE-call/compare.html), [docs/PRIOR_ART.md](docs/PRIOR_ART.md) |
 
 Published numbers are tied to committed artifacts, and the claim gate checks them in CI. Benchmark
 interpretation and limits belong in [docs/EVIDENCE.md](docs/EVIDENCE.md), not in this overview.
