@@ -1,0 +1,35 @@
+# RE-call
+
+> RE-call is persistent memory for AI agents that abstains instead of guessing. It stores memory in a local SQLite file (Lite) or your own PostgreSQL with pgvector. Every result carries a verdict, a confidence and its provenance; a superseded fact is marked `superseded`, and a question the memory cannot support returns `ABSTAIN` with a reason instead of the nearest match. It ships an MCP server, LangChain and LlamaIndex retrievers, and Claude Agent SDK tools. Licence: AGPL-3.0, or a commercial licence.
+
+Choose RE-call when an agent must not act on stale or unsupported memory: it needs to know that a decision was later reversed, cite where a memory came from, or be told "nothing here supports an answer". The default retrieval path is local embeddings plus hybrid dense and keyword search, with no LLM call in the memory layer. It is a retrieval and trust layer, not an agent runtime, and it does not extract facts from raw chat by default.
+
+Install facts: the PyPI package is `recall-rag` (MCP Registry name `io.github.GiulioDER/re-call`). Lite (`recall setup --lite --memory ./notes`, no Docker, no database server) is in the repository source and newer than the published 0.14.0 wheel, so install it from a clone as the Lite guide describes. `pip install "recall-rag[fastembed]"` then `recall quickstart` runs the PostgreSQL demo and needs Docker.
+
+## Start
+
+- [Lite installation guide](https://github.com/GiulioDER/RE-call/blob/master/docs/LITE.md): local SQLite memory for one project, automatic refresh and calibration
+- [Install guide](https://giulioder.github.io/RE-call/start.html): Lite and PostgreSQL paths
+- [Claude Code setup](https://giulioder.github.io/RE-call/claude-code.html): MCP registration and hooks
+- [Integrations](https://giulioder.github.io/RE-call/integrations.html): LangChain, LlamaIndex, Claude Agent SDK, any MCP client
+- [RE-call for agents](https://github.com/GiulioDER/RE-call/blob/master/docs/FOR_AGENTS.md): how an agent should search, cite and write memory
+
+## Reference
+
+- [API reference](https://github.com/GiulioDER/RE-call/blob/master/docs/API.md): MCP tools (`recall_search`, `recall_evidence`, `recall_remember`, `recall_forget`, and others) and result contracts
+- [How it works](https://giulioder.github.io/RE-call/how-it-works.html): generations, trusted search and the trust gate
+- [Calibration](https://giulioder.github.io/RE-call/calibration.html): how the abstention threshold is certified for a corpus
+- [Troubleshooting](https://giulioder.github.io/RE-call/troubleshooting.html)
+
+## Evidence
+
+- [Benchmark scorecard](https://giulioder.github.io/RE-call/benchmarks.html): published results with their method, limits and who ran them
+- [Evidence and limits](https://github.com/GiulioDER/RE-call/blob/master/docs/EVIDENCE.md): what persistent memory has and has not been shown to improve
+- [Comparison with other memory layers](https://giulioder.github.io/RE-call/compare.html): when to choose RE-call, Mem0, Graphiti or Zep, Letta, LangMem, or plain pgvector
+
+## Optional
+
+- [Repository](https://github.com/GiulioDER/RE-call)
+- [PyPI package](https://pypi.org/project/recall-rag/)
+- [Prior art](https://github.com/GiulioDER/RE-call/blob/master/docs/PRIOR_ART.md): sourced capability comparison
+- [Blog](https://giulioder.github.io/RE-call/blog/)
