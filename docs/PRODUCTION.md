@@ -227,11 +227,6 @@ therefore immutable by contract: the writer creates it once and never rewrites i
 mapped artifact may be deleted by generation gc while a process still maps it; on Windows a mapped
 file can be neither rewritten nor deleted until every process releases it.
 
-The AML C8<!--@ citation-pending: implementation contract in recall_aml/service.py and recall/atomic_rescue.py --> service additionally binds each active atomic artifact to its opaque serving scope.
-Its registry layout is `<RECALL_ATOMIC_RESCUE_ARTIFACT_ROOT>/<opaque-scope>/<generation-id>/<corpus-fingerprint>/manifest.json`.
-The service never derives this component from a raw user identifier and never tries another scope
-when the exact scoped manifest is absent or invalid.
-
 **→ 0.6.0 — your retrieval results will change on the same corpus and the same queries.** The first
 non-additive release since 0.5.1, because three defects each made retrieval return *less* than it
 should have: the lexical leg ANDed every query term (so `hybrid` was in practice dense-only); the

@@ -21,7 +21,7 @@ unmodified, separately installed libraries.
 |---|---|---|
 | `psycopg` 3.3.4 | LGPL-3.0-only | The PostgreSQL adapter. A core dependency (`psycopg[binary]`). |
 | `psycopg-binary` 3.3.4 | LGPL-3.0-only | The compiled distribution of psycopg pulled in by `psycopg[binary]`. Its wheels bundle the PostgreSQL client library libpq (PostgreSQL Licence) and, where the platform needs it, OpenSSL (OpenSSL 3, Apache-2.0); the Windows wheel for 3.3.4 carries `libpq`, `libssl-3` and `libcrypto-3`. |
-| `psycopg-pool` 3.3.3 | LGPL-3.0-only | Connection pooling; the `pool`, `mcp` and `hosted` extras. |
+| `psycopg-pool` 3.3.3 | LGPL-3.0-only | Connection pooling; the `pool` and `mcp` extras. |
 | `certifi` 2026.6.17 | MPL-2.0 | Mozilla's CA bundle, pulled in by `requests` and `httpx`. |
 | `tqdm` 4.69.0 | MPL-2.0 AND MIT | Progress bars, pulled in by `fastembed` and `huggingface-hub`. |
 | `orjson` 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) | JSON, pulled in by `langsmith`, which `voyageai` reaches through `langchain-text-splitters` and `langchain-core`. |
@@ -33,9 +33,8 @@ https://openssl-library.org/source/license/index.html.
 ## Python runtime dependencies
 
 The full dependency closure, read from `uv.lock`, of the base install and of the extras the
-shipped services use: `mcp` (the MCP server), `pool`, `voyage`, `hosted` and `openai` (the
-hosted service and `recall_aml`), `fastembed` (the default local embedder), `documents` (file
-extraction) and `atomic`. The last column names every one of those that pulls the package in;
+shipped services use: `mcp` (the MCP server), `pool`, `voyage`, `openai`, `fastembed` (the
+default local embedder), `documents` (file extraction) and `atomic`. The last column names every one of those that pulls the package in;
 `core` means the base install.
 
 Research and benchmarking extras (`sparse`, `rerank`, `finetune`, `eval`, `bench`, `agent-ab`,
@@ -48,68 +47,68 @@ otherwise its trove classifier.
 
 | Package | Locked version | Licence as declared | Declared in | Installed by |
 |---|---|---|---|---|
-| `aiohappyeyeballs` | 2.7.1 | PSF-2.0 | License | voyage, hosted |
-| `aiohttp` | 3.14.5 | Apache-2.0 AND MIT | License-Expression | voyage, hosted |
-| `aiolimiter` | 1.2.1 | MIT | License | voyage, hosted |
-| `aiosignal` | 1.4.0 | Apache 2.0 | License | voyage, hosted |
+| `aiohappyeyeballs` | 2.7.1 | PSF-2.0 | License | voyage |
+| `aiohttp` | 3.14.5 | Apache-2.0 AND MIT | License-Expression | voyage |
+| `aiolimiter` | 1.2.1 | MIT | License | voyage |
+| `aiosignal` | 1.4.0 | Apache 2.0 | License | voyage |
 | `annotated-types` | 0.7.0 | MIT License | classifier | core |
-| `anyio` | 4.15.1 | MIT | License-Expression | mcp, voyage, hosted, openai, fastembed |
-| `attrs` | 26.1.0 | MIT | License-Expression | mcp, voyage, hosted |
+| `anyio` | 4.15.1 | MIT | License-Expression | mcp, voyage, openai, fastembed |
+| `attrs` | 26.1.0 | MIT | License-Expression | mcp, voyage |
 | `beautifulsoup4` | 4.15.0 | MIT License | License | documents |
-| `certifi` | 2026.6.17 | MPL-2.0 | License | voyage, hosted, fastembed |
+| `certifi` | 2026.6.17 | MPL-2.0 | License | voyage, fastembed |
 | `cffi` | 2.1.0 | MIT-0 | License-Expression | mcp, documents |
-| `charset-normalizer` | 3.4.9 | MIT | License | voyage, hosted, fastembed, documents |
-| `click` | 8.4.2 | BSD-3-Clause | License-Expression | mcp, voyage, hosted, fastembed, documents |
-| `colorama` | 0.4.6 | BSD License | classifier | mcp, voyage, hosted, fastembed, documents (Windows only) |
+| `charset-normalizer` | 3.4.9 | MIT | License | voyage, fastembed, documents |
+| `click` | 8.4.2 | BSD-3-Clause | License-Expression | mcp, voyage, fastembed, documents |
+| `colorama` | 0.4.6 | BSD License | classifier | mcp, voyage, fastembed, documents (Windows only) |
 | `cryptography` | 50.0.0 | Apache-2.0 OR BSD-3-Clause | License-Expression | mcp, documents |
-| `distro` | 1.9.0 | Apache License, Version 2.0 | License | voyage, hosted |
+| `distro` | 1.9.0 | Apache License, Version 2.0 | License | voyage |
 | `et-xmlfile` | 2.0.0 | MIT | License | documents |
 | `fastembed` | 0.8.1 | Apache-2.0 | License | fastembed |
-| `filelock` | 3.31.1 | MIT | License-Expression | voyage, hosted, fastembed |
+| `filelock` | 3.31.1 | MIT | License-Expression | voyage, fastembed |
 | `flatbuffers` | 25.12.19 | Apache 2.0 | License | fastembed |
-| `frozenlist` | 1.8.0 | Apache-2.0 | License | voyage, hosted |
-| `fsspec` | 2026.9.0 | BSD-3-Clause | License-Expression | voyage, hosted, fastembed |
-| `h11` | 0.16.0 | MIT | License | mcp, voyage, hosted, openai, fastembed |
-| `hf-xet` | 1.5.2 | Apache-2.0 | License-Expression | voyage, hosted, fastembed |
-| `httpcore` | 1.0.9 | BSD-3-Clause | License-Expression | voyage, hosted, fastembed |
-| `httpcore2` | 2.13.1 | BSD-3-Clause | License-Expression | mcp, hosted, openai |
-| `httpx` | 0.28.1 | BSD-3-Clause | License | voyage, hosted, fastembed |
-| `httpx2` | 2.13.1 | BSD-3-Clause | License-Expression | mcp, hosted, openai |
-| `httpx2-jsfetch` | 1.0 | BSD-3-Clause | License-Expression | mcp, hosted, openai (Emscripten only) |
-| `huggingface-hub` | 1.24.0 | Apache-2.0 | License | voyage, hosted, fastembed |
-| `idna` | 3.18 | BSD-3-Clause | License-Expression | mcp, voyage, hosted, openai, fastembed |
-| `jiter` | 0.16.0 | MIT | License-Expression | hosted, openai |
-| `jsonpatch` | 1.33 | Modified BSD License | License | voyage, hosted |
-| `jsonpointer` | 3.1.1 | Modified BSD License | License | voyage, hosted |
+| `frozenlist` | 1.8.0 | Apache-2.0 | License | voyage |
+| `fsspec` | 2026.9.0 | BSD-3-Clause | License-Expression | voyage, fastembed |
+| `h11` | 0.16.0 | MIT | License | mcp, voyage, openai, fastembed |
+| `hf-xet` | 1.5.2 | Apache-2.0 | License-Expression | voyage, fastembed |
+| `httpcore` | 1.0.9 | BSD-3-Clause | License-Expression | voyage, fastembed |
+| `httpcore2` | 2.13.1 | BSD-3-Clause | License-Expression | mcp, openai |
+| `httpx` | 0.28.1 | BSD-3-Clause | License | voyage, fastembed |
+| `httpx2` | 2.13.1 | BSD-3-Clause | License-Expression | mcp, openai |
+| `httpx2-jsfetch` | 1.0 | BSD-3-Clause | License-Expression | mcp, openai (Emscripten only) |
+| `huggingface-hub` | 1.24.0 | Apache-2.0 | License | voyage, fastembed |
+| `idna` | 3.18 | BSD-3-Clause | License-Expression | mcp, voyage, openai, fastembed |
+| `jiter` | 0.16.0 | MIT | License-Expression | openai |
+| `jsonpatch` | 1.33 | Modified BSD License | License | voyage |
+| `jsonpointer` | 3.1.1 | Modified BSD License | License | voyage |
 | `jsonschema` | 4.26.0 | MIT | License-Expression | mcp |
 | `jsonschema-specifications` | 2025.9.1 | MIT | License-Expression | mcp |
-| `langchain-core` | 1.6.7 | MIT | License | voyage, hosted |
-| `langchain-protocol` | 0.0.18 | MIT | License | voyage, hosted |
-| `langchain-text-splitters` | 1.1.2 | MIT | License | voyage, hosted |
-| `langsmith` | 0.10.7 | MIT | License | voyage, hosted |
+| `langchain-core` | 1.6.7 | MIT | License | voyage |
+| `langchain-protocol` | 0.0.18 | MIT | License | voyage |
+| `langchain-text-splitters` | 1.1.2 | MIT | License | voyage |
+| `langsmith` | 0.10.7 | MIT | License | voyage |
 | `loguru` | 0.7.3 | MIT License | classifier | fastembed |
 | `lxml` | 6.1.1 | BSD-3-Clause | License | documents |
 | `mcp` | 2.2.0 | MIT | License | mcp |
 | `mcp-types` | 2.2.0 | MIT | License | mcp |
 | `mmh3` | 5.2.1 | MIT License | classifier | fastembed |
-| `multidict` | 6.9.1 | Apache License 2.0 | License | voyage, hosted |
+| `multidict` | 6.9.1 | Apache License 2.0 | License | voyage |
 | `numpy` | 2.5.1 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | License-Expression | core |
 | `olefile` | 0.47 | BSD | License | documents |
 | `onnxruntime` | 1.31.0 | MIT License | License | fastembed |
-| `openai` | 3.26.0 | Apache-2.0 | License-Expression | hosted, openai |
+| `openai` | 3.26.0 | Apache-2.0 | License-Expression | openai |
 | `openpyxl` | 3.1.5 | MIT | License | documents |
 | `opentelemetry-api` | 1.44.0 | Apache-2.0 | License-Expression | mcp |
-| `orjson` | 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) | License-Expression | voyage, hosted |
-| `packaging` | 26.2 | Apache-2.0 OR BSD-2-Clause | License-Expression | voyage, hosted, fastembed |
+| `orjson` | 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) | License-Expression | voyage |
+| `packaging` | 26.2 | Apache-2.0 OR BSD-2-Clause | License-Expression | voyage, fastembed |
 | `pdfminer-six` | 20260107 | MIT | License-Expression | documents |
 | `pdfplumber` | 0.11.10 | MIT License | classifier | documents |
 | `pgvector` | 0.5.0 | MIT | License-Expression | core |
-| `pillow` | 12.3.0 | MIT-CMU | License-Expression | voyage, hosted, fastembed, documents |
-| `propcache` | 0.5.2 | Apache-2.0 | License | voyage, hosted |
+| `pillow` | 12.3.0 | MIT-CMU | License-Expression | voyage, fastembed, documents |
+| `propcache` | 0.5.2 | Apache-2.0 | License | voyage |
 | `protobuf` | 6.33.6 | 3-Clause BSD License | License | fastembed |
 | `psycopg` | 3.3.4 | LGPL-3.0-only | License-Expression | core |
 | `psycopg-binary` | 3.3.4 | LGPL-3.0-only | License-Expression | core |
-| `psycopg-pool` | 3.3.3 | LGPL-3.0-only | License-Expression | mcp, pool, hosted |
+| `psycopg-pool` | 3.3.3 | LGPL-3.0-only | License-Expression | mcp, pool |
 | `py-rust-stemmers` | 0.1.8 | none declared on PyPI; MIT in its source repository, qdrant/py-rust-stemmers |  | fastembed |
 | `pycparser` | 3.0 | BSD-3-Clause | License-Expression | mcp, documents |
 | `pydantic` | 2.13.5 | MIT | License-Expression | core |
@@ -121,38 +120,39 @@ otherwise its trove classifier.
 | `python-oxmsg` | 0.0.2 | MIT | License | documents |
 | `python-pptx` | 1.0.2 | MIT | License | documents |
 | `pywin32` | 312 | PSF | License | mcp (Windows only) |
-| `pyyaml` | 6.0.3 | MIT | License | voyage, hosted, fastembed |
+| `pyyaml` | 6.0.3 | MIT | License | voyage, fastembed |
 | `referencing` | 0.37.0 | MIT | License-Expression | mcp |
-| `requests` | 2.34.2 | Apache-2.0 | License | voyage, hosted, fastembed |
-| `requests-toolbelt` | 1.0.0 | Apache 2.0 | License | voyage, hosted |
+| `requests` | 2.34.2 | Apache-2.0 | License | voyage, fastembed |
+| `requests-toolbelt` | 1.0.0 | Apache 2.0 | License | voyage |
 | `rpds-py` | 2026.6.3 | MIT | License-Expression | mcp |
-| `sniffio` | 1.3.1 | MIT OR Apache-2.0 | License | voyage, hosted, openai |
+| `sniffio` | 1.3.1 | MIT OR Apache-2.0 | License | voyage, openai |
 | `soupsieve` | 2.9.2 | MIT | License-Expression | documents |
 | `sse-starlette` | 3.4.5 | BSD-3-Clause | License-Expression | mcp |
-| `starlette` | 1.7.0 | BSD-3-Clause | License-Expression | mcp, hosted |
-| `tenacity` | 9.1.4 | Apache 2.0 | License | voyage, hosted |
+| `starlette` | 1.7.0 | BSD-3-Clause | License-Expression | mcp |
+| `tenacity` | 9.1.4 | Apache 2.0 | License | voyage |
 | `threadpoolctl` | 3.7.0 | BSD-3-Clause | License-Expression | atomic |
-| `tokenizers` | 0.23.3 | Apache Software License | classifier | voyage, hosted, fastembed |
-| `tqdm` | 4.69.0 | MPL-2.0 AND MIT | License | voyage, hosted, fastembed |
-| `truststore` | 0.10.4 | MIT | License-Expression | mcp, hosted, openai |
+| `tokenizers` | 0.23.3 | Apache Software License | classifier | voyage, fastembed |
+| `tqdm` | 4.69.0 | MPL-2.0 AND MIT | License | voyage, fastembed |
+| `truststore` | 0.10.4 | MIT | License-Expression | mcp, openai |
 | `typing-extensions` | 4.16.0 | PSF-2.0 | License-Expression | core |
 | `typing-inspection` | 0.4.2 | MIT | License-Expression | core |
 | `tzdata` | 2026.3 | Apache-2.0 | License | core (Windows only) |
-| `urllib3` | 2.8.0 | MIT | License-Expression | voyage, hosted, fastembed |
-| `uuid-utils` | 0.17.0 | BSD-3-Clause | License-Expression | voyage, hosted |
-| `uvicorn` | 0.54.0 | BSD-3-Clause | License-Expression | mcp, hosted |
-| `voyageai` | 0.5.0 | MIT | License | voyage, hosted |
-| `websockets` | 16.1.1 | BSD-3-Clause | License-Expression | voyage, hosted |
+| `urllib3` | 2.8.0 | MIT | License-Expression | voyage, fastembed |
+| `uuid-utils` | 0.17.0 | BSD-3-Clause | License-Expression | voyage |
+| `uvicorn` | 0.54.0 | BSD-3-Clause | License-Expression | mcp |
+| `voyageai` | 0.5.0 | MIT | License | voyage |
+| `websockets` | 16.1.1 | BSD-3-Clause | License-Expression | voyage |
 | `win32-setctime` | 1.2.0 | MIT license | License | fastembed (Windows only) |
 | `xlrd` | 2.0.2 | BSD | License | documents |
 | `xlsxwriter` | 3.2.9 | BSD-2-Clause | License | documents |
-| `xxhash` | 3.8.1 | BSD-2-Clause | License | voyage, hosted |
-| `yarl` | 1.25.1 | Apache-2.0 | License | voyage, hosted |
-| `zstandard` | 0.25.0 | BSD-3-Clause | License-Expression | voyage, hosted |
+| `xxhash` | 3.8.1 | BSD-2-Clause | License | voyage |
+| `yarl` | 1.25.1 | Apache-2.0 | License | voyage |
+| `zstandard` | 0.25.0 | BSD-3-Clause | License-Expression | voyage |
 
 ## Hosted services used by `recall_aml`
 
-`recall_aml` calls these models over their providers' APIs. No weights are downloaded or
+`recall_aml` is kept in the repository and is not part of any published package since 0.15.0. It
+calls these models over their providers' APIs. No weights are downloaded or
 redistributed; each is used under its provider's terms of service.
 
 | Service | Models | Where | Terms |

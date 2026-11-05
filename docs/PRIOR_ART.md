@@ -88,7 +88,7 @@ Zaragoza), reciprocal rank fusion (Cormack, Clarke and Büttcher), SPLADE (Forma
 Clinchant), the Wilson score interval, the percentile bootstrap (Efron) and the Holm correction.
 Each is cited where it is implemented, and the full references are in
 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md). The feedback guard of the AML service,
-`recall_aml/feedback_guard.py`, recognises the record shapes of
+`recall_aml/feedback_guard.py` (kept in the repository, not shipped since 0.15.0), recognises the record shapes of
 [AgentMemoryBench](https://github.com/solomoon313/AgentMemoryBench) (MIT) and rests on findings
 of StreamBench and Evo-Memory; its module docstring gives the full references.
 

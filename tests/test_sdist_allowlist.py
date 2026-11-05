@@ -61,3 +61,34 @@ def test_every_wheel_package_is_in_the_sdist() -> None:
     targets = data["tool"]["hatch"]["build"]["targets"]
     missing = sorted(set(targets["wheel"]["packages"]) - set(targets["sdist"]["only-include"]))
     assert missing == [], f"wheel packages missing from the sdist allowlist: {missing}"
+
+
+def test_the_aml_benchmark_service_is_not_distributed() -> None:
+    """`recall_aml` stays in the repository but leaves both distributions in 0.15.0.
+
+    Invariant: no wheel package, no sdist entry, no optional dependency set and no console script
+    names the AML benchmark service. Failure mode caught: any one of them comes back, which puts
+    a benchmark endpoint and its dependency set into every install (owner decision 2026-11-04).
+
+    Red proof, recorded 2026-11-05: run against master's `pyproject.toml` at 21261c353 (which
+    still lists `recall_aml` in the wheel `packages` and the sdist `only-include`, declares the
+    `hosted` extra and the `recall-hosted` script), this test fails on its assertion, listing all
+    four. Restored to this branch's `pyproject.toml`, it passes.
+    """
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    targets = data["tool"]["hatch"]["build"]["targets"]
+    found = [
+        *(f"wheel package {name}" for name in targets["wheel"]["packages"] if name == "recall_aml"),
+        *(
+            f"sdist entry {entry}"
+            for entry in targets["sdist"]["only-include"]
+            if entry.strip("/").split("/", 1)[0] == "recall_aml"
+        ),
+        *(f"extra {name}" for name in data["project"]["optional-dependencies"] if name == "hosted"),
+        *(
+            f"script {name}"
+            for name, target in data["project"]["scripts"].items()
+            if name == "recall-hosted" or target.startswith("recall_aml")
+        ),
+    ]
+    assert found == [], f"the AML benchmark service is distributed again: {found}"

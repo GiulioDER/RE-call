@@ -78,7 +78,7 @@ themselves are computed by Voyage AI's hosted API (see `THIRD_PARTY_NOTICES.md`)
 | tokenizer | licence | loaded by |
 |---|---|---|
 | `MongoDB/voyage-context-4` | Apache-2.0 | `recall.embedding_providers.voyage._voyage_token_counter` (re-exported as `recall.embeddings._voyage_token_counter`), for `VoyageContextualizedEmbedder` |
-| `MongoDB/voyage-multimodal-3.5` | **none declared** on its page | `recall.multimodal.lazy_voyage_text_counter`, which calls the same loader, for the multimodal embedder in `recall.multimodal` and `recall_aml.multimodal` |
+| `MongoDB/voyage-multimodal-3.5` | **none declared** on its page | `recall.multimodal.lazy_voyage_text_counter`, which calls the same loader, for the multimodal embedder in `recall.multimodal` and the repository-only `recall_aml.multimodal` (not shipped) |
 
 The loader asks for `voyageai/<model>` through `tokenizers.Tokenizer.from_pretrained`, and Hugging
 Face redirects that name to the `MongoDB/<model>` repository above (both checked 2026-10-20).
