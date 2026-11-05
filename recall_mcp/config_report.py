@@ -181,10 +181,13 @@ def redact_argv(argv: list[str]) -> list[str]:
 
 
 def _scrub_message(message: str, env: Mapping[str, str]) -> str:
-    """A validation message with every withheld value that appears in it replaced."""
+    """A validation message with every withheld value that appears in it replaced, and any password
+    libpq quoted from a withheld DSN (`missing "=" after "<password>"`) replaced too."""
+    from recall.dsn_security import scrub_dsn_secrets
+
     for name, value in env.items():
         if value and len(value) >= 4 and withheld(name):
-            message = message.replace(value, "***")
+            message = scrub_dsn_secrets(message.replace(value, "***"), value)
     return redact_value(message)
 
 
