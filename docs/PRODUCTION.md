@@ -127,29 +127,29 @@ Recent release detail is in [CHANGELOG.md](../CHANGELOG.md), and the full histor
 operator sequence are in [COMPATIBILITY.md](COMPATIBILITY.md). Only the changes that can make
 something currently working start failing are listed here.
 
-**→ 0.15.0: upgrade a PostgreSQL deployment in this order.** The full list, with the reason for
+**→ 0.15.0: upgrade a PostgreSQL deployment in the order below.** The full list, with the reason for
 each step, is under "Upgrade notes" in [CHANGELOG.md](../CHANGELOG.md).
 
-1. Pin `voyageai`, `fastembed`, `onnxruntime`, `tokenizers` and `sentence-transformers` on serving
-   hosts at the versions that built your generations, or plan to rebuild (the embedding library
-   note below).
-2. Upgrade pgvector to 0.8.0 or later; migrations refuse an older extension.
-3. Check configuration that now refuses: a source policy file may hold only the keys its schema
-   lists, the enterprise control plane needs `RECALL_SOURCE_POLICY_FILE`,
-   `RECALL_OIDC_JWKS_REFRESH_SECONDS` may not exceed 3600, and `RECALL_ENTAILMENT` must be unset or
-   false (the QNLI judge is removed).
-4. Stop the servers, then run `recall schema apply --with-migrations` with the migration role
-   (migrations 0026 to 0035). A non-enterprise multi-tenant server no longer migrates on its first
-   request, so this step cannot be skipped.
-5. Re-apply the grants (`recall schema grants --controller` for the controller role and `--strict`
-   for the serving role) and run `recall provenance rebuild` per tenant (the note below).
-6. Rebuild atomic rescue artifacts made by 0.14.0: they lack `embedding_fingerprint` and are
-   refused.
-7. Re-index or rebuild generations whose identity moved (every FastEmbed profile, `st:` models
-   from a local directory or a pinned revision, structured documents, Python code chunks and
-   document extraction), recalibrate a v2 calibration that `recall calibration import` now
-   refuses, and deduplicate labelled query sets.
-8. Start the servers and check `recall doctor` and `recall schema status`.
+* Pin `voyageai`, `fastembed`, `onnxruntime`, `tokenizers` and `sentence-transformers` on serving
+  hosts at the versions that built your generations, or plan to rebuild (the embedding library
+  note below).
+* Upgrade pgvector to `0.8.0` or later; migrations refuse an older extension.
+* Check configuration that now refuses: a source policy file may hold only the keys its schema
+  lists, the enterprise control plane needs `RECALL_SOURCE_POLICY_FILE`,
+  `RECALL_OIDC_JWKS_REFRESH_SECONDS` may not exceed `3600`, and `RECALL_ENTAILMENT` must be unset or
+  false (the QNLI judge is removed).
+* Stop the servers, then run `recall schema apply --with-migrations` with the migration role
+  (migrations `0026` to `0035`). A non-enterprise multi-tenant server no longer migrates on its first
+  request, so this step cannot be skipped.
+* Re-apply the grants (`recall schema grants --controller` for the controller role and `--strict`
+  for the serving role) and run `recall provenance rebuild` per tenant (the note below).
+* Rebuild atomic rescue artifacts made by `0.14.0`: they lack `embedding_fingerprint` and are
+  refused.
+* Re-index or rebuild generations whose identity moved (every FastEmbed profile, `st:` models
+  from a local directory or a pinned revision, structured documents, Python code chunks and
+  document extraction), recalibrate a `v2` calibration that `recall calibration import` now
+  refuses, and deduplicate labelled query sets.
+* Start the servers and check `recall doctor` and `recall schema status`.
 
 **→ 0.15.0: a ledger that already holds facts needs `recall provenance rebuild`.** The
 current-facts migration creates its tables empty and nothing fills them from existing events, so after
