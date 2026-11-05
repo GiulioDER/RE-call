@@ -102,3 +102,18 @@ def test_the_report_list_filters_to_one_memory(db: dbq.DashboardDB, tenant: str)
     assert len(dbq.use_reports(db, tenant)) == 3
     only_c = dbq.use_reports(db, tenant, source=C)
     assert [r["task"] for r in only_c] == ["t2"]
+
+
+@requires_db
+def test_control_for_one_memory_counts_only_it_and_counts_it_the_same(db: dbq.DashboardDB, tenant: str) -> None:
+    """K6 (PERF-009, 2026-11-04): `source=` keeps only that memory, with the counts the whole-tenant call gives.
+
+    The one-memory page used to run the whole-tenant aggregate and keep one entry. Red proof: with
+    the `source` filter dropped from `_RETRIEVALS` and `_REPORTED` (the arguments still passed and
+    ignored), the first assertion fails with A, B and C all returned.
+    """
+    everything = {m["source"]: m for m in dbq.control(db, tenant)["memos"]}
+    for source in (A, C):
+        only = dbq.control(db, tenant, source=source)["memos"]
+        assert [m["source"] for m in only] == [source], f"control(source={source}) returned {[m['source'] for m in only]}"
+        assert only[0] == everything[source]

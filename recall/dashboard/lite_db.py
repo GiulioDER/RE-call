@@ -203,7 +203,7 @@ def search(dsn: str, tenant: str, event_id: str) -> dict[str, Any] | None:
         return _search_row(row) if row is not None else None
 
 
-def control(dsn: str, tenant: str, *, retrievals: bool = True) -> dict[str, Any]:
+def control(dsn: str, tenant: str, *, retrievals: bool = True, source: str | None = None) -> dict[str, Any]:
     """`recall.dashboard.db.control`, the same rules: one retrieval per (search, memory), at its best rank."""
     memos: dict[str, dict[str, Any]] = {}
 
@@ -226,13 +226,15 @@ def control(dsn: str, tenant: str, *, retrievals: bool = True) -> dict[str, Any]
         for rank, hit in enumerate(hits if isinstance(hits, list) else [], start=1):
             if not isinstance(hit, dict) or hit.get("source") is None:
                 continue
+            if source is not None and str(hit["source"]) != source:
+                continue
             seen = best.setdefault(str(hit["source"]), {"rank": rank, "verdicts": set()})
             seen["rank"] = min(seen["rank"], rank)
             verdict = hit.get("verdict")
             if isinstance(verdict, str):
                 seen["verdicts"].add(verdict)
-        for source, seen in best.items():
-            row = memo(source)
+        for found, seen in best.items():
+            row = memo(found)
             row["retrieved"] += 1
             row["first"] += seen["rank"] == 1
             row["ok"] += "ok" in seen["verdicts"]
@@ -252,8 +254,10 @@ def control(dsn: str, tenant: str, *, retrievals: bool = True) -> dict[str, Any]
         if succeeded is True or succeeded is False:
             summary["succeeded" if succeeded else "failed"] += 1
         for role in ("used", "wrong"):
-            for source in _sources(payload, role):
-                row = memo(str(source))
+            for named in _sources(payload, role):
+                if source is not None and str(named) != source:
+                    continue
+                row = memo(str(named))
                 row[role] += 1
                 if role == "used" and effect in ("helped", "no_difference"):
                     row[effect] += 1

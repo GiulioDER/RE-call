@@ -56,7 +56,7 @@ def recent_activity(root: Path, limit: int = 200) -> list[Event]:
     events: list[Event] = []
 
     for record in history(root, limit=limit):
-        kind = "undo" if record.summary and record.summary[0].startswith("undo of edit") else "edit"
+        kind = "undo" if record.is_undo else "edit"
         events.append(Event(record.edited_at, kind, "; ".join(record.summary), record.note, record.editor, record.name))
 
     reported: set[str] = set()
