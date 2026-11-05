@@ -388,6 +388,9 @@ class _Spy:
             failure_code=None,
         )
 
+    def server_embedding_env(self) -> dict[str, str]:
+        return {}
+
     def active_generation(self, tenant: str) -> str | None:
         # Stands in for a database that still serves what `run` below promoted.
         return f"gen_{tenant}"

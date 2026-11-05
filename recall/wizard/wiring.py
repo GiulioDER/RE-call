@@ -134,8 +134,13 @@ def server_blocks(
     promoted: frozenset[str],
     serving: frozenset[str],
     fact_write_dsn: str | None = None,
+    embedding_env: Mapping[str, str] | None = None,
 ) -> tuple[tuple[ServerBlock, ...], tuple[UnservableTenant, ...]]:
     """The blocks to write, and the tenants deliberately left out.
+
+    `embedding_env` is what reproduces the embedder that built the corpora (a selected
+    `RECALL_EMBED_PROFILE` and the settings it needs); every block carries it, because a server
+    whose client environment lacks it would resolve a different model than the one that indexed.
 
     `promoted` is the tenants whose freshly built generation went live. `serving` is the tenants that
     have SOME active generation, which includes a predecessor left in place by a degraded run. The
@@ -199,6 +204,8 @@ def server_blocks(
             )
         )
 
+    for block in blocks:
+        block.env.update(embedding_env or {})
     return tuple(blocks), tuple(unservable)
 
 

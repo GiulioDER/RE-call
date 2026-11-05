@@ -515,8 +515,13 @@ def _default_runner() -> Any:
 
     def _run(config: dict[str, object], path: Path, progress: Any) -> Any:
         from recall.wizard.headless import load_config, run_headless
+        from recall.wizard.probe import install_blockers
 
-        return run_headless(load_config(path), progress=progress)
+        loaded = load_config(path)
+        # The same preflight `recall wizard` runs, before anything is written or started.
+        if found := install_blockers(needs_docker=loaded.data_root is not None):
+            raise RuntimeError("this machine cannot run the install yet:\n- " + "\n- ".join(found))
+        return run_headless(loaded, progress=progress)
 
     return _run
 

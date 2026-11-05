@@ -235,6 +235,9 @@ class _CountingSpy:
         self.legacy.append(spec.tenant)
         return LegacyIndex(tenant=spec.tenant, files=1, chunks=4)
 
+    def server_embedding_env(self) -> dict[str, str]:
+        return {}
+
     def active_generation(self, tenant: str) -> str | None:
         # Stands in for a database that still serves what `_promoted` recorded.
         return f"gen_{tenant}"

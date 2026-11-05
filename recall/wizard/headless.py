@@ -380,8 +380,10 @@ class HeadlessReport:
             # RECALL_DSN is omitted deliberately: it carries the password, and this report is what
             # a CI job prints into a log. The variables that are shown are the ones an operator
             # needs to sanity-check, and the DSN is the one they already know.
+            # A hosted embedding profile's API key rides in the block too (the registered server
+            # needs it), so a credential-named variable is shown as set, never by value.
             shown = ", ".join(
-                f"{k}={v}"
+                f"{k}=<set>" if k.endswith(_CREDENTIAL_SUFFIXES) else f"{k}={v}"
                 for k, v in block.env.items()
                 if k not in {"RECALL_DSN", "RECALL_FACT_WRITE_DSN"}
             )
@@ -498,6 +500,10 @@ class HeadlessReport:
         return "\n".join([head, *lines])
 
 
+#: Variable-name endings the install report never prints the value of.
+_CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
+
+
 class _Services(Protocol):
     """The side-effecting operations, injected so the driver is testable without a database."""
 
@@ -512,6 +518,7 @@ class _Services(Protocol):
     ) -> CorpusOutcome: ...
     def index_legacy(self, spec: CorpusSpec) -> LegacyIndex: ...
     def active_generation(self, tenant: str) -> str | None: ...
+    def server_embedding_env(self) -> dict[str, str]: ...
     def smoke(self, block: ServerBlock) -> SmokeResult: ...
 
 
@@ -538,6 +545,24 @@ class _RealServices:
         the opposite of what injecting services is for.
         """
         return self.embedder().dim
+
+    def server_embedding_env(self) -> dict[str, str]:
+        """The settings a server needs to resolve the embedder this run builds with.
+
+        Empty unless `RECALL_EMBED_PROFILE` is set: then the profile, and what it needs (a hosted
+        profile's key, a local profile's model path and `RECALL_MODEL_SHA256`), exactly as
+        `recall setup --lite` writes them, refusing when they cannot be reproduced. Without it
+        the registered servers resolved the plain `RECALL_EMBEDDER` while the corpora were built
+        under the profile.
+        """
+        if not os.environ.get("RECALL_EMBED_PROFILE", "").strip():
+            return {}
+        from recall.lite.setup import _embedding_environment
+
+        values = _embedding_environment(
+            self.embedder(), self.config.embedder, registration_required=True
+        )
+        return dict(values or {})
 
     def active_generation(self, tenant: str) -> str | None:
         """The generation `tenant` serves now in the configured database, or None if it serves none."""
@@ -1281,6 +1306,15 @@ def _provision(
     if config.data_root is None:
         return config
 
+    if os.environ.get("RECALL_EMBED_PROFILE", "").strip():
+        # The stack's services run in the image, which cannot see a local profile's model path on
+        # this machine, and a hosted profile would need its API key written into the compose file.
+        raise ConfigRefusal(
+            "RECALL_EMBED_PROFILE is set, and the Docker image this install runs cannot reproduce "
+            "an embedding profile. Unset it, or install against an existing database with `dsn`.",
+            ("data_root",),
+        )
+
     if config.embedder not in {"hashing", "hashing-64", "hashing:64", "fastembed"} and not (
         config.embedder.startswith("fastembed:")
     ):
@@ -1429,6 +1463,15 @@ def run_headless(
         # Re-pointed rather than rebuilt, so the embedder resolved above is the one that indexes.
         wiring.config = config
     _prepare(config, wiring)
+    # Before any corpus is built, so a profile the servers could not reproduce is refused by name
+    # rather than after the whole build.
+    try:
+        embedding_env = wiring.server_embedding_env()
+    except ValueError as exc:
+        raise ConfigRefusal(
+            f"RECALL_EMBED_PROFILE cannot be reproduced in the registered servers: {exc}",
+            ("embedder",),
+        ) from exc
 
     # Resumable state, keyed on a digest of the config fields that would invalidate finished work.
     # `WizardState(digest=...)` with no recorded corpora is the no-state case, so the loops below do
@@ -1574,6 +1617,7 @@ def run_headless(
         promoted=promoted,
         serving=serving,
         fact_write_dsn=config.fact_write_dsn,
+        embedding_env=embedding_env,
     )
     files: tuple[Path, ...] = ()
 

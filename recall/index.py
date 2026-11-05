@@ -575,6 +575,27 @@ def _default_walk(root: Path) -> Iterable[Path]:
         yield from (Path(directory) / name for name in filenames)
 
 
+def _glob_walk(root: Path, glob: str) -> Iterable[Path]:
+    """`root.glob(glob)`, without the tool directories the default walk prunes.
+
+    The wizard's corpora walk `**/*.py` and `**/*.md`, not the default glob, and a code folder that
+    is a repository root holds a `.venv` or `node_modules`: every vendored file was read, hashed,
+    chunked and embedded three times over (measured 2026-11-04: listing 31,391 `.py` files of one
+    site-packages took 22.4s before any was opened). The common `**/<pattern>` form is walked with
+    those directories pruned before they are entered; any other glob is filtered afterwards. Hidden
+    directories are NOT pruned here, as before: only the default scan treats them as private.
+    """
+    tail = glob.removeprefix("**/")
+    if glob.startswith("**/") and "/" not in tail:
+        for directory, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+            dirnames[:] = [name for name in dirnames if name not in _DEFAULT_INDEX_EXCLUDED_DIRS]
+            yield from (Path(directory) / name for name in filenames if fnmatch(name, tail))
+        return
+    for path in root.glob(glob):
+        if not any(part in _DEFAULT_INDEX_EXCLUDED_DIRS for part in path.relative_to(root).parts[:-1]):
+            yield path
+
+
 def _matches_glob(file: Path, glob: str) -> bool:
     """Whether a directory walk under `glob` would have yielded `file`.
 
@@ -646,7 +667,7 @@ def _governing_rule(policy: SourceSecurityPolicy, source: str) -> SourceRule | N
 
 def _directory_candidates(root: Path, glob: str) -> list[tuple[Path, os.stat_result]]:
     """The directory branch of `candidate_files`, each path with the stat its check took."""
-    paths = _default_walk(root) if glob == DEFAULT_INDEX_GLOB else root.glob(glob)
+    paths = _default_walk(root) if glob == DEFAULT_INDEX_GLOB else _glob_walk(root, glob)
     return sorted(
         (
             (p, found) for p, found in _confined_with_stats(root, paths)
