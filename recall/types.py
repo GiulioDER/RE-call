@@ -215,6 +215,8 @@ class EvidenceCard:
     calibration_id: str | None
     calibration_status: str
     trust_state: str
+    #: A stored card can hold a verdict this release does not define (a newer release's): it is
+    #: kept as written, declared unknown, and never trusted (`recall.provenance_controller.stored_verdict`).
     verdict: Verdict
     confidence: float
     rank: int

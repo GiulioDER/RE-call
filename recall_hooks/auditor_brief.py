@@ -64,7 +64,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Generic, TypeVar
-from urllib.parse import urlsplit
+
+# Moved to the package root so the general knowledge hook can read a remote without paying for
+# this module's import on every shell call; re-exported here for existing callers.
+from recall_hooks import repo_identity
 
 #: The default auditor list, matched case-insensitively after any `plugin:` prefix is removed.
 DEFAULT_AUDITOR_TYPES = (
@@ -136,8 +139,6 @@ UNKNOWN_SHA = "unavailable"
 PATH_TOKEN_RE = re.compile(r"[\w./\\-]+\.[A-Za-z0-9]{1,10}")
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 BINARY_RE = re.compile(r'^Binary files ("?a/.+|/dev/null) and ("?b/.+|/dev/null) differ$')
-#: `[user@]host:path`; the host needs two characters, so a Windows drive path is not read as one.
-SCP_REMOTE_RE = re.compile(r"^(?:[\w.-]+@)?[\w.-]{2,}:(?!//)(.+)$")
 DRIVE_RE = re.compile(r"^[A-Za-z]:")
 #: git's C-quoting of a path (`core.quotepath=off` still quotes quotes, backslashes and controls).
 _C_ESCAPES = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
@@ -364,21 +365,6 @@ def _stop(processes: list[subprocess.Popen[bytes]]) -> None:
                 process.communicate(timeout=REAP_WAIT_SECONDS)
             except (subprocess.TimeoutExpired, OSError):
                 pass
-
-
-def repo_identity(url: str) -> str | None:
-    """`owner/name` from a remote URL (https, ssh, or scp-like with or without a user), or None."""
-    url = url.strip().rstrip("/")
-    url = url.removesuffix(".git")
-    scp = SCP_REMOTE_RE.match(url)
-    if "://" in url:
-        path = urlsplit(url).path
-    elif scp:
-        path = scp.group(1)
-    else:
-        path = url
-    parts = [part for part in path.replace("\\", "/").split("/") if part]
-    return "/".join(parts[-2:]) if len(parts) >= 2 else None
 
 
 def _unlinked_lstat(root: Path, parts: list[str]) -> os.stat_result | None:

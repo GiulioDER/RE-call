@@ -224,7 +224,7 @@ class LiteFactLedger:
         index's own stated-fact reconcile does not wait for itself)."""
         from recall.backends import write_session
 
-        return write_session(self._store, "fact erasure" if not shared else "fact application")
+        return write_session(self._store, "fact application" if shared else "fact erasure")
 
     def _check(self, tenant_id: str) -> None:
         if tenant_id != self.tenant_id:

@@ -75,6 +75,25 @@ attempt needs a new request id. An id of a form the ledger mints for its own eve
 `REQUEST_ID_RESERVED` before the ledger is read. Neither refusal is recorded: the id already names
 another event, or belongs to one the ledger will write.
 
+With a source policy (`recall_mcp.provenance.apply_fact_memory`), a card is the caller's to cite
+only when its memo is readable whole: allowed, with no redaction, the rule current facts are listed
+by. A cited card the caller may not read is refused `CARD_NOT_FOUND`, as a card that does not
+exist. So is a request id whose recorded event cites such a card, before any replay: it is
+answered with no event and records nothing, so a resend never reveals an application or refusal
+that cites a memo the caller may not read. A recorded refusal that cites no card (a request whose
+cards were not found, a ledger outage, a failed fresh search) is still replayed to whoever sends
+its id. An access context for another tenant is refused with `PermissionError`
+before anything is read.
+
+The check covers the cards a request cites, not the conflict set. Contradiction and supersession
+are judged on the tenant's whole history, so a `CONTRADICTION_WITHOUT_SUPERSESSION` or `DUPLICATE`
+answer can tell a caller, who holds a readable card supporting a guess, that a memo they may not
+read states another value or the same one (`docs/SECURITY_MODEL.md`, Known gaps). Supersession is
+judged the same way: a readable card whose `supersedes:` link names a memo the caller may not read
+retires that memo's fact. Narrowing the
+conflict set to readable memos would let two callers hold contradicting facts, so it is left as
+documented rather than changed.
+
 The MCP request shape is `{claim: AtomicFact, evidence_card_ids: string[], request_id: string,
 writer: string}`. The response shape is `{allowed: boolean, decision_code: string, request_id:
 string, fact_id: string, retried: boolean, detail: string, event_id: string|null,

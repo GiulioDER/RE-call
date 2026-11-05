@@ -235,10 +235,21 @@ def test_rank_rejects_filler_before_reading_memo_tokens():
 
 
 def test_an_off_topic_prompt_injects_nothing(hook_env):
-    """A single coincidental word is not a hit; MIN_MATCHED_TOKENS is what says so."""
+    """A single coincidental word is not a hit; MIN_MATCHED_TOKENS is what says so.
+
+    The prompt must share exactly ONE word with the corpus. The earlier prompt shared none, so
+    `rank` returned [] before the threshold was consulted and the test stayed green with
+    `matched >= MIN_MATCHED_TOKENS` mutated to `matched >= 1`. Red proof, 2026-11-05: with that
+    mutation in `prompt_time.rank` this test fails on the final assertion; restored, it passes.
+    """
 
     store = make_store(hook_env, CORPUS)
-    assert prompt_time.rank(prompt_time.load_memos(store), "book a restaurant near the station") == []
+    memos = prompt_time.load_memos(store)
+    prompt = "book a table near the workstation tonight"
+    vocabulary = {token for _, _, tokens in memos for token in tokens}
+    shared = set(prompt_time.tokenize(prompt)) & vocabulary
+    assert len(shared) == 1, f"the prompt must share exactly one corpus word, shares {shared}"
+    assert prompt_time.rank(memos, prompt) == []
 
 
 # --------------------------------------------------------------------------------------

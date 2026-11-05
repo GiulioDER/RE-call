@@ -20,13 +20,14 @@ from __future__ import annotations
 import hashlib
 import threading
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import MappingProxyType
-from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Protocol, cast, get_args
 
 from recall import eval_clock
+from recall.observability import get_logger
 from recall.supersession import reference_path_key, reference_stem_key
 from recall.types import (
     AtomicFact,
@@ -472,6 +473,8 @@ def evidence_card_from_payload(payload: Mapping[str, Any]) -> EvidenceCard:
     )
 
 
+_log = get_logger("provenance")
+
 #: The verdicts this release defines (`recall.types.Verdict`).
 KNOWN_VERDICTS: frozenset[str] = frozenset(get_args(Verdict))
 
@@ -479,13 +482,18 @@ KNOWN_VERDICTS: frozenset[str] = frozenset(get_args(Verdict))
 def stored_verdict(value: object) -> Verdict:
     """A stored card's verdict, as written.
 
-    A value this release does not define (a newer release's, or a typo) is declared unknown
-    (`verdict_known` says so) and kept, never refused: the card's id covers its verdict, so
-    rewriting it would make the stored card read as tampered, and raising lost every card of a
-    ledger read. Only `ok` is trusted for application (`EvidenceCard.trusted_for_application`),
-    so an unknown verdict never authorizes a fact (2026-11-04 owner decision, CODE-011).
+    A value this release does not define (a newer release's, or a typo) is declared unknown, in
+    a warning naming it, and kept, never refused: the card's id covers its verdict, so rewriting
+    it would make the stored card read as tampered, and raising lost every card of a ledger read.
+    Only `ok` is trusted for application (`EvidenceCard.trusted_for_application`), so an unknown
+    verdict never authorizes a fact (2026-11-04 owner decision, CODE-011). The return type is
+    `Verdict` because `EvidenceCard.verdict` is; a stored card is the one place it can hold
+    another value, which is why this is a cast and not a check (CODE-003).
     """
-    return cast(Verdict, str(value))
+    verdict = str(value)
+    if not verdict_known(verdict):
+        _log.warning("a stored evidence card has verdict %r, which this release does not define", verdict)
+    return cast(Verdict, verdict)
 
 
 def verdict_known(verdict: str) -> bool:
@@ -754,10 +762,24 @@ class ConflictHistoryLedger(Protocol):
 
 
 class ErasureLockLedger(Protocol):
-    """A ledger that orders applications against erasures (`PostgresFactLedger.erasure_lock`);
-    the controller holds it shared around every application, a forget holds it exclusively."""
+    """A ledger that orders applications against erasures (`PostgresFactLedger.erasure_lock`).
+
+    `apply_fact` holds it shared for each of its passes (the fresh search between them runs
+    without it), the stated reconcile holds it shared around its whole write, and a forget or
+    withdraw holds it exclusively. `apply_stated` takes none: its caller holds it, and a nested
+    PostgreSQL shared hold would queue behind a waiting forget and deadlock (DOC-005)."""
 
     def erasure_lock(self, *, shared: bool) -> AbstractContextManager[Any]: ...
+
+
+def erasure_lock_for(ledger: object, *, shared: bool) -> AbstractContextManager[Any]:
+    """`ledger`'s erasure lock (`ErasureLockLedger`), or nothing for a ledger without one.
+
+    The one check every holder uses: the controller, the stated reconcile and forget (CODE-002).
+    """
+    if callable(getattr(ledger, "erasure_lock", None)):
+        return cast(ErasureLockLedger, ledger).erasure_lock(shared=shared)
+    return nullcontext()
 
 
 class OutboxAssertionLedger(Protocol):
@@ -1453,9 +1475,7 @@ class ProvenanceController:
 
     def _erasure_lock(self) -> AbstractContextManager[Any]:
         """The ledger's application side of its erasure lock, or nothing for one without it."""
-        if callable(getattr(self.ledger, "erasure_lock", None)):
-            return cast(ErasureLockLedger, self.ledger).erasure_lock(shared=True)
-        return nullcontext()
+        return erasure_lock_for(self.ledger, shared=True)
 
     def apply_fact(self, request: FactApplicationRequest) -> ControllerDecision:
         """Validate and append one fact, with at most one deterministic fresh-search retry.
@@ -1516,6 +1536,15 @@ class ProvenanceController:
                 cards=(),
                 detail=type(exc).__name__,
             )
+        if prior is not None and not all(self._permitted(card) for card in prior.evidence_cards):
+            # The request id's recorded event cites a memo this caller may not read: answered as
+            # a card the caller cannot see, with no event and nothing recorded, whatever fact
+            # the request names. Answered by the branches below, the event's id (a hash of
+            # tenant, fact and request id) let a caller who knew a request id test which fact
+            # it applied, offline or by which refusal came back, and the refusal replay handed
+            # over another principal's refusal event (2026-11-05 deferred pass, SEC-002). A
+            # recorded refusal that cites no card passes this check and is replayed to anyone.
+            return self._decision(request, DecisionCode.CARD_NOT_FOUND)
         if prior is not None and prior.fact_id != fact_identity(request.claim):
             # Another fact under a used id. Answering with the prior decision named the new fact
             # allowed and recorded nothing; the same fact on other cards is refused by the ledger,
@@ -1531,14 +1560,13 @@ class ProvenanceController:
             return self._decision(
                 request,
                 _decision_code(prior.decision_code),
-                cards=tuple(card for card in prior.evidence_cards if self._permitted(card)),
+                cards=prior.evidence_cards,
                 event=prior,
             )
         if (
             prior is not None
             and prior.event_type == "asserted"
             and {card.card_id for card in prior.evidence_cards} == set(request.evidence_card_ids)
-            and all(self._permitted(card) for card in prior.evidence_cards)
         ):
             # The request sent again (`replays_request`): answered with the event it recorded, as
             # every ledger answers it. Validated afresh, a retry after a later value superseded

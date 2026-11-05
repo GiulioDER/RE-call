@@ -261,6 +261,8 @@ with hit as (
            h.value->>'verdict' as verdict
     from recall_audit_events e, jsonb_array_elements(e.payload->'hits') with ordinality h
     where e.tenant_id = %s and e.event_type = 'search_decision'
+      and (%s::text is null or (e.payload->'hits' @> jsonb_build_array(jsonb_build_object('source', %s::text))
+                                and h.value->>'source' = %s))
 ), per_search as (
     select event_id, source, min(rank) as rank, max(created_at) as at,
            bool_or(verdict = 'superseded') as superseded, bool_or(verdict = 'low_confidence') as low,
@@ -276,12 +278,12 @@ _REPORTED = """
 select m.value #>> '{}' as source, %s::text as role, e.payload->>'effect' as effect,
        e.payload->>'task_succeeded' as succeeded, count(*), max(e.created_at)
 from recall_audit_events e, jsonb_array_elements(e.payload->(%s::text)) m
-where e.tenant_id = %s and e.event_type = 'use_report'
+where e.tenant_id = %s and e.event_type = 'use_report' and (%s::text is null or m.value #>> '{}' = %s)
 group by 1, 2, 3, 4
 """
 
 
-def control(db: DashboardDB, tenant: str, *, retrievals: bool = True) -> dict[str, Any]:
+def control(db: DashboardDB, tenant: str, *, retrievals: bool = True, source: str | None = None) -> dict[str, Any]:
     """Per memory: how often search returned it, and what agents reported it did for their task.
 
     Retrieval comes from the decision ledger; "used", "wrong" and "helped" come only from
@@ -290,11 +292,14 @@ def control(db: DashboardDB, tenant: str, *, retrievals: bool = True) -> dict[st
 
     `retrievals=False` skips the per-memory retrieval counts, which expand every recorded
     search's hits: a caller that shows only the summary and the reports pays nothing for them.
+    `source` keeps only that memory in `memos`, so the page for one memory expands only the
+    searches that returned it. The summary's search and report counts stay tenant-wide, but its
+    `memos_retrieved` counts only the kept memory.
     """
     if db.lite:
         from recall.dashboard import lite_db
 
-        return lite_db.control(db.dsn, tenant, retrievals=retrievals)
+        return lite_db.control(db.dsn, tenant, retrievals=retrievals, source=source)
     memos: dict[str, dict[str, Any]] = {}
 
     def memo(source: str) -> dict[str, Any]:
@@ -305,12 +310,12 @@ def control(db: DashboardDB, tenant: str, *, retrievals: bool = True) -> dict[st
         })
 
     with db.connect(tenant) as c:
-        for source, n, first, last, ok, superseded, low in (c.execute(_RETRIEVALS, (tenant,)).fetchall() if retrievals else ()):
-            row = memo(source)
+        for found, n, first, last, ok, superseded, low in (c.execute(_RETRIEVALS, (tenant, source, source, source)).fetchall() if retrievals else ()):
+            row = memo(found)
             row.update(retrieved=n, first=first, last_retrieved=last, ok=ok, superseded=superseded, low_confidence=low)
         for role in ("used", "wrong"):
-            for source, _, effect, succeeded, n, last in c.execute(_REPORTED, (role, role, tenant)).fetchall():
-                row = memo(source)
+            for found, _, effect, succeeded, n, last in c.execute(_REPORTED, (role, role, tenant, source, source)).fetchall():
+                row = memo(found)
                 row[role] += n
                 if role == "used" and effect in ("helped", "no_difference"):
                     row[effect] += n

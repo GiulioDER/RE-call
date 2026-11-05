@@ -52,6 +52,21 @@ installers write everything else into the hook config file (`recall-hook.json`).
 | `CLAUDE_PID` | set by Claude Code | The client process whose MCP transports SessionEnd closes. |
 | `RECALL_MCP_CLIENT`, `RECALL_MCP_SESSION_ID` | set by `scripts/session-mcp.sh` | MCP transport identity markers SessionEnd uses when no client pid is available. |
 
+Two keys of the hook config file decide where the hooks act, and both are absolute paths:
+
+- `project_root`: the one project the hooks serve. Write-time retrieval, the local memory index
+  and the hosted sync all refuse an event whose working directory is outside it, and a config
+  without it serves none (in hosted mode SessionStart says so). The local installers write it;
+  a hosted config needs it added by hand, or its sync stops.
+- `memory_root`: an override for the client's project memory store, read by the prompt-time
+  hook and by the index and sync path alike. `prompt_time.store` is its deprecated alias, used
+  only when `memory_root` is unset. A store that is itself a symbolic link or a junction is
+  refused either way.
+
+A general knowledge entry scoped `project:<name>` matches the origin remote's `owner/name`
+(for example `project:GiulioDER/RE-call`, spelled exactly as the remote is). A checkout with no origin
+remote is matched by its folder name instead.
+
 Test seams, never for a real environment: `RECALL_MCP_PS_FILE` (a process table read from a
 file) and `RECALL_MCP_KILL_FILE` (a log written instead of a kill, with `RECALL_MCP_KILL_RC` as
 its result) are honoured only together, and `RECALL_MCP_PATTERN` (which command lines count as

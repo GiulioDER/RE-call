@@ -444,6 +444,16 @@ honoured at read time by **demoting** an expired memory, not deleting it, so the
 tell you a memory is stale and show it to you anyway. If your corpus contains personal data, you
 are responsible for deciding *when* to erase; this provides the mechanisms, not the schedule.
 
+**Applying a fact reveals one bit about memos the caller may not read.** `recall_apply_fact`
+checks that the caller may read every card it cites, but judges contradiction and supersession
+against the tenant's whole fact history. A caller who holds a readable card supporting a guessed
+value can therefore learn, from `CONTRADICTION_WITHOUT_SUPERSESSION` or `DUPLICATE`, whether a
+memo outside their policy states another value for the same subject and predicate, or the same
+one. Supersession is judged on the same history, so a readable memo whose `supersedes:` link names
+a memo outside the caller's policy retires that memo's fact. Restricting the conflict set to readable memos would let differently cleared callers record
+contradicting facts, so the trade is documented rather than made
+(`docs/PROVENANCE_CONTROLLER.md`).
+
 ## Reporting a vulnerability
 
 Please report privately via **[GitHub Security Advisories](https://github.com/GiulioDER/RE-call/security/advisories/new)**

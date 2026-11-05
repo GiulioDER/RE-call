@@ -231,7 +231,10 @@ def settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
         "enabled": block.get("enabled", True) is True,
         "k": int(block.get("k", TOP_K)),
         "min_chars": int(block.get("min_chars", MIN_PROMPT_CHARS)),
-        "store": str(block.get("store", "")),
+        # The top-level `memory_root` is THE store override, read by the sync and index path
+        # too, so the prompt hook and SessionEnd can never disagree about which store they mean.
+        # `prompt_time.store` is its deprecated alias, honoured only when `memory_root` is unset.
+        "store": str(config.get("memory_root") or block.get("store", "")),
     }
 
 
@@ -300,7 +303,14 @@ def find_store(cwd: str, override: str = "") -> Path | None:
 
     if override:
         candidate = Path(override).expanduser()
-        return candidate if candidate.is_dir() else None
+        # A linked override redirects the whole store, as a linked default would; both refuse it.
+        try:
+            linked = candidate.is_symlink() or os.path.normcase(str(candidate.resolve())) != os.path.normcase(
+                str(candidate.parent.resolve() / candidate.name)
+            )
+        except OSError:
+            return None
+        return candidate if candidate.is_dir() and not linked else None
     if not cwd:
         return None
     projects = project_config_home() / "projects"

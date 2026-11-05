@@ -861,7 +861,7 @@ class DashboardApp:
             return self._not_connected("RE-call · one memory", "control", "One memory")
         tenant = self._current_tenant()
         try:
-            data = dbq.control(self.db, tenant)
+            data = dbq.control(self.db, tenant, source=source)
             reports = dbq.use_reports(self.db, tenant, limit=100, source=source)
         except dbq.DatabaseUnavailable as exc:
             return self._not_connected("RE-call · one memory", "control", "One memory", detail=str(exc))

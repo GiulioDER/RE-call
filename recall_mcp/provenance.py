@@ -115,6 +115,27 @@ def _read_generation(store: PgVectorStore) -> Iterator[str | None]:
     yield identity
 
 
+def _require_access_context(
+    store: PgVectorStore,
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> None:
+    """Refuse a policy-governed fact call whose access context does not name the store's tenant."""
+    if security_policy is None:
+        return
+    if access_context is None or access_context.tenant != store.tenant:
+        raise PermissionError("a matching source access context is required for facts")
+
+
+def _readable_whole(policy: SourceSecurityPolicy, context: AccessContext, name: str) -> bool:
+    """Whether the caller may read memo `name` whole: allowed, with no redaction. Structured
+    values cannot safely be projected through a text redaction rule, so a redacted memo neither
+    lists nor supports a fact (one rule for applying and listing, 2026-11-05 deferred pass,
+    CODE-005)."""
+    decision = policy.decide(name, context)
+    return decision.allowed and not decision.redactions
+
+
 def apply_fact_memory(
     store: PgVectorStore,
     embedder: Embedder,
@@ -127,7 +148,12 @@ def apply_fact_memory(
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
 ) -> dict[str, object]:
-    """Apply one structured fact through the external provenance controller."""
+    """Apply one structured fact through the external provenance controller.
+
+    With a source policy the caller's access context must name this store's tenant, as for
+    `current_facts_memory`, or the call raises `PermissionError` before anything is read; a card
+    is then the caller's to cite only when its memo is readable whole (`_readable_whole`)."""
+    _require_access_context(store, security_policy, access_context)
     fact = AtomicFact.from_payload(dict(claim))
     request = FactApplicationRequest(fact, tuple(evidence_card_ids), request_id)
     ledger, card_store = _fact_backends(store)
@@ -219,15 +245,11 @@ def apply_fact_memory(
 
     card_permitted = None
     if security_policy is not None:
+        assert access_context is not None
         source_policy, context = security_policy, access_context
 
         def card_permitted(card: EvidenceCard) -> bool:
-            # The rule `current_facts_memory` lists by: a card is the caller's to cite only when
-            # its memo is readable whole, with no redaction.
-            if context is None or context.tenant != store.tenant:
-                return False
-            decision = source_policy.decide(card.source, context)
-            return decision.allowed and not decision.redactions
+            return _readable_whole(source_policy, context, card.source)
 
     with _applied_generation(store) as generation_id:
         controller = ProvenanceController(
@@ -276,9 +298,7 @@ def current_facts_memory(
     check lists no stated fact), or `unchecked` for a store with no lookup, read as the ledger
     alone. Added for review of PR 946, so a client can tell a quiet answer from an incomplete one.
     """
-    if security_policy is not None:
-        if access_context is None or access_context.tenant != store.tenant:
-            raise PermissionError("a matching source access context is required for current facts")
+    _require_access_context(store, security_policy, access_context)
     instant = as_of or eval_clock.now() or datetime.now(UTC)
     failures: list[str] = []
     with _read_generation(store) as generation_id:
@@ -293,9 +313,7 @@ def current_facts_memory(
         policy, context = security_policy, access_context
 
         def permitted(name: str) -> bool:
-            decision = policy.decide(name, context)
-            # Structured values cannot safely be projected through a text redaction rule.
-            return decision.allowed and not decision.redactions
+            return _readable_whole(policy, context, name)
 
     return {
         "tenant_id": store.tenant,

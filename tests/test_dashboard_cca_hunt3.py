@@ -74,6 +74,26 @@ def test_stakes003_an_accept_is_recorded_as_an_edit_and_can_be_undone(reported: 
     assert (reported / "new.md").read_bytes() == before
 
 
+def test_an_accept_writes_only_over_the_bytes_the_reviewer_saw(reported: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The digest check ran before the plan and the dry run; the bytes written over were read after.
+
+    A hand edit landing between the two was written over unseen. Here the check is made to pass
+    for the version the reviewer saw while the file already holds a later one. Red proof,
+    2026-11-05: `recall.dashboard.review._record_accept` without its `sha256(before)` comparison
+    wrote the accept (DID NOT RAISE ReviewRefused).
+    """
+    (item,) = review.build_queue(reported).items
+    name = review.preview(reported, item, NOW).edit_file
+    shown = review.memo_digest(reported, name)
+    later = (reported / name).read_bytes() + b"\nA line written by hand after the review.\n"
+    (reported / name).write_bytes(later)
+    monkeypatch.setattr(review, "memo_digest", lambda root, memo: shown)  # the check saw the old version
+    with pytest.raises(review.ReviewRefused, match="changed since you reviewed it"):
+        review.accept(reported, item, reviewer="ana", note="published", shown_digest=shown, now=NOW)
+    assert (reported / name).read_bytes() == later, "the accept wrote over bytes the reviewer never saw"
+    assert not edit.history(reported, name)
+
+
 def test_stakes008_showing_a_warning_again_is_a_recorded_named_decision(tmp_path: Path) -> None:
     """STAKES-008: restore deleted a recorded dismissal with no name and no trace, and a no-op said done."""
     ledger = triage.DismissalLedger(triage.default_dismissal_path(tmp_path))

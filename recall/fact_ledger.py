@@ -927,9 +927,12 @@ class PostgresFactLedger:
             # application works on other connections: a server's idle-session timeout would end it
             # and release the lock unseen (2026-11-04 audit, ENV-001; `recall.index_lock` does
             # the same for its own lock).
-            conn.execute("SET idle_session_timeout = 0")
-            conn.execute(f"SET lock_timeout = {int(ERASURE_LOCK_WAIT_S * 1000)}")
-            conn.execute(f"SET statement_timeout = {int(ERASURE_LOCK_WAIT_S * 1000) + 1000}")
+            # One round trip for the three (2026-11-05 deferred pass, PERF-004).
+            conn.execute(
+                "SET idle_session_timeout = 0; "
+                f"SET lock_timeout = {int(ERASURE_LOCK_WAIT_S * 1000)}; "
+                f"SET statement_timeout = {int(ERASURE_LOCK_WAIT_S * 1000) + 1000}"
+            )
             function = "pg_advisory_lock_shared" if shared else "pg_advisory_lock"
             conn.execute(
                 f"SELECT {function}(hashtextextended(%s, 0))", (fact_erasure_lock(self.tenant_id),)

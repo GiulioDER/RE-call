@@ -24,7 +24,10 @@ import recall_hooks
 from recall_hooks import credentials as cred
 from recall_hooks import hosted
 
-HOSTED = {"endpoint": "https://mcp.example.test/mcp", "tenant": "t", "account": "a@example.test"}
+# `project_root` since the 2026-11-04 owner decision (STAKES-004): hosted sync is bound to it,
+# and SessionStart warns when a hosted config names none.
+HOSTED = {"endpoint": "https://mcp.example.test/mcp", "tenant": "t", "account": "a@example.test",
+          "project_root": "/hosted-fixture-project"}
 
 # Split inside the vendor prefix so no literal in this file matches the screen; see
 # tests/test_hosted_screening.py for why.

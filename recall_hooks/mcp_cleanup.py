@@ -79,6 +79,13 @@ def _process_table() -> list[tuple[str, str, str]] | None:
     return [row for row in rows if seen[row[0]] == 1]
 
 
+def _same_invocation(parent_command: str, own_command: str) -> bool:
+    """Whether two command lines run the same arguments, whatever the executable that runs them."""
+    parent_args = parent_command.split(None, 1)[1:]
+    own_args = own_command.split(None, 1)[1:]
+    return bool(own_args) and parent_args == own_args
+
+
 def _descends_from(pid: str, want: str, parents: dict[str, str]) -> bool:
     hops = 0
     while hops < 8:
@@ -196,13 +203,28 @@ def close_own_mcp_transports(
     if rows is None:
         return "unknown", "could not read the process table; nothing was closed"
     parents = {pid: ppid for pid, ppid, _ in rows}
+    commands = {pid: command for pid, _ppid, command in rows}
     self_pid = str(os.getpid())
+    # A venv's Windows `python.exe` is a launcher that runs the real interpreter as its child, so
+    # the hook's parent can be that launcher rather than the client (owner decision, 2026-11-04):
+    # nothing descends from it, and cleanup used to close nothing. A parent whose arguments are
+    # this process's own is the launcher; the client is ITS parent.
+    if client_pid and client_pid in commands and _same_invocation(commands[client_pid], commands.get(self_pid, "")):
+        client_pid = parents.get(client_pid, "")
+        if client_pid and not (client_pid.isdigit() and int(client_pid) > 1):
+            client_pid = ""
     ours: list[str] = []
     others = 0
     for pid, _ppid, command in rows:
         if not _is_mcp_transport(command) or _descends_from(pid, self_pid, parents):
             continue
         by_pid = bool(client_pid) and _descends_from(pid, client_pid, parents)
+        if by_pid and session_id:
+            # One client process can host several sessions: a transport marked with another
+            # session's ID is that session's, even though it descends from the same client.
+            marked = _SESSION_ID_RE.search(command)
+            if marked is not None and marked.group(1) != session_id:
+                by_pid = False
         by_mark = False
         if not client_pid and session_id:
             session_match = _SESSION_ID_RE.search(command)
