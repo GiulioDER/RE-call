@@ -243,6 +243,28 @@ def _setup_lite(args: argparse.Namespace) -> None:
 
     project_root = Path.cwd()
     memory = Path(args.memory or os.environ.get("RECALL_INDEX_ROOT") or project_root)
+    if not (args.memory or os.environ.get("RECALL_INDEX_ROOT")):
+        # The folder was defaulted to wherever the terminal happened to open, which on Windows is
+        # the home folder: setup would embed the whole profile, with no budget, as the memo store.
+        resolved = memory.resolve()
+        if resolved == Path.home().resolve() or resolved == Path(resolved.anchor):
+            raise SystemExit(
+                f"recall setup --lite would index all of {resolved}. Run it inside a project, "
+                "or pass --memory <folder of notes>."
+            )
+        from recall.index_budget import budget_from_env
+        from recall.lite.refresh import over_budget, snapshot
+
+        try:
+            refusal = over_budget(snapshot([resolved]), budget_from_env(os.environ))
+        except ValueError as exc:
+            raise SystemExit(f"recall setup --lite: {exc}") from exc
+        if refusal is not None:
+            print(
+                f"warning: {refusal.removesuffix(' Nothing was indexed.')} Setup indexes it "
+                "anyway, because you ran it; pass --memory <folder of notes> to index less.",
+                file=sys.stderr,
+            )
     try:
         embedder = _make_embedder(args.embedder)
     except SystemExit as exc:
@@ -642,6 +664,15 @@ def _cmd_wizard(args: argparse.Namespace) -> None:
                 require_secure_dsn(value)
             except PermissionError as exc:
                 raise SystemExit(f"the wizard config's {key} is refused: {exc}") from exc
+        # Before anything is written or started: a Microsoft Store Python indexes nothing and
+        # still reports success, and a missing Docker or Compose plugin otherwise fails only after
+        # the stack file exists. An existing database (`dsn`) needs no Docker.
+        from recall.wizard.probe import install_blockers
+
+        if found := install_blockers(needs_docker=wizard_config.data_root is not None):
+            raise SystemExit(
+                "recall wizard cannot install on this machine yet:\n- " + "\n- ".join(found)
+            )
         # Derived from the config path rather than required, so resumability is on by default
         # without a new mandatory key. `--no-state` opts out entirely; a run that cannot write
         # beside its config should say so rather than have the driver guess.

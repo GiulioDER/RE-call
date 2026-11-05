@@ -33,10 +33,16 @@ from typing import Any
 from recall.setup import HardwareProbe, probe_hardware
 from recall.wizard.stack import _no_current_directory_search
 
-#: `docker info` against a dead daemon can sit for a long time. Preflight is allowed to be wrong
-#: about Docker; it is not allowed to hang, so the probe is bounded and a timeout reads as "not
-#: running" rather than as an error.
-DOCKER_TIMEOUT_SECONDS = 8.0
+#: The bound on the Docker daemon probe. Preflight is allowed to be wrong about Docker; it is not
+#: allowed to hang, so a timeout reads as "not running" rather than as an error. Twenty seconds is
+#: `recall.quickstart`'s bound for the same `docker version` call, measured there 2026-08-25 at a
+#: median of 0.48s (slowest sample 3.53s); `docker info` took a median of 14.11s, spread 4.01s to
+#: 56.36s, so the old 8s bound reported a healthy, busy daemon as not running.
+DOCKER_TIMEOUT_SECONDS = 20.0
+
+#: The oldest Docker Compose the generated stack runs on: `up --wait` needs 2.1.1, and the
+#: top-level `name:` that `recall.wizard.stack.compose_document` writes needs 2.3.3.
+MIN_COMPOSE_VERSION = (2, 3, 3)
 
 #: Below this the install is refused rather than merely warned about: PostgreSQL in a container,
 #: an embedder and the OS do not coexist under it.
@@ -83,6 +89,12 @@ class SystemProbe:
     cuda_vram_bytes: int | None
     python_executable: str
     python_is_store_build: bool
+    #: The Docker Compose v2 plugin's version, or None when it could not be read. Only probed
+    #: when the daemon answered, since Compose cannot be asked anything without it.
+    docker_compose_version: tuple[int, int, int] | None = None
+    #: True only when `docker compose` positively failed (the plugin is absent). An unreadable
+    #: answer (a timeout, unexpected output) stays False, because unknown is never a blocker.
+    docker_compose_missing: bool = False
 
 
 def _torch() -> Any | None:
@@ -214,8 +226,32 @@ def probe_docker() -> tuple[bool, bool]:
             return False, False
     except Exception:  # BROAD-CATCH: fail-open
         return False, False
-    result = _run(["docker", "info", "--format", "{{.ServerVersion}}"], DOCKER_TIMEOUT_SECONDS)
+    # `version`, not `info`: one round trip to the daemon rather than a whole system inventory,
+    # whose cost grows with what is on the machine. See DOCKER_TIMEOUT_SECONDS.
+    result = _run(["docker", "version", "--format", "{{.Server.Version}}"], DOCKER_TIMEOUT_SECONDS)
     return True, bool(result and result.returncode == 0)
+
+
+def probe_compose() -> tuple[bool, tuple[int, int, int] | None]:
+    """`(missing, version)` for the Docker Compose v2 plugin. Never raises.
+
+    `missing` is True only when `docker compose` ran and failed, which is what an absent plugin
+    does; a Linux Docker Engine from distro packages often ships without it, and `docker compose`
+    then fails only after the stack file is written. A timeout or an answer that does not parse
+    is unknown: `(False, None)`. The version is the leading `major.minor.patch`, so `v2.29.7`,
+    `2.29.7-desktop.1` and Ubuntu's `2.24.6+ds1-0ubuntu1~22.04.1` all read.
+    """
+    import re
+
+    result = _run(["docker", "compose", "version", "--short"], DOCKER_TIMEOUT_SECONDS)
+    if result is None:
+        return False, None
+    if result.returncode != 0:
+        return True, None
+    match = re.match(r"v?(\d+)\.(\d+)\.(\d+)", (result.stdout or "").strip())
+    if match is None:
+        return False, None
+    return False, (int(match[1]), int(match[2]), int(match[3]))
 
 
 def probe_wsl2() -> bool | None:
@@ -370,10 +406,17 @@ def probe_system(path: Path | None = None) -> SystemProbe:
         cuda_vram_bytes=probe_cuda_vram(),
         python_executable=executable,
         python_is_store_build=probe_store_python(),
+        **_compose_fields(docker_running),
     )
 
 
-def blockers(system: SystemProbe) -> list[str]:
+def _compose_fields(docker_running: bool) -> dict[str, Any]:
+    """The two `SystemProbe` Compose fields, probed only when the daemon answered."""
+    missing, version = probe_compose() if docker_running else (False, None)
+    return {"docker_compose_missing": missing, "docker_compose_version": version}
+
+
+def blockers(system: SystemProbe, *, needs_docker: bool = True) -> list[str]:
     """Every condition that would stop the install, each naming its own remedy.
 
     Reports all of them rather than the first. `_why_unavailable` in `recall/setup.py` exists
@@ -382,7 +425,9 @@ def blockers(system: SystemProbe) -> list[str]:
     fixed before the install rather than during it.
 
     An unknown value is never a blocker. Refusing to install because a probe could not read
-    `systeminfo` would fail closed on a diagnostic.
+    `systeminfo` would fail closed on a diagnostic. `needs_docker=False` is an install against an
+    existing database (`dsn`), which runs no container, so the Docker, Compose and virtualization
+    conditions do not apply to it.
     """
     found: list[str] = []
     # The same reporting slack as `heavy_local_models_are_feasible`, so a machine sold with 4 GB,
@@ -397,15 +442,32 @@ def blockers(system: SystemProbe) -> list[str]:
             f"This machine reports {gib:.1f} GiB of memory, below the {MIN_RAM_BYTES // 1024**3} GiB "
             "needed to run PostgreSQL and an embedding model together."
         )
-    if not system.docker_installed:
+    if needs_docker and not system.docker_installed:
         found.append(
             "Docker was not found. RE-call stores its index in PostgreSQL with pgvector, which "
             "the installer runs as a container."
         )
-    elif not system.docker_running:
+    elif needs_docker and not system.docker_running:
         found.append(
             "Docker is installed but its daemon is not responding. Installing Docker Desktop does "
             "not start it: launch it once and let it finish starting."
+        )
+    elif needs_docker and (
+        system.docker_compose_missing
+        or (
+            system.docker_compose_version is not None
+            and system.docker_compose_version < MIN_COMPOSE_VERSION
+        )
+    ):
+        found_version = (
+            "it is missing"
+            if system.docker_compose_version is None
+            else "this machine has " + ".".join(map(str, system.docker_compose_version))
+        )
+        found.append(
+            "The Docker Compose v2 plugin, 2.3.3 or newer, is needed to run the database "
+            f"({found_version}). On Linux install `docker-compose-plugin`; otherwise update "
+            "Docker Desktop."
         )
     if system.python_is_store_build:
         found.append(
@@ -413,9 +475,51 @@ def blockers(system: SystemProbe) -> list[str]:
             "sandboxes file paths, so indexing a folder finds nothing and still reports success. "
             "Install Python from python.org instead."
         )
-    if system.virtualization_enabled is False:
+    if needs_docker and system.virtualization_enabled is False:
         found.append(
             "Hardware virtualization is disabled in firmware. Docker Desktop cannot start "
             "without it; enable VT-x/AMD-V in the BIOS."
         )
     return found
+
+
+def install_blockers(*, needs_docker: bool) -> list[str]:
+    """`blockers` for an install about to start, probing only what those conditions read.
+
+    `probe_system` also reads the GPU (importing torch) and the network through `probe_hardware`,
+    which the conditions above never look at, so a preflight run before every install asks only
+    the questions it acts on. Never raises.
+    """
+    total, available = probe_ram()
+    docker_installed, docker_running = probe_docker() if needs_docker else (False, False)
+    try:
+        executable = sys.executable or ""
+    except Exception:  # BROAD-CATCH: fail-open
+        executable = ""
+    system = SystemProbe(
+        hardware=HardwareProbe(
+            cpu_count=os.cpu_count(),
+            gpu=None,
+            cuda_available=False,
+            free_bytes=0,
+            internet=False,
+            fastembed_available=False,
+            sentence_transformers_available=False,
+            total_ram_bytes=total,
+        ),
+        total_ram_bytes=total,
+        available_ram_bytes=available,
+        docker_installed=docker_installed,
+        docker_running=docker_running,
+        wsl2_available=None,
+        virtualization_enabled=(
+            probe_virtualization(docker_running=docker_running)
+            if needs_docker and docker_installed
+            else None
+        ),
+        cuda_vram_bytes=None,
+        python_executable=executable,
+        python_is_store_build=probe_store_python(),
+        **_compose_fields(docker_running),
+    )
+    return blockers(system, needs_docker=needs_docker)

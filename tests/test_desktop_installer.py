@@ -372,7 +372,9 @@ def test_the_engine_is_handed_the_file_rather_than_the_dict(
 
     source = inspect.getsource(_default_runner)
     assert "load_config(path)" in source, "the engine must read back the file that was written"
-    assert "run_headless(load_config(path)" in source
+    # Read back into `loaded` so the preflight can see it before the install runs (owner
+    # decision DEPLOY-004, 2026-11-05); the engine is still handed what `load_config` returned.
+    assert "loaded = load_config(path)" in source and "run_headless(loaded" in source
 
 
 def test_the_written_config_is_one_the_engine_actually_loads(

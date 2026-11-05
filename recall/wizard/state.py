@@ -29,6 +29,7 @@ the skip saves.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -76,6 +77,11 @@ def config_digest(config: HeadlessConfig) -> str:
     for name in DIGEST_FIELDS:
         value = getattr(config, name)
         payload[name] = value.as_posix() if isinstance(value, Path) else value
+    # `RECALL_EMBED_PROFILE` takes precedence over the configured embedder when it is set, so a run
+    # under another profile built different vectors. Added only when set, so the digest of every
+    # existing run without one is unchanged and its state stays resumable.
+    if profile := os.environ.get("RECALL_EMBED_PROFILE", "").strip():
+        payload["embed_profile"] = profile
     return canonical_sha256(payload)
 
 

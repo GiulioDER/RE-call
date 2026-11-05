@@ -34,34 +34,6 @@ __all__ = ["LiteSetupReport", "SERVER_NAME", "default_store_path", "lite_dsn", "
 SERVER_NAME = "recall-memory"
 
 
-#: What the server needs from the OS when a client starts it with ONLY its registered `env`, which
-#: some clients do: without APPDATA, Python cannot find the
-#: user site-packages ("No module named 'anyio'"); without SystemRoot, Windows sockets fail
-#: (WinError 10106); the temp, cache and home variables are where an embedding model and the
-#: embedding cache live. Measured 2026-10-08 by starting the registered server with exactly this env
-#: and listing its tools. PATH is deliberately NOT here: the server runs no programs, and a PATH
-#: frozen at setup time would go stale. Claude Code 2.1.238 and 2.1.293 were measured that day to
-#: merge the block over their own environment; the replacement demonstration used a direct
-#: process started with only the registered environment. Keep passthrough as insurance.
-SERVER_OS_ENV = (
-    "APPDATA", "LOCALAPPDATA", "SystemRoot", "TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
-    "HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
-)
-
-
-def server_os_env() -> dict[str, str]:
-    """The variables in `SERVER_OS_ENV` that are set here, plus PYTHONSAFEPATH.
-
-    PYTHONSAFEPATH=1 keeps the session's working directory off `sys.path`: a client starts the
-    server in the session's directory, and a project that holds its own `recall/` package would
-    otherwise shadow the installed one.
-    """
-    import os
-
-    found = {name: os.environ[name] for name in SERVER_OS_ENV if os.environ.get(name)}
-    return {**found, "PYTHONSAFEPATH": "1"}
-
-
 def default_store_path(project_root: Path) -> Path:
     return project_root / ".recall" / "memory.db"
 
@@ -257,10 +229,7 @@ def run_lite_setup(
         block = ServerBlock(
             name=SERVER_NAME,
             tenant="default",
-            env={
-                **server_os_env(),
-                **local_env,
-            },
+            env=dict(local_env),
             rationale="a lite store: one SQLite file in this project, calibrated by indexing",
         )
         report.registration = register_local_scope(
