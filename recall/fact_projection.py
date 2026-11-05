@@ -1,4 +1,9 @@
-"""Pure projections over a fact ledger's history: retraction, withdrawal and supersession.
+"""What a fact ledger's history says, computed without the ledger or the controller.
+
+It holds the request-id forms the ledger mints for its own events (`reserved_request_id`),
+retraction and withdrawal (`applications`, `retracted_keys`, `withdrawn_event_ids`), validity
+windows and the interval helpers (`fact_window`), the supersession index (`fact_supersession`),
+the write-ordering helper `ordered_after` and the conflict-key hash `fact_conflict_key`.
 
 Moved verbatim out of `recall.provenance_controller`, which re-exports every name, so both
 import paths give the same objects. It imports the event vocabulary (`recall.fact_events`) and
