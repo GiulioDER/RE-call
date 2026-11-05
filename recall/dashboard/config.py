@@ -85,7 +85,7 @@ def _run(argv: list[str], stdin: str | None = None) -> dict[str, Any]:
 
 def local_report() -> dict[str, Any]:
     """The configuration of this machine's environment, as the `recall` CLI here would see it."""
-    return _run([sys.executable, "-m", REPORT_MODULE, "--json"])
+    return _run([sys.executable, "-P", "-m", REPORT_MODULE, "--json"])
 
 
 def launcher_of(argv: list[str]) -> str | None:
@@ -112,7 +112,7 @@ def server_report(server: RegisteredServer) -> dict[str, Any]:
     args = server.entry.get("args")
     argv = [str(server.entry.get("command", ""))] + ([str(a) for a in args] if isinstance(args, list) else [])
     payload = json.dumps({"env": dict(env) if isinstance(env, Mapping) else {}, "argv": argv})
-    report = _run([sys.executable, "-m", REPORT_MODULE, "--json", "--env-from-stdin"], stdin=payload)
+    report = _run([sys.executable, "-P", "-m", REPORT_MODULE, "--json", "--env-from-stdin"], stdin=payload)
     report["launched_through"] = launcher_of(argv)
     return report
 

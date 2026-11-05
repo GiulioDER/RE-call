@@ -3750,6 +3750,11 @@ def build_server(settings: Settings | None = None) -> MCPServer:
 
 
 def main() -> None:
+    from recall._env import refuse_current_directory_executables
+
+    # Launched by the client in the session's directory, a repository nobody here wrote, and the
+    # indexer runs `git` there by bare name.
+    refuse_current_directory_executables()
     settings = bootstrap_settings()
     environment = settings.env
     # stderr only, and propagate=False — stdout carries JSON-RPC, so a stray log line there

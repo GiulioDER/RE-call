@@ -17,6 +17,9 @@ def _config_path() -> Path:
 
 
 def main() -> int:
+    from recall._env import refuse_current_directory_executables
+
+    refuse_current_directory_executables()
     path = _config_path()
     try:
         document = json.loads(path.read_text(encoding="utf-8"))

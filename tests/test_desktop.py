@@ -1486,7 +1486,7 @@ def test_the_server_is_launched_with_an_absolute_interpreter() -> None:
     assert command is not None
     assert command[0] == sys.executable
     assert Path(command[0]).is_absolute()
-    assert command[1:] == ["-m", "recall_mcp.server"]
+    assert command[1:] == ["-P", "-m", "recall_mcp.server"]
 
 
 def test_the_trust_variables_are_left_to_the_install_not_asserted_by_the_runtime() -> None:

@@ -1,0 +1,30 @@
+id: python-module-run-with-safe-path
+language: python
+severity: error
+files:
+  - recall/**/*.py
+  - recall_mcp/**/*.py
+  - recall_hooks/**/*.py
+  - recall_aml/**/*.py
+  - recall_agent/**/*.py
+  - recall_interop/**/*.py
+  - recall_consistency/**/*.py
+message: A `python -m` launch must pass -P (or -I), so a package of the same name in the working directory cannot shadow the installed one.
+note: |
+  `python -m pkg` puts the working directory first on sys.path. A hook or server is started in
+  the session's directory, which may be a repository nobody here wrote, so a `recall_hooks/` or
+  `recall_mcp/` folder there runs instead of the installed package. CCA confirmed this shape as
+  a P1 four times in RE-call (2026-11-04). When the launch is safe another way (PYTHONSAFEPATH=1
+  in its environment, or a container whose working directory is the image's own), put
+  `# ast-grep-ignore: python-module-run-with-safe-path` on the line above, beside a comment
+  that says which.
+rule:
+  kind: list
+  all:
+    - has:
+        kind: string
+        regex: '^["'']-m["'']$'
+    - not:
+        has:
+          kind: string
+          regex: '^["'']-[PI]["'']$'

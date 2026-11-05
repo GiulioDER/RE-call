@@ -197,7 +197,7 @@ def run_application_smoke(
         token_file = Path(directory) / "tokens.json"
         environment = _smoke_environment(dsn, tenant, token_file, port, token)
         process = subprocess.Popen(
-            [sys.executable, "-m", "recall_mcp.server"],
+            [sys.executable, "-P", "-m", "recall_mcp.server"],
             env=environment,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

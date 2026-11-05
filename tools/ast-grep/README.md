@@ -13,6 +13,7 @@ ast-grep scan          # the tree; exits 1 on an error-level match
 |---|---|
 | `no-secret-valued-cli-flag` | no CLI flag takes a key, token, secret or password as its value; name the environment variable instead (`--api-key-env`) |
 | `benchmark-indexer-without-cache` | no `Indexer` in `benchmarks/` gets the embedding cache unless a suppression says why |
+| `python-module-run-with-safe-path` | in the production packages, a `python -m` launch passes `-P` or `-I`, so the working directory cannot shadow the installed package |
 
 ## Adding a rule
 
@@ -35,3 +36,8 @@ belongs in a Python checker under `scripts/`.
 - `benchmark-indexer-without-cache`: dropping the `cache=None` exemption failed the valid case
   (`[Noisy]`); deleting the suppression in `benchmarks/ladder/systems/recall_system.py` made
   `scan` exit 1.
+
+## Red proof for `python-module-run-with-safe-path` (2026-11-05, ast-grep 0.51.0)
+
+- Narrowing the safe flag from `-[PI]` to `-P` made the `-I` valid case fail (`[Noisy]`).
+- Removing `-P` from `recall/desktop/runtime.py`'s MCP server launch made `scan` exit 1 there.

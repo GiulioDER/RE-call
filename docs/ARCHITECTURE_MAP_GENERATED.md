@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 357
-Cross package edges: 378
+Cross package edges: 379
 
 ## Highest fan in modules
 
@@ -166,6 +166,7 @@ They are observations, not automatic failures.
 | `recall_mcp.auth` | `recall.observability` |
 | `recall_mcp.auth` | `recall.security_policy` |
 | `recall_mcp.auth` | `recall.store` |
+| `recall_mcp.codex_server` | `recall._env` |
 | `recall_mcp.config_report` | `recall.dsn_security` |
 | `recall_mcp.desktop_ingest` | `recall.calibration_v2` |
 | `recall_mcp.desktop_ingest` | `recall.embeddings` |
@@ -560,7 +561,7 @@ They are observations, not automatic failures.
 | `recall.desktop.github` | 3 | 5 |
 | `recall.desktop.install_ui` | 7 | 165 |
 | `recall.desktop.jobs` | 0 | 0 |
-| `recall.desktop.main` | 8 | 174 |
+| `recall.desktop.main` | 9 | 174 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
 | `recall.desktop.runtime` | 5 | 42 |
@@ -580,7 +581,7 @@ They are observations, not automatic failures.
 | `recall.embedding_providers.voyage` | 3 | 12 |
 | `recall.embedding_registry` | 3 | 12 |
 | `recall.embeddings` | 7 | 12 |
-| `recall.enterprise_cli` | 7 | 114 |
+| `recall.enterprise_cli` | 8 | 114 |
 | `recall.errors` | 0 | 0 |
 | `recall.eval` | 0 | 0 |
 | `recall.eval.__main__` | 3 | 121 |
@@ -810,7 +811,7 @@ They are observations, not automatic failures.
 | `recall_mcp` | 0 | 0 |
 | `recall_mcp.assistant` | 12 | 135 |
 | `recall_mcp.auth` | 4 | 38 |
-| `recall_mcp.codex_server` | 1 | 199 |
+| `recall_mcp.codex_server` | 2 | 199 |
 | `recall_mcp.compat` | 0 | 0 |
 | `recall_mcp.config_report` | 2 | 124 |
 | `recall_mcp.desktop_ingest` | 13 | 126 |

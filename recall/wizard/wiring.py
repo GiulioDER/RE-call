@@ -336,6 +336,8 @@ def mcp_config(
             block.name: {
                 "type": "stdio",
                 "command": interpreter or sys.executable,
+                # PYTHONSAFEPATH=1 in `server_os_env()` keeps the session's directory off sys.path.
+                # ast-grep-ignore: python-module-run-with-safe-path
                 "args": ["-m", "recall_mcp.server"],
                 "cwd": str(project_root),
                 "env": {**server_os_env(), **block.env},

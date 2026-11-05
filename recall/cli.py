@@ -5,7 +5,7 @@ import importlib
 import os
 import sys
 
-from recall._env import load_dotenv
+from recall._env import load_dotenv, refuse_current_directory_executables
 from recall.observability import configure_logging
 from recall.schema import (
     ConcurrentMigrator,
@@ -374,7 +374,7 @@ def main(argv: list[str] | None = None) -> None:
     # directory before PATH for such a name, so a `git.exe` committed at the root of a cloned
     # repository would run in place of git. This turns that search off for every child this
     # process starts, as `recall_hooks.main` does for the hooks; elsewhere it is inert.
-    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
+    refuse_current_directory_executables()
     try:
         _main(argv)
     except SchemaError as exc:
