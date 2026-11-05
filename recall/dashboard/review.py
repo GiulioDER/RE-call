@@ -543,12 +543,14 @@ def accept(root: Path, item: QueueItem, *, reviewer: str, note: str, shown_diges
             raise ReviewRefused(str(exc)) from exc
         if result.refusal is not None:
             raise ReviewRefused(f"not written: {result.refusal}")
-        _record_accept(root, edits, plan, reviewer=reviewer, note=note, now=now)
+        _record_accept(root, edits, plan, reviewer=reviewer, note=note, now=now, shown_digest=shown_digest)
         _close_report(root, item.claim, "accepted", reviewer, note, now)
         return plan
 
 
-def _record_accept(root: Path, edits: Any, plan: RewritePlan, *, reviewer: str, note: str, now: datetime) -> None:
+def _record_accept(
+    root: Path, edits: Any, plan: RewritePlan, *, reviewer: str, note: str, now: datetime, shown_digest: str
+) -> None:
     """Write the accepted declaration as a dashboard edit: recovery bytes first, then history.
 
     So an accept keeps who decided and why, the bytes before it, a line on the Activity page and
@@ -561,6 +563,10 @@ def _record_accept(root: Path, edits: Any, plan: RewritePlan, *, reviewer: str, 
     if path is None:
         raise ReviewRefused(f"{plan.edit_file!r} is not a memo in the corpus")
     before = path.read_bytes()
+    # The digest was compared before the plan and the dry run; a writer outside the dashboard
+    # could land in between, and these bytes are the ones the write builds on and records.
+    if hashlib.sha256(before).hexdigest() != shown_digest:
+        raise ReviewRefused(f"{plan.edit_file} changed since you reviewed it; review the new version")
     try:
         after = add_supersedes_target(before, plan.value)
     except (SupersedesDeclaresNothing, ValueError) as exc:

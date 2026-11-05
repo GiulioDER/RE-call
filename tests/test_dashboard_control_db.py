@@ -110,7 +110,8 @@ def test_control_for_one_memory_counts_only_it_and_counts_it_the_same(db: dbq.Da
 
     The one-memory page used to run the whole-tenant aggregate and keep one entry. Red proof: with
     the `source` filter dropped from `_RETRIEVALS` and `_REPORTED` (the arguments still passed and
-    ignored), the first assertion fails with A, B and C all returned.
+    ignored), the first assertion fails with A, B and C all returned. Observed 2026-11-05 on the test
+    host against a session database (PR 1202 had it green in CI only).
     """
     everything = {m["source"]: m for m in dbq.control(db, tenant)["memos"]}
     for source in (A, C):
