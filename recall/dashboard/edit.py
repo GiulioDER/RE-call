@@ -50,9 +50,7 @@ from recall.frontmatter import (
 )
 from recall.lint import (
     corpus_frontmatter,
-    describe_cycle,
-    supersession_cycle_closed_by,
-    supersession_graph_of,
+    cycle_refusal,
 )
 from recall.rewrite import RewriteRefused, derived_value, set_derived_status
 from recall.state_dir import make_parent
@@ -207,16 +205,16 @@ def _refuse_cycles(root: Path, path: Path, after: bytes, added: list[str]) -> No
     """
     if not added:
         return
+    own = path.relative_to(root).as_posix()
     documents: list[tuple[str, Mapping[str, object]]] = [
-        (other.name, meta) for other, meta in corpus_frontmatter(root) if other != path
+        (other.relative_to(root).as_posix(), meta) for other, meta in corpus_frontmatter(root) if other != path
     ]
     after_meta = dict(parse_document(after.decode("utf-8-sig", errors="replace")).meta)
-    documents.append((path.name, after_meta))
-    graph = supersession_graph_of(documents)
+    documents.append((own, after_meta))
     for target in added:
-        chain = supersession_cycle_closed_by(graph, path.name, target)
-        if chain is not None:
-            raise EditRefused(describe_cycle(path.name, target, chain))
+        refusal = cycle_refusal(documents, own, target)
+        if refusal is not None:
+            raise EditRefused(refusal)
 
 
 def _restored_targets(before: bytes, after: bytes) -> list[str]:

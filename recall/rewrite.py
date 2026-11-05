@@ -82,7 +82,7 @@ from recall.frontmatter import (
     writable_reference,
 )
 from recall.lineage import canonical_sha256
-from recall.lint import describe_cycle, supersession_cycle_closed_by, supersession_graph
+from recall.lint import corpus_documents, cycle_refusal
 from recall.observability import get_logger
 from recall.promotion import PromotedFact
 from recall.reasoning_proposals.types import InferenceProposal
@@ -747,12 +747,9 @@ def _refuse_cycle(root: Path, edit_file: str, value: str) -> None:
     so the plan a reviewer is shown already carries the refusal, rather than `recall lint`
     reporting the cycle after the write and search abstaining on every memo in it.
     """
-    chain = supersession_cycle_closed_by(supersession_graph(root), edit_file, value)
-    if chain is not None:
-        raise RewriteRefused(
-            "refusing to write: "
-            + describe_cycle(edit_file, value, chain)
-        )
+    refusal = cycle_refusal(corpus_documents(root), edit_file, value)
+    if refusal is not None:
+        raise RewriteRefused("refusing to write: " + refusal)
 
 
 def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:

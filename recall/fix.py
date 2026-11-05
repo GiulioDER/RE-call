@@ -60,10 +60,8 @@ from recall.lint import (
     DEFAULT_GLOB,
     SENTENCE_LOOKBACK,
     corpus_frontmatter,
-    describe_cycle,
     sentence_around,
-    supersession_cycle_closed_by,
-    supersession_graph_of,
+    cycle_refusal,
 )
 from recall.observability import get_logger
 from recall.errors import RecallError
@@ -576,13 +574,9 @@ def apply_proposal(root: Path, p: Proposal, *, glob: str = DEFAULT_GLOB) -> None
     # A tuple, not a set: the order fixes which chain a refusal names when two close the cycle.
     globs = (DEFAULT_GLOB,) if glob == DEFAULT_GLOB else (DEFAULT_GLOB, glob)
     documents = {f: meta for g in globs for f, meta in corpus_frontmatter(root, g)}
-    graph = supersession_graph_of((f.name, meta) for f, meta in documents.items())
-    chain = supersession_cycle_closed_by(graph, p.edit_file, p.target)
-    if chain is not None:
-        raise SupersessionCycle(
-            f"{p.edit_file} cannot declare supersedes: {p.target!r}: "
-            + describe_cycle(p.edit_file, p.target, chain)
-        )
+    refusal = cycle_refusal([(d.relative_to(root).as_posix(), meta) for d, meta in documents.items()], p.edit_file, p.target)
+    if refusal is not None:
+        raise SupersessionCycle(f"{p.edit_file} cannot declare supersedes: {p.target!r}: " + refusal)
     # The scan above reads the whole corpus, so it is the window in which an editor, an agent or
     # a session hook can save this memo. Writing `updated` then would put back the bytes read
     # before that save; refuse instead, so the next run judges the memo as it now is.

@@ -221,20 +221,22 @@ def test_an_accept_reads_the_corpus_once(corpus: Path, monkeypatch: pytest.Monke
 
     Red: baseline 8e10eea6a, `tests/test_dashboard_review.py::test_an_accept_reads_the_corpus_once`
     failed with `assert 2 == 1`; target `recall.dashboard.review.accept` (CCA deferred finding
-    PERF-006).
+    PERF-006). Since 2026-11-06 the planner's corpus read is `rewrite.corpus_documents` (the cycle
+    check keys memos by path where names are shared); red again then by mutation, `accept` passing
+    `plan=None` so `apply_rewrite` planned again: `assert 2 == 1`.
     """
     import recall.rewrite as rewrite
 
     (item,) = _queue(corpus).items
     shown = review.memo_digest(corpus, "new.md")
     reads = []
-    real = rewrite.supersession_graph
+    real = rewrite.corpus_documents
 
-    def counted(*args: object, **kwargs: object) -> dict[str, list[str]]:
+    def counted(*args: object, **kwargs: object) -> list[tuple[str, dict[str, object]]]:
         reads.append(args)
         return real(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(rewrite, "supersession_graph", counted)
+    monkeypatch.setattr(rewrite, "corpus_documents", counted)
     review.accept(corpus, item, reviewer="giulio", note="confirmed", shown_digest=shown, now=NOW)
     assert len(reads) == 1
     assert _supersedes(corpus / "new.md") == ["old.md"]
