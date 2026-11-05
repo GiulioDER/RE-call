@@ -124,7 +124,7 @@ def test_a_forgotten_memo_leaves_no_byte_of_its_text(tmp_path: Path, monkeypatch
 
     dsn = "sqlite:///" + store_path.as_posix()
     sources = [str(path.resolve()) for path in sorted(folder.glob("*.md"))]
-    done = _run(["--dsn", dsn, "--embedder", "hashing", "forget", *sources, "--yes"])
+    done = _run(["--dsn", dsn, "forget", *sources, "--yes"])
     assert f"from {len(sources)} source(s)" in done, done
     with LiteStore(store_path, dim=DIM) as store:
         assert store.checkpoint()
