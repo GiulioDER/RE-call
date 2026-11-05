@@ -108,7 +108,10 @@ def _derive_everything(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple
     inputs.mkdir()
     (inputs / "cards.json").write_text(json.dumps([c.to_payload() for c in cards]), encoding="utf-8")
     (inputs / "claim.json").write_text(json.dumps(CLAIM), encoding="utf-8")
-    monkeypatch.setattr("recall.cli_commands._shared._make_embedder", lambda *_a, **_k: ContentWordEmbedder())
+    # `forget` imports `_make_embedder` by name, so the CLI's own copy is patched as well; without
+    # it forget builds the default embedder, which needs an extra CI does not install.
+    for module in ("recall.cli_commands._shared", "recall.cli_commands.index_search"):
+        monkeypatch.setattr(f"{module}._make_embedder", lambda *_a, **_k: ContentWordEmbedder())
     dsn = "sqlite:///" + store_path.as_posix()
     applied = _run(["--dsn", dsn, "provenance", "apply", "--claim", str(inputs / "claim.json"),
                     "--cards", str(inputs / "cards.json"), "--request-id", "r1", "--generation", generation])
