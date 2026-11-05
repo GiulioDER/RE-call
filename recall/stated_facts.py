@@ -24,7 +24,6 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -40,6 +39,7 @@ from recall.provenance_controller import (
     STATED_WRITER,
     DecisionCode,
     ProvenanceController,
+    erasure_lock_for,
     fact_identity,
 )
 from recall.types import AtomicFact, Chunk, EvidenceCard
@@ -466,19 +466,19 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
         for fact, card, request_id in pending
         if (rid := _next_request_id(request_id, removed)) not in known
     ]
+    if not todo:
+        # Nothing to write, so nothing to order against a forget: taking the lock here opened a
+        # PostgreSQL connection on every no-op reconcile, and one waiting behind a forget reported
+        # the reconcile failed (2026-11-05 deferred pass, BUG-003).
+        report.reason = "every stated fact is already recorded"
+        return report
     # A forget that ran after the memos were read erased their request ids, so their facts would
     # read as new and be recorded again. What is no longer served is dropped here, and from this
     # check to the last write the ledger's erasure lock is held shared, which a forget holds
     # exclusively (`recall.fact_ledger.PostgresFactLedger.erasure_lock`): a forget either runs
     # first, and the check sees its memos gone, or waits, and retracts what this wrote.
-    with _erasure_lock(ledger):
+    with erasure_lock_for(ledger, shared=True):
         return _record_statements(store, generation_id, report, ledger, card_store, todo, cards, source_of)
-
-
-def _erasure_lock(ledger: object) -> AbstractContextManager[Any]:
-    """`ledger`'s erasure lock, shared, or nothing for a ledger without one."""
-    lock = getattr(ledger, "erasure_lock", None)
-    return lock(shared=True) if callable(lock) else nullcontext()
 
 
 def _record_statements(
@@ -505,13 +505,9 @@ def _record_statements(
     todo = [item for item in todo if source_of[item[1].card_id] not in gone]
     dropped = before - len(todo)
     if not todo:
-        # Two causes, two reasons: a statement dropped because its memo was forgotten mid-run is
-        # not one the ledger already holds.
-        report.reason = (
-            f"{dropped} statement(s) dropped: their memos are no longer served"
-            if dropped
-            else "every stated fact is already recorded"
-        )
+        # The caller returns before the lock when nothing was new, so an empty list here means
+        # every statement was dropped: its memo was forgotten mid-run (BUG-003).
+        report.reason = f"{dropped} statement(s) dropped: their memos are no longer served"
         return report
     # Only the cards a new statement cites: a card's id includes its generation, so putting every
     # admitted memo's card on each activation filled an append-only table with cards nothing cites.

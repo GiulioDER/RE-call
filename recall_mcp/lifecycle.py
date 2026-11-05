@@ -15,6 +15,7 @@ from recall.errors import RecallError
 from recall.fact_retraction import FactErasure, fact_ledger_for, prepare_fact_erasure
 from recall.guards import staleness
 from recall.observability import METRICS, get_logger
+from recall.provenance_controller import erasure_lock_for
 from recall.uploads import delete_staged_sources
 from recall_mcp.models import (
     CurrentStateRecordModel,
@@ -140,9 +141,7 @@ def _erasure_lock(store: PgVectorStore) -> AbstractContextManager[Any]:
     unretracted (STAKES-003). Taken before anything is deleted; a lock that cannot be taken
     raises, and nothing is deleted. Nothing for a store with no ledger.
     """
-    ledger = _fact_ledger_for(store)
-    lock = getattr(ledger, "erasure_lock", None)
-    return lock(shared=False) if callable(lock) else nullcontext()
+    return erasure_lock_for(_fact_ledger_for(store), shared=False)
 
 
 def _forget_retractions(
@@ -203,6 +202,11 @@ def forget_memory(
     from recall.backends import write_session
     from recall.lite import LiteStore
 
+    # A request that is invalid or names a memo the caller may not erase is refused before the
+    # locks: under them it held the exclusive erasure lock for its refusal, and waiting for it
+    # queued every fact application behind a request that erased nothing (2026-11-05 deferred
+    # pass, SEC-003).
+    _preflight_erasure(store, sources, security_policy, security_context, verb="deletion")
     erasing = store.erasing() if isinstance(store, LiteStore) else nullcontext()
     pending = control_plane.erasure_session(store.tenant) if control_plane else nullcontext(None)
     with write_session(store, "forget"), _erasure_lock(store), erasing, pending as scrub_pending:
@@ -245,6 +249,7 @@ def withdraw_memory(
     from recall.backends import write_session
     from recall.lite import LiteStore
 
+    _preflight_erasure(store, sources, security_policy, security_context, verb="withdrawal")
     erasing = store.erasing() if isinstance(store, LiteStore) else nullcontext()
     pending = control_plane.erasure_session(store.tenant) if control_plane else nullcontext(None)
     with write_session(store, "forget"), _erasure_lock(store), erasing, pending as scrub_pending:
@@ -322,20 +327,17 @@ def _authorize_erasure(
                 raise ErasureNotAuthorized(f"source {name!r} is not authorized for erasure")
 
 
-def _forget_memory_unlocked(
+def _preflight_erasure(
     store: PgVectorStore,
     sources: list[str],
-    shadow_store: PgVectorStore | None = None,
-    scrub_pending: Callable[[list[str]], int] | None = None,
-    security_policy: SourceSecurityPolicy | None = None,
-    security_context: AccessContext | None = None,
+    security_policy: SourceSecurityPolicy | None,
+    security_context: AccessContext | None,
     *,
-    withdraw: bool = False,
-    erase_memo_requests: bool = True,
-) -> ForgetResult:
-    """`forget_memory` (or with `withdraw`, `withdraw_memory`) without the lite store's write
-    lane; call one of those."""
-    verb, did = ("withdrawal", "Withdrew") if withdraw else ("deletion", "Forgot")
+    verb: str,
+) -> list[str]:
+    """The requested names, deduplicated, once the request is valid and every one of them is the
+    caller's to erase; raises otherwise. The names a request resolves to are authorized later,
+    under the locks (`_authorize_erasure`)."""
     if not sources:
         raise ErasureRequestInvalid("sources must be a non-empty list")
     if len(sources) > MAX_FORGET_SOURCES:
@@ -354,6 +356,24 @@ def _forget_memory_unlocked(
         for source in requested:
             if not security_policy.decide(source, security_context).allowed:
                 raise ErasureNotAuthorized(f"source {source!r} is not authorized for erasure")
+    return requested
+
+
+def _forget_memory_unlocked(
+    store: PgVectorStore,
+    sources: list[str],
+    shadow_store: PgVectorStore | None = None,
+    scrub_pending: Callable[[list[str]], int] | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    security_context: AccessContext | None = None,
+    *,
+    withdraw: bool = False,
+    erase_memo_requests: bool = True,
+) -> ForgetResult:
+    """`forget_memory` (or with `withdraw`, `withdraw_memory`) without the lite store's write
+    lane; call one of those."""
+    verb, did = ("withdrawal", "Withdrew") if withdraw else ("deletion", "Forgot")
+    requested = _preflight_erasure(store, sources, security_policy, security_context, verb=verb)
     resolved = store.sources_for_identifiers(requested)
     if shadow_store is not None:
         shadow_resolved = shadow_store.sources_for_identifiers(requested)
