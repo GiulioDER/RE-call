@@ -68,9 +68,9 @@ Cross package edges: 384
 | 22 | `recall.trust` |
 | 22 | `recall_mcp.reasoning_engine` |
 | 21 | `recall` |
+| 21 | `recall.rewrite` |
 | 21 | `recall_mcp.indexing` |
 | 20 | `recall.index` |
-| 20 | `recall.rewrite` |
 | 19 | `recall.cli_commands.setup_wizard` |
 | 19 | `recall_mcp.provenance` |
 | 18 | `recall.wizard.headless` |
@@ -516,7 +516,7 @@ They are observations, not automatic failures.
 | `recall.calibration_v2_artifact` | 3 | 15 |
 | `recall.calibration_v2_bounds` | 2 | 16 |
 | `recall.capabilities` | 0 | 0 |
-| `recall.check` | 4 | 30 |
+| `recall.check` | 4 | 31 |
 | `recall.claude_code` | 7 | 158 |
 | `recall.cli` | 6 | 112 |
 | `recall.cli_commands` | 0 | 0 |
@@ -551,7 +551,7 @@ They are observations, not automatic failures.
 | `recall.dashboard.config` | 2 | 159 |
 | `recall.dashboard.corpus` | 5 | 141 |
 | `recall.dashboard.db` | 5 | 136 |
-| `recall.dashboard.edit` | 9 | 138 |
+| `recall.dashboard.edit` | 10 | 138 |
 | `recall.dashboard.graph` | 6 | 140 |
 | `recall.dashboard.lite_db` | 5 | 136 |
 | `recall.dashboard.markdown` | 0 | 0 |
@@ -636,7 +636,7 @@ They are observations, not automatic failures.
 | `recall.fact_redaction` | 10 | 110 |
 | `recall.fact_retraction` | 10 | 110 |
 | `recall.federation` | 4 | 120 |
-| `recall.fix` | 7 | 29 |
+| `recall.fix` | 7 | 30 |
 | `recall.frontmatter` | 1 | 1 |
 | `recall.generation_build` | 8 | 111 |
 | `recall.generation_store` | 16 | 110 |
@@ -652,7 +652,7 @@ They are observations, not automatic failures.
 | `recall.integrations.langchain` | 10 | 121 |
 | `recall.integrations.llamaindex` | 10 | 121 |
 | `recall.lineage` | 2 | 12 |
-| `recall.lint` | 4 | 26 |
+| `recall.lint` | 5 | 27 |
 | `recall.lite` | 2 | 110 |
 | `recall.lite.assistant_memos` | 6 | 110 |
 | `recall.lite.calibration` | 11 | 110 |
@@ -721,7 +721,7 @@ They are observations, not automatic failures.
 | `recall.retrieval_plan` | 1 | 1 |
 | `recall.retrieval_slo` | 0 | 0 |
 | `recall.retriever` | 8 | 42 |
-| `recall.rewrite` | 20 | 133 |
+| `recall.rewrite` | 21 | 133 |
 | `recall.runtime_route` | 1 | 1 |
 | `recall.schema` | 2 | 3 |
 | `recall.schemas` | 0 | 0 |

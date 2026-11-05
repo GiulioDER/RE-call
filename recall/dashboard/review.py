@@ -75,7 +75,7 @@ from recall.rewrite import (
     default_ledger_path,
     plan_rewrite,
 )
-from recall.supersession import reference_path_key, reference_stem_key
+from recall.supersession import reference_path_key, reference_stem_key, resolve_reference
 from recall.stale_reports import StaleReport, StaleReportQueue, StaleReportRefused, default_queue_path, find_quote
 
 AGENT_RULE_ID = "agent_stale_report"
@@ -201,10 +201,10 @@ def memo_path(root: Path, name: str) -> Path | None:
 def already_declared(root: Path, stale: str, replacing: str) -> bool:
     """Whether the newer memo already declares the stale one, by the rule search resolves it with.
 
-    A reference that names a folder matches by path when a memo has that path; otherwise a name
-    counts only when no other memo shares it (`recall.supersession.ReferenceIndex.match`). By file
-    name alone, a declaration of `a/notes.md` hid a claim about `b/notes.md` from the queue, as
-    "already decided", while search left `b/notes.md` live (DAT-005).
+    Each declaration is resolved by `recall.supersession.resolve_reference`, search's own rule: a
+    reference that names a folder matches by path, a bare name only when no other memo shares it.
+    By file name alone, a declaration of `a/notes.md` hid a claim about `b/notes.md` from the
+    queue, as "already decided", while search left `b/notes.md` live (DAT-005).
     """
     path = memo_path(root, replacing)
     if path is None:
@@ -218,17 +218,12 @@ def already_declared(root: Path, stale: str, replacing: str) -> bool:
     targets = [t for t in supersedes_targets(meta.get("supersedes")) if reference_stem_key(t) == stem]
     if not targets:
         return False
-    claimant = reference_path_key(replacing)
-    others = [p for p in _paths_by_stem(root).get(stem, ()) if p != claimant]
-    if not others:
+    names = [encodable_name(p.relative_to(root).as_posix()) for p in memo_files(root)]
+    if not any(reference_stem_key(name) == stem for name in names):
         return True  # the stale memo is not in this folder: no other memo the name could mean
     for target in targets:
-        target_path = reference_path_key(target)
-        if "/" in target_path and target_path in others:
-            if target_path == wanted:
-                return True
-            continue
-        if others == [wanted]:
+        status, found = resolve_reference(target, names, encodable_name(replacing))
+        if status == "resolved" and [reference_path_key(name) for name in found] == [wanted]:
             return True
     return False
 
@@ -514,7 +509,7 @@ def _with_shared_name(item: QueueItem, by_stem: Mapping[str, list[str]]) -> Queu
         return item
     line = (
         f"ambiguous name: {len(sharing)} memos are called {item.stale.rsplit('/', 1)[-1]}; "
-        "reject it here, or write `supersedes:` with the folder in the newer memo"
+        "accepting writes `supersedes:` with this one's folder"
     )
     return dataclasses.replace(item, details=item.details + (line,))
 

@@ -87,6 +87,7 @@ from recall.observability import get_logger
 from recall.promotion import PromotedFact
 from recall.reasoning_proposals.types import InferenceProposal
 from recall.state_dir import make_parent
+from recall.supersession import resolve_reference
 from recall.truth_extraction.types import STATUS_VOCABULARY, VALIDITY_CLAIM_KEYS
 from recall.trust import metadata_is_trusted
 from recall.errors import RecallError
@@ -510,24 +511,43 @@ def _readable_text(raw: bytes, rel: str) -> str:
 
 
 def _resolve(root: Path, ref: str) -> str:
-    """The one corpus file `ref` names, root-relative. Zero or several matches is a refusal."""
-    key = supersedes_key(ref)
+    """The one corpus file `ref` names, root-relative. Zero or several matches is a refusal.
+
+    By search's rule (`recall.supersession.resolve_reference`): a name with a folder is matched by
+    path, so `a/notes.md` names that file even when `b/notes.md` exists; a bare name that two
+    files share is refused with both named, never guessed.
+    """
     # `ref` is a corpus NAME, and `corpus_proposals` guarantees those are encodable, so the
     # file side must be compared in the same spelling or the two can never meet. A memo whose
     # filename is not valid UTF-8 is named `bad\udcff.md` in every proposal and `bad<lone
     # surrogate>.md` on disk: matching raw found zero files and refused the write with "matches
     # 0 files in the corpus" about a file sitting right there. The match is on the escaped
     # form; what is RETURNED stays the real path, because that is what gets opened and written.
-    matches = sorted(
-        f.relative_to(root).as_posix()
-        for f in root.rglob("*.md")
-        if supersedes_key(encodable_name(f.name)) == key
-    )
+    real = {encodable_name(f.relative_to(root).as_posix()): f.relative_to(root).as_posix() for f in root.rglob("*.md")}
+    status, found = resolve_reference(ref, real)
+    matches = sorted(real[name] for name in found) if status in ("resolved", "ambiguous") else []
     if len(matches) != 1:
+        named = f" ({', '.join(matches)})" if matches else ""
         raise RewriteRefused(
-            f"refusing to write: {ref!r} matches {len(matches)} files in the corpus, not one"
+            f"refusing to write: {ref!r} matches {len(matches)} files in the corpus, not one{named}"
         )
     return matches[0]
+
+
+def _refuse_ambiguous_target(root: Path, value: str, edit_file: str) -> None:
+    """Refuse to store a `supersedes:` reference that names more than one memo.
+
+    Whoever writes the declaration knows which memo it means, and every later reader can only
+    guess, so the choice is asked for now: the refusal names the candidates, and the reference
+    written with a folder names one.
+    """
+    names = [encodable_name(f.relative_to(root).as_posix()) for f in root.rglob("*.md")]
+    status, found = resolve_reference(value, names, encodable_name(edit_file))
+    if status == "ambiguous":
+        raise RewriteRefused(
+            f"refusing to write: supersedes {value!r} could name {len(found)} memos "
+            f"({', '.join(sorted(found))}); write it with the folder of the one meant"
+        )
 
 
 def corpus_proposals(
@@ -754,6 +774,7 @@ def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
     _refuse_unwritable_value(value)
     edit_file = _resolve(root, routed.edit_file)
     if routed.key == SUPERSEDES:
+        _refuse_ambiguous_target(root, value, edit_file)
         _refuse_cycle(root, edit_file, value)
     return RewritePlan(
         edit_file=edit_file,

@@ -47,6 +47,7 @@ from recall.dependency_invalidation import (
 )
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key, supersedes_targets, validity_bounds
+from recall.supersession import resolve_reference
 
 #: Prose that usually accompanies a closure/replacement decision. Deliberately short and
 #: high-precision: a chatty list would drown real omissions in noise.
@@ -338,6 +339,7 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
         key = supersedes_key(f.name)
         name_count[key] = name_count.get(key, 0) + 1
     names = set(name_count)
+    every_file = list(rel.values())
     # superseded basename -> ALL files claiming to supersede it (a single-valued map would
     # drop edges on fan-in and could hide a declared cycle behind a third superseder)
     superseders: dict[str, list[str]] = {}
@@ -434,12 +436,15 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
                               f"the chain breaks here")
                 )
             else:
-                if name_count[target] > 1:
+                # A shared basename is ambiguous only when the reference does not name the
+                # folder: `a/notes.md` names one file to search (`resolve_reference`), and
+                # calling it an error made "lint clean" and "what search does" disagree.
+                if name_count[target] > 1 and resolve_reference(written, every_file, rel[f])[0] == "ambiguous":
                     issues.append(
                         LintIssue(rel[f], "error", "ambiguous-supersedes-target",
                                   f"supersedes {written!r}, but {name_count[target]} files "
                                   f"share that basename — the reference cannot be resolved "
-                                  f"unambiguously")
+                                  f"unambiguously; write it with the folder of the one meant")
                     )
                 superseders.setdefault(target, []).append(supersedes_key(f.name))
 

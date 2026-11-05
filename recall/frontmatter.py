@@ -630,6 +630,31 @@ class SupersedesDeclaresNothing(ValueError, RecallError):
     """The memo carries `supersedes:` with no reference: a human saying it supersedes nothing."""
 
 
+def _reference_folder(value: str) -> str:
+    """The folder part of a `supersedes:` reference, folded, or "" for a bare name."""
+    v = value.strip()
+    while len(v) >= 2 and v[0] == "[" and v[-1] == "]":
+        v = v[1:-1].strip()
+    v = v.replace("\\", "/")
+    while v.startswith("./"):
+        v = v[2:]
+    v = v.lstrip("/")
+    return v.rsplit("/", 1)[0].casefold() if "/" in v else ""
+
+
+def _same_reference(a: str, b: str) -> bool:
+    """Whether two `supersedes:` references name the same memo, with no corpus to ask.
+
+    The same stem is the same memo unless both name a folder and the folders differ:
+    `a/notes.md` and `b/notes.md` are two memos (search resolves each by path), while `notes` and
+    `a/notes.md` may be one, so adding the second would only repeat a reference.
+    """
+    if supersedes_key(a) != supersedes_key(b):
+        return False
+    folder_a, folder_b = _reference_folder(a), _reference_folder(b)
+    return not (folder_a and folder_b) or folder_a == folder_b
+
+
 def add_supersedes_target(raw: bytes, target: str) -> bytes | None:
     """Declare one more `supersedes` reference in `raw`, or return None if it already declares it.
 
@@ -658,7 +683,7 @@ def add_supersedes_target(raw: bytes, target: str) -> bytes | None:
     existing = supersedes_targets(meta[SUPERSEDES])
     if not existing:
         raise SupersedesDeclaresNothing("the memo declares `supersedes:` with no reference")
-    if supersedes_key(target) in {supersedes_key(item) for item in existing}:
+    if any(_same_reference(target, item) for item in existing):
         return None
 
     span = frontmatter_span(text)
