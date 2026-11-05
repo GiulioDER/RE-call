@@ -656,13 +656,24 @@ jobs:
   # doctor, and the same searches, the same fact and a forget through the new MCP server.
   # The embedder is `hashing`, so no model download and no paid API. Same PostgreSQL matrix as
   # `schema-migrations`. Required by merge-gate.
+  #
+  # The `roles: two` leg is the strict role split docs/MIGRATIONS.md describes: the serving DSN logs
+  # in as an unprivileged `recall_server` (no superuser, no BYPASSRLS, no schema CREATE), fact
+  # writes go through `RECALL_FACT_WRITE_DSN` as `recall_controller`, and the owner migrates. After
+  # each release's `schema apply`, that release's `recall schema grants --role recall_server
+  # --strict` and `--role recall_controller --controller` output is applied. Every serving check
+  # then runs under row-level security.
   upgrade-from-release:
-    name: Upgrade from 0.14.0 (PostgreSQL ${{ matrix.postgres }})
+    name: Upgrade from 0.14.0 (PostgreSQL ${{ matrix.postgres }}${{ matrix.roles == 'two' && ', two roles' || '' }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         postgres: [16, 17, 18]
+        roles: [one]
+        include:
+          - postgres: 18
+            roles: two
     services:
       db:
         image: pgvector/pgvector:pg${{ matrix.postgres }}
@@ -703,6 +714,26 @@ jobs:
           echo "PY=$RUNNER_TEMP/venv/bin/python" >> "$GITHUB_ENV"
           cp scripts/upgrade_smoke.py "$RUNNER_TEMP/"
 
+      - name: Create the unprivileged serving and controller roles
+        if: matrix.roles == 'two'
+        run: |
+          set -euo pipefail
+          "$PY" -I - <<'EOF'
+          import os, psycopg
+          with psycopg.connect(os.environ["RECALL_MIGRATION_DSN"], autocommit=True) as conn:
+              for role in ("recall_server", "recall_controller"):
+                  conn.execute(f"CREATE ROLE {role} LOGIN PASSWORD '{role}' NOINHERIT NOBYPASSRLS")
+                  conn.execute(f"GRANT CONNECT ON DATABASE recall TO {role}")
+                  conn.execute(f"GRANT USAGE ON SCHEMA public TO {role}")
+                  conn.execute(f"REVOKE CREATE ON SCHEMA public FROM {role}")
+          EOF
+          {
+            echo "RECALL_SERVING_DSN=postgresql://recall_server:recall_server@localhost:5432/recall"
+            echo "RECALL_FACT_WRITE_DSN=postgresql://recall_controller:recall_controller@localhost:5432/recall"
+            echo "UPGRADE_SMOKE_SERVING_ROLE=recall_server"
+            echo "UPGRADE_SMOKE_CONTROLLER_ROLE=recall_controller"
+          } >> "$GITHUB_ENV"
+
       - name: Seed the database with 0.14.0
         working-directory: ${{ runner.temp }}
         run: '"$PY" -I upgrade_smoke.py seed --workdir "$RUNNER_TEMP/upgrade"'
@@ -724,6 +755,67 @@ jobs:
       - name: Upgrade and verify with the new wheel
         working-directory: ${{ runner.temp }}
         run: '"$PY" -I upgrade_smoke.py verify --workdir "$RUNNER_TEMP/upgrade"'
+
+  # The pgvector floor this release checks before migrating (`recall.schema.PGVECTOR_MIN_VERSION`):
+  # every other job runs pgvector 0.8 or newer, so only the passing side of that check ran. Here
+  # 0.14.0 applies its schema on pgvector 0.7.4, as an existing install on an old extension would
+  # have, and the wheel from this commit must refuse to migrate, name the floor, leave the schema
+  # where 0.14.0 put it, and fail `recall doctor`. Required by merge-gate.
+  pgvector-floor:
+    name: pgvector floor refuses 0.7 before migrating
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:0.7.4-pg17
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      RECALL_SERVING_DSN: postgresql://recall:recall@localhost:5432/recall
+      RECALL_MIGRATION_DSN: postgresql://recall:recall@localhost:5432/recall
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+
+      - name: Apply 0.14.0's schema on pgvector 0.7.4
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install --quiet "recall-rag==0.14.0"
+          echo "PY=$RUNNER_TEMP/venv/bin/python" >> "$GITHUB_ENV"
+          cp scripts/upgrade_smoke.py "$RUNNER_TEMP/"
+          "$RUNNER_TEMP/venv/bin/recall" --embedder hashing schema apply
+
+      - name: Build the wheel and install it over the same venv
+        run: |
+          set -euo pipefail
+          uv build --wheel --out-dir "$RUNNER_TEMP/dist"
+          wheel=$(ls "$RUNNER_TEMP"/dist/*.whl)
+          "$PY" -m pip install --quiet --force-reinstall --no-deps "$wheel"
+          "$PY" -m pip install --quiet "$wheel"
+
+      - name: The upgrade refuses before migrating
+        working-directory: ${{ runner.temp }}
+        run: '"$PY" -I upgrade_smoke.py floor --workdir "$RUNNER_TEMP/floor"'
 
   # The desktop UI, which until now was tested only on a maintainer's machine.
   #
@@ -1341,6 +1433,7 @@ jobs:
       - clean-install
       - first-run-lite
       - upgrade-from-release
+      - pgvector-floor
       - desktop
       - session-db
       - citations
@@ -1369,6 +1462,7 @@ jobs:
             "${{ needs.clean-install.result }}" \
             "${{ needs.first-run-lite.result }}" \
             "${{ needs.upgrade-from-release.result }}" \
+            "${{ needs.pgvector-floor.result }}" \
             "${{ needs.desktop.result }}" \
             "${{ needs.session-db.result }}" \
             "${{ needs.citations.result }}" \
