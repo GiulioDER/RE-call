@@ -910,6 +910,15 @@ def test_cca_a_reconcile_whose_memos_were_forgotten_mid_run_says_they_were_dropp
     assert report.reason == "1 statement(s) dropped: their memos are no longer served", report.reason
 
 
+def _two_unstated_memos(store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two memos stating one fact each, indexed with stating off, so a reconcile has two to record."""
+    memo(folder, "door.md", facts=[DOOR])
+    memo(folder, "city.md", facts=[{"subject": "user", "predicate": "city", "object": "Turin"}])
+    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
+    refreshed(store, folder)  # indexed, nothing stated yet
+    monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
+
+
 def test_perf002_a_forget_between_chunks_is_seen_by_the_next_chunk(
     store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -934,11 +943,7 @@ def test_perf002_a_forget_between_chunks_is_seen_by_the_next_chunk(
     """
     import recall.stated_facts as stated
 
-    memo(folder, "door.md", facts=[DOOR])
-    memo(folder, "city.md", facts=[{"subject": "user", "predicate": "city", "object": "Turin"}])
-    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
-    refreshed(store, folder)  # indexed, nothing stated yet
-    monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
+    _two_unstated_memos(store, folder, monkeypatch)
     monkeypatch.setattr(stated, "_STATED_LOCK_CHUNK", 1)
     holds: list[bool] = []
     real_lock = LiteFactLedger.erasure_lock
@@ -973,11 +978,7 @@ def test_bug001_a_failure_after_a_recorded_chunk_says_what_was_recorded(
     """
     import recall.stated_facts as stated
 
-    memo(folder, "door.md", facts=[DOOR])
-    memo(folder, "city.md", facts=[{"subject": "user", "predicate": "city", "object": "Turin"}])
-    monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
-    refreshed(store, folder)  # indexed, nothing stated yet
-    monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
+    _two_unstated_memos(store, folder, monkeypatch)
     monkeypatch.setattr(stated, "_STATED_LOCK_CHUNK", 1)
     holds: list[bool] = []
     real_lock = LiteFactLedger.erasure_lock
@@ -992,7 +993,10 @@ def test_bug001_a_failure_after_a_recorded_chunk_says_what_was_recorded(
     report = reconcile(store, folder)
     assert report.memos_read == 2, report
     assert report.facts_stated == -1, report
-    assert "the first 1 statement(s) were processed before it (at least 1 recorded)" in report.reason, report.reason
+    # The wording changed with the per-hold cursor (2026-11-05 audit, CODE-004): the statements
+    # processed before a failure need not be the first ones of the run.
+    assert "1 statement(s) were processed before it (at least 1 recorded)" in report.reason, report.reason
+    assert "the first" not in report.reason, report.reason
 
 
 def test_perf001_the_served_check_asks_the_generation_first() -> None:
@@ -1033,3 +1037,38 @@ def test_perf001_the_served_check_asks_the_generation_first() -> None:
 
     assert stated._vanished(Legacy(), {"s3://c.md", "s3://d.md"}, "gen-1") == {"s3://d.md"}
     assert resolved == [["s3://c.md", "s3://d.md"]]
+
+
+def test_perf002_a_hold_ends_at_its_time_budget(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PERF-002 (owner decision 2026-11-05, after measuring a replay-mode append at 14.5 s on a
+    32,000-event ledger): a hold of the erasure lock ends once it has run `_STATED_LOCK_SECONDS`,
+    after the statement in hand, and the rest of its chunk goes into the next hold. With the
+    budget at zero each hold records exactly one statement, every statement is still recorded,
+    and the report reads as one reconcile.
+
+    Red proof: with the deadline check in `_record_statements` mutated away (`if False:`), the
+    chunk of 100 took the lock once for both statements and `assert holds == [True, True]`
+    failed with `[True] == [True, True]`. With its at-least-one guard mutated away (`if
+    time.monotonic() >= deadline:`), the first hold took nothing, the loop's progress check raised
+    instead of the loop spinning, and `assert holds == [True, True]` failed with
+    `[True] == [True, True]` in about 4 s (2026-11-05 audit, CODE-001).
+    """
+    import recall.stated_facts as stated
+
+    _two_unstated_memos(store, folder, monkeypatch)
+    monkeypatch.setattr(stated, "_STATED_LOCK_SECONDS", 0.0)
+    holds: list[bool] = []
+    real_lock = LiteFactLedger.erasure_lock
+
+    def lock(self: LiteFactLedger, *, shared: bool) -> Any:
+        holds.append(shared)
+        return real_lock(self, shared=shared)
+
+    monkeypatch.setattr(LiteFactLedger, "erasure_lock", lock)
+    report = reconcile(store, folder)
+    assert holds == [True, True]
+    assert report.facts_stated == 2, report
+    assert report.reason == "recorded 2 statement(s)", report.reason
+    assert sorted(listed(store)) == ["4512", "Turin"]

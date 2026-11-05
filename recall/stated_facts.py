@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -75,6 +76,19 @@ STATED_FACT_SOURCES_ENV = "RECALL_STATED_FACT_SOURCES"
 #: across the whole reconcile, and the lane is reentrant, so releasing it per chunk frees nothing: a
 #: forget there still waits for the whole run (2026-11-05 audit, ENV-001).
 _STATED_LOCK_CHUNK = 100
+
+#: Seconds one hold of the erasure lock may run before it is released after the statement in
+#: hand, whatever is left of its chunk. Measured on 2026-11-05: in the ledger's replay mode an
+#: append decodes the whole ledger, and a fit of the per-append cost (0.56 s at 1,000 events to
+#: 14.5 s at 32,000; slope about 452 us per event, intercept about -0.37 s) reaches 3 s, so 100
+#: statements reach a forget's `ERASURE_LOCK_WAIT_S` (300 s), from about 7,500 events. On
+#: PostgreSQL a forget now waits at most about this long plus one append, plus the hold's
+#: served-memo check and card writes, which count against the budget (owner decision 2026-11-05,
+#: PERF-002). On lite the caller's reentrant write lane is held across the whole run, so a forget
+#: there still waits for all of it (see `_STATED_LOCK_CHUNK`). A hold always processes at least
+#: one statement (records, refuses or drops it), so a reconcile whose appends each outlast the
+#: budget still finishes, one statement per hold.
+_STATED_LOCK_SECONDS = 30.0
 
 
 def _under(path: Path, root: Path) -> bool:
@@ -489,27 +503,44 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
     # chunk, which then sees its memos gone, or waits for it, and retracts what it wrote. Held
     # for a whole first activation (one connection per append), the lock made a forget wait for
     # all of it and give up after `ERASURE_LOCK_WAIT_S`, with every fact application queued
-    # behind that forget (owner decision 2026-11-05, PERF-002).
+    # behind that forget (owner decision 2026-11-05, PERF-002). A chunk also ends early once its
+    # hold has run `_STATED_LOCK_SECONDS`; what it did not reach goes into the next hold, which
+    # checks again what is served.
     dropped = 0
-    for start in range(0, len(todo), _STATED_LOCK_CHUNK):
-        batch = todo[start:start + _STATED_LOCK_CHUNK]
+    taken = 0  # statements of `todo` handed to a hold so far
+    carry: list[tuple[AtomicFact, EvidenceCard, str]] = []  # what the last hold did not reach
+    while carry or taken < len(todo):
+        processed = taken - len(carry)
+        # A cursor into `todo`, not re-slicing what remains: that copied the whole remainder per
+        # hold, quadratic in a large first activation (2026-11-05 audit, PERF-001).
+        batch = carry + todo[taken:taken + _STATED_LOCK_CHUNK - len(carry)]
+        taken += len(batch) - len(carry)
         try:
             with erasure_lock_for(ledger, shared=True):
-                dropped += _record_statements(store, generation_id, report, ledger, card_store, batch, cards, source_of)
+                deadline = time.monotonic() + _STATED_LOCK_SECONDS
+                batch_dropped, carry = _record_statements(
+                    store, generation_id, report, ledger, card_store, batch, cards, source_of, deadline
+                )
+            if len(carry) >= len(batch):
+                # Every hold must take at least one statement, or this loop never ends; the rule
+                # lives in `_record_statements`, and this keeps a break of it from spinning
+                # (2026-11-05 audit, CODE-001).
+                raise RuntimeError("a hold of the erasure lock processed no statement")
+            dropped += batch_dropped
         except Exception as exc:  # BROAD-CATCH: error-translation
-            if start == 0:
+            if processed == 0:
                 raise  # nothing was written: the caller reports it as before
-            # Earlier chunks are recorded; the failure must not read as "nothing was written",
+            # Earlier holds are recorded; the failure must not read as "nothing was written",
             # which the caller's fresh report said (2026-11-05 audit, BUG-001). A re-run records
             # the rest: request ids make every statement idempotent.
             _log.warning(
                 "recording stated facts for tenant %r failed after %d statement(s): %s",
-                store.tenant, start, exc,
+                store.tenant, processed, exc,
             )
             report.facts_stated = -1
             report.reason = (
-                f"{type(exc).__name__}: {exc}; the first {start} statement(s) were processed "
-                f"before it (at least {start - dropped} recorded); a re-run records the rest"
+                f"{type(exc).__name__}: {exc}; {processed} statement(s) were processed before "
+                f"it (at least {processed - dropped} recorded); a re-run records the rest"
             )
             return report
         if report.facts_stated < 0:
@@ -533,10 +564,13 @@ def _record_statements(
     todo: list[tuple[AtomicFact, EvidenceCard, str]],
     cards: list[EvidenceCard],
     source_of: dict[str, str],
-) -> int:
+    deadline: float,
+) -> tuple[int, list[tuple[AtomicFact, EvidenceCard, str]]]:
     """Record `todo` (one chunk) once its memos are known still served, under the caller's
-    erasure lock, counting into `report`; returns how many were dropped because their memo is no
-    longer served. A refusal sets `report.facts_stated` to -1 and its reason, and stops.
+    erasure lock, counting into `report`. Returns how many were dropped because their memo is no
+    longer served, and the statements not reached because the hold passed `deadline`
+    (`time.monotonic`) after at least one was processed. A refusal sets `report.facts_stated` to
+    -1 and its reason, and stops.
 
     `generation_id` is the one the cards were built with, read before the lock: on lite a forget
     the lock waited for changes the store's generation (its fingerprint), and a controller built
@@ -550,7 +584,7 @@ def _record_statements(
     todo = [item for item in todo if source_of[item[1].card_id] not in gone]
     dropped = before - len(todo)
     if not todo:
-        return dropped
+        return dropped, []
     # Only the cards a new statement cites: a card's id includes its generation, so putting every
     # admitted memo's card on each activation filled an append-only table with cards nothing cites.
     cited = {card.card_id for _fact, card, _rid in todo}
@@ -562,7 +596,9 @@ def _record_statements(
         ledger=ledger,
         writer=STATED_WRITER,
     )
-    for fact, card, request_id in todo:
+    for position, (fact, card, request_id) in enumerate(todo):
+        if position and time.monotonic() >= deadline:
+            return dropped, todo[position:]
         decision = controller.apply_stated(fact, card, request_id)
         if decision.code == DecisionCode.APPLIED:
             report.facts_stated += 1
@@ -580,7 +616,7 @@ def _record_statements(
                 store.tenant, report.reason, hint,
             )
             break
-    return dropped
+    return dropped, []
 
 
 def _vanished(store: Any, sources: set[str], generation_id: str) -> set[str]:
