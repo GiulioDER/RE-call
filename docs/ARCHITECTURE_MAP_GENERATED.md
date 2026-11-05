@@ -555,7 +555,7 @@ They are observations, not automatic failures.
 | `recall.dashboard.graph` | 6 | 140 |
 | `recall.dashboard.lite_db` | 5 | 136 |
 | `recall.dashboard.markdown` | 0 | 0 |
-| `recall.dashboard.review` | 10 | 138 |
+| `recall.dashboard.review` | 11 | 138 |
 | `recall.dashboard.server` | 17 | 168 |
 | `recall.dashboard.triage` | 6 | 139 |
 | `recall.db_constants` | 1 | 1 |

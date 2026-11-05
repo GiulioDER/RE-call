@@ -375,14 +375,14 @@ def assemble_graph(
     kinds = Counter(e["kind"] for e in edges)
     notes: list[str] = []
     # A forgotten memo keeps retired what it replaced (`recall.supersession.SupersessionRecord`),
-    # but it is no longer a file here, so its supersession has nothing to be drawn from.
-    hidden_by_forgotten = sum(
-        1 for node in nodes.values()
-        if node["state"] == "superseded" and graph.successor(node["id"], now=_instant(now)) not in nodes
-    )
-    if hidden_by_forgotten:
+    # but it is no longer a file here, so its supersession has nothing to be drawn from. Counted
+    # as the superseded files no drawn edge points at: in a -> b -> c with c forgotten that is b
+    # alone, since b -> a is drawn, and with b forgotten it is a, which the chain's end does not show.
+    drawn_into = {edge["target"] for edge in edges if edge["kind"] == "supersedes"}
+    undrawn = sum(1 for node in nodes.values() if node["state"] == "superseded" and node["id"] not in drawn_into)
+    if undrawn:
         notes.append(
-            f"{hidden_by_forgotten} file(s) are superseded by a forgotten memo, which is not drawn: "
+            f"{undrawn} superseded file(s) have no drawn successor, usually a forgotten memo: "
             "forgetting a memo keeps retired what it replaced."
         )
     return {
