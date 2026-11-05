@@ -19,7 +19,10 @@ from recall_hooks import credentials, hosted
 from .conftest import TEST_DSN, requires_db
 
 
-CONFIG = {'endpoint': 'https://memory.example.test/mcp', 'account': 'sync@example.test'}
+# `project_root` since the 2026-11-04 owner decision (STAKES-004): without it SessionStart warns
+# that hosted sync is not running, ahead of the pending-memo notice these tests read.
+CONFIG = {'endpoint': 'https://memory.example.test/mcp', 'account': 'sync@example.test',
+          'project_root': '/hosted-fixture-project'}
 
 
 @pytest.fixture(autouse=True)

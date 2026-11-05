@@ -39,6 +39,10 @@ RELAY_STATEMENT_TIMEOUT_SECONDS = 3.0
 START_TIMEOUT_SECONDS = 4.0
 STOP_WAIT_SECONDS = 6.0
 SEARCH_BUDGET_SECONDS = 4.5
+#: The whole hook's budget, counted from `recall_hooks.HOOK_STARTED` (owner decision, 2026-11-04):
+#: the client's 5 s timeout counts from process start, and interpreter start (about 0.3 s) comes
+#: before `main` stamps it, so a search must end by this mark however late it began.
+HOOK_BUDGET_SECONDS = 4.2
 IDLE_TIMEOUT_SECONDS = 15 * 60.0
 RETRY_BACKOFF_SECONDS = 5.0
 LOCK_TIMEOUT_SECONDS = START_TIMEOUT_SECONDS
@@ -222,19 +226,43 @@ def _endpoint_request(
     if host != "127.0.0.1" or not 1 <= port <= 65535:
         raise RelayUnavailable("relay endpoint is not a valid loopback address")
     timeout = max(0.01, min(float(timeout), REQUEST_TIMEOUT_SECONDS))
+    end = time.monotonic() + timeout
     with socket.create_connection((host, port), timeout=timeout) as connection:
         connection.settimeout(timeout)
+        # The helper proves it holds the session token BEFORE the token or the draft is sent: a
+        # listener that took the port of a helper that died uncleanly (another local user, on a
+        # shared host) cannot answer the challenge, and so learns nothing (owner decision,
+        # 2026-11-04). The nonce makes an old answer useless.
+        nonce = secrets.token_urlsafe(16)
+        connection.sendall((json.dumps({"op": "hello", "nonce": nonce}) + "\n").encode())
+        hello = _read_line(connection)
+        expected = _server_proof(str(state.get("token", "")), nonce)
+        if not isinstance(hello, dict) or not hmac.compare_digest(str(hello.get("proof", "")), expected):
+            raise RelayUnavailable("the relay helper did not prove it holds the session token")
         connection.sendall((json.dumps(message, separators=(",", ":")) + "\n").encode())
-        buffer = b""
-        while b"\n" not in buffer:
-            chunk = connection.recv(65536)
-            if not chunk:
-                raise RelayUnavailable("relay closed the connection")
-            buffer += chunk
-        response = json.loads(buffer.split(b"\n", 1)[0].decode("utf-8"))
+        # One budget for the whole exchange: a hello answered late must not buy the query a
+        # second full timeout.
+        connection.settimeout(max(0.01, end - time.monotonic()))
+        response = _read_line(connection)
     if not isinstance(response, dict):
         raise RelayUnavailable("relay returned a malformed response")
     return cast(RelayResponse, response)
+
+
+def _read_line(connection: socket.socket) -> Any:
+    """One newline-framed JSON document from `connection`."""
+    buffer = b""
+    while b"\n" not in buffer:
+        chunk = connection.recv(65536)
+        if not chunk:
+            raise RelayUnavailable("relay closed the connection")
+        buffer += chunk
+    return json.loads(buffer.split(b"\n", 1)[0].decode("utf-8"))
+
+
+def _server_proof(token: str, nonce: str) -> str:
+    """What only a holder of `token` can answer to `nonce`; labelled so it is no client token."""
+    return hmac.new(token.encode("utf-8"), b"recall-relay-server\0" + nonce.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _wait_for_exit(pid: Any) -> bool:
@@ -442,6 +470,15 @@ def _ensure(
     start = False
     with _state_lock(path, deadline):
         state = _read(path)
+        if (
+            state
+            and state.get("fingerprint") == fingerprint
+            and int(state.get("port", 0) or 0) > 0
+            and not _pid_alive(state.get("pid"))
+        ):
+            # A helper that is gone left its port to whoever binds it next. Never reuse its state.
+            _retire_state_locked(path, state)
+            state = None
         if state and state.get("fingerprint") == fingerprint and int(state.get("port", 0) or 0) > 0:
             # The query itself is the liveness check.  A separate ping adds one loopback
             # round trip to every tool call and still races the query it precedes.  If the helper
@@ -489,7 +526,11 @@ def search(
     if not session_id:
         raise RelayUnavailable("client supplied no session id")
     last_error: Exception | None = None
+    import recall_hooks
+
     deadline = time.monotonic() + SEARCH_BUDGET_SECONDS
+    if recall_hooks.HOOK_STARTED is not None:
+        deadline = min(deadline, recall_hooks.HOOK_STARTED + HOOK_BUDGET_SECONDS)
     for _ in range(2):
         if time.monotonic() >= deadline:
             break
@@ -770,6 +811,12 @@ def _serve(state_path_value: Path, expected_token_digest: str | None = None) -> 
                 request: dict[str, Any] = {}
                 try:
                     request = _read_request(client)
+                    if request.get("op") == "hello":
+                        # Prove this helper holds the token, then read the real request on the
+                        # same connection. A client sends nothing secret until the proof checks.
+                        nonce = str(request.get("nonce", ""))[:256]
+                        client.sendall((json.dumps({"proof": _server_proof(token, nonce)}) + "\n").encode())
+                        request = _read_request(client)
                     response, connection, next_connect, stop_requested, authenticated = _handle_request(
                         request, token, connection, next_connect, config, options, connect
                     )

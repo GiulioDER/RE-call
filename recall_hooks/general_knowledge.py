@@ -126,6 +126,10 @@ MAX_INDEX_BYTES = 1024 * 1024
 MAX_INDEX_ENTRIES = 256
 MAX_ENTRY_CHARS = 16384
 MAX_ENTRY_ITEMS = 32
+#: The most `command_regex` triggers one index may carry; later ones are dropped at load (owner
+#: decision, 2026-11-04). Every regex is compiled and validated when the index loads, on every
+#: shell call, and the per-entry caps alone admitted 8,192 of them (3.1 s measured at the caps).
+MAX_COMMAND_REGEXES = 256
 MAX_PRUNE_FILES = 128
 PRUNE_INTERVAL_SECONDS = 3600
 CLAIM_LOCK_TIMEOUT_SECONDS = 0.5
@@ -405,6 +409,28 @@ def _entry(raw: Any) -> Entry | None:
     return Entry(ident, kind, scope, triggers, symptoms, body)
 
 
+def _capped_regexes(records: list[Any]) -> list[Any]:
+    """`records` with every `command_regex` trigger past `MAX_COMMAND_REGEXES` removed, in order."""
+    seen = 0
+    capped: list[Any] = []
+    for record in records:
+        triggers = record.get("triggers") if isinstance(record, dict) else None
+        # An oversize list passes untouched: `_entry` rejects it before compiling anything, and
+        # trimming it here would let a record that is malformed today load.
+        if not isinstance(triggers, list) or len(triggers) > MAX_ENTRY_ITEMS:
+            capped.append(record)
+            continue
+        kept = []
+        for trigger in triggers:
+            if isinstance(trigger, dict) and "command_regex" in trigger:
+                seen += 1
+                if seen > MAX_COMMAND_REGEXES:
+                    continue
+            kept.append(trigger)
+        capped.append({**record, "triggers": kept})
+    return capped
+
+
 def load_index(home: Path | None = None) -> list[Entry]:
     """Read `index.json` under `home` (default `knowledge_home()`). Never raises.
 
@@ -425,7 +451,7 @@ def load_index(home: Path | None = None) -> list[Entry]:
         records = document.get("entries")
         if not isinstance(records, list) or len(records) > MAX_INDEX_ENTRIES:
             return []
-        return [e for e in map(_entry, records) if e is not None]
+        return [e for e in map(_entry, _capped_regexes(records)) if e is not None]
     except (OSError, ValueError):
         return []
     except Exception:  # BROAD-CATCH: fail-open
@@ -571,8 +597,72 @@ def _name_from_gitdir_file(directory: Path, dot_git: Path) -> str | None:
     return directory.name or None
 
 
+def repository_scope(cwd: str) -> str | None:
+    """The project a `project:` scope is compared with: the origin remote's `owner/name`, else
+    the repository folder's name (`repository_name`), else None. Never raises.
+
+    The remote, not the folder name, is the boundary (owner decision, 2026-11-04): a fork, a
+    scratch clone or another owner's project with the same folder name must not receive a
+    project's curated operational entries. Read from git's own config file, with no subprocess,
+    because this runs on every shell call. A checkout with no origin remote falls back to its
+    folder name, which is all it has.
+    """
+    name = repository_name(cwd)
+    if name is None:
+        return None
+    try:
+        identity = _origin_identity(Path(os.path.abspath(cwd)))
+    except Exception:  # BROAD-CATCH: fail-open
+        identity = None
+    return identity or name
+
+
+def _origin_identity(start: Path) -> str | None:
+    """`owner/name` of the `origin` remote of the repository holding `start`, or None."""
+    for directory in (start, *start.parents):
+        dot_git = directory / ".git"
+        if dot_git.is_dir():
+            git_dir = dot_git
+            break
+        if dot_git.is_file():
+            with dot_git.open("rb") as handle:
+                first = handle.read(4096).decode("utf-8").splitlines()[:1]
+            if not first or not first[0].startswith("gitdir:"):
+                return None
+            target = first[0][len("gitdir:") :].strip()
+            git_dir = Path(target if os.path.isabs(target) else os.path.join(directory, target))
+            break
+    else:
+        return None
+    common = git_dir / "commondir"
+    if common.is_file():
+        raw = common.read_text(encoding="utf-8").strip()
+        git_dir = Path(raw if os.path.isabs(raw) else os.path.join(git_dir, raw))
+    config = git_dir / "config"
+    if not config.is_file():
+        return None
+    in_origin = False
+    with config.open("rb") as handle:
+        text = handle.read(256 * 1024).decode("utf-8", "replace")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_origin = stripped.replace(" ", "") in ('[remote"origin"]',)
+            continue
+        if in_origin and stripped.split("=", 1)[0].strip().lower() == "url" and "=" in stripped:
+            from . import repo_identity
+
+            return repo_identity(stripped.split("=", 1)[1].strip())
+    return None
+
+
 def in_scope(entry: Entry, project: str | None) -> bool:
-    """`global` is always in scope; `project:<name>` only when `name` is the current project."""
+    """`global` is always in scope; `project:<name>` only when `name` is the current project.
+
+    `project` is `repository_scope`'s answer: `owner/name` for a checkout with an origin remote,
+    so an entry for a project with a remote is scoped `project:owner/name`, written exactly as
+    the remote spells it (the comparison is case-sensitive, as it always was).
+    """
     if entry.scope == "global":
         return True
     prefix = "project:"
@@ -1398,7 +1488,7 @@ def pre_tool_use_context(payload: dict[str, Any]) -> str | None:
         if not load_settings()["enabled"]:
             return None
         cwd = payload.get("cwd")
-        project = repository_name(cwd) if isinstance(cwd, str) else None
+        project = repository_scope(cwd) if isinstance(cwd, str) else None
         entries = [e for e in load_index() if in_scope(e, project)]
         if not entries:
             return None
@@ -1465,7 +1555,7 @@ def post_tool_use_failure(payload: dict[str, Any]) -> int:
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
         command = command if isinstance(command, str) else ""
         cwd = payload.get("cwd")
-        project = repository_name(cwd) if isinstance(cwd, str) else None
+        project = repository_scope(cwd) if isinstance(cwd, str) else None
         session = payload.get("session_id")
         session = session if isinstance(session, str) else ""
         signature = failure_signature(command, error)
