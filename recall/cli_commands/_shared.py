@@ -17,6 +17,9 @@ from recall.trust import terminal_safe, trusted_search
 from recall.trust_policy import TrustPolicy
 from recall.types import TrustedResult
 
+#: The published calibration guide. The wheel ships no `docs/`, so a pip user can open only this.
+CALIBRATION_DOC_URL = "https://github.com/GiulioDER/RE-call/blob/master/docs/CALIBRATION.md"
+
 
 def _make_embedder(name: str) -> Embedder:
     """Resolve any spelling `resolve_embedder` accepts, not just the two built-ins.

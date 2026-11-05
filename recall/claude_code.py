@@ -61,7 +61,6 @@ import sys
 
 from recall.db_constants import DEFAULT_TABLE
 from recall.dsn_security import redacted_dsn
-import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -873,10 +872,32 @@ def _write_hook_config(
 
 
 def _backup(path: Path) -> Path:
-    """Copy a file the client owns before editing it, once per second at worst."""
-    backup = path.with_name(f"{path.name}.recall-backup-{int(time.time())}")
-    if not backup.exists():
-        shutil.copy2(path, backup)
+    """Copy a file the client owns before editing it, into a file this call creates.
+
+    The name comes from the uninstaller's `_backup_path`, so the timestamped backups share one
+    scheme; a same-second name used to be skipped, leaving a second edit with no backup.
+
+    ⛔ Created with `O_EXCL | O_NOFOLLOW` at 0600, as the uninstaller writes its backup of the same
+    `~/.claude.json`: that file carries the client's bearer tokens, and `copy2` followed a symlink
+    planted at the predictable name, overwrote `_backup_path`'s reusable `.last` fallback and
+    created the copy at the umask default. A name already taken raises, so the edit it protects
+    does not go ahead without a backup.
+    """
+    from recall.wizard.uninstall import _backup_path
+
+    backup = _backup_path(path)
+    content = path.read_bytes()
+    flags = (
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    )
+    descriptor = os.open(backup, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+    except BaseException:
+        backup.unlink(missing_ok=True)
+        raise
     return backup
 
 

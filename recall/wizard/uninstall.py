@@ -785,8 +785,9 @@ def _unregister_locked(names: Sequence[str], project_root: Path, config_path: Pa
         # ⛔ **A backup first, and it must NOT clobber the install-time one.** `register_local_scope`
         # writes `<name>.recall-backup` before its own atomic replace, so copying that fixed name
         # here overwrote the only copy of the file from before recall ever touched it — with the
-        # already-rewritten content, at the moment it is most likely to be wanted. `claude_code.py`
-        # already had the right pattern and this now matches it: a timestamped name, never reused.
+        # already-rewritten content, at the moment it is most likely to be wanted. The name comes
+        # from `_backup_path` below, which `wiring.register_local_scope` and `claude_code._backup`
+        # use too, and it is created exclusively so that no earlier backup is replaced.
         #
         # 🔁 This used to say "`copy2` and not `write_text`", and the `os.open` rewrite below
         # falsified it: the backup is now written through a descriptor opened at 0600, so the mode

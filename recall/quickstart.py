@@ -336,7 +336,7 @@ def next_steps(dsn: str, *, provisioned: bool, compose_path: Path | None) -> tup
     lines = [
         "Next, in the order most people want them:",
         "  index your own notes    recall setup        (a separate corpus from this demo)",
-        "  fit a real threshold    recall setup        (the demo threshold above is not one)",
+        "  fit a real threshold    recall wizard       (the demo threshold above is not one)",
         "  give it to Claude Code  recall setup        (registers the MCP server and hooks)",
     ]
     if provisioned:
