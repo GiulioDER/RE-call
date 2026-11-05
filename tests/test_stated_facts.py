@@ -939,7 +939,7 @@ def test_perf002_a_forget_between_chunks_is_seen_by_the_next_chunk(
     monkeypatch.setenv("RECALL_STATED_FACT_SOURCES", "none")
     refreshed(store, folder)  # indexed, nothing stated yet
     monkeypatch.delenv("RECALL_STATED_FACT_SOURCES")
-    monkeypatch.setattr(stated, "_STATED_LOCK_CHUNK", 1, raising=False)
+    monkeypatch.setattr(stated, "_STATED_LOCK_CHUNK", 1)
     holds: list[bool] = []
     real_lock = LiteFactLedger.erasure_lock
 
@@ -993,3 +993,43 @@ def test_bug001_a_failure_after_a_recorded_chunk_says_what_was_recorded(
     assert report.memos_read == 2, report
     assert report.facts_stated == -1, report
     assert "the first 1 statement(s) were processed before it (at least 1 recorded)" in report.reason, report.reason
+
+
+def test_perf001_the_served_check_asks_the_generation_first() -> None:
+    """2026-11-05 deferred pass PERF-001: the stated reconcile's served check (`_vanished`) asked
+    the full resolver, which on PostgreSQL reads every generation of the tenant, for every source
+    of every chunk. It now asks the reconcile's own generation first (`sources_in_generation`, an
+    index probe) and sends only what that does not hold to the resolver, so the answer is the
+    same and the common case reads nothing more. A store without the probe (lite, the legacy
+    store) is asked as before.
+
+    Red proof: with `_vanished` mutated to skip the probe (`present = set()`), every source went to
+    the resolver and `assert resolved == [["s3://b.md"]]` failed with `[['s3://a.md', 's3://b.md']]`.
+    """
+    import recall.stated_facts as stated
+
+    resolved: list[list[str]] = []
+
+    class Generations:
+        def sources_in_generation(self, generation_id: str, sources: list[str]) -> set[str]:
+            assert generation_id == "gen-1"
+            return {s for s in sources if s == "s3://a.md"}
+
+        def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+            resolved.append(identifiers)
+            return {s: [s] for s in identifiers if s == "s3://c.md"}
+
+    gone = stated._vanished(Generations(), {"s3://a.md", "s3://b.md"}, "gen-1")
+    assert resolved == [["s3://b.md"]]
+    assert gone == {"s3://b.md"}
+    resolved.clear()
+    assert stated._vanished(Generations(), {"s3://a.md"}, "gen-1") == set()
+    assert resolved == []
+
+    class Legacy:
+        def sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
+            resolved.append(identifiers)
+            return {"s3://c.md": ["s3://c.md"]}
+
+    assert stated._vanished(Legacy(), {"s3://c.md", "s3://d.md"}, "gen-1") == {"s3://d.md"}
+    assert resolved == [["s3://c.md", "s3://d.md"]]

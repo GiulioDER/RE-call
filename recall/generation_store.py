@@ -1174,6 +1174,22 @@ class GenerationStore(PgVectorStore):
         """
         return set(self.served_sources_for_identifiers(identifiers))
 
+    def sources_in_generation(self, generation_id: str, sources: list[str]) -> set[str]:
+        """The `sources` (source URIs) that `generation_id` holds a chunk of: one probe of
+        `recall_chunks_v1_source_idx`, for the stated-facts reconcile's served check
+        (`recall.stated_facts._vanished`), which asks it once per chunk of statements."""
+        wanted = list(dict.fromkeys(sources))
+        if not wanted:
+            return set()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT source_uri FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s AND source_uri = ANY(%s)",
+                (self._tenant, generation_id, wanted),
+            ).fetchall()
+        )
+        return {str(row[0]) for row in rows}
+
     def served_sources_for_identifiers(self, identifiers: list[str]) -> dict[str, list[str]]:
         """Resolve identifiers (`file` or `source_uri`) to source URIs in the pinned generation only.
 

@@ -69,6 +69,13 @@ _log = get_logger("stated_facts")
 #: refresh follows and PostgreSQL states nothing.
 STATED_FACT_SOURCES_ENV = "RECALL_STATED_FACT_SOURCES"
 
+#: Statements recorded per hold of the erasure lock (`_reconcile`), each chunk checking again which
+#: memos are still served. On PostgreSQL a forget therefore waits at most this many appends. On lite
+#: every production caller (index, refresh, the MCP index path) already holds the file's write lane
+#: across the whole reconcile, and the lane is reentrant, so releasing it per chunk frees nothing: a
+#: forget there still waits for the whole run (2026-11-05 audit, ENV-001).
+_STATED_LOCK_CHUNK = 100
+
 
 def _under(path: Path, root: Path) -> bool:
     # Matches a source against configured stating prefixes; no file is read.
@@ -516,13 +523,6 @@ def _reconcile(store: Any, rule: StatingRule, write_env: Mapping[str, str] | Non
     return report
 
 
-#: Statements recorded per hold of the erasure lock (`_reconcile`), each chunk checking again which
-#: memos are still served. On PostgreSQL a forget therefore waits at most this many appends. On lite
-#: every production caller (index, refresh, the MCP index path) already holds the file's write lane
-#: across the whole reconcile, and the lane is reentrant, so releasing it per chunk frees nothing: a
-#: forget there still waits for the whole run (2026-11-05 audit, ENV-001).
-_STATED_LOCK_CHUNK = 100
-
 
 def _record_statements(
     store: Any,
@@ -545,7 +545,7 @@ def _record_statements(
     from recall.fact_retraction import FACT_WRITE_DSN_ENV
     from recall.lite import LiteStore
 
-    gone = _vanished(store, {source_of[card.card_id] for _fact, card, _rid in todo})
+    gone = _vanished(store, {source_of[card.card_id] for _fact, card, _rid in todo}, generation_id)
     before = len(todo)
     todo = [item for item in todo if source_of[item[1].card_id] not in gone]
     dropped = before - len(todo)
@@ -579,11 +579,24 @@ def _record_statements(
                 "recording stated facts for tenant %r failed: %s; nothing more was recorded%s",
                 store.tenant, report.reason, hint,
             )
-            return dropped
+            break
     return dropped
 
 
-def _vanished(store: Any, sources: set[str]) -> set[str]:
-    """The `sources` the store no longer holds a chunk of."""
-    found = store.sources_for_identifiers(sorted(sources)) if sources else {}
-    return {source for source in sources if not found.get(source)}
+def _vanished(store: Any, sources: set[str], generation_id: str) -> set[str]:
+    """The `sources` the store no longer holds a chunk of.
+
+    A store that can say which sources the reconcile's own generation still holds
+    (`GenerationStore.sources_in_generation`, an index probe) is asked first; only the sources it
+    does not find go to the full resolver, which reads every generation, the adopted legacy table
+    and the manifest. Asked for every source of every chunk of a first activation, that resolver
+    scanned the tenant's chunk rows once per chunk (2026-11-05 deferred pass, PERF-001). A source
+    the generation holds is one the resolver finds too, so the answer is unchanged.
+    """
+    if not sources:
+        return set()
+    probe = getattr(store, "sources_in_generation", None)
+    present = probe(generation_id, sorted(sources)) if callable(probe) else set()
+    rest = sources - present
+    found = store.sources_for_identifiers(sorted(rest)) if rest else {}
+    return {source for source in rest if not found.get(source)}
