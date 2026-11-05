@@ -450,6 +450,43 @@ def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
         return cached
 
 
+def _protected_parent_ids(dense: Sequence[ScoredChunk]) -> list[str]:
+    """The five distinct dense parents a rescue may never displace."""
+
+    if len(dense) < 5:
+        raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
+    ids = [hit.chunk.id for hit in dense[:5]]
+    if len(set(ids)) != 5:
+        raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
+    return ids
+
+
+def _query_view_scores(np: Any, artifact: AtomicRescueArtifact, query_vector: Sequence[float]) -> Any:
+    """Every view's cosine with one admitted query vector."""
+
+    query: Any = np.asarray(query_vector, dtype=np.float32)
+    if query.ndim != 1 or query.shape[0] != artifact.dimension:
+        raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
+    norm = float(np.linalg.norm(query))
+    if not math.isfinite(norm) or norm == 0.0:
+        raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
+    scores = _view_scores(artifact, np.ascontiguousarray(query / norm, dtype=np.float32))
+    if not np.all(np.isfinite(scores)):
+        raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
+    return scores
+
+
+def _excluded_views(np: Any, artifact: AtomicRescueArtifact, chunk_ids: Sequence[str]) -> Any:
+    """A mask of every view whose parent is one of ``chunk_ids``."""
+
+    excluded: Any = np.zeros(artifact.view_count, dtype=np.bool_)
+    for chunk_id in chunk_ids:
+        code = artifact.code_by_chunk_id.get(chunk_id)
+        if code is not None:
+            excluded |= artifact.parent_codes == code
+    return excluded
+
+
 def select_atomic_rescue(
     artifact: AtomicRescueArtifact,
     query_vector: Sequence[float],
@@ -474,28 +511,9 @@ def _select_atomic_rescue_unlocked(
         raise AtomicRescueArtifactError(
             "atomic rescue requires the recall-rag[atomic] optional dependency"
         ) from exc
-    if len(dense) < 5:
-        raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
-    dense_ids = [hit.chunk.id for hit in dense[:5]]
-    if len(set(dense_ids)) != 5:
-        raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
-    query: Any = np.asarray(query_vector, dtype=np.float32)
-    if query.ndim != 1 or query.shape[0] != artifact.dimension:
-        raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
-    norm = float(np.linalg.norm(query))
-    if not math.isfinite(norm) or norm == 0.0:
-        raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
-    query = np.ascontiguousarray(query / norm, dtype=np.float32)
-    scores = _view_scores(artifact, query)
-    if not np.all(np.isfinite(scores)):
-        raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
-
-    excluded: Any = np.zeros(artifact.view_count, dtype=np.bool_)
-    for chunk_id in dense_ids:
-        code = artifact.code_by_chunk_id.get(chunk_id)
-        if code is not None:
-            excluded |= artifact.parent_codes == code
-    valid = ~excluded
+    dense_ids = _protected_parent_ids(dense)
+    scores = _query_view_scores(np, artifact, query_vector)
+    valid = ~_excluded_views(np, artifact, dense_ids)
     if not np.any(valid):
         raise AtomicRescueSelectionError("atomic rescue has no parent outside dense top five")
     best_score = np.max(scores[valid])
@@ -532,22 +550,11 @@ def atomic_rescue_reference_parity(
         raise AtomicRescueArtifactError(
             "atomic rescue requires the recall-rag[atomic] optional dependency"
         ) from exc
-    if len(dense) < 5:
-        raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
-    dense_ids = [hit.chunk.id for hit in dense[:5]]
-    if len(set(dense_ids)) != 5:
-        raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
-    query: Any = np.asarray(query_vector, dtype=np.float32)
-    if query.ndim != 1 or query.shape[0] != artifact.dimension:
-        raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
-    norm = float(np.linalg.norm(query))
-    if not math.isfinite(norm) or norm == 0.0:
-        raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
-    query = np.ascontiguousarray(query / norm, dtype=np.float32)
-    scores = _view_scores(artifact, query)
-    if not np.all(np.isfinite(scores)):
-        raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
+    dense_ids = _protected_parent_ids(dense)
+    scores = _query_view_scores(np, artifact, query_vector)
 
+    # Excluded by chunk id with a full sort, not through the selectors' parent-code mask, so the
+    # oracle stays an independent check of the selection; only input validation is shared.
     excluded = set(dense_ids)
     order = sorted(
         range(artifact.view_count),
@@ -689,17 +696,8 @@ def _select_gated_unlocked(
         raise AtomicRescueSelectionError("gated atomic rescue requires at least one probe")
     if gate_rank < 1:
         raise AtomicRescueSelectionError("gated atomic rescue gate rank must be positive")
-    if len(protected) < 5:
-        raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
-    protected_ids = [hit.chunk.id for hit in protected[:5]]
-    if len(set(protected_ids)) != 5:
-        raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
-    excluded: Any = np.zeros(artifact.view_count, dtype=np.bool_)
-    for chunk_id in protected_ids:
-        code = artifact.code_by_chunk_id.get(chunk_id)
-        if code is not None:
-            excluded |= artifact.parent_codes == code
-    valid = ~excluded
+    protected_ids = _protected_parent_ids(protected)
+    valid = ~_excluded_views(np, artifact, protected_ids)
     if not np.any(valid):
         raise AtomicRescueSelectionError("atomic rescue has no parent outside dense top five")
 
@@ -707,17 +705,11 @@ def _select_gated_unlocked(
     for probe_index, (vector, dense) in enumerate(probes):
         if len(dense) < gate_rank:
             raise AtomicRescueSelectionError("gated atomic rescue probe lacks its gate window")
-        query: Any = np.asarray(vector, dtype=np.float32)
-        if query.ndim != 1 or query.shape[0] != artifact.dimension:
-            raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
-        norm = float(np.linalg.norm(query))
-        if not math.isfinite(norm) or norm == 0.0:
-            raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
-        scores = _view_scores(
-            artifact, np.ascontiguousarray(query / norm, dtype=np.float32)
-        )
-        if not np.all(np.isfinite(scores)):
-            raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
+        # A NaN gate score makes a NaN margin, which neither beats nor loses to anything, so it
+        # would hold `best` and pass the refusal below: the gate cannot decide, so refuse.
+        if not math.isfinite(float(dense[gate_rank - 1].score)):
+            raise AtomicRescueSelectionError("gated atomic rescue gate score is nonfinite")
+        scores = _query_view_scores(np, artifact, vector)
         best_score = np.max(scores[valid])
         tied = np.flatnonzero(valid & (scores == best_score))
         winner = min(
@@ -758,11 +750,7 @@ def insert_gated_atomic_rescue_dense(
     gated = select_gated_atomic_rescue(artifact, probes, dense, gate_rank=gate_rank)
     if gated is None:
         return list(dense), None
-    rescue = hit_loader(gated.selection.chunk_id, gated.selection.score)
-    if rescue is None or rescue.chunk.id != gated.selection.chunk_id:
-        raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
-    later = [hit for hit in dense[5:] if hit.chunk.id != gated.selection.chunk_id]
-    return [*dense[:5], rescue, *later], gated
+    return place_atomic_selection_dense(gated.selection, dense, hit_loader), gated
 
 
 def select_view_gated_atomic_rescue(
@@ -788,22 +776,8 @@ def select_view_gated_atomic_rescue(
             raise AtomicRescueArtifactError(
                 "atomic rescue requires the recall-rag[atomic] optional dependency"
             ) from exc
-        if len(dense) < 5:
-            raise AtomicRescueSelectionError("atomic rescue requires five dense candidates")
-        protected_ids = [hit.chunk.id for hit in dense[:5]]
-        if len(set(protected_ids)) != 5:
-            raise AtomicRescueSelectionError("atomic rescue dense prefix repeats a parent")
-        query: Any = np.asarray(query_vector, dtype=np.float32)
-        if query.ndim != 1 or query.shape[0] != artifact.dimension:
-            raise AtomicRescueSelectionError("atomic rescue query dimension mismatch")
-        norm = float(np.linalg.norm(query))
-        if not math.isfinite(norm) or norm == 0.0:
-            raise AtomicRescueSelectionError("atomic rescue query has nonfinite or zero norm")
-        scores = _view_scores(
-            artifact, np.ascontiguousarray(query / norm, dtype=np.float32)
-        )
-        if not np.all(np.isfinite(scores)):
-            raise AtomicRescueSelectionError("atomic rescue produced nonfinite scores")
+        protected_ids = _protected_parent_ids(dense)
+        scores = _query_view_scores(np, artifact, query_vector)
         excluded: Any = np.zeros(artifact.view_count, dtype=np.bool_)
         protected_best: list[float] = []
         for chunk_id in protected_ids:
@@ -851,11 +825,7 @@ def insert_view_gated_atomic_rescue_dense(
     gated = select_view_gated_atomic_rescue(artifact, query_vector, dense)
     if gated is None:
         return list(dense), None
-    rescue = hit_loader(gated.selection.chunk_id, gated.selection.score)
-    if rescue is None or rescue.chunk.id != gated.selection.chunk_id:
-        raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
-    later = [hit for hit in dense[5:] if hit.chunk.id != gated.selection.chunk_id]
-    return [*dense[:5], rescue, *later], gated
+    return place_atomic_selection_dense(gated.selection, dense, hit_loader), gated
 
 
 def atomic_rescue_expectation_parity(

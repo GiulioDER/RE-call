@@ -48,6 +48,14 @@ RECALL_MULTIMODAL_EMBED_PROFILE=voyage-multimodal-3.5-v1
 VOYAGE_API_KEY=...
 ```
 
+The embedder needs `voyageai>=0.3` and Pillow, which the `voyage` extra alone does not install:
+`pip install "recall-rag[voyage]" "voyageai>=0.3" pillow`. Without Pillow an image over Voyage's
+pixel or byte limit cannot be fitted, so Voyage refuses the whole request holding it; the
+embedder logs `voyage_multimodal_images_unfitted` at construction when Pillow is missing.
+
+The object root must be an `s3://` or `file://` URI with an absolute path prefix; an enabled
+tenant with any other root refuses to start.
+
 The fixed tenant and profile cannot be renamed through environment configuration.
 `RECALL_MULTIMODAL_MAX_MEDIA_BYTES`, `RECALL_MULTIMODAL_MAX_RESPONSE_BYTES`, and
 `RECALL_MULTIMODAL_MAX_ITEMS` are validated at startup and may only lower the module bounds, but

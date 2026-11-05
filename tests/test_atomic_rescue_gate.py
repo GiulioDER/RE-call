@@ -138,3 +138,23 @@ def test_a_probe_without_its_gate_window_is_refused(tmp_path: Path) -> None:
     artifact = _artifact(tmp_path, [("x", _axis(2))])
     with pytest.raises(AtomicRescueSelectionError, match="gate window"):
         select_gated_atomic_rescue(artifact, [(_axis(0), SERVED[:3])], SERVED)
+
+
+def test_a_nonfinite_gate_score_is_refused_not_admitted(tmp_path: Path) -> None:
+    """A NaN at the gate rank must refuse, never admit (CCA hunt STAKES-002).
+
+    Invariant: the window-rank gate admits a rescue only on a measured, non-negative margin.
+    Failure mode: ``margin = best - nan`` is NaN, which neither beats a later probe nor fails
+    ``margin < 0.0``, so the first probe's NaN held ``best`` and the rescue was returned.
+
+    Red proof, 2026-11-06, against the pre-fix ``_select_gated_unlocked`` (no finite check on
+    ``dense[gate_rank - 1].score``): ``Failed: DID NOT RAISE``, the call returned a selection
+    with ``margin=nan``.
+    """
+    from recall.atomic_rescue import AtomicRescueSelectionError
+
+    view = _unit([0.3, 0.0, 0.0, 0.0, 0.0, 0.0, (1 - 0.09) ** 0.5, 0.0])
+    artifact = _artifact(tmp_path, [("x", view)])
+    nan_window = _dense(["p", "q", "r", "s", "t"], [0.9, 0.8, 0.7, 0.6, float("nan")])
+    with pytest.raises(AtomicRescueSelectionError, match="gate score is nonfinite"):
+        select_gated_atomic_rescue(artifact, [(_axis(0), nan_window)], SERVED)
