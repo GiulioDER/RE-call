@@ -8,6 +8,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from recall.confinement import within
 from recall.observability import get_logger
 
 _LOG = get_logger("desktop.uploads")
@@ -88,11 +89,8 @@ def delete_staged_sources(tenant: str, sources: Iterable[str]) -> int:
         raw = str(source)
         if raw.startswith("file://"):
             raw = url2pathname(urlsplit(raw).path)
-        try:
-            path = Path(raw).resolve()
-        except (OSError, ValueError):
-            continue
-        if not path.is_relative_to(uploads_root):
+        path = within(uploads_root, raw)
+        if path is None:
             continue
         try:
             path.unlink()

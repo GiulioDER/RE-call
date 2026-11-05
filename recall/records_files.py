@@ -37,6 +37,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from recall.confinement import within
 from recall.document import parse_document
 from recall.frontmatter import MARKDOWN_SUFFIXES, RECORD_KEY, supersedes_targets, validity_bounds
 from recall.records import (
@@ -263,8 +264,8 @@ def _memo_files(root: Path) -> list[tuple[Path, os.stat_result | OSError]]:
                 if path.suffix.lower() not in _MEMO_SUFFIXES:
                     continue
                 if entry.is_symlink():
-                    target = path.resolve()
-                    if not target.is_relative_to(resolved_root):
+                    target = within(resolved_root, path)
+                    if target is None:
                         continue
                     status = target.stat()
                 else:

@@ -312,6 +312,8 @@ def _stated_marker(store: LiteStore, roots: Sequence[Path]) -> str | None:
 
 def _key_base(root: Path, key_root: Path | None) -> Path:
     """What a file under `root` is named relative to: `key_root` when `root` lies under it."""
+    # Picks the key root for stored names; no file is read.
+    # ast-grep-ignore: containment-via-confined
     return key_root if key_root is not None and root.is_relative_to(key_root) else root
 
 
@@ -526,6 +528,8 @@ def _refresh_locked(
                 security_context=security_context,
             )
             for root in roots:
+                # Picks the key root for stored names; no file is read.
+                # ast-grep-ignore: containment-via-confined
                 keys = key_root if key_root is not None and root.is_relative_to(key_root) else None
                 stats = indexer.index_path(root, files=allowed[root], key_root=keys)
                 report.indexed_files += stats.files

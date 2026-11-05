@@ -786,6 +786,8 @@ def artifact_tree_sha256(path: str | Path, *, follow_file_symlinks: bool = False
         raise ValueError(f"model artifact has no files: {root}")
     for file in files:
         resolved = file.resolve(strict=True)
+        # Applies the caller's follow_file_symlinks policy to a strictly resolved file.
+        # ast-grep-ignore: containment-via-confined
         escapes = root.is_dir() and not resolved.is_relative_to(root)
         if escapes and not follow_file_symlinks:
             raise ValueError(f"model artifact symlink escapes its root: {file}")

@@ -1,0 +1,10 @@
+id: containment-via-confined
+valid:
+  - path = confined(root, name)
+  - outside = within(root, path) is None
+  - path.relative_to(root)
+  - is_relative_to(path, root)
+invalid:
+  - outside = not path.is_relative_to(root)
+  - ok = (root / name).resolve().is_relative_to(root.resolve())
+  - return any(path.is_relative_to(r) for r in roots)

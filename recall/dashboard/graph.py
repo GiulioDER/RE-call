@@ -24,7 +24,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from recall.dashboard.review import anchored, build_queue, memo_files
+from recall.confinement import anchored, within
+from recall.dashboard.review import build_queue, memo_files
 from recall.document import parse_document
 from recall.frontmatter import encodable_name, supersedes_key, supersedes_targets, validity_bounds
 from recall.lint import LintIssue, lint_corpus
@@ -151,8 +152,8 @@ def build_graph(
         for match in _MD_LINK.finditer(text):
             if anchored(match.group(1)):
                 continue  # never resolve a UNC or absolute target: see `anchored`
-            candidate = (path.parent / match.group(1)).resolve()
-            if candidate.is_relative_to(root):
+            candidate = within(root, path.parent / match.group(1))
+            if candidate is not None:
                 relative = candidate.relative_to(root).as_posix()
                 if relative in nodes or relative in names:
                     add_edge(name, relative, "link")

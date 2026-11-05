@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from recall.anchors import code_sha, normalize, resolve_symbols
 from recall.cache import EmbeddingCache, embed_with_cache
+from recall.confinement import within
 from recall.context import ContextPolicy, StructuredChunk, contextual_passages
 from recall.embedding_registry import context_version_for
 from recall.control_plane import ControlPlane
@@ -547,11 +548,8 @@ def _confined_with_stats(root: Path, paths: Iterable[Path]) -> list[tuple[Path, 
     """
     kept: list[tuple[Path, os.stat_result]] = []
     for p in paths:
-        try:
-            resolved = p.resolve()
-        except (OSError, RuntimeError):  # pathlib before 3.13 raises RuntimeError for link loops
-            continue
-        if not resolved.is_relative_to(root):
+        resolved = within(root, p)
+        if resolved is None:
             continue
         try:
             found = resolved.stat()
@@ -1086,6 +1084,8 @@ class Indexer:
         root_is_dir = root.is_dir()
         if key_root is not None:
             keys = Path(key_root).resolve()
+            # Compares two configured roots to pick the key root; no file is read.
+            # ast-grep-ignore: containment-via-confined
             if not root.is_relative_to(keys):
                 raise ValueError(f"key_root {str(keys)!r} does not contain {str(root)!r}")
             # `root` is resolved and every file was walked from it, so each is under `keys` too.
@@ -1693,6 +1693,8 @@ class Indexer:
         """
         def under_root(source: str) -> bool:
             try:
+                # Selects the stored sources a prune may remove; no file is read.
+                # ast-grep-ignore: containment-via-confined
                 return Path(source).is_relative_to(root)
             except (OSError, ValueError):  # pragma: no cover - unparsable stored path
                 return False
@@ -1717,6 +1719,8 @@ class Indexer:
             if stat_module.S_ISREG(found.st_mode):
                 return False
             try:
+                # Selects the stored sources a prune may remove; no file is read.
+                # ast-grep-ignore: containment-via-confined
                 return Path(source).resolve().is_relative_to(root)
             except (OSError, ValueError, RuntimeError):
                 return False

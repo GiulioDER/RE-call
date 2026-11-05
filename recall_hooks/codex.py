@@ -33,10 +33,11 @@ def _session_path(data: dict[str, Any], session: object = None) -> Path | None:
     if raw.startswith("\\\\?\\"):
         raw = raw[4:]
     from recall.codex import codex_home
+    from recall.confinement import within
 
     root = (codex_home() / "sessions").resolve()
-    path = Path(raw).resolve()
-    if path.is_relative_to(root) and path.name.endswith(f"-{session}.jsonl"):
+    path = within(root, raw)
+    if path is not None and path.name.endswith(f"-{session}.jsonl"):
         return path
     return None
 

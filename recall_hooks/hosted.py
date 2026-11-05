@@ -271,6 +271,8 @@ def scan(
     Hosted sync supplies its file limit and an ``oversize`` list so refused files
     are named before their contents can accumulate in memory or reach the screen.
     """
+    from recall.confinement import within
+
     found: dict[str, Change] = {}
     oversized: set[str] = set()
     note = skipped if skipped is not None else {}
@@ -285,7 +287,7 @@ def scan(
             if path.is_symlink() or not path.is_file():
                 continue
             name = f"{root_id}/{path.relative_to(root).as_posix()}"
-            if not path.resolve().is_relative_to(real_root):
+            if within(real_root, path) is None:
                 note[name] = "reached through a link that leaves the memory directory"
                 continue
             if name in found or name in note or name in oversized:
@@ -906,6 +908,8 @@ def sync_memory_roots(
     for name, change in local.items():
         root = next(
             path for root_id, path in roots
+            # Maps a change back to the root it was found under; no file is read.
+            # ast-grep-ignore: containment-via-confined
             if change.path.is_relative_to(path)
             and name == f"{root_id}/{change.path.relative_to(path).as_posix()}"
         )

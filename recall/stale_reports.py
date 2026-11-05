@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from recall.confinement import confined
 from recall.errors import RecallError
 from recall.frontmatter import encodable_name
 from recall.rewrite import RejectionLedger, RewriteRefused, claim_key, default_ledger_path
@@ -146,8 +147,8 @@ def resolve_memo(root: Path, name: str) -> tuple[str, Path]:
     candidate = Path(name.strip())
     if candidate.is_absolute():
         raise StaleReportRefused(f"{name!r} must be a path relative to the corpus root")
-    path = (root / candidate).resolve()
-    if not path.is_relative_to(root):
+    path = confined(root, candidate)
+    if path is None:
         raise StaleReportRefused(f"{name!r} is outside the corpus root")
     relative = path.relative_to(root)
     if relative.parts and relative.parts[0] == _SIDECAR_DIR:
