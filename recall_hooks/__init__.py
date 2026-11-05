@@ -648,6 +648,13 @@ def main(argv: list[str] | None = None) -> int:
     adapter) keeps its earlier stamp and clears it itself.
     """
     global HOOK_STARTED
+    # Every hook runs in the session's directory, which may be a repository nobody here wrote.
+    # Windows CreateProcess searches the current directory before PATH for a bare name such as
+    # `git`, `powershell` or `taskkill`, so a `git.exe` committed at a repository's root would run
+    # instead of git. This variable turns that search off for every child this process starts;
+    # elsewhere it is inert. Nothing here guarantees the client already set it.
+    # First, before anything that could start a child (tests/test_entry_points_refuse_cwd_executables.py).
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
     owned = HOOK_STARTED is None
     if owned:
         HOOK_STARTED = time.monotonic()
@@ -669,12 +676,6 @@ def _dispatch(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
         return 0
-    # Every hook runs in the session's directory, which may be a repository nobody here wrote.
-    # Windows CreateProcess searches the current directory before PATH for a bare name such as
-    # `git`, `powershell` or `taskkill`, so a `git.exe` committed at a repository's root would run
-    # instead of git. This variable turns that search off for every child this process starts;
-    # elsewhere it is inert. Nothing here guarantees the client already set it.
-    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
     if args[0] in {"login", "logout", "auth-headers"}:
         return _auth_command(args)
     if args[0] == "warm-auditor-brief":

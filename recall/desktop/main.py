@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from recall._env import refuse_current_directory_executables
 from recall.desktop.models import RuntimeMode, RuntimeProfile
 from recall.desktop.profiles import load_profile
 from recall.desktop.ui import run_app
@@ -22,6 +23,7 @@ def install_main(argv: list[str] | None = None) -> int:
     inside the running desktop app instead of crashing with "A QApplication instance already
     exists".
     """
+    refuse_current_directory_executables()
     parser = argparse.ArgumentParser(prog="recall-install")
     parser.add_argument(
         "--data-root",
@@ -255,6 +257,7 @@ def uninstall_main(
     collaborators: the decision logic here is what needs testing, and it should not require a
     dialog to exercise. The Qt implementations are the defaults.
     """
+    refuse_current_directory_executables()
     parser = argparse.ArgumentParser(prog="recall-uninstall")
     parser.add_argument(
         "--data-root",
@@ -316,6 +319,7 @@ def uninstall_main(
 
 
 def main(argv: list[str] | None = None) -> int:
+    refuse_current_directory_executables()
     parser = argparse.ArgumentParser(prog="recall-desktop")
     parser.add_argument("--profile", help="path to a runtime profile JSON")
     args = parser.parse_args(argv)

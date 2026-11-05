@@ -376,6 +376,9 @@ def _cmd_status(control: ControlPlane, tenant: str | None, as_json: bool) -> int
 
 
 def main() -> None:
+    from recall._env import refuse_current_directory_executables
+
+    refuse_current_directory_executables()
     args = _parser().parse_args()
     dsn = _dsn(args.command)
     control = ControlPlane(dsn)

@@ -418,7 +418,7 @@ class LocalDatabaseRuntime(RuntimeManager):
         if tenant not in self._gateways:
             self._gateways[tenant] = SdkMcpGateway(
                 self.profile,
-                command=[sys.executable, "-m", "recall_mcp.server"],
+                command=[sys.executable, "-P", "-m", "recall_mcp.server"],
                 env=self._env_for(tenant),
             )
         return self._gateways[tenant]
@@ -588,6 +588,8 @@ class DockerRuntime(RuntimeManager):
         command = ["docker", "compose", "-f", compose]
         if self.profile.compose_project:
             command.extend(["-p", self.profile.compose_project])
+        # Inside the container, whose working directory is the image's own, not a user's checkout.
+        # ast-grep-ignore: python-module-run-with-safe-path
         command.extend(["exec", "-T", self._service_for_tenant(tenant), "python", "-m", "recall_mcp.server"])
         gateway = SdkMcpGateway(self.profile, command=command)
         self._gateways[tenant] = gateway

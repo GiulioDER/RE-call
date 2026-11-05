@@ -1,0 +1,9 @@
+id: python-module-run-with-safe-path
+valid:
+  - command = [sys.executable, "-P", "-m", "recall_mcp.server"]
+  - args = ["-I", "-m", HOOK_MODULE, "session-start"]
+  - names = ["-n", "3"]
+invalid:
+  - command = [sys.executable, "-m", "recall_mcp.server"]
+  - args = ["-m", "recall_mcp.server"]
+  - run([sys.executable, '-m', REPORT_MODULE, "--json"])

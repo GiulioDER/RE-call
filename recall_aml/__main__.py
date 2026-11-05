@@ -315,6 +315,9 @@ def configure_logging(stream: TextIO | None = None) -> None:
 def main() -> None:
     import uvicorn
 
+    from recall._env import refuse_current_directory_executables
+
+    refuse_current_directory_executables()
     configure_logging()
     settings = HostedSettings.from_env()
     uvicorn.run(build_app(settings), host=settings.host, port=settings.port, workers=1)

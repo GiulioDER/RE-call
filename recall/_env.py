@@ -112,6 +112,19 @@ def load_dotenv(path: str | Path = ".env") -> None:
         os.environ[key] = val
 
 
+def refuse_current_directory_executables() -> None:
+    """Stop every child this process starts from running an executable found in the working directory.
+
+    Windows CreateProcess searches the current directory before PATH for a bare name such as `git`,
+    `docker` or `powershell`, so a `git.exe` committed at the root of a repository somebody cloned
+    would run in place of git. This variable turns that search off for every child this process
+    starts; elsewhere it is inert. Every console script calls it first (M2,
+    `tests/test_entry_points_refuse_cwd_executables.py`); `recall_hooks` sets the variable inline
+    rather than import this package on every hook.
+    """
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
+
+
 def truthy(raw: str | None) -> bool:
     """The one affirmative-boolean vocabulary for environment values.
 

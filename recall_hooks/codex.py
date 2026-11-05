@@ -176,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
 
     import recall_hooks
 
+    # As `recall_hooks.main` does, and for its reason: the hook runs in the session's directory.
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
     owned = recall_hooks.HOOK_STARTED is None
     if owned:
         recall_hooks.HOOK_STARTED = time.monotonic()
