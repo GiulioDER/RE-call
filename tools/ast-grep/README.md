@@ -14,6 +14,7 @@ ast-grep scan          # the tree; exits 1 on an error-level match
 | `no-secret-valued-cli-flag` | no CLI flag takes a key, token, secret or password as its value; name the environment variable instead (`--api-key-env`) |
 | `benchmark-indexer-without-cache` | no `Indexer` in `benchmarks/` gets the embedding cache unless a suppression says why |
 | `python-module-run-with-safe-path` | in the production packages, a `python -m` launch passes `-P` or `-I`, so the working directory cannot shadow the installed package |
+| `root-of-only-in-source-identity` | a document's root is derived only through `recall.source_identity.source_identity`, never by calling `root_of` directly |
 
 ## Adding a rule
 
@@ -41,3 +42,10 @@ belongs in a Python checker under `scripts/`.
 
 - Narrowing the safe flag from `-[PI]` to `-P` made the `-I` valid case fail (`[Noisy]`).
 - Removing `-P` from `recall/desktop/runtime.py`'s MCP server launch made `scan` exit 1 there.
+
+## Red proof for `root-of-only-in-source-identity` (2026-11-04, ast-grep 0.51.0)
+
+- Narrowing the regex to `^root_of$` failed the `supersession.root_of(...)` invalid case
+  (`[Missing]`).
+- Deleting the rule's `ignores:` entry made `scan` exit 1 on `recall/source_identity.py`, the one
+  place the call belongs.

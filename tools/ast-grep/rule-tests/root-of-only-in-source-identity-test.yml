@@ -1,0 +1,9 @@
+id: root-of-only-in-source-identity
+valid:
+  - source_identity(source, file).root
+  - root_key(source, file)
+  - self.root_of_tree(path)
+invalid:
+  - root_of(source, file)
+  - root_of(source_location(source), file)
+  - supersession.root_of(chunk.source, name)
