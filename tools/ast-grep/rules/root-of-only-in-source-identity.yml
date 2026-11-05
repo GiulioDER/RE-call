@@ -1,0 +1,18 @@
+id: root-of-only-in-source-identity
+language: python
+severity: error
+ignores:
+  - recall/source_identity.py
+message: Derive a document's root through recall.source_identity.source_identity, not root_of.
+note: |
+  A memo is stored under several spellings (a file:// URI or a plain path, NFC or NFD, a
+  backslash), and three call sites once derived its root three different ways, so one memo
+  could read as two roots at one site and one root at another. CCA counted 42 confirmed
+  `identity-mismatch` findings in RE-call, 11 of them P1 (2026-11-04). `source_identity`
+  decodes the location, decodes an escaped file only when it matches the URI, and NFC-folds
+  both halves; calling root_of directly skips all three.
+rule:
+  kind: call
+  has:
+    field: function
+    regex: (^|\.)root_of$

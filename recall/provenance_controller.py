@@ -765,8 +765,9 @@ class ErasureLockLedger(Protocol):
     """A ledger that orders applications against erasures (`PostgresFactLedger.erasure_lock`).
 
     `apply_fact` holds it shared for each of its passes (the fresh search between them runs
-    without it), the stated reconcile holds it shared around its whole write, and a forget or
-    withdraw holds it exclusively. `apply_stated` takes none: its caller holds it, and a nested
+    without it), the stated reconcile holds it shared for each chunk of its statements
+    (`recall.stated_facts._STATED_LOCK_CHUNK`), from that chunk's served-memo check to its last
+    write, so a forget can run between two chunks, and a forget or withdraw holds it exclusively. `apply_stated` takes none: its caller holds it, and a nested
     PostgreSQL shared hold would queue behind a waiting forget and deadlock (DOC-005)."""
 
     def erasure_lock(self, *, shared: bool) -> AbstractContextManager[Any]: ...
@@ -1781,8 +1782,8 @@ class ProvenanceController:
         projection lists both as contested. A refusal writes nothing, because a card failing these
         checks is the caller's defect, not a decision about the fact. It does not take the
         ledger's erasure lock: its caller (`recall.stated_facts.reconcile_stated_facts`) holds it
-        from its served-memo check to its last write, and a second shared hold queued behind a
-        waiting forget would deadlock PostgreSQL.
+        for each chunk of statements, from that chunk's served-memo check to its last write, and a
+        second shared hold queued behind a waiting forget would deadlock PostgreSQL.
         """
         request = FactApplicationRequest(fact, (card.card_id,), request_id)
         if (

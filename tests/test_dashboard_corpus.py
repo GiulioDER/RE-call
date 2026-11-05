@@ -216,10 +216,12 @@ def test_view_two_escapes_and_reads_the_current_tenant(root: Path, monkeypatch: 
 
 
 def test_the_corpus_switch_lists_the_main_corpora(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """P3."""
-    tenants = [{"tenant": name, "generation": "g"} for name in ("memory", "re-call-code-gen", "re-call-docs", "amb-bench-1", "amb-bench-2")]
+    """P3, with the main corpora pinned since they are no longer built in (ENV-013)."""
+    names = ("memory", "re-call-code-gen", "re-call-docs", *(f"amb-bench-{i}" for i in range(1, 10)))
+    tenants = [{"tenant": name, "generation": "g"} for name in names]
     monkeypatch.setattr(dbq, "tenants", lambda db: tenants)
-    app = DashboardApp(root, port=8765, token="tok", db=DashboardDB("postgresql://fake"))
+    pinned = (("memory", "memory"), ("re-call-code-gen", "code"), ("re-call-docs", "docs"))
+    app = DashboardApp(root, port=8765, token="tok", db=DashboardDB("postgresql://fake"), pinned_tenants=pinned)
     body = app.handle("GET", "/graph?corpus=amb-bench-2", SIGNED).body.decode()
     switch = body.split("class='corpus-switch'", 1)[1].split("</div>", 1)[0]
     assert "corpus=re-call-code-gen" in switch and "corpus=amb-bench-2" in switch
