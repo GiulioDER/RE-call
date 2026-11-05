@@ -3,8 +3,8 @@
 Why the server and not an OS scheduler or a file watcher: it is the only process that reads the
 store, it runs exactly when somebody may search, and every client (Claude Code, Codex, an agent's
 memory provider) starts the same server. A scheduled task fires when nobody searches and needs an
-installer per platform; a watcher needs a new dependency. Design: recall-lab
-`research/designs/2026-10-12-lite-auto-refresh.md`.
+installer per platform; a watcher needs a new dependency. The design record (2026-10-12) is
+private.
 
 Two triggers:
 

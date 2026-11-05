@@ -1,7 +1,7 @@
 """How much evidence to return, decided from what retrieval found.
 
 A long PDF answers badly from five chunks. Measured on 114 held-out MMLongBench-Doc questions
-(recall-lab PI-3, 2026-09-29), handing the reader the top 20 chunks instead of `recall_evidence`'s
+(a private study, 2026-09-29), handing the reader the top 20 chunks instead of `recall_evidence`'s
 default 5 raised judged accuracy from 0.290 to 0.421 (+0.132 [+0.061, +0.202]), and accuracy was
 flat past 20. Memos, markdown and conversational memory showed no such effect elsewhere
 (BEAM, 2026-09-24), so the wider budget applies only when the results come from paged documents.

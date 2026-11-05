@@ -15,8 +15,7 @@ gc retract.
 Who may state facts is the operator's decision, by location, never the memo's (`StatingRule`):
 the memo is written by whoever's trust is in question. On PostgreSQL stating is opt-in: a
 promote, a rollback and an index of the legacy table record facts only where the operator names
-places (`GenerationManager.record_stated_facts`). Design: recall-lab
-`research/designs/2026-10-15-stated-facts-reach-the-ledger.md`.
+places (`GenerationManager.record_stated_facts`). The design record (2026-10-15) is private.
 """
 
 from __future__ import annotations
