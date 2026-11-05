@@ -8,6 +8,7 @@ restart behavior of the local process boundary.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -224,7 +225,9 @@ def test_ensure_serializes_concurrent_first_start(monkeypatch, tmp_path):
     state = {
         "host": "127.0.0.1",
         "port": 1234,
-        "pid": 1,
+        # A live pid: `_ensure` retires a state whose helper is gone (SEC-005, 2026-11-04), and
+        # pid 1 is not this user's process.
+        "pid": os.getpid(),
         "token": "token",
         "fingerprint": relay._fingerprint({"dsn": "dsn"}, {"k": 5, "connect_timeout": 2}),
     }

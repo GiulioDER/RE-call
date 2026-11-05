@@ -34,7 +34,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+import time
+from urllib.parse import urlsplit
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -46,6 +49,30 @@ HOOK_CONFIG_NAME = "recall-hook.json"
 # Keep the installer contract and the hook's malformed-config fallback in one place.  This
 # package is already imported by both callers, so the shared tuple adds no import to the hot path.
 WRITE_TIME_CONNECTION_MODES = ("cold", "relay")
+
+#: `[user@]host:path`; the host needs two characters, so a Windows drive path is not read as one.
+SCP_REMOTE_RE = re.compile(r"^(?:[\w.-]+@)?[\w.-]{2,}:(?!//)(.+)$")
+
+
+def repo_identity(url: str) -> str | None:
+    """`owner/name` from a remote URL (https, ssh, or scp-like with or without a user), or None."""
+    url = url.strip().rstrip("/")
+    url = url.removesuffix(".git")
+    scp = SCP_REMOTE_RE.match(url)
+    if "://" in url:
+        path = urlsplit(url).path
+    elif scp:
+        path = scp.group(1)
+    else:
+        path = url
+    parts = [part for part in path.replace("\\", "/").split("/") if part]
+    return "/".join(parts[-2:]) if len(parts) >= 2 else None
+
+
+#: When this hook process began handling its event (`time.monotonic()`), set by `main` and by the
+#: Codex adapter. The client's hook timeout counts from process start, so a budget measured from
+#: some later call, as the relay's once was, can run past it. None outside a hook process.
+HOOK_STARTED: float | None = None
 
 
 def claude_config_home() -> Path:
@@ -276,6 +303,13 @@ def _unsynced_notice(config: dict[str, Any]) -> str:
             f"are ({names}{more}): over the size cap, unreadable, or named in a way the server "
             "refuses. Nothing was modified on disk. "
         )
+    root = config.get("project_root")
+    if not isinstance(root, str) or not root.strip():
+        # Not silent: hosted sync is bound to `project_root` and refuses every event without one.
+        return (
+            "WARNING: hosted memory sync is not running: the hook config names no project_root, "
+            "so no memos are uploaded. Add the absolute path of this project as project_root. "
+        )
     if not pending or not error:
         return ""
     remedy = {
@@ -405,7 +439,14 @@ def _index_and_refresh(payload: dict[str, Any]) -> int:
         # charged to a session launch, and a local-mode install never pays it at all.
         try:
             from .hosted import sync_memory_roots
+            from .write_time import _event_is_in_configured_project
         except ImportError:
+            return 0
+        # The same project boundary as the local path below (owner decision, 2026-11-04): an
+        # upload cannot be taken back, so a session ending in some other checkout, a cloned
+        # third-party repository with a `memory/` folder say, uploads nothing. A hosted config
+        # that names no `project_root` uploads nothing either; SessionStart says so.
+        if not _event_is_in_configured_project(config, payload):
             return 0
         roots = memory_dirs(str(cwd), str(config.get("memory_root", "")))
         if roots:
@@ -600,6 +641,24 @@ def _pre_tool_use(payload: dict[str, Any]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one hook event, with `HOOK_STARTED` stamped for exactly that event (see `_dispatch`).
+
+    The stamp is cleared when the event ends, so it can never outlive the event it times: a
+    stale one would put every later deadline in the past. A caller that stamped first (the Codex
+    adapter) keeps its earlier stamp and clears it itself.
+    """
+    global HOOK_STARTED
+    owned = HOOK_STARTED is None
+    if owned:
+        HOOK_STARTED = time.monotonic()
+    try:
+        return _dispatch(argv)
+    finally:
+        if owned:
+            HOOK_STARTED = None
+
+
+def _dispatch(argv: list[str] | None = None) -> int:
     """Dispatch for `python -m recall_hooks <event>`, invoked by the hooks themselves.
 
     Also carries the four subcommands a person runs rather than a hook: `login`, `logout`,

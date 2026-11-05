@@ -22,7 +22,10 @@ def _isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
 
 
-HOSTED = {"endpoint": "https://mcp.example.test/mcp", "tenant": "t", "account": "a@example.test"}
+# `project_root` since the 2026-11-04 owner decision (STAKES-004): hosted sync is bound to it,
+# and SessionStart warns when a hosted config names none.
+HOSTED = {"endpoint": "https://mcp.example.test/mcp", "tenant": "t", "account": "a@example.test",
+          "project_root": "/hosted-fixture-project"}
 LOCAL = {"dsn": "postgresql://user:pw@localhost/recall", "tenant": "t"}
 
 
@@ -117,7 +120,7 @@ def test_a_hosted_config_syncs_and_never_touches_a_dsn(
     (cwd / "memory" / "a.md").write_text("# A\n\nBody.\n", encoding="utf-8")
 
     seen: dict[str, object] = {}
-    monkeypatch.setattr(recall_hooks, "load_config", lambda: HOSTED)
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: {**HOSTED, "project_root": str(tmp_path)})
 
     from recall_hooks import hosted
 
@@ -136,7 +139,7 @@ def test_the_hook_returns_zero_even_when_the_sync_explodes(
     """⛔ A hook that raises takes a session down. Whatever the transport does, this returns 0."""
     cwd = tmp_path / "work"
     (cwd / "memory").mkdir(parents=True)
-    monkeypatch.setattr(recall_hooks, "load_config", lambda: HOSTED)
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: {**HOSTED, "project_root": str(tmp_path)})
 
     from recall_hooks import hosted
 
@@ -217,7 +220,7 @@ def test_a_stop_request_is_not_swallowed(tmp_path: Path, monkeypatch: pytest.Mon
     must not extend to Ctrl-C, which is the user asking for this process to end."""
     cwd = tmp_path / "work"
     (cwd / "memory").mkdir(parents=True)
-    monkeypatch.setattr(recall_hooks, "load_config", lambda: HOSTED)
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: {**HOSTED, "project_root": str(tmp_path)})
 
     from recall_hooks import hosted
 
@@ -238,7 +241,7 @@ def test_a_cancelled_scope_does_not_kill_the_session(
 
     cwd = tmp_path / "work"
     (cwd / "memory").mkdir(parents=True)
-    monkeypatch.setattr(recall_hooks, "load_config", lambda: HOSTED)
+    monkeypatch.setattr(recall_hooks, "load_config", lambda: {**HOSTED, "project_root": str(tmp_path)})
 
     from recall_hooks import hosted
 

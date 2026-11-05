@@ -171,6 +171,22 @@ def _normalise(payload: object, event: str) -> dict[str, object]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one Codex hook, stamping `recall_hooks.HOOK_STARTED` for the event's whole budget."""
+    import time
+
+    import recall_hooks
+
+    owned = recall_hooks.HOOK_STARTED is None
+    if owned:
+        recall_hooks.HOOK_STARTED = time.monotonic()
+    try:
+        return _main(argv)
+    finally:
+        if owned:
+            recall_hooks.HOOK_STARTED = None
+
+
+def _main(argv: list[str] | None = None) -> int:
     """Run one Codex hook while preserving the shared fail-open contract."""
     # Read before stdin: a client that exits while this hook is still reading leaves it
     # reparented, and the later parent (init or a subreaper) is no session's identity.

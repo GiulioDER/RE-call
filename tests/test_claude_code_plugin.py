@@ -175,7 +175,8 @@ def test_the_subcommand_is_one_the_hook_module_dispatches_on(event: str) -> None
 
     import recall_hooks
 
-    source = inspect.getsource(recall_hooks.main)
+    # The event table lives in `_dispatch` since `main` became the wrapper that times one event.
+    source = inspect.getsource(recall_hooks._dispatch)
     assert f'"{EXPECTED_HOOKS[event]}"' in source
 
 
