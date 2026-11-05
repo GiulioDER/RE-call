@@ -9,8 +9,7 @@ earlier version of this docstring justified the order by claiming promotion give
 fresh corpus fingerprint, so a calibration measured afterwards would be `CALIBRATION_STALE`. That is
 false: `corpus_fingerprint` is written only by `GenerationManager.create` and by `forget`, and
 `promote` touches neither, so `CalibrationRepository` explicitly accepts an already-active
-generation. The order is right, the reason was not, and the same false sentence is still at
-`recall/generation_build.py` awaiting the same correction.
+generation. The order is right, the reason was not.
 
 **An uncertified generation is NOT promoted.** This is the correction that most changed the module.
 Promoting anyway looked like the friendly choice, and it is destructive: a calibrated `CorpusSpec` is
@@ -44,7 +43,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from recall.calibration_v2 import CalibrationUncertified
+from recall.calibration_v2 import CalibrationRepository, CalibrationUncertified
 from recall.embeddings import Embedder
 from recall.generation_build import BuildRequest, build_generation, chunker_for
 from recall.generations import (
@@ -56,7 +55,7 @@ from recall.lineage import MANIFEST_SCHEMA_VERSION, IndexManifestV1
 from recall.manifest import LocalObjectReader, ObjectReader
 from recall.wizard.corpora import CorpusSpec
 from recall.wizard.identity import artifact_identity_for
-from recall.wizard.inventory import build_inventory
+from recall.wizard.inventory import build_inventory_report
 from recall.wizard.queryset import (
     DEFAULT_PER_CLASS,
     MIN_PER_CLASS,
@@ -156,15 +155,22 @@ def _labelled_set(
     the headroom "too small to certify" while the message quoted the floor. Measured before the fix:
     39 chunks refused, 40 accepted, against a floor of 20.
 
-    The whole read is inside the try. `chunks_from_directory` raises `QuerySetError` for a missing
-    root, a glob matching nothing and unreadable files, and those were escaping uncaught, which
-    defeated the contract `PipelineRefusal`'s docstring states.
+    The read is converted too. `chunks_from_directory` raises `QuerySetError` for a missing root, a
+    glob matching nothing and unreadable files, and those were escaping uncaught, which defeated
+    the contract `PipelineRefusal`'s docstring states. It is read ONCE, outside the retry: the
+    chunks do not depend on `per_class`, and reading inside the loop walked, read and chunked the
+    whole corpus a second time on exactly the path a large code corpus takes.
     """
+    try:
+        chunks = chunks_from_directory(spec.root, spec.glob, chunker)
+    except QuerySetError as exc:
+        raise PipelineRefusal(
+            f"corpus {spec.tenant!r} at {spec.root} cannot produce a certifiable query set: {exc}"
+        ) from exc
     attempts = [per_class] if per_class <= MIN_PER_CLASS else [per_class, MIN_PER_CLASS]
     last: QuerySetError | None = None
     for attempt in attempts:
         try:
-            chunks = chunks_from_directory(spec.root, spec.glob, chunker)
             return canonicalize(generate_offline(chunks, per_class=attempt, seed=seed)), attempt
         except QuerySetError as exc:
             last = exc
@@ -197,7 +203,9 @@ def _counts(spec: CorpusSpec, entries: list[dict[str, Any]]) -> tuple[int, int]:
     return answerable, unanswerable
 
 
-def _identified_request(spec: CorpusSpec, embedder: Any, project: str | None) -> BuildRequest:
+def _identified_request(
+    spec: CorpusSpec, embedder: Embedder, project: str | None
+) -> BuildRequest:
     """Attach the strongest embedder identity available, or say plainly that there is none.
 
     `lineage_revision`, not `revision`: fastembed serves `BAAI/bge-small-en-v1.5` out of
@@ -238,7 +246,9 @@ def _degraded_reason(
     Both cases also leave the generation READY, holding a full copy of the corpus's chunk rows.
     That is deliberate (it is the evidence, and it can still be promoted), but it is not free and
     the operator is the only one who can decide to reclaim it, so the command is named here rather
-    than left to be discovered when the disk fills.
+    than left to be discovered when the disk fills. The gc carries `--retention-days 0` because
+    `abandon` sets no retirement time, so gc ages the generation from its creation, and the
+    default seven day retention would keep a generation this run just built.
     """
     lead = (
         f"certification failed ({certification_reason}). The generation {generation_id} is built "
@@ -259,7 +269,8 @@ def _degraded_reason(
     return (
         f"{lead}{serving} It still holds a full copy of the corpus, which `recall --tenant "
         f"{shlex.quote(spec.tenant)} generation abandon {generation_id}` releases for "
-        f"`recall --tenant {shlex.quote(spec.tenant)} generation gc`."
+        f"`recall --tenant {shlex.quote(spec.tenant)} generation gc --retention-days 0` "
+        "(which also deletes every other failed or retired generation of that tenant at once)."
     )
 
 
@@ -273,8 +284,8 @@ def run_corpus(
     spec: CorpusSpec,
     *,
     manager: GenerationManager,
-    calibrations: Any,
-    embedder: Embedder | Any,
+    calibrations: CalibrationRepository,
+    embedder: Embedder,
     corpus_version: str,
     reader: ObjectReader | None = None,
     project: str | None = None,
@@ -334,12 +345,22 @@ def run_corpus(
     answerable, unanswerable = _counts(spec, entries)
 
     announce("manifest")
+    inventory = build_inventory_report(spec.root, spec.glob)
+    if inventory.vanished:
+        # Refused rather than built short. The query set above came from an earlier read that
+        # still held these files, and the calibrated fingerprint is computed from this list, so a
+        # build over it would certify fewer files than the corpus holds with nothing saying so.
+        raise PipelineRefusal(
+            f"corpus {spec.tenant!r} at {spec.root} changed while it was being read: "
+            f"{inventory.vanished} file(s) disappeared between the walk and the read. Nothing was "
+            "built; run the install again once the folder is not being edited or synced."
+        )
     manifest = IndexManifestV1.from_dict(
         {
             "schema_version": MANIFEST_SCHEMA_VERSION,
             "tenant_id": spec.tenant,
             "corpus_version": corpus_version,
-            "objects": build_inventory(spec.root, spec.glob),
+            "objects": inventory.entries,
         }
     )
     # Constructed from the corpus root, NOT from `RECALL_LOCAL_ALLOWLIST`.

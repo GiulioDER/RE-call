@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,6 +18,7 @@ from recall.lite.writer_lock import DEFAULT_WAIT_S, WAIT_ENV
 
 if TYPE_CHECKING:
     from recall.index_budget import IndexBudget
+    from recall.lite.refresh import Snapshot
     from recall.security_policy import AccessContext, SourceSecurityPolicy
 
 #: Exit codes. 3 is the embedding queue's "busy", so a script can treat both alike.
@@ -46,7 +48,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     )
     p_refresh.set_defaults(func=_cmd_refresh)
     p_refresh.add_argument("--store", type=Path, default=None,
-                           help="the SQLite file (default: .recall/memory.db in the current directory)")
+                           help="the SQLite file (default: the file a sqlite:/// --serving-dsn, "
+                                "RECALL_SERVING_DSN or RECALL_DSN names, else .recall/memory.db in "
+                                "the current directory)")
     p_refresh.add_argument("--memory", type=Path, action="append", default=None,
                            help="a memo folder; repeatable (default: the folders the store was last "
                                 "refreshed from, else RECALL_INDEX_ROOT, else the current directory, "
@@ -61,11 +65,21 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_refresh.add_argument("--allow-prune", action="store_true",
                            help="accept removing the rows of more than half the indexed memos when "
                                 "their files are gone (the guard refuses it otherwise); never automatic")
-    p_refresh.add_argument("--wait", type=float, default=None,
+    p_refresh.add_argument("--wait", type=_finite_seconds, default=None,
                            help=f"seconds to queue for the write lane (default: {WAIT_ENV['write']}, "
                                 f"{DEFAULT_WAIT_S['write']:.0f})")
     p_refresh.add_argument("--check", action="store_true", help="report what a refresh would find; change nothing")
     p_refresh.add_argument("--json", action="store_true", help="print the report as JSON")
+
+
+def _finite_seconds(value: str) -> float:
+    """`--wait` as a number of seconds, refusing nan and inf as `writer_lock._wait_default` refuses
+    them from the environment: nan would read as "try once" and inf as "wait forever", both
+    silently (CCA NUM-007). A negative value is clamped to 0 downstream, as from the environment."""
+    seconds = float(value)
+    if not math.isfinite(seconds):
+        raise argparse.ArgumentTypeError(f"must be a finite number of seconds, got {value!r}")
+    return seconds
 
 
 def _roots(args: argparse.Namespace, db: Path) -> list[Path]:
@@ -125,15 +139,15 @@ def _budget() -> IndexBudget | None:
         return None
 
 
-def _warn_if_over_budget(roots: list[Path], budget: IndexBudget | None) -> None:
+def _warn_if_over_budget(snap: Snapshot, budget: IndexBudget | None) -> None:
     """A person may index past the budget; the server will not, so say so (CCA SEC-002)."""
     import sys
 
-    from recall.lite.refresh import over_budget, snapshot
+    from recall.lite.refresh import over_budget
 
     if budget is None:
         return
-    refusal = over_budget(snapshot(roots), budget)
+    refusal = over_budget(snap, budget)
     if refusal is not None:
         print(
             f"warning: {refusal.removesuffix(' Nothing was indexed.')} This refresh ran anyway, "
@@ -144,17 +158,24 @@ def _warn_if_over_budget(roots: list[Path], budget: IndexBudget | None) -> None:
 
 
 def _cmd_refresh(args: argparse.Namespace) -> None:
-    from recall.lite.refresh import Outcome, check, refresh
+    from recall.lite.refresh import Outcome, check, policy_key, refresh, snapshot
 
     from recall.lite.inspect import inspect_lite_file
-    from recall.lite.refresh import policy_key
 
+    from recall.lite import is_lite_dsn, lite_dsn_path
     from recall.lite.setup import default_store_path
 
-    db = (args.store or default_store_path(Path.cwd())).resolve()
+    # The store `recall search` and `recall index` follow when no --store is typed: the lite DSN
+    # `recall setup --lite` prints for the shell, else the default in the current directory
+    # (CCA ENV-006).
+    db = (
+        args.store
+        or (lite_dsn_path(args.dsn) if is_lite_dsn(args.dsn) else default_store_path(Path.cwd()))
+    ).resolve()
     roots = _roots(args, db)
     budget = _budget()
     if args.check:
+        # "default" is `LiteStore`'s own default tenant, which is a literal there too.
         policy, context = _policy(inspect_lite_file(db).tenant or "default")
         report = check(db, roots, policy=policy_key(policy, context), budget=budget)
         print(json.dumps(report.to_dict(), indent=2, default=str) if args.json else report.render())
@@ -196,6 +217,9 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
                 remediation="check `recall doctor` and install the extra named by the diagnostic",
             ).render()
         ) from exc
+    # One walk serves both the refresh's change check and the budget warning below (CCA
+    # PERF-004): the memo files are the same before and after, and the walk is the cost.
+    snap = snapshot(roots)
     with LiteStore(db, dim=embedder.dim) as store:
         policy, context = _policy(store.tenant)
         result = refresh(
@@ -208,9 +232,10 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
             security_policy=policy,
             security_context=context,
             key_root=_key_root(db),
+            before=snap,
         )
     print(json.dumps(result.to_dict(), indent=2, default=str) if args.json else result.render())
-    _warn_if_over_budget(roots, budget)
+    _warn_if_over_budget(snap, budget)
     if result.outcome is Outcome.FAILED:
         raise SystemExit(EXIT_FAILED)
     if result.outcome is Outcome.BUSY:

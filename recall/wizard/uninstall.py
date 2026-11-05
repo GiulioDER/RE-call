@@ -26,6 +26,10 @@ that acts before it can be read is one you can only evaluate afterwards.
 reproducible by re-indexing and expensive to rebuild, which makes them exactly the thing somebody
 reinstalling next week wants kept and somebody reclaiming disk wants gone. Guessing either way is
 worse than asking.
+
+**An install onto an existing database has nothing here to take apart.** It created no stack and no
+data folder, so there is no stack file to identify it by and `plan_uninstall` refuses. Its MCP
+server registrations are removed by hand, from the project's entry in `~/.claude.json`.
 """
 
 from __future__ import annotations
@@ -44,11 +48,11 @@ from recall.wizard.stack import (
     COMPOSE_NAME,
     DB_VOLUME,
     DOCKERFILE_NAME,
+    _no_current_directory_search,
     existing_tenants,
     is_generated_dockerfile,
 )
 from recall.errors import RecallError
-from recall.atomic_write import atomic_write_bytes
 from recall.wizard.config_lock import configuration_lock
 
 __all__ = [
@@ -178,6 +182,7 @@ def _run(command: Sequence[str], *, timeout: float = 60.0) -> tuple[int, str]:
     undecodable byte from Docker yields rc=0 with `stdout=None` rather than an exception. On this
     path that would read as a successful removal of something still present.
     """
+    _no_current_directory_search()
     try:
         completed = subprocess.run(
             list(command),
@@ -249,7 +254,16 @@ def _compose_project(
     return name, tuple(str(key) for key in services), tuple(volumes), declares_volumes
 
 
-def _corpus_roots(data_root: Path) -> tuple[tuple[str, Path], ...]:
+def _wizard_config(data_root: Path) -> dict[str, object]:
+    """The config the install was run from, or an empty one when it is missing or unreadable."""
+    try:
+        document = json.loads((data_root / "wizard.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def _corpus_roots(document: dict[str, object]) -> tuple[tuple[str, Path], ...]:
     """The folders the install INDEXES, read back from the config it was run from.
 
     These are the user's own documents, code and agent memory. They are listed so the uninstaller
@@ -257,29 +271,18 @@ def _corpus_roots(data_root: Path) -> tuple[tuple[str, Path], ...]:
     suggests them underneath `data_root`, so somebody who took the defaults has their notes inside
     the directory being uninstalled.
     """
-    config_path = data_root / "wizard.json"
-    try:
-        document = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ()
-    if not isinstance(document, dict):
-        return ()
+    from recall.wizard.corpora import CORPUS_ROOT_KEYS
+
     roots: list[tuple[str, Path]] = []
-    for key in ("docs_root", "code_root", "memory_root"):
+    for key in CORPUS_ROOT_KEYS:
         value = document.get(key)
         if isinstance(value, str) and value:
             roots.append((key, Path(value)))
     return tuple(roots)
 
 
-def _configured_project_root(data_root: Path) -> Path | None:
+def _configured_project_root(document: dict[str, object]) -> Path | None:
     """The project whose MCP client config this install wrote into, if any."""
-    try:
-        document = json.loads((data_root / "wizard.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(document, dict):
-        return None
     value = document.get("project_root")
     return Path(value) if isinstance(value, str) and value else None
 
@@ -411,7 +414,9 @@ def plan_uninstall(
         raise UninstallRefusal(
             f"no recall stack at {data_root}: {COMPOSE_NAME} is not there. Point the uninstaller at "
             "the data folder chosen during installation; it is recorded in that install's "
-            "wizard.json."
+            "wizard.json. An install onto an existing database has no stack or data folder to "
+            "remove: delete its MCP server registrations by hand from the project's entry in "
+            "~/.claude.json."
         )
     try:
         compose_content = compose_path.read_bytes()
@@ -420,6 +425,8 @@ def plan_uninstall(
     project_name, services, declared_volumes, declares_volumes = _compose_project(
         compose_path, compose_content
     )
+    # `_compose_project` has already refused a document that is not an object with a services map.
+    services_spec = json.loads(compose_content)["services"]
 
     items: list[Removable] = []
 
@@ -484,11 +491,49 @@ def plan_uninstall(
             continue
         items.append(Removable("file", str(path), "written by the installer"))
 
+    # ⛔ **The recipes and images the services NAME, read from the stack file.** After a completed
+    # install every service builds from `Dockerfile.recall-<digest>`, not the fixed `Dockerfile`
+    # above, so the fixed list alone removed an orphaned stub and left the live recipe. Only a bare
+    # file name, so inside `data_root`, carrying the generated header is ours.
+    #
+    # The image is LISTED, not removed: its tag is `recall-wizard:<version>`, shared by every
+    # install of that version on this machine, and docker protects it only while containers
+    # exist, so removing it here could take the image of another install that is merely stopped.
+    recipes: list[str] = []
+    images: list[str] = []
+    for service in services_spec.values():
+        if not isinstance(service, dict):
+            continue
+        build = service.get("build")
+        recipe = build.get("dockerfile") if isinstance(build, dict) else None
+        if (
+            isinstance(recipe, str) and recipe not in _INSTALLER_FILES and recipe not in recipes
+            and Path(recipe).name == recipe
+        ):
+            recipes.append(recipe)
+        image = service.get("image")
+        if isinstance(image, str) and image.startswith("recall-wizard:") and image not in images:
+            images.append(image)
+    for recipe in recipes:
+        path = data_root / recipe
+        if path.exists() and is_generated_dockerfile(path):
+            items.append(Removable("file", str(path), "written by the installer"))
+    for image in images:
+        items.append(
+            Removable(
+                "image", image,
+                "built by the installer and shared by every install of this version; remove it "
+                f"with `docker image rm {image}` once no install uses it",
+                removing=False,
+            )
+        )
+
     profile = _profile_for(data_root, profile_path)
     if profile is not None:
         items.append(Removable("file", str(profile), _PROFILE_DETAIL))
 
-    project_root = _configured_project_root(data_root)
+    wizard = _wizard_config(data_root)
+    project_root = _configured_project_root(wizard)
     if project_root is not None:
         config = claude_config_path or _default_claude_config()
         owned = frozenset(existing_tenants(data_root / COMPOSE_NAME))
@@ -496,7 +541,7 @@ def plan_uninstall(
 
     # ⛔ Listed as KEPT, loudly. These are the user's own files, and on a default install they sit
     # inside `data_root`, which is the directory somebody would otherwise expect to be deleted.
-    for key, root in _corpus_roots(data_root):
+    for key, root in _corpus_roots(wizard):
         items.append(
             Removable("file", str(root), f"{key}: your own content, never removed", removing=False)
         )
@@ -605,7 +650,7 @@ def execute(
             if status == 0:
                 report.removed.append(item)
             else:
-                report.failed.append((item, output[:200] or "docker compose down failed"))
+                report.failed.append((item, output[-200:] or "docker compose down failed"))
         if compose_failed and not plan.removing("container"):
             # Nothing was listed to attach the failure to, so the stack itself carries it. Without
             # this the error never reaches the user at all.
@@ -617,7 +662,7 @@ def execute(
                         "the stack's containers",
                         removing=False,
                     ),
-                    output[:200] or "docker compose down failed",
+                    output[-200:] or "docker compose down failed",
                 )
             )
 
@@ -628,7 +673,7 @@ def execute(
         if status == 0 or "no such volume" in output.lower():
             report.removed.append(item)
         else:
-            report.failed.append((item, output[:200]))
+            report.failed.append((item, output[-200:]))
 
     if plan.project_root is not None:
         names = tuple(item.name for item in plan.removing("registration"))
@@ -712,7 +757,7 @@ def _unregister(names: Sequence[str], project_root: Path, config_path: Path) -> 
 
 
 def _unregister_locked(names: Sequence[str], project_root: Path, config_path: Path) -> str | None:
-    from recall.wizard.wiring import _written_by_this_project
+    from recall.wizard.wiring import _write_private_configuration, _written_by_this_project
 
     try:
         original = config_path.read_text(encoding="utf-8")
@@ -783,7 +828,9 @@ def _unregister_locked(names: Sequence[str], project_root: Path, config_path: Pa
                 "Refusing to rewrite it, because that file carries access tokens and the backup is "
                 "the only way back. Nothing was changed."
             )
-        atomic_write_bytes(config_path, (json.dumps(document, indent=2) + "\n").encode("utf-8"))
+        # The registration's own writer, so a hardening of how this credential-bearing file is
+        # written reaches both halves of the round trip.
+        _write_private_configuration(config_path, json.dumps(document, indent=2) + "\n")
     except OSError as exc:
         return f"cannot write {config_path}: {exc}"
     return None

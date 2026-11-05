@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -551,6 +552,11 @@ def _run_quickstart_recording_migrations(monkeypatch, apply) -> list[str]:
         apply(table)
 
     monkeypatch.setattr(recall.schema, "apply_migrations", _apply)
+    # DAT-009 (second CCA hunt): the fallback first asks the ledger whether recall is installed.
+    # These runs model a fresh database, so the ledger records nothing.
+    monkeypatch.setattr(
+        recall.schema, "schema_status", lambda *a, **k: SimpleNamespace(migrations=())
+    )
     monkeypatch.setattr(Q, "provision", lambda *a, **k: pytest.fail("must not provision"))
     monkeypatch.setattr(setup_wizard, "PgVectorStore", lambda *a, **k: _StubStore())
     monkeypatch.setattr(setup_wizard, "Indexer", lambda *a, **k: _StubIndexer())

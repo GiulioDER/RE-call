@@ -157,7 +157,9 @@ def test_state_round_trips_through_the_file(tmp_path: Path) -> None:
     restored = load_state(path, digest="d" * 8)
     assert restored == state, "a state file read back must compare equal to the run that wrote it"
     assert restored.outcome_for("default-docs") is not None
-    assert restored.indexed_for("default-memory") == ("default-memory", 2, 7)
+    assert restored.indexed_for("default-memory") == LegacyIndex(
+        tenant="default-memory", files=2, chunks=7
+    )
 
 
 def test_a_digest_mismatch_forgets_everything(tmp_path: Path) -> None:

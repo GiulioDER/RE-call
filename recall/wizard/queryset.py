@@ -80,6 +80,8 @@ _STOPWORDS = frozenset(
 )
 
 _MIN_TERM_LENGTH = 4
+#: Longer than this reads as a run-together identifier rather than a word anybody would say.
+_MAX_TERM_LENGTH = 24
 _TERMS_PER_QUERY = 3
 
 #: A markdown ATX heading. Setext headings are not matched: `chunk_text` splits on blank lines, so
@@ -108,7 +110,7 @@ def canonicalize(entries: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
     * `trust` entries are dropped. Both `recall/eval/queries.json` and `synthetic.generate` emit
       them, they carry no `answerable` key, and the legacy `recall calibrate` path filters them
-      (`recall/setup.py:1146`) while v2 refuses first.
+      (`recall.setup.calibrate_from_files`) while v2 refuses first.
     * `answerable` must be a real bool. `"yes"` is truthy in Python and rejected by the loader.
     * duplicates are removed, compared case- and whitespace-insensitively, because the loader
       refuses a duplicate outright.
@@ -230,7 +232,7 @@ def chunks_from_directory(
             body = file.read_text(encoding="utf-8", errors="replace")
         except (FileNotFoundError, NotADirectoryError) as exc:
             # Raced away between the walk and the read, so it is not part of the corpus. Skipped
-            # rather than fatal, matching `index_path` (`recall/index.py:575`), because a wizard
+            # rather than fatal, matching `recall.index.Indexer.index_path`, because a wizard
             # is pointed at a live user directory where an editor swap file or a cloud-sync
             # placeholder can vanish mid-run, and aborting the whole install over one is worse
             # than generating questions from the rest.
@@ -287,28 +289,39 @@ def offtopic_subjects_absent_from(texts: Sequence[str]) -> list[str]:
     that overlaps the corpus is the exact failure `synthetic.py` measured: shared vocabulary
     destroys separability, and the resulting calibration is fitted to noise.
     """
-    corpus_words = set(word_tokens(texts))
-    surviving: list[str] = []
-    for subject in _OFFTOPIC_SUBJECTS:
-        content = [w for w in word_tokens([subject]) if len(w) > 3]
-        if not corpus_words.intersection(content):
-            surviving.append(subject)
-    return surviving
+    return _subjects_absent_from(set(word_tokens(texts)))
 
 
-def _pool_collisions(texts: Sequence[str]) -> set[str]:
+def _pool_content_words(subject: str) -> list[str]:
+    """The words of a pool subject that count when matching it against a corpus.
+
+    One definition for the survival filter and the collision report, so the refusal names exactly
+    the words the filter used rather than a second, separately edited length rule.
+    """
+    return [w for w in word_tokens([subject]) if len(w) > 3]
+
+
+def _subjects_absent_from(corpus_words: set[str]) -> list[str]:
+    """`offtopic_subjects_absent_from` over a vocabulary already taken from the corpus."""
+    return [
+        subject
+        for subject in _OFFTOPIC_SUBJECTS
+        if not corpus_words.intersection(_pool_content_words(subject))
+    ]
+
+
+def _pool_collisions(corpus_words: set[str]) -> set[str]:
     """The pool's own content words that this corpus contains, which is what the refusal must name.
 
     A count of surviving subjects says how bad it is. These words say WHY, and the two commonest
     causes are told apart by reading them: a corpus genuinely about food and music, or a corpus
     that has ingested the subject list itself.
     """
-    corpus_words = set(word_tokens(texts))
     return {
         word
         for subject in _OFFTOPIC_SUBJECTS
-        for word in word_tokens([subject])
-        if len(word) > 3 and word in corpus_words
+        for word in _pool_content_words(subject)
+        if word in corpus_words
     }
 
 
@@ -345,7 +358,7 @@ def _is_prose(word: str) -> bool:
     from identifiers retrieves the one chunk that happens to contain that symbol, which looks like
     excellent separability while measuring string matching rather than meaning.
     """
-    if len(word) < _MIN_TERM_LENGTH or len(word) > 24:
+    if len(word) < _MIN_TERM_LENGTH or len(word) > _MAX_TERM_LENGTH:
         return False
     if "_" in word or any(ch.isdigit() for ch in word):
         return False
@@ -409,7 +422,12 @@ def generate_offline(
             f"floor is {MIN_PER_CLASS})."
         )
 
-    subjects = offtopic_subjects_absent_from(chunks)
+    # Tokenized ONCE. The document frequency's keys are exactly the corpus vocabulary, so the
+    # disjointness test and the collision report read them instead of tokenizing the corpus again
+    # into a list holding every word occurrence.
+    df = _document_frequency(chunks)
+    corpus_words = set(df)
+    subjects = _subjects_absent_from(corpus_words)
     capacity = len(subjects) * len(_OFFTOPIC_TEMPLATES)
     if capacity < per_class:
         # The colliding WORDS, not just the count. Without them this refusal said the corpus
@@ -425,7 +443,7 @@ def generate_offline(
         # from 12 to 11 and the words traced to this file. The pool lives in
         # `recall/eval/offtopic_subjects.json` precisely so it is not source; a comment quoting it
         # is source again.
-        collisions = _pool_collisions(chunks)
+        collisions = _pool_collisions(corpus_words)
         sample = ", ".join(sorted(collisions)[:8]) or "none identified"
         raise QuerySetError(
             f"only {len(subjects)} of {len(_OFFTOPIC_SUBJECTS)} off-topic subjects are disjoint "
@@ -438,7 +456,6 @@ def generate_offline(
         )
 
     rng = random.Random(seed)
-    df = _document_frequency(chunks)
     total = len(chunks)
 
     # Sampled without replacement rather than taking the first `per_class`: the head of a corpus

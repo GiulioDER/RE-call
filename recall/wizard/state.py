@@ -11,14 +11,9 @@ fix.
 
 **What identifies "already done" is a digest, not a timestamp.** A recorded outcome is only reusable
 if the thing that produced it would produce the same result now, so the digest covers the inputs that
-invalidate previous work and deliberately excludes the ones that do not:
-
-* `dsn` is IN. A different database has none of the rows.
-* `embedder` is IN. Different vectors mean the generation is not the same artifact.
-* `corpus_version` and `project` are IN. Both are stamped onto every chunk.
-* the three roots are IN. A different directory is a different corpus.
-* `migration_dsn` and `serving_role` are OUT. They decide who applies DDL and who may read it,
-  neither of which changes what was built.
+invalidate previous work and deliberately excludes the ones that do not. The two lists are
+`DIGEST_FIELDS` and `IGNORED_FIELDS` below, each with its reasons, and `test_wizard_state.py`
+asserts that every config field is in one of them.
 
 **The state is written after EVERY corpus, not at the end of the plan.** Writing once at the end
 would lose exactly the case this module exists for: the run that did not reach the end.
@@ -38,9 +33,10 @@ from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from recall.atomic_write import atomic_write_bytes
 from recall.lineage import canonical_sha256
 
-if TYPE_CHECKING:  # pragma: no cover - import cycle, and only the annotation needs it
+if TYPE_CHECKING:  # pragma: no cover (import cycle: `from_dict` imports LegacyIndex at call time)
     from recall.wizard.headless import HeadlessConfig, LegacyIndex
 
 from recall.wizard.pipeline import CorpusOutcome
@@ -89,11 +85,11 @@ class WizardState:
 
     digest: str
     outcomes: tuple[CorpusOutcome, ...] = field(default_factory=tuple)
-    indexed: tuple[tuple[str, int, int], ...] = field(default_factory=tuple)
+    indexed: tuple[LegacyIndex, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "outcomes", tuple(self.outcomes))
-        object.__setattr__(self, "indexed", tuple(tuple(entry) for entry in self.indexed))
+        object.__setattr__(self, "indexed", tuple(self.indexed))
 
     def outcome_for(self, tenant: str) -> CorpusOutcome | None:
         """The recorded outcome for `tenant`, or None.
@@ -107,9 +103,9 @@ class WizardState:
                 return outcome
         return None
 
-    def indexed_for(self, tenant: str) -> tuple[str, int, int] | None:
+    def indexed_for(self, tenant: str) -> LegacyIndex | None:
         for entry in self.indexed:
-            if entry[0] == tenant:
+            if entry.tenant == tenant:
                 return entry
         return None
 
@@ -118,8 +114,8 @@ class WizardState:
         return replace(self, outcomes=(*kept, outcome))
 
     def with_indexed(self, entry: LegacyIndex) -> WizardState:
-        kept = tuple(e for e in self.indexed if e[0] != entry.tenant)
-        return replace(self, indexed=(*kept, (entry.tenant, entry.files, entry.chunks)))
+        kept = tuple(e for e in self.indexed if e.tenant != entry.tenant)
+        return replace(self, indexed=(*kept, entry))
 
     def to_dict(self) -> dict[str, Any]:
         from dataclasses import asdict
@@ -128,7 +124,8 @@ class WizardState:
             "schema_version": 1,
             "digest": self.digest,
             "outcomes": [asdict(o) for o in self.outcomes],
-            "indexed": [list(e) for e in self.indexed],
+            # The JSON shape is the one the old tuple produced, so existing files still load.
+            "indexed": [[e.tenant, e.files, e.chunks] for e in self.indexed],
         }
 
     @classmethod
@@ -148,6 +145,8 @@ class WizardState:
             raw.get("indexed", []), list
         ):
             return None
+        from recall.wizard.headless import LegacyIndex
+
         known = {f.name for f in fields(CorpusOutcome)}
         outcomes: list[CorpusOutcome] = []
         for item in raw.get("outcomes") or ():
@@ -162,14 +161,14 @@ class WizardState:
                 outcomes.append(CorpusOutcome(**{k: v for k, v in item.items() if k in known}))
             except (TypeError, ValueError):
                 return None
-        indexed: list[tuple[str, int, int]] = []
+        indexed: list[LegacyIndex] = []
         for item in raw.get("indexed") or ():
             if not (isinstance(item, list) and len(item) == 3):
                 return None
             tenant, files, chunks = item
             if not isinstance(tenant, str) or not isinstance(files, int) or not isinstance(chunks, int):
                 return None
-            indexed.append((tenant, files, chunks))
+            indexed.append(LegacyIndex(tenant=tenant, files=files, chunks=chunks))
         return cls(digest=digest, outcomes=tuple(outcomes), indexed=tuple(indexed))
 
 
@@ -183,7 +182,8 @@ def load_state(path: Path, *, digest: str) -> WizardState:
     """
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        # ValueError covers JSONDecodeError and a file that is not UTF-8 alike.
         return WizardState(digest=digest)
     state = WizardState.from_dict(raw)
     if state is None or state.digest != digest:
@@ -196,10 +196,9 @@ def save_state(path: Path, state: WizardState) -> None:
 
     A partial write is worse than no write: `from_dict` would reject it and the whole run's progress
     would be discarded on the next attempt, which is the failure this module exists to prevent.
+
+    The shared writer also fsyncs before the swap and creates a new file 0600: the digest is taken
+    over the DSN, password included, so the file is no more public than the config beside it.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(
-        json.dumps(state.to_dict(), indent=2) + "\n", encoding="utf-8", newline="\n"
-    )
-    temporary.replace(path)
+    atomic_write_bytes(path, (json.dumps(state.to_dict(), indent=2) + "\n").encode("utf-8"))
