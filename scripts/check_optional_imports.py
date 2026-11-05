@@ -66,7 +66,7 @@ PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
     "rerank": ("sentence_transformers",),
     "s3": ("boto3",),
     "sparse": ("transformers", "torch"),
-    "voyage": ("voyageai",),
+    "voyage": ("voyageai", "PIL"),
     "desktop": (
         "PySide6",
         "keyring",

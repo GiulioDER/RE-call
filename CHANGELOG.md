@@ -805,7 +805,8 @@ list as an ordered upgrade procedure.
   and the sdist no longer carry `recall_aml`, the `hosted` extra or the `recall-hosted` console
   script, which served one benchmark deployment and are not needed to use RE-call. No shipped
   module imports it, and its source stays in the repository. `pip install "recall-rag[hosted]"` now
-  only warns that the extra does not exist.
+  only warns that the extra does not exist. The `voyage` extra now declares Pillow, which
+  `recall.multimodal` uses and which only `hosted` declared; Voyage already installed it.
 
 * **The QNLI entailment judge is gone (breaking).** It was an optional, off by default stage that
   demoted hits a `cross-encoder/qnli-distilroberta-base` model judged as not answering the query.

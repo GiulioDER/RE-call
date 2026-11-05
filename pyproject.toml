@@ -136,7 +136,9 @@ mcp = [
 # would raise TypeError before the dim probe on an environment that already had it.
 # `requests` is what `recall._voyage_http` speaks HTTP with, stated rather than inherited from
 # voyageai. The SDK itself stays: its version is part of every Voyage profile's identity.
-voyage = ["voyageai>=0.2.2", "requests>=2.31"]
+# `recall.multimodal` fits images with Pillow for the Voyage multimodal embedder. voyageai already
+# requires pillow; it is declared here because the `hosted` extra, which declared it, is gone.
+voyage = ["voyageai>=0.2.2", "requests>=2.31", "pillow>=10"]
 # Operators enabling the generation-bound atomic rescue artifact install this extra explicitly.
 # NumPy is also a core dependency now (LiteStore); it stays listed here so the extra states what
 # atomic rescue needs on its own.
