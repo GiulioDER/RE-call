@@ -12,8 +12,8 @@ network use `db:5432`. Those are the same database, and that is the whole point 
 port.
 
 **`data_root` holds the stack; the DATABASE lives on a named volume.** The user's chosen directory
-holds the compose file, the generated Dockerfile and `.env` — everything they need to inspect or
-stop their own install — but not the index.
+holds the compose file and the generated Dockerfile, everything they need to inspect or stop their
+own install, but not the index.
 
 🔁 **This paragraph asserted the opposite until 2026-08-19, and the measurement it carried is what
 made the wrong half read as authoritative.** It said the database was bind mounted into `data_root`
@@ -45,6 +45,7 @@ environment but is NOT a declared dependency of this project and so cannot be re
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
 import subprocess
@@ -71,6 +72,29 @@ DB_IMAGE = "pgvector/pgvector:pg18"
 #: Where the database lives. A named volume inside the Docker VM; see `compose_document` for the
 #: measured reason it is not a bind mount into the user's chosen directory.
 DB_VOLUME = "pgdata"
+
+#: The stack database's role, password and database name. One definition for `compose_document`,
+#: its healthcheck and both DSN helpers, so a change to one cannot leave a DSN naming a role the
+#: container never created.
+DB_USER = "recall"
+DB_PASSWORD = "recall"  # noqa: S105 (the local-only development credential; see `host_dsn`)
+DB_NAME = "recall"
+
+#: The highest TCP port.
+MAX_PORT = 65535
+
+
+def _no_current_directory_search() -> None:
+    """Turn off Windows' current-directory search for the bare-name programs started next.
+
+    `docker`, `wsl`, `systeminfo` and `nvidia-smi` run by bare name from here, `uninstall` and
+    `probe`, and Windows CreateProcess (and `shutil.which`) searches the current directory before
+    PATH for such a name, so a `docker.exe` in the folder the installer was launched from would run
+    in place of Docker. `recall.cli.main` sets this for the CLI, but the desktop console scripts
+    reach the same calls without passing through it. Both read the PARENT process's environment, so
+    a child `env=` would not help; elsewhere it is inert.
+    """
+    os.environ["NoDefaultCurrentDirectoryInExePath"] = "1"
 
 
 def _default_image() -> str:
@@ -140,7 +164,7 @@ DEFAULT_PORT = 5487
 class StackSpec:
     """What to generate. Every field is a decision the user or the wizard already made."""
 
-    #: The user's chosen location. Holds the compose file, the generated Dockerfile and `.env`; the
+    #: The user's chosen location. Holds the compose file and the generated Dockerfile; the
     #: database itself is on the named volume, not here (see the module docstring). Still required
     #: absolute, and the reason is now Compose's rather than the user's: a relative path is resolved
     #: against whatever directory invoked `docker compose`, not against this file.
@@ -165,7 +189,7 @@ class StackSpec:
                 "resolves against whatever directory the installer happened to run from, so the "
                 "user's index would land somewhere they did not choose and cannot find again"
             )
-        if not 1 <= self.port <= 65535:
+        if not 1 <= self.port <= MAX_PORT:
             raise ValueError(f"port must be a TCP port, not {self.port}")
         if not self.tenants:
             raise ValueError("a stack with no tenants would start a database nothing can reach")
@@ -182,14 +206,14 @@ class StackSpec:
 # SECURITY.md documents as local-only. Not a secret being leaked: it is the value the wizard
 # must reproduce to reach the database it just started. `warn_if_insecure_dsn` is what
 # catches these reaching a remote host.
-def host_dsn(port: int, *, user: str = "recall", password: str = "recall") -> str:  # noqa: S107
+def host_dsn(port: int, *, user: str = DB_USER, password: str = DB_PASSWORD) -> str:
     """The address a HOST process uses: the wizard, and every MCP server it registers."""
-    return f"postgresql://{user}:{password}@127.0.0.1:{port}/recall"
+    return f"postgresql://{user}:{password}@127.0.0.1:{port}/{DB_NAME}"
 
 
-def container_dsn(*, user: str = "recall", password: str = "recall") -> str:  # noqa: S107
+def container_dsn(*, user: str = DB_USER, password: str = DB_PASSWORD) -> str:
     """The address a service INSIDE the compose network uses. Same database, shorter path."""
-    return f"postgresql://{user}:{password}@db:{DB_INTERNAL_PORT}/recall"
+    return f"postgresql://{user}:{password}@db:{DB_INTERNAL_PORT}/{DB_NAME}"
 
 
 def choose_port(preferred: int = DEFAULT_PORT, *, attempts: int = 64) -> int:
@@ -201,7 +225,7 @@ def choose_port(preferred: int = DEFAULT_PORT, *, attempts: int = 64) -> int:
     """
     for offset in range(attempts):
         candidate = preferred + offset
-        if candidate > 65535:
+        if candidate > MAX_PORT:
             break
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             # ⚠️ NO `SO_REUSEADDR` here, and that is the whole correctness of this function.
@@ -216,7 +240,7 @@ def choose_port(preferred: int = DEFAULT_PORT, *, attempts: int = 64) -> int:
                 continue
             return candidate
     raise RuntimeError(
-        f"no free port in {preferred}..{min(preferred + attempts - 1, 65535)}; pass one explicitly"
+        f"no free port in {preferred}..{min(preferred + attempts - 1, MAX_PORT)}; pass one explicitly"
     )
 
 
@@ -230,9 +254,13 @@ def existing_tenants(compose_path: Path) -> tuple[str, ...]:
     database, orphaned and unreachable, which is the worst shape for a data-loss bug to take,
     because nothing errors and the user's projects simply stop existing in the UI.
 
-    So the caller unions: `existing_tenants(path) + new`. Kept as a separate reader rather than
-    folded into `write_compose`, because a silent union would be just as wrong in the other
-    direction — a genuine re-install that drops a project must be able to say so.
+    So a stack that gains a project goes through one of the two paths that preserve what is there:
+    `recall.wizard.headless._write_stack`, which merges the existing file's services itself, or
+    `add_tenant_services`, which only adds. Do not build a document from a union of tenants and
+    hand it to `write_compose`: that resets every existing service's environment, trust posture
+    included, and skips the storage checks those paths make. This reader is what they use to report
+    which tenants are already provisioned, and what `uninstall` uses to name the registrations a
+    stack owns.
 
     Empty for anything unreadable, matching `existing_port`: there is nothing to preserve in a file
     that cannot be parsed, and refusing would block an install over a file the caller is about to
@@ -292,9 +320,9 @@ def compose_document(spec: StackSpec) -> dict[str, object]:
         "db": {
             "image": DB_IMAGE,
             "environment": {
-                "POSTGRES_USER": "recall",
-                "POSTGRES_PASSWORD": "recall",
-                "POSTGRES_DB": "recall",
+                "POSTGRES_USER": DB_USER,
+                "POSTGRES_PASSWORD": DB_PASSWORD,
+                "POSTGRES_DB": DB_NAME,
             },
             # PUBLISHED. Without this line the wizard and the agent cannot reach the database the
             # UI is filling, which is the entire defect this module exists to remove.
@@ -324,12 +352,12 @@ def compose_document(spec: StackSpec) -> dict[str, object]:
             # availability one, so the index cannot live on that mount.
             #
             # The named volume lives inside the Docker VM. `data_root` still holds everything the
-            # user needs to see and back up — the compose file, the Dockerfile, `.env` — and the
+            # user needs to see and back up (the compose file and the Dockerfile), and the
             # database is reached through the published loopback port. `docker compose down -v`
             # destroys it, which is why the wizard never runs that.
             "volumes": [f"{DB_VOLUME}:{DB_MOUNT}"],
             "healthcheck": {
-                "test": ["CMD-SHELL", "pg_isready -U recall"],
+                "test": ["CMD-SHELL", f"pg_isready -U {DB_USER}"],
                 "interval": "2s",
                 "timeout": "3s",
                 "retries": 30,
@@ -368,9 +396,13 @@ def tenant_service(base_env: dict[str, str], *, image: str) -> dict[str, object]
         k: v
         for k, v in base_env.items()
         # RECALL_INDEX_ROOT names a HOST folder the container does not mount, so it means nothing
-        # there; the container keeps its own working directory as the index root.
+        # there; the container keeps its own working directory as the index root. The embedding
+        # cache settings describe the host's cache for the same reason.
         if k
-        not in {"RECALL_DSN", "RECALL_MIGRATION_DSN", "RECALL_FACT_WRITE_DSN", "RECALL_INDEX_ROOT"}
+        not in {
+            "RECALL_DSN", "RECALL_MIGRATION_DSN", "RECALL_FACT_WRITE_DSN", "RECALL_INDEX_ROOT",
+            "RECALL_EMBED_CACHE", "RECALL_EMBED_CACHE_MAX_MB",
+        }
     }
     environment["RECALL_DSN"] = container_dsn()
     environment["RECALL_MIGRATION_DSN"] = container_dsn()
@@ -871,7 +903,7 @@ def wait_for_database(dsn: str, *, timeout: float = 120.0, interval: float = 2.0
     bind-mounted data directory, which is exactly the case every user hits once.
 
     Polling the address the caller will actually use is the only check that means anything: it
-    tests the published port, the bind mount, and the server, rather than one process's opinion of
+    tests the published port and the server, rather than one process's opinion of
     its own readiness.
     """
     import time
@@ -915,6 +947,7 @@ def bring_up(
     built, since the build is the slow part of a first install and there is no reason to make the
     user wait for it before their store exists.
     """
+    _no_current_directory_search()
     compose = ["docker", "compose", "-f", str(compose_path), "-p", project_name]
     command = [*compose, "up", "-d", "--wait", *services]
     # A MISSING image is pulled first, on its own and much longer clock: a first pull of the
@@ -954,8 +987,10 @@ def bring_up(
             timeout=timeout,
         )
     except subprocess.CalledProcessError as exc:
+        # The TAIL, as `recall/desktop/runtime.py` keeps: compose prints its per-resource progress
+        # first and the cause (an unhealthy dependency, a port bind error) last.
         raise RuntimeError(
-            f"could not start the recall stack: {(exc.stderr or exc.stdout or '').strip()[:400]}"
+            f"could not start the recall stack: {(exc.stderr or exc.stdout or '').strip()[-400:]}"
         ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f"could not start the recall stack: {exc}") from exc

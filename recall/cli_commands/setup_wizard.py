@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import itertools
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from recall.context import context_policy_for_profile
@@ -113,12 +116,14 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         default=None,
         help="resumable state file (default: the config path with a .state.json suffix). A corpus a "
         "previous run PROMOTED under the same configuration is reused rather than rebuilt, and the "
-        "file is written after every corpus. A degraded corpus is always retried.",
+        "file is written after every corpus. A degraded corpus is always retried. File changes "
+        "under a corpus root are not detected: pass --fresh after editing a corpus.",
     )
     p_wizard.add_argument(
         "--fresh",
         action="store_true",
-        help="ignore any recorded state and rebuild every corpus.",
+        help="ignore any recorded state and rebuild every corpus. Needed after editing a corpus, "
+        "because the recorded state covers the configuration and not the files.",
     )
     p_wizard.add_argument(
         "--no-state",
@@ -240,9 +245,11 @@ def _setup_lite(args: argparse.Namespace) -> None:
     memory = Path(args.memory or os.environ.get("RECALL_INDEX_ROOT") or project_root)
     try:
         embedder = _make_embedder(args.embedder)
-    except Exception as exc:  # BROAD-CATCH: fail-open  # an unusable embedder is advice, not a traceback
+    except SystemExit as exc:
+        # `_make_embedder` already turns every failure into its one-line diagnostic, which names
+        # one extra. The lite path also registers an MCP server, so it names both.
         raise SystemExit(
-            f"recall setup --lite: the embedder {args.embedder!r} is not usable here ({exc}). "
+            f"recall setup --lite: the embedder {args.embedder!r} is not usable here.\n{exc.code}\n"
             'The local default needs: pip install "recall-rag[fastembed,mcp]"'
         ) from exc
     try:
@@ -301,7 +308,7 @@ def _quickstart(args: argparse.Namespace) -> None:
         provision,
         remove_stack,
     )
-    from recall.schema import SchemaTooOld, apply_migrations
+    from recall.schema import SchemaTooOld, apply_migrations, schema_status
 
     if args.remove:
         target = remove_stack()
@@ -362,12 +369,25 @@ def _quickstart(args: argparse.Namespace) -> None:
     # its own flag invites, and its whole isolation story is that it never touches `chunks`.
     #
     # Attempting the quickstart table first distinguishes the two by asking the database rather
-    # than guessing: a `SchemaTooOld` means the globals are genuinely absent, which only happens on
-    # a database with no recall install to damage. Where `chunks` already exists at another width
-    # the globals are already applied, the first call succeeds, and `chunks` is never opened.
+    # than guessing. Where `chunks` already exists at another width the globals are already
+    # applied, the first call succeeds, and `chunks` is never opened.
+    #
+    # ⚠️ A `SchemaTooOld` is NOT proof of an empty database: an older recall install whose global
+    # migrations are only partly applied raises it too (CCA DAT-009). Migrating that install's
+    # `chunks` and globals forward is the operator's decision, so the default target is applied
+    # only when the ledger records nothing at all, for `chunks` or for the globals. The stack this
+    # command provisioned is its own, so an upgrade still migrates that one forward.
     try:
         apply_migrations(dsn, table=QUICKSTART_TABLE, dim=embedder.dim)
-    except SchemaTooOld:
+    except SchemaTooOld as exc:
+        installed = schema_status(dsn, table=DEFAULT_TABLE, dim=embedder.dim).migrations
+        if not provisioned and any(migration.state != "pending" for migration in installed):
+            raise SystemExit(
+                "recall quickstart: this database holds an older recall install whose schema is "
+                "not current, and the quickstart will not migrate it for you. Bring it up to date "
+                "with `recall schema apply` first if you mean to, or point the quickstart at a "
+                "database of its own."
+            ) from exc
         apply_migrations(dsn, table=DEFAULT_TABLE, dim=embedder.dim)
         apply_migrations(dsn, table=QUICKSTART_TABLE, dim=embedder.dim)
     print(f"  applied the schema to {QUICKSTART_TABLE} at dim={embedder.dim}")
@@ -424,16 +444,18 @@ def _quickstart(args: argparse.Namespace) -> None:
         "second one that replaced it. A plain vector index returns the retracted answer here;"
     )
     print("  3. a question the corpus cannot answer, refused rather than answered.\n")
-    # Explained rather than hidden. Every result above carries `DEGRADED:INDEX_NOT_READY`, which a
+    # Explained rather than hidden. Every result above carries a DEGRADED code, which a
     # first-time reader reads as breakage and which is in fact the system declining to overstate
     # what it knows. Suppressing the flag for the demo would be the exact dishonesty this project
     # is about; leaving it unexplained loses the reader instead. So: say what it means, and name
-    # the command that clears it.
+    # the command that certifies a corpus. No code is named: which one this corpus reports
+    # depends on its binding, and `recall setup` does not clear either (CCA DOC-022).
     print(
-        "DEGRADED:INDEX_NOT_READY on every result above is not an error. It is this corpus telling "
-        "you its threshold was never fitted to it, so no verdict here is certified. That is the "
-        "state a strict deployment REFUSES to answer from, and it is why the demo had to ask for "
-        "development trust explicitly. `recall setup` fits a real one.\n"
+        "The DEGRADED code on every result above is not an error. It is this corpus telling you "
+        "its threshold was never fitted to it, so no verdict here is certified. That is the state "
+        "a strict deployment REFUSES to answer from, and it is why the demo had to ask for "
+        "development trust explicitly. `recall wizard` builds a calibrated, promoted generation, "
+        "which is what certifies a corpus.\n"
     )
     for line in next_steps(dsn, provisioned=provisioned, compose_path=compose_path):
         print(line)
@@ -528,7 +550,38 @@ def _cmd_wizard(args: argparse.Namespace) -> None:
                     default=str(save_root / "wizard.json"),
                 )
             ).expanduser()
-            config_written = write_config(document, target)
+            try:
+                if target.is_file():
+                    # The file at the default target is also `recall uninstall`'s record of an
+                    # earlier install, so a re-run keeps it rather than replacing it (CCA
+                    # STAKES-010). Exclusive creation, so an earlier backup is never overwritten,
+                    # and owner-only, because the file can hold a DSN password.
+                    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                    previous = target.read_bytes()
+                    for attempt in itertools.count():
+                        suffix = stamp if attempt == 0 else f"{stamp}.{attempt}"
+                        backup = target.with_name(f"{target.name}.{suffix}")
+                        try:
+                            # O_BINARY: without it Windows would rewrite every newline.
+                            fd = os.open(
+                                backup,
+                                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+                                0o600,
+                            )
+                        except FileExistsError:
+                            continue
+                        with os.fdopen(fd, "wb") as handle:
+                            handle.write(previous)
+                        break
+                    print(f"\nkept the previous configuration as {backup}")
+                config_written = write_config(document, target)
+            except OSError as exc:
+                # After the whole interview: a folder or an unwritable path typed at the save
+                # prompt is the person's to fix, so it ends with the path, not a traceback.
+                raise SystemExit(
+                    f"\ncannot save the configuration to {target}: {exc.strerror or exc}; "
+                    "nothing was installed. Re-run `recall wizard` and choose another path."
+                ) from exc
         except InteractiveRefusal as exc:
             raise SystemExit(str(exc)) from exc
         except (KeyboardInterrupt, EOFError):
@@ -578,6 +631,10 @@ def _cmd_wizard(args: argparse.Namespace) -> None:
         for key, value in (
             ("dsn", wizard_config.dsn),
             ("migration_dsn", wizard_config.migration_dsn),
+            # The wizard creates a LOGIN role with this DSN's password and hands it to every
+            # MCP server, so published credentials here are refused like the other two (CCA
+            # SEC-005).
+            ("fact_write_dsn", wizard_config.fact_write_dsn),
         ):
             if not value:
                 continue

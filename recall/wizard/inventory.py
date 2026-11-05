@@ -1,7 +1,7 @@
 """Turn a local directory into the object inventory `recall manifest create --objects` consumes.
 
 Calibration binds to a generation, a generation is built from a manifest, and a manifest is built
-from an inventory. `file://` manifests exist (see `recall/lineage.py:251`) precisely so a corpus in
+from an inventory. `file://` manifests exist (see `recall.lineage.ManifestObjectV1`) precisely so a corpus in
 a directory can become a generation without object storage — but nothing produced that inventory,
 so the capability was documented and unreachable. This is the producer.
 
@@ -187,7 +187,7 @@ def build_inventory_report(root: str | Path, glob: str = DEFAULT_GLOB) -> Invent
             entries.append(_entry(file))
         except (FileNotFoundError, NotADirectoryError):
             # A file listed by the walk and gone by the read. `index_path` absorbs exactly this
-            # (recall/index.py:575), and an inventory that aborted the whole corpus over one
+            # (`recall.index.Indexer.index_path`), and an inventory that aborted the whole corpus over one
             # deleted file would be strictly worse than the walk it claims to mirror. Counted, not
             # silent: the caller reports it.
             vanished += 1

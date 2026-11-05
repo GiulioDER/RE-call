@@ -3,9 +3,14 @@
 The design describes this as a table with independent columns. They are not independent, and the
 dependencies are the whole reason this module exists rather than a dict literal in the pipeline:
 
-* **`RECALL_ENV=production` is the only switch that routes search through `GenerationStore`**, so it
-  is the only way a calibrated corpus is actually served as calibrated. Verified: `cli.py` selects
-  that store on this switch in three places and `recall_mcp/server.py` in one, and nothing else does.
+* **The runtime route decides whether search goes through `GenerationStore`**, so it is what makes
+  a calibrated corpus actually served as calibrated. `recall.runtime_route.resolve_runtime_route`
+  takes the mode from `RECALL_INDEX_MODE`, or, when that is unset, from its `RECALL_ENV`
+  compatibility default (`production` means generation). The CLI and `recall_mcp/server.py` select
+  the store on that route, so `RECALL_INDEX_MODE=generation` selects it under development too. 🔁
+  This used to say `RECALL_ENV=production` was the only switch; it is the default, not the only one.
+  The wizard serves its calibrated corpora under production, which is why the rules below key on
+  the serving environment.
 * **`recall index` and `recall setup`'s auto-index refuse under that switch, but `Indexer` itself
   does not.** So calibrated and writable are mutually exclusive for anyone going through the CLI,
   and the wizard has to impose the same rule on ITSELF, because it drives `Indexer` in process and
@@ -81,6 +86,10 @@ CODE_GLOB = "**/*.py"
 #: and a separate row in the UI, so a fourth kind is a topology change rather than a string.
 CorpusKind = Literal["docs", "code", "memory"]
 
+#: The config keys naming each kind's folder, in `CorpusKind` order. One tuple so the installer that
+#: writes them and the uninstaller that lists them as kept cannot disagree about which exist.
+CORPUS_ROOT_KEYS: tuple[str, ...] = ("docs_root", "code_root", "memory_root")
+
 #: The project scope used when the user names none. Chosen to match the desktop UI's
 #: `RuntimeProfile.default_tenant`, so a wizard install with no project named produces exactly the
 #: tenants that UI already expects rather than a parallel set it cannot see.
@@ -124,6 +133,7 @@ def tenant_for(project: str, kind: CorpusKind) -> str:
 
 __all__ = [
     "CODE_GLOB",
+    "CORPUS_ROOT_KEYS",
     "DEFAULT_PROJECT",
     "CorpusKind",
     "CorpusPlan",
@@ -218,8 +228,9 @@ class CorpusSpec:
         if self.calibrated and self.serving_environment != "production":
             raise ValueError(
                 f"a calibrated corpus is served under production, not "
-                f"{self.serving_environment!r}: it is the only environment that reads the "
-                "generation store, so anywhere else the calibration is simply not consulted"
+                f"{self.serving_environment!r}: production always takes the generation route, "
+                "which is the one that reads the generation store and consults the calibration, "
+                "while elsewhere the route defaults to the legacy table"
             )
         # Before the uncalibrated-in-production guard below, so a WRITABLE corpus gets the message
         # about writing rather than the one about generations. Both are reachable: writable implies

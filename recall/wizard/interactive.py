@@ -30,8 +30,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from recall.wizard.database import probe_database
+from recall.wizard.database import DatabaseReport, probe_database
 from recall.wizard.questions import (
+    DEFAULT_EMBEDDER,
     Question,
     build_config,
     default_for,
@@ -135,7 +136,7 @@ def ask_config(
     prompter: Prompter,
     *,
     default_root: Path,
-    probe: Callable[..., object] = probe_database,
+    probe: Callable[..., DatabaseReport] = probe_database,
 ) -> dict[str, object]:
     """Ask what the install needs and return the config document, ready to write.
 
@@ -172,7 +173,10 @@ def ask_config(
             )
         elif question.kind == "dsn":
             answers[question.key] = _ask_working_dsn(
-                prompter, embedder=answers.get("embedder", "fastembed"), probe=probe
+                prompter,
+                question,
+                embedder=answers.get("embedder", DEFAULT_EMBEDDER),
+                probe=probe,
             )
         else:
             answers[question.key] = prompter.ask(
@@ -182,7 +186,8 @@ def ask_config(
     try:
         return build_config(answers)
     except ValueError as exc:
-        # ⛔ **Translated, because `recall/cli.py` handles `InteractiveRefusal` and not `ValueError`.**
+        # ⛔ **Translated, because `recall.cli_commands.setup_wizard._cmd_wizard` handles
+        # `InteractiveRefusal` and not `ValueError`.**
         # The data-folder validation added alongside this is reachable by TYPING a relative path,
         # unlike the three corpus-root refusals which are effectively unreachable from a prompt that
         # offers a non-empty default. So the terminal interview ended in a traceback with every
@@ -202,26 +207,32 @@ def _applies(question: Question, answers: dict[str, str]) -> bool:
 
 
 def _ask_working_dsn(
-    prompter: Prompter, *, embedder: str, probe: Callable[..., object]
+    prompter: Prompter,
+    question: Question,
+    *,
+    embedder: str,
+    probe: Callable[..., DatabaseReport],
 ) -> str:
     """Ask for a DSN until one is usable, or give up with the reason attached.
 
     ⚠️ **The probe runs before the answer is accepted, and a blocking finding re-asks.** Taking a
     DSN on faith is what makes the whole existing-database path a trap: every way it can be wrong
     fails minutes later, during a build, naming something other than the connection string.
+
+    The prompt is the declared `question.prompt`, not a second copy of it. `ask_config` has already
+    printed `question.help`, which carries the example, so a prompt restating the example printed
+    it twice, and an edit to the declared question reached the GUI only.
     """
     expected = _dimension_for(embedder)
     for _ in range(_MAX_RETRIES):
-        dsn = prompter.ask(
-            "\nConnection string, for example postgresql://user:password@127.0.0.1:5432/recall"
-        )
+        dsn = prompter.ask(f"\n{question.prompt}")
         if not dsn:
             prompter.write("  a connection string is required for an existing database.")
             continue
         prompter.write("  checking...")
         report = probe(dsn, expected_dimension=expected)
-        prompter.write(report.render())  # type: ignore[attr-defined]
-        if report.usable:  # type: ignore[attr-defined]
+        prompter.write(report.render())
+        if report.usable:
             return dsn
         prompter.write("  that database cannot host this install yet. Fix the above, or try another.")
     raise InteractiveRefusal(

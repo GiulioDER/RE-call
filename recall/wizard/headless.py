@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from recall.calibration_v2 import CalibrationRepository
 from recall.embeddings import Embedder, resolve_embedder
 from recall.generations import GenerationManager
-from recall.store import redacted_dsn, scrub_dsn_secrets
+from recall.store import redacted_dsn, require_secure_dsn, scrub_dsn_secrets
 from recall.wizard.corpora import (
     DEFAULT_PROJECT,
     RELATIVE_ROOT,
@@ -80,6 +80,7 @@ from recall.wizard.wiring import (
     SmokeResult,
     UnservableTenant,
     LocalScopeRegistration,
+    claude_config_path as _default_claude_config_path,
     register_local_scope,
     server_blocks,
     write_project_files,
@@ -103,6 +104,14 @@ __all__ = [
 #: column and a reason containing a newline lost its indent entirely.
 _TENANT_COLUMN = 8
 _GUTTER = 2
+
+#: What `recall` resolves when none of these is set: `runtime_route.resolve_runtime_route` takes
+#: development and, under it, the legacy route; `TrustPolicy.from_env` takes strict.
+_CLI_ROUTE_DEFAULTS = (
+    ("RECALL_ENV", "development"),
+    ("RECALL_INDEX_MODE", "legacy"),
+    ("RECALL_TRUST_MODE", "strict"),
+)
 
 
 @dataclass(frozen=True)
@@ -378,6 +387,17 @@ class HeadlessReport:
             )
             lines.append(f"{' ' * _GUTTER}{block.name:<{width}} server   ({shown})")
             lines.append(detail(block.rationale))
+            # The project `.env` carries only the DSN and the embedder, and the CLI defaults to
+            # tenant `default` on the legacy route, so without this line a `recall search` in the
+            # project reads an empty corpus. Only the settings that differ from the CLI's own
+            # defaults are named, which keeps the line short enough to paste.
+            route = " ".join(
+                f"{key}={block.env[key]}"
+                for key, default in _CLI_ROUTE_DEFAULTS
+                if block.env.get(key, default) != default
+            )
+            command = f"recall --tenant {block.tenant} search \"<query>\""
+            lines.append(f"{indent}cli: {route + ' ' if route else ''}{command}")
         for missing in self.unservable:
             lines.append(f"{' ' * _GUTTER}{missing.tenant:<{width}} NO SERVER")
             lines.append(detail(missing.reason))
@@ -538,7 +558,7 @@ class _RealServices:
     def grant(self, dsn: str, *, role: str) -> None:
         """Grant the serving role its privileges, over the DDL-owner connection that can.
 
-        No migration emits a GRANT (`recall/schema.py:148` says so and says why), and
+        No migration emits a GRANT (`recall.schema.serving_grants` says so and says why), and
         `serving_grants` had exactly one caller in the package: a CLI subcommand that only PRINTS
         the SQL. So a two-role install — the deployment the two DSN keys exist for — completed
         "successfully" and then failed at the first query with `permission denied`. It cannot fail
@@ -548,7 +568,7 @@ class _RealServices:
 
         from recall.schema import serving_grants
 
-        with psycopg.connect(dsn) as conn, conn.transaction():
+        with psycopg.connect(dsn, connect_timeout=10) as conn, conn.transaction():
             for statement in serving_grants(role):
                 conn.execute(statement)
 
@@ -556,6 +576,9 @@ class _RealServices:
         self, dsn: str, *, serving_role: str | None, controller_dsn: str
     ) -> None:
         """Install the strict two-role fact boundary over the DDL-owner connection."""
+        # Guarded here as well as by the CLI, because the desktop installer calls `run_headless`
+        # directly, and this DSN's password is what the LOGIN role below is created with.
+        require_secure_dsn(controller_dsn)
         if not serving_role:
             raise ValueError("serving_role is required")
         controller_parts = urlsplit(controller_dsn)
@@ -576,7 +599,7 @@ class _RealServices:
 
         from recall.schema import controller_grants, serving_grants
 
-        with psycopg.connect(dsn) as conn:
+        with psycopg.connect(dsn, connect_timeout=10) as conn:
             role_state = conn.execute(
                 "SELECT rolcanlogin FROM pg_roles WHERE rolname = %s",
                 (controller_role,),
@@ -591,10 +614,16 @@ class _RealServices:
                 with psycopg.connect(controller_dsn, connect_timeout=10) as controller:
                     controller.execute("SELECT 1")
             if role_state is None:
+                # Hashed here, so the statement carries a SCRAM verifier rather than the password:
+                # a server that logs DDL, or shows it in pg_stat_activity, would otherwise record
+                # the plaintext. The server stores a verifier either way, so login is unchanged.
+                verifier = conn.pgconn.encrypt_password(
+                    controller_password.encode(), controller_role.encode(), b"scram-sha-256"
+                ).decode()
                 with conn.transaction():
                     conn.execute(
                         sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
-                            sql.Identifier(controller_role), sql.Literal(controller_password)
+                            sql.Identifier(controller_role), sql.Literal(verifier)
                         )
                     )
                 # Verified BEFORE anything is granted to it. PostgreSQL refuses `DROP ROLE` for a
@@ -629,8 +658,7 @@ class _RealServices:
     def index_legacy(self, spec: CorpusSpec) -> LegacyIndex:
         """Index an uncalibrated corpus into the legacy `chunks` table, under ITS OWN tenant.
 
-        `recall.setup.index_memory_directory` exists and is deliberately not used: it hardcodes
-        `DEFAULT_TENANT`, so it would write `memory`'s content into `default`, and it swallows
+        `recall.setup.index_memory_directory` exists and is deliberately not used: it swallows
         every exception to print a suggestion, which is right for an interactive scaffolder and
         wrong for a driver whose report is the only thing a CI job reads.
 
@@ -654,13 +682,30 @@ class _RealServices:
                 )
         return LegacyIndex(tenant=spec.tenant, files=stats.files, chunks=stats.chunks)
 
+    def has_legacy_rows(self, tenant: str) -> bool:
+        """Whether `tenant` holds any row in the legacy `chunks` table of the configured database.
+
+        Asked before a recorded legacy index is reused, for the reason `active_generation` is asked
+        for a generation: a removed volume or a recreated database keeps the config digest, so the
+        state file alone would report an empty tenant as indexed.
+        """
+        import psycopg
+
+        with psycopg.connect(self.config.resolved_dsn, connect_timeout=10) as conn:
+            conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (tenant,))
+            row = conn.execute(
+                "SELECT 1 FROM chunks WHERE tenant_id = %s LIMIT 1", (tenant,)
+            ).fetchone()
+        return row is not None
+
     def smoke(self, block: ServerBlock) -> SmokeResult:
         """Put one real query through one configured server, exactly as that server would.
 
-        The store is chosen from the BLOCK's own `RECALL_ENV`, mirroring `recall_mcp/server.py:629`,
-        because the point is to exercise the configuration that was just written rather than a
-        second guess at it. If `server_blocks` is ever wrong about which tenants can be served, this
-        is where it surfaces: as an exception, from the same code path the client will take.
+        The store is chosen from the BLOCK's own `RECALL_ENV`, mirroring the `generation_mode`
+        branch in `recall_mcp.server` that selects `GenerationStore`, because the point is to
+        exercise the configuration that was just written rather than a second guess at it. If
+        `server_blocks` is ever wrong about which tenants can be served, this is where it
+        surfaces: as an exception, from the same code path the client will take.
 
         The query is drawn from the tenant's OWN indexed text. A fixed question would abstain on
         every corpus and prove only that nothing raised; a phrase the corpus actually contains can
@@ -683,19 +728,11 @@ class _RealServices:
             else "SELECT text FROM chunks WHERE tenant_id = %s LIMIT 1"
         )
         try:
-            with psycopg.connect(self.config.resolved_dsn) as conn:
+            with psycopg.connect(self.config.resolved_dsn, connect_timeout=10) as conn:
                 conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (block.tenant,))
                 row = conn.execute(statement, (block.tenant,)).fetchone()
         except Exception as exc:  # noqa: BLE001 - a failure to look is a failure, and it is reported  # BROAD-CATCH: error-translation
-            return SmokeResult(
-                tenant=block.tenant,
-                query="",
-                hits=0,
-                abstained=True,
-                trust_state="unknown",
-                failure_code=None,
-                error=scrub_dsn_secrets(f"{type(exc).__name__}: {exc}", self.config.resolved_dsn),
-            )
+            return _failed_smoke(self.config, block.tenant, "", exc)
 
         if not row or not str(row[0]).strip():
             return SmokeResult(
@@ -738,15 +775,7 @@ class _RealServices:
                     store, embedder, query, k=5, policy=TrustPolicy.from_env(block.env)
                 )
         except Exception as exc:  # noqa: BLE001 - THIS is the failure the smoke test exists for  # BROAD-CATCH: error-translation
-            return SmokeResult(
-                tenant=block.tenant,
-                query=query,
-                hits=0,
-                abstained=True,
-                trust_state="unknown",
-                failure_code=None,
-                error=scrub_dsn_secrets(f"{type(exc).__name__}: {exc}", self.config.resolved_dsn),
-            )
+            return _failed_smoke(self.config, block.tenant, query, exc)
 
         return SmokeResult(
             tenant=block.tenant,
@@ -764,8 +793,10 @@ class _RealServices:
             spec,
             # `development` for the BUILD, and the corpus's own value for SERVING. A production
             # build requires a verifiable embedder identity, which the wizard's embedders do not
-            # have; a calibrated corpus is nonetheless served with `RECALL_ENV=production`, because
-            # that is the only environment that reads the generation store. The two coexist
+            # have; a calibrated corpus is nonetheless served with `RECALL_ENV=production` and
+            # `RECALL_INDEX_MODE=generation`, because the runtime route (`RECALL_INDEX_MODE`, or its
+            # `RECALL_ENV` compatibility default when unset) is what selects the generation store,
+            # and the server block pins both. The two coexist
             # because each MCP server gets its own env block. (This comment used to blame a file://
             # manifest. Nothing gates file:// on the environment — see `_BUILD_ENVIRONMENTS` in
             # pipeline.py for the correction.)
@@ -788,6 +819,21 @@ class _RealServices:
             project=self.config.project,
             progress=progress,
         )
+
+
+def _failed_smoke(config: HeadlessConfig, tenant: str, query: str, exc: Exception) -> SmokeResult:
+    """The smoke result for a query that raised, scrubbed of every DSN the run holds."""
+    return SmokeResult(
+        tenant=tenant,
+        query=query,
+        hits=0,
+        abstained=True,
+        trust_state="unknown",
+        failure_code=None,
+        error=scrub_dsn_secrets(
+            f"{type(exc).__name__}: {exc}", config.resolved_dsn, config.resolved_migration_dsn
+        ),
+    )
 
 
 def _database_identity(dsn: str) -> tuple[str, int | None, str]:
@@ -896,8 +942,8 @@ def load_config(path: str | Path) -> HeadlessConfig:
             if not candidate.is_dir():
                 raise ConfigRefusal(
                     f"project_root {project_root_raw!r} exists and is not a directory. The wizard "
-                    "writes .env, a CLAUDE.md block and memory/MEMORY.md inside it, and none of "
-                    "those can be written underneath a file.",
+                    "writes .env and a CLAUDE.md block inside it, and neither can be written "
+                    "underneath a file.",
                     ("project_root",),
                 )
         elif not candidate.parent.is_dir():
@@ -945,6 +991,12 @@ def load_config(path: str | Path) -> HeadlessConfig:
             ("migration_dsn", "data_root"),
         )
 
+    # Stripped once, here, because `tenant_for` strips it to name the tenants while the desktop
+    # profile and every chunk's provenance took the padded value, which names no tenant.
+    project = (raw.get("project") or DEFAULT_PROJECT).strip()
+    if not project:
+        raise ConfigRefusal("project must not be blank", ("project",))
+
     return HeadlessConfig(
         embedder=raw["embedder"],
         corpus_version=raw["corpus_version"],
@@ -956,11 +1008,24 @@ def load_config(path: str | Path) -> HeadlessConfig:
         # same string twice is a way to get them different by typo.
         migration_dsn=raw.get("migration_dsn") or raw.get("dsn") or None,
         data_root=Path(raw["data_root"]) if raw.get("data_root") else None,
-        project=raw.get("project") or DEFAULT_PROJECT,
+        project=project,
         serving_role=raw.get("serving_role") or None,
         fact_write_dsn=raw.get("fact_write_dsn") or None,
         project_root=Path(raw["project_root"]) if raw.get("project_root") else None,
     )
+
+
+def _embedder_dim(config: HeadlessConfig, wiring: _Services) -> int:
+    """The embedder's dimension, or a refusal naming `embedder` when it cannot be resolved."""
+    try:
+        return wiring.dim()
+    except PipelineRefusal:
+        raise
+    except Exception as exc:  # BROAD-CATCH: error-translation
+        raise ConfigRefusal(
+            f"embedder {config.embedder!r} could not be resolved: {type(exc).__name__}: {exc}",
+            ("embedder",),
+        ) from exc
 
 
 def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
@@ -1017,15 +1082,7 @@ def _prepare(config: HeadlessConfig, wiring: _Services) -> None:
                 ("dsn", "fact_write_dsn"),
             )
 
-    try:
-        dim = wiring.dim()
-    except PipelineRefusal:
-        raise
-    except Exception as exc:  # BROAD-CATCH: error-translation
-        raise ConfigRefusal(
-            f"embedder {config.embedder!r} could not be resolved: {type(exc).__name__}: {exc}",
-            ("embedder",),
-        ) from exc
+    dim = _embedder_dim(config, wiring)
 
     try:
         wiring.apply_schema(config.resolved_migration_dsn, dim=dim)
@@ -1176,8 +1233,8 @@ def _write_stack(
     if compose_path.exists():
         try:
             existing = json.loads(compose_path.read_text(encoding="utf-8"))
-            services = existing["services"]
-            if not isinstance(existing, dict) or not isinstance(services, dict) or "db" not in services:
+            services = existing.get("services") if isinstance(existing, dict) else None
+            if not isinstance(services, dict) or "db" not in services:
                 raise ValueError("the existing stack has no service mapping with a database")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise ConfigRefusal(
@@ -1236,7 +1293,13 @@ def _provision(
 
     compose_path = config.data_root / COMPOSE_NAME
     compose_project = compose_project_for(config.data_root, config.project)
-    port = existing_port(compose_path) or choose_port()
+    try:
+        port = existing_port(compose_path) or choose_port()
+    except RuntimeError as exc:
+        raise ConfigRefusal(
+            f"cannot choose a database port for data_root {config.data_root}: {exc}",
+            ("data_root",),
+        ) from exc
     dsn = host_dsn(port)
     tenants = tuple(spec.tenant for spec in plan.corpora)
 
@@ -1246,17 +1309,25 @@ def _provision(
         # `data_root`. See `compose_document` for the measured reason. Naming the data root here as
         # if it held the database would be a claim the code stopped creating.
         progress(f"stack: {config.data_root}, database on volume, port {port}")
-    _write_stack(
-        compose_path,
-        StackSpec(
-            data_root=config.data_root,
-            port=port,
-            tenants=tenants,
-            env=_provisional_env(tenants, dsn=dsn, embedder=config.embedder),
-            project_name=compose_project,
-        ),
-        provisional=True,
-    )
+    # A data_root that cannot be created or written (read-only, unelevated, or on Windows a path
+    # that is an existing file) is a config problem, so it is refused by name, not a traceback.
+    try:
+        _write_stack(
+            compose_path,
+            StackSpec(
+                data_root=config.data_root,
+                port=port,
+                tenants=tenants,
+                env=_provisional_env(tenants, dsn=dsn, embedder=config.embedder),
+                project_name=compose_project,
+            ),
+            provisional=True,
+        )
+    except OSError as exc:
+        raise ConfigRefusal(
+            f"cannot write the stack into data_root {config.data_root}: {exc.strerror or exc}",
+            ("data_root",),
+        ) from exc
     # `db` only. The recall image is built later and the store must not wait for it.
     try:
         bring_up(compose_path, project_name=compose_project, services=("db",))
@@ -1332,16 +1403,31 @@ def run_headless(
         # PATH, and the operator needs to be told which config key holds it.
         raise ConfigRefusal(f"the corpus plan is not buildable from this config: {exc}") from exc
 
+    # `project_root` exists only to register MCP servers, and every one runs
+    # `python -m recall_mcp.server`, which imports `mcp` at its top. Without the extra each server
+    # dies on start, so this is refused before the build rather than reported after it.
+    if config.project_root is not None and importlib.util.find_spec("mcp") is None:
+        raise ConfigRefusal(
+            "project_root is set, so the wizard registers MCP servers, but this Python lacks the "
+            "`mcp` extra they need to start: run pip install \"recall-rag[mcp]\" and re-run.",
+            ("project_root",),
+        )
+
     # Remember what existed before provisioning adds temporary service entries.
     # A caught rebuild failure cannot establish that an installed scope stopped serving.
     preexisting_tenants = (
         frozenset(existing_tenants(config.data_root / COMPOSE_NAME))
         if config.data_root is not None else frozenset()
     )
+    wiring = services if services is not None else _RealServices(config)
+    # Resolved BEFORE provisioning, so a host without the embedder's extra is refused before a
+    # compose file is written, an image pulled or a database started.
+    _embedder_dim(config, wiring)
     # The database, at the user's chosen location, before anything tries to reach one.
     config = _provision(config, plan, progress)
-
-    wiring = services if services is not None else _RealServices(config)
+    if isinstance(wiring, _RealServices):
+        # Re-pointed rather than rebuilt, so the embedder resolved above is the one that indexes.
+        wiring.config = config
     _prepare(config, wiring)
 
     # Resumable state, keyed on a digest of the config fields that would invalidate finished work.
@@ -1378,28 +1464,30 @@ def run_headless(
     failures: list[Failure] = []
     reused: list[str] = []
     for spec in plan.calibrated:
-        recorded = state.outcome_for(spec.tenant)
-        if recorded is not None and wiring.active_generation(spec.tenant) != recorded.generation_id:
-            # The state file says what a previous run promoted, not what the database holds now. A
-            # purged volume, a recreated database or a later promote all keep the config digest, and
-            # reusing the record then wired strict servers over a tenant with no such generation and
-            # still reported the install complete. So the database is asked, and a stale record is
-            # rebuilt rather than trusted.
-            if progress:
-                progress(
-                    f"{spec.tenant}: the recorded generation {recorded.generation_id} is no "
-                    "longer active in the database; rebuilding"
-                )
-            recorded = None
-        if recorded is not None:
-            # Only a PROMOTED outcome is recorded, so this cannot silently reuse a degraded corpus:
-            # that one was left unpromoted precisely so re-running would retry it.
-            outcomes.append(recorded)
-            reused.append(spec.tenant)
-            if progress:
-                progress(f"{spec.tenant}: reused from a previous run")
-            continue
+        # Inside the try, because asking the database can fail too, and by then an earlier corpus
+        # of this run may already be promoted: that report is the one that must not be lost.
         try:
+            recorded = state.outcome_for(spec.tenant)
+            if recorded is not None and wiring.active_generation(spec.tenant) != recorded.generation_id:
+                # The state file says what a previous run promoted, not what the database holds
+                # now. A purged volume, a recreated database or a later promote all keep the config
+                # digest, and reusing the record then wired strict servers over a tenant with no
+                # such generation and still reported the install complete. So the database is
+                # asked, and a stale record is rebuilt rather than trusted.
+                if progress:
+                    progress(
+                        f"{spec.tenant}: the recorded generation {recorded.generation_id} is no "
+                        "longer active in the database; rebuilding"
+                    )
+                recorded = None
+            if recorded is not None:
+                # Only a PROMOTED outcome is recorded, so this cannot silently reuse a degraded
+                # corpus: that one was left unpromoted precisely so re-running would retry it.
+                outcomes.append(recorded)
+                reused.append(spec.tenant)
+                if progress:
+                    progress(f"{spec.tenant}: reused from a previous run")
+                continue
             outcome = wiring.run(spec, progress=_step_reporter(spec.tenant, progress))
             outcomes.append(outcome)
             state = state.with_outcome(outcome)
@@ -1433,15 +1521,25 @@ def run_headless(
     for spec in plan.corpora:
         if spec.calibrated:
             continue
-        if (previous := state.indexed_for(spec.tenant)) is not None:
-            indexed.append(LegacyIndex(tenant=previous[0], files=previous[1], chunks=previous[2]))
-            reused.append(spec.tenant)
-            if progress:
-                progress(f"{spec.tenant}: reused from a previous run")
-            continue
-        if progress:
-            progress(f"{spec.tenant}: index")
         try:
+            previous = state.indexed_for(spec.tenant)
+            # The database is asked, as the calibrated loop asks it, because a removed volume keeps
+            # the digest. Services without the probe (test doubles) keep the record as before.
+            has_rows = getattr(wiring, "has_legacy_rows", None)
+            if previous is not None and previous.chunks and has_rows is not None and not has_rows(
+                spec.tenant
+            ):
+                if progress:
+                    progress(f"{spec.tenant}: the recorded index has no rows in the database; re-indexing")
+                previous = None
+            if previous is not None:
+                indexed.append(previous)
+                reused.append(spec.tenant)
+                if progress:
+                    progress(f"{spec.tenant}: reused from a previous run")
+                continue
+            if progress:
+                progress(f"{spec.tenant}: index")
             entry = wiring.index_legacy(spec)
             indexed.append(entry)
             state = state.with_indexed(entry)
@@ -1516,15 +1614,20 @@ def run_headless(
             files = (*files, compose_path, profile_written)
             if progress:
                 progress(f"desktop: {profile_written}")
-        except OSError as exc:
+        except PipelineRefusal:
+            # A refusal of the stack rewrite keeps propagating as before; only write and validation
+            # errors below become a reported failure.
+            raise
+        except (OSError, ValueError) as exc:
             # Reported, not raised. The corpora are built and promoted by now; losing that because
             # a profile could not be written would be the expensive half of the trade. The install
-            # works from the CLI and the agent either way; only the UI handoff is missing.
+            # works from the CLI and the agent either way; only the UI handoff is missing. A
+            # ValueError (an undecodable file, a profile that fails validation) is the same case.
             failures.append(
                 Failure(
                     tenant="desktop",
-                    error=f"could not write {exc.filename or 'the desktop profile'}: "
-                    f"{exc.strerror or exc}",
+                    error=f"could not write {getattr(exc, 'filename', None) or 'the desktop profile'}: "
+                    f"{getattr(exc, 'strerror', None) or exc}",
                 )
             )
 
@@ -1550,19 +1653,8 @@ def run_headless(
         # 🔁 This comment said the opposite until the local-scope switch was audited. It was written
         # for USER scope, where a project file genuinely does win (2 beats 3), and stayed behind when
         # the code moved to local (1). Correct sentence, wrong scope, and nothing failed.
-        if importlib.util.find_spec("mcp") is None:
-            # Every block runs `python -m recall_mcp.server`, which imports `mcp` at its top, so
-            # without the extra each registered server dies on start and the client just shows no
-            # tools. Registration still happens, so installing the extra is the whole repair.
-            failures.append(
-                Failure(
-                    tenant="wiring",
-                    error=(
-                        "the MCP servers were registered, but this Python lacks the `mcp` extra "
-                        "they need to start: run pip install \"recall-rag[mcp]\""
-                    ),
-                )
-            )
+        #
+        # A missing `mcp` extra is refused at the top of this function, before the build.
         try:
             registration = register_local_scope(
                 blocks,
@@ -1587,21 +1679,25 @@ def run_headless(
             # `project_root` both, so the report naming it is the ONLY thing that says where the
             # desktop UI was pointed. A directory listing of the install does not contain it.
             files = (*files, *wrote)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             # Reported, not raised. Every corpus is already built and promoted by now; throwing that
-            # away because a directory is read-only would be the expensive half of the trade.
+            # away because a directory is read-only would be the expensive half of the trade. A
+            # ValueError is the same case: a CLAUDE.md saved in a legacy codepage fails to decode.
             #
             # The FAILING FILE is named from the exception rather than assumed. This block covers
             # `~/.claude.json`, `.env`, `CLAUDE.md` and `MEMORY.md`, and an earlier version of
             # this message blamed one of them for all four, which would have sent an operator to
             # check a file that was written correctly.
-            blamed = exc.filename or "the project files"
-            failures.append(
-                Failure(
-                    tenant="wiring",
-                    error=f"could not write {blamed}: {exc.strerror or exc}",
+            blamed = getattr(exc, "filename", None) or f"the project files in {config.project_root}"
+            error = f"could not write {blamed}: {getattr(exc, 'strerror', None) or exc}"
+            failures.append(Failure(tenant="wiring", error=error))
+            if registration is None:
+                # `register_local_scope` itself raised. Recorded as a skipped registration, so the
+                # report says why nothing was registered instead of claiming `project_root` is unset.
+                registration = LocalScopeRegistration(
+                    config_path=claude_config_path or _default_claude_config_path(),
+                    skipped_reason=error,
                 )
-            )
     else:
         blocks = ()
 
@@ -1620,19 +1716,7 @@ def run_headless(
             except Exception as exc:  # noqa: BLE001 - a smoke test must never be the thing that  # BROAD-CATCH: fail-open
                 # aborts an install. Its whole job is to report, and an unexpected failure inside
                 # it is still a report about this server rather than a reason to lose the run.
-                results.append(
-                    SmokeResult(
-                        tenant=block.tenant,
-                        query="",
-                        hits=0,
-                        abstained=True,
-                        trust_state="unknown",
-                        failure_code=None,
-                        error=scrub_dsn_secrets(
-                            f"{type(exc).__name__}: {exc}", config.resolved_dsn, config.resolved_migration_dsn
-                        ),
-                    )
-                )
+                results.append(_failed_smoke(config, block.tenant, "", exc))
         smoke = tuple(results)
 
     return HeadlessReport(

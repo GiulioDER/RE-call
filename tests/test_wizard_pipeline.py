@@ -540,7 +540,8 @@ def test_degraded_reclaim_advice_targets_corpus_tenant(tmp_path: Path, tenant: s
     commands = [part for part in outcome.degraded_reason.split("`")[1::2] if part.startswith("recall ")]
     assert [shlex.split(command) for command in commands] == [
         ["recall", "--tenant", tenant, "generation", "abandon", outcome.generation_id],
-        ["recall", "--tenant", tenant, "generation", "gc"],
+        # DOC-007 (second CCA hunt): a default gc keeps a generation built today for 7 days.
+        ["recall", "--tenant", tenant, "generation", "gc", "--retention-days", "0"],
     ]
 
 
