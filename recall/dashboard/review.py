@@ -219,10 +219,13 @@ def already_declared(root: Path, stale: str, replacing: str) -> bool:
     if not targets:
         return False
     names = [encodable_name(p.relative_to(root).as_posix()) for p in memo_files(root)]
-    if not any(reference_stem_key(name) == stem for name in names):
+    claimant = reference_path_key(replacing)
+    # The claimant spelled as the folder lists it, so the resolver leaves it out by name.
+    own = next((name for name in names if reference_path_key(name) == claimant), encodable_name(replacing))
+    if not any(reference_stem_key(name) == stem and reference_path_key(name) != claimant for name in names):
         return True  # the stale memo is not in this folder: no other memo the name could mean
     for target in targets:
-        status, found = resolve_reference(target, names, encodable_name(replacing))
+        status, found = resolve_reference(target, names, own)
         if status == "resolved" and [reference_path_key(name) for name in found] == [wanted]:
             return True
     return False
@@ -507,10 +510,14 @@ def _with_shared_name(item: QueueItem, by_stem: Mapping[str, list[str]]) -> Queu
     sharing = by_stem.get(reference_stem_key(item.stale), [])
     if len(sharing) < 2:
         return item
-    line = (
-        f"ambiguous name: {len(sharing)} memos are called {item.stale.rsplit('/', 1)[-1]}; "
+    # A memo in a folder is named by its path, so accepting writes that path. One at the top
+    # level has no folder to add, and `rewrite` refuses its bare name as ambiguous.
+    advice = (
         "accepting writes `supersedes:` with this one's folder"
+        if "/" in reference_path_key(item.stale)
+        else "it is at the top level, so it cannot be named apart from the others: reject it, or rename it"
     )
+    line = f"ambiguous name: {len(sharing)} memos are called {item.stale.rsplit('/', 1)[-1]}; {advice}"
     return dataclasses.replace(item, details=item.details + (line,))
 
 

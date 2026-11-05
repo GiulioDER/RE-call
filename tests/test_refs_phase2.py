@@ -103,3 +103,32 @@ def test_the_queue_claim_about_a_namesake_can_be_accepted(shared: Path) -> None:
     declared = (shared / "new.md").read_text(encoding="utf-8")
     assert "a/notes.md" in declared and "b/notes.md" in declared, "the accept did not declare b/notes.md beside a/notes.md"
     assert not review.build_queue(shared).items
+
+
+def test_a_claim_a_namesake_already_declares_stays_hidden(tmp_path: Path) -> None:
+    """The newer memo is not another memo the name could mean: with `b/notes.md` gone, `a/notes.md`
+    declaring it still closes the claim. Red proof: the first version of this phase counted the
+    claimant, so the claim came back (`assert False`)."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "notes.md").write_text("---\nsupersedes: b/notes.md\n---\nNew.\n", encoding="utf-8")
+    assert review.already_declared(tmp_path, "b/notes.md", "a/notes.md"), "a declared claim came back to the queue"
+
+
+def test_a_top_level_namesake_is_not_promised_an_accept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A memo at the top level has no folder to name it by, so the queue says it cannot be told apart.
+    Red proof: the first version promised "accepting writes `supersedes:` with this one's folder"."""
+
+    def no_arbiter(*args: object, **kwargs: object) -> tuple[()]:
+        raise RewriteRefused("the supersession arbiter is off")
+
+    monkeypatch.setattr(review, "corpus_proposals", no_arbiter)
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "notes.md").write_text(f"Top: {OLD}.\n", encoding="utf-8")
+    (tmp_path / "sub" / "notes.md").write_text(f"Sub: {OLD}.\n", encoding="utf-8")
+    (tmp_path / "new.md").write_text(f"New: {NEW}.\n", encoding="utf-8")
+    with StaleReportQueue(default_queue_path(tmp_path)) as queue:
+        queue.submit(tmp_path, stale_source="notes.md", replacing_source="new.md", stale_quote=OLD, current_quote=NEW,
+                     client="mcp:test", task=None, reported_at=NOW)
+    (item,) = review.build_queue(tmp_path).items
+    line = next(d for d in item.details if d.startswith("ambiguous name"))
+    assert "top level" in line and "accepting writes" not in line, f"the queue promised an accept rewrite refuses: {line}"

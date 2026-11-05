@@ -957,9 +957,9 @@ def writable_reference(value: str) -> str:
     vocabularies — `rewrite` raises `RewriteRefused`, `fix` records an `Unfixable` its dry run
     prints — while "is any of this writable" has one answer, and this module is where both
     writers already share one. Each names that surviving segment when it refuses: the file's own
-    name is what has to change. Ambiguity is unaffected either way, because the stem is what was
-    being compared already, so dropping the directory cannot make two documents collide that did
-    not collide before.
+    name is what has to change. Dropping the directory can make a reference ambiguous that named
+    one memo by its path, when another memo shares the stem; `rewrite.plan_rewrite` refuses such a
+    value before it is stored rather than writing an edge no reader can resolve.
 
     A value carrying no marker is returned untouched, directories and all. Trimming those too
     would read the same to every resolver and still be wrong: a derived block's dedup recognises
