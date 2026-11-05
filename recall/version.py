@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 
 #: Derived from ``__version__`` so the comparable form cannot drift from the published version.
 _major, _minor, _patch = (int(part) for part in __version__.split("."))
