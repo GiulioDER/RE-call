@@ -749,6 +749,17 @@ def resolve_supersession_candidates(
     return _resolve_rows(rows).parts()
 
 
+def resolve_reference(reference: str, files: Iterable[str], claimant: str = "") -> tuple[str, list[str]]:
+    """What a `supersedes:` reference, written in `claimant`, names among root-relative `files`.
+
+    Search's own rule (`ReferenceIndex.match`), for the layers that read a folder of memo files
+    rather than an index (rewrite, lint, the dashboard): a reference that names a folder is matched
+    by path, a bare name by its stem, and a match that is not unique is ``ambiguous``, never
+    guessed. Returns ``("resolved" | "ambiguous" | "dangling" | "self", the files it could name)``.
+    """
+    return ReferenceIndex((file, None) for file in files).match(reference, claimant)
+
+
 class ReferenceIndex:
     """The matching half of the resolver: every file keyed by root and path, and the rule that
     finds the file a `supersedes:` reference names (`_resolve_rows` states it).

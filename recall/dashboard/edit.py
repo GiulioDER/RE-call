@@ -57,6 +57,7 @@ from recall.lint import (
 from recall.rewrite import RewriteRefused, derived_value, set_derived_status
 from recall.state_dir import make_parent
 from recall.stale_reports import StaleReportRefused, resolve_memo
+from recall.supersession import reference_path_key
 from recall.truth_extraction.types import STATUS_VOCABULARY
 
 #: A sentinel for "leave this value as it is", distinct from None, which clears it.
@@ -283,7 +284,8 @@ def plan_edit(
             raise EditRefused(f"{target} is not a memo in this corpus")
         if len(matches) > 1:
             raise EditRefused(f"{target} matches {len(matches)} memos ({', '.join(matches)}); name it so it is unique")
-        if supersedes_key(matches[0]) == supersedes_key(corpus_name):
+        # The same path, not the same file name: `a/notes.md` may supersede `b/notes.md`.
+        if reference_path_key(matches[0]) == reference_path_key(corpus_name):
             raise EditRefused("a memo cannot supersede itself")
         try:
             changed = add_supersedes_target(after, matches[0])
