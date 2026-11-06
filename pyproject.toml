@@ -40,7 +40,8 @@ dependencies = [
     # It used to arrive only as a transitive of `mcp`, so a plain `pip install recall-rag` then
     # `import recall_agent` raised ModuleNotFoundError: pydantic. Relying on somebody else's
     # transitive for a module-scope import is a dependency whether or not it is declared.
-    "pydantic>=2",
+    # >=2.4: CVE-2024-3772 (regex denial of service) is fixed in 2.4.0.
+    "pydantic>=2.4",
     # `recall.lite.store.LiteStore` keeps its dense leg as one float32 matrix and needs numpy on its
     # first write. pgvector 0.5.0 no longer pulls numpy in, so a core-only install raised
     # ModuleNotFoundError: numpy there (PR 894, verified 2026-10-07). The zero-setup install is the
@@ -103,7 +104,9 @@ documents = [
     # of an unused dependency is none. (Corrected 2026-10-28: this said the rule "had kept silent"
     # the advisories; pip-audit's `audit` job found them, and whether the rule also suppressed a
     # security PR is unconfirmed, see .github/dependabot.yml.)
-    "pdfplumber>=0.11",
+    # >=0.11.9: earlier releases pin pdfminer.six at versions with published advisories, whose
+    # fixes (20251107, 20251230) are reachable only through pdfplumber 0.11.9 and later.
+    "pdfplumber>=0.11.9",
     "python-docx>=1.1",
     "openpyxl>=3.1",
     "python-pptx>=1.0",
@@ -124,11 +127,14 @@ pool = ["psycopg-pool>=3.2"]
 mcp = [
     "mcp==2.2.0",
     "psycopg-pool>=3.2",
-    "PyJWT[crypto]>=2.10.1,<3",
-    # MCP server and HTTP client modules import these packages directly.
-    "anyio>=4",
-    "httpx2>=2,<3",
-    "starlette>=0.27",
+    "PyJWT[crypto]>=2.15.0,<3",
+    # MCP server and HTTP client modules import these packages directly. Each floor is the first
+    # release that fixes every advisory pip-audit reports against older versions (2026-11-06):
+    # anyio 4.14.2, httpx2 2.12.0, starlette 1.3.1 (Host and path validation, form limits; no 0.x
+    # release carries those fixes).
+    "anyio>=4.14.2",
+    "httpx2>=2.12,<3",
+    "starlette>=1.3.1",
 ]
 # >=0.2.2 rather than >=0.2: `max_retries` first appears on `voyageai.Client` in 0.2.2, and
 # `VoyageEmbedder` passes it to keep this repository's retry policy single-owner. 0.2.1 satisfies
@@ -138,14 +144,18 @@ mcp = [
 # voyageai. The SDK itself stays: its version is part of every Voyage profile's identity.
 # `recall.multimodal` fits images with Pillow for the Voyage multimodal embedder. voyageai already
 # requires pillow; it is declared here because the `hosted` extra, which declared it, is gone.
-voyage = ["voyageai>=0.2.2", "requests>=2.31", "pillow>=10"]
+# Floors for requests (2.33.0) and pillow (13.0.0) are the first releases that fix every advisory
+# pip-audit reports against older versions (2026-11-06). Pillow decodes user-supplied images here.
+voyage = ["voyageai>=0.2.2", "requests>=2.33", "pillow>=13"]
 # Operators enabling the generation-bound atomic rescue artifact install this extra explicitly.
 # NumPy is also a core dependency now (LiteStore); it stays listed here so the extra states what
 # atomic rescue needs on its own.
 # threadpoolctl bounds the BLAS pool of the view-matrix product (`recall.atomic_rescue._view_scores`).
 atomic = ["numpy>=1.26", "threadpoolctl>=3.1"]
 # OpenAI-compatible embeddings, including OpenRouter-hosted models.
-openai = ["openai>=1.10"]
+# >=1.58: `recall.reasoning_expansion` passes `reasoning_effort=` to chat.completions.create, which
+# openai 1.57.4 does not accept and 1.58.0 does (checked in both wheels, 2026-11-06).
+openai = ["openai>=1.58"]
 s3 = ["boto3>=1.35"]
 # Production AWS runtime integrations. boto3 is kept separate from the core package so local and
 # stdio installations do not gain a cloud control plane or credential provider implicitly.
@@ -153,11 +163,11 @@ aws = ["boto3>=1.35", "redis[hiredis]>=5,<9"]
 # Learned sparse retrieval uses transformers directly. Model weights are user-provisioned.
 sparse = ["transformers>=4.40,<6", "torch>=2.5,<3"]
 # Keep rerank and finetune sentence-transformers floors in step.
-rerank = ["sentence-transformers>=3.0", "transformers>=5.6,<6", "torch>=2.4,<3"]
+rerank = ["sentence-transformers>=3.0", "transformers>=5.10,<6", "torch>=2.4,<3"]
 eval = ["matplotlib>=3.7", "numpy"]
 # Model backed truth extraction. Runs on the ingest path only, never the query path, and is
 # OFF unless RECALL_TRUTH_EXTRACTION is set. Shares the `bench` extra's openai floor.
-extract = ["openai>=1.10"]
+extract = ["openai>=1.58"]
 # Keep the benchmark on the Sentence Transformers legacy trainer. `accelerate` is deliberately
 # absent: CVE-2026-69112 affects its checkpoint loading helpers, and there is no fixed upstream
 # release yet. The benchmark does not need that optional package when it uses `old_fit`.
@@ -167,7 +177,9 @@ finetune = ["sentence-transformers>=3.0", "numpy"]
 # release. Keep the compatibility marker so existing `.[llamaindex]` commands remain valid, but
 # require applications that accept that framework dependency to install `llama-index-core` in
 # their own environment. RE-call's package and audit dependency set stays free of that advisory.
-langchain = ["langchain-core>=0.3"]
+# >=0.3.85: the last 0.3 release, carrying every fix published for that line. Two advisories are
+# fixed only on the 1.x line (1.2.11 and 1.2.22); requiring 1.x is left to an owner decision.
+langchain = ["langchain-core>=0.3.85"]
 llamaindex = []
 # Claude Agent SDK integration (`recall_agent`). Deliberately NOT in `dev`: the SDK spawns the
 # Claude Code CLI at runtime, CI installs without heavy extras, and a CI run without the SDK is
@@ -176,14 +188,14 @@ llamaindex = []
 # `ClaudeAgentOptions` surface this package relies on (`setting_sources`, `extra_args`,
 # `cli_path`, SDK in-process servers in `mcp_servers`) is the 0.2 line's; `<1` because the SDK
 # is pre-1.0 and `recall_agent/_sdk.py` is deliberately the only module exposed to its churn.
-agent = ["claude-agent-sdk>=0.2,<1", "psycopg-pool>=3.2"]
+agent = ["claude-agent-sdk>=0.2.121,<1", "psycopg-pool>=3.2"]
 # Benchmark extra is deliberate and excluded from `dev`.
-bench = ["mem0ai==2.0.13", "openai>=1.10", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.14.0"]
+bench = ["mem0ai==2.0.13", "openai>=1.58", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.14.0"]
 dev = [
-    "pytest>=8", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.16,<0.17",
+    "pytest>=9.0.3", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.16,<0.17",
     "hypothesis>=6,<7",
     # Multimodal contract tests exercise the hosted path's real image fitting behavior.
-    "pillow>=10",
+    "pillow>=13",
     # `pytest-xdist` is a dev tool, not a test dependency: nothing imports it and the suite runs
     # identically without it. It is declared because the suite is LARGE rather than slow — 6,563
     # tests averaging under a third of a second each, with no hotspot to remove — so the only
@@ -191,9 +203,9 @@ dev = [
     # is what makes that safe against a shared database; see the note there.
     "pytest-xdist>=3.6",
     "mcp==2.2.0", "psycopg-pool>=3.2",
-    "python-dotenv>=1.0",
-    "PyJWT[crypto]>=2.10.1,<3",
-    "langchain-core>=0.3",
+    "python-dotenv>=1.2.2",
+    "PyJWT[crypto]>=2.15.0,<3",
+    "langchain-core>=0.3.85",
     # The full contract suite imports numpy from benchmark, evaluation, and reranking tests.
     # Keep it direct in dev rather than relying on an unrelated optional framework dependency.
     "numpy>=1.26",
@@ -220,7 +232,12 @@ analysis = [
     "pytest-benchmark>=5,<6",
 ]
 # Optional Windows desktop shell. Keeping this separate preserves the small library install.
-desktop = ["PySide6>=6.7", "keyring>=25", "mcp==2.2.0", "psycopg-pool>=3.2", "fastembed>=0.3,<1"]
+# onnxruntime and tokenizers are imported directly by `recall-install --selftest`, so they are
+# declared here as in the `fastembed` extra rather than left to fastembed's own requirements.
+desktop = [
+    "PySide6>=6.7", "keyring>=25", "mcp==2.2.0", "psycopg-pool>=3.2", "fastembed>=0.3,<1",
+    "onnxruntime>=1.17,<2", "tokenizers>=0.13,<1",
+]
 
 # Declared LAST among the `[project]` sub-tables: every bare key above (`dependencies`,
 # `classifiers`, …) belongs to `[project]`, and opening a sub-table earlier would silently

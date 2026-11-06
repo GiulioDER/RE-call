@@ -1310,6 +1310,16 @@ list as an ordered upgrade procedure.
 
 ### Security
 
+* **Dependency floors no longer admit versions with published advisories, where a fixed release
+  exists on the supported line.** Core `pydantic>=2.4`; `mcp` extra `PyJWT[crypto]>=2.15.0`,
+  `anyio>=4.14.2`, `httpx2>=2.12` and `starlette>=1.3.1`; `voyage` extra `requests>=2.33` and
+  `pillow>=13`; `documents` extra `pdfplumber>=0.11.9`; `langchain` extra `langchain-core>=0.3.85`;
+  `agent` extra `claude-agent-sdk>=0.2.121`; `rerank` extra `transformers>=5.10`. The `openai`,
+  `extract` and `bench` extras now require `openai>=1.58`, the first release that accepts the
+  `reasoning_effort` argument RE-call passes, and the `desktop` extra declares the `onnxruntime`
+  and `tokenizers` its self-test imports. An environment holding an older version of one of these
+  must upgrade it to install 0.15.0.
+
 * **On Windows, no RE-call command runs an executable from the
   current directory.** Every console script (`recall`, `recall-mcp`, the desktop entry points and
   the hook launcher) sets `NoDefaultCurrentDirectoryInExePath` before doing anything else, and the
