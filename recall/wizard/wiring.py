@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from collections.abc import Mapping
@@ -590,14 +591,31 @@ def _project_keys(projects: dict[str, object], project_root: Path) -> tuple[str,
     So every existing key that resolves to this directory is used, rather than one invented one. A
     project the user has never opened has no key at all, and only then is one invented from the
     resolved path.
+
+    This runs under the configuration lock, so only keys whose last folder name matches this
+    project's (as typed or as resolved, ignoring case) are resolved at all: resolving every key, one
+    of which may name an offline network share, could hold the lock past the 30 s other writers
+    wait. A spelling that reaches this folder under another final name (a junction or symlink named
+    differently) is therefore not found; that is the accepted cost (owner decision 2026-11-06).
     """
-    matches = [key for key in projects if _same_directory(key, project_root)]
-    return tuple(matches) if matches else (str(project_root.resolve()),)
+    root = project_root.resolve()
+    names = {project_root.name.casefold(), root.name.casefold()}
+    matches = [
+        key
+        for key in projects
+        if (_final_component(key) in names or "" in names) and _resolves_to(key, root)
+    ]
+    return tuple(matches) if matches else (str(root),)
 
 
-def _same_directory(key: str, project_root: Path) -> bool:
+def _final_component(key: str) -> str:
+    """The last folder name of a key in either separator style, compared without case."""
+    return re.split(r"[\\/]+", key.rstrip("\\/"))[-1].casefold()
+
+
+def _resolves_to(key: str, resolved_root: Path) -> bool:
     try:
-        return Path(key).resolve() == project_root.resolve()
+        return Path(key).resolve() == resolved_root
     except (OSError, ValueError):
         return False
 

@@ -1025,7 +1025,7 @@ def test_the_suite_never_touches_the_real_client_config() -> None:
 def test_project_keys_follow_each_platform_s_own_case_rule(tmp_path: Path) -> None:
     """⛔ Do NOT casefold this comparison, on either platform.
 
-    `_same_directory` compares `Path(key).resolve() == project_root.resolve()`, and `PurePath.__eq__`
+    `_resolves_to` compares `Path(key).resolve() == project_root.resolve()`, and `PurePath.__eq__`
     is case-insensitive on Windows and case-sensitive on POSIX. That is each platform's own rule
     about what a directory IS, and it is the rule this has to follow.
 
@@ -1040,7 +1040,7 @@ def test_project_keys_follow_each_platform_s_own_case_rule(tmp_path: Path) -> No
     asserting whichever one the machine running the suite happens to have. CI runs on Linux and
     development happens on Windows, so both branches are exercised somewhere.
     """
-    from recall.wizard.wiring import _same_directory
+    from recall.wizard.wiring import _resolves_to
 
     # ⚠️ Deliberately NOT created. On Windows `resolve()` asks the filesystem for the canonical
     # casing of a path that EXISTS, so two spellings of one real directory collapse to the same
@@ -1050,12 +1050,12 @@ def test_project_keys_follow_each_platform_s_own_case_rule(tmp_path: Path) -> No
     shouted = str(tmp_path / "PROJ")
 
     if os.name == "nt":
-        assert _same_directory(shouted, lowered), (
+        assert _resolves_to(shouted, lowered.resolve()), (
             "on Windows these name one directory, and refusing to match would report the user's "
             "own project as a stranger"
         )
     else:
-        assert not _same_directory(shouted, lowered), (
+        assert not _resolves_to(shouted, lowered.resolve()), (
             "on POSIX these are two directories, and matching them would register this project's "
             "servers under an unrelated one"
         )

@@ -19,7 +19,6 @@ from recall.index import (
     MAX_BATCH_CHUNKS,
     PruneGuardTripped,
     chunk_code,
-    chunk_text,
     head_commit,
 )
 from recall.index_lock import ConcurrentIndex
@@ -89,7 +88,9 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     p_index.add_argument(
         "--glob",
         default=DEFAULT_INDEX_GLOB,
-        help="file glob to index, for example '**/*.py' for code. Default: supported documents and code.",
+        help="file glob to index, for example '**/*.md'. Default: supported documents and code. "
+             "Code is chunked as plain text here; `recall generation build --chunker code` "
+             "chunks Python by symbol.",
     )
     p_index.add_argument(
         "--project",
@@ -369,7 +370,6 @@ def _cmd_index(args: argparse.Namespace) -> None:
             f"{route.describe()}: local filesystem indexing is unavailable on the generation "
             "route; build from an immutable manifest"
         )
-    chunker = chunk_code if args.glob.endswith(".py") else chunk_text
     security_policy = load_source_policy()
     security_context = (
         access_context_from_environment(args.tenant, purpose="indexing")
@@ -395,7 +395,6 @@ def _cmd_index(args: argparse.Namespace) -> None:
                     indexer = Indexer(
                         store,
                         embedder,
-                        chunker=chunker,
                         cache=cache,
                         context_policy=context_policy_for_profile(embedding_profile_id(embedder)),
                         allow_prune=args.allow_prune,
