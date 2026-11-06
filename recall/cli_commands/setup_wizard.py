@@ -518,6 +518,21 @@ def _cmd_uninstall(args: argparse.Namespace) -> None:
 def _cmd_wizard(args: argparse.Namespace) -> None:
     from recall.wizard.headless import PipelineRefusal, load_config, run_headless
 
+    # Global flags whose value would only seem to apply: every path below builds with the config's
+    # embedder and DSNs and never reads these, so they are refused before any question is asked.
+    # Typed flags only, since each one defaults from the environment.
+    for flag, given in (
+        ("--embedder", getattr(args, "embedder_given", False)),
+        ("--serving-dsn", getattr(args, "dsn_given", False)),
+        ("--migration-dsn", getattr(args, "migration_dsn_given", False)),
+    ):
+        if given:
+            raise SystemExit(
+                f"`recall wizard` does not accept {flag}: the embedder and the DSNs come from the "
+                f"config file, so {flag} would be ignored rather than applied. Set it in the config "
+                "instead."
+            )
+
     # ⚠️ The interactive path WRITES a config and then runs that file, rather than running the
     # answers directly. One engine, and the user keeps an artefact they can re-run, hand to
     # somebody else, or put in CI. An interactive flow that installed from memory would be a

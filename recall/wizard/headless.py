@@ -49,7 +49,7 @@ from typing import Protocol
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from recall.calibration_v2 import CalibrationRepository
-from recall.embeddings import Embedder, resolve_embedder
+from recall.embeddings import HASHING_ALIASES, Embedder, resolve_embedder
 from recall.generations import GenerationManager
 from recall.store import redacted_dsn, require_secure_dsn, scrub_dsn_secrets
 from recall.wizard.corpora import (
@@ -1315,7 +1315,7 @@ def _provision(
             ("data_root",),
         )
 
-    if config.embedder not in {"hashing", "hashing-64", "hashing:64", "fastembed"} and not (
+    if config.embedder not in {*HASHING_ALIASES, "fastembed"} and not (
         config.embedder.startswith("fastembed:")
     ):
         raise ConfigRefusal(

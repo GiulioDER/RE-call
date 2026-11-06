@@ -783,6 +783,24 @@ class GenerationStore(PgVectorStore):
         )
         return {str(source): str(digest) for source, digest in rows}
 
+    def sources_present(self, sources: Sequence[str]) -> set[str]:
+        """Which of `sources` the ACTIVE generation holds, the scope `source_content_hashes` has.
+
+        Overridden because the inherited query filters `source`, a column `recall_chunks_v1` does
+        not have, and ignores the generation, so it would fail or answer for every generation.
+        """
+        if not sources:
+            return set()
+        generation_id = self._generation_id()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                "SELECT DISTINCT source_uri FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND generation_id = %s AND source_uri = ANY(%s)",
+                (self._tenant, generation_id, list(sources)),
+            ).fetchall()
+        )
+        return {str(row[0]) for row in rows}
+
     def source_raw_hashes(self) -> dict[str, str]:
         """The same answer as `source_content_hashes` here, and that is the point.
 
@@ -797,32 +815,41 @@ class GenerationStore(PgVectorStore):
         """
         return self.source_content_hashes()
 
-    def sources_in_any_generation(self) -> frozenset[str]:
-        """Every source this tenant has indexed, across ALL generations.
+    def sources_in_any_generation(self, sources: Sequence[str]) -> frozenset[str]:
+        """Which of `sources` this tenant has indexed, across ALL generations.
 
         `source_content_hashes()` is scoped to one generation, so it answers "can I read this
         now", not "does this exist". Erasure needs the second question: a source that dropped
         out of the active generation must still be erasable, while one that was never indexed
         must still be refused as a typo, because forgetting it writes a permanent tombstone
         that bars that URI from every future build.
+
+        Scoped to `sources` in SQL: listing every source of the tenant to check a few named ones
+        cost a scan of the whole tenant on every erasure request.
         """
+        if not sources:
+            return frozenset()
         rows = self._with_retry(
             lambda conn: conn.execute(
-                "SELECT DISTINCT source_uri FROM recall_chunks_v1 WHERE tenant_id = %s",
-                (self._tenant,),
+                "SELECT DISTINCT source_uri FROM recall_chunks_v1 "
+                "WHERE tenant_id = %s AND source_uri = ANY(%s)",
+                (self._tenant, list(sources)),
             ).fetchall()
         )
         return frozenset(str(row[0]) for row in rows)
 
-    def sources_in_legacy_table(self) -> frozenset[str]:
-        """Every source still held in the adopted v0.8 table for this tenant.
+    def sources_in_legacy_table(self, sources: Sequence[str]) -> frozenset[str]:
+        """Which of `sources` are still held in the adopted v0.8 table for this tenant.
 
         Migration 0008 adopts a v0.8 install's rows IN PLACE: they never enter
         `recall_chunks_v1`, and its `legacy_unverified` generation carries a
         `{"legacy_table": ...}` manifest with no `objects`, so neither of the other two probes
         can see them. Without this an erasure request for a legacy source was answered with
-        "check for typos" about data the tenant demonstrably holds.
+        "check for typos" about data the tenant demonstrably holds. Scoped to `sources` in SQL,
+        as `sources_in_any_generation` is.
         """
+        if not sources:
+            return frozenset()
         rows = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT to_regclass(%s) IS NOT NULL", (self._migration_target,)
@@ -832,8 +859,9 @@ class GenerationStore(PgVectorStore):
             return frozenset()
         found = self._with_retry(
             lambda conn: conn.execute(
-                f"SELECT DISTINCT source FROM {self._migration_target} WHERE tenant_id = %s",
-                (self._tenant,),
+                f"SELECT DISTINCT source FROM {self._migration_target} "
+                "WHERE tenant_id = %s AND source = ANY(%s)",
+                (self._tenant, list(sources)),
             ).fetchall()
         )
         return frozenset(str(row[0]) for row in found)
