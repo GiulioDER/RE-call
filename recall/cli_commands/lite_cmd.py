@@ -183,7 +183,7 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     if not db.exists():
         raise SystemExit(f"no lite store at {db}; create one with `recall setup --lite`")
 
-    from recall.embeddings import resolve_embedder
+    from recall.cli_commands import _shared
     from recall.lite import LiteStore
 
     # Only a typed --embedder, before or after `lite refresh`: the global option's default is
@@ -197,26 +197,17 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
         # A wrong embedder of the same width does not raise: it ranks nonsense. So never guess.
         raise SystemExit(f"{ask} (the store has not recorded one yet)")
     try:
-        embedder = resolve_embedder(name)
-    except (MemoryError, RecursionError):
-        raise
-    except Exception as exc:  # BROAD-CATCH: error-translation  # as `_shared._make_embedder`
-        if not (given or info.embedder_spec) and isinstance(exc, ValueError):
+        # The shared helper, so refresh translates an unusable embedder exactly as every other
+        # command does (CCA CODE-029); it raises SystemExit chained to the resolver's error.
+        embedder = _shared._make_embedder(name)
+    except SystemExit as exc:
+        if not (given or info.embedder_spec) and isinstance(exc.__cause__, ValueError):
             # A store set up before the spec was recorded holds only the model's own name, such
             # as BAAI/bge-small-en-v1.5, which names no provider; guessing one is the nonsense above.
             raise SystemExit(
                 f"{ask} (the store recorded the model {name!r}, which names no embedder)"
             ) from None
-        # A typo, or a recorded backend whose extra is not installed here, is the operator's to
-        # fix: one line naming the extra, as every other command prints, not a traceback.
-        from recall.capabilities import diagnose_exception
-
-        raise SystemExit(
-            diagnose_exception(
-                "embedder", "construction", exc, target=name,
-                remediation="check `recall doctor` and install the extra named by the diagnostic",
-            ).render()
-        ) from exc
+        raise
     # One walk serves both the refresh's change check and the budget warning below (CCA
     # PERF-004): the memo files are the same before and after, and the walk is the cost.
     snap = snapshot(roots)
