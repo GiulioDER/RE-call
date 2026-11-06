@@ -302,7 +302,7 @@ def _index_memory_unlocked(
     # the index has committed by now, so a failure to check must not report the write as failed.
     try:
         ambiguous = ambiguous_references(store, security_policy=security_policy, access_context=security_context)
-    except Exception as exc:  # noqa: BLE001  # stated above: the receipt never fails a committed index
+    except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: fail-open; the index has committed, only the receipt is missing
         ambiguous = []
         message += f" Supersedes references were not checked ({type(exc).__name__})."
     if ambiguous:
