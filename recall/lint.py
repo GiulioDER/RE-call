@@ -47,7 +47,7 @@ from recall.dependency_invalidation import (
 )
 from recall.document import parse_document
 from recall.frontmatter import supersedes_key, supersedes_targets, validity_bounds
-from recall.supersession import resolve_reference
+from recall import supersession as _supersession
 
 #: Prose that usually accompanies a closure/replacement decision. Deliberately short and
 #: high-precision: a chatty list would drown real omissions in noise.
@@ -228,21 +228,78 @@ def _find_cycles(graph: dict[str, list[str]]) -> list[frozenset[str]]:
 DEFAULT_GLOB = "**/*.md"
 
 
+def _cycle_name(value: str) -> str:
+    """A name in the cycle graph as given: a bare name by its stem, a path with its folder."""
+    v = value.strip()
+    while len(v) >= 2 and v[0] == "[" and v[-1] == "]":
+        v = v[1:-1].strip()
+    if v.lower().endswith(".md"):
+        v = v[:-3]
+    return v if "/" in v else supersedes_key(v)
+
+
+def cycle_keys(names: Iterable[str]) -> dict[str, str]:
+    """Each root-relative file's key in the cycle graph: its stem, or its path when another file
+    shares the stem, so `a/notes.md` and `b/notes.md` are two nodes while a flat corpus keys and
+    names every memo by its stem, as it always has."""
+    names = list(names)
+    count: dict[str, int] = {}
+    for name in names:
+        count[supersedes_key(name)] = count.get(supersedes_key(name), 0) + 1
+    return {name: supersedes_key(name) if count[supersedes_key(name)] == 1 else _cycle_name(name) for name in names}
+
+
 def supersession_graph_of(documents: Iterable[tuple[str, Mapping[str, object]]]) -> dict[str, list[str]]:
     """The `supersedes:` edges `lint_corpus` checks for cycles: superseded key -> superseding keys.
 
-    ``documents`` are (file name, frontmatter) pairs. A reference counts only when it names a
-    document in the set, and a self-reference is left out, both as `lint_corpus` reads them.
+    ``documents`` are (root-relative file, frontmatter) pairs, and each node is keyed by
+    `cycle_keys`. A reference counts only when it resolves to one other document of the set, by
+    search's rule (`recall.supersession.resolve_reference`), as `lint_corpus` reads it.
     """
-    docs = [(supersedes_key(name), meta) for name, meta in documents]
-    names = {key for key, _meta in docs}
+    docs = list(documents)
+    names = [name for name, _meta in docs]
+    keys = cycle_keys(names)
+    # One index for the whole corpus: building one per reference made a 1,000-memo lint 16x
+    # slower (measured 2026-11-06, 0.44 s to 6.8 s).
+    index = _reference_index(names)
     graph: dict[str, list[str]] = {}
     for own, meta in docs:
         for written in supersedes_targets(meta.get("supersedes")):
-            target = supersedes_key(written)
-            if target != own and target in names:
-                graph.setdefault(target, []).append(own)
+            status, found = index.match(written, own)
+            if status == "resolved":
+                graph.setdefault(keys[found[0]], []).append(keys[own])
     return graph
+
+
+def _reference_index(names: Iterable[str]) -> _supersession.ReferenceIndex:
+    """Search's resolver over a folder of root-relative files (`supersession.resolve_reference`)."""
+    return _supersession.ReferenceIndex((name, None) for name in names)
+
+
+def _cycle_key(index: _supersession.ReferenceIndex, keys: Mapping[str, str], value: str, claimant: str = "") -> str:
+    """The cycle-graph key of the memo `value` names, written in `claimant`."""
+    status, found = index.match(value, claimant)
+    if status == "resolved":
+        return keys[found[0]]
+    if status == "self":
+        return keys.get(claimant, _cycle_name(claimant))
+    return _cycle_name(value)
+
+
+def cycle_refusal(documents: Sequence[tuple[str, Mapping[str, object]]], superseder: str, target: str) -> str | None:
+    """`describe_cycle`'s sentence when `superseder supersedes target` would close a cycle, else None.
+
+    ``documents`` are the corpus as (root-relative file, frontmatter), ``superseder`` a file of
+    it and ``target`` the reference as it will be written. The one call every writer makes, so
+    each keys both ends as the graph does.
+    """
+    names = [name for name, _meta in documents]
+    keys, index = cycle_keys(names), _reference_index(names)
+    start, goal = _cycle_key(index, keys, superseder), _cycle_key(index, keys, target, superseder)
+    # The keys are final: normalising them again would turn `y.md` (the key of `y.md.md`) into `y`
+    # and miss the cycle through it.
+    chain = _closed_by(supersession_graph_of(documents), start, goal)
+    return None if chain is None else _describe(start, goal, chain)
 
 
 def corpus_frontmatter(path: str | Path, glob: str = DEFAULT_GLOB) -> list[tuple[Path, dict[str, object]]]:
@@ -259,9 +316,18 @@ def corpus_frontmatter(path: str | Path, glob: str = DEFAULT_GLOB) -> list[tuple
     return found
 
 
+def corpus_documents(path: str | Path, glob: str = DEFAULT_GLOB) -> list[tuple[str, dict[str, object]]]:
+    """`corpus_frontmatter` as (root-relative file, frontmatter), the shape the cycle graph reads."""
+    root = Path(path)
+    return [
+        (f.relative_to(root).as_posix() if root.is_dir() else f.name, meta)
+        for f, meta in corpus_frontmatter(path, glob)
+    ]
+
+
 def supersession_graph(path: str | Path, glob: str = DEFAULT_GLOB) -> dict[str, list[str]]:
     """`supersession_graph_of` for the corpus on disk, read as `lint_corpus` reads it."""
-    return supersession_graph_of((f.name, meta) for f, meta in corpus_frontmatter(path, glob))
+    return supersession_graph_of(corpus_documents(path, glob))
 
 
 def supersession_cycle_closed_by(
@@ -281,7 +347,11 @@ def supersession_cycle_closed_by(
     A new cycle passes through the new edge, and one exists exactly when ``target`` already
     supersedes ``superseder``, directly or through others.
     """
-    start, goal = supersedes_key(superseder), supersedes_key(target)
+    return _closed_by(graph, _cycle_name(superseder), _cycle_name(target))
+
+
+def _closed_by(graph: Mapping[str, Sequence[str]], start: str, goal: str) -> tuple[str, ...] | None:
+    """`supersession_cycle_closed_by` over keys already in the graph's form."""
     if start == goal:
         return (start,)
     parent: dict[str, str] = {}
@@ -307,9 +377,13 @@ def describe_cycle(superseder: str, target: str, chain: Sequence[str]) -> str:
     ``superseder`` and ``target`` are the names `supersession_cycle_closed_by` was given; they are
     keyed here as the chain is, so a writer passes the same two values to both.
     """
+    return _describe(_cycle_name(superseder), _cycle_name(target), chain)
+
+
+def _describe(superseder: str, target: str, chain: Sequence[str]) -> str:
+    """`describe_cycle` over keys already in the graph's form."""
     if len(chain) == 1:
         return "a memo cannot supersede itself"
-    superseder, target = supersedes_key(superseder), supersedes_key(target)
     # A chain longer than two is transitive: `target` reaches the superseder through the memos
     # between, and declares no edge to it itself.
     through = f" through {' -> '.join(chain[1:-1])}" if len(chain) > 2 else ""
@@ -340,6 +414,8 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
         name_count[key] = name_count.get(key, 0) + 1
     names = set(name_count)
     every_file = list(rel.values())
+    keys = cycle_keys(every_file)
+    index = _reference_index(every_file)
     # superseded basename -> ALL files claiming to supersede it (a single-valued map would
     # drop edges on fan-in and could hide a declared cycle behind a third superseder)
     superseders: dict[str, list[str]] = {}
@@ -424,7 +500,10 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
             # on. The real corpus writes wikilink brackets and omits the extension, and
             # comparing verbatim reported every one of its edges as dangling.
             target = supersedes_key(written)
-            if target == supersedes_key(f.name):
+            status, found = index.match(written, rel[f])
+            # A reference to this very file, by search's rule: `notes` written in `a/notes.md`
+            # names `b/notes.md` when that is the only other memo so named, never itself.
+            if status == "self" or (target == supersedes_key(f.name) and not found):
                 issues.append(
                     LintIssue(rel[f], "error", "self-supersedes",
                               "a document cannot supersede itself")
@@ -437,16 +516,17 @@ def lint_corpus(path: str | Path, glob: str = DEFAULT_GLOB) -> list[LintIssue]:
                 )
             else:
                 # A shared basename is ambiguous only when the reference does not name the
-                # folder: `a/notes.md` names one file to search (`resolve_reference`), and
+                # folder: `a/notes.md` names one file to search (`index.match`), and
                 # calling it an error made "lint clean" and "what search does" disagree.
-                if name_count[target] > 1 and resolve_reference(written, every_file, rel[f])[0] == "ambiguous":
+                if name_count[target] > 1 and status == "ambiguous":
                     issues.append(
                         LintIssue(rel[f], "error", "ambiguous-supersedes-target",
                                   f"supersedes {written!r}, but {name_count[target]} files "
                                   f"share that basename — the reference cannot be resolved "
                                   f"unambiguously; write it with the folder of the one meant")
                     )
-                superseders.setdefault(target, []).append(supersedes_key(f.name))
+                if status == "resolved":
+                    superseders.setdefault(keys[found[0]], []).append(keys[rel[f]])
 
     for members in _find_cycles(superseders):
         issues.append(

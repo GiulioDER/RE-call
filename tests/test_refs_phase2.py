@@ -7,8 +7,8 @@ review queue, the dashboard editor and `add_supersedes_target`'s dedup compared 
 
 Red proof, 2026-11-05: every test below failed against the pre-change files in its own assertion
 (recorded in the pull request). The new `resolve_reference` is tested only through those
-consumers, since the pre-change code lacks it. The editor test is a strict expected failure until
-the cycle check is path-aware (owner decision 2026-11-05: ship this phase, fix that next).
+consumers, since the pre-change code lacks it. The editor test was a strict expected failure until
+the cycle check became path-aware (tests/test_refs_cycles.py).
 """
 
 from __future__ import annotations
@@ -77,11 +77,6 @@ def test_a_second_memo_with_the_same_name_can_be_declared() -> None:
     assert add_supersedes_target(b"---\nsupersedes: notes\n---\nNew.\n", "a/notes.md") is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the cycle check (`lint.supersession_graph_of`, `supersession_cycle_closed_by`) keys memos by "
-    "file name, so a/notes.md superseding b/notes.md reads as a self-supersession; made path-aware next",
-)
 def test_the_editor_lets_one_folder_supersede_a_namesake_in_another(shared: Path) -> None:
     try:
         after = edit.plan_edit(shared, "a/notes.md", add_supersedes=("b/notes.md",)).after
