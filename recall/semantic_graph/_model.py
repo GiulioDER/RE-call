@@ -15,7 +15,13 @@ from typing import Any, Literal, Protocol, get_args
 from recall._frozen import freeze_value as _freeze
 from recall.lineage import canonical_sha256
 
-SEMANTIC_GRAPH_SCHEMA_VERSION = 2
+#: Bumped whenever `build_semantic_graph` writes different output for the same chunks. The
+#: marker records the version a graph was built with; a graph built by an older version keeps
+#: serving under its own version until `recall graph rebuild`, and `validate` rebuilds it.
+#: 3 (2026-11-06): NUM-001/002 dates, BUG-001 file identity, DOC-002 supersedes, NUM-003 dedup.
+SEMANTIC_GRAPH_SCHEMA_VERSION = 3
+#: The version of a marker written before markers recorded one.
+LEGACY_GRAPH_SCHEMA_VERSION = 2
 
 
 EntityKind = Literal[
@@ -183,6 +189,13 @@ class GraphReadiness:
     relation_count: int
     diagnostic_count: int
     reason: str | None = None
+    #: The version the graph was built with (`LEGACY_GRAPH_SCHEMA_VERSION` for an old marker).
+    schema_version: int | None = None
+
+    @property
+    def stale_schema(self) -> bool:
+        """Whether the graph was built by an older builder and wants `recall graph rebuild`."""
+        return self.schema_version is not None and self.schema_version < SEMANTIC_GRAPH_SCHEMA_VERSION
 
 
 @dataclass
@@ -252,6 +265,7 @@ class SemanticGraphProjection:
             mention_count=len(self.mentions),
             relation_count=len(self.relations),
             diagnostic_count=len(self.diagnostics),
+            schema_version=self.schema_version,
         )
 
 
@@ -303,8 +317,61 @@ def _identity(kind: str, payload: Mapping[str, Any]) -> str:
     return f"sg_{kind}_{canonical_sha256(dict(payload))[:24]}"
 
 
+def _diagnostic(
+    *,
+    tenant_id: str,
+    generation_id: str,
+    kind: DiagnosticKind,
+    reference: str | None,
+    message: str,
+    identity: Mapping[str, Any] | None = None,
+    entity_ids: Sequence[str] = (),
+    relation_ids: Sequence[str] = (),
+    schema_version: int | None = None,
+) -> SemanticGraphDiagnostic:
+    """One graph diagnostic, its id derived from the same kind and reference it stores.
+
+    `identity` holds the extra fields that tell two diagnostics of one kind and reference apart.
+    At one `SEMANTIC_GRAPH_SCHEMA_VERSION` the id hashes exactly the payload each call site
+    hashed before this helper existed, so the helper changed no id; a version bump changes every
+    id. `schema_version` keys a diagnostic raised while loading an older graph to that graph's
+    own version.
+    """
+    return SemanticGraphDiagnostic(
+        id=_identity(
+            "diagnostic",
+            {
+                "schema_version": (
+                    SEMANTIC_GRAPH_SCHEMA_VERSION if schema_version is None else schema_version
+                ),
+                "tenant_id": tenant_id,
+                "generation_id": generation_id,
+                "kind": kind,
+                "reference": reference,
+                **(identity or {}),
+            },
+        ),
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        kind=kind,
+        reference=reference,
+        message=message,
+        entity_ids=tuple(entity_ids),
+        relation_ids=tuple(relation_ids),
+    )
+
+
+def marker_schema_version(marker: Mapping[str, Any]) -> int:
+    """The builder version a graph marker records; a marker from before the field is legacy."""
+    value = marker.get("schema_version")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return LEGACY_GRAPH_SCHEMA_VERSION
+    return value
+
+
 def _graph_identity(
     *,
+    schema_version: int | None = None,
     tenant_id: str,
     generation_id: str,
     pipeline_fingerprint: str | None,
@@ -318,7 +385,9 @@ def _graph_identity(
     return _identity(
         "graph",
         {
-            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+            "schema_version": (
+                SEMANTIC_GRAPH_SCHEMA_VERSION if schema_version is None else schema_version
+            ),
             "tenant_id": tenant_id,
             "generation_id": generation_id,
             "pipeline_fingerprint": pipeline_fingerprint,

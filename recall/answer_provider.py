@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from urllib import request
 from urllib.parse import urlparse
 
+from recall.evidence import AnswerProfile
 from recall.provider_metadata import ProviderMetadata
 
 #: A version label, not a hash of the prompt text, so it is bumped by hand whenever
@@ -159,7 +160,7 @@ class OpenRouterAnswerProvider(OllamaAnswerProvider):
     provider_id = "recall.reasoning.answer.openrouter"
 
 
-def resolve_answer_profile(env: Mapping[str, str] | None = None) -> str:
+def resolve_answer_profile(env: Mapping[str, str] | None = None) -> AnswerProfile:
     """The answer prompt profile, from ``RECALL_REASONING_ANSWER_PROFILE``; unset means ``dated``.
 
     ``dated`` became the default on 2026-09-29 after two pre-registered measurements (LongMemEval-S
@@ -173,11 +174,12 @@ def resolve_answer_profile(env: Mapping[str, str] | None = None) -> str:
 
     source = env if env is not None else os.environ
     profile = source.get("RECALL_REASONING_ANSWER_PROFILE", "dated").strip().lower() or "dated"
-    if profile not in ANSWER_PROFILES:
-        raise ValueError(
-            f"RECALL_REASONING_ANSWER_PROFILE must be one of {', '.join(ANSWER_PROFILES)}"
-        )
-    return profile
+    for known in ANSWER_PROFILES:
+        if profile == known:
+            return known
+    raise ValueError(
+        f"RECALL_REASONING_ANSWER_PROFILE must be one of {', '.join(ANSWER_PROFILES)}"
+    )
 
 
 def resolve_answer_provider(

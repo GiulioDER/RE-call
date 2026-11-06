@@ -42,6 +42,15 @@ list as an ordered upgrade procedure.
   v3. Upgrading `voyageai`, `fastembed`, `onnxruntime`, `tokenizers` or `sentence-transformers` on
   a serving host turns every generation that recorded a profile into `LINEAGE_MISMATCH` until it
   is rebuilt, so pin those libraries or rebuild before switching traffic (#909).
+* **Rebuild semantic graphs once.** The graph builder's output changed (date handling, file
+  identity, supersedes of compiled records, duplicate diagnostics), and its schema version moves
+  from 2 to 3. Existing graphs keep serving under the version they were built with; run `recall
+  graph rebuild --generation <id>` for each live generation to pick up the fixes. A generation left
+  in `validating` by older code is rebuilt by `recall generation validate` rather than failed.
+  The change is one way: code before 0.15.0 refuses a graph built at version 3, and 0.15.0
+  refuses one built by a newer version. Upgrade the serving checkout and the CLI that builds and
+  validates generations together, and after a rollback run `recall graph rebuild` with the older
+  code for each live generation.
 * **Atomic rescue artifacts built by 0.14.0 are refused**: their `manifest.json` lacks
   `embedding_fingerprint`. Rebuild them.
 * **Configuration that refuses now:** a source policy file with an unknown or misspelled key, an

@@ -105,7 +105,8 @@ GRAPH_FIRST_RETRIEVAL_K = 20
 GRAPH_FIRST_SEED_K = _graph_expansion.GRAPH_FIRST_SEED_K
 GRAPH_FIRST_CONTEXT_K = _graph_expansion.GRAPH_FIRST_CONTEXT_K
 
-GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v2"
+# v3 (2026-11-06, BUG-006): corroboration counts distinct claims, not one relation per chunk.
+GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v3"
 GRAPH_DIRECTIONAL_RELATIONS = frozenset(
     {"supports", "references", "depends_on", "caused", "supersedes"}
 )
@@ -540,6 +541,16 @@ def _cached_semantic_graph(
                 )
                 semantic = None
                 _invalidate_graph_readiness(store)
+            elif getattr(readiness, "stale_schema", False):
+                # It still serves, under the version it was built with, but without the
+                # builder fixes since; logged once per cache fill, not per request.
+                _log.warning(
+                    "semantic graph for %s was built by graph schema %s; run "
+                    "`recall graph rebuild --generation %s`",
+                    generation_id,
+                    getattr(readiness, "schema_version", None),
+                    generation_id,
+                )
     except BaseException as exc:
         with _GRAPH_PROJECTION_LOCK:
             flight.error = exc

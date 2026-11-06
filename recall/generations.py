@@ -70,7 +70,13 @@ from recall.lineage import (
 from recall.manifest import ManifestObjectV1, ObjectReader, VerifiedObject
 from recall.observability import METRICS, get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
-from recall.semantic_graph import GraphReadiness, SemanticGraphProjection, build_semantic_graph, write_semantic_graph
+from recall.semantic_graph import (
+    GraphReadiness,
+    SemanticGraphProjection,
+    build_semantic_graph,
+    marker_schema_version,
+    write_semantic_graph,
+)
 from recall.supersession_records import pg_delete_removals, pg_record_removals, pg_records
 from recall.supersession import resolve_supersession_graph, supersession_rows_sql
 from recall.types import Chunk, EvidenceCard
@@ -361,6 +367,7 @@ def _effective_corpus_fingerprint(
 
 def _semantic_graph_marker(graph: SemanticGraphProjection) -> dict[str, Any]:
     return {
+        "schema_version": graph.schema_version,
         "graph_id": graph.graph_id,
         "graph_fingerprint": graph.fingerprint,
         "entity_count": len(graph.entities),
@@ -1866,7 +1873,28 @@ class GenerationManager:
                 pipeline_fingerprint=current.pipeline_fingerprint,
                 corpus_fingerprint=current.corpus_fingerprint,
             )
-            if (
+            built_version = marker_schema_version(graph_marker)
+            if built_version > graph.schema_version:
+                raise GenerationError(
+                    "generation semantic graph was built by a newer builder "
+                    f"(schema {built_version}, this code {graph.schema_version})"
+                )
+            if built_version < graph.schema_version:
+                # Built by an older builder (a deploy between build and validate): its rows
+                # cannot match the current build, and the generation is not corrupt. Replace
+                # the graph and its marker in this transaction instead of failing the build.
+                write_semantic_graph(conn, graph)
+                summary["semantic_graph"] = _semantic_graph_marker(graph)
+                self._audit(
+                    conn,
+                    "generation_graph_upgraded",
+                    generation_id=generation_id,
+                    payload={
+                        "from_schema_version": built_version,
+                        "to_schema_version": graph.schema_version,
+                    },
+                )
+            elif (
                 graph_marker.get("graph_id") != graph.graph_id
                 or graph_marker.get("graph_fingerprint") != graph.fingerprint
             ):

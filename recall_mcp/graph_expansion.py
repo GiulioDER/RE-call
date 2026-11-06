@@ -112,7 +112,8 @@ class GraphCandidate:
     """Mutable admission state for one graph neighbor chunk."""
 
     neighbor_ids: set[str] = field(default_factory=set)
-    relation_ids: set[str] = field(default_factory=set)
+    #: One entry per distinct claim (`relation_claim`), which corroboration counts.
+    claim_keys: set[str] = field(default_factory=set)
     trusted_seed_chunk_ids: set[str] = field(default_factory=set)
     relation_evidence_chunk_ids: set[str] = field(default_factory=set)
     best_confidence: float = 0.0
@@ -128,12 +129,25 @@ def calibrated_graph_relevance(cosine: float, calibration: Calibration | None) -
     return max(0.0, min(1.0, (float(cosine) + 1.0) / 2.0))
 
 
+def relation_claim(relation: Any) -> str:
+    """What one relation asserts, independent of which chunk of its document carried it.
+
+    Frontmatter is copied to every chunk of a file, so one authored claim is one relation per
+    chunk. Corroboration counts claims, so a long memo cannot support a neighbour by repeating
+    itself; the same claim made by two documents still counts twice.
+    """
+    source = relation.metadata.get("source") if relation.metadata else None
+    if not isinstance(source, str):
+        return f"id:{relation.id}"
+    return "|".join((relation.relation, relation.subject_id, relation.object_id, source))
+
+
 def graph_corroboration(candidate: GraphCandidate) -> float:
     """Return a bounded signal for distinct seed and relation support."""
     seed_support = min(
         len(candidate.trusted_seed_chunk_ids) / GRAPH_RERANK_CORROBORATION_CAP, 1.0
     )
-    relation_support = min(len(candidate.relation_ids) / GRAPH_RERANK_CORROBORATION_CAP, 1.0)
+    relation_support = min(len(candidate.claim_keys) / GRAPH_RERANK_CORROBORATION_CAP, 1.0)
     return (seed_support + relation_support) / 2.0
 
 
@@ -554,7 +568,7 @@ def _score_candidates(
                     else 0
                 ),
                 -(
-                    len(candidates_by_chunk[chunk_id].relation_ids)
+                    len(candidates_by_chunk[chunk_id].claim_keys)
                     if use_corroboration
                     else 0
                 ),
@@ -824,7 +838,7 @@ def _retain_loaded_candidates(
                 else relation.subject_id
             )
             candidate.neighbor_ids.add(neighbor)
-            candidate.relation_ids.add(relation.id)
+            candidate.claim_keys.add(relation_claim(relation))
             candidate.trusted_seed_chunk_ids.update(
                 set(relation.evidence_chunk_ids).intersection(trusted_seed_ids)
             )

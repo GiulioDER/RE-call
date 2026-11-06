@@ -32,6 +32,7 @@ from recall.atomic_rescue import (
 from recall.calibration import Calibration
 from recall.embeddings import Embedder
 from recall.evidence import (
+    AnswerProfile,
     EvidenceBundle,
     EvidencePolicy,
 )
@@ -126,7 +127,7 @@ def _strict_reasoning_refusal(
     tenant_id: str,
     generation: GenerationSelection,
     budget: ReasoningBudget,
-    answer_profile: str,
+    answer_profile: AnswerProfile,
     started: float,
 ) -> ReasoningResponse:
     bundle = EvidenceBundle(
@@ -196,7 +197,7 @@ def _execute_reasoning_query(
     budget: ReasoningBudget,
     as_of: datetime | None,
     *,
-    answer_profile: str = "dated",
+    answer_profile: AnswerProfile = "dated",
 ) -> ReasoningResponse:
     """Execute one generation bound reasoning request inside the store snapshot."""
     generation = _reasoning_generation(store)
