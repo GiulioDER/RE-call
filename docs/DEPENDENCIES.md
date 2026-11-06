@@ -142,17 +142,23 @@ choose the framework in its own environment:
 `GHSA-8mgp-746c-j5xp`. Install `llama-index-core` separately only in an environment that accepts
 that upstream dependency, then run the adapter tests there.
 
-## Benchmark Extra
+## Benchmark dependencies
 
-The `bench` extra is for deliberate local benchmark runs, not normal development or CI. It includes
-heavy or competitor-specific dependencies.
+There is no `bench` extra since 2026-11-07. It served only the repository's own benchmark harnesses,
+which the wheel does not ship, so it published an exact competitor pin and heavy packages that
+nothing installed from PyPI imports. A benchmark run installs them in its own environment, from a
+checkout:
 
-`mem0ai` is pinned exactly because it is the competitor being measured. Its extraction prompt,
+```bash
+pip install -e ".[dev,openai]" "mem0ai==2.0.13" "pyarrow>=23.0.1"
+```
+
+`mem0ai` stays pinned exactly because it is the competitor being measured. Its extraction prompt,
 retrieval defaults, and API move between releases, so a range would let a fresh install silently
 change a published comparison. Bumping it requires a deliberate re-run.
 
-`pyarrow` is required because the BEAM benchmark ships as parquet. `numpy` is required because
-benchmark modules import it directly.
+`pyarrow` is required because the BEAM benchmark ships as parquet; 23.0.1 is the first release
+without a published advisory. `numpy` and `tiktoken` come with `dev`.
 
 ## Development Tools
 

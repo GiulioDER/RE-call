@@ -212,8 +212,10 @@ llamaindex = []
 # `cli_path`, SDK in-process servers in `mcp_servers`) is the 0.2 line's; `<1` because the SDK
 # is pre-1.0 and `recall_agent/_sdk.py` is deliberately the only module exposed to its churn.
 agent = ["claude-agent-sdk>=0.2.121,<1", "psycopg-pool>=3.2"]
-# Benchmark extra is deliberate and excluded from `dev`.
-bench = ["mem0ai==2.0.13", "openai>=1.58", "pyarrow>=15", "numpy>=1.26", "tiktoken==0.14.0"]
+# The `bench` extra was removed on 2026-11-07 (owner decision): no module in the wheel imports mem0ai or
+# pyarrow, so it published installable dependencies, an exact competitor pin among them, that
+# nothing installed from PyPI uses. Benchmark runs install what they need themselves; see
+# docs/DEPENDENCIES.md.
 dev = [
     "pytest>=9.0.3", "pytest-timeout>=2.3", "pytest-cov>=5", "ruff>=0.16,<0.17",
     "hypothesis>=6,<7",
@@ -545,7 +547,7 @@ allow_indirect_imports = true
 [tool.deptry]
 extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
 known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks", "recall_aml"]
-optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "bench", "eval", "finetune"]
+optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "eval", "finetune"]
 # These are deliberate boundaries rather than missing declarations. The GUI and LlamaIndex
 # adapters are optional runtime surfaces, evaluation plotting is intentionally development only,
 # and promotion imports application supplied modules at runtime. The lean CI job intentionally
@@ -783,8 +785,8 @@ module = [
     # includes `benchmarks`, and the typecheck job installs `.[dev]` only, so without this the job
     # fails on a dependency it deliberately does not install.
     "pyarrow.*",
-    # Lazily imported for benchmark env-file support. The typecheck job installs `.[dev]`, not
-    # `.[bench]`, so this import must either be installed by dev or explicitly skipped here.
+    # Lazily imported for benchmark env-file support. The typecheck job installs `.[dev]` only, so
+    # this import must either be installed by dev or explicitly skipped here.
     "dotenv.*",
     "boto3.*",
     "onnxruntime.*",

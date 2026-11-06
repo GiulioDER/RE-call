@@ -862,6 +862,12 @@ list as an ordered upgrade procedure.
 
 ### Removed
 
+* **The `bench` extra is gone.** It installed `mem0ai==2.0.13`, `pyarrow` and the OpenAI SDK for
+  the repository's own benchmark harnesses, which the wheel does not ship, so nothing installed
+  from PyPI used them. `pip install "recall-rag[bench]"` now installs no extra packages, with a
+  warning from pip. A benchmark run installs those packages itself; `docs/DEPENDENCIES.md` gives
+  the command.
+
 * **BREAKING: the benchmark service package `recall_aml` is no longer distributed.** The wheel
   and the sdist no longer carry `recall_aml`, the `hosted` extra or the `recall-hosted` console
   script, which served one benchmark deployment and are not needed to use RE-call. No shipped

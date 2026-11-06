@@ -59,14 +59,9 @@ updates:
     # depend on the answer: the `audit` job runs pip-audit over the resolved dependency set, so a
     # vulnerability is still DETECTED in CI even when no pull request arrives.
     ignore:
-      # mem0ai: pinned EXACTLY, and the only one of the three whose bump PR goes GREEN — the
-      # competitive benchmark is never installed in CI, so no test can fail on it. That is what
-      # makes it dangerous: mem0ai is the competitor being measured, its version is recorded into
-      # every results artifact via importlib.metadata, and its extraction prompt and retrieval
-      # defaults move between releases. A merged bump would silently change what "Mem0" means in
-      # already-published comparisons. Bumping it is a re-run, not a resolver decision.
-      # No update-types: every version is ignored, because the pin is `==`.
-      - dependency-name: "mem0ai"
+      # mem0ai: its rule was removed on 2026-11-07 with the `bench` extra, the only place it was
+      # declared. pyproject.toml no longer names it, so there is nothing here for an update to
+      # reach, and tests/test_dependabot_ignores_match_pins.py refuses a rule for an undeclared name.
 
       # ruff: capped `<0.17` because 0.16.0 changed the default enabled rule set from 59 rules to
       # 413. The project pins the pre-0.16 baseline explicitly in pyproject.toml; adopting any new
@@ -78,7 +73,7 @@ updates:
       # `0.16.3 -> 0.16.5`, a PATCH, and it went RED on `ruff check`. A patch can move this
       # linter's enabled rule set, so the `<0.17` cap is only honoured if patches are held too.
       # All three types are listed, which is exhaustive; kept spelled out rather than collapsed
-      # to a bare `dependency-name` (the mem0ai form) because the pin is `<0.17`, not `==`, and a
+      # to a bare `dependency-name` (the form the former mem0ai rule used) because the pin is `<0.17`, not `==`, and a
       # bare name would claim a stricter cap than pyproject.toml carries.
       - dependency-name: "ruff"
         update-types:
