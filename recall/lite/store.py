@@ -1495,7 +1495,9 @@ class LiteStore:
                 (payload,),
             )
 
-    def record_embedder_spec(self, spec: str, *, model: str | None = None, dimension: int | None = None) -> None:
+    def record_embedder_spec(
+        self, spec: str, *, profile: str | None = None, model: str | None = None, dimension: int | None = None
+    ) -> None:
         """Keep the embedder spec setup resolved (`fastembed`, `voyage:<model>`), so a refresh run
         with no `--embedder` resolves the same one. `embedder_model` alone cannot: it is the model's
         own name, which `recall.embeddings.resolve_embedder` does not accept.
@@ -1504,6 +1506,9 @@ class LiteStore:
         replace a model an earlier calibration recorded, even when this run's refit saved none (a
         corpus below the calibration floor): the vectors are that model's now, and a binding left
         naming the old one refused the next plain refresh. A store never calibrated keeps no model.
+
+        `profile` is the RECALL_EMBED_PROFILE the embedder was built under ("" for none), which
+        outranks the spec when an embedder is built, so a guard compares both (CCA SEC-001).
         """
         with self._write():
             self._conn.execute(
@@ -1511,6 +1516,12 @@ class LiteStore:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (spec,),
             )
+            if profile is not None:
+                self._conn.execute(
+                    "INSERT INTO meta(key, value) VALUES ('embedder_profile', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (profile,),
+                )
             if model is not None:
                 self._conn.executemany(
                     "UPDATE meta SET value = ? WHERE key = ?",

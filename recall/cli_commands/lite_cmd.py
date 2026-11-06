@@ -192,9 +192,10 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.lite import LiteStore
 
     info = inspect_lite_file(db)
-    spec, switched = _shared._lite_embedder_spec(
+    spec, profile, switched = _shared._lite_embedder_spec(
         args, info.embedder_spec, db, force=args.force,
-        how_to_switch="pass --force to re-embed every memo with it, or unset RECALL_EMBEDDER",
+        how_to_switch="pass --force to re-embed every memo with it",
+        recorded_profile=info.embedder_profile,
     )
     name = spec or info.embedder_model
     ask = f"which embedder built {db}? Pass --embedder or set RECALL_EMBEDDER"
@@ -241,6 +242,7 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
             # Also on a store that recorded no spec, so the guard engages from now on, and on a
             # rebind, so the binding names the new vectors.
             record_spec=spec if spec and (switched or rebind or adopt) else None,
+            record_profile=profile,
         )
     print(json.dumps(result.to_dict(), indent=2, default=str) if args.json else result.render())
     _warn_if_over_budget(snap, budget)

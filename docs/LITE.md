@@ -140,10 +140,11 @@ withdraw embed nothing, so they ignore such a variable and use the recorded embe
 `--embedder` with a different value for a refresh or an index switches the store to it, with a
 warning, and the store's calibration then waits for a refit fitted with the new model. A switch
 re-embeds only what the run covers (the memo folders for a refresh, the given path for `recall
-index`); sources outside it keep the old vectors. The MCP server keeps the embedder setup
-configured until you run setup again with the new one, and once the server has refreshed and
-recalibrated the store with its own, `recall lite refresh` and `recall index` refuse to run without
-`--embedder`. To change models cleanly, build a separate store, as described under updates below.
+index`); sources outside it keep the old vectors. Setup also records `RECALL_EMBED_PROFILE`, which
+outranks the embedder name, and a different one in your shell is refused the same way. The MCP
+server keeps the embedder setup configured until you run setup again with the new one; until then
+it does not refresh a store that records another embedder, profile or model than its own, and its
+answers say so. To change models cleanly, build a separate store, as described under updates below.
 
 With `--check`, exit code `0` means current and `1` means changed, never refreshed, or missing input. It compares the memo files, the store and the policy; it does not detect a change to the facts a refresh would state (an upgraded stating rule with no memo edited), which only a refresh records.
 A writing refresh returns `0` for refreshed, unchanged, or coalesced work, `1` for failure, and `3`

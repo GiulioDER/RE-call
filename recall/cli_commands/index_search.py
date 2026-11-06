@@ -370,7 +370,7 @@ def _print_evidence(
 
 def _cmd_index(args: argparse.Namespace) -> None:
     route = _runtime_route(args)
-    name, switched = args.embedder, False
+    name, profile, switched = args.embedder, "", False
     if is_lite_dsn(args.dsn):
         # A lite file records the embedder it was built with; the global default (RECALL_EMBEDDER,
         # else fastembed) knows nothing of it (CCA DAT-007).
@@ -379,9 +379,10 @@ def _cmd_index(args: argparse.Namespace) -> None:
         db = lite_dsn_path(args.dsn)
         meta = lite_file_meta(db) or {}
         recorded = meta.get("embedder_spec")
-        name, switched = _lite_embedder_spec(
+        name, profile, switched = _lite_embedder_spec(
             args, recorded, db, force=False,
-            how_to_switch="re-embed it with `recall lite refresh --force`, or unset RECALL_EMBEDDER",
+            how_to_switch="re-embed it with `recall lite refresh --force`",
+            recorded_profile=meta.get("embedder_profile"),
         )
         name = name or args.embedder
         bound = meta.get("embedder_model")
@@ -457,7 +458,9 @@ def _cmd_index(args: argparse.Namespace) -> None:
                     if switched or recorded is None:
                         # Also on a store this command built, so the next plain index or refresh
                         # resolves this embedder and refuses a different one (CCA ENV-003).
-                        store.record_embedder_spec(name, model=str(embedder.name), dimension=int(embedder.dim))
+                        store.record_embedder_spec(
+                            name, profile=profile, model=str(embedder.name), dimension=int(embedder.dim)
+                        )
                 from recall.stated_facts import reconcile_stated_facts
 
                 stated = reconcile_stated_facts(store)

@@ -54,28 +54,45 @@ def _make_embedder(name: str) -> Embedder:
 
 
 def _lite_embedder_spec(
-    args: argparse.Namespace, recorded: str | None, db: Path, *, force: bool, how_to_switch: str
-) -> tuple[str, bool]:
-    """The embedder spec for the lite store `db`, and whether it switches away from the one the
-    store recorded (CCA DAT-006, DAT-007).
+    args: argparse.Namespace,
+    recorded: str | None,
+    db: Path,
+    *,
+    force: bool,
+    how_to_switch: str,
+    recorded_profile: str | None = None,
+) -> tuple[str, str, bool]:
+    """The embedder spec and RECALL_EMBED_PROFILE for the lite store `db`, and whether they switch
+    away from the ones the store recorded (CCA DAT-006, DAT-007, SEC-001).
 
     A typed `--embedder` wins, then RECALL_EMBEDDER, then `recorded`; "" when there is none. A
     switch re-embeds what the run indexes, leaves other sources on the old vectors, and the
     recalibration rebinds the store, while the MCP server `recall setup --lite` configured still
     names the old embedder. So a RECALL_EMBEDDER left in a shell, which is how a switch happens by
     accident, is refused unless `force`; a typed one is deliberate and only warned about.
+
+    The profile outranks any spec when the embedder is built (`recall.embeddings.resolve_embedder`),
+    so one that differs from `recorded_profile` is refused unless `force`, whatever was typed.
     """
+    profile = os.environ.get("RECALL_EMBED_PROFILE", "").strip()
+    profile_switched = recorded_profile is not None and profile != recorded_profile
+    if profile_switched and not force:
+        restore = f"set RECALL_EMBED_PROFILE={recorded_profile!r}" if recorded_profile else "unset RECALL_EMBED_PROFILE"
+        raise SystemExit(
+            f"RECALL_EMBED_PROFILE={profile!r} differs from {recorded_profile!r}, the profile {db} was "
+            f"built with; {how_to_switch}, or {restore}"
+        )
     # Only a typed --embedder, before or after the subcommand: the global option's default is
     # RECALL_EMBEDDER or fastembed, which must not count as deliberate (`recall.cli.StoreGiven`).
     typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
     env = os.environ.get("RECALL_EMBEDDER", "").strip()
     spec = typed or env or recorded or ""
     if not recorded or spec == recorded:
-        return spec, False
+        return spec, profile, profile_switched
     if not typed and not force:
         raise SystemExit(
             f"RECALL_EMBEDDER={spec!r} differs from {recorded!r}, the embedder {db} was built "
-            f"with; {how_to_switch}"
+            f"with; {how_to_switch}, or unset RECALL_EMBEDDER"
         )
     print(
         f"warning: {db} was built with {recorded!r}; embedding with {spec!r} instead. What this run "
@@ -83,7 +100,7 @@ def _lite_embedder_spec(
         f"`recall setup --lite` configured still names {recorded!r} until setup is run again.",
         file=sys.stderr,
     )
-    return spec, True
+    return spec, profile, True
 
 
 def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str, *, erasure: bool = False) -> str:
@@ -99,10 +116,19 @@ def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str, *, era
     """
     from recall.lite.inspect import lite_file_meta
 
-    recorded = (lite_file_meta(db) or {}).get("embedder_spec")
+    meta = lite_file_meta(db) or {}
+    recorded = meta.get("embedder_spec")
     typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
     if erasure:
         return typed or recorded or str(args.embedder)
+    recorded_profile = meta.get("embedder_profile")
+    profile = os.environ.get("RECALL_EMBED_PROFILE", "").strip()
+    if recorded_profile is not None and profile != recorded_profile:
+        # The profile outranks a typed --embedder when the embedder is built (CCA SEC-001).
+        raise SystemExit(
+            f"recall {command}: RECALL_EMBED_PROFILE={profile!r} differs from {recorded_profile!r}, the "
+            f"profile {db} was built with; set it back, or unset it if {recorded_profile!r} is empty"
+        )
     env = os.environ.get("RECALL_EMBEDDER", "").strip()
     if recorded and not typed and env and env != recorded:
         raise SystemExit(

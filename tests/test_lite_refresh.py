@@ -1243,3 +1243,31 @@ def test_a_refresh_of_an_unchanged_folder_records_a_missing_spec(
     monkeypatch.setenv("RECALL_EMBEDDER", "content-words")
     assert _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory")) == 0, capsys.readouterr()
     assert _recorded_spec(db) == "content-words"
+
+
+def test_a_shell_embed_profile_that_differs_from_the_recorded_one_is_refused(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Owner decision 2026-11-06 (item 4, CCA SEC-001): setup records RECALL_EMBED_PROFILE next to
+    the spec, and refresh and search refuse a shell profile that differs from it before building
+    an embedder, since the profile outranks the spec. Failure caught: a profile change with an
+    equal spec reached the embedder unseen.
+
+    Red proof, 2026-11-06 on the remote test host: with `profile=...` dropped from the
+    `record_embedder_spec` call in `recall.lite.setup.run_lite_setup`, this failed at the recorded
+    profile assertion (None); with the `recorded_profile is not None and profile !=
+    recorded_profile` check of `recall.cli_commands._shared._lite_read_embedder` made `False`,
+    it failed at the search refusal; with `if profile_switched and not force:` in
+    `recall.cli_commands._shared._lite_embedder_spec` made `if False:`, it failed at the refresh
+    refusal (DID NOT RAISE); restored, it passed."""
+    monkeypatch.delenv("RECALL_EMBED_PROFILE", raising=False)
+    db, asked = _setup_with_model_name(project, monkeypatch)
+    assert _meta(db, "embedder_profile") == ""
+    monkeypatch.setenv("RECALL_EMBED_PROFILE", "some-profile-v1")
+    with pytest.raises(SystemExit) as stopped:
+        cli_main(["lite", "refresh", "--store", str(db), "--memory", str(project / "memory")])
+    assert "RECALL_EMBED_PROFILE='some-profile-v1' differs from ''" in str(stopped.value.code), stopped.value.code
+    with pytest.raises(SystemExit) as stopped:
+        cli_main(["--dsn", f"sqlite:///{db.as_posix()}", "search", "flange valve"])
+    assert "RECALL_EMBED_PROFILE='some-profile-v1' differs from ''" in str(stopped.value.code), stopped.value.code
+    assert asked == [], f"an embedder was built before the refusal: {asked}"

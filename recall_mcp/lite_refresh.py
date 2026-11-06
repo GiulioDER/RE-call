@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from recall.index_budget import IndexBudget, budget_from_env
 from recall.lite import LiteStore
-from recall.lite.refresh import Outcome, Snapshot, read_state, refresh, snapshot
+from recall.lite.refresh import Outcome, Snapshot, embedder_refusal, read_state, refresh, snapshot
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -98,11 +98,15 @@ class LiteAutoRefresher:
         security_context: AccessContext | None = None,
         budget: IndexBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self._store, self._embedder, self._roots = store, embedder, roots
         self._interval_s, self._wait_s, self._clock = interval_s, wait_s, clock
         self._policy, self._context = security_policy, security_context
         self._budget = budget
+        # The embedder settings this server was started with, which the guard compares with the
+        # ones the store recorded before every refresh.
+        self._env = {key: (env or {}).get(key, "") for key in ("RECALL_EMBEDDER", "RECALL_EMBED_PROFILE")}
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._last_check = -math.inf
@@ -154,6 +158,7 @@ class LiteAutoRefresher:
             security_policy=security_policy,
             security_context=security_context,
             budget=budget,
+            env=env,
         )
 
     def start(self) -> None:
@@ -235,6 +240,20 @@ class LiteAutoRefresher:
     def _run(self) -> None:
         with self._lock:
             before, self._pending = self._pending, None
+        try:
+            refusal = embedder_refusal(self._store, self._embedder, self._env)
+        except Exception as exc:  # BROAD-CATCH: fail-open  # an unreadable meta must not stop a search
+            refusal = f"the store's embedder record does not read: {type(exc).__name__}: {exc}"
+        if refusal is not None:
+            # The guard `recall lite refresh` applies, which a server cannot answer with --force or
+            # --embedder (owner decision 2026-11-06): nothing is embedded, and the agent is told.
+            _log.warning("lite auto refresh refused: %s", refusal)
+            with self._lock:
+                self._failure = refusal
+                self._failed = (before or snapshot(self._roots)).fingerprint
+                self._backoff_s = MAX_BACKOFF_S
+                self._retry_at = self._clock() + self._backoff_s
+            return
         try:
             # In the background: a server is long-lived, so a refit can outlast this refresh.
             report = refresh(

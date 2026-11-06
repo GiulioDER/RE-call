@@ -218,7 +218,7 @@ def run_lite_setup(
             )
             if refreshed.outcome is not Outcome.REFRESHED:
                 raise ValueError(f"indexing {memory} failed: {refreshed.reason}")
-            store.record_embedder_spec(embedder_name)
+            store.record_embedder_spec(embedder_name, profile=os.environ.get("RECALL_EMBED_PROFILE", "").strip())
         report.files, report.chunks, report.skipped = (
             refreshed.indexed_files, refreshed.chunks_written, refreshed.skipped,
         )

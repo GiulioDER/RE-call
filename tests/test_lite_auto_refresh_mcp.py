@@ -495,3 +495,27 @@ def test_recall_index_checks_the_policy_on_the_names_it_stores(lite_env: dict[st
         assert "denied" not in answer and "RAISED" not in answer, answer
 
     _serve(env, body)
+
+
+def test_the_server_does_not_refresh_a_store_switched_away_from_its_embedder(
+    setup: tuple[LiteStore, Path, Clock],
+) -> None:
+    """Owner decision 2026-11-06 (item 5): the server's own refresh asks the question `recall lite
+    refresh` asks. Invariant: a store that records another embedder spec than the server's
+    RECALL_EMBEDDER is not refreshed, and the agent is told why. Failure caught: the server
+    re-embedded a store a person had switched, undoing the switch.
+
+    Red proof, 2026-11-06 on the remote test host: with `refusal = embedder_refusal(...)` in
+    `recall_mcp.lite_refresh.LiteAutoRefresher._run` replaced by `refusal = None`, this failed at
+    the indexed-memo assertion (the server refreshed); restored, it passed."""
+    store, root, clock = setup
+    store.record_embedder_spec("switched-words", profile="")
+    refresher = LiteAutoRefresher(  # type: ignore[arg-type]
+        store, ContentWordEmbedder(), [root], interval_s=30, wait_s=30, clock=clock,
+        env={"RECALL_EMBEDDER": "content-words"},
+    )
+    refresher.start()
+    refresher._kick()[0].join(30)
+    assert _sources(store) == set(), f"the server refreshed a switched store: {_sources(store)}"
+    warning = refresher.warning() or ""
+    assert "records the embedder 'switched-words'" in warning and "recall setup --lite" in warning, warning
