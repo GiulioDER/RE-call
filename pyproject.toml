@@ -192,7 +192,10 @@ finetune = ["sentence-transformers>=3.0", "numpy"]
 # require applications that accept that framework dependency to install `llama-index-core` in
 # their own environment. RE-call's package and audit dependency set stays free of that advisory.
 # >=0.3.85: the last 0.3 release, carrying every fix published for that line. Two advisories are
-# fixed only on the 1.x line (1.2.11 and 1.2.22); requiring 1.x is left to an owner decision.
+# fixed only on the 1.x line: PYSEC-2026-2193 (`langchain_core.prompts.loading`, 1.2.22) and
+# PYSEC-2026-2562 (`ChatOpenAI` image token counting, 1.2.11). The adapter imports only
+# `BaseRetriever`, `Document` and the retriever callback, so neither path is reached from RE-call,
+# and 0.3 users stay supported (owner decision, 2026-11-07).
 langchain = ["langchain-core>=0.3.85"]
 llamaindex = []
 # Claude Agent SDK integration (`recall_agent`). Deliberately NOT in `dev`: the SDK spawns the
