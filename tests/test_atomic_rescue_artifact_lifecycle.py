@@ -304,3 +304,52 @@ def test_a_published_artifact_directory_takes_the_umask_mode(tmp_path: Path) -> 
     finally:
         os.umask(previous)
     assert stat.S_IMODE(manifest.parent.stat().st_mode) == 0o755
+
+
+def test_the_writer_never_sets_the_process_umask(tmp_path: Path, monkeypatch) -> None:
+    """BUG-001, owner decision 2026-11-06: the staging directory is made with a plain mkdir.
+
+    Invariant: writing an artifact never calls ``os.umask``. Failure mode: reading the umask
+    meant setting it, so for a moment every file another thread created took the wrong mode.
+    Red proof, 2026-11-06, against 12fde1c70 (``_current_umask``), on the Linux test host:
+    ``assert [18, 18] == []``, both umask calls recorded.
+    """
+    calls: list[int] = []
+    real = os.umask
+
+    def spy(mask: int) -> int:
+        calls.append(mask)
+        return real(mask)
+
+    monkeypatch.setattr(os, "umask", spy)
+    manifest = _write(tmp_path / "artifact")
+    assert calls == []
+    assert manifest.is_file()
+    assert [entry.name for entry in tmp_path.iterdir()] == ["artifact"]
+
+
+def test_a_same_size_rewrite_within_one_mtime_tick_is_read_again(tmp_path: Path) -> None:
+    """BUG-002, owner decision 2026-11-06: the expectation cache is keyed on the receipt's hash.
+
+    Invariant: a receipt rewritten in place with the same size and the same mtime is read
+    again. Failure mode: the (inode, size, mtime) stamp matched, so a coarse-mtime filesystem
+    served the old score. Red proof, 2026-11-06, against bbb515eae (the stat stamp):
+    ``assert True is False``, the second call still saw score 0.5.
+    """
+    receipt = tmp_path / "expected.json"
+    key = hashlib.sha256(b"query").hexdigest()
+
+    def body(score: float) -> bytes:
+        row = {"source": "a.md", "parent_ordinal": 0, "score": score}
+        return json.dumps({"schema_version": 1, "rows": {key: row}}).encode("utf-8")
+
+    receipt.write_bytes(body(0.5))
+    tick = receipt.stat().st_mtime_ns
+    selection = AtomicRescueSelection("a", "a.md", 0, 0, 0.5)
+    assert atomic_rescue_expectation_parity(receipt, query="query", selection=selection) == (True, True)
+    with receipt.open("r+b") as handle:
+        handle.write(body(0.4))
+        handle.truncate()
+    os.utime(receipt, ns=(tick, tick))
+    assert receipt.stat().st_size == len(body(0.5))
+    assert atomic_rescue_expectation_parity(receipt, query="query", selection=selection)[1] is False
