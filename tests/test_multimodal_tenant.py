@@ -376,3 +376,96 @@ def test_an_out_of_range_bound_names_its_variable_and_ceiling() -> None:
     """
     with pytest.raises(MediaValidationError, match=r"RECALL_MULTIMODAL_MAX_ITEMS is 99.*1 and 20"):
         MultimodalTenantConfig(max_items=99)
+
+
+# Owner decisions of 2026-11-06 on the second hunt's open items. Red proofs, 2026-11-06, against
+# the second hunt's module (a77611f8a) with this file otherwise unchanged.
+
+
+def test_a_typo_in_the_enabled_flag_is_refused() -> None:
+    """ENV-103: from_env reads RECALL_MULTIMODAL_ENABLED as strictly as the server settings do.
+
+    Red proof: ``Failed: DID NOT RAISE``; 'ture' read as disabled.
+    """
+    with pytest.raises(ValueError, match="RECALL_MULTIMODAL_ENABLED"):
+        MultimodalTenantConfig.from_env({"RECALL_MULTIMODAL_ENABLED": "ture"})
+    assert MultimodalTenantConfig.from_env({}).enabled is False
+
+
+def test_an_empty_segment_after_the_root_is_a_legitimate_key() -> None:
+    """SEC-101, narrowed by the owner: only a leading '//' is refused.
+
+    Invariant: an S3 key with an empty segment inside the root is admitted as spelled, while a
+    leading '//' (a UNC host to a Windows consumer) is still refused. Red proof: the admission
+    raised ``MediaValidationError: object_uri is outside the configured multimodal object root``.
+    """
+    ref = build_media_ref(
+        PAYLOAD,
+        media_type="image/png",
+        object_uri="s3://recall-multimodal/media/a//b.png",
+        object_root=OBJECT_ROOT,
+    )
+    assert ref.object_uri == "s3://recall-multimodal/media/a//b.png"
+
+
+@pytest.mark.parametrize(
+    "object_uri", ["s3://b/tenants//A/x.png", "s3://b/tenants/./A/x.png"]
+)
+def test_an_empty_or_dot_segment_inside_the_root_prefix_is_refused(object_uri: str) -> None:
+    """CCA run 20261106T141216Z SEC-001: S3 keys are literal, so the root prefix must match
+    literally.
+
+    Invariant: an admitted s3 key starts with the root's key prefix. Failure mode: normpath folded
+    'tenants//A' to 'tenants/A', the check passed, and the raw key stored lies outside the prefix
+    'tenants/A/'. Red proof, 2026-11-06, against the owner-decision diff before this fix (any
+    '//' after a leading one admitted): both parameters failed with ``Failed: DID NOT RAISE``.
+    """
+    with pytest.raises(MediaValidationError, match="object root"):
+        build_media_ref(
+            PAYLOAD, media_type="image/png", object_uri=object_uri, object_root="s3://b/tenants/A/"
+        )
+
+
+@pytest.mark.parametrize(
+    ("object_uri", "object_root"),
+    [("s3://b/a/b/x.png", "s3://b/a//b/"), ("s3://b/media/x.png", "s3://b/media//")],
+)
+def test_a_key_outside_a_root_s_literal_prefix_is_refused(object_uri: str, object_root: str) -> None:
+    """SEC-001, first rework: the literal object path is compared with the literal root path.
+
+    Failure mode: the first fix compared the literal object path with the NORMALISED root, so a
+    root whose own path holds '//' admitted keys outside its literal S3 prefix. Red proof,
+    2026-11-06, a mutation restoring that comparison (``root_path.rstrip("/") + "/"``): both
+    parameters failed with ``Failed: DID NOT RAISE``; the control below passed both before and after.
+    """
+    with pytest.raises(MediaValidationError, match="object root"):
+        build_media_ref(PAYLOAD, media_type="image/png", object_uri=object_uri, object_root=object_root)
+    inside = build_media_ref(
+        PAYLOAD, media_type="image/png", object_uri="s3://b/a//b/x.png", object_root="s3://b/a//b/"
+    )
+    assert inside.object_uri == "s3://b/a//b/x.png"
+
+
+def test_a_directly_built_reference_is_held_to_the_configured_root(monkeypatch) -> None:
+    """SEC-102: project_media_evidence re-checks a reference against the configured root.
+
+    Red proof: ``Failed: DID NOT RAISE``; a reference outside the root was projected.
+    """
+    from recall.multimodal import MediaObjectRef
+
+    monkeypatch.setenv("RECALL_MULTIMODAL_OBJECT_ROOT", OBJECT_ROOT)
+    outside = MediaObjectRef(
+        content_digest=hashlib.sha256(PAYLOAD).hexdigest(),
+        media_type="image/png",
+        byte_size=len(PAYLOAD),
+        object_uri="s3://recall-multimodal/private/a.png",
+        tenant_id="re-call-multimodal",
+    )
+    with pytest.raises(MediaValidationError, match="object root"):
+        project_media_evidence(outside, requester_tenant="re-call-multimodal", principal="tester")
+    inside = build_media_ref(
+        PAYLOAD,
+        media_type="image/png",
+        object_uri="s3://recall-multimodal/media/a.png",
+    )
+    project_media_evidence(inside, requester_tenant="re-call-multimodal", principal="tester")

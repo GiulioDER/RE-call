@@ -263,3 +263,44 @@ def test_an_expectation_key_that_is_not_lower_case_hex_is_malformed(tmp_path: Pa
     selection = AtomicRescueSelection("a", "a.md", 0, 0, 0.5)
     with pytest.raises(AtomicRescueArtifactError, match="malformed"):
         atomic_rescue_expectation_parity(receipt, query="query", selection=selection)
+
+
+# Owner decisions of 2026-11-06 on the second hunt's open items. Red proofs, 2026-11-06, against
+# the second hunt's module (a77611f8a) with this file otherwise unchanged.
+
+
+def test_a_receipt_rewritten_in_place_is_read_again(tmp_path: Path) -> None:
+    """DAT-102: the expectation cache follows the receipt file, not only its path.
+
+    Red proof: ``assert True is False``; the second call still saw the old score.
+    """
+    receipt = tmp_path / "expected.json"
+    key = hashlib.sha256(b"query").hexdigest()
+
+    def write(score: float) -> None:
+        row = {"source": "a.md", "parent_ordinal": 0, "score": score}
+        receipt.write_text(
+            json.dumps({"schema_version": 1, "rows": {key: row}}), encoding="utf-8"
+        )
+
+    selection = AtomicRescueSelection("a", "a.md", 0, 0, 0.5)
+    write(0.5)
+    assert atomic_rescue_expectation_parity(receipt, query="query", selection=selection) == (True, True)
+    write(0.25)
+    assert atomic_rescue_expectation_parity(receipt, query="query", selection=selection)[1] is False
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX directory modes")
+def test_a_published_artifact_directory_takes_the_umask_mode(tmp_path: Path) -> None:
+    """DAT-103: the published directory is not left at mkdtemp's 0700.
+
+    Red proof: ``assert 448 == 493`` (0o700 against 0o755 under umask 022).
+    """
+    import stat
+
+    previous = os.umask(0o022)
+    try:
+        manifest = _write(tmp_path / "artifact")
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(manifest.parent.stat().st_mode) == 0o755

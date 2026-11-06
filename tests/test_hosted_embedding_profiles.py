@@ -88,6 +88,13 @@ class _StubVoyageClient:
         )
         return _VoyageResult([[0.5] * _StubVoyageClient.width for _ in texts])
 
+    def multimodal_embed(self, inputs, model, **kwargs):
+        # Every voyageai the multimodal profile accepts (0.3 and later) has this endpoint.
+        type(self).calls.append(
+            {"multimodal": True, "model": model, "input_type": kwargs.get("input_type")}
+        )
+        return _VoyageResult([[0.5] * _StubVoyageClient.width for _ in inputs])
+
     def contextualized_embed(self, inputs, model, input_type, **kwargs):
         type(self).calls.append(
             {"contextualized": True, "model": model, "inputs": inputs, "input_type": input_type}
