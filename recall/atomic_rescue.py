@@ -247,8 +247,9 @@ def _view_scores(artifact: "AtomicRescueArtifact", query: Any) -> Any:
             return artifact.matrix @ query
 
 
-# Keyed by path and stamped with the file's identity, so a receipt rewritten in place is reread.
-_EXPECTATION_CACHE: dict[Path, tuple[tuple[int, int, int], Mapping[str, tuple[str, int, float]]]] = {}
+# Keyed by path and stamped with the SHA256 of the receipt's bytes. A stat stamp missed a rewrite
+# of the same size within one mtime tick (BUG-002); the owner chose the hash on 2026-11-06.
+_EXPECTATION_CACHE: dict[Path, tuple[str, Mapping[str, tuple[str, int, float]]]] = {}
 _EXPECTATION_CACHE_LOCK = threading.Lock()
 
 
@@ -926,17 +927,17 @@ def atomic_rescue_expectation_parity(
 
     resolved = Path(path).expanduser().resolve()
     try:
-        status = resolved.stat()
+        payload = resolved.read_bytes()
     except OSError as exc:
         raise AtomicRescueArtifactError("atomic rescue expectation artifact is unreadable") from exc
-    stamp = (status.st_ino, status.st_size, status.st_mtime_ns)
+    stamp = hashlib.sha256(payload).hexdigest()
     with _EXPECTATION_CACHE_LOCK:
         cached = _EXPECTATION_CACHE.get(resolved)
         expectations = cached[1] if cached is not None and cached[0] == stamp else None
         if expectations is None:
             try:
-                decoded = json.loads(resolved.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                decoded = json.loads(payload.decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
                 raise AtomicRescueArtifactError(
                     "atomic rescue expectation artifact is unreadable"
                 ) from exc

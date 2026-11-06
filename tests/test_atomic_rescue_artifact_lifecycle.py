@@ -326,3 +326,30 @@ def test_the_writer_never_sets_the_process_umask(tmp_path: Path, monkeypatch) ->
     assert calls == []
     assert manifest.is_file()
     assert [entry.name for entry in tmp_path.iterdir()] == ["artifact"]
+
+
+def test_a_same_size_rewrite_within_one_mtime_tick_is_read_again(tmp_path: Path) -> None:
+    """BUG-002, owner decision 2026-11-06: the expectation cache is keyed on the receipt's hash.
+
+    Invariant: a receipt rewritten in place with the same size and the same mtime is read
+    again. Failure mode: the (inode, size, mtime) stamp matched, so a coarse-mtime filesystem
+    served the old score. Red proof, 2026-11-06, against bbb515eae (the stat stamp):
+    ``assert True is False``, the second call still saw score 0.5.
+    """
+    receipt = tmp_path / "expected.json"
+    key = hashlib.sha256(b"query").hexdigest()
+
+    def body(score: float) -> bytes:
+        row = {"source": "a.md", "parent_ordinal": 0, "score": score}
+        return json.dumps({"schema_version": 1, "rows": {key: row}}).encode("utf-8")
+
+    receipt.write_bytes(body(0.5))
+    tick = receipt.stat().st_mtime_ns
+    selection = AtomicRescueSelection("a", "a.md", 0, 0, 0.5)
+    assert atomic_rescue_expectation_parity(receipt, query="query", selection=selection) == (True, True)
+    with receipt.open("r+b") as handle:
+        handle.write(body(0.4))
+        handle.truncate()
+    os.utime(receipt, ns=(tick, tick))
+    assert receipt.stat().st_size == len(body(0.5))
+    assert atomic_rescue_expectation_parity(receipt, query="query", selection=selection)[1] is False
