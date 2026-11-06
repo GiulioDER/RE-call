@@ -229,6 +229,11 @@ memo was forgotten. Since migration 0029, `recall_forget` (CLI, MCP, and the ass
 
 - Every evidence card citing a forgotten memo, in `recall_evidence_cards` and inside every ledger
   event, becomes a marker keeping only its tenant, generation and memo name.
+- On a lite store and the legacy table a card is decided by the chunk it cites: a card citing a
+  chunk the forget erased counts as forgotten even when another root still serves a memo under
+  the same root-relative name, and the forget records the erased chunk ids first, so a re-run
+  after a failure completes the erasure. A generation store reads chunks one generation at a
+  time, so there a card is decided by its memo name, and a namesake under another root keeps it.
 - A fact value is erased when every card on every event holding it (asserted, DUPLICATE, rejected,
   abstained) cites a forgotten memo, at least one of them in this forget: its payload becomes
   `{fact_id, redacted, redaction_id}`. A value another surviving memo states stays.

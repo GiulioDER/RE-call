@@ -4,7 +4,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from recall._env import truthy
+from recall._env import strict_bool
 from recall.embedding_core import (  # re-exported: this module is their public home
     _R as _R,
     _TRANSIENT_MARKERS as _TRANSIENT_MARKERS,
@@ -102,7 +102,8 @@ HASHING_ALIASES = ("hashing", "hashing-64", "hashing:64")
 
 def require_multimodal_enabled(env: Mapping[str, str]) -> None:
     """Refuse a voyage-multimodal embedder unless RECALL_MULTIMODAL_ENABLED opts in."""
-    if not truthy(env.get("RECALL_MULTIMODAL_ENABLED", "0")):
+    # Strict, as MultimodalTenantConfig.from_env reads it, so a typo is refused at both.
+    if not strict_bool(env.get("RECALL_MULTIMODAL_ENABLED", "0"), name="RECALL_MULTIMODAL_ENABLED"):
         raise ValueError(
             "voyage-multimodal is disabled; set RECALL_MULTIMODAL_ENABLED=1 to opt in"
         )

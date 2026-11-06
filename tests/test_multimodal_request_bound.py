@@ -587,3 +587,46 @@ def test_an_sdk_without_the_multimodal_endpoint_is_refused_with_the_install_hint
     monkeypatch.setitem(sys.modules, "voyageai", old_sdk)
     with pytest.raises(ImportError, match=r'voyageai>=0\.3.*"pillow>=10"'):
         VoyageMultimodalEmbedder(api_key="test-key", token_counter=_one_token_per_char)
+
+
+class _FailingFirstClient(_Client):
+    """Fails the request for "fail" at once; the request for "slow" stays in flight a while."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[str] = []
+
+    def multimodal_embed(self, *, inputs, model, input_type, **_kwargs):
+        import time
+
+        text = inputs[0]["content"][0]["text"]
+        self.sent.append(text)
+        if text == "fail":
+            raise RuntimeError("provider refused the request")
+        if text == "slow":
+            time.sleep(0.5)
+        return SimpleNamespace(embeddings=[[1.0] + [0.0] * 1023 for _ in inputs])
+
+
+def test_a_failed_parallel_request_cancels_the_requests_not_yet_sent() -> None:
+    """Owner decision 2026-11-06: after one request fails, the queued ones are not sent.
+
+    Invariant: with two workers, "fail" fails while "slow" is in flight, so "c" and "d" are
+    never sent and the failure is raised. Failure mode: every submitted request still ran and
+    spent credit after the batch was already lost. Red proof, 2026-11-06, against 12fde1c70
+    (``pool.map`` inside ``with``): ``assert ['c', 'fail', 'slow'] == ['fail', 'slow']``. The
+    same assertion also failed a first fix that cancelled the queue after ``wait``: the worker
+    that ran "fail" had already taken "c" before the failure was seen.
+    """
+    import pytest
+
+    client = _FailingFirstClient()
+    embedder = VoyageMultimodalEmbedder(
+        client=client, batch_size=1, token_counter=_one_token_per_char, max_parallel_requests=2
+    )
+    client.sent.clear()
+
+    with pytest.raises(RuntimeError, match="provider refused"):
+        embedder.embed_passages(["fail", "slow", "c", "d"])
+
+    assert sorted(client.sent) == sorted(["fail", "slow"])

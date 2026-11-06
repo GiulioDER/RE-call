@@ -17,6 +17,8 @@
   <a href="https://github.com/GiulioDER/RE-call/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/python-3.11%2B-blue" alt="Python 3.11+">
   <img src="docs/postgresql-badge.svg" alt="PostgreSQL + pgvector">
+  <a href="https://mcprush.com/to/re-call-mcp-memory-server?ref=badge"><img src="https://mcprush.com/badge/re-call-mcp-memory-server/score.svg" alt="RE-call MCP Memory Server on mcprush"></a>
+  <a href="https://glama.ai/mcp/servers/GiulioDER/RE-call"><img src="https://glama.ai/mcp/servers/GiulioDER/RE-call/badges/score.svg" alt="RE-call MCP server"></a>
 </p>
 
 <p align="center">
