@@ -3,6 +3,9 @@
 Invariants and the failure each one catches:
 - ENV-001: a desktop upload records stated facts through the controller DSN the MCP server
   resolved (its runtime environment, secrets included), not through the process environment.
+- SEC-001 (owner decision 2026-11-06: erasure decides per card): two roots hold `x.md`; forgetting
+  one root's memo retracts and redacts a fact whose only card cites that root's chunk, although
+  the other root still serves `x.md`. A fact the other root's own chunk also supports stays.
 
 Red proofs are in each test's docstring.
 """
@@ -14,6 +17,134 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+from recall.lite import LiteStore
+from recall.lite.facts import LiteEvidenceCardStore, LiteFactLedger
+from recall.provenance_controller import (
+    ControllerDecision,
+    DecisionCode,
+    FactApplicationRequest,
+    ProvenanceController,
+)
+from recall.types import Chunk
+from recall_mcp.lifecycle import forget_memory
+from tests.fact_fixtures import NOW, evidence_card
+from tests.test_fact_retraction import DIM, DOOR, current
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> LiteStore:
+    """Two roots, each holding a memo whose root-relative name is `x.md`."""
+    opened = LiteStore(tmp_path / "memory.db", dim=DIM)
+    for root in ("A", "B"):
+        opened.upsert(
+            [Chunk(f"chunk-{root}", f"/{root}/x.md", f"text of {root}/x.md", {"file": "x.md"})],
+            [[1.0] + [0.0] * (DIM - 1)],
+        )
+    return opened
+
+
+def _apply(store: LiteStore, root: str, request_id: str, source: str = "x.md") -> ControllerDecision:
+    """Apply DOOR with one card naming `source` and citing root `root`'s chunk."""
+    card = evidence_card(DOOR, tenant=store.tenant, generation="g1", chunk=f"chunk-{root}", source=source)
+    cards = LiteEvidenceCardStore(store)
+    cards.put((card,))
+    return ProvenanceController(
+        tenant_id=store.tenant, generation_id="g1", cards=cards, ledger=LiteFactLedger(store),
+        source_digest_for=lambda _card: "digest", now=lambda: NOW, writer="sec001-test",
+    ).apply_fact(FactApplicationRequest(DOOR, (card.card_id,), request_id))
+
+
+def _value_kept(store: LiteStore) -> bool:
+    return any(event.fact is not None and event.fact.object == "4512" for event in LiteFactLedger(store).events)
+
+
+def test_sec001_a_namesake_under_another_root_does_not_keep_a_forgotten_fact(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_sec001_a_namesake_under_another_root_does_not_keep_a_forgotten_fact.
+
+    Red against base 032c205e4 (`prepare_fact_erasure` decided gone by card name, and /B still
+    serves `x.md`): fails on "the forgotten root's fact is still current: ['4512']". Red, mutation
+    of the redaction half (the `erased_chunk=chunk_gone` argument dropped from `redact` in
+    recall/fact_retraction.py): fails on "the forgotten root's fact value was not erased".
+    """
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+
+    result = forget_memory(store, ["/A/x.md"])
+
+    assert current(store) == [], f"the forgotten root's fact is still current: {current(store)}"
+    assert result.facts_retracted == 1
+    assert result.facts_redacted == 1 and not _value_kept(store), "the forgotten root's fact value was not erased"
+
+
+def test_sec001_control_the_other_roots_own_card_keeps_its_fact(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_sec001_control_the_other_roots_own_card_keeps_its_fact.
+
+    Control: the fact /B's own chunk also supports survives the forget of /A, value and all.
+    Red, mutation of `chunk_gone` in recall/fact_retraction.py (returning True for every chunk
+    id, so a card counts as gone by name touch alone): fails on "a fact the other root still
+    supports was retracted".
+    """
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    assert _apply(store, "B", "r2").code == DecisionCode.DUPLICATE
+
+    result = forget_memory(store, ["/A/x.md"])
+
+    assert current(store) == ["4512"], f"a fact the other root still supports was retracted: {result.message}"
+    assert result.facts_retracted == 0
+    assert _value_kept(store), "the value the other root still supports was erased"
+
+
+@pytest.mark.parametrize("failing", ["retract_forgotten", "redact"])
+def test_sec001_a_rerun_completes_a_failed_per_card_erasure(
+    store: LiteStore, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_sec001_a_rerun_completes_a_failed_per_card_erasure[retract_forgotten|redact].
+
+    CCA BUG-001 of run 20261106T121445Z: the erased chunk ids were read from the rows the first
+    run deleted, so a re-run (which deletes nothing) could not finish a failed retraction or
+    redaction of a card a namesake keeps named. Red against the first SEC-001 commit (no
+    `forget_source_chunks` record): fails on "the re-run left the forgotten root's fact current"
+    ([retract_forgotten]) and "the re-run left the forgotten root's value" ([redact]).
+    """
+    from recall.fact_redaction import LiteFactRedactor
+
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    owner = LiteFactLedger if failing == "retract_forgotten" else LiteFactRedactor
+
+    def down(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("unavailable once")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, failing, down)
+        first = forget_memory(store, ["/A/x.md"])
+    assert -1 in (first.facts_retracted, first.facts_redacted), first.message
+
+    forget_memory(store, ["/A/x.md"])
+
+    assert current(store) == [], f"the re-run left the forgotten root's fact current: {current(store)}"
+    assert not _value_kept(store), "the re-run left the forgotten root's value"
+
+
+def test_sec001_a_card_whose_name_no_longer_resolves_is_retracted_by_its_chunk(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_sec001_a_card_whose_name_no_longer_resolves_is_retracted_by_its_chunk.
+
+    CCA SEC-001 of run 20261106T121445Z: a card stamped `old/x.md` (its memo indexed under
+    another root then) cites /A's chunk, whose memo is now named `x.md`. The chunk rule redacted
+    it, but retraction still asked for its name, so the fact stayed current. Red against the
+    first SEC-001 change (`touched` by name only): fails on "a card of the forgotten chunk left
+    its fact unretracted". The listing alone cannot show it: a name no memo serves is hidden
+    anyway, so the retraction is asserted on the ledger.
+    """
+    assert _apply(store, "A", "r1", source="old/x.md").code == DecisionCode.APPLIED
+
+    result = forget_memory(store, ["/A/x.md"])
+
+    retractions = [event for event in LiteFactLedger(store).events if event.event_type == "retracted"]
+    assert result.facts_retracted == 1 and len(retractions) == 1, (
+        f"a card of the forgotten chunk left its fact unretracted: {result.message}"
+    )
+    assert current(store) == []
+    assert not _value_kept(store), "a card of the forgotten chunk kept its value"
 
 
 class _Stop(Exception):

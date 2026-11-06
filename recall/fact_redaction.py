@@ -186,10 +186,13 @@ def plan_redaction(
     erased: Callable[[str], bool] | None,
     everything: bool = False,
     token: Callable[[], str] | None = None,
+    erased_chunk: Callable[[str], bool] | None = None,
 ) -> RedactionPlan:
     """The rewrites that erase what `erased` memos supplied (every value, with `everything`).
 
-    `erased(name)` says whether a card naming memo `name` is erased now. `stored_cards` are the
+    `erased(name)` says whether a card naming memo `name` is erased now, and `erased_chunk(chunk_id)`
+    whether the chunk a card cites is: a memo another root holds under the same name does not keep a
+    card of the erased root's chunk (owner decision 2026-11-06, CCA SEC-001). `stored_cards` are the
     card table's rows of this tenant that may need it, as `(card_id, card)`. The module docstring
     states the rule. Deterministic for a fixed `token`: maps are built in sorted order.
     """
@@ -199,7 +202,11 @@ def plan_redaction(
     def erasable(card: Mapping[str, Any]) -> bool:
         if is_redaction_marker(card):
             return False
-        return everything or (erased is not None and erased(str(card.get("source", ""))))
+        return (
+            everything
+            or (erased is not None and erased(str(card.get("source", ""))))
+            or (erased_chunk is not None and erased_chunk(str(card.get("chunk_id", ""))))
+        )
 
     cards_now: set[str] = set()
     names: set[str] = set()
@@ -382,15 +389,17 @@ class PostgresFactRedactor:
             ).fetchall()
         return {str(name) for (name,) in rows if name}
 
-    def _stored_cards(self, names: Collection[str] | None) -> list[tuple[str, Mapping[str, Any]]]:
+    def _stored_cards(
+        self, names: Collection[str] | None, chunk_ids: Collection[str] = ()
+    ) -> list[tuple[str, Mapping[str, Any]]]:
         sql = (
             f"SELECT card_id, card FROM {EVIDENCE_CARD_TABLE} "
             "WHERE tenant_id = %s AND NOT (card ? 'redacted')"
         )
         params: list[Any] = [self.tenant_id]
         if names is not None:
-            sql += " AND card->>'source' = ANY(%s)"
-            params.append(sorted(names))
+            sql += " AND (card->>'source' = ANY(%s) OR card->>'chunk_id' = ANY(%s))"
+            params.extend([sorted(names), sorted(chunk_ids)])
         with self._connect(self.card_dsn) as conn:
             return [(str(card_id), card) for card_id, card in conn.execute(sql, params).fetchall()]
 
@@ -410,25 +419,32 @@ class PostgresFactRedactor:
         reason: str = "forget",
         writer: str = REDACTION_WRITER,
         token: Callable[[], str] | None = None,
+        erased_chunk: Callable[[str], bool] | None = None,
+        chunk_ids: Collection[str] = (),
     ) -> RedactionReport:
         """Plan and apply one redaction in one transaction. `names` bounds the card-table read to
-        the memos `erased` may answer for (all of them with `everything`)."""
+        the memos `erased` may answer for, and `chunk_ids` adds the cards citing a chunk
+        `erased_chunk` may answer for, whatever name they carry (all of them with `everything`)."""
         from psycopg.types.json import Jsonb
 
         if reason not in REASONS:
             raise ValueError(f"{reason!r} is not a redaction reason")
-        stored = self._stored_cards(None if everything else (names or ()))
+        stored = self._stored_cards(None if everything else (names or ()), chunk_ids)
         with self._connect(self.dsn) as conn, conn.transaction():
             rows = [_pg_row(row) for row in conn.execute(_LEDGER_ROW_SQL, (self.tenant_id,)).fetchall()]
             # Only to learn which facts to lock: its ids are thrown away, so it draws none.
             first = plan_redaction(
-                self.tenant_id, rows, stored, erased=erased, everything=everything, token=lambda: "0" * 32
+                self.tenant_id, rows, stored, erased=erased, everything=everything, token=lambda: "0" * 32,
+                erased_chunk=erased_chunk,
             )
             if first.empty:
                 return RedactionReport()
             lock_fact_keys(conn, self.tenant_id, conflict_keys(rows, first))
             rows = [_pg_row(row) for row in conn.execute(_LEDGER_ROW_SQL, (self.tenant_id,)).fetchall()]
-            plan = plan_redaction(self.tenant_id, rows, stored, erased=erased, everything=everything, token=token)
+            plan = plan_redaction(
+                self.tenant_id, rows, stored, erased=erased, everything=everything, token=token,
+                erased_chunk=erased_chunk,
+            )
             if plan.empty:
                 return RedactionReport()
             # The function checks that this plan is a redaction and nothing else, and rebuilds the
@@ -562,19 +578,22 @@ class LiteFactRedactor:
         reason: str = "forget",
         writer: str = REDACTION_WRITER,
         token: Callable[[], str] | None = None,
+        erased_chunk: Callable[[str], bool] | None = None,
+        chunk_ids: Collection[str] = (),
     ) -> RedactionReport:
         """`PostgresFactRedactor.redact` on the file, in one write transaction."""
         from datetime import UTC, datetime
 
         from recall.fact_current import SQLiteTables, rebuild_tables
 
-        del names  # one file: the card table is read whole, there is no second connection
+        del names, chunk_ids  # one file: the card table is read whole, there is no second connection
         if reason not in REASONS:
             raise ValueError(f"{reason!r} is not a redaction reason")
         conn = self._store._conn
         with self._store._write():
             plan = plan_redaction(
-                self.tenant_id, self._rows(), self._cards(), erased=erased, everything=everything, token=token
+                self.tenant_id, self._rows(), self._cards(), erased=erased, everything=everything, token=token,
+                erased_chunk=erased_chunk,
             )
             if plan.empty:
                 return RedactionReport()

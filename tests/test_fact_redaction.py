@@ -766,3 +766,35 @@ def test_t12_a_card_only_redaction_waits_for_the_facts_key_lock(make_store: Call
         assert reports and reports[0].events_rewritten >= 1 and reports[0].facts_redacted == 0, reports
     finally:
         store.close()
+
+
+def test_t13_a_card_of_a_forgotten_chunk_is_erased_whatever_name_it_carries(backend: Backend) -> None:
+    """Node tests/test_fact_redaction.py::test_t13_a_card_of_a_forgotten_chunk_is_erased_whatever_name_it_carries[lite|pg].
+
+    Owner decision 2026-11-06 (erasure decides per card) and CCA SEC-001 of run 20261106T121445Z.
+    Two roots hold `x.md`; the only card of DOOR cites /A's chunk under the name `old/x.md` it was
+    stamped with, which no memo now carries. Forgetting /A must erase DOOR's value from every fact
+    table, the PostgreSQL card table included, whose read was bounded by name only. Red, lite,
+    against the first per-card change (`touched` by name only): fails on "a card of the forgotten
+    chunk left its fact unretracted". The [pg] param runs only where a database is configured
+    (CI); its red proof (mutation `card->>'chunk_id' = ANY(%s)` dropped from
+    `PostgresFactRedactor._stored_cards`, expected to fail on "the forgotten chunk's value is
+    still in the fact tables") was not run on the test host, which has no database.
+    """
+    for root in ("A", "B"):
+        backend.store.upsert(
+            [Chunk(f"chunk-{root}", f"/{root}/x.md", f"text of {root}/x.md", {"file": "x.md"})],
+            [[1.0] + [0.0] * (DIM - 1)],
+        )
+    card = evidence_card(DOOR, tenant=backend.tenant, generation=GEN, chunk="chunk-A", source="old/x.md")
+    backend.cards.put((card,))
+    decision = ProvenanceController(
+        tenant_id=backend.tenant, generation_id=GEN, cards=backend.cards, ledger=backend.ledger(),
+        source_digest_for=lambda _card: "digest", now=lambda: NOW, writer="redaction-test",
+    ).apply_fact(FactApplicationRequest(DOOR, (card.card_id,), "r-door"))
+    assert decision.code == DecisionCode.APPLIED
+
+    result = forget_memory(backend.store, ["/A/x.md"])
+
+    assert result.facts_retracted == 1, f"a card of the forgotten chunk left its fact unretracted: {result.message}"
+    assert not _holds("4512", " ".join(backend.rows())), "the forgotten chunk's value is still in the fact tables"
