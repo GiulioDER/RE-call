@@ -259,6 +259,7 @@ def generation_ingest(
         store.tenant,
         actor="recall-desktop",
         serving_environment=values.get("RECALL_SERVING_ENV", values.get("RECALL_ENV")),
+        fact_write_env=values,
     )
     with manager.tenant_ingest_lock():
         try:
