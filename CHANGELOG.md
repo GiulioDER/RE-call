@@ -419,6 +419,13 @@ list as an ordered upgrade procedure.
 
 ### Changed
 
+* **A forget decides per evidence card on a lite store and the legacy table (#1233).** A fact
+  whose every card cites a chunk the forget erased is retracted, and its value erased, even when
+  another root still serves a memo under the same root-relative name; a value another card still
+  supports stays. The erased chunk ids are recorded before deletion, so running a failed forget
+  again completes it. A generation store keeps the name rule, since its chunks are read one
+  generation at a time.
+
 * **The project license changed to the AGPL-3.0, with a commercial license beside it.** Releases
   from this one on are open source under the GNU Affero General Public License v3.0, which permits
   commercial use on its conditions; closed source products and proprietary hosted services can
