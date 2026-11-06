@@ -46,21 +46,21 @@ list as an ordered upgrade procedure.
   `embedding_fingerprint`. Rebuild them.
 * **Configuration that refuses now:** a source policy file with an unknown or misspelled key, an
   enterprise control plane without `RECALL_SOURCE_POLICY_FILE`, `RECALL_OIDC_JWKS_REFRESH_SECONDS`
-  above 3600, and an unknown `RECALL_DEPENDENCY_INVALIDATION` value at startup. Source policies
-  whose redactions are not sorted get new digests, so rows filtered on the old digest return
-  nothing until a re-index.
-* **Calibration:** a labelled set that repeats a query, or labels one both ways, is refused; a v2
-  `recall calibration import` needs `--labels` and a matching `--embedder`; some v2 bundles fitted
-  before #1106 re-derive a different threshold and must be recalibrated.
-* **Behaviour that changes answers or scripts:** strict PostgreSQL searches refuse a term absent
-  from the generation (`unknown_term`, on by default); `recall_reasoning_query` answers with the
-  `dated` profile by default; a forget by a name that matches several sources refuses and lists
-  them; an explicit glob index skips `.git`, `.venv`, `venv`, `node_modules`, `site-packages` and
-  `__pycache__`; an `as_of` without an offset is read as UTC; a stdio server refuses a `tenant`
-  argument naming another tenant; a dependency projection read that raises is
-  `DEPENDENCY_UNAVAILABLE`; and every tool that writes a `supersedes:` edge is gated.
-* **Redis idempotency:** the request fingerprint is bound to the authenticated principal, so a key
-  in flight across the upgrade needs a new key.
+  above 3600, an unknown `RECALL_DEPENDENCY_INVALIDATION` value, a `RECALL_GRAPH_*` control outside
+  its vocabulary (a blank value still means the default), and a `RECALL_MULTIMODAL_ENABLED` that is
+  not a recognised boolean, all at startup. Source policies whose redactions are not sorted get new
+  digests, so rows filtered on the old digest return nothing until a re-index. * **Calibration:** a
+  labelled set that repeats a query, or labels one both ways, is refused; a v2 `recall calibration
+  import` needs `--labels` and a matching `--embedder`; some v2 bundles fitted before #1106
+  re-derive a different threshold and must be recalibrated. * **Behaviour that changes answers or
+  scripts:** strict PostgreSQL searches refuse a term absent from the generation (`unknown_term`, on
+  by default); `recall_reasoning_query` answers with the `dated` profile by default; a forget by a
+  name that matches several sources refuses and lists them; an explicit glob index skips `.git`,
+  `.venv`, `venv`, `node_modules`, `site-packages` and `__pycache__`; an `as_of` without an offset
+  is read as UTC; a stdio server refuses a `tenant` argument naming another tenant; a dependency
+  projection read that raises is `DEPENDENCY_UNAVAILABLE`; and every tool that writes a
+  `supersedes:` edge is gated. * **Redis idempotency:** the request fingerprint is bound to the
+  authenticated principal, so a key in flight across the upgrade needs a new key.
 
 ### Added
 
@@ -142,7 +142,7 @@ list as an ordered upgrade procedure.
   text. `recall_report_use` records, after a task, whether memory `helped`, made `no_difference` or
   `misled`, the memories used and any found wrong, as one `use_report` row; every memory named must
   exist in the served generation. Both need `recall:write` and change no memo, verdict or ranking.
-  The tool surface grows from 22 to 24, and the re-call skill asks for one report after a task that
+  Both join the default tool list, and the re-call skill asks for one report after a task that
   searched memory. Both take an optional `idempotency_key`, and on an authenticated server a stale
   report is recorded only in the caller's own audit ledger.
 
@@ -228,7 +228,16 @@ list as an ordered upgrade procedure.
   object root no admission can use. The multimodal client honours `RECALL_VOYAGE_TIMEOUT_SECONDS`,
   the install hint names `voyageai>=0.3` and Pillow (and the embedder warns at construction when
   Pillow is missing), a text query works on a client that only embeds text, and fitting a very long
-  thin image no longer takes one step per pixel.
+  thin image no longer takes one step per pixel. A leading `//` (raw or `%2F` encoded) is refused so
+  a file URI cannot name a UNC host, an empty or `.` segment inside the root's own prefix is
+  refused, and the projection re-checks `object_uri` under the object root. Pillow opens only the
+  declared format, and an image type outside JPEG, PNG and WebP is never opened. A bad root is named
+  as the fault, a `RECALL_MULTIMODAL_MAX_*` refusal names the variable, its value and its range, and
+  `RECALL_MULTIMODAL_ENABLED` is read strictly everywhere, so a typo refuses instead of meaning off.
+  `RECALL_VOYAGE_PARALLEL_REQUESTS` also applies to the multimodal embedder, which sends no further
+  request after one fails. A `voyageai` without `multimodal_embed` is refused at construction, every
+  vector must have the width the construction probe measured, and an empty image query is refused
+  locally. `fit_voyage_input` and `estimate_voyage_tokens` are deprecated.
 
 * **A search can be routed to a configured tenant by a versioned plan.**
   `RECALL_RETRIEVAL_PLANS_JSON` holds routes, each naming an allowed tenant set, a primary tenant
@@ -801,6 +810,13 @@ list as an ordered upgrade procedure.
   items and rejecting one no longer hides the other; a rejection recorded under the old file name
   key still applies.
 
+* **An agent can ask which memo a `supersedes:` reference names before it writes it.** The new MCP
+  tool `recall_resolve_reference` answers by search's own rule on the served index: `resolved` with
+  the exact value to write, `ambiguous` with the candidates, `dangling` or `self`. The
+  `recall_index` receipt lists stored references that name more than one memo; it is advisory and
+  runs after the index has committed. Under a source policy only readable memos are named or
+  counted, so neither reveals that an unreadable memo exists. The re-call skill routes the tool.
+
 * `RECALL_TRUST_MODE=development` under `RECALL_ENV=production` now logs a warning naming both
   variables when the policy is resolved (at MCP server startup, and on a `recall` search); the
   relaxed gate is still honoured. An unknown `RECALL_DEPENDENCY_INVALIDATION` value is now refused
@@ -1028,6 +1044,16 @@ list as an ordered upgrade procedure.
   an install failure naming the extra. The calibrated server block pins
   `RECALL_INDEX_MODE=generation` and sets `RECALL_INDEX_ROOT` to the memory folder.
 
+* **An empty `RECALL_SERVING_DSN` falls through to `RECALL_DSN` in the CLI**, as it does in the MCP
+  server; the wizard writes it empty into every server block. `recall wizard` refuses a global
+  `--embedder`, `--serving-dsn` (`--dsn`) or `--migration-dsn` it would ignore. On PostgreSQL,
+  forget and withdraw look up only the named sources instead of listing every source of the tenant.
+  The desktop configuration page's SPLADE check probes only the hardware and CUDA memory it reads,
+  not Docker, WSL and `systeminfo`. The `recall index --glob` help no longer offers `**/*.py` for
+  code chunking, which never applied there; it names `recall generation build --chunker code`. Setup
+  matches an existing Claude Code project entry only when its last folder name matches the
+  project's, so a differently named junction or symbolic link to the project is no longer found.
+
 * **MCP servers registered by `recall setup` start under a client that passes only the registered
   environment.** On Windows such a launch lost the user site-packages (`No module named
   'recall_mcp'`) and the socket stack (`WinError 10106`). Each registered entry now carries
@@ -1095,11 +1121,19 @@ list as an ordered upgrade procedure.
   complete source identity before its SQL limit, so a stale or unrelated document no longer enters
   its results. Graph components load from one PostgreSQL snapshot during a concurrent erasure.
 
-* **Reasoning queries no longer fail on concurrency, budgets or a stray
-  `0000`.** Concurrent requests no longer raise `KeyError` in the shared graph validation cache; a
-  standalone `0000` token (for example an entity label `v0000`) no longer fails every graph-first
-  query on a tenant; the planner enforces its wall-time budget after its last step; and trusted
-  chunks without file metadata match the graph's source fallback.
+* **Reasoning queries no longer fail on concurrency, budgets or a stray `0000`.** Concurrent
+  requests no longer raise `KeyError` in the shared graph validation cache; a standalone `0000`
+  token (for example an entity label `v0000`) no longer fails every graph-first query on a tenant;
+  the planner enforces its wall-time budget after its last step; and trusted chunks without file
+  metadata match the graph's source fallback. A source scoped graph-first query filters neighbours
+  by source before the candidate budget, a graph refused for a stale readiness marker re-reads it so
+  a rebuild takes effect without a restart, graph expansion stays bound to the seed retrieval it
+  expanded, and a graph failure before the trust gate reaches `GRAPH_PROVIDER_ERROR` with the seed
+  kept. An unpadded date no longer moves `valid_from` or `effective_at` to the end of its day, and
+  `valid_until` runs to the end of its day only for a bare date. The strict response decoder keeps
+  each item's authority and verdict, raises `EvidenceValidationError` for a malformed `trust_state`
+  or date, and refuses a citation that names no item of the trusted evidence. An authored file
+  entity no longer replaces the document's own file identity.
 
 * **A rescued parent is scored as a chunk.** Atomic rescue passed the 24 word view's cosine to the
   trust layer, whose threshold was fitted on chunk cosines, so a rescue could jump the top five or
@@ -1107,7 +1141,12 @@ list as an ordered upgrade procedure.
   generation cannot score is refused. View products run under a two thread BLAS limit
   (`threadpoolctl>=3.1` joins the `atomic` extra), which cut p95 from 202 ms to 55 ms under a CPU
   quota. The window rank gate also refuses a rescue whose gate score is not a finite number, where a
-  NaN margin admitted it.
+  NaN margin admitted it. Dense placement leaves a selection already in the top five unchanged. A
+  cold artifact load runs outside the cache lock, once per path, and `threadpoolctl` is checked at
+  load rather than on every search. The artifact writer fsyncs its members and directories, loads
+  the staged artifact before publishing it, and gives the published directory the umask's mode
+  without ever setting the process umask; an unreadable `.npz` member is refused. The expectation
+  cache is keyed on the receipt's hash, so a receipt rewritten in place is read again.
 
 * **Atomic rescue stays out of scoped searches.** Document, structural and successor expansion
   re-searches re-ran the selection per source, could insert another source's parent, and raised
@@ -1322,6 +1361,11 @@ list as an ordered upgrade procedure.
   a memo the caller may not read now answers `CARD_NOT_FOUND` and records nothing, where it
   returned the event (whose id let a caller test which fact was applied), and `apply_fact_memory`
   for another tenant under a source policy raises `PermissionError` before reading.
+
+* **Graph expansion no longer reports neighbours the source policy denies.** Under a source security
+  policy, `candidate_fetched_count`, `candidate_payload_bytes`, `db_result_bytes`, a
+  `security_policy` rejection and the gate reason counted policy-denied neighbours, which told a
+  caller that unreadable memos existed.
 
 * **The enterprise control plane holds the tenant outbox lock through an erasure**,
   so a replay can no longer restore deleted text, and a stale JWKS key is not reused past the
