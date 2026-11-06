@@ -882,6 +882,15 @@ list as an ordered upgrade procedure.
 
 ### Fixed
 
+* **A memo pruned from disk no longer loses its facts when another memo is forgotten (#1244).**
+  A forget counted every memo the store no longer served as gone, so forgetting one memo retracted
+  for good a fact that a memo deleted from disk also stated, and restoring that file did not bring
+  it back. The indexer's prune now leaves an audit record of the chunk ids it removed
+  (`prune_source_chunks`, ids only), and a forget keeps a card whose chunk was last pruned as
+  evidence: the fact is hidden while the memo is away and current again when it returns. A forget
+  that names the pruned memo still forgets it. Memos pruned before this release have no record
+  and still count as forgotten.
+
 * **Applying a fact on a generation store no longer refuses every evidence card.**
   `GenerationStore.generation_id` returned `"legacy"`, so `recall_apply_fact` built its controller
   for a generation that does not exist and refused each card as `GENERATION_MISMATCH`. It now names
@@ -910,7 +919,7 @@ list as an ordered upgrade procedure.
 * **A fact whose memos are no longer served is not current.** A memo pruned from disk or left out of
   a promoted generation hides its facts from `recall_current_facts` and from the conflict check of
   `recall_apply_fact`, and they return with the memo after a `generation rollback` or a restored
-  file. Nothing is written to the ledger.
+  file. Nothing is written to the fact ledger.
 
 * **`recall generation gc` retracts for good the facts no remaining generation can bring back.**
   When gc deletes the last generation holding every memo behind a fact, it appends `retracted`
