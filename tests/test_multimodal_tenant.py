@@ -469,3 +469,17 @@ def test_a_directly_built_reference_is_held_to_the_configured_root(monkeypatch) 
         object_uri="s3://recall-multimodal/media/a.png",
     )
     project_media_evidence(inside, requester_tenant="re-call-multimodal", principal="tester")
+
+
+def test_the_embedder_gate_refuses_a_mistyped_enabled_flag() -> None:
+    """Owner decision 2026-11-06: the embedder gate reads RECALL_MULTIMODAL_ENABLED strictly.
+
+    Invariant: a value that is not a boolean is refused by name, as
+    ``MultimodalTenantConfig.from_env`` refuses it. Failure mode: the gate read 'ture' as off and
+    said only that multimodal is disabled. Red proof, 2026-11-06, against 107ad058a (``truthy``):
+    ``Regex pattern did not match``, the error was the 'disabled' one.
+    """
+    with pytest.raises(ValueError, match="RECALL_MULTIMODAL_ENABLED='ture' is not a boolean"):
+        resolve_embedder("voyage-multimodal", env={"RECALL_MULTIMODAL_ENABLED": "ture"})
+    with pytest.raises(ValueError, match="disabled"):
+        resolve_embedder("voyage-multimodal", env={"RECALL_MULTIMODAL_ENABLED": "0"})
