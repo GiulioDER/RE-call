@@ -318,3 +318,86 @@ def test_an_image_in_pillows_warning_band_is_refused_before_it_is_decoded(monkey
     assert changed and fitted != url
     with pytest.warns(DecompressionBombWarning), pytest.raises(DecompressionBombError):
         fit_voyage_image(url, strict=True)
+
+
+class _CountingLimit(int):
+    """A pixel limit that counts how often the fitter tests a size against it."""
+
+    tests = 0
+
+    def __lt__(self, other):  # `width * height > limit` reaches here first, int being its base
+        type(self).tests += 1
+        return int(self) < other
+
+
+def test_a_strip_image_is_fitted_in_a_few_steps(monkeypatch) -> None:
+    """A 1 x N strip is fitted without a step per surplus pixel (CCA hunt PERF-001).
+
+    Invariant: fitting tests a size against the pixel limit a bounded number of times. Failure
+    mode: the short side clamps to 1 and the long side shrank one pixel per loop step, about 36M
+    steps (about 19 s) for a 1 x 170M PNG that is under the byte cap. Scaled down here: a 1 x 5000
+    image against a limit of 100 took 607 steps.
+
+    Red proof, 2026-11-06, against the pre-fix one-pixel loop in ``_fit_voyage_image``:
+    ``assert 608 <= 10`` (the count), with the fitted size the same 1 x 100 before and after.
+    """
+    limit = _CountingLimit(100)
+    _CountingLimit.tests = 0
+    monkeypatch.setattr(multimodal_module, "VOYAGE_MAX_IMAGE_PIXELS", limit)
+    embedder, client = _embedder()
+    payload = _encoded(Image.new("L", (1, 5000), 0), "PNG")
+
+    embedder.embed_query(MultimodalQuery(image_bytes=payload, media_type="image/png"))
+
+    with Image.open(BytesIO(_sent_image(client))) as sent:
+        assert (sent.width, sent.height) == (1, 100)
+    assert _CountingLimit.tests <= 10
+
+
+class _TextOnlyClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], str]] = []
+
+    def embed(self, texts, model, input_type, **_kwargs):
+        self.calls.append((list(texts), input_type))
+        return SimpleNamespace(embeddings=[[1.0] + [0.0] * 1023 for _ in texts])
+
+
+def test_a_text_only_client_answers_queries_as_it_embeds_passages() -> None:
+    """embed_query uses the same provider path as the documents (CCA hunt CODE-011).
+
+    Invariant: a client the constructor and the document path accept also embeds a text query,
+    as a query. Failure mode: embed_query called ``multimodal_embed`` unconditionally, so a
+    client with only ``embed`` built, embedded passages, then failed every query.
+
+    Red proof, 2026-11-06, against the pre-fix ``embed_query``: ``AttributeError:
+    '_TextOnlyClient' object has no attribute 'multimodal_embed'`` raised at the call under test.
+    """
+    client = _TextOnlyClient()
+    embedder = VoyageMultimodalEmbedder(client=client, token_counter=_one_token_per_char)
+    client.calls.clear()
+
+    assert embedder.embed_query("where is the cat") == [1.0] + [0.0] * 1023
+    assert client.calls == [(["where is the cat"], "query")]
+
+
+def test_a_missing_pillow_is_reported_when_the_embedder_is_built(monkeypatch, caplog) -> None:
+    """Without Pillow no image can be fitted, and that is said once, up front (DEPLOY-001).
+
+    Invariant: an embedder that will send over-limit images unfitted says so when built.
+    Failure mode: the install hint named an extra without Pillow, and the fitter then passed
+    every image through silently, so Voyage refused whole requests with no local trace.
+
+    Red proof, 2026-11-06, against the pre-fix constructor: the assertion on the
+    ``voyage_multimodal_images_unfitted`` record failed (no such record).
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "PIL", None)
+    with caplog.at_level(logging.WARNING, logger="recall.multimodal"):
+        VoyageMultimodalEmbedder(client=_Client(), token_counter=_one_token_per_char)
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage() == "voyage_multimodal_images_unfitted"
+    ] == ["voyage_multimodal_images_unfitted"]

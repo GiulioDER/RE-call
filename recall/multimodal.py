@@ -168,11 +168,13 @@ def _fit_voyage_image(
             while True:
                 width = max(1, int(image.width * scale))
                 height = max(1, int(image.height * scale))
+                # The jumps reproduce the old one-pixel-per-step loop's result in at most a few
+                # steps; one pixel at a time took millions of steps for a 1 x N strip.
                 while width * height > VOYAGE_MAX_IMAGE_PIXELS:
                     if width >= height:
-                        width -= 1
+                        width = max(VOYAGE_MAX_IMAGE_PIXELS // height, height - 1)
                     else:
-                        height -= 1
+                        height = max(VOYAGE_MAX_IMAGE_PIXELS // width, width)
                 resized = image.resize((width, height), Image.Resampling.LANCZOS)
                 if image_format == "JPEG" and resized.mode not in {"L", "RGB"}:
                     resized = resized.convert("RGB")
@@ -392,6 +394,12 @@ def _validate_object_root(object_uri: str, object_root: str) -> str:
             if next_decoded == decoded:
                 break
             decoded = next_decoded
+        # A path still changing after the last pass would hide its remaining encodings from the
+        # checks below, and a backslash is a separator to a Windows consumer but not to posixpath.
+        if unquote(decoded) != decoded or "\\" in decoded or "\x00" in decoded:
+            raise MediaValidationError(
+                "object_uri is outside the configured multimodal object root"
+            )
         normalized = posixpath.normpath(decoded)
         if (
             any(part == ".." for part in decoded.split("/"))
@@ -689,6 +697,15 @@ class MultimodalTenantConfig:
             raise MediaValidationError(
                 "RECALL_MULTIMODAL_OBJECT_ROOT is required when multimodal retrieval is enabled"
             )
+        # build_media_ref refuses every upload under a root it cannot contain, so refuse that
+        # root here, at startup, rather than at the first admission.
+        if self.enabled and self.object_root:
+            root = urlsplit(_validate_uri(self.object_root, "RECALL_MULTIMODAL_OBJECT_ROOT"))
+            if not root.path.startswith("/"):
+                raise MediaValidationError(
+                    "RECALL_MULTIMODAL_OBJECT_ROOT must name an absolute path prefix, "
+                    "such as s3://bucket/prefix/"
+                )
 
     def physical_identity(self) -> dict[str, object]:
         return {
@@ -719,6 +736,7 @@ class VoyageMultimodalEmbedder:
         identity: EmbeddingProfile | None = None,
         client: _MultimodalClient | None = None,
         token_counter: Callable[[list[str]], list[int]] | None = None,
+        timeout: float | None = None,
     ) -> None:
         self._model = identity.model_name if identity is not None else model
         self._batch_size = batch_size
@@ -735,13 +753,25 @@ class VoyageMultimodalEmbedder:
                 import voyageai
             except ImportError as exc:  # pragma: no cover
                 raise ImportError(
-                    'VoyageMultimodalEmbedder requires: pip install "recall-rag[voyage]"'
+                    "VoyageMultimodalEmbedder requires voyageai>=0.3 and Pillow: "
+                    'pip install "recall-rag[voyage]" "voyageai>=0.3" pillow'
                 ) from exc
             from recall.embedding_registry import _voyage_timeout
 
             # The SDK's default timeout is none, so a hung socket would block the caller forever.
             client = voyageai.Client(
-                api_key=key, max_retries=0, timeout=_voyage_timeout(os.environ)
+                api_key=key,
+                max_retries=0,
+                timeout=_voyage_timeout(os.environ) if timeout is None else timeout,
+            )
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            # Without Pillow no image can be measured or fitted, so an image over Voyage's
+            # limits is sent as given and the provider refuses the whole request holding it.
+            log.warning(
+                "voyage_multimodal_images_unfitted",
+                extra={"reason": "Pillow is not installed; pip install pillow"},
             )
         self._client = client
         probe = self._embed_provider_inputs([{"content": [{"type": "text", "text": "probe"}]}])
@@ -760,14 +790,16 @@ class VoyageMultimodalEmbedder:
     def profile(self) -> EmbeddingProfile | None:
         return self._profile
 
-    def _embed_provider_inputs(self, inputs: list[dict[str, object]]) -> list[list[float]]:
+    def _embed_provider_inputs(
+        self, inputs: list[dict[str, object]], input_type: str = "document"
+    ) -> list[list[float]]:
         multimodal_embed = getattr(self._client, "multimodal_embed", None)
         if callable(multimodal_embed):
             result = retry_with_backoff(
                 lambda: multimodal_embed(
                     inputs=inputs,
                     model=self._model,
-                    input_type="document",
+                    input_type=input_type,
                 ),
                 attempts=self._max_retries,
             )
@@ -790,7 +822,7 @@ class VoyageMultimodalEmbedder:
                 lambda: self._client.embed(
                     texts,
                     model=self._model,
-                    input_type="document",
+                    input_type=input_type,
                 ),
                 attempts=self._max_retries,
             )
@@ -866,16 +898,7 @@ class VoyageMultimodalEmbedder:
         )
         [(tokens, images)] = self._estimate([provider_input], image_pixels)
         self._log_input(0, "query", tokens, images, fitted)
-        result = retry_with_backoff(
-            lambda: self._client.multimodal_embed(
-                inputs=[provider_input], model=self._model, input_type="query"
-            ),
-            attempts=self._max_retries,
-        )
-        vectors = getattr(result, "embeddings", None)
-        if not isinstance(vectors, list) or len(vectors) != 1:
-            raise RuntimeError("Voyage multimodal query response did not contain one vector")
-        vector = [float(value) for value in vectors[0]]
+        [vector] = self._embed_provider_inputs([provider_input], input_type="query")
         _check_declared_width(self._profile, len(vector), "the Voyage multimodal endpoint")
         return vector
 

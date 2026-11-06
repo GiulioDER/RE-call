@@ -752,3 +752,27 @@ def test_registered_environment_does_not_borrow_ambient_credentials(
             make_embedder(spelling, env)
         else:
             resolve_registered_embedder(profile, env)
+
+
+def test_the_multimodal_profile_takes_its_timeout_from_the_callers_env(stub_providers, monkeypatch):
+    """The registry's env reaches the multimodal client too (CCA hunt ENV-001).
+
+    Invariant: a profile built with an explicit env gets that env's
+    RECALL_VOYAGE_TIMEOUT_SECONDS, as the text Voyage profiles do. Failure mode: the multimodal
+    embedder read ``os.environ``, so the caller's 7 s became the 60 s default.
+
+    Red proof, 2026-11-06, against the pre-fix ``EmbeddingProfileSpec._construct`` (no
+    ``timeout`` passed to ``VoyageMultimodalEmbedder``): ``assert 60.0 == 7.0``.
+    """
+    monkeypatch.delenv("RECALL_VOYAGE_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setattr(
+        _StubVoyageClient,
+        "multimodal_embed",
+        lambda self, inputs, **_kwargs: _StubMultimodalResult(len(inputs)),
+        raising=False,
+    )
+    embedder = registered_profile("voyage-multimodal-3.5-v1").build(
+        api_key="k",
+        env={"RECALL_VOYAGE_TIMEOUT_SECONDS": "7", "RECALL_MULTIMODAL_ENABLED": "1"},
+    )
+    assert embedder._client.timeout == 7.0

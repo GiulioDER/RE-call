@@ -432,6 +432,7 @@ class RegisteredProfile:
             return VoyageMultimodalEmbedder(
                 api_key=api_key,
                 identity=identity,
+                timeout=_voyage_timeout(env),
             )
         # Not checked at registration: __post_init__ only refuses a base_url on a local profile.
         # Every registered openai-compat profile declares one, and this assert is the only

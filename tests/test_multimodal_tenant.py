@@ -195,3 +195,73 @@ def test_registered_profile_is_carried_by_multimodal_provider() -> None:
     assert embedder.profile is identity
     assert embedder.dim == entry.dimension
     assert embedder.embed_query(MultimodalQuery(text="find the image")) == [0.0] * 1024
+
+
+@pytest.mark.parametrize(
+    "object_uri",
+    [
+        "s3://recall-multimodal/media/..%5Cprivate.png",
+        "s3://recall-multimodal/media/a/..%5C..%5Cprivate.png",
+        "s3://recall-multimodal/media/..\\private.png",
+        "file:///C:/srv/media/..%5Csecret.png",
+    ],
+)
+def test_a_backslash_traversal_is_refused(object_uri: str) -> None:
+    """A backslash is a separator to a Windows consumer (CCA hunt SEC-001).
+
+    Invariant: an admitted object_uri resolves under the object root on every platform.
+    Failure mode: the containment checks split on '/' only, so a raw backslash or '..%5C' passed and
+    resolved outside the root through url2pathname on Windows.
+
+    Red proof, 2026-11-06, against the pre-fix ``_validate_object_root``: every parameter
+    failed with ``Failed: DID NOT RAISE``.
+    """
+    root = "file:///C:/srv/media/" if object_uri.startswith("file:") else OBJECT_ROOT
+    with pytest.raises(MediaValidationError, match="object root"):
+        build_media_ref(PAYLOAD, media_type="image/png", object_uri=object_uri, object_root=root)
+
+
+def test_a_uri_still_encoded_after_the_decode_passes_is_refused() -> None:
+    """Running out of decode passes refuses rather than admits (CCA hunt DAT-001).
+
+    Invariant: containment is judged on a path decoded to its fixpoint. Failure mode: after
+    three passes a four times encoded '..' was still '%2e%2e', passed every check, and was
+    admitted. Red proof, 2026-11-06, against the pre-fix ``decode_path``: the four times encoded
+    URI failed with ``Failed: DID NOT RAISE``; the three times encoded control was refused before
+    and after.
+    """
+    for encoded_dots in ("%25252e%25252e", "%2525252e%2525252e", "%252525252e%252525252e"):
+        with pytest.raises(MediaValidationError, match="object root"):
+            build_media_ref(
+                PAYLOAD,
+                media_type="image/png",
+                object_uri=f"s3://recall-multimodal/media/{encoded_dots}/private.png",
+                object_root=OBJECT_ROOT,
+            )
+    ref = build_media_ref(
+        PAYLOAD,
+        media_type="image/png",
+        object_uri="s3://recall-multimodal/media/100%25.png",
+        object_root=OBJECT_ROOT,
+    )
+    assert ref.object_uri == "s3://recall-multimodal/media/100%25.png"
+
+
+def test_an_enabled_tenant_refuses_a_root_no_admission_can_use() -> None:
+    """The root is checked at startup, not at the first upload (CCA hunt ENV-002).
+
+    Invariant: an enabled tenant starts only with a root ``build_media_ref`` can contain under.
+    Failure mode: a bare path or a bucket with no path started cleanly, then every admission was
+    refused with a message blaming the object_uri. Red proof, 2026-11-06, against the pre-fix
+    ``MultimodalTenantConfig.__post_init__``: both refused roots failed with
+    ``Failed: DID NOT RAISE``.
+    """
+    for root, message in (("s3://bucket", "absolute path prefix"), ("/srv/media", "s3://")):
+        with pytest.raises(MediaValidationError, match=message):
+            MultimodalTenantConfig.from_env(
+                {"RECALL_MULTIMODAL_ENABLED": "1", "RECALL_MULTIMODAL_OBJECT_ROOT": root}
+            )
+    config = MultimodalTenantConfig.from_env(
+        {"RECALL_MULTIMODAL_ENABLED": "1", "RECALL_MULTIMODAL_OBJECT_ROOT": OBJECT_ROOT}
+    )
+    assert config.object_root == OBJECT_ROOT
