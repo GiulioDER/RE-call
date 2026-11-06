@@ -86,6 +86,27 @@ def _lite_embedder_spec(
     return spec, True
 
 
+def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str) -> str:
+    """The embedder a command that only reads or erases the lite store `db` builds (CCA ENV-002).
+
+    A typed `--embedder` wins, then RECALL_EMBEDDER, then the spec the store recorded, and only
+    then the global default, which knows nothing of the store. A RECALL_EMBEDDER that differs from
+    the recorded spec is refused, as index and refresh refuse it: a model other than the one that
+    built the vectors ranks nonsense without raising.
+    """
+    from recall.lite.inspect import lite_file_meta
+
+    recorded = (lite_file_meta(db) or {}).get("embedder_spec")
+    typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
+    env = os.environ.get("RECALL_EMBEDDER", "").strip()
+    if recorded and not typed and env and env != recorded:
+        raise SystemExit(
+            f"recall {command}: RECALL_EMBEDDER={env!r} differs from {recorded!r}, the embedder {db} "
+            "was built with; unset RECALL_EMBEDDER, or pass --embedder to use another one anyway"
+        )
+    return typed or env or recorded or str(args.embedder)
+
+
 def _refuse_unbound_embedder(
     embedder: Embedder, bound: str | None, db: Path, args: argparse.Namespace, *, switched: bool
 ) -> None:

@@ -235,7 +235,9 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
             security_context=context,
             key_root=_key_root(db),
             before=snap,
-            record_spec=spec if switched else None,
+            # Also when the store recorded no spec (built by an older `recall index`), so the
+            # guard engages from now on, and on a rebind, so the binding names the new vectors.
+            record_spec=spec if spec and (switched or rebind or not info.embedder_spec) else None,
         )
     print(json.dumps(result.to_dict(), indent=2, default=str) if args.json else result.render())
     _warn_if_over_budget(snap, budget)

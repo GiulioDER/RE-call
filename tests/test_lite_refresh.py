@@ -1109,3 +1109,96 @@ def test_a_store_bound_to_another_model_is_refused_unless_the_switch_is_typed(
     assert _cli("lite", "refresh", "--embedder", "content-words", *rest) == 0
     out = capsys.readouterr().out
     assert "refreshed:" in out, f"the typed embedder did not re-embed the store: {out}"
+
+
+def _meta(db: Path, key: str) -> str | None:
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else str(row[0])
+
+
+def test_a_switch_whose_refit_saved_no_calibration_leaves_the_next_plain_refresh_working(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Follow-up to DAT-006 (CCA run 20261106T134241Z). Invariant: after a switch to another
+    model, the store's binding names the model its vectors now hold, even when the corpus is below
+    the calibration floor and the refit saved nothing, so the next refresh with no flag proceeds.
+    Failure caught: the binding kept the old model, and the next plain refresh was refused with a
+    message blaming the MCP server.
+
+    Red proof, 2026-11-06 on the remote test host: with the `if model is not None:` block of
+    `recall.lite.store.LiteStore.record_embedder_spec` mutated to `if False:`, this failed at the
+    second refresh ("bound to the model 'org/model-name'"); restored, it passed."""
+    from recall.cli_commands import _shared
+
+    db, asked = _setup_with_model_name(project, monkeypatch)
+    old, new = ContentWordEmbedder(name="org/model-name"), ContentWordEmbedder(name="org/other-model")
+
+    def resolve(name: str) -> ContentWordEmbedder:
+        asked.append(name)
+        return new if name == "typed-words" else old
+
+    monkeypatch.setattr(_shared, "resolve_embedder", resolve)
+    rest = ["--store", str(db), "--memory", str(project / "memory")]
+    assert _cli("lite", "refresh", "--embedder", "typed-words", *rest) == 0, capsys.readouterr()
+    assert "Add a few more memos" in capsys.readouterr().out, "the refit was expected to save nothing"
+    refused: object = None
+    try:
+        cli_main(["lite", "refresh", *rest])
+    except SystemExit as exc:
+        refused = exc.code
+    assert refused in (0, None), f"the plain refresh after the switch was refused: {refused}"
+    assert asked[-1] == "typed-words", asked
+    assert _meta(db, "embedder_model") == "org/other-model"
+
+
+def test_search_and_forget_of_a_lite_store_build_the_embedder_it_recorded(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CCA ENV-002. Invariant: `recall search` and `recall forget` against a sqlite:/// store, with
+    no --embedder and no RECALL_EMBEDDER, build the embedder the store recorded rather than the
+    global fastembed default; a differing RECALL_EMBEDDER is refused before any is built.
+
+    Red proof, 2026-11-06 on the remote test host: with `recorded` dropped from the return of
+    `recall.cli_commands._shared._lite_read_embedder` (`typed or env or str(args.embedder)`), this
+    failed at the search assertion with ['fastembed']; restored, it passed."""
+    db, asked = _setup_with_model_name(project, monkeypatch)
+    dsn = f"sqlite:///{db.as_posix()}"
+    for argv in (["search", "flange valve"], ["forget", "memo-000.md"]):
+        asked.clear()
+        _cli("--dsn", dsn, *argv)
+        assert asked == ["content-words"], f"{argv[0]} ignored the recorded embedder: {asked}"
+    capsys.readouterr()
+    monkeypatch.setenv("RECALL_EMBEDDER", "typed-words")
+    asked.clear()
+    with pytest.raises(SystemExit) as stopped:
+        cli_main(["--dsn", dsn, "search", "flange valve"])
+    assert "differs from 'content-words'" in str(stopped.value.code), stopped.value.code
+    assert asked == [], f"search built an embedder before refusing: {asked}"
+
+
+def test_a_lite_store_first_built_by_index_records_its_embedder(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CCA ENV-003. Invariant: `recall index` that builds a sqlite:/// store records the embedder
+    spec it used, so a later run with a different RECALL_EMBEDDER is refused. Failure caught: no
+    spec was recorded, and the guard never engaged on a store index had built.
+
+    Red proof, 2026-11-06 on the remote test host: with `if switched or recorded is None:` in
+    `recall.cli_commands.index_search._cmd_index` mutated to `if switched:`, this failed at the
+    recorded spec assertion (None); restored, it passed."""
+    _, asked = _setup_with_model_name(project, monkeypatch)
+    db = project / ".recall" / "built-by-index.db"
+    dsn = f"sqlite:///{db.as_posix()}"
+    code = _cli("--embedder", "content-words", "--dsn", dsn, "index", str(project / "memory"))
+    assert code == 0, capsys.readouterr()
+    assert _recorded_spec(db) == "content-words"
+    monkeypatch.setenv("RECALL_EMBEDDER", "typed-words")
+    with pytest.raises(SystemExit) as stopped:
+        cli_main(["--dsn", dsn, "index", str(project / "memory")])
+    assert "differs from 'content-words'" in str(stopped.value.code), stopped.value.code

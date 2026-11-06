@@ -130,11 +130,12 @@ client configuration, not into your shell. Use the same root and embedder as set
 has recorded its roots, the command can reuse them, but explicit paths make scheduled jobs easier
 to inspect.
 
-The store records the embedder setup used, and `recall lite refresh` and `recall index` against the
-store use it when you pass no `--embedder`. A `RECALL_EMBEDDER` in your shell that names a different
+The store records the embedder setup used (or, for a store `recall index` built, the one it used),
+and `recall lite refresh`, `recall index`, `recall search`, `recall forget` and `recall withdraw`
+against the store use it when you pass no `--embedder`. A `RECALL_EMBEDDER` in your shell that names a different
 embedder is refused, because a variable left over from another project would otherwise re-embed the
 store silently; `recall lite refresh --force` accepts it. Typing `--embedder` with a different value
-switches the store to it, with a warning. A switch re-embeds only what the run covers (the memo
+for a refresh or an index switches the store to it, with a warning. A switch re-embeds only what the run covers (the memo
 folders for a refresh, the given path for `recall index`); sources outside it keep the old vectors.
 The MCP server keeps the embedder setup configured until you run setup again with the new one, and
 once the server has refreshed and recalibrated the store with its own, both commands refuse to run

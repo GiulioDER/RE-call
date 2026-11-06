@@ -1495,16 +1495,27 @@ class LiteStore:
                 (payload,),
             )
 
-    def record_embedder_spec(self, spec: str) -> None:
+    def record_embedder_spec(self, spec: str, *, model: str | None = None, dimension: int | None = None) -> None:
         """Keep the embedder spec setup resolved (`fastembed`, `voyage:<model>`), so a refresh run
         with no `--embedder` resolves the same one. `embedder_model` alone cannot: it is the model's
-        own name, which `recall.embeddings.resolve_embedder` does not accept."""
+        own name, which `recall.embeddings.resolve_embedder` does not accept.
+
+        `model` and `dimension` are those of the embedder that just re-embedded the store. They
+        replace a model an earlier calibration recorded, even when this run's refit saved none (a
+        corpus below the calibration floor): the vectors are that model's now, and a binding left
+        naming the old one refused the next plain refresh. A store never calibrated keeps no model.
+        """
         with self._write():
             self._conn.execute(
                 "INSERT INTO meta(key, value) VALUES ('embedder_spec', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (spec,),
             )
+            if model is not None:
+                self._conn.executemany(
+                    "UPDATE meta SET value = ? WHERE key = ?",
+                    [(model, "embedder_model"), (str(dimension), "embedder_dimension")],
+                )
 
     def calibration_evidence(self, calibration_id: str) -> tuple[str, bytes, str] | None:
         """`(queries JSON, vectors, sources JSON)` stored with `calibration_id`, or None."""

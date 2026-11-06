@@ -528,7 +528,7 @@ They are observations, not automatic failures.
 | `recall.cli` | 6 | 113 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._lite` | 3 | 112 |
-| `recall.cli_commands._shared` | 10 | 122 |
+| `recall.cli_commands._shared` | 11 | 122 |
 | `recall.cli_commands.backup_cmd` | 1 | 8 |
 | `recall.cli_commands.calibration_cmd` | 17 | 214 |
 | `recall.cli_commands.dashboard_cmd` | 4 | 186 |

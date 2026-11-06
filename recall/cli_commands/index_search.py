@@ -39,6 +39,7 @@ from recall.cli_commands._shared import (
     CALIBRATION_DOC_URL,
     _cli_trust,
     _lite_embedder_spec,
+    _lite_read_embedder,
     _make_embedder,
     _print_result,
     _refuse_unbound_embedder,
@@ -377,8 +378,9 @@ def _cmd_index(args: argparse.Namespace) -> None:
 
         db = lite_dsn_path(args.dsn)
         meta = lite_file_meta(db) or {}
+        recorded = meta.get("embedder_spec")
         name, switched = _lite_embedder_spec(
-            args, meta.get("embedder_spec"), db, force=False,
+            args, recorded, db, force=False,
             how_to_switch="re-embed it with `recall lite refresh --force`, or unset RECALL_EMBEDDER",
         )
         name = name or args.embedder
@@ -452,8 +454,10 @@ def _cmd_index(args: argparse.Namespace) -> None:
 
                     outcome = ensure_calibrated(store, embedder)
                     print(f"calibration: {outcome.status.value}: {outcome.reason}")
-                    if switched:
-                        store.record_embedder_spec(name)
+                    if switched or recorded is None:
+                        # Also on a store this command built, so the next plain index or refresh
+                        # resolves this embedder and refuses a different one (CCA ENV-003).
+                        store.record_embedder_spec(name, model=str(embedder.name), dimension=int(embedder.dim))
                 from recall.stated_facts import reconcile_stated_facts
 
                 stated = reconcile_stated_facts(store)
@@ -524,7 +528,9 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
         )
     # After the refusals: building an embedder loads a model or sends a billed probe, and erasure
     # embeds nothing; a refused command must not pay for it.
-    embedder = _make_embedder(args.embedder)
+    embedder = _make_embedder(
+        _lite_read_embedder(args, lite_dsn_path(args.dsn), command) if is_lite_dsn(args.dsn) else args.embedder
+    )
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
@@ -832,7 +838,9 @@ def _cmd_search(args: argparse.Namespace) -> None:
         scope = _search_scope(args)
     except ValueError as exc:
         raise SystemExit(f"recall search: {exc}") from exc
-    embedder = _make_embedder(args.embedder)
+    embedder = _make_embedder(
+        _lite_read_embedder(args, lite_dsn_path(args.dsn), "search") if is_lite_dsn(args.dsn) else args.embedder
+    )
     # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
     #
     # `trusted_search` only consults the generation-bound resolver when `calibration is None`

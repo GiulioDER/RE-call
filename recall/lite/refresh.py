@@ -562,7 +562,7 @@ def _refresh_locked(
     if record_spec is not None:
         # Under the write lane, with the re-embed it describes, so no other writer can rebind the
         # store between them (CCA BUG-002): a later refresh with no flag resolves this embedder.
-        store.record_embedder_spec(record_spec)
+        store.record_embedder_spec(record_spec, model=str(embedder.name), dimension=int(embedder.dim))
     report.outcome = Outcome.REFRESHED
     report.reason = f"{current.count} file(s) checked in {time.monotonic() - started:.1f}s"
     report.calibration, report.calibration_reason = calibration.status.value, calibration.reason
