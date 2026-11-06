@@ -29,7 +29,10 @@ base64 data URLs, and unbounded payloads are not stored in vector metadata or ve
 operator supplied captions, but it does not replace the original object. The original object is
 returned only as a controlled reference after owning tenant authorization (and, for private
 media, a non empty authenticated principal) and within the response byte budget. Missing authorization, an unknown object scheme, an overlarge upload, or an
-overlarge response refuses the operation.
+overlarge response refuses the operation. `project_media_evidence` also re-checks the
+reference's `object_uri` under its `object_root` argument, or under
+`RECALL_MULTIMODAL_OBJECT_ROOT` when that is set, and refuses one outside it; with neither, it
+does not check, so a reference built directly is held to a root only when one is configured.
 
 Provider image bytes are transient request material. `MultimodalQuery` builds the provider input
 without adding the input bytes to persisted metadata. Original media must be retained in the
@@ -48,10 +51,15 @@ RECALL_MULTIMODAL_EMBED_PROFILE=voyage-multimodal-3.5-v1
 VOYAGE_API_KEY=...
 ```
 
-The embedder needs `voyageai>=0.3` and Pillow, which the `voyage` extra alone does not install:
-`pip install "recall-rag[voyage]" "voyageai>=0.3" pillow`. Without Pillow an image over Voyage's
-pixel or byte limit cannot be fitted, so Voyage refuses the whole request holding it; the
-embedder logs `voyage_multimodal_images_unfitted` at construction when Pillow is missing.
+`RECALL_MULTIMODAL_ENABLED` accepts 1, true, yes or on, and 0, false, no or off; any other
+value is refused rather than read as off.
+
+The embedder needs `voyageai>=0.3` and Pillow 10 or later. The `voyage` extra installs Pillow 10
+but allows voyageai from 0.2.2, so install `pip install "recall-rag[voyage]" "voyageai>=0.3"`. An
+older voyageai, without the multimodal endpoint, is refused when the embedder is built. Without Pillow an image
+over Voyage's pixel or byte limit cannot be fitted, so Voyage refuses the whole request holding
+it; the embedder logs `voyage_multimodal_images_unfitted` at construction when Pillow is missing.
+An image whose type is not JPEG, PNG or WebP is never opened locally and goes to Voyage as given.
 
 The object root must be an `s3://` or `file://` URI with an absolute path prefix; an enabled
 tenant with any other root refuses to start.

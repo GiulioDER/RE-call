@@ -247,7 +247,8 @@ def _view_scores(artifact: "AtomicRescueArtifact", query: Any) -> Any:
             return artifact.matrix @ query
 
 
-_EXPECTATION_CACHE: dict[Path, Mapping[str, tuple[str, int, float]]] = {}
+# Keyed by path and stamped with the file's identity, so a receipt rewritten in place is reread.
+_EXPECTATION_CACHE: dict[Path, tuple[tuple[int, int, int], Mapping[str, tuple[str, int, float]]]] = {}
 _EXPECTATION_CACHE_LOCK = threading.Lock()
 
 
@@ -924,8 +925,14 @@ def atomic_rescue_expectation_parity(
     """
 
     resolved = Path(path).expanduser().resolve()
+    try:
+        status = resolved.stat()
+    except OSError as exc:
+        raise AtomicRescueArtifactError("atomic rescue expectation artifact is unreadable") from exc
+    stamp = (status.st_ino, status.st_size, status.st_mtime_ns)
     with _EXPECTATION_CACHE_LOCK:
-        expectations = _EXPECTATION_CACHE.get(resolved)
+        cached = _EXPECTATION_CACHE.get(resolved)
+        expectations = cached[1] if cached is not None and cached[0] == stamp else None
         if expectations is None:
             try:
                 decoded = json.loads(resolved.read_text(encoding="utf-8"))
@@ -970,7 +977,7 @@ def atomic_rescue_expectation_parity(
                     )
                 parsed[query_digest] = source, ordinal, float(score)
             expectations = parsed
-            _EXPECTATION_CACHE[resolved] = expectations
+            _EXPECTATION_CACHE[resolved] = (stamp, expectations)
     query_digest = hashlib.sha256(query.encode("utf-8")).hexdigest()
     expected = expectations.get(query_digest)
     if expected is None:
@@ -1061,6 +1068,9 @@ def write_atomic_rescue_artifact(
         # before the rename, which Windows refuses while a member is mapped.
         staged = _load_atomic_rescue_artifact(manifest_path)
         del staged
+        # mkdtemp makes the directory 0700, which a serving process running as another user
+        # could not read; give it the mode a plain mkdir would have had.
+        staging.chmod(0o777 & ~_current_umask())
         _flush_directory(staging)
         os.replace(staging, root)
         _flush_directory(root.parent)
@@ -1068,6 +1078,14 @@ def write_atomic_rescue_artifact(
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def _current_umask() -> int:
+    """The process umask; reading it means setting it, so it is put straight back."""
+
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return mask
 
 
 def _write_durable(path: Path, text: str) -> None:

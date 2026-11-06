@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import posixpath
+import warnings
 from urllib.parse import SplitResult, unquote, urlsplit
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from datetime import datetime
 from typing import Literal, Protocol
 
 from recall import embeddings as _embeddings
-from recall._env import truthy
+from recall._env import strict_bool
 from recall.embeddings import (
     MULTIMODAL_EMBEDDING_MODEL as MULTIMODAL_EMBEDDING_MODEL,
     MULTIMODAL_EMBEDDING_PROFILE as MULTIMODAL_EMBEDDING_PROFILE,
@@ -84,6 +85,10 @@ VOYAGE_MAX_IMAGE_BYTES = 20_000_000
 VOYAGE_REQUEST_TOKEN_HEADROOM = 0.9
 
 _IMAGE_FORMATS = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}
+_INSTALL_HINT = (
+    "VoyageMultimodalEmbedder requires voyageai>=0.3 and Pillow>=10: "
+    'pip install "recall-rag[voyage]" "voyageai>=0.3" "pillow>=10"'
+)
 
 log = logging.getLogger("recall.multimodal")
 
@@ -99,18 +104,18 @@ def _split_data_url(data_url: str) -> tuple[str, bytes] | None:
         return None
 
 
-def _pillow_formats(image_format: str | None) -> list[str] | None:
-    """The one decoder bytes declared as a supported type may reach, so a PNG label cannot
-    hand Pillow an EPS file and with it Ghostscript."""
-    return None if image_format is None else [image_format]
+def _image_pixels(payload: bytes, image_format: str | None) -> int | None:
+    """Width times height of an encoded image, or None when it cannot be read.
 
-
-def _image_pixels(payload: bytes, image_format: str | None = None) -> int | None:
-    """Width times height of an encoded image, or None when it cannot be read."""
+    Only the decoder of the declared format is tried, so a PNG label cannot hand Pillow an EPS
+    file and with it Ghostscript; bytes of a type outside `_IMAGE_FORMATS` are not opened at all.
+    """
+    if image_format is None:
+        return None
     try:
         from PIL import Image
 
-        with Image.open(BytesIO(payload), formats=_pillow_formats(image_format)) as image:
+        with Image.open(BytesIO(payload), formats=[image_format]) as image:
             return int(image.width * image.height)
     except Exception:  # BROAD-CATCH: fail-open; ImportError or any decoder error means unknown
         return None
@@ -123,11 +128,12 @@ def fit_voyage_image(data_url: str, *, strict: bool = False) -> tuple[str, bool]
     before is re-encoded. One over either limit is scaled down, keeping its aspect ratio and
     format, until it fits: first to the pixel limit, then by a further fifth of each side while
     the encoding is still over the byte limit. Only the transient provider input changes; nothing
-    that stores or returns the original ever sees the fitted copy. Without Pillow, or for bytes
-    that do not decode, the input is returned unchanged and the provider decides.
+    that stores or returns the original ever sees the fitted copy. Without Pillow, for bytes
+    that do not decode, or for a type other than JPEG, PNG or WebP (never opened, in either
+    mode), the input is returned unchanged and the provider decides.
 
-    With ``strict``, an image whose header Pillow cannot open raises (as does a missing Pillow)
-    instead of passing through: usually ``UnidentifiedImageError``, though a truncated file can
+    With ``strict``, an image of a supported type whose header Pillow cannot open raises (as
+    does a missing Pillow) instead of passing through: usually ``UnidentifiedImageError``, though a truncated file can
     raise a plain ``OSError``, and so can a resize of an image over the pixel limit. Only the
     header is read, so an image within both limits whose pixel data is corrupt behind a readable
     header is still returned unchanged and sent. The AML adapter uses it, because its admission
@@ -146,14 +152,17 @@ def _fit_voyage_image(
         return data_url, False, None
     media_type, payload = decoded
     image_format = _IMAGE_FORMATS.get(media_type)
+    if image_format is None:
+        # A type RE-call cannot fit is not opened at all, in either mode; the provider decides.
+        return data_url, False, None
     if strict:
         from PIL import Image
 
-        with Image.open(BytesIO(payload), formats=_pillow_formats(image_format)) as probe:
+        with Image.open(BytesIO(payload), formats=[image_format]) as probe:
             pixels: int | None = int(probe.width * probe.height)
     else:
         pixels = _image_pixels(payload, image_format)
-    if image_format is None or pixels is None:
+    if pixels is None:
         return data_url, False, pixels
     if pixels <= VOYAGE_MAX_IMAGE_PIXELS and len(payload) <= VOYAGE_MAX_IMAGE_BYTES:
         return data_url, False, pixels
@@ -202,7 +211,15 @@ def _fit_voyage_image(
 
 
 def fit_voyage_input(item: Mapping[str, object]) -> tuple[dict[str, object], int]:
-    """A copy of one provider input with every image fitted, and how many images changed."""
+    """A copy of one provider input with every image fitted, and how many images changed.
+
+    Deprecated: nothing calls it; `VoyageMultimodalEmbedder.embed_multimodal` fits its inputs.
+    """
+    warnings.warn(
+        "recall.multimodal.fit_voyage_input is deprecated and will be removed",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _fit_voyage_input(item, {})
 
 
@@ -241,7 +258,15 @@ def estimate_voyage_tokens(
     A part this cannot measure (an image that will not decode, or a content type RE-call never
     builds) counts as a whole context window, which at worst sends that input in a request of
     its own.
+
+    Deprecated: use `estimate_voyage_inputs`, which also skips the tokenizer when it cannot
+    matter.
     """
+    warnings.warn(
+        "recall.multimodal.estimate_voyage_tokens is deprecated; use estimate_voyage_inputs",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return _estimate_voyage_tokens(item, count_text, {})
 
 
@@ -401,8 +426,8 @@ def _split_controlled_uri(value: str, field: str) -> SplitResult:
         raise MediaValidationError(f"{field} is not a valid URI") from exc
 
 
-def _decoded_path(path: str, error: str) -> str:
-    """The path decoded to its fixpoint and normalised, refusing anything a consumer could escape by."""
+def _decoded_path(path: str, error: str) -> tuple[str, str]:
+    """The path decoded to its fixpoint, literally and normalised, refusing what a consumer could escape by."""
     decoded = path
     for _ in range(_MAX_URI_DECODE_PASSES):
         if any(part == ".." for part in decoded.split("/")):
@@ -413,13 +438,14 @@ def _decoded_path(path: str, error: str) -> str:
         decoded = next_decoded
     # A path still changing after the last pass would hide its remaining encodings from the
     # checks below, and a backslash is a separator to a Windows consumer but not to posixpath.
-    # An empty segment is refused because normpath folds it away: a leading '//' left in the
-    # stored URI is a UNC host to a Windows consumer.
+    # A leading empty segment is refused because normpath folds it away and the '//' left in the
+    # stored URI is a UNC host to a Windows consumer. One later in the path is a legitimate key
+    # (S3 allows them); `_validate_object_root` admits it only after the root's own prefix.
     if (
         unquote(decoded) != decoded
         or "\\" in decoded
         or "\x00" in decoded
-        or "//" in decoded
+        or decoded.startswith("//")
     ):
         raise MediaValidationError(error)
     normalized = posixpath.normpath(decoded)
@@ -429,26 +455,26 @@ def _decoded_path(path: str, error: str) -> str:
         or normalized.startswith("../")
     ):
         raise MediaValidationError(error)
-    return normalized
+    return decoded, normalized
 
 
-def _object_root_path(object_root: str, field: str) -> tuple[SplitResult, str]:
-    """A root's parts and its decoded absolute path, refused with a message naming the root."""
+def _object_root_path(object_root: str, field: str) -> tuple[SplitResult, str, str]:
+    """A root's parts, its normalised and its literal decoded paths, refused naming the root."""
     root = _split_controlled_uri(object_root, field)
-    root_path = _decoded_path(root.path, f"{field} is not a usable object root")
+    literal_root, root_path = _decoded_path(root.path, f"{field} is not a usable object root")
     if not root_path.startswith("/"):
         raise MediaValidationError(
             f"{field} must name an absolute path prefix, such as s3://bucket/prefix/"
         )
-    return root, root_path
+    return root, root_path, literal_root
 
 
 def _validate_object_root(object_uri: str, object_root: str) -> str:
     uri = _split_controlled_uri(object_uri, "object_uri")
-    root, root_path = _object_root_path(object_root, "object_root")
+    root, root_path, literal_root = _object_root_path(object_root, "object_root")
     if (uri.scheme, uri.netloc) != (root.scheme, root.netloc):
         raise MediaValidationError(_OUTSIDE_ROOT)
-    uri_path = _decoded_path(uri.path, _OUTSIDE_ROOT)
+    literal_path, uri_path = _decoded_path(uri.path, _OUTSIDE_ROOT)
     try:
         common_path = posixpath.commonpath([uri_path, root_path])
     except ValueError:
@@ -457,6 +483,11 @@ def _validate_object_root(object_uri: str, object_root: str) -> str:
         uri_path == root_path
         or common_path != root_path
         or not uri_path.startswith(root_path.rstrip("/") + "/")
+        # An S3 key is literal: an empty or '.' segment in either path names another key than
+        # normpath suggests, so the literal paths must agree on the root's own prefix too.
+        or not literal_path.startswith(
+            literal_root if literal_root.endswith("/") else literal_root + "/"
+        )
     ):
         raise MediaValidationError(_OUTSIDE_ROOT)
     return uri.geturl()
@@ -665,6 +696,7 @@ def project_media_evidence(
     include_original: bool = True,
     used_bytes: int = 0,
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    object_root: str | None = None,
 ) -> dict[str, object]:
     """Project a media reference's provenance for an authorized requester, or refuse.
 
@@ -674,11 +706,20 @@ def project_media_evidence(
     is charged whatever ``include_original`` says. ``include_original`` controls only the
     ``original_media`` entry: the provenance itself always carries ``object_uri`` and
     ``content_digest``.
+
+    A reference need not come from `build_media_ref`, so its ``object_uri`` is checked again
+    under ``object_root``, or under ``RECALL_MULTIMODAL_OBJECT_ROOT`` when that is set, and
+    refused with `MediaValidationError` if it lies outside. With neither, it is not checked.
     """
     if requester_tenant != media.tenant_id:
         raise MediaAccessDenied("media may only be accessed from its owning tenant")
     if media.access_policy == "private" and not principal.strip():
         raise MediaAccessDenied("private media requires an authenticated principal")
+    root = object_root
+    if root is None:
+        root = os.environ.get("RECALL_MULTIMODAL_OBJECT_ROOT", "").strip() or None
+    if root is not None:
+        _validate_object_root(media.object_uri, root)
     if used_bytes < 0 or used_bytes + media.byte_size > max_response_bytes:
         raise MediaBudgetExceeded("original media would exceed the response byte budget")
     result = media.metadata()
@@ -707,7 +748,10 @@ class MultimodalTenantConfig:
     def from_env(cls, env: Mapping[str, str] | None = None) -> "MultimodalTenantConfig":
         source = os.environ if env is None else env
         return cls(
-            enabled=truthy(source.get("RECALL_MULTIMODAL_ENABLED")),
+            # Strict, as the server's own settings read it: a typo must not quietly disable the tenant.
+            enabled=strict_bool(
+                source.get("RECALL_MULTIMODAL_ENABLED"), name="RECALL_MULTIMODAL_ENABLED"
+            ),
             tenant_id=source.get("RECALL_MULTIMODAL_TENANT", MULTIMODAL_TENANT).strip(),
             embedding_profile=source.get(
                 "RECALL_MULTIMODAL_EMBED_PROFILE", MULTIMODAL_EMBEDDING_PROFILE
@@ -807,10 +851,11 @@ class VoyageMultimodalEmbedder:
             try:
                 import voyageai
             except ImportError as exc:  # pragma: no cover
-                raise ImportError(
-                    "VoyageMultimodalEmbedder requires voyageai>=0.3 and Pillow: "
-                    'pip install "recall-rag[voyage]" "voyageai>=0.3" pillow'
-                ) from exc
+                raise ImportError(_INSTALL_HINT) from exc
+            if not callable(getattr(voyageai.Client, "multimodal_embed", None)):
+                # An older SDK has no multimodal endpoint; its text fallback would serve the
+                # probe and then fail on the first image.
+                raise ImportError(_INSTALL_HINT)
             from recall.embedding_registry import _voyage_timeout
 
             # The SDK's default timeout is none, so a hung socket would block the caller forever.
@@ -826,9 +871,10 @@ class VoyageMultimodalEmbedder:
             # limits is sent as given and the provider refuses the whole request holding it.
             log.warning(
                 "voyage_multimodal_images_unfitted",
-                extra={"reason": "Pillow is not installed; pip install pillow"},
+                extra={"reason": 'Pillow is not installed; pip install "pillow>=10"'},
             )
         self._client = client
+        self._dim = 0  # set from the probe below, which every later response must match
         probe = self._embed_provider_inputs([{"content": [{"type": "text", "text": "probe"}]}])
         self._dim = len(probe[0])
         _check_declared_width(identity, self._dim, "the Voyage multimodal endpoint")
@@ -884,7 +930,18 @@ class VoyageMultimodalEmbedder:
         vectors = getattr(result, "embeddings", None)
         if not isinstance(vectors, list) or len(vectors) != len(inputs):
             raise RuntimeError("Voyage multimodal response did not preserve input alignment")
-        return [[float(value) for value in vector] for vector in vectors]
+        floats = [[float(value) for value in vector] for vector in vectors]
+        # Every vector must have the width the construction probe measured (the probe itself
+        # sets it), so a model change or a truncated response cannot mix widths in one store.
+        if any(not vector for vector in floats):
+            raise RuntimeError("Voyage multimodal response holds an empty vector")
+        expected = self._dim or (len(floats[0]) if floats else 0)
+        if any(len(vector) != expected for vector in floats):
+            widths = sorted({len(vector) for vector in floats})
+            raise RuntimeError(
+                f"Voyage multimodal response vectors are {widths} wide, not all {expected}"
+            )
+        return floats
 
     def _estimate(
         self, items: list[dict[str, object]], image_pixels: dict[str, int | None]
@@ -968,6 +1025,7 @@ class VoyageMultimodalEmbedder:
 
 
 __all__ = [
+    "DEFAULT_MAX_ITEMS",
     "DEFAULT_MAX_MEDIA_BYTES",
     "DEFAULT_MAX_RESPONSE_BYTES",
     "MediaAccessDenied",
@@ -982,8 +1040,13 @@ __all__ = [
     "MULTIMODAL_EMBEDDING_PROFILE",
     "MULTIMODAL_TENANT",
     "SUPPORTED_MEDIA_TYPES",
+    "VOYAGE_MAX_INPUT_TOKENS",
     "VoyageMultimodalEmbedder",
     "build_media_ref",
+    "estimate_voyage_inputs",
+    "fit_voyage_image",
+    "lazy_voyage_text_counter",
     "media_digest",
+    "plan_voyage_requests",
     "project_media_evidence",
 ]

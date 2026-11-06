@@ -276,7 +276,7 @@ def test_header_readable_corrupt_image_passes_through(monkeypatch):
     # Signature, IHDR, IDAT header remain; compressed pixel body is truncated.
     start = payload.index(b"IDAT") + 4
     corrupt = payload[:start + 2]
-    assert multimodal_module._image_pixels(corrupt) == 200
+    assert multimodal_module._image_pixels(corrupt, "PNG") == 200
     monkeypatch.setattr(multimodal_module, "VOYAGE_MAX_IMAGE_PIXELS", 100)
     embedder, client = _embedder()
     error = None
@@ -422,7 +422,7 @@ def test_bytes_labelled_png_reach_only_the_png_decoder() -> None:
         ]
     }
 
-    tokens, images = multimodal_module.estimate_voyage_tokens(item, _one_token_per_char)
+    [(tokens, images)] = multimodal_module.estimate_voyage_inputs([item], _one_token_per_char)
 
     assert (tokens, images) == (VOYAGE_MAX_INPUT_TOKENS, 1)
 
@@ -473,3 +473,117 @@ def test_parallel_requests_keep_more_than_one_request_in_flight_and_the_order() 
 
     assert client.peak == 2
     assert [vector[0] for vector in vectors] == [1.0, 2.0, 3.0]
+
+
+# Owner decisions of 2026-11-06 on the second hunt's open items. Red proofs, 2026-11-06, against
+# the second hunt's module (a77611f8a) with this file otherwise unchanged.
+
+
+def test_an_unsupported_image_type_is_never_opened(monkeypatch) -> None:
+    """SEC-002 residual: a type outside JPEG, PNG and WebP reaches no Pillow decoder at all.
+
+    Red proof: ``assert ['open'] == []``; the strict probe opened the GIF with every decoder.
+    """
+    opened: list[str] = []
+    real_open = Image.open
+
+    def spy(*args, **kwargs):
+        opened.append("open")
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(Image, "open", spy)
+    url = "data:image/gif;base64," + base64.b64encode(_encoded(Image.new("L", (4, 4)), "GIF")).decode()
+
+    fitted, changed = multimodal_module.fit_voyage_image(url, strict=True)
+    multimodal_module.estimate_voyage_inputs(
+        [{"content": [{"type": "image_base64", "image_base64": url}]}], _one_token_per_char
+    )
+
+    assert (fitted, changed) == (url, False)
+    assert opened == []
+
+
+def test_the_unused_public_wrappers_are_deprecated_and_the_used_helpers_exported() -> None:
+    """CODE-015: fit_voyage_input and estimate_voyage_tokens warn; the helpers callers import
+    are in __all__.
+
+    Red proof: ``Failed: DID NOT WARN``.
+    """
+    import pytest
+
+    item = _text(3)
+    with pytest.warns(DeprecationWarning, match="fit_voyage_input"):
+        multimodal_module.fit_voyage_input(item)
+    with pytest.warns(DeprecationWarning, match="estimate_voyage_inputs"):
+        multimodal_module.estimate_voyage_tokens(item, _one_token_per_char)
+    assert {
+        "DEFAULT_MAX_ITEMS",
+        "VOYAGE_MAX_INPUT_TOKENS",
+        "estimate_voyage_inputs",
+        "fit_voyage_image",
+        "lazy_voyage_text_counter",
+        "plan_voyage_requests",
+    } <= set(multimodal_module.__all__)
+
+
+class _NarrowingClient(_Client):
+    """Answers the construction probe at 1024 and later requests at 512."""
+
+    def multimodal_embed(self, *, inputs, model, input_type, **_kwargs):
+        width = 1024 if not self.requests else 512
+        self.requests.append((input_type, [dict(item) for item in inputs]))
+        return SimpleNamespace(embeddings=[[0.5] * width for _ in inputs])
+
+
+def test_a_response_narrower_than_the_probe_is_refused() -> None:
+    """BUG-006: every vector must have the width the construction probe measured.
+
+    Red proof: ``Failed: DID NOT RAISE``; 512-wide vectors were returned beside a 1024 dim.
+    """
+    import pytest
+
+    embedder = VoyageMultimodalEmbedder(client=_NarrowingClient(), token_counter=_one_token_per_char)
+    assert embedder.dim == 1024
+    with pytest.raises(RuntimeError, match="not all 1024"):
+        embedder.embed_passages(["narrow"])
+
+
+class _EmptyVectorClient(_Client):
+    def multimodal_embed(self, *, inputs, model, input_type, **_kwargs):
+        return SimpleNamespace(embeddings=[[] for _ in inputs])
+
+
+def test_an_empty_vector_is_reported_as_empty() -> None:
+    """CCA run 20261106T141216Z DOC-004: the refusal names the fault.
+
+    Red proof, 2026-11-06, against the owner-decision diff before this fix: ``Regex pattern did not
+    match``; the message was 'Voyage multimodal response vectors are not all 0 wide'.
+    """
+    import pytest
+
+    with pytest.raises(RuntimeError, match="empty vector"):
+        VoyageMultimodalEmbedder(client=_EmptyVectorClient(), token_counter=_one_token_per_char)
+
+
+def test_an_sdk_without_the_multimodal_endpoint_is_refused_with_the_install_hint(monkeypatch) -> None:
+    """DEPLOY-101, DEPLOY-102: an old voyageai is refused at construction, naming the versions.
+
+    Red proof: ``Failed: DID NOT RAISE``; the old SDK's text fallback answered the probe.
+    """
+    import sys
+    import types
+
+    import pytest
+
+    class _OldClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def embed(self, texts, model, **_kwargs):
+            return SimpleNamespace(embeddings=[[0.0] * 1024 for _ in texts])
+
+    old_sdk = types.ModuleType("voyageai")
+    old_sdk.Client = _OldClient
+    monkeypatch.setitem(sys.modules, "voyageai", old_sdk)
+    with pytest.raises(ImportError, match=r'voyageai>=0\.3.*"pillow>=10"'):
+        VoyageMultimodalEmbedder(api_key="test-key", token_counter=_one_token_per_char)
