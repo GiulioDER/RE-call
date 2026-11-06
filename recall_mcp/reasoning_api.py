@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from recall.answer_provider import OllamaAnswerProvider
 from recall.calibration import Calibration
 from recall.embeddings import Embedder
+from recall.evidence import AnswerProfile
 from recall.query_class import resolve_graph_expansion, route_query
 from recall.reasoning import ReasoningPolicy, ReasoningResponse
 from recall.reasoning_planner import ReasoningBudget
@@ -62,7 +63,7 @@ def reasoning_query(
     calibration: Calibration | None = None,
     security_policy: SourceSecurityPolicy | None = None,
     access_context: AccessContext | None = None,
-    answer_profile: str = "dated",
+    answer_profile: AnswerProfile = "dated",
 ) -> ReasoningResponse:
     """Run a bounded reasoning query with optional graph expansion."""
     if graph_expansion not in {"auto", "off", "one_hop"}:

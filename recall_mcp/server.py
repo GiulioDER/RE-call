@@ -34,7 +34,7 @@ from recall.answer_provider import resolve_answer_profile, resolve_answer_provid
 from recall.proof_obligations import ProofProvider, ProofRun, RepairRequest, run_proof_obligations
 from recall.proof_provider import resolve_proof_provider
 from recall.reasoning import ReasoningResponse
-from recall.evidence import EvidenceBundle
+from recall.evidence import AnswerProfile, EvidenceBundle
 from recall.control_plane import ControlPlane
 from recall.current_state import MAX_CURRENT_STATE_RECORDS
 from recall.embeddings import Embedder, embedding_profile_id
@@ -600,7 +600,7 @@ class _ServingBackend:
     registry: StoreRegistry | None
     embedder: Embedder
     answer_provider: object
-    answer_profile: str
+    answer_profile: AnswerProfile
     proof_provider: object
     generation_mode: bool
     pinned_generation_id: str | None
@@ -2204,7 +2204,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                     graph_expansion=graph_expansion.replace("-", "_"),
                     as_of=as_of_instant,
                     answer_provider=state.get("answer_provider"),
-                    answer_profile=str(state.get("answer_profile", "dated")),
+                    answer_profile=cast(AnswerProfile, state.get("answer_profile", "dated")),
                     policy=_trust_policy_for(state),
                     security_policy=state.get("source_security_policy"),
                     access_context=_access_context(state, store),
