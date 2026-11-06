@@ -13,6 +13,7 @@ from recall.semantic_graph._build import (
 )
 from recall.semantic_graph._model import (
     ENTITY_KINDS,
+    LEGACY_GRAPH_SCHEMA_VERSION as LEGACY_GRAPH_SCHEMA_VERSION,
     RELATION_KINDS,
     RELATION_STATUSES,
     SEMANTIC_GRAPH_SCHEMA_VERSION as SEMANTIC_GRAPH_SCHEMA_VERSION,
@@ -28,6 +29,7 @@ from recall.semantic_graph._model import (
     SemanticGraphStore as SemanticGraphStore,
     SemanticMention,
     SemanticRelation,
+    marker_schema_version as marker_schema_version,
     normalize_entity_name,
     relation_coverage,
 )

@@ -16,9 +16,10 @@ from recall.semantic_graph._model import (
     SemanticGraphProjection,
     SemanticMention,
     SemanticRelation,
+    _diagnostic,
     _graph_identity,
-    _identity,
     _relation_temporal_fields,
+    marker_schema_version,
     _thaw,
 )
 
@@ -48,6 +49,9 @@ def read_graph_readiness(conn: Any, tenant_id: str, generation_id: str) -> Graph
             for field in counts
             for value in (marker.get(field),)
         )
+        # Written by a newer builder (this code was rolled back): this code cannot reproduce
+        # its ids, so it is not ready here rather than served under a version it does not know.
+        or marker_schema_version(marker) > SEMANTIC_GRAPH_SCHEMA_VERSION
     ):
         return GraphReadiness(
             ready=False,
@@ -71,6 +75,7 @@ def read_graph_readiness(conn: Any, tenant_id: str, generation_id: str) -> Graph
         mention_count=int(marker["mention_count"]),
         relation_count=int(marker["relation_count"]),
         diagnostic_count=int(marker["diagnostic_count"]),
+        schema_version=marker_schema_version(marker),
     )
 
 
@@ -193,6 +198,7 @@ def _load_relation_rows(
     *,
     tenant_id: str,
     generation_id: str,
+    schema_version: int,
 ) -> tuple[tuple[SemanticRelation, ...], tuple[SemanticGraphDiagnostic, ...]]:
     """Decode persisted relation rows and retain diagnostics for invalid rows."""
     loaded_relations: list[SemanticRelation] = []
@@ -203,23 +209,14 @@ def _load_relation_rows(
             # A relation whose evidence rows are gone cannot satisfy the dataclass invariant.
             relation_id = str(row[0])
             load_diagnostics.append(
-                SemanticGraphDiagnostic(
-                    id=_identity(
-                        "diagnostic",
-                        {
-                            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                            "tenant_id": tenant_id,
-                            "generation_id": generation_id,
-                            "kind": "missing_evidence",
-                            "reference": relation_id,
-                        },
-                    ),
+                _diagnostic(
                     tenant_id=tenant_id,
                     generation_id=generation_id,
                     kind="missing_evidence",
                     reference=relation_id,
                     message=f"relation {relation_id} has no surviving evidence rows",
                     relation_ids=(relation_id,),
+                    schema_version=schema_version,
                 )
             )
             continue
@@ -229,23 +226,14 @@ def _load_relation_rows(
         except ValueError as exc:
             relation_id = str(row[0])
             load_diagnostics.append(
-                SemanticGraphDiagnostic(
-                    id=_identity(
-                        "diagnostic",
-                        {
-                            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                            "tenant_id": tenant_id,
-                            "generation_id": generation_id,
-                            "kind": "invalid_relation",
-                            "reference": relation_id,
-                            "value": repr(relation_metadata),
-                        },
-                    ),
+                _diagnostic(
                     tenant_id=tenant_id,
                     generation_id=generation_id,
                     kind="invalid_relation",
                     reference=relation_id,
                     message=str(exc),
+                    identity={"value": repr(relation_metadata)},
+                    schema_version=schema_version,
                 )
             )
             continue
@@ -346,10 +334,20 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
         )
         for row in mention_rows
     )
+    # Stamped with the version the graph was BUILT with, so its fingerprint still matches the
+    # marker after a builder bump: an older graph keeps serving until it is rebuilt. A marker
+    # from a newer builder gets this code's version, so its fingerprint fails, as before. Rows
+    # with no marker at all (written, marker not yet recorded) are this code's own.
+    schema_version = (
+        min(marker_schema_version(marker), SEMANTIC_GRAPH_SCHEMA_VERSION)
+        if isinstance(marker, dict)
+        else SEMANTIC_GRAPH_SCHEMA_VERSION
+    )
     relations, load_diagnostics = _load_relation_rows(
         relation_rows,
         tenant_id=tenant_id,
         generation_id=generation_id,
+        schema_version=schema_version,
     )
     diagnostics = tuple(
         SemanticGraphDiagnostic(
@@ -374,6 +372,7 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
         # A marker without a graph id is the legacy form: derive the id the builder would have,
         # from the same recipe, so the two cannot drift.
         else _graph_identity(
+            schema_version=schema_version,
             tenant_id=tenant_id,
             generation_id=generation_id,
             pipeline_fingerprint=generation_row[0] if generation_row else None,
@@ -385,7 +384,7 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
         )
     )
     return SemanticGraphProjection(
-        schema_version=SEMANTIC_GRAPH_SCHEMA_VERSION,
+        schema_version=schema_version,
         graph_id=graph_id,
         tenant_id=tenant_id,
         generation_id=generation_id,

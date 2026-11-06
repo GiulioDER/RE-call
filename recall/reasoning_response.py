@@ -19,6 +19,7 @@ from typing import Any, Literal, cast, get_args
 
 from recall.evidence import (
     ANSWER_PROFILES,
+    AnswerProfile,
     BundleDecision,
     EvidenceBundle,
     EvidenceValidationError,
@@ -122,7 +123,7 @@ class ReasoningDiagnostics:
     performance: Mapping[str, object] = dataclass_field(default_factory=dict)
     #: Which answer prompt produced the answer, so an audit of a response can tell the profiles apart.
     #: ``plain`` when unrecorded: every response serialized before this field existed was plain.
-    answer_profile: str = "plain"
+    answer_profile: AnswerProfile = "plain"
     #: ``dated-premise`` only: the evidence chunk ids `recall.evidence.stale_premise_notice` handed
     #: the reader, and whether they became the citations of a correction the reader left uncited.
     premise_notice: tuple[str, ...] = ()

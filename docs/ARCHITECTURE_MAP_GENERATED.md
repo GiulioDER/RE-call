@@ -9,7 +9,7 @@ design violation.
 
 Packages: `recall`, `recall_mcp`, `recall_agent`, `recall_hooks`, `recall_interop`, `recall_consistency`
 Modules: 360
-Cross package edges: 389
+Cross package edges: 390
 
 ## Highest fan in modules
 
@@ -87,12 +87,12 @@ Cross package edges: 389
 | 14 | `recall.cli_commands.provenance_cmd` |
 | 14 | `recall.doctor` |
 | 14 | `recall.eval.promotion.__main__` |
+| 14 | `recall_mcp.reasoning_api` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.lite.refresh` |
 | 13 | `recall.reasoning` |
 | 13 | `recall_mcp.assistant` |
 | 13 | `recall_mcp.desktop_ingest` |
-| 13 | `recall_mcp.reasoning_api` |
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.desktop.ui` |
 | 12 | `recall.eval.harness` |
@@ -315,6 +315,7 @@ They are observations, not automatic failures.
 | `recall_mcp.reasoning_api` | `recall.answer_provider` |
 | `recall_mcp.reasoning_api` | `recall.calibration` |
 | `recall_mcp.reasoning_api` | `recall.embeddings` |
+| `recall_mcp.reasoning_api` | `recall.evidence` |
 | `recall_mcp.reasoning_api` | `recall.query_class` |
 | `recall_mcp.reasoning_api` | `recall.reasoning` |
 | `recall_mcp.reasoning_api` | `recall.reasoning_planner` |
@@ -844,7 +845,7 @@ They are observations, not automatic failures.
 | `recall_mcp.provenance` | 19 | 147 |
 | `recall_mcp.query_construction_api` | 15 | 149 |
 | `recall_mcp.reasoning_admin` | 6 | 147 |
-| `recall_mcp.reasoning_api` | 13 | 167 |
+| `recall_mcp.reasoning_api` | 14 | 167 |
 | `recall_mcp.reasoning_common` | 4 | 128 |
 | `recall_mcp.reasoning_diagnostics` | 15 | 142 |
 | `recall_mcp.reasoning_engine` | 23 | 151 |

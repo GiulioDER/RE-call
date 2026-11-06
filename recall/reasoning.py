@@ -13,6 +13,7 @@ from typing import Any, Literal, Protocol
 
 from recall.evidence import (
     ANSWER_PROFILES,
+    AnswerProfile,
     AnswerEnvelope,
     EvidenceBundle,
     EvidencePolicy,
@@ -199,7 +200,7 @@ class ReasoningRequest:
     #: The answer prompt `_answer_from_evidence` renders: ``dated`` (the default since 2026-09-29,
     #: `recall.evidence.DATED_READER_CONTRACT`), whose question date is ``as_of`` when the caller
     #: pinned one and the moment of the call otherwise, or the ``plain`` opt-out.
-    answer_profile: str = "dated"
+    answer_profile: AnswerProfile = "dated"
     _context: _ReasoningRequestContext = dataclass_field(
         default_factory=_ReasoningRequestContext,
         repr=False,

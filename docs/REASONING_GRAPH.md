@@ -143,6 +143,14 @@ every nonempty query, abstains with `GRAPH_NOT_READY` until an operator runs:
 recall graph rebuild --generation <generation_id>
 ```
 
+The generation marker records the graph schema version the graph was built with. A graph built by
+an older builder still serves, under the version it was built with, and the server logs that it
+wants a rebuild; `recall graph rebuild` replaces it with the current builder's graph. Validating a
+generation whose graph an older builder wrote (an upgrade between `recall generation build` and
+`recall generation validate`) rebuilds the graph in the same transaction instead of failing the
+generation. The other direction is refused: a graph a newer builder wrote is not ready for older
+code, and validating it fails, so after a rollback run `recall graph rebuild` with the older code.
+
 Graph expansion defaults to `auto` on public reasoning surfaces. It selects bounded `one_hop` for
 every nonempty query. The MCP `one_hop` path now follows the benchmark shaped ordering:
 `hybrid top 20 -> graph expansion from top 8 -> score all bounded candidates -> protect the direct

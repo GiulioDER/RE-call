@@ -27,6 +27,7 @@ from recall.semantic_graph._model import (
     SemanticMention,
     SemanticRelation,
     _EntityBuildResult,
+    _diagnostic,
     _graph_identity,
     _identity,
     _parse_temporal_value,
@@ -344,23 +345,13 @@ def _discover_entities(
                 candidates = [get_entity(canonical, "unknown", "metadata")]
             if len(candidates) != 1:
                 diagnostics.append(
-                    SemanticGraphDiagnostic(
-                        id=_identity(
-                            "diagnostic",
-                            {
-                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                                "tenant_id": tenant_id,
-                                "generation_id": generation_id,
-                                "kind": "ambiguous_entity",
-                                "reference": normalize_entity_name(alias),
-                                "canonical": canonical_key,
-                            },
-                        ),
+                    _diagnostic(
                         tenant_id=tenant_id,
                         generation_id=generation_id,
                         kind="ambiguous_entity",
                         reference=normalize_entity_name(alias),
                         message="entity alias resolves to multiple canonical entities",
+                        identity={"canonical": canonical_key},
                         entity_ids=tuple(sorted(entity.id for entity in candidates)),
                     )
                 )
@@ -377,17 +368,7 @@ def _discover_entities(
     }
     for normalized in sorted(ambiguous_names):
         diagnostics.append(
-            SemanticGraphDiagnostic(
-                id=_identity(
-                    "diagnostic",
-                    {
-                        "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                        "tenant_id": tenant_id,
-                        "generation_id": generation_id,
-                        "kind": "ambiguous_entity",
-                        "reference": normalized,
-                    },
-                ),
+            _diagnostic(
                 tenant_id=tenant_id,
                 generation_id=generation_id,
                 kind="ambiguous_entity",
@@ -473,23 +454,13 @@ def _decode_explicit_relation(
         or not isinstance(subject, str)
         or not isinstance(object_value, str)
     ):
-        return SemanticGraphDiagnostic(
-            id=_identity(
-                "diagnostic",
-                {
-                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                    "tenant_id": tenant_id,
-                    "generation_id": generation_id,
-                    "kind": "invalid_relation",
-                    "reference": chunk.id,
-                    "value": raw,
-                },
-            ),
+        return _diagnostic(
             tenant_id=tenant_id,
             generation_id=generation_id,
             kind="invalid_relation",
             reference=chunk.id,
             message="relation metadata must name a supported relation and two strings",
+            identity={"value": raw},
         )
     confidence_value = raw.get("confidence", 1.0)
     if (
@@ -498,24 +469,13 @@ def _decode_explicit_relation(
         or not math.isfinite(confidence_value)
         or not 0.0 <= confidence_value <= 1.0
     ):
-        return SemanticGraphDiagnostic(
-            id=_identity(
-                "diagnostic",
-                {
-                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                    "tenant_id": tenant_id,
-                    "generation_id": generation_id,
-                    "kind": "invalid_relation",
-                    "reference": chunk.id,
-                    "field": "confidence",
-                    "value": repr(confidence_value),
-                },
-            ),
+        return _diagnostic(
             tenant_id=tenant_id,
             generation_id=generation_id,
             kind="invalid_relation",
             reference=chunk.id,
             message="relation confidence must be a finite number between 0.0 and 1.0",
+            identity={"field": "confidence", "value": repr(confidence_value)},
         )
     subject_key = normalize_entity_name(subject)
     object_key = normalize_entity_name(object_value)
@@ -530,19 +490,7 @@ def _decode_explicit_relation(
         subject_entity = None
         object_entity = None
     if subject_entity is None or object_entity is None:
-        return SemanticGraphDiagnostic(
-            id=_identity(
-                "diagnostic",
-                {
-                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                    "tenant_id": tenant_id,
-                    "generation_id": generation_id,
-                    "kind": "missing_evidence",
-                    "reference": chunk.id,
-                    "subject": subject,
-                    "object": object_value,
-                },
-            ),
+        return _diagnostic(
             tenant_id=tenant_id,
             generation_id=generation_id,
             kind="missing_evidence",
@@ -551,28 +499,18 @@ def _decode_explicit_relation(
                 "relation endpoints must be mentioned by the supporting chunk or "
                 "resolve to a unique file"
             ),
+            identity={"subject": subject, "object": object_value},
         )
     try:
         effective_at, valid_from, valid_until = _relation_temporal_fields(raw)
     except ValueError as exc:
-        return SemanticGraphDiagnostic(
-            id=_identity(
-                "diagnostic",
-                {
-                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                    "tenant_id": tenant_id,
-                    "generation_id": generation_id,
-                    "kind": "invalid_relation",
-                    "reference": chunk.id,
-                    "field": "temporal",
-                    "value": repr(raw),
-                },
-            ),
+        return _diagnostic(
             tenant_id=tenant_id,
             generation_id=generation_id,
             kind="invalid_relation",
             reference=chunk.id,
             message=str(exc),
+            identity={"field": "temporal", "value": repr(raw)},
         )
     uncertainty = raw.get("uncertainty", ())
     if (
@@ -580,24 +518,13 @@ def _decode_explicit_relation(
         or isinstance(uncertainty, (str, bytes, bytearray))
         or not all(isinstance(item, str) for item in uncertainty)
     ):
-        return SemanticGraphDiagnostic(
-            id=_identity(
-                "diagnostic",
-                {
-                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                    "tenant_id": tenant_id,
-                    "generation_id": generation_id,
-                    "kind": "invalid_relation",
-                    "reference": chunk.id,
-                    "field": "uncertainty",
-                    "value": repr(uncertainty),
-                },
-            ),
+        return _diagnostic(
             tenant_id=tenant_id,
             generation_id=generation_id,
             kind="invalid_relation",
             reference=chunk.id,
             message="relation uncertainty must be a sequence of strings",
+            identity={"field": "uncertainty", "value": repr(uncertainty)},
         )
     structural_type = raw.get("structural_type")
     relation_id = _identity(
@@ -705,23 +632,13 @@ def build_semantic_graph(
             if kind != "resolved" or len(target_sources) != 1:
                 if kind == "ambiguous" or len(target_sources) > 1:
                     diagnostics.append(
-                        SemanticGraphDiagnostic(
-                            id=_identity(
-                                "diagnostic",
-                                {
-                                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                                    "tenant_id": tenant_id,
-                                    "generation_id": generation_id,
-                                    "kind": "ambiguous_entity",
-                                    "reference": target,
-                                    "source": chunk.source,
-                                },
-                            ),
+                        _diagnostic(
                             tenant_id=tenant_id,
                             generation_id=generation_id,
                             kind="ambiguous_entity",
                             reference=target,
                             message="supersession target resolves to multiple files",
+                            identity={"source": chunk.source},
                         )
                     )
                 continue
@@ -737,23 +654,13 @@ def build_semantic_graph(
                 effective_at, valid_from, valid_until = _relation_temporal_fields(raw_temporal)
             except ValueError as exc:
                 diagnostics.append(
-                    SemanticGraphDiagnostic(
-                        id=_identity(
-                            "diagnostic",
-                            {
-                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                                "tenant_id": tenant_id,
-                                "generation_id": generation_id,
-                                "kind": "invalid_relation",
-                                "reference": chunk.id,
-                                "value": target,
-                            },
-                        ),
+                    _diagnostic(
                         tenant_id=tenant_id,
                         generation_id=generation_id,
                         kind="invalid_relation",
                         reference=chunk.id,
                         message=str(exc),
+                        identity={"value": target},
                     )
                 )
                 continue
@@ -814,23 +721,13 @@ def build_semantic_graph(
             dependencies = dependencies_from_metadata(chunk.metadata)
         except ValueError as exc:
             diagnostics.append(
-                SemanticGraphDiagnostic(
-                    id=_identity(
-                        "diagnostic",
-                        {
-                            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                            "tenant_id": tenant_id,
-                            "generation_id": generation_id,
-                            "kind": "invalid_relation",
-                            "reference": chunk.id,
-                            "field": "depends_on",
-                        },
-                    ),
+                _diagnostic(
                     tenant_id=tenant_id,
                     generation_id=generation_id,
                     kind="invalid_relation",
                     reference=chunk.id,
                     message=str(exc),
+                    identity={"field": "depends_on"},
                 )
             )
             continue
@@ -844,23 +741,13 @@ def build_semantic_graph(
                     diagnostic_kind = "missing_evidence"
                     message = "dependency target does not resolve to a unique file"
                 diagnostics.append(
-                    SemanticGraphDiagnostic(
-                        id=_identity(
-                            "diagnostic",
-                            {
-                                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                                "tenant_id": tenant_id,
-                                "generation_id": generation_id,
-                                "kind": diagnostic_kind,
-                                "reference": chunk.id,
-                                "target": target,
-                            },
-                        ),
+                    _diagnostic(
                         tenant_id=tenant_id,
                         generation_id=generation_id,
                         kind=diagnostic_kind,
                         reference=chunk.id,
                         message=message,
+                        identity={"target": target},
                     )
                 )
                 continue
@@ -910,23 +797,13 @@ def build_semantic_graph(
             if len(target_sources) != 1:
                 if len(target_sources) > 1:
                     diagnostics.append(
-                        SemanticGraphDiagnostic(
-                            id=_identity(
-                                "diagnostic",
-                                {
-                                    "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                                    "tenant_id": tenant_id,
-                                    "generation_id": generation_id,
-                                    "kind": "ambiguous_entity",
-                                    "reference": target,
-                                    "source": chunk.source,
-                                },
-                            ),
+                        _diagnostic(
                             tenant_id=tenant_id,
                             generation_id=generation_id,
                             kind="ambiguous_entity",
                             reference=target,
                             message="explicit file reference resolves to multiple files",
+                            identity={"source": chunk.source},
                         )
                     )
                 continue
@@ -1017,17 +894,7 @@ def build_semantic_graph(
                 entity_by_key[(normalized, kind)].id for kind in sorted(kinds)
             )
             diagnostics.append(
-                SemanticGraphDiagnostic(
-                    id=_identity(
-                        "diagnostic",
-                        {
-                            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                            "tenant_id": tenant_id,
-                            "generation_id": generation_id,
-                            "kind": "ambiguous_entity",
-                            "reference": normalized,
-                        },
-                    ),
+                _diagnostic(
                     tenant_id=tenant_id,
                     generation_id=generation_id,
                     kind="ambiguous_entity",

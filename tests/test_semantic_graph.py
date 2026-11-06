@@ -1468,7 +1468,7 @@ def test_graph_rerank_combines_structural_features_and_preserves_direct_retrieva
     calibration = Calibration("test", threshold=0.65, scale=0.1)
     structurally_supported = service._GraphCandidate(
         trusted_seed_chunk_ids={"seed-a", "seed-b"},
-        relation_ids={"relation-a", "relation-b"},
+        claim_keys={"relation-a", "relation-b"},
         best_confidence=1.0,
         path_length=1,
     )
@@ -1829,8 +1829,9 @@ def test_active_one_hop_serving_path_exposes_documented_policy_fingerprint(monke
         type("Embedder", (), {"embed_query": lambda self, _: [1.0]})(),
     )
 
+    # v3 since BUG-006 (2026-11-06): corroboration counts distinct claims.
     documented_policy = (
-        "semantic_graph_precision_v2|combined|none|20260825|32|"
+        "semantic_graph_precision_v3|combined|none|20260825|32|"
         "caused,depends_on,references,supersedes,supports|contradicts,same_entity|"
         "rerank=0.60,0.20,0.10,0.10|corroboration_cap=2|"
         "fill_policy=direct_first_fill_missing|fill_slots=5|tail_replacement_margin=off"

@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 import re
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, cast, get_args
 
 from recall.errors import RecallError
 from recall.types import (
@@ -257,7 +257,8 @@ SYSTEM_PROMPT = (
 #: The answer profiles. ``dated`` (the default for `recall_reasoning_query` since 2026-09-29) is
 #: `render_dated_evidence_prompt`; ``plain`` (``RECALL_REASONING_ANSWER_PROFILE=plain``, the opt-out)
 #: is `render_evidence_prompt`, unchanged.
-ANSWER_PROFILES: tuple[str, ...] = ("plain", "dated", "dated-premise")
+AnswerProfile = Literal["plain", "dated", "dated-premise"]
+ANSWER_PROFILES: tuple[AnswerProfile, ...] = get_args(AnswerProfile)
 
 #: The reading instructions the ``dated`` profile appends AFTER the unchanged `SYSTEM_PROMPT`, so
 #: the safety contract (untrusted data, citations, the envelope) still comes first. Library
