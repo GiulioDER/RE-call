@@ -9,9 +9,10 @@ third may contain a transient base64 representation only while a request is in f
 from __future__ import annotations
 
 import base64
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import hashlib
 from io import BytesIO
+from itertools import islice
 import logging
 import math
 import os
@@ -979,7 +980,8 @@ class VoyageMultimodalEmbedder:
         320K-token request cap; an input over that budget alone is sent in a request of its own.
         An input over the 32K-token context is sent unchanged and logged, and the provider
         truncates it. The provider embeds each input on its own, so packing changes no vector.
-        Up to ``max_parallel_requests`` requests are in flight at once.
+        Up to ``max_parallel_requests`` requests are in flight at once; when one fails, the
+        requests not yet sent are cancelled and its error is raised once those in flight end.
         """
         image_pixels: dict[str, int | None] = {}
         prepared = [_fit_voyage_input(item, image_pixels) for item in inputs]
@@ -995,8 +997,27 @@ class VoyageMultimodalEmbedder:
         ]
         if self._max_parallel_requests > 1 and len(requests) > 1:
             workers = min(self._max_parallel_requests, len(requests))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                responses = list(pool.map(self._embed_provider_inputs, requests))
+            # A request is submitted only when a worker is free, so nothing waits in the pool's
+            # queue: a worker that has just failed would otherwise take the next request before
+            # the failure is seen. After a failure no further request is sent; one already in
+            # flight cannot be recalled and is waited for by the shutdown below.
+            pending = iter(enumerate(requests))
+            by_index: dict[int, list[list[float]]] = {}
+            pool = ThreadPoolExecutor(max_workers=workers)
+            try:
+                running = {
+                    pool.submit(self._embed_provider_inputs, request): index
+                    for index, request in islice(pending, workers)
+                }
+                while running:
+                    done, _ = wait(running, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        by_index[running.pop(future)] = future.result()
+                    for index, request in islice(pending, len(done)):
+                        running[pool.submit(self._embed_provider_inputs, request)] = index
+            finally:
+                pool.shutdown(wait=True)
+            responses = [by_index[index] for index in range(len(requests))]
         else:
             responses = [self._embed_provider_inputs(request) for request in requests]
         return [vector for response in responses for vector in response]

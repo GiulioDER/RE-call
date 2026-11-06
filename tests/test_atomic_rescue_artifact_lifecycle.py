@@ -304,3 +304,25 @@ def test_a_published_artifact_directory_takes_the_umask_mode(tmp_path: Path) -> 
     finally:
         os.umask(previous)
     assert stat.S_IMODE(manifest.parent.stat().st_mode) == 0o755
+
+
+def test_the_writer_never_sets_the_process_umask(tmp_path: Path, monkeypatch) -> None:
+    """BUG-001, owner decision 2026-11-06: the staging directory is made with a plain mkdir.
+
+    Invariant: writing an artifact never calls ``os.umask``. Failure mode: reading the umask
+    meant setting it, so for a moment every file another thread created took the wrong mode.
+    Red proof, 2026-11-06, against 12fde1c70 (``_current_umask``), on the Linux test host:
+    ``assert [18, 18] == []``, both umask calls recorded.
+    """
+    calls: list[int] = []
+    real = os.umask
+
+    def spy(mask: int) -> int:
+        calls.append(mask)
+        return real(mask)
+
+    monkeypatch.setattr(os, "umask", spy)
+    manifest = _write(tmp_path / "artifact")
+    assert calls == []
+    assert manifest.is_file()
+    assert [entry.name for entry in tmp_path.iterdir()] == ["artifact"]

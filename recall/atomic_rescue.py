@@ -15,9 +15,9 @@ import json
 import math
 import os
 from pathlib import Path
+import secrets
 import shutil
 import threading
-import tempfile
 import time
 from typing import Any, Callable, Mapping, Sequence
 
@@ -1020,7 +1020,7 @@ def write_atomic_rescue_artifact(
     if root.exists():
         raise FileExistsError(f"atomic rescue artifact directory already exists: {root}")
     root.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=f".{root.name}.", dir=root.parent))
+    staging = _make_staging_directory(root)
     try:
         values = np.ascontiguousarray(matrix, dtype=np.float32)
         if (
@@ -1068,9 +1068,6 @@ def write_atomic_rescue_artifact(
         # before the rename, which Windows refuses while a member is mapped.
         staged = _load_atomic_rescue_artifact(manifest_path)
         del staged
-        # mkdtemp makes the directory 0700, which a serving process running as another user
-        # could not read; give it the mode a plain mkdir would have had.
-        staging.chmod(0o777 & ~_current_umask())
         _flush_directory(staging)
         os.replace(staging, root)
         _flush_directory(root.parent)
@@ -1080,12 +1077,21 @@ def write_atomic_rescue_artifact(
         raise
 
 
-def _current_umask() -> int:
-    """The process umask; reading it means setting it, so it is put straight back."""
+def _make_staging_directory(root: Path) -> Path:
+    """A new, uniquely named sibling of ``root``, created with the mode a plain mkdir gives.
 
-    mask = os.umask(0o022)
-    os.umask(mask)
-    return mask
+    ``tempfile.mkdtemp`` makes it 0700, which a serving process running as another user could
+    not read once it is renamed into place; ``os.mkdir`` applies the umask without reading it.
+    """
+
+    for _ in range(100):
+        candidate = root.parent / f".{root.name}.{secrets.token_hex(8)}"
+        try:
+            os.mkdir(candidate)
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError(f"no free staging directory name beside {root}")
 
 
 def _write_durable(path: Path, text: str) -> None:
