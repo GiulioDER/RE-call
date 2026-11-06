@@ -1587,11 +1587,12 @@ def test_the_first_reasoning_provider_is_always_runnable(monkeypatch):
     assert choices[0].available is True
 
 
-def test_openrouter_reasoning_models_lead_with_gpt_4o_mini():
+def test_openrouter_reasoning_models_lead_with_deepseek_v4_1_flash():
     """The first entry is what a reader gets by pressing Enter, so it must be the safe
     inexpensive default rather than the best or the cheapest."""
     choices = reasoning_model_choices(OPENROUTER_BASE_URL)
-    assert choices[0].value == "openai/gpt-4o-mini"
+    assert choices[0].value == "deepseek/deepseek-v4.1-flash"
+    assert "openai/gpt-4o-mini" not in [c.value for c in choices]
     assert choices[0].available is True
     assert "deepseek/deepseek-chat" in [c.value for c in choices]
     assert "anthropic/claude-sonnet-4.5" in [c.value for c in choices]
@@ -2215,7 +2216,7 @@ def test_choosing_openrouter_and_deepseek_writes_all_four_keys(tmp_path, monkeyp
             "1",              # sparse: fts
             "y",              # reasoning arm enabled
             "2",              # provider: openrouter
-            "2",              # model: deepseek chat, second now that gpt-4o mini leads
+            "2",              # model: deepseek chat, second now that deepseek v4.1 flash leads
             "n",              # scaffold declined
             "n",              # calibrate declined
         ],
