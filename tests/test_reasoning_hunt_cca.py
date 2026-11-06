@@ -320,6 +320,77 @@ def test_bug002_graph_first_failure_reaches_the_provider_boundary(monkeypatch) -
     assert provider_errors == ["semantic graph load failed"]
 
 
+def test_bug101_a_failure_after_expansion_reaches_the_provider_boundary(monkeypatch) -> None:
+    """BUG-101: graph steps after a successful expansion could still end the whole query.
+
+    The BUG-002 handler covered only `_expand_semantic_graph`. The calibration read, the margin
+    read and the context assembly ran after it, unguarded, so a failing margin read (an invalid
+    RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN in a library caller) escaped the transform. Red on the
+    pre-fix tree: the ValueError escaped, so `escaped == ["transform"]`.
+    """
+    escaped: list[str] = []
+
+    def failing_margin() -> Any:
+        raise ValueError("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN must be off, on, or one of ...")
+
+    def fake_retrieve(*_args: Any, **kwargs: Any) -> Any:
+        transform = kwargs["pre_trust_transform"]
+        raw = RetrievalResult(
+            query="q",
+            hits=[
+                ScoredChunk(chunk=_chunk(f"seed{index:02d}", "notes/a.md"), score=0.8, indexed_at=NOW)
+                for index in range(GRAPH_FIRST_CONTEXT_K + 5)
+            ],
+            gap_warning=False,
+            staleness=StalenessReport(False, NOW, timedelta(0), timedelta(days=1)),
+        )
+        try:
+            context = transform(raw)
+        except ValueError:
+            escaped.append("transform")
+        else:
+            assert [hit.chunk.id for hit in context.hits] == [
+                hit.chunk.id for hit in raw.hits[:GRAPH_FIRST_CONTEXT_K]
+            ]
+        raise _Stop
+
+    provider_errors: list[str] = []
+
+    def fake_reason(request: ReasoningRequest) -> str:
+        with pytest.raises(_Stop):
+            request.providers.retriever(request)
+        assert request.providers.graph_expansion_provider is not None
+        try:
+            request.providers.graph_expansion_provider(request, _result())
+        except Exception as exc:  # recorded by type, so the escape assertion is what decides
+            provider_errors.append(type(exc).__name__)
+        return "done"
+
+    monkeypatch.setattr(reasoning_engine, "_provisional_graph_seed_result", lambda raw, *_: raw)
+    monkeypatch.setattr(
+        reasoning_engine,
+        "_expand_semantic_graph",
+        lambda *_args, **_kwargs: SimpleNamespace(scored_candidates=()),
+    )
+    monkeypatch.setattr(reasoning_engine, "_resolve_graph_calibration", lambda *_: None)
+    monkeypatch.setattr(reasoning_engine, "_graph_tail_replacement_margin", failing_margin)
+    monkeypatch.setattr(retrieval_module, "_retrieve_trusted", fake_retrieve)
+    monkeypatch.setattr(reasoning_engine, "reason", fake_reason)
+    store = SimpleNamespace(tenant="acme", generation_id="legacy")
+    assert (
+        service.reasoning_query(
+            store,
+            object(),
+            "What does the plan depend on?",
+            graph_expansion="one_hop",
+            policy=TrustPolicy.development(),
+        )
+        == "done"
+    )
+    assert escaped == []
+    assert provider_errors == ["ValueError"]
+
+
 def test_code001_reuse_audit_recomputes_with_the_configured_shadow_policy(monkeypatch) -> None:
     """CODE-001 (P2): the reuse audit's duplicate payload used the default shadow policy.
 
