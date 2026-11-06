@@ -31,7 +31,7 @@ Cross package edges: 384
 | 164 | `recall.wizard.headless` |
 | 164 | `recall.wizard.state` |
 | 163 | `recall.cli_commands.doctor_cmd` |
-| 162 | `recall.cli_commands.lite_cmd` |
+| 163 | `recall.cli_commands.lite_cmd` |
 | 162 | `recall.doctor` |
 | 159 | `recall.dashboard.config` |
 | 159 | `recall.lite.setup` |
@@ -532,7 +532,7 @@ They are observations, not automatic failures.
 | `recall.cli_commands.idempotency_cmd` | 2 | 39 |
 | `recall.cli_commands.index_search` | 28 | 132 |
 | `recall.cli_commands.lint_check` | 7 | 125 |
-| `recall.cli_commands.lite_cmd` | 10 | 162 |
+| `recall.cli_commands.lite_cmd` | 9 | 163 |
 | `recall.cli_commands.manifest_cmd` | 4 | 112 |
 | `recall.cli_commands.provenance_cmd` | 14 | 138 |
 | `recall.cli_commands.reasoning_cmd` | 11 | 169 |

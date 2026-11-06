@@ -710,6 +710,10 @@ def _setup_with_model_name(project: Path, monkeypatch: pytest.MonkeyPatch) -> tu
         return embedder
 
     monkeypatch.setattr(embeddings, "resolve_embedder", resolve)
+    # Refresh builds through the shared CLI helper (CODE-029), which binds the name at import.
+    from recall.cli_commands import _shared
+
+    monkeypatch.setattr(_shared, "resolve_embedder", resolve)
     return report.store, asked
 
 
@@ -767,7 +771,13 @@ def test_refresh_of_a_store_without_a_recorded_spec_asks_instead_of_crashing(
 
     Red proof, 2026-11-04 on the remote test host: with the `try`/`except ValueError` around `resolve_embedder`
     removed from `recall.cli_commands.lite_cmd._cmd_refresh`, this failed at `pytest.fail` with
-    "unknown embedder: 'org/model-name'"; restored, it passed."""
+    "unknown embedder: 'org/model-name'"; restored, it passed.
+
+    Red proof, 2026-11-06 on the remote test host, after refresh moved to the shared helper (CCA
+    CODE-029, DOC-001): the old checks passed even with the re-wording branch deleted, because the
+    helper's own message also exits with a string. With the re-wording condition in `_cmd_refresh`
+    mutated to `if False:`, the message assertion below failed with the helper's "unknown embedder"
+    text; restored, the file passed (47 tests)."""
     import sqlite3
 
     db, asked = _setup_with_model_name(project, monkeypatch)
@@ -776,11 +786,41 @@ def test_refresh_of_a_store_without_a_recorded_spec_asks_instead_of_crashing(
         conn.execute("DELETE FROM meta WHERE key = 'embedder_spec'")
     conn.close()
     try:
-        code = _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"))
+        with pytest.raises(SystemExit) as stopped:
+            cli_main(["lite", "refresh", "--store", str(db), "--memory", str(project / "memory")])
     except ValueError as exc:
         pytest.fail(f"refresh raised the resolver's error instead of asking: {exc}")
     assert asked == ["org/model-name"], f"refresh never tried the recorded model name: {asked}"
-    assert code == -1, "refresh did not stop with a message"
+    message = stopped.value.code
+    assert isinstance(message, str), f"refresh did not stop with a message: {message!r}"
+    assert "names no embedder" in message and "--embedder" in message, message
+
+
+def test_refresh_builds_its_embedder_through_the_shared_cli_helper(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CODE-029 (second CCA hunt of the first-run code, PR 1211). Invariant: `recall lite refresh`
+    builds its embedder with `recall.cli_commands._shared._make_embedder`, so a change to how every
+    other command translates an unusable embedder reaches refresh too. Failure caught: refresh
+    kept a copy of that translation, which had already drifted once. Target:
+    `recall.cli_commands.lite_cmd._cmd_refresh`.
+
+    Red proof on the remote test host: against the pre-fix `lite_cmd`, which resolved the embedder
+    itself, the shared helper's stand-in is never called and the assertion fails."""
+    from recall.cli_commands import _shared
+
+    db, _asked = _setup_with_model_name(project, monkeypatch)
+    used: list[str] = []
+    real = _shared._make_embedder
+
+    def shared(name: str) -> object:
+        used.append(name)
+        return real(name)
+
+    monkeypatch.setattr(_shared, "_make_embedder", shared)
+    code = _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory"))
+    assert used == ["content-words"], f"refresh did not use the shared helper: {used}"
+    assert code == 0
 
 
 def test_check_is_current_straight_after_setup(project: Path) -> None:
