@@ -417,12 +417,17 @@ class GenerationManager:
         actor: str = "recall-cli",
         environment: str | None = None,
         serving_environment: str | None = None,
+        fact_write_env: Mapping[str, str] | None = None,
     ) -> None:
         if not tenant_id.strip():
             raise ValueError("tenant_id must be non-empty")
         self._dsn = dsn
         self.tenant_id = tenant_id
         self.actor = actor
+        # Where a promote or rollback reads RECALL_FACT_WRITE_DSN when it records stated facts: an
+        # MCP caller passes its runtime environment, which holds secrets os.environ does not (CCA
+        # ENV-001); None is the process environment.
+        self._fact_write_env = fact_write_env
         #: Facts the last `gc` retracted for good; -1 when its retraction failed (the next gc retries).
         self.last_gc_facts_retracted = 0
         #: Facts the last promote or rollback recorded from what the activated generation's memos
@@ -2100,7 +2105,13 @@ class GenerationManager:
         self.last_stated_facts = self._record_stated_facts_after_activation(previous)
         return previous
 
-    def record_stated_facts(self, generation_id: str, *, env: Mapping[str, str] | None = None) -> int:
+    def record_stated_facts(
+        self,
+        generation_id: str,
+        *,
+        env: Mapping[str, str] | None = None,
+        write_env: Mapping[str, str] | None = None,
+    ) -> int:
         """Record the facts the memos of `generation_id` state (`recall.stated_facts`).
 
         Reads that generation's chunks through a `GenerationStore` fixed to it, opened with the
@@ -2115,12 +2126,12 @@ class GenerationManager:
         store = GenerationStore(self._dsn, 1, tenant=self.tenant_id)
         with store:
             store.set_fixed_generation(generation_id)
-            report = reconcile_stated_facts(store, env=env)
+            report = reconcile_stated_facts(store, env=env, write_env=write_env)
         return report.facts_stated if report.enabled else 0
 
     def _record_stated_facts_after_activation(self, generation_id: str) -> int:
         try:
-            return self.record_stated_facts(generation_id)
+            return self.record_stated_facts(generation_id, write_env=self._fact_write_env)
         except Exception:  # BROAD-CATCH: error-translation  # counted, retried by the next activation
             _log.exception("recording the stated facts of %r failed for %r", generation_id, self.tenant_id)
             return -1

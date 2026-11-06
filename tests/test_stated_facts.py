@@ -333,12 +333,20 @@ def test_s4_an_edit_hides_what_the_old_text_stated_and_a_revert_restores_it(stor
     assert listed(store) == ["4512"], f"the revert did not restore the old value: {listed(store)}"
 
 
-def test_s5_a_superseded_memo_states_nothing_until_its_successor_goes(store: LiteStore, folder: Path) -> None:
-    """Node tests/test_stated_facts.py::test_s5_a_superseded_memo_states_nothing_until_its_successor_goes.
+def test_s5_a_superseded_memo_states_nothing_after_its_successor_is_forgotten(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s5_a_superseded_memo_states_nothing_after_its_successor_is_forgotten.
 
-    Spec test 5: memo-level, so a successor stating no fact retires the old memo's fact too, and
-    forgetting the successor brings it back. Red, mutation of `served_sources`: pass
-    `superseded=None` for a lite store. Fails on "a superseded memo's fact is still listed".
+    Spec test 5: memo-level, so a successor stating no fact retires the old memo's fact too.
+    Changed contract (CCA BUG-001, run 20261105T225204Z): this test was written 2026-10-18 and
+    asserted that forgetting the successor brings the old fact back. The owner decided on
+    2026-10-22 (#987) that forget keeps retired what a memo superseded, in both layers; the
+    document layer and applied facts follow it, so stated facts now do too. Withdrawing the
+    successor still gives the fact back (the control below).
+
+    Red, mutation of `served_sources`: pass `superseded=None` for a lite store. Fails on "a
+    superseded memo's fact is still listed". Red against the pre-fix `superseded` (base
+    032c205e4, recall/fact_retraction.py), which admitted a claimant only while the store served
+    it: fails on "forgetting the successor brought the superseded memo's fact back: ['4512']".
     """
     from recall_mcp.lifecycle import forget_memory
 
@@ -351,7 +359,29 @@ def test_s5_a_superseded_memo_states_nothing_until_its_successor_goes(store: Lit
     assert listed(store) == [], f"a superseded memo's fact is still listed: {listed(store)}"
     forget_memory(store, ["note-b.md"])  # type: ignore[arg-type]
     successor.unlink()
-    assert listed(store) == ["4512"], f"forgetting the successor did not restore the fact: {listed(store)}"
+    assert listed(store) == [], f"forgetting the successor brought the superseded memo's fact back: {listed(store)}"
+
+
+def test_s5_control_withdrawing_the_successor_restores_the_fact(store: LiteStore, folder: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s5_control_withdrawing_the_successor_restores_the_fact.
+
+    Control for the changed contract above: a withdrawal voids the successor's claim (#987), so the
+    old memo's stated fact is current again. It passes before and after the BUG-001 fix. Red,
+    mutation of `superseded` in recall/fact_retraction.py (`retires` returning True for every
+    key): fails on "withdrawing the successor did not restore the fact".
+    """
+    from recall_mcp.lifecycle import withdraw_memory
+
+    memo(folder, "door-a.md", facts=[DOOR])
+    refreshed(store, folder)
+    reconcile(store, folder)
+    successor = memo(folder, "note-b.md", body="The front door was rekeyed.", supersedes="door-a.md")
+    refreshed(store, folder)
+    reconcile(store, folder)
+    assert listed(store) == [], f"a superseded memo's fact is still listed: {listed(store)}"
+    withdraw_memory(store, ["note-b.md"])  # type: ignore[arg-type]
+    successor.unlink()
+    assert listed(store) == ["4512"], f"withdrawing the successor did not restore the fact: {listed(store)}"
 
 
 def test_s5w_a_successor_memo_retires_stated_facts_only_inside_its_window(store: LiteStore, folder: Path) -> None:

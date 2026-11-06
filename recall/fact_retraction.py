@@ -45,7 +45,9 @@ def fact_ledger_for(store: object, env: Mapping[str, str] | None = None) -> Any 
 
     A lite store's ledger is in its own file. A PostgreSQL store's is written through the
     controller role (`RECALL_FACT_WRITE_DSN` in `env`), else the store's own DSN, as
-    `recall_mcp.provenance` resolves it.
+    `recall_mcp.provenance` resolves it when `env` is the MCP runtime environment. With no `env`
+    it reads the process environment, which lacks a DSN the server resolved from a secret, so
+    an MCP caller passes its runtime environment.
     """
     import os
 
@@ -378,7 +380,9 @@ def served_sources(
         superseding b, c retires a even when an excluded sibling wins search's single chain.
         Expired intermediates are traversed, excluded intermediates are not. A name two
         roots hold is keyed in the graph by each source (`SupersessionGraph.collided`), and is
-        retired when any of them is: looked up by name, it never was (audit SEC-005).
+        retired when any of them is: looked up by name, it never was (audit SEC-005). A claimant
+        forgotten or pruned still retires through its standing record, admitted by the source the
+        record names, as the document layer keeps it retiring; a withdrawn one never claims.
         """
         try:
             # Only admitted memos can retire facts, so with stating off nothing can be retired, and
@@ -404,9 +408,16 @@ def served_sources(
                     continue
                 claims[key] = graph.live_claimants(key)
                 pending.extend(claimant for claimant in claims[key] if claimant not in claims)
-            claimants = resolved_names(
-                frozenset(claimant for group in claims.values() for claimant in group)
-            )
+            wanted = frozenset(claimant for group in claims.values() for claimant in group)
+            claimants = resolved_names(wanted)
+            # A claimant the store no longer serves is a memo forgotten or pruned whose record
+            # still stands in the graph; forget keeps retired what it retired (owner decision
+            # 2026-10-22), so it is admitted by its record's source (CCA BUG-001).
+            unserved = sorted(name for name in wanted if not claimants.get(name))
+            if unserved:
+                with pinned():
+                    recorded = store.recorded_sources_for_identifiers(unserved)
+                claimants = {**claimants, **{name: list(values) for name, values in recorded.items() if values}}
             # Keep the graph's canonical keys, including source-qualified copies. Admission
             # must hold for every source a key resolves to, so ambiguous authority retires nothing.
             admitted = frozenset(
