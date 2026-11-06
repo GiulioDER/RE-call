@@ -18,7 +18,7 @@ already is, so none of that code changes:
   plus the store's 0.25 boost for a matching number. The counts
   come from FTS5's own index (`fts5vocab`), so stemming is the tokenizer's on both sides. Measured
   2026-10-07 on the memory corpus: BM25 agreed with Postgres on 0.40 of the keyword top 10 and
-  0.62 of the fused top 5 (recall-lab `d2980fe`), which is why this leg copies the formula.
+  0.62 of the fused top 5 (a private measurement), which is why this leg copies the formula.
   Postgres breaks rank ties by physical row order, which no other store can reproduce; this one
   breaks them by chunk id.
 * **Writes.** `replace_sources` keeps `first_indexed_at` across a re-index and also deletes by

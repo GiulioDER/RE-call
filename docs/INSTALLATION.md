@@ -8,7 +8,7 @@ an existing setup.
 
 | Goal | Command or guide |
 |---|---|
-| Keep one project's memory in a local file | [Install Lite from source](LITE.md), then `recall setup --lite --memory ./notes` |
+| Keep one project's memory in a local file | [Install Lite](LITE.md) (0.15.0 or later), then `recall setup --lite --memory ./notes` |
 | See the PostgreSQL demo | `pip install "recall-rag[fastembed]"` then `recall quickstart` |
 | Install your own PostgreSQL corpus | `pip install "recall-rag[fastembed]"` then `recall setup` |
 | Provision from a reviewed JSON file | `recall wizard --headless --config wizard.json` |
@@ -27,8 +27,8 @@ install the unrelated PyPI package named `recall`.
 - Docker, if you want RE-call to start PostgreSQL for you, including for the bundled quickstart
   (`recall quickstart --existing-dsn <dsn>` uses an existing PostgreSQL with pgvector instead)
 
-The Lite path uses SQLite on a local disk and needs neither PostgreSQL nor Docker. It currently
-requires a source installation with Git: the published `0.14.0` wheel predates Lite.
+The Lite path uses SQLite on a local disk and needs neither PostgreSQL nor Docker. It ships in
+the PyPI wheel from `0.15.0`; earlier wheels do not contain it.
 
 The default `fastembed` extra provides a local embedding backend. Hosted alternatives are available
 through the `voyage` and `openai` extras. Optional retrieval and integration extras are listed in
@@ -36,8 +36,8 @@ the [dependency guide](DEPENDENCIES.md).
 
 ## Local memory in one file
 
-Use [the Lite guide](LITE.md) for source installation, client wiring, refresh, upgrades, and backup
-and restore. After installing that build, run from your own project:
+Use [the Lite guide](LITE.md) for installation, client wiring, refresh, upgrades, and backup
+and restore. After installing 0.15.0 or later, run from your own project:
 
 ```bash
 recall setup --lite --memory ./notes
@@ -66,7 +66,7 @@ not guarantee certification. The CLI does not inherit the server's registered en
 setup's printed settings before CLI searches and diagnostics.
 
 Lite supports one project on one machine. Generations, multi-tenant serving, and authentication
-require PostgreSQL. The [Lite guide](LITE.md) explains refresh limits, write queues, and the source
+require PostgreSQL. The [Lite guide](LITE.md) explains refresh limits, write queues, and the
 update routine. Keep backups of both the original memos and the SQLite store, including fact
 ledger data; stop clients before making a file copy.
 
@@ -189,7 +189,7 @@ Never commit passwords or API keys to MCP configuration, `.env` files, or the re
 
 ## Integration setup
 
-The package installs the core CLI and Python API. Lite source builds use the client wiring above;
+The package installs the core CLI and Python API. Lite installs use the client wiring above;
 the following package commands and automatic installer refer to the PostgreSQL path:
 
 | Integration | Extra and follow-up |

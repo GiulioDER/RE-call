@@ -119,7 +119,7 @@ class RetrievalProfile:
 #: a 16-vCPU idle reference host, so no number here is claimed to be tuned to measured throughput.
 #: `RECALL_SEARCH_CONCURRENCY` / `RECALL_SEARCH_QUEUE` override them per deployment.
 #:
-#: `paged_returned_k=20` on the four local profiles is PI-3's measured knee (recall-lab, 2026-09-29):
+#: `paged_returned_k=20` on the four local profiles is the measured knee of a private study (2026-09-29):
 #: on held-out long-PDF questions 20 chunks beat 5 by +0.132 and 30 or 40 added nothing that 20 did
 #: not. It applies only under `RECALL_PAGED_EVIDENCE=on` and only when the client left `k` unset.
 FAST_PROFILE = RetrievalProfile(

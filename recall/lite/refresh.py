@@ -17,7 +17,7 @@ the same ideas map onto less machinery:
 
 The trigger lives in the MCP server (`recall_mcp.lite_refresh`), because it is the reader that runs
 exactly when somebody may search; the CLI search, `recall doctor` and the dashboard also read the
-store and do not refresh it. `recall lite refresh` is the same call for a person or a scheduler. Design: recall-lab `research/designs/2026-10-12-lite-auto-refresh.md`.
+store and do not refresh it. `recall lite refresh` is the same call for a person or a scheduler. The design record (2026-10-12) is private.
 
 A memo folder may contain the store itself. Its files never enter a snapshot because the indexer's
 default walk never reads them: the state file is `.json`, which `recall.index` excludes by default,

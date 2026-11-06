@@ -5,7 +5,7 @@ template, while this file records the operational rationale behind each group.
 
 ## Lite store and maintenance
 
-See [LITE.md](LITE.md) for source installation, client configuration, updates, and backup and restore.
+See [LITE.md](LITE.md) for installation, client configuration, updates, and backup and restore.
 Lite setup prints the absolute SQLite DSN and configured diagnostic commands. The CLI does not
 read the MCP registration, so apply those settings when running CLI searches or doctor.
 

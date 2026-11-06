@@ -4,7 +4,7 @@ A memo states a fact in its `recall_graph` frontmatter (or through `recall_remem
 fact's key is the ledger's conflict key: namespace, subject, predicate and context, compared exactly
 (`recall.provenance_controller.fact_conflict_key`). Two memos about one slot conflict only when their
 writer spelled the key the same way, and a conflict is `contested` until a `supersedes:` settles it.
-Measured on MemoryAgentBench FactConsolidation (recall-lab WK-1 to WK-3, 2026-10-23): with declared
+Measured on MemoryAgentBench FactConsolidation (the maintainer's private study, 2026-10-23): with declared
 keys and edges RE-call's ledger answers at the dataset's ceiling, gpt-4o-mini extracting keys from the
 prose afterwards could not keep them consistent, and a capable writer declaring keys as it wrote,
 after looking up its own earlier keys by the subject it meant, matched the ceiling.

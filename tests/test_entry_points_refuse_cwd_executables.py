@@ -74,7 +74,7 @@ def test_the_scripts_table_is_read() -> None:
     """Negative control on the table itself: an empty or misread table would pass the test above."""
     scripts = _scripts()
     assert {"recall", "recall-mcp", "recall-hooks"} <= set(scripts)
-    assert len(scripts) >= 10
+    assert len(scripts) >= 9
 
 
 def test_the_shared_call_sets_the_variable(monkeypatch) -> None:

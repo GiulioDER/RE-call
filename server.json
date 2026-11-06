@@ -8,19 +8,19 @@
     "url": "https://github.com/GiulioDER/RE-call",
     "source": "github"
   },
-  "version": "0.14.0",
+  "version": "0.15.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "recall-rag",
-      "version": "0.14.0",
+      "version": "0.15.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         {
           "type": "named",
           "name": "--from",
-          "value": "recall-rag[mcp,fastembed]==0.14.0"
+          "value": "recall-rag[mcp,fastembed]==0.15.0"
         },
         {
           "type": "positional",
@@ -33,7 +33,7 @@
       "environmentVariables": [
         {
           "name": "RECALL_SERVING_DSN",
-          "description": "PostgreSQL serving DSN for the RE-call memory store.",
+          "description": "The store RE-call reads: a PostgreSQL DSN, or the sqlite:/// address `recall setup --lite` prints for a local Lite store with no database server.",
           "format": "string",
           "isRequired": true,
           "isSecret": true,

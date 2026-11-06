@@ -6,8 +6,8 @@ question the corpus cannot answer is refused rather than answered from the neare
 
 ## Install for Claude Code
 
-For a local SQLite store, [install Lite from source](../docs/LITE.md) and run
-`recall setup --lite --memory ./notes`. The published `0.14.0` wheel predates Lite. Setup registers
+For a local SQLite store, [install Lite](../docs/LITE.md) (`recall-rag` 0.15.0 or later) and run
+`recall setup --lite --memory ./notes`. Setup registers
 a project server directly; this plugin is optional. If using its server instead, pass
 `--no-register` to setup and use the printed SQLite DSN in the plugin's Database DSN setting. The
 plugin's server has no memo folder setting, so it does not refresh memos by itself.
@@ -70,7 +70,7 @@ wrong table looks exactly like an empty corpus.
 `.recall/memory.db`, indexes and calibrates it, and registers the server for that project by itself,
 so the plugin's own server is optional there. To use the plugin's server instead, run it with
 `--no-register` and paste the `sqlite:///` address it prints as the **Database DSN**; keep table
-`chunks`, tenant `default` and trust mode `strict`. Use the [Lite source install](../docs/LITE.md),
+`chunks`, tenant `default` and trust mode `strict`. Use the [Lite install](../docs/LITE.md),
 then follow its refresh, update, and backup instructions. The plugin's settings have no memo
 folder, so its server does not refresh by itself: run `recall lite refresh --store <file> --memory
 <folder>` after editing memos, or on a schedule.
