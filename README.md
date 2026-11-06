@@ -20,6 +20,10 @@
 </p>
 
 <p align="center">
+  <a href="https://mcprush.com/to/re-call-mcp-memory-server?ref=badge"><img src="https://mcprush.com/badge/re-call-mcp-memory-server/card.svg" alt="RE-call MCP Memory Server MCP server"></a>
+</p>
+
+<p align="center">
   <a href="#what-is-re-call">What it is</a>
   &nbsp;·&nbsp;
   <a href="docs/FOR_AGENTS.md">For agents</a>
