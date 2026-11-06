@@ -284,9 +284,11 @@ def _run_rewrite(args: argparse.Namespace) -> None:
         RejectionLedger,
         apply_rewrite,
         claim_key,
+        claim_keys,
         corpus_proposals,
         default_ledger_path,
         plan_rewrite,
+        shared_stems,
     )
 
     root = Path(args.path)
@@ -363,6 +365,8 @@ def _run_rewrite(args: argparse.Namespace) -> None:
         root, args.glob, on_arbiter_run=lambda run: print(run.summary(), file=sys.stderr)
     )
     ledger_path = default_ledger_path(root if root.is_dir() else root.parent)
+    # Names other memos share keep their folder in a claim's key (`rewrite.claim_key`).
+    shared = shared_stems(root if root.is_dir() else root.parent)
 
     if args.rewrite_cmd == "plan":
         # Read WITHOUT creating the ledger. Opening it for write made `plan` create
@@ -371,11 +375,10 @@ def _run_rewrite(args: argparse.Namespace) -> None:
         # a decision, so a missing ledger simply means nothing has been rejected yet.
         rejected = _rejected_claims(ledger_path)
         for proposal in proposals:
-            claim = claim_key(
-                proposal.proposed_relation, proposal.subject_id, proposal.object_id
-            )
+            keys = claim_keys(proposal.proposed_relation, proposal.subject_id, proposal.object_id, shared)
+            claim = keys[0]
             state = _declared_state(root, proposal)
-            if claim in rejected:
+            if any(key in rejected for key in keys):
                 mark = "REJECTED"
             elif state is not None and state[0] == "declared":
                 # Otherwise an accepted proposal reappears every run, indistinguishable from
@@ -406,7 +409,9 @@ def _run_rewrite(args: argparse.Namespace) -> None:
                     quote = " ".join(str(proposal.metadata.get(key, "")).split())
                     print(f"      {label}: \"{quote[:200]}\"")
             # Printed so a plan from THIS command and a plan from `recall_rewrite_plan` over
-            # MCP name the same thing. Their proposal ids never match; their claim keys do.
+            # MCP name the same thing. Their proposal ids never match; their claim keys do,
+            # except for a memo whose name another memo shares: the MCP key is still the
+            # file-name one, which `--claim` also accepts.
             print(f"      claim {claim}")
         print(f"\n{len(proposals)} proposal(s)")
         print("dry run — nothing written. Declare one with `recall rewrite apply`.")
@@ -418,7 +423,7 @@ def _run_rewrite(args: argparse.Namespace) -> None:
             (
                 p
                 for p in proposals
-                if claim_key(p.proposed_relation, p.subject_id, p.object_id) == wanted
+                if wanted in claim_keys(p.proposed_relation, p.subject_id, p.object_id, shared)
             ),
             None,
         )
@@ -434,7 +439,7 @@ def _run_rewrite(args: argparse.Namespace) -> None:
         raise SystemExit(2)
 
     now = datetime.now(timezone.utc)
-    claim = claim_key(chosen.proposed_relation, chosen.subject_id, chosen.object_id)
+    claim = claim_key(chosen.proposed_relation, chosen.subject_id, chosen.object_id, shared=shared)
 
     if args.rewrite_cmd == "reject":
         with RejectionLedger(ledger_path) as ledger:
@@ -457,7 +462,8 @@ def _run_rewrite(args: argparse.Namespace) -> None:
         # The ledger is consulted HERE, not only under --apply. Skipping it meant the preview
         # of an already rejected claim printed "Re-run with --apply to write this edge", and
         # --apply then refused it: a preview that promises a write the real run declines.
-        if claim in _rejected_claims(ledger_path):
+        rejected = _rejected_claims(ledger_path)
+        if any(key in rejected for key in claim_keys(chosen.proposed_relation, chosen.subject_id, chosen.object_id, shared)):
             print(f"not written: claim {claim} was already rejected by a reviewer")
             raise SystemExit(1)
         print("dry run — nothing written. Re-run with --apply to write this edge.")

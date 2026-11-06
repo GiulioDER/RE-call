@@ -40,7 +40,7 @@ from pathlib import Path
 from recall.confinement import confined
 from recall.errors import RecallError
 from recall.frontmatter import encodable_name
-from recall.rewrite import RejectionLedger, RewriteRefused, claim_key, default_ledger_path
+from recall.rewrite import RejectionLedger, RewriteRefused, claim_keys, default_ledger_path, shared_stems
 from recall.state_dir import make_parent
 
 MIN_QUOTE_CHARS = 20
@@ -223,19 +223,25 @@ class StaleReportQueue:
             raise StaleReportRefused(
                 f"current_quote is not verbatim in {replacing_name} (at least {MIN_QUOTE_CHARS} characters, copied exactly)"
             )
-        key = claim_key("supersedes", stale_name, replacing_name)
+        # A name another memo shares keeps its folder in the key (`rewrite.claim_key`).
+        keys = claim_keys("supersedes", stale_name, replacing_name, shared_stems(root.resolve()))
+        key = keys[0]
         ledger = default_ledger_path(root.resolve()) if ledger_path is None else ledger_path
         if ledger.exists():
             try:
                 with RejectionLedger(ledger) as rejections:
-                    if rejections.is_rejected(key):
+                    if rejections.is_rejected(*keys):
                         raise StaleReportRefused(
                             f"a person already rejected the claim that {replacing_name} supersedes {stale_name}"
                         )
             except RewriteRefused as exc:
                 raise StaleReportRefused(str(exc)) from exc
         stamp = reported_at.isoformat()
-        existing = self.get(key)
+        # A row stored before folders counted keeps its key: the same claim reported again
+        # counts on it rather than opening a second pending row beside it.
+        existing = next((found for k in keys if (found := self.get(k)) is not None), None)
+        if existing is not None:
+            key = existing.claim_key
         if existing is not None and existing.status != "pending":
             raise StaleReportRefused(f"this claim was already {existing.status} by {existing.reviewer_id}")
         if existing is None and self.count("pending") >= max_pending:
