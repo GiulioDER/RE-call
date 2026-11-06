@@ -401,3 +401,75 @@ def test_a_missing_pillow_is_reported_when_the_embedder_is_built(monkeypatch, ca
         for record in caplog.records
         if record.getMessage() == "voyage_multimodal_images_unfitted"
     ] == ["voyage_multimodal_images_unfitted"]
+
+
+def test_bytes_labelled_png_reach_only_the_png_decoder() -> None:
+    """A declared image type limits Pillow to that one decoder (second hunt, SEC-002).
+
+    Invariant: bytes labelled image/png are never opened by another Pillow plugin. Failure mode:
+    ``Image.open`` without ``formats=`` read an EPS header behind a PNG label, so an over-limit
+    EPS reached the resize and with it Ghostscript. Observed through the estimator: an image no
+    allowed decoder reads counts as a whole context. Red proof, 2026-11-06, against the first
+    hunt's module: ``assert 44643 == 32000``, the EPS header's 25M pixels at 560 per token.
+    """
+    eps = b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 5000 5000\n%%EndComments\nshowpage\n%%EOF\n"
+    item = {
+        "content": [
+            {
+                "type": "image_base64",
+                "image_base64": "data:image/png;base64," + base64.b64encode(eps).decode("ascii"),
+            }
+        ]
+    }
+
+    tokens, images = multimodal_module.estimate_voyage_tokens(item, _one_token_per_char)
+
+    assert (tokens, images) == (VOYAGE_MAX_INPUT_TOKENS, 1)
+
+
+class _SlowClient(_Client):
+    """Records how many requests are in flight at once."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        import threading
+
+        self._lock = threading.Lock()
+        self.in_flight = 0
+        self.peak = 0
+
+    def multimodal_embed(self, *, inputs, model, input_type, **_kwargs):
+        import time
+
+        with self._lock:
+            self.in_flight += 1
+            self.peak = max(self.peak, self.in_flight)
+        time.sleep(0.3)
+        with self._lock:
+            self.in_flight -= 1
+            vectors = []
+            for item in inputs:
+                text = item["content"][0]["text"]
+                vectors.append([float(len(text))] + [0.0] * 1023)
+        return SimpleNamespace(embeddings=vectors)
+
+
+def test_parallel_requests_keep_more_than_one_request_in_flight_and_the_order() -> None:
+    """RECALL_VOYAGE_PARALLEL_REQUESTS reaches the multimodal embedder too (PERF-003, ENV-102).
+
+    Invariant: with ``max_parallel_requests=2`` two planned requests are in flight together and
+    the vectors still come back in input order. Failure mode: requests were always sent one
+    after another, whatever the setting. Red proof, 2026-11-06, a mutation of the new
+    ``embed_multimodal`` (the parallel branch disabled, ``if False and ...``): ``assert 1 == 2``
+    on the peak.
+    """
+    client = _SlowClient()
+    embedder = VoyageMultimodalEmbedder(
+        client=client, batch_size=1, token_counter=_one_token_per_char, max_parallel_requests=2
+    )
+    client.peak = 0
+
+    vectors = embedder.embed_passages(["a", "bb", "ccc"])
+
+    assert client.peak == 2
+    assert [vector[0] for vector in vectors] == [1.0, 2.0, 3.0]

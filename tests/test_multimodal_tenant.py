@@ -265,3 +265,114 @@ def test_an_enabled_tenant_refuses_a_root_no_admission_can_use() -> None:
         {"RECALL_MULTIMODAL_ENABLED": "1", "RECALL_MULTIMODAL_OBJECT_ROOT": OBJECT_ROOT}
     )
     assert config.object_root == OBJECT_ROOT
+
+
+# Second CCA hunt of recall/multimodal.py (run 20261106T105829Z). Red proofs, 2026-11-06, each
+# against the pre-fix module (the first hunt's version, master 31320c8d2) with this file
+# otherwise unchanged; each failed in the assertion named in its docstring.
+
+
+@pytest.mark.parametrize(
+    ("object_uri", "object_root"),
+    [
+        ("file://///srv/media/a.png", "file:///srv/media/"),
+        ("file:///%2F%2Fsrv/media/a.png", "file:///srv/media/"),
+        ("file:////server/share/a.png", "file:///"),
+    ],
+)
+def test_a_leading_double_slash_is_refused(object_uri: str, object_root: str) -> None:
+    """normpath folds an empty segment away, so it must be refused first (SEC-101).
+
+    Invariant: an admitted file URI cannot name a UNC host. Failure mode: '///srv' normalised to
+    '/srv', passed containment, and the raw URI was stored, which ``pathlib.Path.from_uri`` maps to
+    ``\\\\srv\\media``. Red proof: every parameter failed with ``Failed: DID NOT RAISE``.
+    """
+    with pytest.raises(MediaValidationError, match="object root"):
+        build_media_ref(
+            PAYLOAD, media_type="image/png", object_uri=object_uri, object_root=object_root
+        )
+
+
+@pytest.mark.parametrize(
+    "root", ["file:///srv/%5Cx/", "s3://b/%2e%2e/x/", "s3://[b/x/"]
+)
+def test_an_enabled_tenant_refuses_a_root_admission_would_refuse(root: str) -> None:
+    """Startup applies admission's own root validation (architect residual of the first hunt).
+
+    Invariant: startup and admission accept the same roots. Failure mode: startup read the raw
+    path, so a root holding '%5C' or an encoded '..' passed it and every admission under it was
+    then refused. Red proof: the first two parameters failed with ``Failed: DID NOT RAISE``; the
+    last raised a bare ``ValueError`` outside ``MediaValidationError``.
+    """
+    with pytest.raises(ValueError) as refused:
+        MultimodalTenantConfig.from_env(
+            {"RECALL_MULTIMODAL_ENABLED": "1", "RECALL_MULTIMODAL_OBJECT_ROOT": root}
+        )
+    assert isinstance(refused.value, MediaValidationError)
+    assert "RECALL_MULTIMODAL_OBJECT_ROOT" in str(refused.value)
+
+
+def test_a_root_fault_is_reported_against_the_root() -> None:
+    """A bad root is named as the fault, not the object (DOC-001, BUG-102).
+
+    Red proof: ``assert 'object_root' in 'object_uri is outside the configured multimodal object
+    root'`` for the bucket-only root, and a bare ``ValueError('Invalid IPv6 URL')`` for the
+    bracketed URI.
+    """
+    with pytest.raises(MediaValidationError) as refused:
+        build_media_ref(
+            PAYLOAD,
+            media_type="image/png",
+            object_uri="s3://bucket/a.png",
+            object_root="s3://bucket",
+        )
+    assert "object_root" in str(refused.value)
+    with pytest.raises(ValueError) as bracketed:
+        build_media_ref(
+            PAYLOAD,
+            media_type="image/png",
+            object_uri="s3://[bucket/x.png",
+            object_root=OBJECT_ROOT,
+        )
+    assert isinstance(bracketed.value, MediaValidationError)
+
+
+def test_an_empty_image_query_is_refused_locally() -> None:
+    """An empty image is refused before any provider request (BUG-104).
+
+    Red proof: ``Failed: DID NOT RAISE``; the empty image was sent as ``data:image/png;base64,``.
+    """
+    with pytest.raises(MediaValidationError, match="empty"):
+        MultimodalQuery(image_bytes=b"", media_type="image/png")
+
+
+def test_a_reference_stores_the_values_it_validated() -> None:
+    """Padding is stripped from the stored URI and tenant, as the digest is normalised (DAT-101).
+
+    Invariant: a reference built directly authorizes its own tenant. Failure mode: a padded
+    tenant_id was kept, so ``project_media_evidence`` denied the reference its own tenant. Red
+    proof: ``assert '  s3://recall-multimodal/media/a.png ' ==
+    's3://recall-multimodal/media/a.png'``.
+    """
+    from recall.multimodal import MediaObjectRef
+
+    ref = MediaObjectRef(
+        content_digest=hashlib.sha256(PAYLOAD).hexdigest(),
+        media_type="image/png",
+        byte_size=len(PAYLOAD),
+        object_uri="  s3://recall-multimodal/media/a.png ",
+        tenant_id=" re-call-multimodal ",
+    )
+    assert ref.object_uri == "s3://recall-multimodal/media/a.png"
+    assert ref.tenant_id == "re-call-multimodal"
+    project_media_evidence(ref, requester_tenant="re-call-multimodal", principal="tester")
+
+
+def test_an_out_of_range_bound_names_its_variable_and_ceiling() -> None:
+    """The refusal says which variable is wrong and what the limit is (ENV-101).
+
+    Red proof: ``Regex pattern did not match``; the message was 'multimodal max_items is outside
+    the bounded limit'.
+    """
+    with pytest.raises(MediaValidationError, match=r"RECALL_MULTIMODAL_MAX_ITEMS is 99.*1 and 20"):
+        MultimodalTenantConfig(max_items=99)

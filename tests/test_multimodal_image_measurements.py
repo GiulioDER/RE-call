@@ -26,9 +26,9 @@ def _measurements(monkeypatch):
         calls["decode"] += 1
         return split(url)
 
-    def probe(payload):
+    def probe(payload, *image_format):
         calls["pixels"] += 1
-        return pixels(payload)
+        return pixels(payload, *image_format)
 
     monkeypatch.setattr(multimodal, "_split_data_url", decode)
     monkeypatch.setattr(multimodal, "_image_pixels", probe)
