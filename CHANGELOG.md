@@ -13,10 +13,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 RE-call 0.15.0 adds Lite, a local store in one SQLite file that needs no Docker and no database
 server, and ships it in the PyPI wheel for the first time. It also adds the local memory dashboard,
 audit records looked up by exact key, stated facts in the fact ledger and the `recall withdraw`
-erasure counterpart, and it carries the fixes of pre-release audits of Lite, the MCP server and
-its authentication, the fact ledger, provenance, the dashboard, the hooks and the first-run code.
-The project license is now the AGPL-3.0 with a commercial license beside it (see Changed). Several
-changes are breaking; read the upgrade notes before upgrading a serving host.
+erasure counterpart, and it carries the fixes of pre-release audits of Lite, the MCP server and its
+authentication, the fact ledger, provenance, the dashboard, the hooks and the first-run code. The
+code audits run during this release recorded at least 1,068 bugs in the shipped packages whose fixes
+are in it (95 rated P1, the highest severity, 668 P2 and 305 P3), and 190 of the pull requests
+merged since 0.14.0 are fixes. The project license is now the AGPL-3.0 with a commercial license
+beside it (see Changed). Several changes are breaking; read the upgrade notes before upgrading a
+serving host.
 
 ### Upgrade notes
 
