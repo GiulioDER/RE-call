@@ -244,7 +244,7 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
         "generation dense search, exact or hnsw",
         parse_generation_dense_search(None),
     ),
-    EnvironmentSpec("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "Retrieval", "opt in calibrated graph tail replacement: off, on, or 0.05, 0.10, 0.15, 0.20", "off"),
+    EnvironmentSpec("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "Retrieval", "opt in calibrated graph tail replacement: off, on (0.05), or 0.05, 0.10, 0.15, 0.20", "off"),
     EnvironmentSpec("RECALL_GRAPH_PRECISION_VARIANT", "Retrieval", "graph precision evaluation variant; an unknown value refuses startup", "combined"),
     EnvironmentSpec("RECALL_GRAPH_RELATION_CONTROL", "Retrieval", "graph evaluation control: none, shuffled or removed", "none"),
     EnvironmentSpec("RECALL_GRAPH_RELATION_CONTROL_SEED", "Retrieval", "integer seed of the shuffled relation control", "20260825"),

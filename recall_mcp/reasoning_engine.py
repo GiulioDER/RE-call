@@ -14,12 +14,15 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from datetime import datetime
 from typing import (
+    Any,
     cast,
 )
 
+from recall._env import truthy
 from recall.answer_provider import OllamaAnswerProvider
 from recall.atomic_rescue import (
     AtomicRescueArtifactError,
@@ -49,6 +52,7 @@ from recall.reasoning import (
     ReasoningRequest,
     ReasoningResponse,
     SemanticGraphExpansionResult,
+    _record_reasoning_metrics,
     reason,
 )
 from recall.reasoning_expansion import (
@@ -79,6 +83,7 @@ from recall.types import (
 from recall_mcp import graph_projection as _graph_projection
 from recall_mcp import reasoning_diagnostics as _reasoning_diagnostics
 from recall_mcp import retrieval as _retrieval
+from recall_mcp import semantic_graph_cache as _semantic_graph_cache
 from recall_mcp.graph_projection import (
     _authorized_graph,
     _combined_graph_policy_fingerprint,
@@ -121,6 +126,8 @@ def _strict_reasoning_refusal(
     tenant_id: str,
     generation: GenerationSelection,
     budget: ReasoningBudget,
+    answer_profile: str,
+    started: float,
 ) -> ReasoningResponse:
     bundle = EvidenceBundle(
         query="",
@@ -158,20 +165,17 @@ def _strict_reasoning_refusal(
         trust_state="refused",
         refusal_reason=refusal.code.value,
         diagnostics=ReasoningDiagnostics(
-            latency_ms=0,
+            latency_ms=int((time.perf_counter() - started) * 1000),
             budget=budget,
             budget_used=None,
             retrieval_stage_ms={},
             generator_invoked=False,
             citations_normalized=False,
+            answer_profile=answer_profile,
         ),
     )
-    METRICS.increment(
-        "recall_reasoning_outcome_total",
-        outcome=response.outcome,
-        trust_state=response.trust_state,
-        refusal_reason=refusal.code.value,
-    )
+    # The same recorder every `reason()` exit uses, so a refusal reaches the latency histogram.
+    _record_reasoning_metrics(response)
     return response
 
 
@@ -260,6 +264,7 @@ def _execute_reasoning_query(
                 .strip()
                 .lower()
             )
+            benchmark_pin = truthy(shadow_values.get("RECALL_BENCHMARK_PIN"))
             shadow_mode = (
                 shadow_values.get("RECALL_SOURCE_CONDITIONING_MODE", "off").strip().lower()
             )
@@ -298,7 +303,12 @@ def _execute_reasoning_query(
             capture_shadow_trace = capture_source_trace or capture_atomic_trace
             leg_audit: dict[str, object] | None = None
             source_admission_audit: dict[str, object] | None = None
-            if performance is None:
+            baseline_span: AbstractContextManager[Any] = (
+                performance.span("baseline_retrieval_ms")
+                if performance is not None
+                else nullcontext()
+            )
+            with baseline_span:
                 executed = _retrieval._retrieve_trusted(
                     store,
                     embedder,
@@ -318,27 +328,6 @@ def _execute_reasoning_query(
                     ),
                     capture_candidate_trace=capture_shadow_trace,
                 )
-            else:
-                with performance.span("baseline_retrieval_ms"):
-                    executed = _retrieval._retrieve_trusted(
-                        store,
-                        embedder,
-                        query,
-                        source,
-                        k,
-                        calibration,
-                        policy,
-                        security_policy=security_policy,
-                        access_context=access_context,
-                        pool_k=GRAPH_FIRST_RETRIEVAL_K if graph_expansion == "one_hop" else None,
-                        pre_trust_transform=(
-                            graph_first_transform if graph_expansion == "one_hop" else None
-                        ),
-                        query_vector_callback=(
-                            capture_retrieval_query_vector if graph_expansion == "one_hop" else None
-                        ),
-                        capture_candidate_trace=capture_shadow_trace,
-                    )
             if performance is not None and _retrieval_leg_benchmark_audit_enabled():
                 if security_policy is not None or access_context is not None:
                     raise ValueError(
@@ -569,8 +558,7 @@ def _execute_reasoning_query(
                 atomic_started = time.perf_counter()
                 benchmark_result = (
                     copy.deepcopy(executed.result)
-                    if shadow_values.get("RECALL_BENCHMARK_PIN", "").strip().lower()
-                    in {"1", "true", "yes", "on"}
+                    if benchmark_pin
                     else None
                 )
                 if atomic_configuration_error:
@@ -608,10 +596,7 @@ def _execute_reasoning_query(
                                     "RECALL_BENCHMARK_ATOMIC_RESCUE_EXPECTED", ""
                                 ).strip()
                                 or None
-                                if shadow_values.get("RECALL_BENCHMARK_PIN", "")
-                                .strip()
-                                .lower()
-                                in {"1", "true", "yes", "on"}
+                                if benchmark_pin
                                 else None
                             ),
                         )
@@ -677,6 +662,14 @@ def _execute_reasoning_query(
         retrieval: TrustedResult,
     ) -> Sequence[InferenceProposal] | ProposalProtocolReport:
         del retrieval
+        if source is not None:
+            # A source scoped graph is built for this request alone (`graph_provider`), so
+            # caching its proposals would only evict the store graph's entry.
+            return tuple(
+                _semantic_graph_cache.deterministic_inference_proposals(
+                    graph, pipeline_id=graph.pipeline_fingerprint or "legacy"
+                )
+            )
         return _cached_deterministic_proposals(
             graph,
             pipeline_id=graph.pipeline_fingerprint or "legacy",
@@ -751,6 +744,7 @@ def _execute_reasoning_query(
         answer_profile=answer_profile,
     )
     request._context.performance = PerformanceTrace()
+    started = time.perf_counter()
     try:
         with performance_trace_scope(request._context.performance):
             return reason(request)
@@ -760,4 +754,6 @@ def _execute_reasoning_query(
             tenant_id=store.tenant,
             generation=generation,
             budget=budget,
+            answer_profile=answer_profile,
+            started=started,
         )

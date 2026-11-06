@@ -40,6 +40,7 @@ from recall.retriever import (
     StructuralExpansionPolicy,
 )
 from recall.source_conditioning import (
+    SOURCE_CONDITIONING_LANES,
     SOURCE_CONDITIONING_SHADOW_POLICIES,
     SourceConditioningArtifactError,
     chunk_identifier_hash,
@@ -53,6 +54,7 @@ from recall.trust_policy import TrustPolicy
 from recall.types import (
     RetrievalResult,
     ScoredChunk,
+    TrustedHit,
     TrustedResult,
 )
 from recall_mcp import factories as _factories
@@ -65,6 +67,7 @@ _log = _get_logger("mcp.service")
 BENCHMARK_RETRIEVAL_LEG_DEPTH = 100
 BENCHMARK_DOCUMENT_EXPANSION_SOURCES = 2
 BENCHMARK_DOCUMENT_EXPANSION_CHUNKS = 8
+BENCHMARK_STRUCTURAL_EXPANSION_RADIUS = 2
 
 
 def _benchmark_audit_enabled(name: str) -> bool:
@@ -210,7 +213,8 @@ def _source_conditioning_shadow_payload(
     """Compute a non-serving source-conditioned selection without exposing candidate data."""
     if policy not in SOURCE_CONDITIONING_SHADOW_POLICIES:
         raise SourceConditioningArtifactError(
-            "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY must be alpha008 or guarded_spare_slot"
+            "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY must be one of "
+            + ", ".join(sorted(SOURCE_CONDITIONING_SHADOW_POLICIES))
         )
     artifact = load_source_conditioning_artifact(artifact_path)
     pipeline_fingerprint = baseline.pipeline_fingerprint
@@ -257,7 +261,7 @@ def _source_conditioning_shadow_payload(
     selected_ids = [str(item["chunk_id"]) for item in selected]
     lane_counts = {
         lane: sum(str(receipt["lane"]) == lane for receipt in receipts)
-        for lane in ("dual_leg", "lexical_dominant")
+        for lane in SOURCE_CONDITIONING_LANES
     }
     return {
         "status": "ok",
@@ -342,18 +346,21 @@ def _benchmark_candidate_rows(hits: Sequence[ScoredChunk]) -> list[dict[str, obj
     return rows
 
 
-def _source_conditioning_reused_audits(
-    candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration],
-    profile: RetrievalProfile,
-) -> tuple[dict[str, object], dict[str, object]]:
-    """Build source conditioning inputs from a main request candidate trace."""
-    raw, trusted, calibration = candidate_trace
-    trusted_by_id = {hit.chunk.id: hit for hit in trusted.hits}
-    raw_ids = {hit.chunk.id for hit in raw.result.hits}
-    if set(trusted_by_id) != raw_ids:
-        raise RuntimeError("reused trust pool changed candidate identity")
+def _trust_pool_payload(
+    hits: Sequence[ScoredChunk],
+    trusted_by_id: Mapping[str, TrustedHit],
+    *,
+    candidate_k: int,
+    pool_limit: int,
+    calibration: Calibration,
+) -> dict[str, object]:
+    """The pre-trust pool with each candidate's verdict, the one shape both audits compare.
+
+    The reuse audit compares a pool built from the request's trace with one fetched again, so
+    the two must come from one builder or a field added to one reads as a parity failure.
+    """
     rows: list[dict[str, object]] = []
-    for rank, hit in enumerate(raw.result.hits, start=1):
+    for rank, hit in enumerate(hits, start=1):
         trusted_hit = trusted_by_id[hit.chunk.id]
         candidate_source, ordinal = _benchmark_candidate_identity(hit)
         rows.append(
@@ -368,20 +375,39 @@ def _source_conditioning_reused_audits(
                 "verdict": trusted_hit.verdict,
             }
         )
+    return {
+        "candidate_k": candidate_k,
+        "pool_limit": pool_limit,
+        "pool_size": len(rows),
+        "threshold": float(calibration.threshold),
+        "scale": float(calibration.scale),
+        "items": rows,
+    }
+
+
+def _source_conditioning_reused_audits(
+    candidate_trace: tuple[RetrievalCandidateTrace, TrustedResult, Calibration],
+    profile: RetrievalProfile,
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Build source conditioning inputs from a main request candidate trace."""
+    raw, trusted, calibration = candidate_trace
+    trusted_by_id = {hit.chunk.id: hit for hit in trusted.hits}
+    raw_ids = {hit.chunk.id for hit in raw.result.hits}
+    if set(trusted_by_id) != raw_ids:
+        raise RuntimeError("reused trust pool changed candidate identity")
     return (
         {
             "depth": profile.candidate_k,
             "dense": _benchmark_candidate_rows(raw.dense),
             "sparse": _benchmark_candidate_rows(raw.sparse),
         },
-        {
-            "candidate_k": profile.candidate_k,
-            "pool_limit": profile.candidate_k * 2,
-            "pool_size": len(rows),
-            "threshold": float(calibration.threshold),
-            "scale": float(calibration.scale),
-            "items": rows,
-        },
+        _trust_pool_payload(
+            raw.result.hits,
+            trusted_by_id,
+            candidate_k=profile.candidate_k,
+            pool_limit=profile.candidate_k * 2,
+            calibration=calibration,
+        ),
     )
 
 
@@ -453,30 +479,13 @@ def _source_admission_benchmark_audit_payload(
     trusted_by_id = {hit.chunk.id: hit for hit in result.hits}
     if set(trusted_by_id) != {hit.chunk.id for hit in captured}:
         raise RuntimeError("source admission trust pool changed candidate identity")
-    rows: list[dict[str, object]] = []
-    for rank, hit in enumerate(captured, start=1):
-        trusted = trusted_by_id[hit.chunk.id]
-        candidate_source, ordinal = _benchmark_candidate_identity(hit)
-        rows.append(
-            {
-                "chunk_id": hit.chunk.id,
-                "source": candidate_source,
-                "ordinal": ordinal,
-                "pool_rank": rank,
-                "text": hit.chunk.text,
-                "cosine": float(hit.score),
-                "confidence": float(trusted.confidence),
-                "verdict": trusted.verdict,
-            }
-        )
-    return {
-        "candidate_k": profile.candidate_k,
-        "pool_limit": pool_limit,
-        "pool_size": len(rows),
-        "threshold": float(active_calibration.threshold),
-        "scale": float(active_calibration.scale),
-        "items": rows,
-    }
+    return _trust_pool_payload(
+        captured,
+        trusted_by_id,
+        candidate_k=profile.candidate_k,
+        pool_limit=pool_limit,
+        calibration=active_calibration,
+    )
 
 
 def _benchmark_bundle_payload(bundle: EvidenceBundle) -> dict[str, object]:
@@ -578,7 +587,7 @@ def _document_expansion_benchmark_audit_payload(
             enabled=True,
             max_sources=BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
             chunks_per_source=BENCHMARK_DOCUMENT_EXPANSION_CHUNKS,
-            radius=2,
+            radius=BENCHMARK_STRUCTURAL_EXPANSION_RADIUS,
             relational_query_only=False,
         ),
     )
@@ -593,7 +602,7 @@ def _document_expansion_benchmark_audit_payload(
     return {
         "max_sources": BENCHMARK_DOCUMENT_EXPANSION_SOURCES,
         "chunks_per_source": BENCHMARK_DOCUMENT_EXPANSION_CHUNKS,
-        "radius": 2,
+        "radius": BENCHMARK_STRUCTURAL_EXPANSION_RADIUS,
         "item_budget": max(1, k),
         "diagnostic_pools": {
             "document": _benchmark_trusted_pool_payload(document_result),

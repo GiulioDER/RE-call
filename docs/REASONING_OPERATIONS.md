@@ -68,9 +68,15 @@ Those counters are **two fields, and reading them as one gives the wrong answer*
   to candidates. These are not counts of unique rejected candidates; inspect the reason before
   deciding which stage or criterion needs attention.
 * `graph_expansion_refusals` counts refusals of the WHOLE expansion, before any candidate is
-  discovered: `graph_not_ready`, `generation_mismatch`, `no_trusted_seed`, `selective_gate`. At
-  most one fires per query, and `graph_gate_reason` names it. Non-zero here means expansion never
-  started, so the admission criteria had nothing to do with the outcome.
+  discovered: `graph_not_ready`, `tenant_mismatch`, `generation_mismatch`, `pipeline_mismatch`,
+  `corpus_mismatch`, `no_trusted_seed`, `selective_gate`. At most one fires per query.
+  `graph_gate_reason` carries the same name, except that `selective_gate` is reported as
+  `graph_gate_not_met`; it is also set without a refusal, to `graph_gate_not_met` when no
+  relation was eligible and to `missing_chunk` when no candidate could be scored. Non-zero here
+  means expansion never started, so the admission criteria had nothing to do with the outcome.
+* Under a source security policy a neighbour the policy denies is counted as `missing_chunk`, in
+  `graph_admission_rejections` and in `graph_gate_reason`, deliberately: the response does not say
+  that the policy refused it. Under a policy that label is therefore not evidence of missing rows.
 
 `selective_gate` used to be reported in the first field, which put `{'selective_gate': 1}` beside
 `graph_candidates_discovered: 0` even though admission had not started. Relation admission can
@@ -80,13 +86,20 @@ pays for one: `graph_diagnostics_encountered` is 0 on those queries rather than 
 diagnostic count, because nothing inspected the graph.
 
 
+Each of these is validated at server startup: a value outside its vocabulary refuses startup,
+and a blank value means the default.
+
 * `RECALL_GRAPH_PRECISION_VARIANT` selects one isolated tuning arm or `combined`.
 * `RECALL_GRAPH_RELATION_CONTROL` selects `none`, `shuffled`, or `removed` for evaluation only.
+* `RECALL_GRAPH_RELATION_CONTROL_SEED` is the integer seed of the shuffled control, default
+  20260825.
 * `RECALL_GRAPH_HUB_DEGREE_THRESHOLD` accepts 16, 32, or 64.
 * `RECALL_GRAPH_COSINE_MARGIN` accepts the historical values 0.05, 0.10, 0.15, or 0.20 for
   runner compatibility. It no longer rejects or ranks candidates.
-* `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` is off by default. The experimental setting accepts
-  0.05, 0.10, 0.15, or 0.20 as a calibrated advantage and permits one direct tail replacement.
+* `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` is off by default (`off`, `none`, `0`, `false`, `no`
+  or blank). `on`, `1`, `true` or `yes` selects a margin of 0.05. The experimental setting also
+  accepts 0.05, 0.10, 0.15, or 0.20 as a calibrated advantage and permits one direct tail
+  replacement.
 
 All graph candidates still pass normal trust evaluation and retain their original chunk citation.
 The precision evaluation protocol is recorded in
@@ -183,6 +196,8 @@ Privacy erasure and rebuild:
 | Reasoning budget exhausted | abstained or needs review | `budget_exhausted` | trace ids only |
 | Ambiguous graph evidence | needs review | `ambiguous_evidence` | trace ids only |
 | Privacy erasure before rebuild | strict refusal until rebuilt and calibrated | lineage or calibration failure code | no |
+| Semantic graph not built, or its identity mismatched, under `one_hop` (the `auto` default) | abstained, trusted evidence kept as data | `GRAPH_NOT_READY` | no |
+| Graph provider error, timeout, or evidence not bound to its seed | abstained, seed evidence kept | `GRAPH_PROVIDER_ERROR` or `GRAPH_PROVIDER_TIMEOUT` | no |
 
 Terminal output and structured output are treated separately. Human CLI summaries are terminal
 safe. Structured JSON may include corpus text only in explicit evidence fields, never in advice or

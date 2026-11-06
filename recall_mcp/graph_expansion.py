@@ -51,6 +51,7 @@ class GraphExpansionDependencies:
     resolve_graph_calibration: Callable[..., Any]
     semantic_graph_indexes: Callable[..., Any]
     shuffle_graph_relation_endpoints: Callable[..., Any]
+    controlled_semantic_graph: Callable[..., Any]
     store_graph: Callable[..., Any]
     validate_security_context: Callable[..., Any]
     embed_query: Callable[..., Any]
@@ -1028,7 +1029,7 @@ def expand_semantic_graph(
     _graph_tail_replacement_margin = dependencies.graph_tail_replacement_margin
     _resolve_graph_calibration = dependencies.resolve_graph_calibration
     _semantic_graph_indexes = dependencies.semantic_graph_indexes
-    _shuffle_graph_relation_endpoints = dependencies.shuffle_graph_relation_endpoints
+    _controlled_semantic_graph = dependencies.controlled_semantic_graph
     _store_graph = dependencies.store_graph
     _validate_security_context = dependencies.validate_security_context
     embed_query = dependencies.embed_query
@@ -1212,16 +1213,7 @@ def expand_semantic_graph(
             readiness="GRAPH_NOT_READY",
             gate_reason="corpus_mismatch",
         )
-    if relation_control == "removed":
-        semantic = replace(semantic, relations=())
-    elif relation_control == "shuffled" and semantic.relations:
-        semantic = replace(
-            semantic,
-            relations=_shuffle_graph_relation_endpoints(
-                semantic.relations,
-                relation_control_seed,
-            ),
-        )
+    semantic = _controlled_semantic_graph(semantic, relation_control, relation_control_seed)
     indexes = _semantic_graph_indexes(semantic)
     mentions_by_chunk = indexes.mentions_by_chunk
     ambiguous_entities = indexes.ambiguous_entities

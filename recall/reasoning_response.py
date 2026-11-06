@@ -19,8 +19,10 @@ from typing import Any, Literal, cast, get_args
 
 from recall.evidence import (
     ANSWER_PROFILES,
+    BundleDecision,
     EvidenceBundle,
     EvidenceValidationError,
+    TrustState,
 )
 from recall.provider_metadata import ProviderMetadata
 from recall.reasoning_expansion import (
@@ -84,6 +86,15 @@ class Contradiction:
 
 @dataclass(frozen=True)
 class ReasoningDiagnostics:
+    """Library authored diagnostics for one reasoning run.
+
+    `budget_used` includes the answer call and retrieval expansion model calls.
+    `graph_readiness` is `not_requested` when graph expansion is off, `ready` when the graph was
+    usable (`graph_gate_reason` then says why nothing expanded), and otherwise
+    `GRAPH_NOT_READY`, `GRAPH_PROVIDER_ERROR` or `GRAPH_PROVIDER_TIMEOUT`, which is then also
+    the run's `refusal_reason`.
+    """
+
     latency_ms: int
     budget: ReasoningBudget
     budget_used: ReasoningBudgetUsage | None
@@ -192,6 +203,12 @@ def reasoning_response_from_dict(payload: Mapping[str, object]) -> ReasoningResp
         )
         for item in (_mapping(value) for value in _sequence(payload["citations"]))
     )
+    # The rule `recall.reasoning._citations` applies when a response is produced: a citation
+    # names an item of the trusted evidence, with that item's source.
+    cited_sources = {item.chunk_id: item.source for item in bundle.items}
+    for citation in citations:
+        if cited_sources.get(citation.chunk_id) != citation.source:
+            raise EvidenceValidationError("citation does not name an item of trusted_evidence")
     diagnostics_payload = _mapping(payload["diagnostics"])
     diagnostics = ReasoningDiagnostics(
         latency_ms=_required_int(diagnostics_payload["latency_ms"]),
@@ -343,17 +360,13 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
         )
         for item in (_mapping(value) for value in _sequence(payload["items"]))
     )
-    decision = _checked_literal(payload["decision"], ("answer", "abstain"), "decision")
+    decision = _checked_literal(payload["decision"], get_args(BundleDecision), "decision")
     reason_code = _optional_str(payload.get("reason_code"))
     raw_decision_state = payload.get("decision_state")
     decision_state: DecisionState = cast(
         DecisionState,
         (
-            _checked_literal(
-                raw_decision_state,
-                ("supported", "corpus_gap", "no_supporting_evidence"),
-                "decision_state",
-            )
+            _checked_literal(raw_decision_state, get_args(DecisionState), "decision_state")
             if raw_decision_state is not None
             else "supported"
             if decision == "answer"
@@ -663,7 +676,10 @@ def _optional_datetime(value: object) -> datetime | None:
         return None
     if not isinstance(value, str):
         raise EvidenceValidationError("expected ISO datetime string")
-    return datetime.fromisoformat(value)
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise EvidenceValidationError("expected ISO datetime string") from exc
 
 
 def _optional_int(value: object) -> int | None:
@@ -730,6 +746,5 @@ def _checked_literal(value: object, allowed: tuple[str, ...], field_name: str) -
 
 
 def _trust_state(value: object) -> str:
-    if value not in {"trusted", "degraded", "refused"}:
-        raise EvidenceValidationError("trust_state must be trusted, degraded, or refused")
-    return value
+    # Tuple membership, so an unhashable value is refused rather than raising TypeError.
+    return cast(str, _checked_literal(value, get_args(TrustState), "trust_state"))

@@ -16,6 +16,7 @@ from recall.semantic_graph._model import (
     RELATION_KINDS,
     RELATION_STATUSES,
     SEMANTIC_GRAPH_SCHEMA_VERSION as SEMANTIC_GRAPH_SCHEMA_VERSION,
+    DiagnosticKind as DiagnosticKind,
     EntityKind as EntityKind,
     ExtractionMethod as ExtractionMethod,
     GraphReadiness,

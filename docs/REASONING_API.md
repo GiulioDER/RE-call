@@ -19,8 +19,10 @@ Fields:
 1. `query`: natural language query.
 2. `tenant_id`: tenant boundary the result must remain inside.
 3. `generation`: `GenerationSelection` with optional `generation_id`, `pipeline_fingerprint`, and `corpus_fingerprint`.
-4. `as_of`: optional valid time instant used by graph traversal. Temporal edges and neighboring
-   chunks outside their effective validity window are rejected before ranking and budget admission.
+4. `as_of`: optional valid time instant. Graph traversal rejects temporal edges and neighboring
+   chunks outside their effective validity window before ranking and budget admission, the planner
+   evaluates validity at it, and the dated answer prompts use it as the question date (the moment
+   of the call when unset). The MCP retriever does not evaluate seed retrieval at it.
 5. `known_as_of`: optional transaction time constraint. Retriever ports should pass this through to `trusted_search(..., known_as_of=...)`.
 6. `policy`: `ReasoningPolicy`.
 7. `budget`: `ReasoningBudget`, shared with the planner. Its default graph limits are selected by
@@ -75,6 +77,11 @@ Provider ports:
 5. `expansion_provider`: optional, returns bounded untrusted retrieval proposals.
 6. `expansion_retriever`: optional, executes proposals and must preserve tenant, generation, trust,
    and calibration binding.
+7. `graph_expansion_provider`: required when `policy.graph_expansion` is `one_hop`; without it the
+   run abstains with `GRAPH_NOT_READY`. Returns `SemanticGraphExpansionResult`. Its retrieval must
+   match every identity field the request pins and the tenant, generation, pipeline and corpus of
+   the seed retrieval it expanded; otherwise the seed is kept and the run abstains with
+   `GRAPH_PROVIDER_ERROR`. Any readiness other than `ready` becomes the run's `refusal_reason`.
 
 Response type: `ReasoningResponse`
 
@@ -104,8 +111,10 @@ Outcomes are distinct:
 
 Policies:
 
-1. `retrieval_only`: returns the evidence bundle after certification checks pass and never invokes the answer provider. If certification fails, it abstains with the original trust failure.
+1. `retrieval_only`: returns the evidence bundle after certification checks pass and never invokes the answer provider. If certification fails, it abstains with `refusal_reason="uncertified_evidence"` (the MCP strict path raises the trust failure instead).
 2. `evidence_assembly`: assembles trusted evidence and may call the answer provider.
+3. `proposal_assisted`: requires a graph provider, records proposals, runs bounded planning, then may call the answer provider.
+4. `review_required`: same as proposal assisted, but returns `needs_review` when proposals are present.
 
 The built in local adapter uses Ollama's native `/api/chat` endpoint, including its strict JSON
 schema and `think` switch. Configure it with `RECALL_REASONING_ANSWER_BASE_URL`,
@@ -138,8 +147,6 @@ adapter records `0.0`, which is true of local inference and would be a false mon
 hosted call. Provider failures are sanitized and never promote evidence.
 A local Qwen3 4B model is a suitable starting point for an 8 GB GPU; measure latency and answer
 quality on the target machine before enabling it for regular use.
-3. `proposal_assisted`: requires a graph provider, records proposals, and runs bounded planning.
-4. `review_required`: same as proposal assisted, but returns `needs_review` when proposals are present.
 
 ## Original Model Query Construction
 
@@ -234,7 +241,7 @@ Evidence remains source only when it is present in a trusted `EvidenceBundle`. T
 
 Boundary checks:
 
-1. Retrieval tenant, generation, pipeline fingerprint, and corpus fingerprint are checked against the request when both sides specify them.
+1. Retrieval tenant, generation, pipeline fingerprint, and corpus fingerprint are checked against every field the request specifies; a retrieval that leaves a pinned field unset is refused.
 2. Graph tenant, generation, pipeline fingerprint, and corpus fingerprint are checked before proposal assisted planning.
 3. Proposal `generation_id` must match the graph generation.
 4. Proposal source evidence ids must resolve to graph node ids.

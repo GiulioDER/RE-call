@@ -38,6 +38,8 @@ STRICT_SPARE_SLOT_SPARSE_MAX_RANK = 2
 STRICT_SPARE_SLOT_SOURCE_MARGIN_FLOOR = 0.0
 STRICT_SPARE_SLOT_CROSS_LEG_FLOOR = 0.5
 SOURCE_CONDITIONING_SHADOW_POLICIES = frozenset({"alpha008", "guarded_spare_slot"})
+#: The lanes a spare-slot receipt names; the shadow payload counts receipts per lane.
+SOURCE_CONDITIONING_LANES = ("dual_leg", "lexical_dominant")
 _ALLOWED_VERDICTS = frozenset({"ok", "low_confidence"})
 
 
@@ -595,6 +597,7 @@ __all__ = [
     "STRICT_SPARE_SLOT_POLICY",
     "STRICT_SPARE_SLOT_SOURCE_MARGIN_FLOOR",
     "STRICT_SPARE_SLOT_SPARSE_MAX_RANK",
+    "SOURCE_CONDITIONING_LANES",
     "SOURCE_CONDITIONING_SHADOW_POLICIES",
     "SOURCE_CONDITIONING_MODEL_ID",
     "SOURCE_CONDITIONING_SCHEMA_VERSION",
