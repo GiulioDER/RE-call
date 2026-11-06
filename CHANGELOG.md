@@ -213,7 +213,13 @@ list as an ordered upgrade procedure.
   refused. Limits: `RECALL_MULTIMODAL_MAX_MEDIA_BYTES`, `RECALL_MULTIMODAL_MAX_RESPONSE_BYTES`,
   `RECALL_MULTIMODAL_MAX_ITEMS`; the tenant and profile are fixed by `RECALL_MULTIMODAL_TENANT` and
   `RECALL_MULTIMODAL_EMBED_PROFILE`. The tenant needs its own generation and calibration and is
-  never mixed into the text tenants. See `docs/MULTIMODAL.md`.
+  never mixed into the text tenants. See `docs/MULTIMODAL.md`. The object root check refuses a
+  backslash or NUL in the decoded path and a path that still changes after decoding, so `..%5C` and
+  a repeatedly encoded `..` cannot escape it; an enabled multimodal tenant refuses at startup an
+  object root no admission can use. The multimodal client honours `RECALL_VOYAGE_TIMEOUT_SECONDS`,
+  the install hint names `voyageai>=0.3` and Pillow (and the embedder warns at construction when
+  Pillow is missing), a text query works on a client that only embeds text, and fitting a very long
+  thin image no longer takes one step per pixel.
 
 * **A search can be routed to a configured tenant by a versioned plan.**
   `RECALL_RETRIEVAL_PLANS_JSON` holds routes, each naming an allowed tenant set, a primary tenant
@@ -765,6 +771,17 @@ list as an ordered upgrade procedure.
   A memo that declares one reference keeps the plain string it always had, so existing chunk
   metadata does not change.
 
+* **A `supersedes:` reference resolves the same way in every layer.** Search resolves a reference
+  that names a folder by its path, and a bare name only when no other memo shares it; `recall
+  rewrite`, `recall lint`, `recall lint --fix`, the dashboard editor and its review queue now use
+  the same rule (`recall.supersession.resolve_reference`). So `supersedes: a/notes.md` is no longer
+  an error beside `b/notes.md`, `ambiguous-supersedes-target` is reported only when search finds the
+  reference ambiguous, `recall rewrite` lists the candidates when it refuses a shared bare name, and
+  `plan_rewrite` refuses a value that names more than one memo before it is stored. The cycle check
+  keys a memo by its path where another memo shares its name, so a memo superseding its namesake in
+  another folder is no longer refused as superseding itself, and a chain through two same-named
+  memos is no longer reported as a cycle. A flat corpus keys and names every memo as before.
+
 * `RECALL_TRUST_MODE=development` under `RECALL_ENV=production` now logs a warning naming both
   variables when the policy is resolved (at MCP server startup, and on a `recall` search); the
   relaxed gate is still honoured. An unknown `RECALL_DEPENDENCY_INVALIDATION` value is now refused
@@ -1011,10 +1028,11 @@ list as an ordered upgrade procedure.
   limiter, store and registry. A token in its last clock-skew window is no longer validated and
   then refused.
 
-* **On PostgreSQL a forget waits for at most one chunk of a stated-facts
-  reconcile.** The reconcile holds the erasure lock per 100 statements, re-checking which memos
-  are still served, where a forget waited for a whole first activation and gave up after 300 s.
-  The lock's session sets its own lock and statement timeouts.
+* **On PostgreSQL a forget waits for at most one chunk of a stated-facts reconcile.** The reconcile
+  holds the erasure lock per 100 statements, re-checking which memos are still served, where a
+  forget waited for a whole first activation and gave up after 300 s. The lock's session sets its
+  own lock and statement timeouts. Each hold also ends once it has run 30 s, after the statement in
+  hand, so a large replay ledger no longer holds the lock past a forget's wait.
 
 * **Supersession cache freshness and latest-state reads no longer scan a tenant's whole
   removal history.** Migration 0034 adds a per-tenant revision table and 0035 an index on the
@@ -1069,7 +1087,8 @@ list as an ordered upgrade procedure.
   turn an abstention into an answer. The parent is now scored with its own cosine, and a parent the
   generation cannot score is refused. View products run under a two thread BLAS limit
   (`threadpoolctl>=3.1` joins the `atomic` extra), which cut p95 from 202 ms to 55 ms under a CPU
-  quota.
+  quota. The window rank gate also refuses a rescue whose gate score is not a finite number, where a
+  NaN margin admitted it.
 
 * **Atomic rescue stays out of scoped searches.** Document, structural and successor expansion
   re-searches re-ran the selection per source, could insert another source's parent, and raised
@@ -1289,12 +1308,16 @@ list as an ordered upgrade procedure.
   so a replay can no longer restore deleted text, and a stale JWKS key is not reused past the
   stale window while another refresh holds the lock.
 
-* **Setup keeps credentials and memory state out of git and away from
-  other users.** A `.recall` directory RE-call creates gets a `.gitignore` of `*`, so `git add .`
-  in a memo repository no longer stages the store, and `.dockerignore` excludes `.recall` at any
-  depth. Inside a git work tree `recall setup` adds `.env` to `.gitignore`; the managed `.env`,
-  the wizard state file and client config copies holding credentials are written owner-only
-  (`0600`) through an atomic writer; a symbolic link backup target is refused.
+* **Setup keeps credentials and memory state out of git and away from other users.** A `.recall`
+  directory RE-call creates gets a `.gitignore` of `*`, so `git add .` in a memo repository no
+  longer stages the store, and `.dockerignore` excludes `.recall` at any depth. Inside a git work
+  tree `recall setup` adds `.env` to `.gitignore`; the managed `.env`, the wizard state file and
+  client config copies holding credentials are written owner-only (`0600`) through an atomic writer;
+  a symbolic link backup target is refused. The backup `recall setup` takes of `~/.claude.json` is
+  created owner-only under a name that is never reused, so a second edit in the same second keeps a
+  backup of its own and an existing backup is never overwritten. `recall quickstart` points at
+  `recall wizard` for a real threshold, and `recall calibrate` prints the published calibration
+  guide's URL, which a wheel install can open.
 
 * **Forget and withdraw check the source policy against every name the erased rows are authorized
   by.** `recall_forget`, `recall_withdraw`, `recall forget` and `recall withdraw` checked the names
