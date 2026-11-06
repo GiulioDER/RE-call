@@ -86,13 +86,14 @@ updates:
           - "version-update:semver-minor"
           - "version-update:semver-major"
 
-      # mcp: pinned EXACTLY (`mcp==2.2.0`) in three separate extras, so every bump is a pin edit
-      # in three places, and a protocol library is one where a wire-format change is not a
-      # routine upgrade. Patch and minor are held; a MAJOR still opens a PR, which is the moment
-      # this is worth a person's attention.
+      # mcp: held at the 2.2 minor (`mcp~=2.2.0`) in three separate extras, so a minor bump is a
+      # pin edit in three places, and a protocol library is one where a wire-format change is not
+      # a routine upgrade. Minor is held; a MAJOR still opens a PR, which is the moment this is
+      # worth a person's attention. 🔁 Changed 2026-11-06: patch releases are no longer held. The
+      # extras now admit 2.2.x, so a patch is a lock bump with a CI run behind it, which is how a
+      # security patch should arrive.
       - dependency-name: "mcp"
         update-types:
-          - "version-update:semver-patch"
           - "version-update:semver-minor"
 
       # transformers: capped `<6`. Tokenizer and model behaviour moves between minors and this is

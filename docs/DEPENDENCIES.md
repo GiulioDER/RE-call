@@ -52,7 +52,7 @@ instead of presenting all three as an opaque embedder traceback.
 
 ## MCP Extra
 
-`mcp` is **pinned exactly at 2.2.0**, not ranged. RE-call uses the MCP 2 server import path,
+`mcp` is **held at the 2.2 minor** (`~=2.2.0`, any 2.2.x patch; exactly 2.2.0 until 2026-11-06). RE-call uses the MCP 2 server import path,
 context injection, and snake_case tool annotation fields. The boundaries below are why the floor
 sits where it does; they are kept as a record of what each version added, and as the map for a
 future bump:
@@ -63,7 +63,7 @@ future bump:
 | `>=1.27.2` | Adds `AccessToken.subject` and `.claims`, used to carry tenant identity. |
 | `>=2.0.0` | Provides `MCPServer`, typed request `Context` injection, and snake_case `ToolAnnotations` fields used by `recall_mcp.server`. |
 | `<3` | Next major is reserved as a port until its server, auth, and context APIs are tested here. |
-| `==2.2.0` | The pin itself. See below. |
+| `~=2.2.0` | The pin itself: the minor is fixed, patch releases are allowed. See below. |
 
 ### Why this one is pinned rather than ranged
 
@@ -85,6 +85,11 @@ Two things made the drift invisible:
   release in range.
 - **A range admits a version no one has run the suite against.** The pin converts that into a
   deliberate bump: a version change is now a diff, reviewed, with a full CI run behind it.
+
+🔁 Changed 2026-11-06, owner decision: the pin allows 2.2.x patch releases (`~=2.2.0`). An exact
+pin in a published extra kept a downstream security patch from installing next to RE-call until
+RE-call released. The 2.1.0 change that motivated the pin was a minor release, and the minor stays
+fixed; the main CI suite still installs the exact version in `uv.lock`.
 
 `RateLimited` keeps its `ToolError` base regardless. The pin controls *when* a new SDK arrives,
 not whether the code survives it.

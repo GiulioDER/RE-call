@@ -987,7 +987,8 @@ jobs:
   # That is the accepted cost of the pin, not an oversight: the range is what let 2.1.0 land
   # unreviewed and break master three times. The floor coverage below is still real for every
   # dependency that remains ranged. See docs/DEPENDENCIES.md.
-  # 🔁 Corrected 2026-11-06: the pin is now `==2.2.0`, in the `mcp`, `dev` and `desktop` extras.
+  # 🔁 Corrected 2026-11-06: the pin is now `~=2.2.0` (2.2.x), in the `mcp`, `dev` and `desktop`
+  # extras, so this job resolves 2.2.0, the lowest patch.
   # `openai` joined this job's extras the same day, so its declared floor is resolved here too.
   # `pgvector>=0.3` was wrong the same way: `from pgvector import Vector` is a 0.4.0 export, so the
   # declared floor named versions where `import recall.store` raises ImportError. A floor nothing

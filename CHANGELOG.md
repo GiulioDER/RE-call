@@ -1317,8 +1317,13 @@ list as an ordered upgrade procedure.
   `agent` extra `claude-agent-sdk>=0.2.121`; `rerank` extra `transformers>=5.10`. The `openai`,
   `extract` and `bench` extras now require `openai>=1.58`, the first release that accepts the
   `reasoning_effort` argument RE-call passes, and the `desktop` extra declares the `onnxruntime`
-  and `tokenizers` its self-test imports. An environment holding an older version of one of these
-  must upgrade it to install 0.15.0.
+  and `tokenizers` its self-test imports. The `fastembed` and `desktop` extras require
+  `fastembed>=0.9.1`, the first release that allows Pillow 13, and declare `pillow>=13`. An
+  environment holding an older version of one of these must upgrade it to install 0.15.0. The
+  `mcp`, `dev` and `desktop` extras now accept any `mcp` 2.2.x patch release (`~=2.2.0`) instead
+  of exactly 2.2.0, so an upstream security patch can be installed without waiting for a RE-call
+  release. `COMMERCIAL_LICENSE.md` now states that third-party components keep their own licenses
+  under a commercial license, including the LGPL-3.0 terms of psycopg and PySide6.
 
 * **On Windows, no RE-call command runs an executable from the
   current directory.** Every console script (`recall`, `recall-mcp`, the desktop entry points and
