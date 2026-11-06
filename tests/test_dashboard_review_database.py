@@ -311,11 +311,14 @@ def test_an_item_takes_its_names_and_quotes_from_one_row(corpus: Path) -> None:
         _row("recall/archive/old.md", "recall/new.md", minutes=9, stale_quote=archived),
         _row("recall/old.md", "recall/new.md", minutes=1),
     ]
-    (item,) = _queue(corpus, rows).items
-    assert grounded(item.stale_quote, (corpus / item.stale).read_text(encoding="utf-8")), (
-        f"{item.stale_quote!r} is shown under {item.stale}, which does not contain it"
-    )
-    assert (item.stale, item.stale_quote) == ("archive/old.md", archived)
+    # Two memos share the name `old.md`, so these are two claims since 2026-11-06 (a claim's key
+    # keeps the folder of a shared name, `rewrite.claim_key`), and each item keeps its own row.
+    items = _queue(corpus, rows).items
+    for item in items:
+        assert grounded(item.stale_quote, (corpus / item.stale).read_text(encoding="utf-8")), (
+            f"{item.stale_quote!r} is shown under {item.stale}, which does not contain it"
+        )
+    assert sorted((item.stale, item.stale_quote) for item in items) == [("archive/old.md", archived), ("old.md", OLD_QUOTE)]
 
 
 def test_a_read_that_reaches_the_limit_says_so(corpus: Path, monkeypatch) -> None:

@@ -61,6 +61,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Literal
 
 from recall.atomic_write import atomic_write_bytes
@@ -87,7 +88,7 @@ from recall.observability import get_logger
 from recall.promotion import PromotedFact
 from recall.reasoning_proposals.types import InferenceProposal
 from recall.state_dir import make_parent
-from recall.supersession import resolve_reference
+from recall.supersession import reference_path_key, resolve_reference
 from recall.truth_extraction.types import STATUS_VOCABULARY, VALIDITY_CLAIM_KEYS
 from recall.trust import metadata_is_trusted
 from recall.errors import RecallError
@@ -219,20 +220,53 @@ def route_relation(relation: str, subject_id: str, object_id: str) -> Routed:
     )
 
 
-def claim_key(relation: str, subject_id: str, object_id: str) -> str:
+def claim_key(relation: str, subject_id: str, object_id: str, *, shared: Collection[str] = frozenset()) -> str:
     """The generation-independent identity of a claim, used to key rejections.
 
     `supersedes_key` normalises the two document references so `old.md`, `old` and `[[old]]` are
     one claim rather than three — a rejection a human made against one spelling has been made
     against all of them.
+
+    `shared` names the stems more than one memo of the corpus carries (`shared_stems`). A side
+    whose stem is shared keeps its folder, so a claim about `a/notes.md` and one about
+    `b/notes.md` are two claims; every other side keys by its stem, so the key is the one it has
+    always been. A caller that cannot see the corpus passes nothing and gets that key too.
     """
     return "claim_" + canonical_sha256(
         {
             "relation": relation,
-            "subject": supersedes_key(subject_id),
-            "object": supersedes_key(object_id),
+            "subject": _claim_side(subject_id, shared),
+            "object": _claim_side(object_id, shared),
         }
     )[:32]
+
+
+def _claim_side(value: str, shared: Collection[str]) -> str:
+    stem = supersedes_key(value)
+    if stem not in shared:
+        return stem
+    path = reference_path_key(value)
+    return path if "/" in path else stem
+
+
+def shared_stems(root: Path) -> frozenset[str]:
+    """The stems more than one memo under `root` carries, as `claim_key` takes them."""
+    count: dict[str, int] = {}
+    for f in root.rglob("*.md"):
+        stem = supersedes_key(encodable_name(f.name))
+        count[stem] = count.get(stem, 0) + 1
+    return frozenset(stem for stem, n in count.items() if n > 1)
+
+
+def claim_keys(relation: str, subject_id: str, object_id: str, shared: Collection[str]) -> tuple[str, ...]:
+    """The claim's key, and the key it had before folders counted, when that differs.
+
+    A rejection recorded under the older key was made against every memo the name could mean,
+    so it is still honoured; nothing stored is rewritten.
+    """
+    current = claim_key(relation, subject_id, object_id, shared=shared)
+    legacy = claim_key(relation, subject_id, object_id)
+    return (current,) if current == legacy else (current, legacy)
 
 
 def default_ledger_path(root: Path) -> Path:
@@ -319,11 +353,17 @@ class RejectionLedger:
                 f"rejection ledger at {self._path} could not be written: {exc}"
             ) from exc
 
-    def is_rejected(self, claim: str) -> bool:
+    def is_rejected(self, claim: str, *older: str) -> bool:
+        """Whether `claim`, or any of the `older` keys the same claim had (`claim_keys`), was rejected."""
         try:
-            row = self._conn.execute(
-                "SELECT 1 FROM rejected_claims WHERE claim_key = ?", (claim,)
-            ).fetchone()
+            row = next(
+                (
+                    found
+                    for key in (claim, *older)
+                    if (found := self._conn.execute("SELECT 1 FROM rejected_claims WHERE claim_key = ?", (key,)).fetchone())
+                ),
+                None,
+            )
         except sqlite3.Error as exc:
             # A locked, closed or externally-truncated ledger must not surface as a sqlite type
             # `apply_rewrite`'s docstring never promised. Refusing is the safe reading anyway:
@@ -778,7 +818,7 @@ def plan_rewrite(root: Path, fact: PromotedFact) -> RewritePlan:
         key=routed.key,
         value=value,
         block=block,
-        claim=claim_key(checked.relation, checked.subject_id, checked.object_id),
+        claim=claim_key(checked.relation, checked.subject_id, checked.object_id, shared=shared_stems(root)),
         fact_id=checked.fact_id,
         proposal_id=checked.proposal_id,
         reviewer_id=checked.reviewer_id,
@@ -827,7 +867,9 @@ def apply_rewrite(
             checked.fact_id, checked.proposal_id, checked.reviewer_id
         ):
             raise RewriteRefused(f"the plan given is for fact {plan.fact_id}, not {checked.fact_id}")
-    if ledger is not None and ledger.is_rejected(plan.claim):
+    # The key the claim had before folders counted (`claim_keys`), so an older rejection still holds.
+    legacy = claim_key(fact.relation, fact.subject_id, fact.object_id)
+    if ledger is not None and ledger.is_rejected(plan.claim, legacy):
         return RewriteResult(plan, False, f"claim {plan.claim} was rejected by a reviewer")
 
     path = root / plan.edit_file

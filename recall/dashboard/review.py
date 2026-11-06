@@ -74,6 +74,7 @@ from recall.rewrite import (
     corpus_proposals,
     default_ledger_path,
     plan_rewrite,
+    shared_stems,
 )
 from recall.supersession import reference_path_key, reference_stem_key, resolve_reference
 from recall.stale_reports import StaleReport, StaleReportQueue, StaleReportRefused, default_queue_path, find_quote
@@ -319,6 +320,11 @@ def _quote(path: Path, sha256: object, chars: object) -> str | None:
         return None  # gone or unreadable right now (or a NUL stand-in name): asked again next time
 
 
+def _rejected(rejected: frozenset[str], key: str, stale: str, replacing: str) -> bool:
+    """Whether the claim was rejected under its key, or under the key it had before folders counted."""
+    return key in rejected or claim_key("supersedes", stale, replacing) in rejected
+
+
 def database_items(
     root: Path,
     rows: Sequence[Mapping[str, object]],
@@ -336,6 +342,7 @@ def database_items(
     groups: dict[str, list[tuple[Mapping[str, object], str, str, str, str]]] = {}
     elsewhere = same = unquoted = decided = 0
     verdicts: dict[str, bool] = {}  # one `closed` read per claim, not per row: rows repeat daily
+    shared = shared_stems(root)
     for row in rows:
         stale = _local_in(str(row.get("stale_source") or ""), index)
         replacing = _local_in(str(row.get("replacing_source") or ""), index)
@@ -345,7 +352,7 @@ def database_items(
         if stale == replacing:
             same += 1
             continue
-        key = claim_key("supersedes", stale, replacing)
+        key = claim_key("supersedes", stale, replacing, shared=shared)
         if closed is not None:
             if key not in verdicts:
                 verdicts[key] = closed(key, stale, replacing)
@@ -452,7 +459,8 @@ def build_queue(
             notes.append(f"corpus database: unreachable, so only this folder's reports are shown ({exc})")
         else:
             found, found_notes = database_items(
-                root, rows, closed=lambda key, stale, replacing: key in rejected or already_declared(root, stale, replacing)
+                root, rows, closed=lambda key, stale, replacing: _rejected(rejected, key, stale, replacing)
+                or already_declared(root, stale, replacing)
             )
             notes.extend(found_notes)
             for key, item in found.items():
@@ -474,10 +482,11 @@ def build_queue(
         notes.append(f"arbiter: {exc}")
         proposals = ()
     notes.extend(summaries)
+    shared = shared_stems(root)
     for proposal in proposals:
         if proposal.proposed_relation != "supersedes":
             continue
-        key = claim_key("supersedes", proposal.subject_id, proposal.object_id)
+        key = claim_key("supersedes", proposal.subject_id, proposal.object_id, shared=shared)
         detail = proposal.explanation
         if key in by_claim:
             current = by_claim[key]
@@ -497,7 +506,7 @@ def build_queue(
     items = tuple(
         item
         for key, item in sorted(by_claim.items())
-        if key not in rejected and not already_declared(root, item.stale, item.replacing)
+        if not _rejected(rejected, key, item.stale, item.replacing) and not already_declared(root, item.stale, item.replacing)
     )
     if items:
         by_stem = _paths_by_stem(root)
@@ -626,7 +635,7 @@ def reject(root: Path, item: QueueItem, *, reviewer: str, note: str, now: dateti
     with DECISION_LOCK, _edit_reservation(root):
         # Checked again under the reservation an accept holds, so a reject racing an accept of the
         # same claim (two tabs, two dashboards) cannot record a decline beside a written declaration.
-        if item.claim in rejected_claims(root) or already_declared(root, item.stale, item.replacing):
+        if _rejected(rejected_claims(root), item.claim, item.stale, item.replacing) or already_declared(root, item.stale, item.replacing):
             raise ReviewRefused("that claim was decided meanwhile; reload the queue")
         try:
             with RejectionLedger(default_ledger_path(root)) as ledger:
