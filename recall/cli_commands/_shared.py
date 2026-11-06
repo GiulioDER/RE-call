@@ -86,18 +86,23 @@ def _lite_embedder_spec(
     return spec, True
 
 
-def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str) -> str:
+def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str, *, erasure: bool = False) -> str:
     """The embedder a command that only reads or erases the lite store `db` builds (CCA ENV-002).
 
     A typed `--embedder` wins, then RECALL_EMBEDDER, then the spec the store recorded, and only
     then the global default, which knows nothing of the store. A RECALL_EMBEDDER that differs from
     the recorded spec is refused, as index and refresh refuse it: a model other than the one that
     built the vectors ranks nonsense without raising.
+
+    An `erasure` embeds nothing and needs the embedder for the store's width only, so it takes the
+    recorded spec over RECALL_EMBEDDER and refuses nothing: a stray variable must not stop a forget.
     """
     from recall.lite.inspect import lite_file_meta
 
     recorded = (lite_file_meta(db) or {}).get("embedder_spec")
     typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
+    if erasure:
+        return typed or recorded or str(args.embedder)
     env = os.environ.get("RECALL_EMBEDDER", "").strip()
     if recorded and not typed and env and env != recorded:
         raise SystemExit(

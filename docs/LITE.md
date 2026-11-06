@@ -132,14 +132,18 @@ to inspect.
 
 The store records the embedder setup used (or, for a store `recall index` built, the one it used),
 and `recall lite refresh`, `recall index`, `recall search`, `recall forget` and `recall withdraw`
-against the store use it when you pass no `--embedder`. A `RECALL_EMBEDDER` in your shell that names a different
-embedder is refused, because a variable left over from another project would otherwise re-embed the
-store silently; `recall lite refresh --force` accepts it. Typing `--embedder` with a different value
-for a refresh or an index switches the store to it, with a warning. A switch re-embeds only what the run covers (the memo
-folders for a refresh, the given path for `recall index`); sources outside it keep the old vectors.
-The MCP server keeps the embedder setup configured until you run setup again with the new one, and
-once the server has refreshed and recalibrated the store with its own, both commands refuse to run
-without `--embedder`. To change models cleanly, build a separate store, as described under updates below.
+against the store use it when you pass no `--embedder`. A `RECALL_EMBEDDER` in your shell that
+names a different embedder is refused by refresh, index and search, because a variable left over
+from another project would otherwise re-embed the store silently or rank its memos with the wrong
+model: unset it, or for a refresh confirm the switch with `recall lite refresh --force`. Forget and
+withdraw embed nothing, so they ignore such a variable and use the recorded embedder. Typing
+`--embedder` with a different value for a refresh or an index switches the store to it, with a
+warning, and the store's calibration then waits for a refit fitted with the new model. A switch
+re-embeds only what the run covers (the memo folders for a refresh, the given path for `recall
+index`); sources outside it keep the old vectors. The MCP server keeps the embedder setup
+configured until you run setup again with the new one, and once the server has refreshed and
+recalibrated the store with its own, `recall lite refresh` and `recall index` refuse to run without
+`--embedder`. To change models cleanly, build a separate store, as described under updates below.
 
 With `--check`, exit code `0` means current and `1` means changed, never refreshed, or missing input. It compares the memo files, the store and the policy; it does not detect a change to the facts a refresh would state (an upgraded stating rule with no memo edited), which only a refresh records.
 A writing refresh returns `0` for refreshed, unchanged, or coalesced work, `1` for failure, and `3`

@@ -1202,3 +1202,44 @@ def test_a_lite_store_first_built_by_index_records_its_embedder(
     with pytest.raises(SystemExit) as stopped:
         cli_main(["--dsn", dsn, "index", str(project / "memory")])
     assert "differs from 'content-words'" in str(stopped.value.code), stopped.value.code
+
+
+def test_forget_ignores_a_shell_embedder_and_uses_the_recorded_one(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CCA ENV-002 (run 20261106T152931Z). Invariant: `recall forget` on a sqlite:/// store embeds
+    nothing, so a RECALL_EMBEDDER that differs from the recorded spec neither refuses it nor is
+    built: the recorded embedder supplies the width. Failure caught: a stray shell variable
+    refused an erasure.
+
+    Red proof, 2026-11-06 on the remote test host: with `erasure=True` dropped from the
+    `_lite_read_embedder` call in `recall.cli_commands.index_search._cmd_remove`, this failed at
+    the `asked` assertion ([], the forget refused with 'differs from'); restored, it passed."""
+    db, asked = _setup_with_model_name(project, monkeypatch)
+    monkeypatch.setenv("RECALL_EMBEDDER", "typed-words")
+    _cli("--dsn", f"sqlite:///{db.as_posix()}", "forget", "memo-000.md")
+    err = capsys.readouterr().err
+    assert asked == ["content-words"], f"forget did not build the recorded embedder: {asked} {err}"
+
+
+def test_a_refresh_of_an_unchanged_folder_records_a_missing_spec(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CCA BUG-003 (run 20261106T152931Z). Invariant: a refresh of a store that recorded no
+    embedder spec records the one it used even when no memo changed, so the guard engages from
+    that run on. Failure caught: the unchanged short-circuit returned before the only place the
+    spec is recorded.
+
+    Red proof, 2026-11-06 on the remote test host: with `or adopt` removed from the `force=`
+    argument in `recall.cli_commands.lite_cmd._cmd_refresh`, this failed at the recorded spec
+    assertion (None); restored, it passed."""
+    import sqlite3
+
+    db, _ = _setup_with_model_name(project, monkeypatch)
+    conn = sqlite3.connect(db)
+    with conn:
+        conn.execute("DELETE FROM meta WHERE key = 'embedder_spec'")
+    conn.close()
+    monkeypatch.setenv("RECALL_EMBEDDER", "content-words")
+    assert _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory")) == 0, capsys.readouterr()
+    assert _recorded_spec(db) == "content-words"

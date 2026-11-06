@@ -217,6 +217,9 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     # A typed embedder the calibration is not bound to must re-embed too, or the refusal's own
     # advice (pass --embedder) would end `unchanged` on an unchanged folder.
     rebind = info.embedder_model is not None and embedder.name != info.embedder_model
+    # A store that recorded no spec (built by an older `recall index`) records this one, which only
+    # a run that reaches the write lane does; an unchanged folder would return before it (CCA BUG-003).
+    adopt = bool(spec) and not info.embedder_spec
     # One walk serves both the refresh's change check and the budget warning below (CCA
     # PERF-004): the memo files are the same before and after, and the walk is the cost.
     snap = snapshot(roots)
@@ -228,16 +231,16 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
             embedder,
             # A switch must reach the indexer: the no-change check looks at the memos only (CCA
             # BUG-001), so without this a typed switch on an unchanged folder did nothing.
-            force=args.force or switched or rebind,
+            force=args.force or switched or rebind or adopt,
             wait_s=args.wait,
             allow_prune=args.allow_prune,
             security_policy=policy,
             security_context=context,
             key_root=_key_root(db),
             before=snap,
-            # Also when the store recorded no spec (built by an older `recall index`), so the
-            # guard engages from now on, and on a rebind, so the binding names the new vectors.
-            record_spec=spec if spec and (switched or rebind or not info.embedder_spec) else None,
+            # Also on a store that recorded no spec, so the guard engages from now on, and on a
+            # rebind, so the binding names the new vectors.
+            record_spec=spec if spec and (switched or rebind or adopt) else None,
         )
     print(json.dumps(result.to_dict(), indent=2, default=str) if args.json else result.render())
     _warn_if_over_budget(snap, budget)
