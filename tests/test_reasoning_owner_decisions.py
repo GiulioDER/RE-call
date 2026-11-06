@@ -392,7 +392,8 @@ def test_bug001_validate_names_a_graph_a_newer_builder_wrote(manager, monkeypatc
 
     After a rollback the marker records a version this code does not know. Red proof is a
     mutation in `GenerationManager._validate`: removing the `built_version > graph.schema_version`
-    branch let it fall through to "fingerprint mismatch", which this match refuses.
+    branch let it fall through to "fingerprint mismatch", which this match refuses. Observed
+    red in CI run 42303562791 on a throwaway branch: "Regex pattern did not match".
     """
     from recall.generation_types import GenerationError
 
