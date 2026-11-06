@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     import openai.resources.chat.completions as completions
 
-    completions.Completions.create = cap.wrap(completions.Completions.create)  # type: ignore[method-assign]
+    completions.Completions.create = cap.wrap(completions.Completions.create)
     from benchmarks.run import main as run_main
 
     try:

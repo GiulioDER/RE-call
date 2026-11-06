@@ -3,8 +3,10 @@ name: LoCoMo version comparison
 # Manual only. Compares two RE-call versions on LoCoMo with ONE harness: the `benchmarks/`
 # directory and `recall/eval/locomo.py` are taken from the revision this workflow is dispatched
 # on and copied over BOTH checkouts, so the only thing that differs between the arms is the
-# library under them. Each arm gets its own virtualenv; RECALL_EMBEDDER is never set, so each
-# version resolves its own default embedder, and the artifacts record which one it was.
+# library under them. The baseline is fixed at the v0.14.0 tag and the candidate is the dispatched
+# revision; neither is an input, so a dispatch cannot point the job at an arbitrary ref. Each arm
+# gets its own virtualenv; RECALL_EMBEDDER is never set, so each version resolves its own default
+# embedder, and the artifacts record which one it was.
 #
 #   gh workflow run locomo-bench.yml --repo GiulioDER/RE-call -f stage=retrieval
 #   gh workflow run locomo-bench.yml --repo GiulioDER/RE-call -f stage=reader
@@ -19,14 +21,6 @@ on:
         required: true
         type: choice
         options: [retrieval, reader]
-      baseline_ref:
-        description: Baseline version
-        default: v0.14.0
-        type: string
-      candidate_ref:
-        description: Candidate version (empty means the dispatched revision)
-        default: ""
-        type: string
       conversations:
         description: LoCoMo conversations to run (10 is all)
         default: "10"
@@ -95,14 +89,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.baseline_ref }}
+          ref: v0.14.0
           path: arm-baseline
       - &checkout_candidate
         name: Check out the candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.candidate_ref || github.sha }}
+          ref: ${{ github.sha }}
           path: arm-candidate
       - &setup_python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
