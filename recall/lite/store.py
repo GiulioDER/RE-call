@@ -1058,6 +1058,25 @@ class LiteStore:
         return {name for (payload,) in rows for name in json.loads(payload).get("aliases", ())
                 if isinstance(name, str)}
 
+    def latest_chunk_records(self, chunk_ids: Sequence[str]) -> dict[str, tuple[str, str]]:
+        """`{chunk_id: (event_type, source)}` of the latest `prune_source_chunks` or
+        `forget_source_chunks` record naming each of `chunk_ids`, in the order they were appended."""
+        if not chunk_ids:
+            return {}
+        from recall.chunk_records import latest_chunk_records
+
+        # By rowid, the order of append: `created_at` is the eval clock's time on a server that
+        # runs one and wall time elsewhere, so it may put a later forget before an earlier prune
+        # (CCA SEC-001 of run 20261106T212835Z).
+        rows = self._metadata_values(
+            "SELECT chunk.value, audit_events.event_type, audit_events.source_uri "
+            "FROM audit_events, json_each(audit_events.payload, '$.chunk_ids') AS chunk "
+            "WHERE audit_events.event_type IN ('prune_source_chunks', 'forget_source_chunks') "
+            "AND chunk.value IN (SELECT value FROM json_each(?)) ORDER BY audit_events.rowid",
+            (json.dumps(list(chunk_ids)),),
+        )
+        return latest_chunk_records(rows)
+
     def forgotten_source_chunks(self, sources: Sequence[str]) -> set[str]:
         """Recover the chunk ids recorded before these exact sources were forgotten."""
         if not sources:
