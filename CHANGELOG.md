@@ -437,6 +437,11 @@ list as an ordered upgrade procedure.
 
 ### Changed
 
+* **`recall setup` offers DeepSeek V4.1 Flash first for the reasoning arm on OpenRouter.** Pressing
+  Enter at the model menu now writes `RECALL_REASONING_EXPANSION_MODEL=deepseek/deepseek-v4.1-flash`
+  instead of `openai/gpt-4o-mini`, which is no longer listed. The OpenAI direct menu is unchanged,
+  since api.openai.com serves no DeepSeek model, and an existing `.env` keeps the model it names.
+
 * **A forget decides per evidence card on a lite store and the legacy table (#1233).** A fact
   whose every card cites a chunk the forget erased is retracted, and its value erased, even when
   another root still serves a memo under the same root-relative name; a value another card still
