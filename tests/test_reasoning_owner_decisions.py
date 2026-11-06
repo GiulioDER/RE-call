@@ -329,9 +329,11 @@ def test_deploy101_validate_upgrades_a_graph_an_older_builder_wrote(manager, mon
     """DEPLOY-101: validating a generation built before an upgrade failed it for good.
 
     `_validate` rebuilt the graph with the current builder and refused the older marker as a
-    fingerprint mismatch, and `rebuild_graph` refuses a validating generation. Expected red on
-    the pre-fix tree: the generation ends FAILED. This runs only where a database is available
-    (CI during the AML window), so its red run is not recorded here.
+    fingerprint mismatch, and `rebuild_graph` refuses a validating generation. This runs only
+    where a database is available (CI during the AML window). Red proof, CI run 42301127227 on a
+    throwaway branch: replacing `if built_version < graph.schema_version:` in
+    `GenerationManager._validate` with `if False:` made this test raise
+    `GenerationError: generation semantic graph fingerprint mismatch` on all three database jobs.
     """
     data = b"a memo built before the upgrade"
     manifest = _manifest(manager.tenant_id, data)
