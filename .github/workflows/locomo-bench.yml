@@ -107,6 +107,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # v0.14.0 registers the pgvector type on connect and expects the extension to exist;
+          # the service image ships it but does not create it. Same setup for both arms.
+          PGPASSWORD=recall psql -h localhost -U recall -d recall -v ON_ERROR_STOP=1 \
+            -c "CREATE EXTENSION IF NOT EXISTS vector"
           curl -sSfL "$LOCOMO_URL" -o locomo10.json
           test "$(git hash-object locomo10.json)" = "$LOCOMO_BLOB"
           for arm in baseline candidate; do
