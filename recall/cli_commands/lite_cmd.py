@@ -192,11 +192,12 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.lite import LiteStore
 
     info = inspect_lite_file(db)
-    spec, profile, switched = _shared._lite_embedder_spec(
+    choice = _shared._lite_embedder_spec(
         args, info.embedder_spec, db, force=args.force,
         how_to_switch="pass --force to re-embed every memo with it",
         recorded_profile=info.embedder_profile,
     )
+    spec, profile, switched = choice.spec, choice.profile, choice.switched
     name = spec or info.embedder_model
     ask = f"which embedder built {db}? Pass --embedder or set RECALL_EMBEDDER"
     if not name:

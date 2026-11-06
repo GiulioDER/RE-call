@@ -379,11 +379,12 @@ def _cmd_index(args: argparse.Namespace) -> None:
         db = lite_dsn_path(args.dsn)
         meta = lite_file_meta(db) or {}
         recorded = meta.get("embedder_spec")
-        name, profile, switched = _lite_embedder_spec(
+        choice = _lite_embedder_spec(
             args, recorded, db, force=False,
             how_to_switch="re-embed it with `recall lite refresh --force`",
             recorded_profile=meta.get("embedder_profile"),
         )
+        name, profile, switched = choice.spec, choice.profile, choice.switched
         name = name or args.embedder
         bound = meta.get("embedder_model")
     embedder = _make_embedder(name)

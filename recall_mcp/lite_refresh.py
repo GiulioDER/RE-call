@@ -106,7 +106,7 @@ class LiteAutoRefresher:
         self._budget = budget
         # The embedder settings this server was started with, which the guard compares with the
         # ones the store recorded before every refresh.
-        self._env = {key: (env or {}).get(key, "") for key in ("RECALL_EMBEDDER", "RECALL_EMBED_PROFILE")}
+        self._env = dict(env or {})
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._last_check = -math.inf

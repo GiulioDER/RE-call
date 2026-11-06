@@ -582,3 +582,23 @@ def test_a_switch_with_no_memo_change_is_reported_by_the_next_retrieval(
     refresher.before_retrieval()
     warning = refresher.warning() or ""
     assert "records the embedder 'switched-words'" in warning, warning
+
+
+def test_an_unreadable_embedder_record_refuses_rather_than_passes(
+    setup: tuple[LiteStore, Path, Clock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CCA DAT-003 (deferred pass of run 20261106T215302Z). Invariant: when the store's meta cannot
+    be read, `embedder_refusal` refuses instead of reading it as "nothing recorded". Failure
+    caught: a failed read skipped the spec and profile checks, so the server refreshed unguarded.
+
+    Red proof, 2026-11-07 on the remote test host: with `meta = lite_file_meta(store.path)`
+    restored to `... or {}` and the `if meta is None:` block removed in
+    `recall.lite.refresh.embedder_refusal`, this failed at the assertion (None); restored, it
+    passed."""
+    import recall.lite.inspect as inspect_mod
+    from recall.lite.refresh import embedder_refusal
+
+    store, _, _ = setup
+    monkeypatch.setattr(inspect_mod, "lite_file_meta", lambda path: None)
+    refusal = embedder_refusal(store, ContentWordEmbedder(), {"RECALL_EMBEDDER": "content-words"})  # type: ignore[arg-type]
+    assert refusal is not None and "could not be read" in refusal, refusal

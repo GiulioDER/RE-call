@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import NamedTuple
 from pathlib import Path
 
 from recall._env import refuse_removed_entailment
@@ -53,6 +54,14 @@ def _make_embedder(name: str) -> Embedder:
         raise SystemExit(diagnostic.render()) from exc
 
 
+class _LiteEmbedderChoice(NamedTuple):
+    """What `_lite_embedder_spec` chose; read by name, since spec and profile are both strings."""
+
+    spec: str
+    profile: str
+    switched: bool
+
+
 def _lite_embedder_spec(
     args: argparse.Namespace,
     recorded: str | None,
@@ -61,7 +70,7 @@ def _lite_embedder_spec(
     force: bool,
     how_to_switch: str,
     recorded_profile: str | None = None,
-) -> tuple[str, str, bool]:
+) -> _LiteEmbedderChoice:
     """The embedder spec and RECALL_EMBED_PROFILE for the lite store `db`, and whether they switch
     away from the ones the store recorded (CCA DAT-006, DAT-007, SEC-001).
 
@@ -90,7 +99,7 @@ def _lite_embedder_spec(
     env = os.environ.get("RECALL_EMBEDDER", "").strip()
     spec = typed or env or recorded or ""
     if not recorded or spec == recorded:
-        return spec, profile, profile_switched
+        return _LiteEmbedderChoice(spec, profile, profile_switched)
     if not typed and not force:
         raise SystemExit(
             f"RECALL_EMBEDDER={spec!r} differs from {recorded!r}, the embedder {db} was built "
@@ -102,7 +111,7 @@ def _lite_embedder_spec(
         f"`recall setup --lite` configured still names {recorded!r} until setup is run again.",
         file=sys.stderr,
     )
-    return spec, profile, True
+    return _LiteEmbedderChoice(spec, profile, True)
 
 
 def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str, *, erasure: bool = False) -> str:
@@ -111,7 +120,9 @@ def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str, *, era
     A typed `--embedder` wins, then RECALL_EMBEDDER, then the spec the store recorded, and only
     then the global default, which knows nothing of the store. A RECALL_EMBEDDER that differs from
     the recorded spec is refused, as index and refresh refuse it: a model other than the one that
-    built the vectors ranks nonsense without raising.
+    built the vectors ranks nonsense without raising. A RECALL_EMBED_PROFILE that differs from the
+    recorded one is refused before any of that, even with a typed `--embedder`, because the profile
+    outranks every spec when the embedder is built (CCA SEC-001).
 
     An `erasure` embeds nothing and needs the embedder for the store's width only, so it takes the
     recorded spec over RECALL_EMBEDDER and refuses nothing: a stray variable must not stop a forget.

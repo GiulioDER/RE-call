@@ -110,7 +110,11 @@ def embedder_refusal(store: LiteStore, embedder: Embedder, env: Mapping[str, str
     """
     from recall.lite.inspect import lite_file_meta
 
-    meta = lite_file_meta(store.path) or {}
+    meta = lite_file_meta(store.path)
+    if meta is None:
+        # A lite store always has its meta table, so None is a read that failed, not "nothing
+        # recorded"; skipping the checks then would fail open (CCA DAT-003).
+        return "the store's embedder record could not be read, so the embedder cannot be checked"
     rerun = "run `recall setup --lite` again to register the embedder the store now holds"
     # Unset, the server builds its default (`recall_mcp.settings`), so that is what is compared
     # (CCA STAKES-003); an empty value must not skip the check.
@@ -443,6 +447,12 @@ def refresh(
     without their policy digest, so search would stop returning them (CCA SEC-001).
     `allow_prune` is for a person who has confirmed a large deletion
     (`recall lite refresh --allow-prune`); the server never passes it.
+
+    `record_spec` is the embedder spec to record with this run's re-embed, under the write lane,
+    and `record_profile` the RECALL_EMBED_PROFILE recorded beside it; the profile is written only
+    with a spec, so `record_profile` alone records nothing. `refusal_env` is the environment of a
+    refresher that can neither `--force` nor type an embedder (the MCP server): `embedder_refusal`
+    is asked with it under the lane, and a refusal is a FAILED refresh that embeds nothing.
     """
     if security_policy is not None and security_context is None:
         raise ValueError("security_context is required when security_policy is configured")
