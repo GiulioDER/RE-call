@@ -9,13 +9,14 @@ third may contain a transient base64 representation only while a request is in f
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 from io import BytesIO
 import logging
 import math
 import os
 import posixpath
-from urllib.parse import unquote, urlsplit
+from urllib.parse import SplitResult, unquote, urlsplit
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -46,6 +47,8 @@ PROTECTED_TENANTS = frozenset({"default", "memory", "re-call-code-gen", "re-call
 # The fixed multimodal tenant must never alias a text specialist; checked once, at import.
 if MULTIMODAL_TENANT in PROTECTED_TENANTS:  # pragma: no cover - a constant invariant
     raise RuntimeError("MULTIMODAL_TENANT overlaps a protected text specialist tenant")
+#: Every policy requires the owning tenant. "private" also requires a non-empty principal;
+#: "public" is recorded but enforced exactly as "tenant" is today.
 AccessPolicy = Literal["private", "tenant", "public"]
 
 
@@ -62,7 +65,7 @@ class MediaAccessDenied(MultimodalError):
 
 
 class MediaBudgetExceeded(MultimodalError):
-    """The response would exceed its explicit media byte budget."""
+    """An upload, an image query, or a projected response would exceed its media byte budget."""
 
 #: Voyage's multimodal limits (docs.voyageai.com/reference/multimodal-embeddings-api, read
 #: 2026-09-30). An image counts one token per 560 pixels. Over either request cap, or over an
@@ -96,12 +99,18 @@ def _split_data_url(data_url: str) -> tuple[str, bytes] | None:
         return None
 
 
-def _image_pixels(payload: bytes) -> int | None:
+def _pillow_formats(image_format: str | None) -> list[str] | None:
+    """The one decoder bytes declared as a supported type may reach, so a PNG label cannot
+    hand Pillow an EPS file and with it Ghostscript."""
+    return None if image_format is None else [image_format]
+
+
+def _image_pixels(payload: bytes, image_format: str | None = None) -> int | None:
     """Width times height of an encoded image, or None when it cannot be read."""
     try:
         from PIL import Image
 
-        with Image.open(BytesIO(payload)) as image:
+        with Image.open(BytesIO(payload), formats=_pillow_formats(image_format)) as image:
             return int(image.width * image.height)
     except Exception:  # BROAD-CATCH: fail-open; ImportError or any decoder error means unknown
         return None
@@ -140,10 +149,10 @@ def _fit_voyage_image(
     if strict:
         from PIL import Image
 
-        with Image.open(BytesIO(payload)) as probe:
+        with Image.open(BytesIO(payload), formats=_pillow_formats(image_format)) as probe:
             pixels: int | None = int(probe.width * probe.height)
     else:
-        pixels = _image_pixels(payload)
+        pixels = _image_pixels(payload, image_format)
     if image_format is None or pixels is None:
         return data_url, False, pixels
     if pixels <= VOYAGE_MAX_IMAGE_PIXELS and len(payload) <= VOYAGE_MAX_IMAGE_BYTES:
@@ -162,7 +171,7 @@ def _fit_voyage_image(
         )
 
     try:
-        with Image.open(BytesIO(payload)) as original:
+        with Image.open(BytesIO(payload), formats=[image_format]) as original:
             image = ImageOps.exif_transpose(original)
             scale = min(1.0, math.sqrt(VOYAGE_MAX_IMAGE_PIXELS / (image.width * image.height)))
             while True:
@@ -263,7 +272,11 @@ def _estimate_voyage_tokens(
         url = str(part.get("image_base64"))
         if url not in image_pixels:
             decoded = _split_data_url(url)
-            image_pixels[url] = _image_pixels(decoded[1]) if decoded is not None else None
+            image_pixels[url] = (
+                _image_pixels(decoded[1], _IMAGE_FORMATS.get(decoded[0]))
+                if decoded is not None
+                else None
+            )
         pixels = image_pixels[url]
         tokens += (
             VOYAGE_MAX_INPUT_TOKENS
@@ -376,60 +389,76 @@ def _validate_uri(value: str, field: str) -> str:
 
 
 _MAX_URI_DECODE_PASSES = 3
+_OUTSIDE_ROOT = "object_uri is outside the configured multimodal object root"
+
+
+def _split_controlled_uri(value: str, field: str) -> SplitResult:
+    """A controlled URI's parts, refused with this module's own error when it does not parse."""
+    validated = _validate_uri(value, field)
+    try:
+        return urlsplit(validated)
+    except ValueError as exc:
+        raise MediaValidationError(f"{field} is not a valid URI") from exc
+
+
+def _decoded_path(path: str, error: str) -> str:
+    """The path decoded to its fixpoint and normalised, refusing anything a consumer could escape by."""
+    decoded = path
+    for _ in range(_MAX_URI_DECODE_PASSES):
+        if any(part == ".." for part in decoded.split("/")):
+            raise MediaValidationError(error)
+        next_decoded = unquote(decoded)
+        if next_decoded == decoded:
+            break
+        decoded = next_decoded
+    # A path still changing after the last pass would hide its remaining encodings from the
+    # checks below, and a backslash is a separator to a Windows consumer but not to posixpath.
+    # An empty segment is refused because normpath folds it away: a leading '//' left in the
+    # stored URI is a UNC host to a Windows consumer.
+    if (
+        unquote(decoded) != decoded
+        or "\\" in decoded
+        or "\x00" in decoded
+        or "//" in decoded
+    ):
+        raise MediaValidationError(error)
+    normalized = posixpath.normpath(decoded)
+    if (
+        any(part == ".." for part in decoded.split("/"))
+        or normalized == ".."
+        or normalized.startswith("../")
+    ):
+        raise MediaValidationError(error)
+    return normalized
+
+
+def _object_root_path(object_root: str, field: str) -> tuple[SplitResult, str]:
+    """A root's parts and its decoded absolute path, refused with a message naming the root."""
+    root = _split_controlled_uri(object_root, field)
+    root_path = _decoded_path(root.path, f"{field} is not a usable object root")
+    if not root_path.startswith("/"):
+        raise MediaValidationError(
+            f"{field} must name an absolute path prefix, such as s3://bucket/prefix/"
+        )
+    return root, root_path
 
 
 def _validate_object_root(object_uri: str, object_root: str) -> str:
-    uri = urlsplit(_validate_uri(object_uri, "object_uri"))
-    root = urlsplit(_validate_uri(object_root, "object_root"))
+    uri = _split_controlled_uri(object_uri, "object_uri")
+    root, root_path = _object_root_path(object_root, "object_root")
     if (uri.scheme, uri.netloc) != (root.scheme, root.netloc):
-        raise MediaValidationError("object_uri is outside the configured multimodal object root")
-    def decode_path(path: str) -> str:
-        decoded = path
-        for _ in range(_MAX_URI_DECODE_PASSES):
-            if any(part == ".." for part in decoded.split("/")):
-                raise MediaValidationError(
-                    "object_uri is outside the configured multimodal object root"
-                )
-            next_decoded = unquote(decoded)
-            if next_decoded == decoded:
-                break
-            decoded = next_decoded
-        # A path still changing after the last pass would hide its remaining encodings from the
-        # checks below, and a backslash is a separator to a Windows consumer but not to posixpath.
-        if unquote(decoded) != decoded or "\\" in decoded or "\x00" in decoded:
-            raise MediaValidationError(
-                "object_uri is outside the configured multimodal object root"
-            )
-        normalized = posixpath.normpath(decoded)
-        if (
-            any(part == ".." for part in decoded.split("/"))
-            or normalized == ".."
-            or normalized.startswith("../")
-        ):
-            raise MediaValidationError(
-                "object_uri is outside the configured multimodal object root"
-            )
-        return normalized
-
-    uri_path = decode_path(uri.path)
-    root_path = decode_path(root.path)
-    if (
-        not root_path.startswith("/")
-    ):
-        raise MediaValidationError("object_uri is outside the configured multimodal object root")
-    # decode_path already returns posixpath.normpath of each path.
-    normalized_uri_path = uri_path
-    normalized_root_path = root_path
+        raise MediaValidationError(_OUTSIDE_ROOT)
+    uri_path = _decoded_path(uri.path, _OUTSIDE_ROOT)
     try:
-        common_path = posixpath.commonpath([normalized_uri_path, normalized_root_path])
+        common_path = posixpath.commonpath([uri_path, root_path])
     except ValueError:
         common_path = ""
     if (
-        normalized_uri_path == normalized_root_path
-        or common_path != normalized_root_path
-        or not normalized_uri_path.startswith(normalized_root_path.rstrip("/") + "/")
+        uri_path == root_path
+        or common_path != root_path
+        or not uri_path.startswith(root_path.rstrip("/") + "/")
     ):
-        raise MediaValidationError("object_uri is outside the configured multimodal object root")
+        raise MediaValidationError(_OUTSIDE_ROOT)
     return uri.geturl()
 
 
@@ -460,10 +489,13 @@ class MediaObjectRef:
             raise MediaValidationError("media byte_size must be positive")
         if self.byte_size > DEFAULT_MAX_MEDIA_BYTES:
             raise MediaBudgetExceeded("media byte_size exceeds the default admission budget")
-        _validate_uri(self.object_uri, "object_uri")
+        # Stored as validated, as content_digest is: a padded tenant_id would make
+        # project_media_evidence deny the media its own tenant.
+        object.__setattr__(self, "object_uri", _validate_uri(self.object_uri, "object_uri"))
         if self.source_uri is not None:
-            _validate_uri(self.source_uri, "source_uri")
-        if not self.tenant_id.strip():
+            object.__setattr__(self, "source_uri", _validate_uri(self.source_uri, "source_uri"))
+        object.__setattr__(self, "tenant_id", self.tenant_id.strip())
+        if not self.tenant_id:
             raise MediaValidationError("media tenant_id must be non-empty")
         if self.access_policy not in {"private", "tenant", "public"}:
             raise MediaValidationError("access_policy must be private, tenant, or public")
@@ -605,6 +637,8 @@ class MultimodalQuery:
                 )
             if self.media_type not in SUPPORTED_MEDIA_TYPES:
                 raise MediaValidationError("image queries need a supported media type")
+            if not self.image_bytes:
+                raise MediaValidationError("image query bytes must not be empty")
             if len(self.image_bytes) > self.max_bytes:
                 raise MediaBudgetExceeded("image query exceeds the media byte budget")
 
@@ -632,7 +666,15 @@ def project_media_evidence(
     used_bytes: int = 0,
     max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
 ) -> dict[str, object]:
-    """Project provenance and, only when authorized, the controlled original reference."""
+    """Project a media reference's provenance for an authorized requester, or refuse.
+
+    Raises `MediaAccessDenied` for a requester outside the owning tenant, or for private media
+    without a principal, and `MediaBudgetExceeded` when ``used_bytes`` plus the media's
+    ``byte_size`` passes ``max_response_bytes``; nothing is projected in either case. The budget
+    is charged whatever ``include_original`` says. ``include_original`` controls only the
+    ``original_media`` entry: the provenance itself always carries ``object_uri`` and
+    ``content_digest``.
+    """
     if requester_tenant != media.tenant_id:
         raise MediaAccessDenied("media may only be accessed from its owning tenant")
     if media.access_policy == "private" and not principal.strip():
@@ -685,14 +727,17 @@ class MultimodalTenantConfig:
             )
         if self.embedding_profile != MULTIMODAL_EMBEDDING_PROFILE:
             raise MediaValidationError("multimodal embedding profile is fixed and registered")
-        if not 1 <= self.max_media_bytes <= DEFAULT_MAX_MEDIA_BYTES:
-            raise MediaValidationError("multimodal max_media_bytes is outside the bounded limit")
-        if not 1 <= self.max_response_bytes <= DEFAULT_MAX_RESPONSE_BYTES:
-            raise MediaValidationError(
-                "multimodal max_response_bytes is outside the bounded limit"
-            )
-        if not 1 <= self.max_items <= DEFAULT_MAX_ITEMS:
-            raise MediaValidationError("multimodal max_items is outside the bounded limit")
+        for variable, value, ceiling in (
+            ("RECALL_MULTIMODAL_MAX_MEDIA_BYTES", self.max_media_bytes, DEFAULT_MAX_MEDIA_BYTES),
+            (
+                "RECALL_MULTIMODAL_MAX_RESPONSE_BYTES",
+                self.max_response_bytes,
+                DEFAULT_MAX_RESPONSE_BYTES,
+            ),
+            ("RECALL_MULTIMODAL_MAX_ITEMS", self.max_items, DEFAULT_MAX_ITEMS),
+        ):
+            if not 1 <= value <= ceiling:
+                raise MediaValidationError(f"{variable} is {value}; it must be between 1 and {ceiling}")
         if self.enabled and not self.object_root:
             raise MediaValidationError(
                 "RECALL_MULTIMODAL_OBJECT_ROOT is required when multimodal retrieval is enabled"
@@ -700,12 +745,7 @@ class MultimodalTenantConfig:
         # build_media_ref refuses every upload under a root it cannot contain, so refuse that
         # root here, at startup, rather than at the first admission.
         if self.enabled and self.object_root:
-            root = urlsplit(_validate_uri(self.object_root, "RECALL_MULTIMODAL_OBJECT_ROOT"))
-            if not root.path.startswith("/"):
-                raise MediaValidationError(
-                    "RECALL_MULTIMODAL_OBJECT_ROOT must name an absolute path prefix, "
-                    "such as s3://bucket/prefix/"
-                )
+            _object_root_path(self.object_root, "RECALL_MULTIMODAL_OBJECT_ROOT")
 
     def physical_identity(self) -> dict[str, object]:
         return {
@@ -718,8 +758,9 @@ class MultimodalTenantConfig:
         }
 
 
-class _MultimodalClient(Protocol):
-    def multimodal_embed(self, **kwargs: object) -> object: ...
+class _TextClient(Protocol):
+    """The least a client needs. A client with ``multimodal_embed`` too (the Voyage SDK's) is
+    used through that, found at call time; one without it serves text inputs through ``embed``."""
 
     def embed(self, texts: Sequence[str], model: str, **kwargs: object) -> object: ...
 
@@ -734,10 +775,24 @@ class VoyageMultimodalEmbedder:
         batch_size: int = 32,
         max_retries: int = 3,
         identity: EmbeddingProfile | None = None,
-        client: _MultimodalClient | None = None,
+        client: _TextClient | None = None,
         token_counter: Callable[[list[str]], list[int]] | None = None,
         timeout: float | None = None,
+        max_parallel_requests: int = 1,
     ) -> None:
+        """Build the client and probe the endpoint's width.
+
+        Construction sends one embedding request (a short text) to learn the vector width and
+        check it against ``identity``, so it needs a reachable provider and spends credit.
+        ``identity.model_name``, when given, overrides ``model``. ``timeout`` (seconds) applies
+        only to the client built here, not to an injected ``client``; without it the
+        ``RECALL_VOYAGE_TIMEOUT_SECONDS`` value of the process environment is used. A client
+        without ``multimodal_embed`` is accepted and serves text inputs through ``embed``.
+        ``max_parallel_requests`` bounds the planned requests one call keeps in flight.
+        """
+        if max_parallel_requests < 1:
+            raise ValueError("Voyage multimodal parallel requests must be positive")
+        self._max_parallel_requests = max_parallel_requests
         self._model = identity.model_name if identity is not None else model
         self._batch_size = batch_size
         self._max_retries = max_retries
@@ -859,13 +914,15 @@ class VoyageMultimodalEmbedder:
             )
 
     def embed_multimodal(self, inputs: Sequence[Mapping[str, object]]) -> list[list[float]]:
-        """Embed every input, in order, in requests Voyage's caps accept.
+        """Embed every input, returning the vectors in input order.
 
-        Requests were cut by count alone, so large images or long texts could pass the
-        320K-token request cap and be refused whole. They are now packed under that cap as well
-        as under ``batch_size``, and every image is fitted to Voyage's per-image pixel and byte
-        limits first. The provider embeds each input on its own, so packing changes no vector,
-        and a call already under every cap is sent exactly as before.
+        Every image is first fitted, non-strictly, to Voyage's per-image pixel and byte limits;
+        one that cannot be read is sent as given. The inputs are then packed into consecutive
+        requests of at most ``batch_size`` inputs and, by the local estimate, 90% of Voyage's
+        320K-token request cap; an input over that budget alone is sent in a request of its own.
+        An input over the 32K-token context is sent unchanged and logged, and the provider
+        truncates it. The provider embeds each input on its own, so packing changes no vector.
+        Up to ``max_parallel_requests`` requests are in flight at once.
         """
         image_pixels: dict[str, int | None] = {}
         prepared = [_fit_voyage_input(item, image_pixels) for item in inputs]
@@ -873,12 +930,19 @@ class VoyageMultimodalEmbedder:
         estimates = self._estimate(normalized, image_pixels)
         for index, ((tokens, images), (_, fitted)) in enumerate(zip(estimates, prepared)):
             self._log_input(index, "document", tokens, images, fitted)
-        vectors: list[list[float]] = []
-        for start, stop in plan_voyage_requests(
-            [tokens for tokens, _ in estimates], self._batch_size
-        ):
-            vectors.extend(self._embed_provider_inputs(normalized[start:stop]))
-        return vectors
+        requests = [
+            normalized[start:stop]
+            for start, stop in plan_voyage_requests(
+                [tokens for tokens, _ in estimates], self._batch_size
+            )
+        ]
+        if self._max_parallel_requests > 1 and len(requests) > 1:
+            workers = min(self._max_parallel_requests, len(requests))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                responses = list(pool.map(self._embed_provider_inputs, requests))
+        else:
+            responses = [self._embed_provider_inputs(request) for request in requests]
+        return [vector for response in responses for vector in response]
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         return self.embed_passages(texts)

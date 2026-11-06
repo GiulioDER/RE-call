@@ -21,6 +21,7 @@ import tempfile
 import time
 from typing import Any, Callable, Mapping, Sequence
 
+from recall.atomic_write import _flush_directory
 from recall.embeddings import Embedder, embedding_profile, embedding_profile_id
 from recall.lineage import is_sha256_hex
 from recall.errors import RecallError
@@ -212,6 +213,7 @@ def resolve_atomic_rescue_manifest(
 _ARTIFACT_CACHE_MAX_ENTRIES = 2
 _ARTIFACT_CACHE: OrderedDict[Path, AtomicRescueArtifact] = OrderedDict()
 _ARTIFACT_CACHE_LOCK = threading.Lock()
+_ARTIFACT_LOAD_LOCKS: dict[Path, threading.Lock] = {}
 # Upper bound on the matrix bytes one load-time validation step reads at once, and so on the
 # temporaries it builds. 16 MiB is 4,096 rows of a 1024-dimension float32 matrix.
 _VALIDATION_BLOCK_BYTES = 16 * 1024 * 1024
@@ -317,6 +319,14 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
         raise AtomicRescueArtifactError(
             "atomic rescue requires the recall-rag[atomic] optional dependency"
         ) from exc
+    # numpy is a core dependency, so only this probe finds a missing [atomic] extra at load,
+    # rather than on every search once the artifact has loaded.
+    try:
+        import threadpoolctl  # noqa: F401
+    except ImportError as exc:
+        raise AtomicRescueArtifactError(
+            "atomic rescue requires the recall-rag[atomic] optional dependency"
+        ) from exc
 
     try:
         decoded = json.loads(path.read_text(encoding="utf-8"))
@@ -326,6 +336,25 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
         raise AtomicRescueArtifactError("atomic rescue manifest must be a JSON object")
     if decoded.get("schema_version") != ATOMIC_RESCUE_SCHEMA_VERSION:
         raise AtomicRescueArtifactError("atomic rescue manifest schema is unsupported")
+    # Every manifest scalar is checked before the matrix is hashed: a refused artifact is never
+    # cached, so a late refusal would cost every query the whole cold load.
+    manifest_strings = {
+        name: _string(decoded, name)
+        for name in (
+            "generation_id",
+            "calibration_id",
+            "pipeline_fingerprint",
+            "corpus_fingerprint",
+            "embedding_profile",
+            "embedding_fingerprint",
+            "source_commit",
+            "constructed_at",
+        )
+    }
+    dimension = _integer(decoded, "dimension")
+    view_count = _integer(decoded, "view_count")
+    parent_count = _integer(decoded, "parent_count")
+    ordinary_chunk_count = _integer(decoded, "ordinary_chunk_count")
 
     root = path.parent.resolve()
     matrix_path = _artifact_member(root, decoded.get("matrix_file"), "matrix_file")
@@ -384,9 +413,14 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
         matrix = np.load(matrix_path, mmap_mode="r")
     except (OSError, ValueError) as exc:
         raise AtomicRescueArtifactError("atomic rescue matrix is unreadable") from exc
+    if not isinstance(matrix, np.ndarray):
+        # An .npz member loads as an open archive, not an array.
+        close = getattr(matrix, "close", None)
+        if callable(close):
+            close()
+        raise AtomicRescueArtifactError("atomic rescue matrix is unreadable")
     if matrix.dtype != np.dtype("float32") or matrix.ndim != 2:
         raise AtomicRescueArtifactError("atomic rescue matrix must be two dimensional float32")
-    dimension = _integer(decoded, "dimension")
     if matrix.shape != (len(views), dimension):
         raise AtomicRescueArtifactError("atomic rescue matrix shape mismatch")
     # Checked in row blocks, never over the whole matrix at once. `np.linalg.norm(matrix, axis=1)`
@@ -405,30 +439,28 @@ def _load_atomic_rescue_artifact(path: Path) -> AtomicRescueArtifact:
             raise AtomicRescueArtifactError("atomic rescue matrix rows are not normalized")
     matrix = np.ascontiguousarray(matrix, dtype=np.float32)
 
-    view_count = _integer(decoded, "view_count")
-    parent_count = _integer(decoded, "parent_count")
     if view_count != len(views) or parent_count != len(code_by_chunk_id):
         raise AtomicRescueArtifactError("atomic rescue manifest counts disagree with metadata")
     load_ms = (time.perf_counter() - started) * 1000.0
     resident_after = _resident_bytes()
     return AtomicRescueArtifact(
         manifest_path=path,
-        generation_id=_string(decoded, "generation_id"),
-        calibration_id=_string(decoded, "calibration_id"),
-        pipeline_fingerprint=_string(decoded, "pipeline_fingerprint"),
-        corpus_fingerprint=_string(decoded, "corpus_fingerprint"),
-        embedding_profile=_string(decoded, "embedding_profile"),
-        embedding_fingerprint=_string(decoded, "embedding_fingerprint"),
+        generation_id=manifest_strings["generation_id"],
+        calibration_id=manifest_strings["calibration_id"],
+        pipeline_fingerprint=manifest_strings["pipeline_fingerprint"],
+        corpus_fingerprint=manifest_strings["corpus_fingerprint"],
+        embedding_profile=manifest_strings["embedding_profile"],
+        embedding_fingerprint=manifest_strings["embedding_fingerprint"],
         dimension=dimension,
-        ordinary_chunk_count=_integer(decoded, "ordinary_chunk_count"),
+        ordinary_chunk_count=ordinary_chunk_count,
         views=tuple(views),
         matrix=matrix,
         parent_codes=parent_codes,
         code_by_chunk_id=code_by_chunk_id,
         matrix_sha256=matrix_digest,
         metadata_sha256=metadata_digest,
-        source_commit=_string(decoded, "source_commit"),
-        constructed_at=_string(decoded, "constructed_at"),
+        source_commit=manifest_strings["source_commit"],
+        constructed_at=manifest_strings["constructed_at"],
         load_ms=load_ms,
         resident_memory_delta_bytes=max(0, resident_after - resident_before),
     )
@@ -439,15 +471,47 @@ def load_atomic_rescue_artifact(path: str | Path) -> AtomicRescueArtifact:
 
     resolved = Path(path).expanduser().resolve()
     with _ARTIFACT_CACHE_LOCK:
-        cached = _ARTIFACT_CACHE.get(resolved)
-        if cached is None:
-            cached = _load_atomic_rescue_artifact(resolved)
-            _ARTIFACT_CACHE[resolved] = cached
+        cached = _cached_artifact(resolved)
+        if cached is not None:
+            return cached
+        load_lock = _ARTIFACT_LOAD_LOCKS.setdefault(resolved, threading.Lock())
+    # The load runs outside the cache lock, so a hit on another, cached artifact never waits
+    # behind it; the per-path lock still makes concurrent callers of one path share a load.
+    with load_lock:
+        with _ARTIFACT_CACHE_LOCK:
+            cached = _cached_artifact(resolved)
+            if cached is not None:
+                return cached
+        try:
+            loaded = _load_atomic_rescue_artifact(resolved)
+        except BaseException:
+            with _ARTIFACT_CACHE_LOCK:
+                _release_load_lock(resolved, load_lock)
+            raise
+        with _ARTIFACT_CACHE_LOCK:
+            _ARTIFACT_CACHE[resolved] = loaded
+            _ARTIFACT_CACHE.move_to_end(resolved)
+            while len(_ARTIFACT_CACHE) > _ARTIFACT_CACHE_MAX_ENTRIES:
+                # Drop only the cache reference; in-flight callers still own their mappings.
+                _ARTIFACT_CACHE.popitem(last=False)
+            _release_load_lock(resolved, load_lock)
+        return loaded
+
+
+def _release_load_lock(resolved: Path, load_lock: threading.Lock) -> None:
+    """Forget a path's load lock once its load is done; the caller holds the cache lock."""
+
+    if _ARTIFACT_LOAD_LOCKS.get(resolved) is load_lock:
+        del _ARTIFACT_LOAD_LOCKS[resolved]
+
+
+def _cached_artifact(resolved: Path) -> AtomicRescueArtifact | None:
+    """The cached artifact for ``resolved``, marked most recently used; the caller holds the lock."""
+
+    cached = _ARTIFACT_CACHE.get(resolved)
+    if cached is not None:
         _ARTIFACT_CACHE.move_to_end(resolved)
-        while len(_ARTIFACT_CACHE) > _ARTIFACT_CACHE_MAX_ENTRIES:
-            # Drop only the cache reference; in-flight callers still own their mappings.
-            _ARTIFACT_CACHE.popitem(last=False)
-        return cached
+    return cached
 
 
 def _protected_parent_ids(dense: Sequence[ScoredChunk]) -> list[str]:
@@ -542,7 +606,12 @@ def atomic_rescue_reference_parity(
     dense: Sequence[ScoredChunk],
     selection: AtomicRescueSelection,
 ) -> tuple[bool, bool]:
-    """Compare the fast selection with a deterministic same-vector full sort."""
+    """Compare the fast selection with a deterministic same-vector full sort.
+
+    Returns ``(identity_matches, score_matches)``: whether the selection's ``(source,
+    parent_ordinal, view_ordinal)`` is the full sort's winner, and whether its score equals that
+    winner's score exactly (the same float32 product, so no tolerance applies).
+    """
 
     try:
         import numpy as np
@@ -594,8 +663,14 @@ def place_atomic_selection_dense(
     dense: Sequence[ScoredChunk],
     hit_loader: Callable[[str, float], ScoredChunk | None],
 ) -> list[ScoredChunk]:
-    """Place an already selected parent at dense rank six, whatever store selected it."""
+    """Place an already selected parent at dense rank six, whatever store selected it.
 
+    A selection whose parent is already in the dense top five leaves the ranking unchanged, as
+    the fused placement does, rather than listing that parent twice.
+    """
+
+    if any(hit.chunk.id == selection.chunk_id for hit in dense[:5]):
+        return list(dense)
     rescue = hit_loader(selection.chunk_id, selection.score)
     if rescue is None or rescue.chunk.id != selection.chunk_id:
         raise AtomicRescueSelectionError("atomic rescue selected parent is unavailable")
@@ -648,7 +723,13 @@ def place_atomic_selection_fused(
 
 @dataclass(frozen=True)
 class GatedAtomicRescueSelection:
-    """A rescue admitted by the dense-rank gate, with the evidence for admitting it."""
+    """A rescue admitted by a gate, with the evidence for admitting it.
+
+    Both gates return it. From the window-rank gate, ``probe_index`` is the winning probe and
+    ``margin`` the view score minus that probe's ``gate_rank``-th dense window score. From the
+    view gate, ``probe_index`` is always 0 and ``margin`` the view score minus the weakest best
+    view score among the protected parents. The two margins are on different scales.
+    """
 
     selection: AtomicRescueSelection
     probe_index: int
@@ -834,7 +915,13 @@ def atomic_rescue_expectation_parity(
     query: str,
     selection: AtomicRescueSelection,
 ) -> tuple[bool, bool]:
-    """Compare a selection with a private benchmark receipt without exposing either value."""
+    """Compare a selection with a private benchmark receipt without exposing either value.
+
+    The receipt is JSON ``{"schema_version": 1, "rows": {<sha256>: {"source": str,
+    "parent_ordinal": int, "score": float}}}``, keyed by the lower-case SHA256 hex of the UTF-8
+    query. Returns ``(identity_matches, score_matches)``: whether ``(source, parent_ordinal)``
+    matches the row, and whether the score equals it exactly.
+    """
 
     resolved = Path(path).expanduser().resolve()
     with _EXPECTATION_CACHE_LOCK:
@@ -859,7 +946,7 @@ def atomic_rescue_expectation_parity(
             for query_digest, row in rows.items():
                 if (
                     not isinstance(query_digest, str)
-                    or len(query_digest) != 64
+                    or not is_sha256_hex(query_digest)
                     or not isinstance(row, dict)
                 ):
                     raise AtomicRescueArtifactError(
@@ -908,7 +995,17 @@ def write_atomic_rescue_artifact(
     ordinary_chunk_count: int,
     source_commit: str,
 ) -> Path:
-    """Write a new immutable artifact directory and return its manifest path."""
+    """Write a new immutable artifact directory and return its manifest path.
+
+    Each view is a mapping with a non-empty string ``chunk_id`` and ``source`` and
+    non-negative integer ``parent_ordinal`` and ``view_ordinal``; one ``chunk_id`` has one
+    ``(source, parent_ordinal)``, and row ``i`` of ``matrix`` is view ``i``'s unit vector. Every
+    identity argument must be a non-empty string and ``ordinary_chunk_count`` at least 1. The
+    staged directory is loaded with the serving loader before it is renamed into place, so an
+    artifact the loader would refuse is never published (the target path would otherwise stay
+    taken until removed by hand). Members and directories are fsynced before and after the
+    rename.
+    """
 
     import numpy as np
 
@@ -917,8 +1014,8 @@ def write_atomic_rescue_artifact(
         raise FileExistsError(f"atomic rescue artifact directory already exists: {root}")
     root.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{root.name}.", dir=root.parent))
-    values = np.ascontiguousarray(matrix, dtype=np.float32)
     try:
+        values = np.ascontiguousarray(matrix, dtype=np.float32)
         if (
             values.ndim != 2
             or values.shape[0] != len(views)
@@ -930,12 +1027,14 @@ def write_atomic_rescue_artifact(
         matrix_path = staging / "matrix.npy"
         metadata_path = staging / "views.json"
         manifest_path = staging / "manifest.json"
-        np.save(matrix_path, values, allow_pickle=False)
+        with matrix_path.open("wb") as handle:
+            np.save(handle, values, allow_pickle=False)
+            handle.flush()
+            os.fsync(handle.fileno())
         metadata = {"schema_version": 1, "views": list(views)}
-        metadata_path.write_text(
+        _write_durable(
+            metadata_path,
             json.dumps(metadata, ensure_ascii=False, separators=(",", ":")) + "\n",
-            encoding="utf-8",
-            newline="\n",
         )
         parent_count = len({str(view["chunk_id"]) for view in views})
         manifest = {
@@ -957,16 +1056,27 @@ def write_atomic_rescue_artifact(
             "source_commit": source_commit,
             "constructed_at": datetime.now(UTC).isoformat(),
         }
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
+        _write_durable(manifest_path, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        # The loader's refusal is the publication gate. Its mapping of the matrix is released
+        # before the rename, which Windows refuses while a member is mapped.
+        staged = _load_atomic_rescue_artifact(manifest_path)
+        del staged
+        _flush_directory(staging)
         os.replace(staging, root)
+        _flush_directory(root.parent)
         return root / "manifest.json"
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
+
+
+def _write_durable(path: Path, text: str) -> None:
+    """Write UTF-8 text with LF line ends and fsync it before returning."""
+
+    with path.open("wb") as handle:
+        handle.write(text.encode("utf-8"))
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 __all__ = [
