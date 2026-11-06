@@ -140,7 +140,8 @@ jobs:
           for arm in baseline candidate; do
             start=$(date +%s)
             ( cd "arm-$arm" && export RECALL_DSN="postgresql://recall:recall@localhost:5432/arm_$arm" \
-                && "../venv-$arm/bin/python" -m recall.eval.locomo \
+                && export LOCOMO_PER_QUESTION_OUT="../out/questions_$arm.json" \
+                && "../venv-$arm/bin/python" -m benchmarks.locomo_per_question \
                 --data locomo10.json --k 5 --k-curve 1,3,5,10,20 --candidate-k 20 \
                 --conversations "$CONVERSATIONS" \
                 --table "locomo_$arm" --out "../out/retrieval_$arm.json" ) 2> "out/retrieval_$arm.stderr" \
