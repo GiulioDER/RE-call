@@ -31,7 +31,7 @@ from recall.semantic_graph._model import (
     _relation_temporal_fields,
     normalize_entity_name,
 )
-from recall.supersession import ReferenceIndex
+from recall.supersession import ReferenceIndex, chunk_supersedes_targets
 from recall.types import Chunk
 
 
@@ -322,7 +322,10 @@ def _discover_entities(
             if not normalized or normalized in declared_aliases:
                 continue
             entity = get_entity(label, kind, method)
-            if kind == "file":
+            # Only the chunk's own `file` metadata names its file. An authored `file` entity
+            # names another document; counting it here gave the source two file identities,
+            # which silently dropped every per-document edge it declares.
+            if kind == "file" and method == "filename":
                 file_entities_by_source[chunk.source].add(entity.id)
             by_normalized.setdefault(normalized, entity)
         entity_ids_by_chunk[chunk.id] = by_normalized
@@ -689,7 +692,7 @@ def build_semantic_graph(
             continue
         replacement_id = next(iter(subject_ids))
         claimant = references.key(file, chunk.source)
-        for target in _as_labels(chunk.metadata.get("supersedes")):
+        for target in chunk_supersedes_targets(chunk.metadata):
             kind, keys = references.match(target, claimant)
             target_sources = {
                 (source, entity_id)

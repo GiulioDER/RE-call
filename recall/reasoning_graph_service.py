@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field as dataclass_field
 from typing import TYPE_CHECKING
 
+from recall.reasoning_expansion import validate_expansion_binding
 from recall.reasoning_proposals import ProviderFailure
 from recall.types import ScoredChunk, TrustedResult
 
@@ -119,6 +120,9 @@ def run_graph_expansion(
     if graph_expansion.readiness == "ready":
         try:
             validate_retrieval_binding(request, graph_expansion.retrieval)
+            # The request check skips every field the request leaves unset, which is the
+            # default, so the expansion is also bound to the seed it expanded.
+            validate_expansion_binding(retrieval, graph_expansion.retrieval)
         except ValueError as exc:
             # A provider returning evidence bound to another tenant, generation, or corpus is a
             # misbehaving provider, not a caller error. Keep the validated seed retrieval.

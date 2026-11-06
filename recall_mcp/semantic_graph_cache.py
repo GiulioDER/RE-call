@@ -9,7 +9,6 @@ that owns it (`_graph_projection._store_graph`) is patched on that module, its o
 from __future__ import annotations
 
 import hashlib
-import os
 import random
 import threading
 import weakref
@@ -34,6 +33,7 @@ from typing import (
     cast,
 )
 
+from recall._env import truthy
 from recall.calibration import Calibration
 from recall.embeddings import (
     Embedder,
@@ -86,6 +86,7 @@ from recall_mcp.graph_projection import (
     _authorization_scope,
     _combined_graph_policy_fingerprint,
 )
+from recall_mcp.settings import runtime_environment
 
 _log = _get_logger("mcp.service")
 
@@ -449,6 +450,17 @@ def _generation_scope(
     return nullcontext()
 
 
+def _invalidate_graph_readiness(store: PgVectorStore) -> None:
+    """Re-read the marker next time: a graph rebuild may replace it under an unchanged key.
+
+    A cached refusal costs one marker read per request until the graph is rebuilt; the
+    alternative was refusing graph expansion until the process restarted.
+    """
+    invalidate = getattr(store, "invalidate_graph_readiness", None)
+    if callable(invalidate):
+        invalidate()
+
+
 def _cached_semantic_graph(
     store: PgVectorStore,
     generation_id: str,
@@ -471,6 +483,8 @@ def _cached_semantic_graph(
             performance = current_performance_trace()
             if performance is not None:
                 performance.add("projection_cache_hits")
+            if cached is None:
+                _invalidate_graph_readiness(store)
             return cached
 
         flight = _SEMANTIC_GRAPH_INFLIGHT.get(key)
@@ -519,6 +533,7 @@ def _cached_semantic_graph(
                     generation_id,
                 )
                 semantic = None
+                _invalidate_graph_readiness(store)
     except BaseException as exc:
         with _GRAPH_PROJECTION_LOCK:
             flight.error = exc
@@ -549,50 +564,79 @@ def _retrieval_graph(
     )
 
 
-def _graph_precision_settings() -> tuple[str, str, int, int, float]:
-    variant = os.environ.get("RECALL_GRAPH_PRECISION_VARIANT", "combined").strip().lower()
+def _graph_precision_settings(
+    env: Mapping[str, str] | None = None,
+) -> tuple[str, str, int, int, float]:
+    """The evaluation controls, refusing a value outside their vocabulary.
+
+    These used to fall back to the default silently, so a typo in `RECALL_GRAPH_RELATION_CONTROL`
+    ran the real graph as the control arm. Startup validates them through
+    `validate_graph_precision_environment`, so a request only refuses when the server was never
+    validated.
+    """
+    values = runtime_environment() if env is None else env
+
+    def setting(name: str, default: str) -> str:
+        # A blank value means the default, as it did before these were validated.
+        return (values.get(name) or "").strip() or default
+
+    variant = setting("RECALL_GRAPH_PRECISION_VARIANT", "combined").lower()
     if variant not in GRAPH_PRECISION_VARIANTS:
-        variant = "combined"
-    relation_control = os.environ.get("RECALL_GRAPH_RELATION_CONTROL", "none").strip().lower()
-    if relation_control not in GRAPH_RELATION_CONTROLS:
-        relation_control = "none"
-    try:
-        relation_control_seed = int(
-            os.environ.get("RECALL_GRAPH_RELATION_CONTROL_SEED", "20260825")
+        raise ValueError(
+            "RECALL_GRAPH_PRECISION_VARIANT must be one of "
+            + ", ".join(sorted(GRAPH_PRECISION_VARIANTS))
         )
-    except ValueError:
-        relation_control_seed = 20260825
+    relation_control = setting("RECALL_GRAPH_RELATION_CONTROL", "none").lower()
+    if relation_control not in GRAPH_RELATION_CONTROLS:
+        raise ValueError(
+            "RECALL_GRAPH_RELATION_CONTROL must be one of "
+            + ", ".join(sorted(GRAPH_RELATION_CONTROLS))
+        )
+    try:
+        relation_control_seed = int(setting("RECALL_GRAPH_RELATION_CONTROL_SEED", "20260825"))
+    except ValueError as exc:
+        raise ValueError("RECALL_GRAPH_RELATION_CONTROL_SEED must be an integer") from exc
     try:
         hub_threshold = int(
-            os.environ.get("RECALL_GRAPH_HUB_DEGREE_THRESHOLD", str(GRAPH_HUB_DEGREE_THRESHOLD))
+            setting("RECALL_GRAPH_HUB_DEGREE_THRESHOLD", str(GRAPH_HUB_DEGREE_THRESHOLD))
         )
     except ValueError:
-        hub_threshold = GRAPH_HUB_DEGREE_THRESHOLD
+        hub_threshold = -1
     if hub_threshold not in {16, 32, 64}:
-        hub_threshold = GRAPH_HUB_DEGREE_THRESHOLD
+        raise ValueError("RECALL_GRAPH_HUB_DEGREE_THRESHOLD must be 16, 32 or 64")
     try:
-        cosine_margin = float(
-            os.environ.get("RECALL_GRAPH_COSINE_MARGIN", str(GRAPH_COSINE_MARGIN))
-        )
+        cosine_margin = float(setting("RECALL_GRAPH_COSINE_MARGIN", str(GRAPH_COSINE_MARGIN)))
     except ValueError:
-        cosine_margin = GRAPH_COSINE_MARGIN
+        cosine_margin = -1.0
     if cosine_margin not in {0.05, 0.10, 0.15, 0.20}:
-        cosine_margin = GRAPH_COSINE_MARGIN
+        raise ValueError("RECALL_GRAPH_COSINE_MARGIN must be 0.05, 0.10, 0.15 or 0.20")
     return variant, relation_control, relation_control_seed, hub_threshold, cosine_margin
 
 
-def _graph_tail_replacement_margin() -> float | None:
+def _graph_tail_replacement_margin(env: Mapping[str, str] | None = None) -> float | None:
     """Read the opt-in calibrated margin for replacing one direct tail item."""
-    raw = os.environ.get("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "off").strip().lower()
-    if raw in {"", "off", "none"}:
+    source = runtime_environment() if env is None else env
+    raw = source.get("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "off").strip().lower()
+    if raw in {"", "off", "none", "0", "false", "no"}:
         return None
-    if raw in {"on", "true"}:
+    if truthy(raw):
         return GRAPH_TAIL_REPLACEMENT_MARGIN
     try:
         margin = float(raw)
     except ValueError:
-        return None
-    return margin if margin in GRAPH_TAIL_REPLACEMENT_MARGINS else None
+        margin = -1.0
+    if margin not in GRAPH_TAIL_REPLACEMENT_MARGINS:
+        raise ValueError(
+            "RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN must be off, on, or one of 0.05, 0.10, "
+            "0.15, 0.20"
+        )
+    return margin
+
+
+def validate_graph_precision_environment(env: Mapping[str, str]) -> None:
+    """Refuse at startup any graph evaluation control the request path would refuse."""
+    _graph_precision_settings(env)
+    _graph_tail_replacement_margin(env)
 
 
 def _graph_precision_policy_fingerprint(
@@ -698,6 +742,7 @@ def _expand_semantic_graph(
     access_context: AccessContext | None = None,
     defer_trust_evaluation: bool = False,
     excluded_chunk_ids: frozenset[str] = frozenset(),
+    source: str | None = None,
 ) -> SemanticGraphExpansionResult:
     return _graph_expansion.expand_semantic_graph(
         store,
@@ -710,4 +755,5 @@ def _expand_semantic_graph(
         access_context=access_context,
         defer_trust_evaluation=defer_trust_evaluation,
         excluded_chunk_ids=excluded_chunk_ids,
+        source=source,
     )
