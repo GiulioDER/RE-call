@@ -1384,6 +1384,13 @@ list as an ordered upgrade procedure.
   (CVE-2026-112940, CVE-2026-112913, CVE-2026-112907; GHSA-xmj3-9gf7-h52w). Both reach RE-call only
   transitively.
 
+* **An environment that keeps fastembed 0.9.0 or earlier keeps a Pillow with open advisories.**
+  The advisories published against Pillow 12.3.0 from 2026-10-20 are fixed in 13.0.0, and the lock
+  pins 13.0.0 with fastembed 0.9.1, the first fastembed that allows it. fastembed 0.9.0 and earlier
+  require `pillow<13`, and the `fastembed` extra still admits them (`fastembed>=0.3,<1`). A fresh
+  `pip install "recall-rag[fastembed]"` resolves fastembed 0.9.1 and Pillow 13.0.0; in an existing
+  environment run `python -m pip install --upgrade fastembed pillow`.
+
 ## [0.14.0] (2026-09-17)
 
 ### Added
