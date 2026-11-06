@@ -244,7 +244,12 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
         "generation dense search, exact or hnsw",
         parse_generation_dense_search(None),
     ),
-    EnvironmentSpec("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "Retrieval", "opt in calibrated graph tail replacement"),
+    EnvironmentSpec("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "Retrieval", "opt in calibrated graph tail replacement: off, on, or 0.05, 0.10, 0.15, 0.20", "off"),
+    EnvironmentSpec("RECALL_GRAPH_PRECISION_VARIANT", "Retrieval", "graph precision evaluation variant; an unknown value refuses startup", "combined"),
+    EnvironmentSpec("RECALL_GRAPH_RELATION_CONTROL", "Retrieval", "graph evaluation control: none, shuffled or removed", "none"),
+    EnvironmentSpec("RECALL_GRAPH_RELATION_CONTROL_SEED", "Retrieval", "integer seed of the shuffled relation control", "20260825"),
+    EnvironmentSpec("RECALL_GRAPH_HUB_DEGREE_THRESHOLD", "Retrieval", "graph hub degree threshold: 16, 32 or 64", "32"),
+    EnvironmentSpec("RECALL_GRAPH_COSINE_MARGIN", "Retrieval", "legacy graph cosine margin: 0.05, 0.10, 0.15 or 0.20", "0.10"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_MODE", "Retrieval", "off or sampled shadow source conditioning", "off"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_ARTIFACT", "Retrieval", "versioned source conditioning model artifact"),
     EnvironmentSpec("RECALL_SOURCE_CONDITIONING_SHADOW_SAMPLE_RATE", "Retrieval", "deterministic shadow sampling fraction", "0"),
@@ -257,6 +262,10 @@ ENVIRONMENT_SCHEMA: tuple[EnvironmentSpec, ...] = (
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_PLACEMENT", "Retrieval", "dense rank six before fusion, or fused rank six after it", "dense"),
     EnvironmentSpec("RECALL_ATOMIC_RESCUE_SHADOW_SAMPLE_RATE", "Retrieval", "deterministic atomic rescue shadow sampling fraction", "0"),
     EnvironmentSpec("RECALL_BENCHMARK_PIN", "Retrieval", "allow pinned benchmark generation", "0"),
+    EnvironmentSpec("RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT", "Retrieval", "with the benchmark pin, expose per leg retrieval candidates", "0"),
+    EnvironmentSpec("RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT", "Retrieval", "with the benchmark pin, run document expansion arms", "0"),
+    EnvironmentSpec("RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT", "Retrieval", "with the benchmark pin, expose the full trust pool", "0"),
+    EnvironmentSpec("RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT", "Retrieval", "with the benchmark pin, compare reused and repeated source conditioning traces", "0"),
     EnvironmentSpec("RECALL_PINNED_GENERATION_ID", "Retrieval", "pinned benchmark generation"),
     EnvironmentSpec("RECALL_ENTERPRISE_CONTROL_PLANE", "Enterprise", "enable enterprise routing", "0"),
     EnvironmentSpec("RECALL_ALLOW_INSECURE_DSN", "Security", "allow insecure database DSN", "0"),
@@ -325,6 +334,10 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         "RECALL_REASONING_ANSWER_ENABLED",
         "RECALL_ENTERPRISE_CONTROL_PLANE",
         "RECALL_BENCHMARK_PIN",
+        "RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT",
+        "RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT",
+        "RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT",
+        "RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT",
         "RECALL_MULTIMODAL_ENABLED",
     ):
         _bool(source, name, False)
@@ -355,6 +368,9 @@ def _validate_runtime_options(source: Mapping[str, str]) -> None:
         )
     # The request path's own parser, so startup admits exactly what a request accepts.
     paged_evidence_mode(source.get("RECALL_PAGED_EVIDENCE"))
+    from recall_mcp.semantic_graph_cache import validate_graph_precision_environment
+
+    validate_graph_precision_environment(source)
     # Likewise for the generation store's dense path: a bad value used to pass startup and then
     # fail every search, which federation's default `omit` records only as a failed leg.
     parse_generation_dense_search(source.get("RECALL_GENERATION_DENSE_SEARCH"))

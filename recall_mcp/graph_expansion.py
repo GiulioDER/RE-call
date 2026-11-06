@@ -20,6 +20,7 @@ from recall.embeddings import Embedder
 from recall.store import PgVectorStore
 from recall.store import EdgeCandidates
 from recall.frontmatter import validity_bounds
+from recall.observability import PerformanceTrace, performance_trace_scope
 from recall.supersession import SupersessionGraph, store_supersession_graph
 from recall.trust import is_trusted
 from recall.types import Chunk, RetrievalResult, ScoredChunk, TrustedHit, TrustedResult
@@ -686,7 +687,16 @@ def _fetch_candidate_chunks(
     fetch_scope: AbstractContextManager[Any] = (
         performance.span("candidate_fetch_ms") if performance is not None else nullcontext()
     )
-    with fetch_scope:
+    # Under a source policy the batch holds chunks the caller may not see, and the response
+    # carries this request's trace. The store counts result bytes into the active trace, so
+    # the fetch runs under a throwaway one: the client must not learn the size of what it
+    # was denied.
+    db_trace_scope: AbstractContextManager[Any] = (
+        performance_trace_scope(PerformanceTrace())
+        if security_policy is not None
+        else nullcontext()
+    )
+    with fetch_scope, db_trace_scope:
         if callable(batch_loader):
             with generation_scope(store, request.generation.generation_id):
                 fetched = batch_loader(tuple(candidate_ids))
@@ -712,16 +722,6 @@ def _fetch_candidate_chunks(
                 if callable(iterator)
                 else {}
             )
-    if performance is not None:
-        performance.add("candidate_fetched_count", len(chunks_by_id))
-        performance.add(
-            "candidate_payload_bytes",
-            sum(
-                len(chunk.text.encode("utf-8")) + len(chunk.source.encode("utf-8"))
-                for chunk in chunks_by_id.values()
-            ),
-        )
-
     if security_policy is not None:
         assert access_context is not None
         authorized_chunks: dict[str, Chunk] = {}
@@ -732,7 +732,9 @@ def _fetch_candidate_chunks(
                 continue
             decision = security_policy.decide(chunk.source, access_context)
             if not decision.allowed:
-                stats.reject("security_policy")
+                # Counted as missing, so neither the reason label nor the byte counters say
+                # that the policy refused it. That a neighbour went missing is still visible.
+                stats.reject("missing_chunk")
                 continue
             redacted_text, _ = security_policy.redact_with_decision(chunk.text, decision)
             authorized_chunks[chunk_id] = (
@@ -743,6 +745,15 @@ def _fetch_candidate_chunks(
         for chunk_id in candidate_ids:
             if chunk_id not in chunks_by_id:
                 stats.reject("missing_chunk")
+    if performance is not None:
+        performance.add("candidate_fetched_count", len(chunks_by_id))
+        performance.add(
+            "candidate_payload_bytes",
+            sum(
+                len(chunk.text.encode("utf-8")) + len(chunk.source.encode("utf-8"))
+                for chunk in chunks_by_id.values()
+            ),
+        )
     return chunks_by_id
 
 
@@ -856,6 +867,7 @@ def _materialize_candidates(
     resolve_successor: Callable[..., Any],
     excluded_chunk_ids: frozenset[str],
     graph: SupersessionGraph | None = None,
+    source: str | None = None,
 ) -> CandidateMaterialization:
     """Filter graph metadata, fetch only bounded text, authorize it, and build candidate state."""
     if graph is None:
@@ -864,17 +876,40 @@ def _materialize_candidates(
     # and context slots. The persisted graph names a chunk by id only, so its file comes from one
     # text-free metadata read, and only when the corpus has an edge at all.
     superseded_ids: set[str] = set()
+    # A source scoped request keeps only neighbours inside that source, matched the way the
+    # search scope matches it. The graph spans the whole store, so the filter runs here, before
+    # the budget, or neighbours from other files could take every slot.
+    in_scope_ids: set[str] | None = None
     metadata_reader = getattr(store, "chunk_metadata_by_ids", None)
-    if graph.edges and callable(metadata_reader) and candidate_relations_by_chunk:
-        with generation_scope(store, request.generation.generation_id):
+    if (
+        (graph.edges or source is not None)
+        and callable(metadata_reader)
+        and candidate_relations_by_chunk
+    ):
+        # Under a source policy this read covers neighbours the caller may be denied, so the
+        # store's byte counting goes to a throwaway trace, as in `_fetch_candidate_chunks`.
+        db_trace_scope: AbstractContextManager[Any] = (
+            performance_trace_scope(PerformanceTrace())
+            if security_policy is not None
+            else nullcontext()
+        )
+        with db_trace_scope, generation_scope(store, request.generation.generation_id):
             loaded = metadata_reader(tuple(sorted(candidate_relations_by_chunk)))
+        if source is not None:
+            in_scope_ids = set()
         for chunk in loaded.values() if isinstance(loaded, Mapping) else loaded:
-            if isinstance(chunk, Chunk) and _chunk_is_superseded(
-                chunk, graph, as_of, request.known_as_of
+            if not isinstance(chunk, Chunk):
+                continue
+            if in_scope_ids is not None and (
+                chunk.metadata.get("file") == source or chunk.source == source
             ):
+                in_scope_ids.add(chunk.id)
+            if graph.edges and _chunk_is_superseded(chunk, graph, as_of, request.known_as_of):
                 superseded_ids.add(chunk.id)
     candidate_ids: list[str] = []
     for chunk_id in sorted(candidate_relations_by_chunk):
+        if in_scope_ids is not None and chunk_id not in in_scope_ids:
+            continue
         window = indexes.validity_by_chunk.get(chunk_id)
         if window is not None and window != (None, None):
             valid_from, valid_until = window
@@ -976,6 +1011,7 @@ def expand_semantic_graph(
     access_context: AccessContext | None = None,
     defer_trust_evaluation: bool = False,
     excluded_chunk_ids: frozenset[str] = frozenset(),
+    source: str | None = None,
 ) -> SemanticGraphExpansionResult:
     """Expand seeds through one precise persisted semantic hop.
 
@@ -1259,6 +1295,7 @@ def expand_semantic_graph(
         resolve_successor=resolve_successor,
         excluded_chunk_ids=excluded_chunk_ids,
         graph=supersession_graph,
+        source=source,
     )
     candidates_by_chunk = dict(materialized.candidates_by_chunk)
     chunks_by_id = dict(materialized.chunks_by_id)
@@ -1281,7 +1318,7 @@ def expand_semantic_graph(
             entities=len(seed_entities),
             relations=relation_count,
             candidates=candidate_count,
-            gate_reason="security_policy" if security_policy is not None else "missing_chunk",
+            gate_reason="missing_chunk",
         )
     active_calibration = _resolve_graph_calibration(store, request, calibration)
     scored_candidates = _score_candidates(
