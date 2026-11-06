@@ -532,10 +532,7 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
         )
     # After the refusals: building an embedder loads a model or sends a billed probe, and erasure
     # embeds nothing; a refused command must not pay for it.
-    embedder = _make_embedder(
-        _lite_read_embedder(args, lite_dsn_path(args.dsn), command, erasure=True)
-        if is_lite_dsn(args.dsn) else args.embedder
-    )
+    embedder = _make_embedder(_lite_read_embedder(args, command, erasure=True))
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
@@ -843,9 +840,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
         scope = _search_scope(args)
     except ValueError as exc:
         raise SystemExit(f"recall search: {exc}") from exc
-    embedder = _make_embedder(
-        _lite_read_embedder(args, lite_dsn_path(args.dsn), "search") if is_lite_dsn(args.dsn) else args.embedder
-    )
+    embedder = _make_embedder(_lite_read_embedder(args, "search"))
     # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
     #
     # `trusted_search` only consults the generation-bound resolver when `calibration is None`

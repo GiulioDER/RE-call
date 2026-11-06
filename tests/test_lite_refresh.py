@@ -962,14 +962,7 @@ def test_a_person_refreshing_a_subfolder_files_names_as_the_server_does(
 
 
 def _recorded_spec(db: Path) -> str | None:
-    import sqlite3
-
-    conn = sqlite3.connect(db)
-    try:
-        row = conn.execute("SELECT value FROM meta WHERE key = 'embedder_spec'").fetchone()
-    finally:
-        conn.close()
-    return None if row is None else str(row[0])
+    return _meta(db, "embedder_spec")
 
 
 def test_refresh_refuses_a_shell_embedder_that_differs_from_the_recorded_one(

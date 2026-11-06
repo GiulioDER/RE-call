@@ -251,3 +251,19 @@ def test_a_store_rebound_to_another_model_does_not_lend_it_the_old_threshold(tmp
         _strict(store, ContentWordEmbedder(name="another-model"))
     assert refused.value.code is TrustFailureCode.CALIBRATION_STALE
     assert _refit_wanted(store), "a fit for another model was taken to cover the corpus"
+
+
+def test_a_model_is_recorded_only_with_its_dimension(tmp_path: Path) -> None:
+    """CCA DAT-002 (deferred pass of run 20261106T152931Z). Invariant: `record_embedder_spec`
+    refuses a model without its dimension (or the reverse) and writes nothing. Failure caught: a
+    model alone stored the text "None" as `embedder_dimension`, which every later binding read
+    fails to parse.
+
+    Red proof, 2026-11-07 on the remote test host: with the `if (model is None) != (dimension is
+    None):` check of `recall.lite.store.LiteStore.record_embedder_spec` made `if False:`, this
+    failed at `pytest.raises(ValueError)` (DID NOT RAISE); restored, it passed."""
+    store = _store(tmp_path, 48)
+    assert auto_calibrate(store, ContentWordEmbedder()).status is CalibrationStatus.CERTIFIED
+    with pytest.raises(ValueError):
+        store.record_embedder_spec("another", model="another-model")
+    assert store.bound_embedder() == ("test-content-words", DIM)

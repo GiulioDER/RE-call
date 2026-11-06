@@ -1498,9 +1498,11 @@ class LiteStore:
     def record_embedder_spec(
         self, spec: str, *, profile: str | None = None, model: str | None = None, dimension: int | None = None
     ) -> None:
-        """Keep the embedder spec setup resolved (`fastembed`, `voyage:<model>`), so a refresh run
-        with no `--embedder` resolves the same one. `embedder_model` alone cannot: it is the model's
-        own name, which `recall.embeddings.resolve_embedder` does not accept.
+        """Keep the spec of the embedder that built the store (`fastembed`, `voyage:<model>`), so a
+        run with no `--embedder` resolves the same one. Setup writes it, and so do a refresh or an
+        index that switches, rebinds or adopts; index, refresh, search, forget and withdraw read it.
+        `embedder_model` alone cannot serve: it is the model's own name, which
+        `recall.embeddings.resolve_embedder` does not accept.
 
         `model` and `dimension` are those of the embedder that just re-embedded the store. They
         replace a model an earlier calibration recorded, even when this run's refit saved none (a
@@ -1510,6 +1512,10 @@ class LiteStore:
         `profile` is the RECALL_EMBED_PROFILE the embedder was built under ("" for none), which
         outranks the spec when an embedder is built, so a guard compares both (CCA SEC-001).
         """
+        if (model is None) != (dimension is None):
+            # One without the other wrote the text "None" as the width, which every later binding
+            # read fails to parse (CCA DAT-002).
+            raise ValueError("record_embedder_spec takes model and dimension together")
         with self._write():
             self._conn.execute(
                 "INSERT INTO meta(key, value) VALUES ('embedder_spec', ?) "

@@ -54,6 +54,17 @@ def _make_embedder(name: str) -> Embedder:
         raise SystemExit(diagnostic.render()) from exc
 
 
+def _typed_and_shell_embedder(args: argparse.Namespace) -> tuple[str, str]:
+    """The `--embedder` typed on this command line ("" when none) and RECALL_EMBEDDER from the
+    shell, read one way by every Lite embedder guard (CCA CODE-001).
+
+    Only a typed --embedder, before or after the subcommand, counts: the global option's default
+    is RECALL_EMBEDDER or fastembed, which must not count as deliberate (`recall.cli.StoreGiven`).
+    """
+    typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
+    return typed, os.environ.get("RECALL_EMBEDDER", "").strip()
+
+
 class _LiteEmbedderChoice(NamedTuple):
     """What `_lite_embedder_spec` chose; read by name, since spec and profile are both strings."""
 
@@ -93,10 +104,7 @@ def _lite_embedder_spec(
             f"RECALL_EMBED_PROFILE={profile!r} differs from {recorded_profile!r}, the profile {db} was "
             f"built with; {how_to_switch}, or {restore}"
         )
-    # Only a typed --embedder, before or after the subcommand: the global option's default is
-    # RECALL_EMBEDDER or fastembed, which must not count as deliberate (`recall.cli.StoreGiven`).
-    typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
-    env = os.environ.get("RECALL_EMBEDDER", "").strip()
+    typed, env = _typed_and_shell_embedder(args)
     spec = typed or env or recorded or ""
     if not recorded or spec == recorded:
         return _LiteEmbedderChoice(spec, profile, profile_switched)
@@ -114,8 +122,10 @@ def _lite_embedder_spec(
     return _LiteEmbedderChoice(spec, profile, True)
 
 
-def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str, *, erasure: bool = False) -> str:
-    """The embedder a command that only reads or erases the lite store `db` builds (CCA ENV-002).
+def _lite_read_embedder(args: argparse.Namespace, command: str, *, erasure: bool = False) -> str:
+    """The embedder a command that only reads or erases `args.dsn` builds (CCA ENV-002): the global
+    `--embedder` value unless the DSN is a Lite store, so no call site repeats that test (CCA
+    CODE-002).
 
     A typed `--embedder` wins, then RECALL_EMBEDDER, then the spec the store recorded, and only
     then the global default, which knows nothing of the store. A RECALL_EMBEDDER that differs from
@@ -127,11 +137,15 @@ def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str, *, era
     An `erasure` embeds nothing and needs the embedder for the store's width only, so it takes the
     recorded spec over RECALL_EMBEDDER and refuses nothing: a stray variable must not stop a forget.
     """
+    from recall.lite import is_lite_dsn, lite_dsn_path
     from recall.lite.inspect import lite_file_meta
 
+    if not is_lite_dsn(args.dsn):
+        return str(args.embedder)
+    db = lite_dsn_path(args.dsn)
     meta = lite_file_meta(db) or {}
     recorded = meta.get("embedder_spec")
-    typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
+    typed, env = _typed_and_shell_embedder(args)
     if erasure:
         return typed or recorded or str(args.embedder)
     from recall.lite.refresh import profile_mismatch
@@ -144,7 +158,6 @@ def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str, *, era
             f"recall {command}: RECALL_EMBED_PROFILE={profile!r} differs from {recorded_profile!r}, the "
             f"profile {db} was built with; {restore}"
         )
-    env = os.environ.get("RECALL_EMBEDDER", "").strip()
     if recorded and not typed and env and env != recorded:
         raise SystemExit(
             f"recall {command}: RECALL_EMBEDDER={env!r} differs from {recorded!r}, the embedder {db} "
