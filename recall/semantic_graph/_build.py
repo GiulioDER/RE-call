@@ -10,7 +10,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlsplit
 
 from recall.frontmatter import dependencies_from_metadata
@@ -18,6 +18,7 @@ from recall.semantic_graph._model import (
     ENTITY_KINDS,
     RELATION_KINDS,
     SEMANTIC_GRAPH_SCHEMA_VERSION,
+    DiagnosticKind,
     EntityKind,
     ExtractionMethod,
     SemanticEntity,
@@ -26,6 +27,7 @@ from recall.semantic_graph._model import (
     SemanticMention,
     SemanticRelation,
     _EntityBuildResult,
+    _graph_identity,
     _identity,
     _parse_temporal_value,
     _relation_temporal_fields,
@@ -56,9 +58,8 @@ def _entity_specs(chunk: Chunk) -> list[tuple[str, EntityKind, ExtractionMethod]
     for key in ENTITY_KINDS:
         for label in _as_labels(chunk.metadata.get(key)):
             specs.append((label, key, "metadata"))
-    for metadata_key in ("entities",):
-        for label in _as_labels(chunk.metadata.get(metadata_key)):
-            specs.append((label, "unknown", "metadata"))
+    for label in _as_labels(chunk.metadata.get("entities")):
+        specs.append((label, "unknown", "metadata"))
     graph_entities = _graph_metadata(chunk).get("entities")
     if isinstance(graph_entities, Sequence) and not isinstance(
         graph_entities, (str, bytes, bytearray)
@@ -197,20 +198,21 @@ def _finalize_graph(
     entities = tuple(sorted(entity_by_key.values(), key=lambda entity: entity.id))
     ordered_mentions = tuple(sorted(mentions, key=lambda mention: mention.id))
     ordered_relations = tuple(sorted(relations.values(), key=lambda relation: relation.id))
-    ordered_diagnostics = tuple(sorted(diagnostics, key=lambda diagnostic: diagnostic.id))
-    graph_id = _identity(
-        "graph",
-        {
-            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-            "tenant_id": tenant_id,
-            "generation_id": generation_id,
-            "pipeline_fingerprint": pipeline_fingerprint,
-            "corpus_fingerprint": corpus_fingerprint,
-            "entities": [entity.id for entity in entities],
-            "mentions": [mention.id for mention in ordered_mentions],
-            "relations": [relation.id for relation in ordered_relations],
-            "diagnostics": [diagnostic.id for diagnostic in ordered_diagnostics],
-        },
+    # One diagnostic per id: frontmatter is copied to every chunk of a file, so a diagnostic
+    # whose id names no chunk is raised once per chunk, and each copy inflated the counts.
+    unique_diagnostics = {diagnostic.id: diagnostic for diagnostic in diagnostics}
+    ordered_diagnostics = tuple(
+        sorted(unique_diagnostics.values(), key=lambda diagnostic: diagnostic.id)
+    )
+    graph_id = _graph_identity(
+        tenant_id=tenant_id,
+        generation_id=generation_id,
+        pipeline_fingerprint=pipeline_fingerprint,
+        corpus_fingerprint=corpus_fingerprint,
+        entity_ids=[entity.id for entity in entities],
+        mention_ids=[mention.id for mention in ordered_mentions],
+        relation_ids=[relation.id for relation in ordered_relations],
+        diagnostic_ids=[diagnostic.id for diagnostic in ordered_diagnostics],
     )
     return SemanticGraphProjection(
         schema_version=SEMANTIC_GRAPH_SCHEMA_VERSION,
@@ -397,7 +399,7 @@ def _discover_entities(
 
     for chunk, chunk_specs in zip(ordered_chunks, specs_per_chunk, strict=True):
         by_normalized = entity_ids_by_chunk[chunk.id]
-        for label, kind, method in chunk_specs:
+        for label, _kind, method in chunk_specs:
             normalized = normalize_entity_name(label)
             resolved_entity: SemanticEntity | None
             if normalized in alias_candidates and normalized not in ambiguous_names:
@@ -836,9 +838,7 @@ def build_semantic_graph(
             target_sources = file_targets.get(normalize_entity_name(target), set())
             if len(target_sources) != 1:
                 if len(target_sources) > 1:
-                    diagnostic_kind: Literal[
-                        "ambiguous_entity", "invalid_relation", "missing_evidence"
-                    ] = "ambiguous_entity"
+                    diagnostic_kind: DiagnosticKind = "ambiguous_entity"
                     message = "dependency target resolves to multiple files"
                 else:
                     diagnostic_kind = "missing_evidence"

@@ -9,8 +9,8 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, time
-from typing import Any, Literal, Protocol
+from datetime import UTC, datetime
+from typing import Any, Literal, Protocol, get_args
 
 from recall._frozen import freeze_value as _freeze
 from recall.lineage import canonical_sha256
@@ -49,30 +49,17 @@ ExtractionMethod = Literal[
 ]
 
 
-ENTITY_KINDS: tuple[EntityKind, ...] = (
-    "person",
-    "project",
-    "service",
-    "file",
-    "decision",
-    "event",
-    "concept",
-    "unknown",
-)
+DiagnosticKind = Literal["ambiguous_entity", "invalid_relation", "missing_evidence"]
 
 
-RELATION_KINDS: tuple[RelationKind, ...] = (
-    "supports",
-    "contradicts",
-    "references",
-    "depends_on",
-    "caused",
-    "same_entity",
-    "supersedes",
-)
+# Derived from the Literals, so a kind added to one cannot be missing from the other.
+ENTITY_KINDS: tuple[EntityKind, ...] = get_args(EntityKind)
 
 
-RELATION_STATUSES: tuple[RelationStatus, ...] = ("authored", "candidate")
+RELATION_KINDS: tuple[RelationKind, ...] = get_args(RelationKind)
+
+
+RELATION_STATUSES: tuple[RelationStatus, ...] = get_args(RelationStatus)
 
 
 def normalize_entity_name(value: str) -> str:
@@ -128,6 +115,14 @@ class SemanticMention:
 
 @dataclass(frozen=True)
 class SemanticRelation:
+    """One evidence backed edge of the semantic graph, bound to a tenant and generation.
+
+    Traversal runs from `subject_id` to `object_id`. For `supersedes` the subject is the
+    replaced document and the object its replacement, so a walk moves from a stale hit to its
+    successor. `effective_at`, `valid_from` and `valid_until` are normalised to UTC, and
+    `valid_until` must be after `valid_from`.
+    """
+
     id: str
     tenant_id: str
     generation_id: str
@@ -169,7 +164,7 @@ class SemanticGraphDiagnostic:
     id: str
     tenant_id: str
     generation_id: str
-    kind: Literal["ambiguous_entity", "invalid_relation", "missing_evidence"]
+    kind: DiagnosticKind
     reference: str | None
     message: str
     entity_ids: tuple[str, ...] = ()
@@ -308,9 +303,43 @@ def _identity(kind: str, payload: Mapping[str, Any]) -> str:
     return f"sg_{kind}_{canonical_sha256(dict(payload))[:24]}"
 
 
+def _graph_identity(
+    *,
+    tenant_id: str,
+    generation_id: str,
+    pipeline_fingerprint: str | None,
+    corpus_fingerprint: str | None,
+    entity_ids: Sequence[str],
+    mention_ids: Sequence[str],
+    relation_ids: Sequence[str],
+    diagnostic_ids: Sequence[str],
+) -> str:
+    """The graph id, from the one recipe the builder and the loader both use."""
+    return _identity(
+        "graph",
+        {
+            "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
+            "tenant_id": tenant_id,
+            "generation_id": generation_id,
+            "pipeline_fingerprint": pipeline_fingerprint,
+            "corpus_fingerprint": corpus_fingerprint,
+            "entities": list(entity_ids),
+            "mentions": list(mention_ids),
+            "relations": list(relation_ids),
+            "diagnostics": list(diagnostic_ids),
+        },
+    )
+
+
+_BARE_DATE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}")
+
+
 def _parse_temporal_value(value: Any, field_name: str, *, end_of_day: bool = False) -> datetime | None:
     if value is None or value == "":
         return None
+    # Only a bare date runs to the end of its day: an explicit instant that happens to fall at
+    # midnight UTC means that instant, as `recall_mcp.graph_expansion.temporal_bounds` reads it.
+    bare_date = not isinstance(value, datetime) and bool(_BARE_DATE.fullmatch(str(value).strip()))
     if isinstance(value, datetime):
         parsed = value
     else:
@@ -328,7 +357,7 @@ def _parse_temporal_value(value: Any, field_name: str, *, end_of_day: bool = Fal
         parsed = parsed.replace(tzinfo=UTC)
     else:
         parsed = parsed.astimezone(UTC)
-    if end_of_day and parsed.time() == time.min:
+    if end_of_day and bare_date:
         parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
     return parsed
 

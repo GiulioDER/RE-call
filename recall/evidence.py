@@ -87,10 +87,16 @@ class EvidenceItem:
     authority: str = "unknown"
 
 
+#: Whether a bundle may be answered from; the decoder in `recall.reasoning_response` reads it.
+BundleDecision = Literal["answer", "abstain"]
+#: The trust state a bundle and a reasoning response carry.
+TrustState = Literal["trusted", "degraded", "refused"]
+
+
 @dataclass(frozen=True)
 class EvidenceBundle:
     query: str
-    decision: Literal["answer", "abstain"]
+    decision: BundleDecision
     reason_code: str | None
     decision_state: DecisionState
     calibrated: bool
@@ -521,7 +527,7 @@ def build_evidence_bundle(
         )
         if missing_slots:
             selected = []
-    decision: Literal["answer", "abstain"] = "answer" if selected else "abstain"
+    decision: BundleDecision = "answer" if selected else "abstain"
     if missing_slots:
         empty_reason = "answer_slot_gap"
     elif selected:

@@ -100,8 +100,10 @@ MAX_GRAPH_RESCORING_CANDIDATES = 512
 # wider than the final context, eight direct items are protected, and graph candidates can fill
 # the remaining two slots after all bounded candidates have been rescored.
 GRAPH_FIRST_RETRIEVAL_K = 20
-GRAPH_FIRST_SEED_K = 8
-GRAPH_FIRST_CONTEXT_K = 10
+# Defined once, in graph_expansion, which ranks and cuts with them; this module hashes them into
+# the policy fingerprint and re-exports them for the engine.
+GRAPH_FIRST_SEED_K = _graph_expansion.GRAPH_FIRST_SEED_K
+GRAPH_FIRST_CONTEXT_K = _graph_expansion.GRAPH_FIRST_CONTEXT_K
 
 GRAPH_PRECISION_POLICY_VERSION = "semantic_graph_precision_v2"
 GRAPH_DIRECTIONAL_RELATIONS = frozenset(
@@ -109,12 +111,15 @@ GRAPH_DIRECTIONAL_RELATIONS = frozenset(
 )
 GRAPH_DIAGNOSTIC_ONLY_RELATIONS = frozenset({"contradicts", "same_entity"})
 GRAPH_HUB_DEGREE_THRESHOLD = 32
+GRAPH_HUB_DEGREE_THRESHOLDS = frozenset({16, 32, 64})
+GRAPH_RELATION_CONTROL_SEED = 20260825
 # Kept as a compatibility setting for old diagnostic runners. It no longer rejects candidates.
 GRAPH_COSINE_MARGIN = 0.10
-GRAPH_RERANK_WEIGHTS = (0.60, 0.20, 0.10, 0.10)
-GRAPH_RERANK_CORROBORATION_CAP = 2
+GRAPH_COSINE_MARGINS = frozenset({0.05, 0.10, 0.15, 0.20})
+GRAPH_RERANK_WEIGHTS = _graph_expansion.GRAPH_RERANK_WEIGHTS
+GRAPH_RERANK_CORROBORATION_CAP = _graph_expansion.GRAPH_RERANK_CORROBORATION_CAP
 GRAPH_FILL_POLICY = "direct_first_fill_missing"
-GRAPH_FILL_SLOT_COUNT = 5
+GRAPH_FILL_SLOT_COUNT = _graph_expansion.GRAPH_FILL_SLOT_COUNT
 GRAPH_TAIL_REPLACEMENT_MARGIN = 0.05
 GRAPH_TAIL_REPLACEMENT_MARGINS = frozenset({0.05, 0.10, 0.15, 0.20})
 GRAPH_PRECISION_VARIANTS = frozenset(
@@ -300,6 +305,7 @@ def _reset_graph_projection_cache() -> None:
     _graph_projection._reset_graph_projection_cache()
     with _GRAPH_PROJECTION_LOCK:
         _SEMANTIC_GRAPH_INDEXES.clear()
+        _CONTROLLED_GRAPHS.clear()
         _SEMANTIC_GRAPH_CACHE.clear()
         _SEMANTIC_GRAPH_INFLIGHT.clear()
     with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
@@ -593,7 +599,9 @@ def _graph_precision_settings(
             + ", ".join(sorted(GRAPH_RELATION_CONTROLS))
         )
     try:
-        relation_control_seed = int(setting("RECALL_GRAPH_RELATION_CONTROL_SEED", "20260825"))
+        relation_control_seed = int(
+            setting("RECALL_GRAPH_RELATION_CONTROL_SEED", str(GRAPH_RELATION_CONTROL_SEED))
+        )
     except ValueError as exc:
         raise ValueError("RECALL_GRAPH_RELATION_CONTROL_SEED must be an integer") from exc
     try:
@@ -602,14 +610,20 @@ def _graph_precision_settings(
         )
     except ValueError:
         hub_threshold = -1
-    if hub_threshold not in {16, 32, 64}:
-        raise ValueError("RECALL_GRAPH_HUB_DEGREE_THRESHOLD must be 16, 32 or 64")
+    if hub_threshold not in GRAPH_HUB_DEGREE_THRESHOLDS:
+        raise ValueError(
+            "RECALL_GRAPH_HUB_DEGREE_THRESHOLD must be one of "
+            + ", ".join(str(value) for value in sorted(GRAPH_HUB_DEGREE_THRESHOLDS))
+        )
     try:
         cosine_margin = float(setting("RECALL_GRAPH_COSINE_MARGIN", str(GRAPH_COSINE_MARGIN)))
     except ValueError:
         cosine_margin = -1.0
-    if cosine_margin not in {0.05, 0.10, 0.15, 0.20}:
-        raise ValueError("RECALL_GRAPH_COSINE_MARGIN must be 0.05, 0.10, 0.15 or 0.20")
+    if cosine_margin not in GRAPH_COSINE_MARGINS:
+        raise ValueError(
+            "RECALL_GRAPH_COSINE_MARGIN must be one of "
+            + ", ".join(f"{value:.2f}" for value in sorted(GRAPH_COSINE_MARGINS))
+        )
     return variant, relation_control, relation_control_seed, hub_threshold, cosine_margin
 
 
@@ -627,8 +641,8 @@ def _graph_tail_replacement_margin(env: Mapping[str, str] | None = None) -> floa
         margin = -1.0
     if margin not in GRAPH_TAIL_REPLACEMENT_MARGINS:
         raise ValueError(
-            "RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN must be off, on, or one of 0.05, 0.10, "
-            "0.15, 0.20"
+            "RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN must be off, on, or one of "
+            + ", ".join(f"{value:.2f}" for value in sorted(GRAPH_TAIL_REPLACEMENT_MARGINS))
         )
     return margin
 
@@ -645,6 +659,7 @@ def _graph_precision_policy_fingerprint(
     variant, relation_control, relation_control_seed, hub_threshold, _legacy_cosine_margin = (
         settings if settings is not None else _graph_precision_settings()
     )
+    tail_margin = _graph_tail_replacement_margin()
     return hashlib.sha256(
         "|".join(
             (
@@ -660,11 +675,7 @@ def _graph_precision_policy_fingerprint(
                 f"fill_policy={GRAPH_FILL_POLICY}",
                 f"fill_slots={GRAPH_FILL_SLOT_COUNT}",
                 "tail_replacement_margin="
-                + (
-                    "off"
-                    if _graph_tail_replacement_margin() is None
-                    else f"{_graph_tail_replacement_margin():.2f}"
-                ),
+                + ("off" if tail_margin is None else f"{tail_margin:.2f}"),
             )
         ).encode("utf-8")
     ).hexdigest()
@@ -704,6 +715,41 @@ def _shuffle_graph_relation_endpoints(
     )
 
 
+#: One controlled projection per (base graph object, control, seed), confirmed through a weak
+#: reference like `_SEMANTIC_GRAPH_INDEXES`. Without it an evaluation arm rebuilt the projection,
+#: and so every adjacency index, on each request, which skewed its latency against `none`.
+_CONTROLLED_GRAPHS: OrderedDict[
+    tuple[int, str, int],
+    tuple[weakref.ref[SemanticGraphProjection], SemanticGraphProjection],
+] = OrderedDict()
+_CONTROLLED_GRAPHS_MAX = 4
+
+
+def _controlled_semantic_graph(
+    semantic: SemanticGraphProjection, relation_control: str, seed: int
+) -> SemanticGraphProjection:
+    """The projection a relation control evaluates: the graph itself, or one reused copy."""
+    if relation_control == "none" or (relation_control == "shuffled" and not semantic.relations):
+        return semantic
+    key = (id(semantic), relation_control, seed)
+    with _GRAPH_PROJECTION_LOCK:
+        entry = _CONTROLLED_GRAPHS.get(key)
+        if entry is not None and entry[0]() is semantic:
+            _CONTROLLED_GRAPHS.move_to_end(key)
+            return entry[1]
+    if relation_control == "removed":
+        controlled = replace(semantic, relations=())
+    else:
+        controlled = replace(
+            semantic, relations=_shuffle_graph_relation_endpoints(semantic.relations, seed)
+        )
+    with _GRAPH_PROJECTION_LOCK:
+        while len(_CONTROLLED_GRAPHS) >= _CONTROLLED_GRAPHS_MAX:
+            _CONTROLLED_GRAPHS.popitem(last=False)
+        _CONTROLLED_GRAPHS[key] = (weakref.ref(semantic), controlled)
+    return controlled
+
+
 def _graph_expansion_dependencies() -> _graph_expansion.GraphExpansionDependencies:
     """Bind graph orchestration to current service seams at call time."""
     return _graph_expansion.GraphExpansionDependencies(
@@ -717,6 +763,7 @@ def _graph_expansion_dependencies() -> _graph_expansion.GraphExpansionDependenci
         resolve_graph_calibration=_resolve_graph_calibration,
         semantic_graph_indexes=_semantic_graph_indexes,
         shuffle_graph_relation_endpoints=_shuffle_graph_relation_endpoints,
+        controlled_semantic_graph=_controlled_semantic_graph,
         store_graph=_graph_projection._store_graph,
         validate_security_context=_validate_security_context,
         embed_query=embed_query,

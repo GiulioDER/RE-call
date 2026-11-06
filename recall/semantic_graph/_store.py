@@ -16,6 +16,7 @@ from recall.semantic_graph._model import (
     SemanticGraphProjection,
     SemanticMention,
     SemanticRelation,
+    _graph_identity,
     _identity,
     _relation_temporal_fields,
     _thaw,
@@ -370,19 +371,17 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
     graph_id = (
         str(marker["graph_id"])
         if isinstance(marker, dict) and marker.get("graph_id")
-        else _identity(
-            "graph",
-            {
-                "schema_version": SEMANTIC_GRAPH_SCHEMA_VERSION,
-                "tenant_id": tenant_id,
-                "generation_id": generation_id,
-                "pipeline_fingerprint": generation_row[0] if generation_row else None,
-                "corpus_fingerprint": generation_row[1] if generation_row else None,
-                "entities": [entity.id for entity in entities],
-                "mentions": [mention.id for mention in mentions],
-                "relations": [relation.id for relation in relations],
-                "diagnostics": (),
-            },
+        # A marker without a graph id is the legacy form: derive the id the builder would have,
+        # from the same recipe, so the two cannot drift.
+        else _graph_identity(
+            tenant_id=tenant_id,
+            generation_id=generation_id,
+            pipeline_fingerprint=generation_row[0] if generation_row else None,
+            corpus_fingerprint=generation_row[1] if generation_row else None,
+            entity_ids=sorted(entity.id for entity in entities),
+            mention_ids=sorted(mention.id for mention in mentions),
+            relation_ids=sorted(relation.id for relation in relations),
+            diagnostic_ids=sorted(diagnostic.id for diagnostic in diagnostics),
         )
     )
     return SemanticGraphProjection(

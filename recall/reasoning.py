@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field as dataclass_field, replace
 import time
 import threading
 import weakref
 from datetime import datetime, timezone
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from recall.evidence import (
     ANSWER_PROFILES,
@@ -58,6 +59,7 @@ from recall.reasoning_proposals import (
     InferenceProposal,
     ProposalProtocolReport,
     ProviderFailure,
+    ProviderFailureKind,
 )
 from recall.types import TrustedResult
 from recall.trust import is_trusted
@@ -131,7 +133,14 @@ class GenerationSelection:
 
 @dataclass(frozen=True)
 class ReasoningPolicy:
-    """Explicit policy for how far the public reasoning API may go."""
+    """Explicit policy for how far the public reasoning API may go.
+
+    `name` overrides two flags whatever the caller passed: `proposal_assisted` turns
+    `allow_proposal_guided_expansion` on, and `review_required` turns it and
+    `require_human_review_on_proposals` on. `require_certified_evidence` abstains with
+    `uncertified_evidence` unless the bundle is trusted. `allow_retrieval_expansion` runs the
+    bounded depth and model expansion. `graph_expansion` is `off` or `one_hop`.
+    """
 
     name: ReasoningPolicyName = "evidence_assembly"
     require_certified_evidence: bool = True
@@ -275,12 +284,8 @@ def _answer_from_evidence(
     except Exception as exc:  # BROAD-CATCH: fail-open
         # Provider failures stay in band so the run reaches its metrics record. Envelope
         # validation remains outside this block because malformed output is a hard contract error.
-        failure = ProviderFailure(
-            kind="timeout" if isinstance(exc, TimeoutError) else "provider_error",
-            provider_id="unknown",
-            model_id="unknown",
-            provider_revision="unknown",
-            message=type(exc).__name__,
+        failure = _unknown_failure(
+            "timeout" if isinstance(exc, TimeoutError) else "provider_error", type(exc).__name__
         )
         return _response(
             request=request,
@@ -495,7 +500,10 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 graph_expansion=graph_expansion,
             )
         performance = request._context.performance
-        if performance is None:
+        planner_span: AbstractContextManager[Any] = (
+            performance.span("planner_execution_ms") if performance is not None else nullcontext()
+        )
+        with planner_span:
             plan = plan_multi_hop_evidence(
                 retrieval,
                 graph,
@@ -506,18 +514,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
                 as_of=request.as_of,
                 known_as_of=request.known_as_of,
             )
-        else:
-            with performance.span("planner_execution_ms"):
-                plan = plan_multi_hop_evidence(
-                    retrieval,
-                    graph,
-                    proposals=proposals,
-                    budget=request.budget,
-                    model_calls_used=expansion_model_calls,
-                    policy_scope=request.policy_scope,
-                    as_of=request.as_of,
-                    known_as_of=request.known_as_of,
-                )
+        if performance is not None:
             performance.set("planner_budget_result", plan.outcome)
             performance.set(
                 "planner_budget_steps_used",
@@ -786,68 +783,32 @@ def _proposal_report(
         raw = provider(request, graph, retrieval)
     except TimeoutError as exc:
         return (), (
-            ProviderFailure(
-                kind="timeout",
-                provider_id="unknown",
-                model_id="unknown",
-                provider_revision="unknown",
-                message=type(exc).__name__,
-            ),
+            _unknown_failure("timeout", type(exc).__name__),
         )
     except Exception as exc:  # BROAD-CATCH: fail-open
         return (), (
-            ProviderFailure(
-                kind="provider_error",
-                provider_id="unknown",
-                model_id="unknown",
-                provider_revision="unknown",
-                message=type(exc).__name__,
-            ),
+            _unknown_failure("provider_error", type(exc).__name__),
         )
     if isinstance(raw, ProposalProtocolReport):
         pipeline = request.generation.pipeline_fingerprint or retrieval.pipeline_fingerprint
         if raw.generation_id != graph.generation_id:
             return (), (
-                ProviderFailure(
-                    kind="malformed_output",
-                    provider_id="unknown",
-                    model_id="unknown",
-                    provider_revision="unknown",
-                    message="report_generation_mismatch",
-                ),
+                _unknown_failure("malformed_output", "report_generation_mismatch"),
             )
         if pipeline is not None and raw.pipeline_id != pipeline:
             return (), (
-                ProviderFailure(
-                    kind="malformed_output",
-                    provider_id="unknown",
-                    model_id="unknown",
-                    provider_revision="unknown",
-                    message="report_pipeline_mismatch",
-                ),
+                _unknown_failure("malformed_output", "report_pipeline_mismatch"),
             )
         return raw.proposals, raw.provider_failures
     try:
         proposals = tuple(raw)
     except (TypeError, ValueError) as exc:
         return (), (
-            ProviderFailure(
-                kind="malformed_output",
-                provider_id="unknown",
-                model_id="unknown",
-                provider_revision="unknown",
-                message=type(exc).__name__,
-            ),
+            _unknown_failure("malformed_output", type(exc).__name__),
         )
     if not all(isinstance(proposal, InferenceProposal) for proposal in proposals):
         return (), (
-            ProviderFailure(
-                kind="malformed_output",
-                provider_id="unknown",
-                model_id="unknown",
-                provider_revision="unknown",
-                message="non_proposal_item",
-            ),
+            _unknown_failure("malformed_output", "non_proposal_item"),
         )
     return proposals, ()
 
@@ -873,6 +834,9 @@ def _checked(graph: ReasoningGraphProjection) -> _CheckedGraph:
     with _CHECKED_GRAPHS_LOCK:
         entry = _CHECKED_GRAPHS.get(id(graph))
         if entry is not None and entry.graph() is graph:
+            # Reinserted, so the oldest entry is the least recently used one.
+            del _CHECKED_GRAPHS[id(graph)]
+            _CHECKED_GRAPHS[id(graph)] = entry
             return entry
     # Build the node-id set outside the lock; concurrent misses may prepare the
     # same immutable graph, but must share one cache entry once it is published.
@@ -881,6 +845,10 @@ def _checked(graph: ReasoningGraphProjection) -> _CheckedGraph:
         entry = _CHECKED_GRAPHS.get(id(graph))
         if entry is not None and entry.graph() is graph:
             return entry
+        # Least recently used, after the entries whose graph is gone: a per-request graph must
+        # not push out the store graph every query reuses.
+        for key in [key for key, value in _CHECKED_GRAPHS.items() if value.graph() is None]:
+            del _CHECKED_GRAPHS[key]
         while len(_CHECKED_GRAPHS) >= _CHECKED_GRAPHS_MAX:
             _CHECKED_GRAPHS.pop(next(iter(_CHECKED_GRAPHS)))
         _CHECKED_GRAPHS[id(graph)] = prepared
@@ -934,6 +902,17 @@ def _check_member_identity(
         raise ReasoningValidationError(f"{kind} {member_id} tenant_id does not match graph")
     if generation_id != graph.generation_id:
         raise ReasoningValidationError(f"{kind} {member_id} generation_id does not match graph")
+
+
+def _unknown_failure(kind: ProviderFailureKind, message: str) -> ProviderFailure:
+    """A provider failure from a caller supplied port, whose provider identity is not known."""
+    return ProviderFailure(
+        kind=kind,
+        provider_id="unknown",
+        model_id="unknown",
+        provider_revision="unknown",
+        message=message,
+    )
 
 
 def _budget_used(

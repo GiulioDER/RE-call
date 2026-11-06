@@ -51,7 +51,10 @@ three extraction paths, and they are not equally reachable:
 - **The `recall_graph` frontmatter object** can declare any of the seven kinds, but only where a
   human hand-wrote that one-line JSON. Nothing infers `supports`, `contradicts`, `caused` or
   `same_entity` from prose; the projection deliberately has no model or embedding extractor. A
-  top level `supersedes` claim is also projected as an authored supersession edge.
+  top level `supersedes` claim is also projected as an authored supersession edge. A list
+  declares one claim per reference, and targets resolve as the trust layer resolves them. A
+  compiled record (`record_type = compiled`) declares record ids rather than files and is read as
+  declaring no supersession here, exactly as the trust layer reads it.
 
 Measured 2026-09-01 against the live serving database, **every tenant, every relation row**:
 
@@ -115,6 +118,13 @@ graph diagnostics and never become trusted relations. `aliases` uses the canonic
 of exact aliases form:
 `{"Rate Limits V2":["rate limits","RL v2"]}`.
 
+A relation may carry `effective_at`, `valid_from` and `valid_until` as ISO 8601 dates or
+instants. A value without a timezone is read as UTC. A bare date in `valid_from` or
+`effective_at` starts at midnight UTC; a bare date in `valid_until` runs to the end of that day,
+so it is inclusive, while an explicit instant means that instant. A `supersedes` edge takes
+`effective_at` from `effective_at`, else `effective_date`, else `valid_from`. A malformed date, or
+a `valid_until` not after `valid_from`, becomes an `invalid_relation` diagnostic.
+
 Markdown links and wikilinks are also extracted conservatively as authored `references` relations.
 They are accepted only when the target resolves to exactly one file in the generation. Missing and
 ambiguous targets do not drive expansion. This provides useful structure without treating a
@@ -126,7 +136,8 @@ generation scoped, protected by RLS, and linked to chunks and generations with c
 keys. Source erasure removes unsupported derived rows and invalidates the generation graph marker.
 
 New generations build and verify the semantic graph before promotion. Existing generations remain
-valid for ordinary retrieval, but graph expansion returns `GRAPH_NOT_READY` until an operator runs:
+valid for ordinary retrieval, but a reasoning query that expands the graph, which `auto` does for
+every nonempty query, abstains with `GRAPH_NOT_READY` until an operator runs:
 
 ```text
 recall graph rebuild --generation <generation_id>
@@ -157,7 +168,8 @@ the graph cannot fill them. A graph candidate cannot displace a protected direct
 The experimental `RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN` setting permits one additional change to
 this policy: a graph candidate may replace only the first unprotected direct tail item when its
 calibrated query relevance exceeds that tail by the configured margin. The setting is off by
-default, accepts `0.05`, `0.10`, `0.15`, or `0.20`, and never permits more than one replacement.
+default, accepts `0.05`, `0.10`, `0.15`, or `0.20` (or `on`, meaning `0.05`), and never permits
+more than one replacement.
 
 An entity mentioned by more than 32 distinct chunks is a hub and cannot seed traversal unless the
 normalized query contains an exact entity alias. Selective expansion refuses to traverse when at

@@ -2151,10 +2151,25 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
         Existing retrieval clients should keep using `recall_search` or `recall_evidence`.
         This tool is additive and returns a full reasoning response: trust state, generation
-        identity, proposals, trace, refusal reason, and diagnostics. It does not call a generator,
-        so an answer is returned only when the optional answer provider is explicitly enabled.
+        identity, proposals, trace, refusal reason, and diagnostics. It makes no generator call
+        unless the answer provider is enabled with `RECALL_REASONING_ANSWER_ENABLED=1`; then
+        `proposal_assisted`, `evidence_assembly` and `review_required` (when no proposals exist)
+        may call it, and `retrieval_only` and `evidence_proof` never do.
 
         Args:
+            source: restrict retrieval and graph neighbours to one source file.
+            k: trusted retrieval hits. Under `one_hop` the context is capped at 10 items
+                whatever `k` is.
+            mode: `proposal_assisted` (default) records graph proposals, runs bounded planning,
+                then may answer. `review_required` returns `needs_review` when proposals exist.
+                `evidence_assembly` answers without planning. `retrieval_only` returns trusted
+                evidence only. `evidence_proof` is an experimental proof obligation gate. It uses
+                only the separately configured OpenRouter proof provider, returns no generated
+                answer, and may issue one source scoped repair.
+            max_evidence_tokens: evidence token budget, enforced by the planner.
+            expand_retrieval: run bounded retrieval expansion (a depth pass, then at most one
+                model call proposing queries, when `RECALL_REASONING_EXPANSION=1`); its model
+                call is counted in `diagnostics.budget_used.model_calls`.
             max_steps: planner step budget. Unset selects the budget of the query's category
                 (list recall, temporal, multi hop or default); an explicit value is used as given.
             max_graph_nodes: graph node budget, trusted seeds included. Unset selects the
@@ -2164,13 +2179,10 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             graph_expansion: `auto` by default. Automatic activation uses the measured global one hop
                 configuration for every nonempty query. `off` and `one_hop` remain explicit
                 overrides. Expanded chunks are independently trust evaluated.
-            as_of: ISO 8601 valid-time instant for graph traversal. Temporal edges and neighbours
-                outside their validity window, or superseded at that instant, are rejected before
-                ranking. A value without a timezone is read as UTC. Unset means now.
-            mode: `evidence_assembly` may call the optional answer provider when
-                `RECALL_REASONING_ANSWER_ENABLED=1`. `evidence_proof` is an experimental
-                proof obligation gate. It uses only the separately configured OpenRouter proof
-                provider, returns no generated answer, and may issue one source scoped repair.
+            as_of: ISO 8601 valid-time instant for graph traversal, and the question date of the
+                dated answer prompt. Temporal edges and neighbours outside their validity window,
+                or superseded at that instant, are rejected before ranking. Seed retrieval is not
+                evaluated at it. A value without a timezone is read as UTC. Unset means now.
         """
         state = _state(ctx)
         as_of_instant = _parse_as_of(as_of)
