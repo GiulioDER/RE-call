@@ -322,3 +322,50 @@ def test_the_index_glob_help_no_longer_promises_code_chunking() -> None:
     out = " ".join(run_cli(["index", "--help"]).split())
     assert "'**/*.py' for code" not in out, out
     assert "recall generation build --chunker code" in out, out
+
+
+_EDITABLE = '{"url": "file:///src/recall", "dir_info": {"editable": true}}'
+_FOLDER = '{"url": "file:///src/recall", "dir_info": {}}'
+_ARCHIVE = '{"url": "https://files.example/recall_rag.whl", "archive_info": {}}'
+
+
+@pytest.mark.parametrize(
+    ("record", "warned"),
+    [(_EDITABLE, True), (_FOLDER, True), ("not installed", True), (None, False), (_ARCHIVE, False)],
+)
+def test_a_source_install_is_warned_before_the_stack_is_written(
+    record: str | None, warned: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DEPLOY-008 (DEF-13), owner decision 2026-11-06: warn and continue. Invariant: when the
+    running recall is an editable, folder or uninstalled source tree, `recall wizard` with
+    `data_root` reports, before writing the stack, that the image installs `recall-rag==<version>`
+    from PyPI; a wheel install (no `direct_url.json`, or an archive) is not warned. Failure caught:
+    nothing said that the image may run an older release than the code that set up the database.
+    Red proof: against the pre-fix `recall/wizard/headless.py` (`_provision`) the three source
+    cases failed the `warned` assertion; the two wheel cases are negative controls and passed."""
+    import importlib.metadata as metadata
+
+    from recall.wizard import headless as H
+    from tests.test_wizard_cca_hunt2_headless import ConfigRefusal, _data_root_config, _Spy
+
+    class _Distribution:
+        def read_text(self, name: str) -> str | None:
+            assert name == "direct_url.json"
+            return record
+
+    def distribution(name: str) -> _Distribution:
+        if record == "not installed":
+            raise metadata.PackageNotFoundError(name)
+        return _Distribution()
+
+    def stop(*args: object, **kwargs: object) -> None:
+        raise PermissionError(13, "stopped here by the test", str(tmp_path / "store"))
+
+    monkeypatch.setattr(metadata, "distribution", distribution)
+    monkeypatch.setattr(H, "choose_port", lambda: 55432)
+    monkeypatch.setattr(H, "write_compose", stop)
+    messages: list[str] = []
+    with pytest.raises(ConfigRefusal):
+        H.run_headless(_data_root_config(tmp_path), services=_Spy(), progress=messages.append)
+
+    assert any("runs from source" in message for message in messages) is warned, messages

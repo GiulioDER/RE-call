@@ -493,6 +493,41 @@ def _publishes_documents(version: str) -> bool:
     return tuple(parts) > _DOCUMENTS_EXTRA_SINCE or (exact and not prerelease)
 
 
+def source_install_note() -> str | None:
+    """A warning when the running recall is not a wheel, so the image may install another release.
+
+    The generated Dockerfile installs `recall-rag==<running version>` from PyPI. A source or editable
+    install reports the last version number while running newer code, which may already have
+    migrated the database past what that release can read, so the services would refuse it at
+    runtime. Warned and continued rather than refused (owner decision 2026-11-06), since a
+    developer's `data_root` install is the common source install. `None` for a wheel install, and
+    when the install record cannot be read: an unknown is not evidence of a skew.
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    from recall import __version__
+
+    try:
+        direct_url = distribution("recall-rag").read_text("direct_url.json")
+    except PackageNotFoundError:
+        reason = "it is not installed as a package"
+    else:
+        try:
+            dir_info = json.loads(direct_url).get("dir_info") if direct_url else None
+        except (ValueError, AttributeError):
+            return None
+        if not isinstance(dir_info, dict):
+            return None
+        reason = (
+            "it is an editable install" if dir_info.get("editable") else "it was installed from a folder"
+        )
+    return (
+        f"warning: this recall runs from source ({reason}), but the stack's image installs "
+        f"recall-rag=={__version__} from PyPI, which may be an older release than this code and the "
+        "schema it applies; continuing"
+    )
+
+
 def dockerfile_text(version: str | None = None) -> str:
     """The Dockerfile the generated stack builds from.
 

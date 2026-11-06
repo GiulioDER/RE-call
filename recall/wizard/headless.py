@@ -71,6 +71,7 @@ from recall.wizard.stack import (
     existing_port,
     existing_tenants,
     host_dsn,
+    source_install_note,
     wait_for_database,
     write_compose,
 )
@@ -1343,6 +1344,8 @@ def _provision(
         # `data_root`. See `compose_document` for the measured reason. Naming the data root here as
         # if it held the database would be a claim the code stopped creating.
         progress(f"stack: {config.data_root}, database on volume, port {port}")
+        if (note := source_install_note()) is not None:
+            progress(note)
     # A data_root that cannot be created or written (read-only, unelevated, or on Windows a path
     # that is an existing file) is a config problem, so it is refused by name, not a traceback.
     try:
