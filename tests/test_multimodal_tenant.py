@@ -499,3 +499,24 @@ def test_the_embedder_gate_refuses_a_mistyped_enabled_flag() -> None:
         resolve_embedder("voyage-multimodal", env={"RECALL_MULTIMODAL_ENABLED": "ture"})
     with pytest.raises(ValueError, match="disabled"):
         resolve_embedder("voyage-multimodal", env={"RECALL_MULTIMODAL_ENABLED": "0"})
+
+
+def test_a_path_whose_single_decode_differs_from_its_fixpoint_is_refused() -> None:
+    """DAT-002, owner decision 2026-11-06: the check and the fetch must name one object.
+
+    Invariant: a path is admitted only when decoding it once, as an S3 client does, gives the
+    same name as decoding it to the fixpoint the containment check uses. Failure mode:
+    'me%2564ia/a.png' passed containment as 'media/a.png' and was fetched as 'me%64ia/a.png',
+    outside the root. Red proof, 2026-11-06, against c1e892d51: ``Failed: DID NOT RAISE`` on
+    the first URI. Ordinary encodings stay admitted.
+    """
+    for refused in ("s3://recall-multimodal/me%2564ia/a.png", "s3://recall-multimodal/media/100%2541.png"):
+        with pytest.raises(MediaValidationError, match="percent-encoded more than once"):
+            build_media_ref(
+                PAYLOAD, media_type="image/png", object_uri=refused, object_root=OBJECT_ROOT
+            )
+    for admitted in ("s3://recall-multimodal/media/a%20b.png", "s3://recall-multimodal/media/50%25off.png"):
+        ref = build_media_ref(
+            PAYLOAD, media_type="image/png", object_uri=admitted, object_root=OBJECT_ROOT
+        )
+        assert ref.object_uri == admitted
