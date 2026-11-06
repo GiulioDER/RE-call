@@ -8,15 +8,19 @@ from. Two things take a memo away, and they are treated differently on purpose:
   `recall.fact_ledger.plan_retractions`), and the values it supplied are then erased from the
   ledger (`recall.fact_redaction`).
 - A memo deleted from disk, pruned by the indexer, or left out of a promoted generation is a
-  STATE. A rollback, a restored file or a repaired sync brings it back, so nothing is written: the
-  projections hide a fact none of whose memos the store serves now (`served_sources`, rule in
-  `recall.provenance_controller.absent_fact_ids`), and show it again when a memo returns. A lite
+  STATE. A rollback, a restored file or a repaired sync brings it back, so nothing is written to
+  the fact ledger: the projections hide a fact none of whose memos the store serves now
+  (`served_sources`, rule in `recall.provenance_controller.absent_fact_ids`), and show it again
+  when a memo returns. The indexer's prune leaves one audit record of the chunks it removed
+  (`prune_source_chunks`), so a later forget of another memo keeps a pruned card as evidence
+  rather than reading its memo as forgotten; a memo left out of a promoted generation has no such
+  record, and a forget still reads it by name. A lite
   or PostgreSQL store also answers with which content each memo is served and which memos its supersession
   graph retires (`recall.provenance_controller.ServedState`).
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
@@ -64,6 +68,21 @@ def fact_ledger_for(store: object, env: Mapping[str, str] | None = None) -> Any 
         configured = (os.environ if env is None else env).get(FACT_WRITE_DSN_ENV, "").strip()
         return PostgresFactLedger(configured or store.dsn, tenant_id=store.tenant)
     return None
+
+
+def latest_chunk_records(rows: Iterable[Sequence[Any]]) -> dict[str, tuple[str, str]]:
+    """`{chunk_id: (event_type, source)}` from `(chunk_id, event_type, source)` rows of
+    `prune_source_chunks` and `forget_source_chunks` records, in the order they were appended:
+    the last record of a chunk decides whether its memo was forgotten or only pruned.
+
+    The one rule both stores apply (`LiteStore.latest_chunk_records` and
+    `recall.store_receipts.ReceiptsAuditMixin.latest_chunk_records`, CCA CODE-001 of run
+    20261106T212835Z); each orders its rows by append, never by a clock an eval run sets.
+    """
+    latest: dict[str, tuple[str, str]] = {}
+    for chunk_id, kind, source in rows:
+        latest[str(chunk_id)] = (str(kind), str(source or ""))
+    return latest
 
 
 def prepare_retraction(
@@ -126,17 +145,20 @@ def prepare_fact_erasure(
     redacted card (`recall.types.RedactedEvidenceCard`) is gone: its memo was forgotten, and a
     namesake is another memo. So is a card whose own chunk this deletion erases, on a lite store
     or the legacy table, though another root still serves a memo under its name; its value is then
-    redacted as well when no other card supports it.
+    redacted as well when no other card supports it. A card whose chunk the indexer last recorded
+    pruning (`prune_source_chunks`) survives unless this call names its memo: a memo deleted from
+    disk is a state, and only that positive record tells it from a forgotten one.
     """
     from recall.generation_store import GenerationStore
     from recall.types import RedactedEvidenceCard
 
-    cited = {
-        card.source
+    cited_cards = [
+        card
         for event in ledger.events
         for card in event.evidence_cards
         if not isinstance(card, RedactedEvidenceCard)
-    }
+    ]
+    cited = {card.source for card in cited_cards}
     if redactor is not None:
         cited |= set(redactor.card_sources())
     names = sorted(cited)
@@ -181,16 +203,44 @@ def prepare_fact_erasure(
         erased_chunks.update(ids)
         # Recorded before the rows vanish, like the aliases, so a forget re-run after a failed
         # retraction or redaction, which deletes nothing, still knows them (CCA BUG-001). Ids only.
+        # One record per forget, never merged with an earlier one: the latest record of a chunk
+        # decides whether it was forgotten or only pruned.
         if ids and callable(append):
-            identity = json.dumps([store.tenant, source, ids], ensure_ascii=False)
-            append(
-                "forget_source_chunks", {"chunk_ids": ids}, source_uri=source,
-                event_id="forget_chunks_" + hashlib.sha256(identity.encode()).hexdigest(),
-            )
+            append("forget_source_chunks", {"chunk_ids": ids}, source_uri=source)
     for target in chunk_targets:
         recover_chunks = getattr(target, "forgotten_source_chunks", None)
         if callable(recover_chunks):
             erased_chunks.update(recover_chunks(sorted(named)))
+    # A memo pruned from disk is a state, not a decision (owner decision 2026-11-06, CCA STAKES-001
+    # of run 20261105T225204Z): a card whose chunk's latest record is the indexer's prune survives,
+    # so a fact it also states is hidden while the memo is away instead of retracted for good. No
+    # record means gone, as before: a memo forgotten before these records existed stays forgotten.
+    # A pruned memo this call names, by its name or its source, is a decision; it is recorded as
+    # forgotten first, so a later forget reads it so even when this call's redaction fails. Only
+    # what the call names counts, never `touched_names`: that also holds every name a memo this
+    # call erases is served under, so forgetting /A/x.md would decide a pruned /B/x.md (CCA BUG-001
+    # of run 20261106T212835Z).
+    asked = set(named)
+    pruned: dict[str, tuple[str, str]] = {}
+    candidates = sorted({card.chunk_id for card in cited_cards} - erased_chunks)
+    for target in chunk_targets:
+        latest = getattr(target, "latest_chunk_records", None)
+        if callable(latest) and candidates:
+            pruned.update(
+                (chunk, record) for chunk, record in latest(candidates).items()
+                if record[0] == "prune_source_chunks"
+            )
+    decided: dict[str, set[str]] = {}
+    for card in cited_cards:
+        record = pruned.get(card.chunk_id)
+        if record is not None and (card.source in asked or record[1] in asked | gone_sources):
+            decided.setdefault(record[1], set()).add(card.chunk_id)
+    for source, chunk_ids in sorted(decided.items()):
+        if callable(append):
+            append("forget_source_chunks", {"chunk_ids": sorted(chunk_ids)}, source_uri=source)
+        erased_chunks.update(chunk_ids)
+        for chunk_id in chunk_ids:
+            pruned.pop(chunk_id, None)
     chunk_cache: dict[str, bool] = {}
 
     def chunk_gone(chunk_id: str) -> bool:
@@ -223,7 +273,9 @@ def prepare_fact_erasure(
         return name in known and not remaining().get(name)
 
     def gone(card: EvidenceCard) -> bool:
-        return isinstance(card, RedactedEvidenceCard) or gone_name(card.source) or chunk_gone(card.chunk_id)
+        if isinstance(card, RedactedEvidenceCard) or chunk_gone(card.chunk_id):
+            return True
+        return gone_name(card.source) and card.chunk_id not in pruned
 
     def retract() -> int:
         append = ledger.withdraw_forgotten if withdraw else ledger.retract_forgotten
@@ -238,6 +290,7 @@ def prepare_fact_erasure(
             names=sorted(touched_names),
             erased_chunk=chunk_gone,
             chunk_ids=sorted(erased_chunks),
+            kept_chunk=lambda chunk_id: chunk_id in pruned,
         )
         return int(report.facts_redacted)
 

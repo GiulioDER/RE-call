@@ -145,6 +145,28 @@ class ReceiptsAuditMixin:
 
         return self._with_retry(_op)
 
+    def latest_chunk_records(self, chunk_ids: Sequence[str]) -> dict[str, tuple[str, str]]:
+        """`LiteStore.latest_chunk_records` for this tenant: the latest prune or forget record per
+        chunk id, in the order they were appended."""
+        if not chunk_ids:
+            return {}
+
+        from recall.fact_retraction import latest_chunk_records
+
+        def _op(conn: "psycopg.Connection") -> dict[str, tuple[str, str]]:
+            # `created_at` is the server's clock_timestamp() (migration 0008), so it orders by
+            # append; at one instant a forget sorts last, so a tie never keeps a forgotten memo.
+            rows = conn.execute(
+                "SELECT chunk, event_type, source_uri FROM recall_audit_events, "
+                "jsonb_array_elements_text(payload->'chunk_ids') AS chunk "
+                "WHERE tenant_id = %s AND event_type IN ('prune_source_chunks', 'forget_source_chunks') "
+                "AND chunk = ANY(%s) ORDER BY created_at, (event_type = 'forget_source_chunks')",
+                (self._tenant, list(chunk_ids)),
+            ).fetchall()
+            return latest_chunk_records(rows)
+
+        return self._with_retry(_op)
+
     def forgotten_source_chunks(self, sources: Sequence[str]) -> set[str]:
         """Recover the chunk ids recorded before these exact sources were forgotten."""
         if not sources:

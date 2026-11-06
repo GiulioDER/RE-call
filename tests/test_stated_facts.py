@@ -1102,3 +1102,143 @@ def test_perf002_a_hold_ends_at_its_time_budget(
     assert report.facts_stated == 2, report
     assert report.reason == "recorded 2 statement(s)", report.reason
     assert sorted(listed(store)) == ["4512", "Turin"]
+
+
+def test_s8_a_pruned_memo_is_a_state_when_another_is_forgotten(store: LiteStore, folder: Path, tmp_path: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s8_a_pruned_memo_is_a_state_when_another_is_forgotten.
+
+    Owner decision 2026-11-06 on STAKES-001 of CCA run 20261105T225204Z ("Prune records"): a memo
+    deleted from disk and pruned by a refresh is a state. door-a.md and door-b.md state DOOR;
+    door-b.md is pruned; door-a.md is forgotten; door-b.md comes back. Red against master before
+    the fix (every name that resolves to nothing counted as gone, so both assertions were
+    retracted for good and the restored memo's request id was already known): fails on "the
+    restored memo's fact stayed retracted: []". Red, mutation of `Indexer._prune_vanished`
+    (recall/index.py): the `_record_pruned_chunks` call removed, same failure.
+    """
+    memo(folder, "door-a.md", facts=[DOOR])
+    pruned = memo(folder, "door-b.md", facts=[DOOR])
+    refreshed(store, folder)
+    reconcile(store, folder)
+    assert listed(store) == ["4512"]
+    kept = tmp_path / "door-b.md.kept"
+    pruned.rename(kept)
+    refreshed(store, folder)
+
+    forget_memory(store, ["door-a.md"])  # type: ignore[arg-type]
+    (folder / "door-a.md").unlink()
+    kept.rename(pruned)
+    refreshed(store, folder)
+    reconcile(store, folder)
+
+    assert listed(store) == ["4512"], f"the restored memo's fact stayed retracted: {listed(store)}"
+
+
+def test_s8_control_a_pruned_memo_the_forget_names_is_forgotten(store: LiteStore, folder: Path, tmp_path: Path) -> None:
+    """Node tests/test_stated_facts.py::test_s8_control_a_pruned_memo_the_forget_names_is_forgotten.
+
+    Control: naming the pruned memo in the forget is a decision, so the fact is retracted (not
+    only hidden while both memos are away). Red, mutation of `prepare_fact_erasure`
+    (recall/fact_retraction.py): the `decided` set never filled (no named pruned memo counts as
+    decided), fails on "a fact outlived the memos the forget named".
+    """
+    memo(folder, "door-a.md", facts=[DOOR])
+    pruned = memo(folder, "door-b.md", facts=[DOOR])
+    refreshed(store, folder)
+    reconcile(store, folder)
+    pruned.rename(tmp_path / "door-b.md.kept")
+    refreshed(store, folder)
+
+    forget_memory(store, ["door-a.md", "door-b.md"])  # type: ignore[arg-type]
+    (folder / "door-a.md").unlink()
+
+    events = LiteFactLedger(store).events
+    assert any(e.event_type == "retracted" for e in events), "a fact outlived the memos the forget named"
+    assert listed(store) == []
+
+
+def test_s8_control_a_memo_forgotten_with_no_prune_record_stays_forgotten(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_s8_control_a_memo_forgotten_with_no_prune_record_stays_forgotten.
+
+    Control, fail closed: door-b.md was forgotten (its redaction failed, so its card was never
+    redacted) and has no prune record, so forgetting door-a.md retracts the fact. Red, mutation of
+    `prepare_fact_erasure` (recall/fact_retraction.py): any recorded chunk counted as pruned (the
+    `record[0] == "prune_source_chunks"` filter dropped), fails on "a fact outlived both its
+    forgotten memos".
+    """
+    import recall.fact_redaction as redaction
+
+    memo(folder, "door-a.md", facts=[DOOR])
+    memo(folder, "door-b.md", facts=[DOOR])
+    refreshed(store, folder)
+    reconcile(store, folder)
+
+    def down(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("redaction unavailable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(redaction.LiteFactRedactor, "redact", down)
+        forget_memory(store, ["door-b.md"])  # type: ignore[arg-type]
+    (folder / "door-b.md").unlink()
+    forget_memory(store, ["door-a.md"])  # type: ignore[arg-type]
+    (folder / "door-a.md").unlink()
+
+    events = LiteFactLedger(store).events
+    assert any(e.event_type == "retracted" for e in events) and listed(store) == [], (
+        "a fact outlived both its forgotten memos"
+    )
+
+
+def test_s8_the_prune_records_and_deletes_under_the_erasure_lock(
+    store: LiteStore, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_s8_the_prune_records_and_deletes_under_the_erasure_lock.
+
+    CCA STAKES-001 of run 20261106T212835Z: on PostgreSQL a forget holds the fact ledger's
+    erasure lock exclusively from its plan to its delete, and the indexer's prune held nothing,
+    so a prune could record a forgotten memo's chunks after the forget's own record and keep its
+    card alive for good. The prune's record and its delete now both run inside the lock (shared).
+    Red, mutation of `Indexer._prune_vanished` (recall/index.py: the `with erasure_lock_for(...)`
+    replaced by `with nullcontext()`): fails on "the prune wrote outside the erasure lock".
+    """
+    from contextlib import contextmanager
+
+    import recall.provenance_controller as controller
+
+    memo(folder, "door-b.md", facts=[DOOR])
+    refreshed(store, folder)
+    held: list[bool] = []
+    seen: list[tuple[str, bool]] = []
+    real_lock = controller.erasure_lock_for
+
+    def lock(ledger: object, *, shared: bool) -> Any:
+        @contextmanager
+        def holding() -> Iterator[None]:
+            with real_lock(ledger, shared=shared):
+                held.append(shared)
+                try:
+                    yield
+                finally:
+                    held.pop()
+        return holding()
+
+    real_append, real_delete = store.append_audit_event, store.delete_sources
+
+    def append(kind: str, *args: Any, **kwargs: Any) -> Any:
+        seen.append((kind, bool(held)))
+        return real_append(kind, *args, **kwargs)
+
+    def delete(*args: Any, **kwargs: Any) -> Any:
+        seen.append(("delete", bool(held)))
+        return real_delete(*args, **kwargs)
+
+    monkeypatch.setattr(controller, "erasure_lock_for", lock)
+    monkeypatch.setattr(store, "append_audit_event", append)
+    monkeypatch.setattr(store, "delete_sources", delete)
+    (folder / "door-b.md").rename(tmp_path / "door-b.md.kept")
+    refreshed(store, folder)
+
+    pruning = [entry for entry in seen if entry[0] in ("prune_source_chunks", "delete")]
+    assert [kind for kind, _ in pruning] == ["prune_source_chunks", "delete"], seen
+    assert all(inside for _, inside in pruning), f"the prune wrote outside the erasure lock: {seen}"
