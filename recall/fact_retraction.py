@@ -124,8 +124,11 @@ def prepare_fact_erasure(
     completes it. A card whose name was not known here (applied while this ran) counts as
     surviving: a retraction may fail to happen, never remove a fact that still has evidence. A
     redacted card (`recall.types.RedactedEvidenceCard`) is gone: its memo was forgotten, and a
-    namesake is another memo.
+    namesake is another memo. So is a card whose own chunk this deletion erases, on a lite store
+    or the legacy table, though another root still serves a memo under its name; its value is then
+    redacted as well when no other card supports it.
     """
+    from recall.generation_store import GenerationStore
     from recall.types import RedactedEvidenceCard
 
     cited = {
@@ -163,8 +166,45 @@ def prepare_fact_erasure(
                     event_id="forget_alias_" + hashlib.sha256(identity.encode()).hexdigest(),
                 )
 
+    # The chunks this deletion erases, so a card citing one is gone although a memo another root
+    # holds under the same root-relative name is still served (owner decision 2026-11-06, CCA
+    # SEC-001). Chunk ids hash the absolute source, so they never name another root's chunk. A
+    # generation store reads chunks per generation only, so there it stays the name rule: a
+    # retraction may fail to happen, never remove a fact that still has evidence.
+    chunk_targets = [
+        target for target in (store, shadow_store)
+        if target is not None and not isinstance(target, GenerationStore)
+    ]
+    erased_chunks: set[str] = set()
+    for source in sorted(gone_sources):
+        ids = sorted({chunk.id for target in chunk_targets for chunk in target.chunks_for_source(source)})
+        erased_chunks.update(ids)
+        # Recorded before the rows vanish, like the aliases, so a forget re-run after a failed
+        # retraction or redaction, which deletes nothing, still knows them (CCA BUG-001). Ids only.
+        if ids and callable(append):
+            identity = json.dumps([store.tenant, source, ids], ensure_ascii=False)
+            append(
+                "forget_source_chunks", {"chunk_ids": ids}, source_uri=source,
+                event_id="forget_chunks_" + hashlib.sha256(identity.encode()).hexdigest(),
+            )
+    for target in chunk_targets:
+        recover_chunks = getattr(target, "forgotten_source_chunks", None)
+        if callable(recover_chunks):
+            erased_chunks.update(recover_chunks(sorted(named)))
+    chunk_cache: dict[str, bool] = {}
+
+    def chunk_gone(chunk_id: str) -> bool:
+        # Look again after deletion, as `remaining` does: a chunk indexed again is evidence again.
+        if chunk_id not in erased_chunks:
+            return False
+        if chunk_id not in chunk_cache:
+            chunk_cache[chunk_id] = all(target.chunk_by_id(chunk_id) is None for target in chunk_targets)
+        return chunk_cache[chunk_id]
+
     def touched(card: EvidenceCard) -> bool:
-        return card.source in touched_names
+        # A card whose own chunk this deletion erases is touched by it even when its name, stamped
+        # under another root, no longer resolves (CCA SEC-001 of run 20261106T121445Z).
+        return card.source in touched_names or chunk_gone(card.chunk_id)
 
     remaining_cache: list[dict[str, list[str]]] = []
 
@@ -183,7 +223,7 @@ def prepare_fact_erasure(
         return name in known and not remaining().get(name)
 
     def gone(card: EvidenceCard) -> bool:
-        return isinstance(card, RedactedEvidenceCard) or gone_name(card.source)
+        return isinstance(card, RedactedEvidenceCard) or gone_name(card.source) or chunk_gone(card.chunk_id)
 
     def retract() -> int:
         append = ledger.withdraw_forgotten if withdraw else ledger.retract_forgotten
@@ -196,6 +236,8 @@ def prepare_fact_erasure(
         report = redactor.redact(
             erased=lambda name: name in touched_names and gone_name(name),
             names=sorted(touched_names),
+            erased_chunk=chunk_gone,
+            chunk_ids=sorted(erased_chunks),
         )
         return int(report.facts_redacted)
 

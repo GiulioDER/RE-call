@@ -1058,6 +1058,17 @@ class LiteStore:
         return {name for (payload,) in rows for name in json.loads(payload).get("aliases", ())
                 if isinstance(name, str)}
 
+    def forgotten_source_chunks(self, sources: Sequence[str]) -> set[str]:
+        """Recover the chunk ids recorded before these exact sources were forgotten."""
+        if not sources:
+            return set()
+        rows = self._metadata_values(
+            "SELECT payload FROM audit_events WHERE event_type = 'forget_source_chunks' "
+            "AND source_uri IN (SELECT value FROM json_each(?))", (json.dumps(list(sources)),),
+        )
+        return {chunk for (payload,) in rows for chunk in json.loads(payload).get("chunk_ids", ())
+                if isinstance(chunk, str)}
+
     def count(self) -> int:
         return int(self._metadata_values("SELECT count(*) FROM chunks")[0][0])
 
