@@ -481,6 +481,12 @@ class IndexResult(BaseModel):
         "than discovering it later as missing memory.",
     )
     message: str = Field(description="Human-readable summary of what was indexed.")
+    ambiguous_references: list[AmbiguousReference] = Field(
+        default_factory=list,
+        description="`supersedes:` references in the tenant that name more than one memo, so search "
+        "resolves them to none. Rewrite each with the folder of the memo meant "
+        "(`recall_resolve_reference` names the candidates).",
+    )
 
 
 class ForgetResult(BaseModel):
@@ -618,6 +624,34 @@ class CurrentStateResult(BaseModel):
     corpus_fingerprint: str | None = Field(default=None, description="Corpus identity.")
     as_of: str = Field(description="Exact UTC instant used for the projection.")
     records: list[CurrentStateRecordModel] = Field(description="Projected source states.")
+
+
+class ReferenceCandidate(BaseModel):
+    file: str = Field(description="The memo's root-relative file name.")
+    source: str | None = Field(default=None, description="The memo's source URI, when the store records one.")
+
+
+class ReferenceResolution(BaseModel):
+    reference: str = Field(description="The reference asked about, as given.")
+    status: str = Field(
+        description="`resolved` (it names one memo), `ambiguous` (it names several; write one of "
+        "`candidates` with its folder), `dangling` (it names none) or `self` (it names `written_in`)."
+    )
+    candidates: list[ReferenceCandidate] = Field(
+        default_factory=list, description="Every memo the reference could mean, as search resolves it."
+    )
+    write: str | None = Field(
+        default=None,
+        description="When `resolved`, the shortest form that names that memo alone: write this in "
+        "`supersedes:`. A bare name when no other memo shares it, else the file with its folder; "
+        "always the file with its folder where access rules hide memos from the caller.",
+    )
+    message: str = Field(description="What to do next, in a sentence.")
+
+
+class AmbiguousReference(BaseModel):
+    memo: str = Field(description="The memo that declares the reference.")
+    reference: str = Field(description="The `supersedes:` reference that names more than one memo.")
 
 
 class InventoryEntry(BaseModel):

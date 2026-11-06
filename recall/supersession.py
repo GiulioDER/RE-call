@@ -332,6 +332,10 @@ class SupersessionGraph:
     collided: frozenset[str] = frozenset()
     #: claimant -> the references it declares that name several files (so resolve to none).
     ambiguous_claims: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    #: The index every reference of this resolution was matched with, for a reader that resolves
+    #: one more reference the same way (`recall_resolve_reference`). Read-only; None for a graph
+    #: built from parts.
+    references: ReferenceIndex | None = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_parts(
@@ -373,6 +377,7 @@ class SupersessionGraph:
             dict(self.windows),
             self.collided,
             dict(self.ambiguous_claims),
+            self.references,
         )
 
     def successor(
@@ -430,6 +435,7 @@ def as_supersession_graph(
             value.windows,
             value.collided,
             value.ambiguous_claims,
+            value.references,
         )
     return SupersessionGraph.from_parts(value, unresolved, candidates)
 
@@ -1095,6 +1101,7 @@ def _resolve_rows(
         bounded,
         collided,
         {claimant: tuple(refs) for claimant, refs in ambiguous_claims.items()},
+        index,
     )
 
 

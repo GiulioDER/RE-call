@@ -296,10 +296,22 @@ def _index_memory_unlocked(
     stated = reconcile_stated_facts(store, write_env=values)
     if stated.enabled:
         message += f" Stated facts: {stated.summary()}."
+    from recall_mcp.lifecycle import ambiguous_references
+
+    # What search will resolve to no memo, said while the writer is still here to fix it. Advisory:
+    # the index has committed by now, so a failure to check must not report the write as failed.
+    try:
+        ambiguous = ambiguous_references(store, security_policy=security_policy, access_context=security_context)
+    except Exception as exc:  # noqa: BLE001  # stated above: the receipt never fails a committed index
+        ambiguous = []
+        message += f" Supersedes references were not checked ({type(exc).__name__})."
+    if ambiguous:
+        message += f" {len(ambiguous)} supersedes reference(s) name more than one memo; see ambiguous_references."
     return IndexResult(
         files=stats.files,
         chunks=stats.chunks,
         skipped=stats.skipped,
         deleted=stats.deleted,
         message=message,
+        ambiguous_references=ambiguous,
     )

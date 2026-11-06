@@ -194,6 +194,7 @@ from recall_mcp.lifecycle import (
     forget_memory,  # noqa: F401  # legacy public import
     memory_inventory,  # noqa: F401  # legacy public import
     memory_stats,  # noqa: F401  # legacy public import
+    resolve_served_reference,  # noqa: F401  # on the service hub so the tool tests stop at it
     withdraw_memory,  # noqa: F401  # on the service hub beside forget_memory
 )
 from recall_mcp.indexing import (

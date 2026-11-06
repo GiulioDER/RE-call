@@ -25,8 +25,12 @@ from recall_mcp.models import (
     WithdrawResult,
     InventoryResult,
     MemoryStatsResult,
+    AmbiguousReference,
+    ReferenceCandidate,
+    ReferenceResolution,
 )
 from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall.supersession import ReferenceIndex, reference_stem_key, stored_supersession_graph
 
 if TYPE_CHECKING:
     from recall.control_plane import ControlPlane
@@ -548,6 +552,116 @@ def memory_stats(store: PgVectorStore, max_age: timedelta = timedelta(days=2)) -
         stale=stale,
         metrics=METRICS.snapshot(),
     )
+
+
+def _check_access(
+    store: object, security_policy: SourceSecurityPolicy | None, access_context: AccessContext | None
+) -> None:
+    """Refuse a policy without a context, or a context for another tenant, as `memory_inventory` does."""
+    if security_policy is None:
+        return
+    if access_context is None:
+        raise ValueError("access_context is required when security_policy is configured")
+    if getattr(store, "tenant", None) != access_context.tenant:
+        raise PermissionError("access context tenant does not match the store")
+
+
+def _readable_keys(
+    index: ReferenceIndex,
+    keys: list[str],
+    security_policy: SourceSecurityPolicy | None,
+    access_context: AccessContext | None,
+) -> list[str]:
+    """The keys among `keys` whose memo the caller may read; all of them when no policy is set.
+
+    Matching stays on the served index, so an answer is search's own; only what is SHOWN is
+    narrowed, and a memo the caller cannot read is never named or counted (2026-11-04 hunt,
+    SEC-001). A memo with no source cannot be asked about, so a policy never admits it.
+    """
+    if security_policy is None or access_context is None:
+        return keys
+    return [
+        key
+        for key in keys
+        if (source := index.nodes[key][2]) is not None and security_policy.decide(source, access_context).allowed
+    ]
+
+
+def resolve_served_reference(
+    store: object,
+    reference: str,
+    *,
+    written_in: str = "",
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
+) -> ReferenceResolution:
+    """Which memo a `supersedes:` reference names in this tenant, by search's own rule, before it is written.
+
+    The rule is `ReferenceIndex.match`, the one search resolves every stored reference with: a
+    reference that names a folder is matched by path, a bare name only when no other memo shares
+    it. `written_in` is the memo the reference will be written in, so a reference to itself says so.
+
+    Under a policy the answer counts only memos the caller may read, and `write` is always the
+    file with its folder: a bare name that is unique among readable memos may still be shared
+    with one the caller cannot see, and search, which sees every memo, would resolve it to none.
+    """
+    _check_access(store, security_policy, access_context)
+    graph = stored_supersession_graph(store)
+    index = graph.references if graph is not None else None
+    if index is None:
+        return ReferenceResolution(
+            reference=reference, status="dangling",
+            message="this store resolves no supersedes references, so none can be checked",
+        )
+    status, keys = index.match(reference, written_in)
+    keys = [key for key in keys if key in index.nodes]
+    shown = _readable_keys(index, keys, security_policy, access_context)
+    if security_policy is not None and status in ("resolved", "ambiguous"):
+        status = "dangling" if not shown else "resolved" if len(shown) == 1 else "ambiguous"
+    candidates = [ReferenceCandidate(file=index.nodes[key][0], source=index.nodes[key][2]) for key in sorted(shown)]
+    write = None
+    if status == "resolved" and len(candidates) == 1:
+        file = candidates[0].file
+        stem = reference_stem_key(file)
+        namesakes = sum(1 for named, _root, _source in index.nodes.values() if reference_stem_key(named) == stem)
+        write = file.rsplit("/", 1)[-1] if namesakes == 1 and security_policy is None else file
+    message = {
+        "resolved": f"it names one memo; write `supersedes: {write}`",
+        "ambiguous": f"it names {len(candidates)} memos; write the one meant with its folder, as listed",
+        "dangling": "it names no memo in this tenant",
+        "self": "it names the memo it would be written in",
+    }.get(status, status)
+    return ReferenceResolution(reference=reference, status=status, candidates=candidates, write=write, message=message)
+
+
+def ambiguous_references(
+    store: object,
+    *,
+    limit: int = 50,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
+) -> list[AmbiguousReference]:
+    """The tenant's `supersedes:` references that name more than one memo, which search resolves to none.
+
+    Under a policy a reference is listed only when the caller may read the memo it is written in
+    and every memo it names: one ambiguous only because of a memo the caller cannot read would
+    otherwise say that memo exists.
+    """
+    _check_access(store, security_policy, access_context)
+    graph = stored_supersession_graph(store)
+    index = graph.references if graph is not None else None
+    if graph is None or index is None:
+        return []
+    found = []
+    for claimant, references in sorted(graph.ambiguous_claims.items()):
+        if claimant not in index.nodes:
+            continue
+        for reference in references:
+            status, keys = index.match(reference, claimant)
+            named = [claimant, *keys]
+            if status == "ambiguous" and _readable_keys(index, named, security_policy, access_context) == named:
+                found.append(AmbiguousReference(memo=index.nodes[claimant][0], reference=reference))
+    return found[:limit]
 
 
 def memory_inventory(
