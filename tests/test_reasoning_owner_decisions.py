@@ -143,6 +143,40 @@ def test_bug006_one_claim_repeated_across_chunks_counts_once() -> None:
     )
 
 
+def test_bug006_admission_counts_one_claim_once() -> None:
+    """BUG-006 at its consumer: admission must store claim keys, not relation ids.
+
+    `_retain_loaded_candidates` is where a candidate's corroboration set is filled. Red proof
+    is a mutation: `candidate.claim_keys.add(relation.id)` at that line stored the three copies
+    apart and failed the assertion with `3 == 1`.
+    """
+    from datetime import UTC, datetime
+
+    from recall.supersession import SupersessionGraph
+
+    copies = [_relation(f"rel-{i}", "memo-0", "/r/memo.md") for i in range(3)]
+    candidates = {"memo-0": graph_expansion.GraphCandidate()}
+    result = graph_expansion._retain_loaded_candidates(
+        request=SimpleNamespace(known_as_of=None),  # the function reads only this field
+        candidates_by_chunk=candidates,
+        chunks_by_id={"memo-0": Chunk("memo-0", "/r/memo.md", "text", {})},
+        candidate_relations_by_chunk={"memo-0": copies},
+        indexes=SimpleNamespace(validity_by_chunk={}, chunks_by_entity={}),
+        seed_entities={"entity-a"},
+        trusted_seed_ids=set(),
+        as_of=datetime(2026, 11, 6, tzinfo=UTC),
+        supersession={},
+        edge_candidates={},
+        candidate_budget=10,
+        supersedes_key=lambda *_: None,
+        resolve_successor=lambda *_: None,
+        stats=graph_expansion.ExpansionStats(),
+        graph=SupersessionGraph.from_parts({}),
+    )
+    admitted = result.candidates_by_chunk["memo-0"]
+    assert len(admitted.claim_keys) == 1
+
+
 def _rows(graph: Any, marker: dict[str, Any]) -> tuple[Any, ...]:
     """The single row `load_semantic_graph` reads, as PostgreSQL returns it (JSON values)."""
 
@@ -350,3 +384,24 @@ def test_deploy101_validate_upgrades_a_graph_an_older_builder_wrote(manager, mon
         readiness = read_graph_readiness(conn, manager.tenant_id, generation.generation_id)
     assert readiness.ready
     assert readiness.schema_version == SEMANTIC_GRAPH_SCHEMA_VERSION
+
+
+@requires_db
+def test_bug001_validate_names_a_graph_a_newer_builder_wrote(manager, monkeypatch) -> None:  # noqa: F811
+    """BUG-001: validating a generation whose graph a newer builder wrote reported corruption.
+
+    After a rollback the marker records a version this code does not know. Red proof is a
+    mutation in `GenerationManager._validate`: removing the `built_version > graph.schema_version`
+    branch let it fall through to "fingerprint mismatch", which this match refuses.
+    """
+    from recall.generation_types import GenerationError
+
+    data = b"a memo built by a newer builder"
+    manifest = _manifest(manager.tenant_id, data)
+    generation = manager.create(manifest, _pipeline("model-a"))
+    _use_schema_version(monkeypatch, SEMANTIC_GRAPH_SCHEMA_VERSION + 1)
+    manager.build(generation.generation_id, _reader(manifest, data), _Embedder(1), lambda t: [t])
+    monkeypatch.undo()
+
+    with pytest.raises(GenerationError, match="newer builder"):
+        manager.validate(generation.generation_id)
