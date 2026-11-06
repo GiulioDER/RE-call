@@ -358,8 +358,9 @@ def test_excluded_dirs_match_the_indexer() -> None:
 
 
 def test_a_deadline_load_only_appends(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """F10 (PERF-001): under a deadline the cache is only appended to, never rewritten whole (a
-    rewrite grows with the cache and a hook's exit can kill it), and the next call reads it."""
+    """F10 (PERF-001): under a deadline a cache holding no dead rows is only appended to, never
+    rewritten whole (a rewrite grows with the cache), and the next call reads it. A cache holding
+    dead rows is rewritten (CCA hunt run 20261106T223009Z, PERF-001: `test_records_files_hunt_cca`)."""
     import time
 
     memos = copy_memos(tmp_path / "memos")
