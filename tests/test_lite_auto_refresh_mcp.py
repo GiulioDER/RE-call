@@ -507,7 +507,9 @@ def test_the_server_does_not_refresh_a_store_switched_away_from_its_embedder(
 
     Red proof, 2026-11-06 on the remote test host: with `refusal = embedder_refusal(...)` in
     `recall_mcp.lite_refresh.LiteAutoRefresher._run` replaced by `refusal = None`, this failed at
-    the indexed-memo assertion (the server refreshed); restored, it passed."""
+    the indexed-memo assertion (the server refreshed); restored, it passed. The check then moved
+    under the write lane (CCA STAKES-002): with `refusal_env=self._env` removed from that call,
+    it failed the same way, 2026-11-06."""
     store, root, clock = setup
     store.record_embedder_spec("switched-words", profile="")
     refresher = LiteAutoRefresher(  # type: ignore[arg-type]
@@ -519,3 +521,64 @@ def test_the_server_does_not_refresh_a_store_switched_away_from_its_embedder(
     assert _sources(store) == set(), f"the server refreshed a switched store: {_sources(store)}"
     warning = refresher.warning() or ""
     assert "records the embedder 'switched-words'" in warning and "recall setup --lite" in warning, warning
+
+
+def test_a_refresh_asks_the_embedder_guard_under_the_write_lane(setup: tuple[LiteStore, Path, Clock]) -> None:
+    """CCA STAKES-002 (run 20261106T215302Z). Invariant: `refresh(refusal_env=...)` asks
+    `embedder_refusal` inside the write lane, so a switch that committed while the refresh queued
+    stops it before anything is embedded. Failure caught: the server asked before queueing, then
+    re-embedded with the embedder the switch had replaced.
+
+    Red proof, 2026-11-06 on the remote test host: with the `refusal_env is not None` block of
+    `recall.lite.refresh._refresh_locked` removed, this failed at the outcome assertion
+    (`Outcome.REFRESHED`); restored, it passed."""
+    from recall.lite.refresh import refresh
+
+    store, root, _ = setup
+    store.record_embedder_spec("switched-words", profile="")
+    report = refresh(store, [root], ContentWordEmbedder(), refusal_env={"RECALL_EMBEDDER": "content-words"})  # type: ignore[arg-type]
+    assert report.outcome is Outcome.FAILED, report.outcome
+    assert "records the embedder 'switched-words'" in report.reason, report.reason
+    assert _sources(store) == set(), f"the refused refresh embedded: {_sources(store)}"
+
+
+def test_an_unset_server_embedder_is_compared_as_the_default_it_builds(setup: tuple[LiteStore, Path, Clock]) -> None:
+    """CCA STAKES-003 (run 20261106T215302Z). Invariant: a server with no RECALL_EMBEDDER builds
+    fastembed, so `embedder_refusal` compares that with the recorded spec instead of skipping the
+    check. Failure caught: an unset variable passed a store recorded with another embedder.
+
+    Red proof, 2026-11-06 on the remote test host: with `or "fastembed"` removed from
+    `recall.lite.refresh.embedder_refusal`, this failed at the assertion (None); restored, it
+    passed."""
+    from recall.lite.refresh import embedder_refusal
+
+    store, _, _ = setup
+    store.record_embedder_spec("voyage:voyage-4", profile="")
+    refusal = embedder_refusal(store, ContentWordEmbedder(), {})  # type: ignore[arg-type]
+    assert refusal is not None and "this server runs 'fastembed'" in refusal, refusal
+
+
+def test_a_switch_with_no_memo_change_is_reported_by_the_next_retrieval(
+    setup: tuple[LiteStore, Path, Clock],
+) -> None:
+    """CCA ENV-002 (run 20261106T215302Z). Invariant: when the store is switched away from the
+    server's embedder and no memo changes, the next retrieval check still asks the guard and its
+    warning says why. Failure caught: no refresh started, so the switch went unreported.
+
+    Red proof, 2026-11-06 on the remote test host: with `refusal = embedder_refusal(...)` in the
+    unchanged branch of `recall_mcp.lite_refresh.LiteAutoRefresher.before_retrieval` replaced by
+    `refusal = None`, this failed at the warning assertion; restored, it passed."""
+    store, root, clock = setup
+    refresher = LiteAutoRefresher(  # type: ignore[arg-type]
+        store, ContentWordEmbedder(), [root], interval_s=30, wait_s=30, clock=clock,
+        env={"RECALL_EMBEDDER": "content-words"},
+    )
+    refresher.start()
+    refresher._kick()[0].join(30)
+    refresher.before_retrieval()
+    assert refresher.warning() is None, refresher.warning()
+    store.record_embedder_spec("switched-words", profile="")
+    clock.now += 31
+    refresher.before_retrieval()
+    warning = refresher.warning() or ""
+    assert "records the embedder 'switched-words'" in warning, warning

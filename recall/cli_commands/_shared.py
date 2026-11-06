@@ -74,10 +74,12 @@ def _lite_embedder_spec(
     The profile outranks any spec when the embedder is built (`recall.embeddings.resolve_embedder`),
     so one that differs from `recorded_profile` is refused unless `force`, whatever was typed.
     """
+    from recall.lite.refresh import profile_mismatch
+
     profile = os.environ.get("RECALL_EMBED_PROFILE", "").strip()
-    profile_switched = recorded_profile is not None and profile != recorded_profile
+    restore = profile_mismatch(recorded_profile, profile)
+    profile_switched = restore is not None
     if profile_switched and not force:
-        restore = f"set RECALL_EMBED_PROFILE={recorded_profile!r}" if recorded_profile else "unset RECALL_EMBED_PROFILE"
         raise SystemExit(
             f"RECALL_EMBED_PROFILE={profile!r} differs from {recorded_profile!r}, the profile {db} was "
             f"built with; {how_to_switch}, or {restore}"
@@ -121,13 +123,15 @@ def _lite_read_embedder(args: argparse.Namespace, db: Path, command: str, *, era
     typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
     if erasure:
         return typed or recorded or str(args.embedder)
+    from recall.lite.refresh import profile_mismatch
+
     recorded_profile = meta.get("embedder_profile")
     profile = os.environ.get("RECALL_EMBED_PROFILE", "").strip()
-    if recorded_profile is not None and profile != recorded_profile:
+    if (restore := profile_mismatch(recorded_profile, profile)) is not None:
         # The profile outranks a typed --embedder when the embedder is built (CCA SEC-001).
         raise SystemExit(
             f"recall {command}: RECALL_EMBED_PROFILE={profile!r} differs from {recorded_profile!r}, the "
-            f"profile {db} was built with; set it back, or unset it if {recorded_profile!r} is empty"
+            f"profile {db} was built with; {restore}"
         )
     env = os.environ.get("RECALL_EMBEDDER", "").strip()
     if recorded and not typed and env and env != recorded:

@@ -176,8 +176,11 @@ class LiteAutoRefresher:
             current = snapshot(self._roots)
             fingerprint = current.fingerprint
             if fingerprint == self._refreshed:
+                # A switch made while no memo changed starts no refresh, so it is asked here, a
+                # meta read (CCA ENV-002); otherwise nothing is missing.
+                refusal = embedder_refusal(self._store, self._embedder, self._env)
                 with self._lock:
-                    self._failure = None  # back to a snapshot that refreshed: nothing is missing
+                    self._failure = refusal
                 return
             if fingerprint == self._failed and self._refreshed_elsewhere(fingerprint):
                 return
@@ -241,20 +244,6 @@ class LiteAutoRefresher:
         with self._lock:
             before, self._pending = self._pending, None
         try:
-            refusal = embedder_refusal(self._store, self._embedder, self._env)
-        except Exception as exc:  # BROAD-CATCH: fail-open  # an unreadable meta must not stop a search
-            refusal = f"the store's embedder record does not read: {type(exc).__name__}: {exc}"
-        if refusal is not None:
-            # The guard `recall lite refresh` applies, which a server cannot answer with --force or
-            # --embedder (owner decision 2026-11-06): nothing is embedded, and the agent is told.
-            _log.warning("lite auto refresh refused: %s", refusal)
-            with self._lock:
-                self._failure = refusal
-                self._failed = (before or snapshot(self._roots)).fingerprint
-                self._backoff_s = MAX_BACKOFF_S
-                self._retry_at = self._clock() + self._backoff_s
-            return
-        try:
             # In the background: a server is long-lived, so a refit can outlast this refresh.
             report = refresh(
                 self._store,
@@ -266,6 +255,10 @@ class LiteAutoRefresher:
                 budget=self._budget,
                 before=before,
                 key_root=self._roots[0],  # RECALL_INDEX_ROOT: the server's single root names files
+                # The guard `recall lite refresh` applies, asked under the write lane; a server
+                # cannot answer it with --force or --embedder (owner decision 2026-11-06), so a
+                # refusal is a failed refresh whose reason retrievals carry.
+                refusal_env=self._env,
             )
         except Exception as exc:  # BROAD-CATCH: fail-open  # logged; the next check retries
             _log.warning("lite auto refresh failed: %s", exc)

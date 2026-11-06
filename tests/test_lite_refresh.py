@@ -1271,3 +1271,34 @@ def test_a_shell_embed_profile_that_differs_from_the_recorded_one_is_refused(
         cli_main(["--dsn", f"sqlite:///{db.as_posix()}", "search", "flange valve"])
     assert "RECALL_EMBED_PROFILE='some-profile-v1' differs from ''" in str(stopped.value.code), stopped.value.code
     assert asked == [], f"an embedder was built before the refusal: {asked}"
+
+
+def test_a_store_that_recorded_no_profile_adopts_one(
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CCA STAKES-001 (run 20261106T215302Z). Invariant: a store whose spec was recorded before
+    profiles were has its RECALL_EMBED_PROFILE recorded by the next plain refresh or index, even
+    with no memo changed, so the profile guard engages from then on. Failure caught: only a
+    switch recorded the profile, so the guard skipped such a store for good.
+
+    Red proof, 2026-11-06 on the remote test host: with `or info.embedder_profile is None` removed
+    from `adopt` in `recall.cli_commands.lite_cmd._cmd_refresh`, this failed at the first profile
+    assertion (None); with `or meta.get("embedder_profile") is None` removed from
+    `recall.cli_commands.index_search._cmd_index`, it failed at the second; restored, it passed."""
+    import sqlite3
+
+    monkeypatch.delenv("RECALL_EMBED_PROFILE", raising=False)
+    db, _ = _setup_with_model_name(project, monkeypatch)
+
+    def forget_profile() -> None:
+        conn = sqlite3.connect(db)
+        with conn:
+            conn.execute("DELETE FROM meta WHERE key = 'embedder_profile'")
+        conn.close()
+
+    forget_profile()
+    assert _cli("lite", "refresh", "--store", str(db), "--memory", str(project / "memory")) == 0, capsys.readouterr()
+    assert _meta(db, "embedder_profile") == ""
+    forget_profile()
+    assert _cli("--dsn", f"sqlite:///{db.as_posix()}", "index", str(project / "memory")) == 0, capsys.readouterr()
+    assert _meta(db, "embedder_profile") == ""

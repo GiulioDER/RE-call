@@ -90,6 +90,15 @@ def refresh_purpose(roots: Sequence[str | Path]) -> str:
     return f"{PURPOSE}:{hashlib.sha256(folders.encode('utf-8')).hexdigest()[:12]}"
 
 
+def profile_mismatch(recorded: str | None, current: str) -> str | None:
+    """How to put RECALL_EMBED_PROFILE back when `current` differs from the `recorded` one, else
+    None; a store that recorded none is not compared. The one rule every guard applies (CCA
+    CODE-001)."""
+    if recorded is None or current == recorded:
+        return None
+    return f"set RECALL_EMBED_PROFILE={recorded!r}" if recorded else "unset RECALL_EMBED_PROFILE"
+
+
 def embedder_refusal(store: LiteStore, embedder: Embedder, env: Mapping[str, str]) -> str | None:
     """Why a refresher with no `--force` and no typed `--embedder`, the MCP server's, must not
     refresh `store` with `embedder` built from `env`; None when it may (owner decision 2026-11-06).
@@ -103,11 +112,13 @@ def embedder_refusal(store: LiteStore, embedder: Embedder, env: Mapping[str, str
 
     meta = lite_file_meta(store.path) or {}
     rerun = "run `recall setup --lite` again to register the embedder the store now holds"
-    recorded, configured = meta.get("embedder_spec"), env.get("RECALL_EMBEDDER", "").strip()
-    if recorded and configured and configured != recorded:
+    # Unset, the server builds its default (`recall_mcp.settings`), so that is what is compared
+    # (CCA STAKES-003); an empty value must not skip the check.
+    recorded, configured = meta.get("embedder_spec"), env.get("RECALL_EMBEDDER", "").strip() or "fastembed"
+    if recorded and configured != recorded:
         return f"the store records the embedder {recorded!r}, and this server runs {configured!r}; {rerun}"
     recorded_profile, profile = meta.get("embedder_profile"), env.get("RECALL_EMBED_PROFILE", "").strip()
-    if recorded_profile is not None and profile != recorded_profile:
+    if profile_mismatch(recorded_profile, profile) is not None:
         return (
             f"the store records RECALL_EMBED_PROFILE={recorded_profile!r}, and this server runs "
             f"{profile!r}; {rerun}"
@@ -407,6 +418,7 @@ def refresh(
     key_root: str | Path | None = None,
     record_spec: str | None = None,
     record_profile: str | None = None,
+    refusal_env: Mapping[str, str] | None = None,
 ) -> RefreshReport:
     """Bring `store` up to date with `roots`. See the module docstring; never raises on a busy lane.
 
@@ -480,6 +492,7 @@ def refresh(
                 key_root=None if key_root is None else Path(key_root).resolve(),
                 record_spec=record_spec,
                 record_profile=record_profile,
+                refusal_env=refusal_env,
             )
     except LiteWriterCoalesced:
         report.outcome = Outcome.COALESCED
@@ -507,6 +520,7 @@ def _refresh_locked(
     key_root: Path | None = None,
     record_spec: str | None = None,
     record_profile: str | None = None,
+    refusal_env: Mapping[str, str] | None = None,
 ) -> RefreshReport:
     from recall.cache import default_cache
     from recall.context import context_policy_for_profile
@@ -517,6 +531,11 @@ def _refresh_locked(
     # whatever changes while it indexes moves the next snapshot, so it is refreshed next time.
     current = snapshot(roots)
     report.fingerprint, report.files_seen = current.fingerprint, current.count
+    if refusal_env is not None and (refusal := embedder_refusal(store, embedder, refusal_env)) is not None:
+        # Asked under the lane, so a switch that committed while this refresh queued is seen
+        # before anything is embedded with the embedder it replaced (CCA STAKES-002).
+        report.outcome, report.reason = Outcome.FAILED, refusal
+        return _finish(db, roots, report)
     if current.missing:
         # Gone while this refresh queued. Indexing an empty list would read as "every memo deleted".
         report.outcome = Outcome.FAILED

@@ -455,7 +455,7 @@ def _cmd_index(args: argparse.Namespace) -> None:
 
                     outcome = ensure_calibrated(store, embedder)
                     print(f"calibration: {outcome.status.value}: {outcome.reason}")
-                    if switched or recorded is None:
+                    if switched or recorded is None or meta.get("embedder_profile") is None:
                         # Also on a store this command built, so the next plain index or refresh
                         # resolves this embedder and refuses a different one (CCA ENV-003).
                         store.record_embedder_spec(

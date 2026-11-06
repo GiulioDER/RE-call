@@ -220,7 +220,9 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     rebind = info.embedder_model is not None and embedder.name != info.embedder_model
     # A store that recorded no spec (built by an older `recall index`) records this one, which only
     # a run that reaches the write lane does; an unchanged folder would return before it (CCA BUG-003).
-    adopt = bool(spec) and not info.embedder_spec
+    # A store that recorded a spec before profiles were recorded adopts its profile the same way,
+    # or every profile guard would skip it for good (CCA STAKES-001).
+    adopt = bool(spec) and (not info.embedder_spec or info.embedder_profile is None)
     # One walk serves both the refresh's change check and the budget warning below (CCA
     # PERF-004): the memo files are the same before and after, and the walk is the cost.
     snap = snapshot(roots)
