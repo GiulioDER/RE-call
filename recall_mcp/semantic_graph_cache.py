@@ -9,6 +9,7 @@ that owns it (`_graph_projection._store_graph`) is patched on that module, its o
 from __future__ import annotations
 
 import hashlib
+import os
 import random
 import threading
 import weakref
@@ -86,7 +87,6 @@ from recall_mcp.graph_projection import (
     _authorization_scope,
     _combined_graph_policy_fingerprint,
 )
-from recall_mcp.settings import runtime_environment
 
 _log = _get_logger("mcp.service")
 
@@ -574,7 +574,7 @@ def _graph_precision_settings(
     `validate_graph_precision_environment`, so a request only refuses when the server was never
     validated.
     """
-    values = runtime_environment() if env is None else env
+    values = os.environ if env is None else env
 
     def setting(name: str, default: str) -> str:
         # A blank value means the default, as it did before these were validated.
@@ -615,7 +615,7 @@ def _graph_precision_settings(
 
 def _graph_tail_replacement_margin(env: Mapping[str, str] | None = None) -> float | None:
     """Read the opt-in calibrated margin for replacing one direct tail item."""
-    source = runtime_environment() if env is None else env
+    source = os.environ if env is None else env
     raw = source.get("RECALL_GRAPH_TAIL_REPLACEMENT_MARGIN", "off").strip().lower()
     if raw in {"", "off", "none", "0", "false", "no"}:
         return None
