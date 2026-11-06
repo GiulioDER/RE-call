@@ -237,7 +237,11 @@ class StaleReportQueue:
             except RewriteRefused as exc:
                 raise StaleReportRefused(str(exc)) from exc
         stamp = reported_at.isoformat()
-        existing = self.get(key)
+        # A row stored before folders counted keeps its key: the same claim reported again
+        # counts on it rather than opening a second pending row beside it.
+        existing = next((found for k in keys if (found := self.get(k)) is not None), None)
+        if existing is not None:
+            key = existing.claim_key
         if existing is not None and existing.status != "pending":
             raise StaleReportRefused(f"this claim was already {existing.status} by {existing.reviewer_id}")
         if existing is None and self.count("pending") >= max_pending:

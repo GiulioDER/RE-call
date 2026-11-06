@@ -250,9 +250,16 @@ def _claim_side(value: str, shared: Collection[str]) -> str:
 
 
 def shared_stems(root: Path) -> frozenset[str]:
-    """The stems more than one memo under `root` carries, as `claim_key` takes them."""
+    """The stems more than one memo under `root` carries, as `claim_key` takes them.
+
+    Only memos count, as `recall.dashboard.review.memo_files` lists them: a `.md` file in a dot
+    directory (`.obsidian/`, `.trash/`, the `.recall` sidecar) is not a namesake, so it can
+    never change the key of a memo the dashboard shows as uniquely named.
+    """
     count: dict[str, int] = {}
     for f in root.rglob("*.md"):
+        if not f.is_file() or any(part.startswith(".") for part in f.relative_to(root).parts):
+            continue
         stem = supersedes_key(encodable_name(f.name))
         count[stem] = count.get(stem, 0) + 1
     return frozenset(stem for stem, n in count.items() if n > 1)

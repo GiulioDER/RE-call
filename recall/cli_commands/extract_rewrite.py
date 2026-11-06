@@ -409,7 +409,9 @@ def _run_rewrite(args: argparse.Namespace) -> None:
                     quote = " ".join(str(proposal.metadata.get(key, "")).split())
                     print(f"      {label}: \"{quote[:200]}\"")
             # Printed so a plan from THIS command and a plan from `recall_rewrite_plan` over
-            # MCP name the same thing. Their proposal ids never match; their claim keys do.
+            # MCP name the same thing. Their proposal ids never match; their claim keys do,
+            # except for a memo whose name another memo shares: the MCP key is still the
+            # file-name one, which `--claim` also accepts.
             print(f"      claim {claim}")
         print(f"\n{len(proposals)} proposal(s)")
         print("dry run — nothing written. Declare one with `recall rewrite apply`.")
@@ -460,7 +462,8 @@ def _run_rewrite(args: argparse.Namespace) -> None:
         # The ledger is consulted HERE, not only under --apply. Skipping it meant the preview
         # of an already rejected claim printed "Re-run with --apply to write this edge", and
         # --apply then refused it: a preview that promises a write the real run declines.
-        if claim in _rejected_claims(ledger_path):
+        rejected = _rejected_claims(ledger_path)
+        if any(key in rejected for key in claim_keys(chosen.proposed_relation, chosen.subject_id, chosen.object_id, shared)):
             print(f"not written: claim {claim} was already rejected by a reviewer")
             raise SystemExit(1)
         print("dry run — nothing written. Re-run with --apply to write this edge.")

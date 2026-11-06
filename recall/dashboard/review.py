@@ -431,14 +431,18 @@ def build_queue(
     by_claim: dict[str, QueueItem] = {}
 
     unsafe = 0
+    shared = shared_stems(root)
     for report in pending_reports(root):
         if anchored(report.stale_source) or anchored(report.replacing_source):
             # Names are checked when a report is written, but a sidecar synced from another system
             # is read back as is; an absolute or UNC name is never a memo of this folder.
             unsafe += 1
             continue
-        by_claim[report.claim_key] = QueueItem(
-            claim=report.claim_key,
+        # Keyed by the claim's current key, as the database and arbiter items are, so the three
+        # sources merge into one item even for a row stored before folders counted.
+        key_now = claim_key("supersedes", report.stale_source, report.replacing_source, shared=shared)
+        by_claim[key_now] = QueueItem(
+            claim=key_now,
             stale=report.stale_source,
             replacing=report.replacing_source,
             stale_quote=report.stale_quote,
@@ -482,7 +486,6 @@ def build_queue(
         notes.append(f"arbiter: {exc}")
         proposals = ()
     notes.extend(summaries)
-    shared = shared_stems(root)
     for proposal in proposals:
         if proposal.proposed_relation != "supersedes":
             continue
@@ -587,7 +590,7 @@ def accept(root: Path, item: QueueItem, *, reviewer: str, note: str, shown_diges
         if result.refusal is not None:
             raise ReviewRefused(f"not written: {result.refusal}")
         _record_accept(root, edits, plan, reviewer=reviewer, note=note, now=now, shown_digest=shown_digest)
-        _close_report(root, item.claim, "accepted", reviewer, note, now)
+        _close_report(root, item, "accepted", reviewer, note, now)
         return plan
 
 
@@ -642,18 +645,20 @@ def reject(root: Path, item: QueueItem, *, reviewer: str, note: str, now: dateti
                 ledger.reject(item.claim, reviewer_id=reviewer, reason=note, rejected_at=now)
         except RewriteRefused as exc:
             raise ReviewRefused(str(exc)) from exc
-        _close_report(root, item.claim, "rejected", reviewer, note, now)
+        _close_report(root, item, "rejected", reviewer, note, now)
 
 
-def _close_report(root: Path, claim: str, status: str, reviewer: str, note: str, now: datetime) -> None:
+def _close_report(root: Path, item: QueueItem, status: str, reviewer: str, note: str, now: datetime) -> None:
+    """Close the item's sidecar row, under its current key or the one it had before folders counted."""
     path = default_queue_path(root)
     if not path.exists():
         return
     try:
         with StaleReportQueue(path) as queue:
-            report = queue.get(claim)
-            if report is not None and report.status == "pending":
-                queue.mark_reviewed(claim, status=status, reviewer_id=reviewer, note=note, reviewed_at=now)
+            for claim in dict.fromkeys((item.claim, claim_key("supersedes", item.stale, item.replacing))):
+                report = queue.get(claim)
+                if report is not None and report.status == "pending":
+                    queue.mark_reviewed(claim, status=status, reviewer_id=reviewer, note=note, reviewed_at=now)
     except (sqlite3.Error, StaleReportRefused) as exc:
         # The memo or the rejection ledger is already written, so this is not a refusal.
         raise DecisionRecorded(f"the decision was recorded but the report queue could not be updated: {exc}") from exc
