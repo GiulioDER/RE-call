@@ -270,3 +270,55 @@ def test_the_wizard_ignores_an_embedder_from_the_environment(
     out = run_cli(["wizard", "--headless", "--config", str(tmp_path / "missing.json")])
     assert "does not accept" not in out, out
     assert "missing.json" in out, out
+
+
+# ----------------------------------------------------------------------------------------------
+# Owner decisions of 2026-11-06 on the pass's parked findings
+# ----------------------------------------------------------------------------------------------
+
+
+def test_project_keys_resolve_only_keys_named_like_the_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PERF-009 (DEF-14), owner decision 2026-11-06: pre-filter lexically. Invariant: under the
+    ~/.claude.json lock, `_project_keys` resolves only keys whose last folder name matches the
+    project's, and still finds every spelling of the project that does. Failure caught: it resolved
+    every key, so one key on an offline network share could hold the lock past other writers'
+    30 s deadline.
+    Red proof: against the pre-fix `recall/wizard/wiring.py` (`_project_keys`) the two unrelated
+    keys were resolved and the `resolved` assertion failed."""
+    import pathlib
+
+    from recall.wizard.wiring import _project_keys
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    spellings = {str(project), os.path.join(str(tmp_path), ".", "proj")}
+    unrelated = [str(tmp_path / "elsewhere" / "other"), str(tmp_path / "share" / "offline")]
+    projects: dict[str, object] = {key: {} for key in [*spellings, *unrelated]}
+
+    resolved: list[str] = []
+    real = pathlib.Path.resolve
+
+    def recording(self: pathlib.Path, strict: bool = False) -> pathlib.Path:
+        resolved.append(str(self))
+        return real(self, strict=strict)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", recording)
+    keys = _project_keys(projects, project)
+
+    assert set(keys) == spellings, keys
+    assert not set(unrelated) & set(resolved), resolved
+
+
+def test_the_index_glob_help_no_longer_promises_code_chunking() -> None:
+    """CODE-019 (DEF-8), owner decision 2026-11-06: remove the dead branch and correct the help.
+    Invariant: `recall index --help` does not offer `'**/*.py'` as the way to index code, and names
+    the command that chunks Python by symbol. Failure caught: the help suggested a glob whose only
+    effect was to pick `chunk_code`, which `recall index` never reaches, since every non-markdown
+    file is chunked from its extracted text blocks.
+    Red proof: against the pre-fix `recall/cli_commands/index_search.py` (`--glob` help) the first
+    assertion failed."""
+    out = " ".join(run_cli(["index", "--help"]).split())
+    assert "'**/*.py' for code" not in out, out
+    assert "recall generation build --chunker code" in out, out
