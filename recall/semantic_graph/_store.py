@@ -9,7 +9,6 @@ from typing import Any
 from psycopg.types.json import Jsonb
 
 from recall.semantic_graph._model import (
-    LEGACY_GRAPH_SCHEMA_VERSION,
     SEMANTIC_GRAPH_SCHEMA_VERSION,
     GraphReadiness,
     SemanticEntity,
@@ -337,11 +336,12 @@ def load_semantic_graph(conn: Any, tenant_id: str, generation_id: str) -> Semant
     )
     # Stamped with the version the graph was BUILT with, so its fingerprint still matches the
     # marker after a builder bump: an older graph keeps serving until it is rebuilt. A marker
-    # from a newer builder gets this code's version, so its fingerprint fails, as before.
+    # from a newer builder gets this code's version, so its fingerprint fails, as before. Rows
+    # with no marker at all (written, marker not yet recorded) are this code's own.
     schema_version = (
         min(marker_schema_version(marker), SEMANTIC_GRAPH_SCHEMA_VERSION)
         if isinstance(marker, dict)
-        else LEGACY_GRAPH_SCHEMA_VERSION
+        else SEMANTIC_GRAPH_SCHEMA_VERSION
     )
     relations, load_diagnostics = _load_relation_rows(
         relation_rows,
