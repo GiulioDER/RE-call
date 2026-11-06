@@ -376,6 +376,7 @@ def refresh(
     budget: IndexBudget | None = None,
     before: Snapshot | None = None,
     key_root: str | Path | None = None,
+    record_spec: str | None = None,
 ) -> RefreshReport:
     """Bring `store` up to date with `roots`. See the module docstring; never raises on a busy lane.
 
@@ -447,6 +448,7 @@ def refresh(
                 security_context=security_context,
                 budget=budget,
                 key_root=None if key_root is None else Path(key_root).resolve(),
+                record_spec=record_spec,
             )
     except LiteWriterCoalesced:
         report.outcome = Outcome.COALESCED
@@ -472,6 +474,7 @@ def _refresh_locked(
     security_context: AccessContext | None,
     budget: IndexBudget | None,
     key_root: Path | None = None,
+    record_spec: str | None = None,
 ) -> RefreshReport:
     from recall.cache import default_cache
     from recall.context import context_policy_for_profile
@@ -556,6 +559,10 @@ def _refresh_locked(
     stated = reconcile_stated_facts(store, roots=roots)
     report.facts_stated, report.facts_malformed = stated.facts_stated, stated.facts_malformed
     report.stated = stated.render()
+    if record_spec is not None:
+        # Under the write lane, with the re-embed it describes, so no other writer can rebind the
+        # store between them (CCA BUG-002): a later refresh with no flag resolves this embedder.
+        store.record_embedder_spec(record_spec)
     report.outcome = Outcome.REFRESHED
     report.reason = f"{current.count} file(s) checked in {time.monotonic() - started:.1f}s"
     report.calibration, report.calibration_reason = calibration.status.value, calibration.reason

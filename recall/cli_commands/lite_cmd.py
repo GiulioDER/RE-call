@@ -59,9 +59,14 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
 
     # SUPPRESS, not None: a default here would overwrite `recall --embedder X lite refresh`'s X.
     p_refresh.add_argument("--embedder", action=StoreGiven, default=argparse.SUPPRESS,
-                           help="the embedder the store was built with (default: RECALL_EMBEDDER, else "
-                                "the one the store recorded)")
-    p_refresh.add_argument("--force", action="store_true", help="refresh even when no memo changed")
+                           help="the embedder to refresh with (default: RECALL_EMBEDDER, else the one "
+                                "the store recorded). A RECALL_EMBEDDER that differs from the recorded "
+                                "one is refused without --force; a different value typed here switches "
+                                "the store to it, with a warning, and re-embeds the memo folders")
+    p_refresh.add_argument("--force", action="store_true",
+                           help="refresh even when no memo changed; also confirms switching to a "
+                                "RECALL_EMBEDDER that differs from the embedder the store recorded, "
+                                "which re-embeds every memo under the memo folders")
     p_refresh.add_argument("--allow-prune", action="store_true",
                            help="accept removing the rows of more than half the indexed memos when "
                                 "their files are gone (the guard refuses it otherwise); never automatic")
@@ -186,12 +191,12 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
     from recall.cli_commands import _shared
     from recall.lite import LiteStore
 
-    # Only a typed --embedder, before or after `lite refresh`: the global option's default is
-    # RECALL_EMBEDDER or fastembed, which must not outrank the spec the store recorded.
-    typed = args.embedder if getattr(args, "embedder_given", False) else ""
-    given = typed or os.environ.get("RECALL_EMBEDDER", "").strip()
     info = inspect_lite_file(db)
-    name = given or info.embedder_spec or info.embedder_model
+    spec, switched = _shared._lite_embedder_spec(
+        args, info.embedder_spec, db, force=args.force,
+        how_to_switch="pass --force to re-embed every memo with it, or unset RECALL_EMBEDDER",
+    )
+    name = spec or info.embedder_model
     ask = f"which embedder built {db}? Pass --embedder or set RECALL_EMBEDDER"
     if not name:
         # A wrong embedder of the same width does not raise: it ranks nonsense. So never guess.
@@ -201,13 +206,17 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
         # command does (CCA CODE-029); it raises SystemExit chained to the resolver's error.
         embedder = _shared._make_embedder(name)
     except SystemExit as exc:
-        if not (given or info.embedder_spec) and isinstance(exc.__cause__, ValueError):
+        if not spec and isinstance(exc.__cause__, ValueError):
             # A store set up before the spec was recorded holds only the model's own name, such
             # as BAAI/bge-small-en-v1.5, which names no provider; guessing one is the nonsense above.
             raise SystemExit(
                 f"{ask} (the store recorded the model {name!r}, which names no embedder)"
             ) from None
         raise
+    _shared._refuse_unbound_embedder(embedder, info.embedder_model, db, args, switched=switched)
+    # A typed embedder the calibration is not bound to must re-embed too, or the refusal's own
+    # advice (pass --embedder) would end `unchanged` on an unchanged folder.
+    rebind = info.embedder_model is not None and embedder.name != info.embedder_model
     # One walk serves both the refresh's change check and the budget warning below (CCA
     # PERF-004): the memo files are the same before and after, and the walk is the cost.
     snap = snapshot(roots)
@@ -217,13 +226,16 @@ def _cmd_refresh(args: argparse.Namespace) -> None:
             store,
             roots,
             embedder,
-            force=args.force,
+            # A switch must reach the indexer: the no-change check looks at the memos only (CCA
+            # BUG-001), so without this a typed switch on an unchanged folder did nothing.
+            force=args.force or switched or rebind,
             wait_s=args.wait,
             allow_prune=args.allow_prune,
             security_policy=policy,
             security_context=context,
             key_root=_key_root(db),
             before=snap,
+            record_spec=spec if switched else None,
         )
     print(json.dumps(result.to_dict(), indent=2, default=str) if args.json else result.render())
     _warn_if_over_budget(snap, budget)

@@ -7,6 +7,9 @@ lives in that consumer's module instead.
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+from pathlib import Path
 
 from recall._env import refuse_removed_entailment
 from recall.calibration import Calibration
@@ -48,6 +51,59 @@ def _make_embedder(name: str) -> Embedder:
             remediation="check `recall doctor` and install the extra named by the diagnostic",
         )
         raise SystemExit(diagnostic.render()) from exc
+
+
+def _lite_embedder_spec(
+    args: argparse.Namespace, recorded: str | None, db: Path, *, force: bool, how_to_switch: str
+) -> tuple[str, bool]:
+    """The embedder spec for the lite store `db`, and whether it switches away from the one the
+    store recorded (CCA DAT-006, DAT-007).
+
+    A typed `--embedder` wins, then RECALL_EMBEDDER, then `recorded`; "" when there is none. A
+    switch re-embeds what the run indexes, leaves other sources on the old vectors, and the
+    recalibration rebinds the store, while the MCP server `recall setup --lite` configured still
+    names the old embedder. So a RECALL_EMBEDDER left in a shell, which is how a switch happens by
+    accident, is refused unless `force`; a typed one is deliberate and only warned about.
+    """
+    # Only a typed --embedder, before or after the subcommand: the global option's default is
+    # RECALL_EMBEDDER or fastembed, which must not count as deliberate (`recall.cli.StoreGiven`).
+    typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
+    env = os.environ.get("RECALL_EMBEDDER", "").strip()
+    spec = typed or env or recorded or ""
+    if not recorded or spec == recorded:
+        return spec, False
+    if not typed and not force:
+        raise SystemExit(
+            f"RECALL_EMBEDDER={spec!r} differs from {recorded!r}, the embedder {db} was built "
+            f"with; {how_to_switch}"
+        )
+    print(
+        f"warning: {db} was built with {recorded!r}; embedding with {spec!r} instead. What this run "
+        "indexes is re-embedded, other sources keep the old vectors, and the MCP server "
+        f"`recall setup --lite` configured still names {recorded!r} until setup is run again.",
+        file=sys.stderr,
+    )
+    return spec, True
+
+
+def _refuse_unbound_embedder(
+    embedder: Embedder, bound: str | None, db: Path, args: argparse.Namespace, *, switched: bool
+) -> None:
+    """Refuse an embedder other than the model `db`'s calibration is bound to, unless it was typed
+    or the switch confirmed (CCA ENV-001).
+
+    The recorded spec alone cannot say what built the vectors: the MCP server refreshes with the
+    embedder `recall setup --lite` wrote into its environment and rebinds the calibration
+    (`embedder_model`) without touching the spec, so a spec that matches can name another model
+    than the store holds, and two commands would then re-embed the store back and forth unseen.
+    """
+    if bound is None or switched or getattr(args, "embedder_given", False) or embedder.name == bound:
+        return
+    raise SystemExit(
+        f"{db} is bound to the model {bound!r}, not {embedder.name!r}; the MCP server may have "
+        "refreshed it with the embedder `recall setup --lite` configured. Run setup again to "
+        "choose one, or pass --embedder to switch deliberately"
+    )
 
 
 def _refuse_removed_entailment() -> None:
