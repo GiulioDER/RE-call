@@ -503,6 +503,15 @@ class GenerationStore(PgVectorStore):
             self._graph_readiness_cache = (key, readiness)
         return readiness
 
+    def invalidate_graph_readiness(self) -> None:
+        """Drop the cached readiness marker, so the next read asks the database again.
+
+        `recall graph rebuild` rewrites the marker of a ready generation without changing its
+        corpus fingerprint, so the cache key alone cannot see a rebuild. The graph cache calls
+        this while the loaded graph disagrees with the marker it holds.
+        """
+        self._graph_readiness_cache = None
+
     def delete_generation_graph(self, generation_id: str | None = None) -> int:
         """Delete all derived graph rows, and the readiness marker, for one generation."""
         target = generation_id or self._generation_id()
@@ -1335,3 +1344,11 @@ def _bucket_sources(rows: Iterable[Sequence[Any]], requested: set[str]) -> dict[
             if str(source) not in bucket:
                 bucket.append(str(source))
     return resolved
+
+
+if TYPE_CHECKING:
+    from recall.semantic_graph import SemanticGraphStore
+
+    def _graph_store_contract(store: GenerationStore) -> SemanticGraphStore:
+        """mypy holds the exported graph store Protocol to its one implementation."""
+        return store

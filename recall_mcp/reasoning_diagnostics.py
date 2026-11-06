@@ -24,6 +24,7 @@ from recall.atomic_rescue import (
     load_atomic_rescue_artifact,
     select_atomic_rescue,
 )
+from recall._env import truthy
 from recall.calibration import Calibration
 from recall.embeddings import Embedder, embedding_profile_id
 from recall.evidence import (
@@ -66,42 +67,34 @@ BENCHMARK_DOCUMENT_EXPANSION_SOURCES = 2
 BENCHMARK_DOCUMENT_EXPANSION_CHUNKS = 8
 
 
+def _benchmark_audit_enabled(name: str) -> bool:
+    """Return whether the benchmark pin and one audit flag are both on.
+
+    Read from the server's resolved environment, the source the same request's other benchmark
+    gates and the startup pin decision read, so one request cannot see the pin both on and off.
+    """
+    env = runtime_environment()
+    return truthy(env.get("RECALL_BENCHMARK_PIN")) and truthy(env.get(name))
+
+
 def _retrieval_leg_benchmark_audit_enabled() -> bool:
     """Return whether a generation-pinned benchmark may expose per-leg candidates."""
-    truthy = {"1", "true", "yes", "on"}
-    return (
-        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
-        and os.environ.get("RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT", "").strip().lower() in truthy
-    )
+    return _benchmark_audit_enabled("RECALL_BENCHMARK_RETRIEVAL_LEG_AUDIT")
 
 
 def _document_expansion_benchmark_audit_enabled() -> bool:
     """Return whether a generation-pinned benchmark may run document expansion arms."""
-    truthy = {"1", "true", "yes", "on"}
-    return (
-        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
-        and os.environ.get("RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT", "").strip().lower()
-        in truthy
-    )
+    return _benchmark_audit_enabled("RECALL_BENCHMARK_DOCUMENT_EXPANSION_AUDIT")
 
 
 def _source_admission_benchmark_audit_enabled() -> bool:
     """Return whether a generation-pinned benchmark may expose the full trust pool."""
-    truthy = {"1", "true", "yes", "on"}
-    return (
-        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
-        and os.environ.get("RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT", "").strip().lower() in truthy
-    )
+    return _benchmark_audit_enabled("RECALL_BENCHMARK_SOURCE_ADMISSION_AUDIT")
 
 
 def _source_conditioning_reuse_benchmark_audit_enabled() -> bool:
     """Return whether a generation pinned benchmark may compare reused and repeated traces."""
-    truthy = {"1", "true", "yes", "on"}
-    return (
-        os.environ.get("RECALL_BENCHMARK_PIN", "").strip().lower() in truthy
-        and os.environ.get("RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT", "").strip().lower()
-        in truthy
-    )
+    return _benchmark_audit_enabled("RECALL_BENCHMARK_SOURCE_CONDITIONING_REUSE_AUDIT")
 
 
 def _source_conditioning_shadow_sampled(query: str, env: Mapping[str, str] | None = None) -> bool:

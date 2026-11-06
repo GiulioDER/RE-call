@@ -169,6 +169,8 @@ class _ReasoningRequestContext:
 
     query_vector: list[float] | None = None
     performance: PerformanceTrace | None = None
+    #: Model calls spent by retrieval expansion; the planner counts them only when it runs.
+    expansion_model_calls: int = 0
 
 
 @dataclass
@@ -465,6 +467,7 @@ def reason(request: ReasoningRequest) -> ReasoningResponse:
         retrieval, bundle, expansion_trace, expansion_failures, expansion_model_calls = _expand_retrieval(
             request, retrieval, bundle
         )
+        request._context.expansion_model_calls = expansion_model_calls
         provider_failures = (*provider_failures, *expansion_failures)
     if request.policy.allow_proposal_guided_expansion:
         if request.providers.graph_provider is None:
@@ -934,7 +937,7 @@ def _check_member_identity(
 
 
 def _budget_used(
-    plan: "ReasoningPlan | None", generator_invoked: bool
+    plan: "ReasoningPlan | None", generator_invoked: bool, expansion_model_calls: int = 0
 ) -> ReasoningBudgetUsage | None:
     """Budget counters for the response, INCLUDING the answer call.
 
@@ -945,8 +948,18 @@ def _budget_used(
 
     `generator_invoked` is exactly the fact needed, and every exit of `reason` already routes
     through `_response` carrying it, so this cannot drift out of step with the call.
+    Retrieval expansion without a planner (`evidence_assembly` with `expand_retrieval`) is
+    counted from `expansion_model_calls`; with a planner it is already in `plan.budget_used`.
     """
     existing = plan.budget_used if plan is not None else None
+    if existing is None and expansion_model_calls:
+        existing = ReasoningBudgetUsage(
+            steps=0,
+            graph_nodes=0,
+            model_calls=expansion_model_calls,
+            evidence_tokens=0,
+            wall_time_ms=0,
+        )
     if not generator_invoked:
         return existing
     if existing is None:
@@ -1031,7 +1044,9 @@ def _response(
         diagnostics=ReasoningDiagnostics(
             latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
             budget=request.budget,
-            budget_used=_budget_used(plan, generator_invoked),
+            budget_used=_budget_used(
+                plan, generator_invoked, request._context.expansion_model_calls
+            ),
             retrieval_stage_ms=bundle_stage_ms(retrieval),
             generator_invoked=generator_invoked,
             citations_normalized=citations_normalized,

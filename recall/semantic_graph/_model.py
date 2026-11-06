@@ -283,18 +283,25 @@ class SemanticGraphStore(Protocol):
     """Persistence contract for an immutable, tenant and generation bound graph."""
 
     def write_generation_graph(self, graph: SemanticGraphProjection) -> None:
-        """Atomically replace the graph rows for ``graph.generation_id``."""
+        """Atomically replace the graph rows for ``graph.generation_id``.
+
+        The generation's readiness marker is not changed; a graph build writes it separately.
+        """
 
     def load_generation_graph(
         self, tenant_id: str, generation_id: str
     ) -> SemanticGraphProjection | None:
         """Load one generation graph, or ``None`` when it has not been built."""
 
-    def delete_generation_graph(self, tenant_id: str, generation_id: str) -> int:
+    def delete_generation_graph(self, generation_id: str | None = None) -> int:
         """Delete all derived graph rows and return the number of root rows removed."""
 
-    def graph_readiness(self, tenant_id: str, generation_id: str) -> GraphReadiness:
-        """Report whether the persisted graph matches the generation marker."""
+    def graph_readiness(self, generation_id: str | None = None) -> GraphReadiness:
+        """Report the generation's readiness marker, without loading the graph rows.
+
+        The marker is written by a graph build or rebuild; serving compares it with the loaded
+        graph's fingerprint before using the graph.
+        """
 
 
 def _identity(kind: str, payload: Mapping[str, Any]) -> str:
@@ -315,7 +322,8 @@ def _parse_temporal_value(value: Any, field_name: str, *, end_of_day: bool = Fal
                 parsed = datetime.strptime(text, "%Y-%m-%d")
             except ValueError as exc:
                 raise ValueError(f"bad {field_name} date {value!r}") from exc
-            end_of_day = True
+            # The caller's `end_of_day` decides, as on the ISO path: only `valid_until` runs to
+            # the end of its day, so an unpadded `valid_from` still starts at midnight.
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     else:

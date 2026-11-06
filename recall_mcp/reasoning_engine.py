@@ -199,6 +199,7 @@ def _execute_reasoning_query(
     retrieval_cache: dict[str, TrustedResult] = {}
     retrieval_context: dict[str, list[float] | None] = {}
     graph_first_expansion: dict[str, SemanticGraphExpansionResult] = {}
+    graph_first_error: dict[str, Exception] = {}
 
     def capture_retrieval_query_vector(vector: list[float]) -> None:
         retrieval_context["query_vector"] = vector
@@ -206,17 +207,29 @@ def _execute_reasoning_query(
 
     def graph_first_transform(raw: RetrievalResult) -> RetrievalResult:
         provisional = _provisional_graph_seed_result(raw, store, request)
-        expansion = _expand_semantic_graph(
-            store,
-            request,
-            provisional,
-            calibration,
-            embedder,
-            security_policy=security_policy,
-            access_context=access_context,
-            defer_trust_evaluation=True,
-            excluded_chunk_ids=frozenset(hit.chunk.id for hit in raw.hits),
-        )
+        try:
+            expansion = _expand_semantic_graph(
+                store,
+                request,
+                provisional,
+                calibration,
+                embedder,
+                security_policy=security_policy,
+                access_context=access_context,
+                defer_trust_evaluation=True,
+                excluded_chunk_ids=frozenset(hit.chunk.id for hit in raw.hits),
+                source=source,
+            )
+        except TrustRefusal:
+            raise
+        except Exception as exc:  # BROAD-CATCH: error-translation
+            # This runs inside retrieval, outside the provider boundary that turns a graph
+            # failure into GRAPH_PROVIDER_ERROR with the seed kept. Retrieval continues on the
+            # seeds alone and the provider re-raises, so the failure reaches that boundary.
+            graph_first_error["error"] = exc
+            # The same context cut every success path applies, without the graph's tail margin,
+            # whose own read may be what raised.
+            return replace(raw, hits=raw.hits[:GRAPH_FIRST_CONTEXT_K])
         candidates = expansion.scored_candidates
         if source is not None:
             # The semantic graph spans the whole store, so a source scoped request keeps only
@@ -240,6 +253,13 @@ def _execute_reasoning_query(
         if "result" not in retrieval_cache:
             performance = request._context.performance
             shadow_values = dict(runtime_environment()) if performance is not None else {}
+            # One policy for the reused payload and its duplicate, or the reuse audit compares
+            # two policies and reports a false mismatch.
+            shadow_policy = (
+                shadow_values.get("RECALL_SOURCE_CONDITIONING_SHADOW_POLICY", "alpha008")
+                .strip()
+                .lower()
+            )
             shadow_mode = (
                 shadow_values.get("RECALL_SOURCE_CONDITIONING_MODE", "off").strip().lower()
             )
@@ -440,11 +460,7 @@ def _execute_reasoning_query(
                             baseline=executed.result,
                             embedder=embedder,
                             profile=executed.profile,
-                            policy=shadow_values.get(
-                                "RECALL_SOURCE_CONDITIONING_SHADOW_POLICY", "alpha008"
-                            )
-                            .strip()
-                            .lower(),
+                            policy=shadow_policy,
                         )
                     except (OSError, SourceConditioningArtifactError):
                         performance.set(
@@ -517,6 +533,7 @@ def _execute_reasoning_query(
                                     baseline=executed.result,
                                     embedder=embedder,
                                     profile=executed.profile,
+                                    policy=shadow_policy,
                                 )
                             except Exception:  # BROAD-CATCH: fail-open
                                 _log.exception("source conditioning reuse benchmark audit failed")
@@ -670,6 +687,9 @@ def _execute_reasoning_query(
     def graph_expansion_provider(
         request: ReasoningRequest, retrieval: TrustedResult
     ) -> SemanticGraphExpansionResult:
+        error = graph_first_error.get("error")
+        if error is not None:
+            raise error
         prepared = graph_first_expansion.get("result")
         if prepared is not None:
             return replace(prepared, retrieval=retrieval)

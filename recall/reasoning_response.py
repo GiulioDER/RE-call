@@ -30,9 +30,11 @@ from recall.reasoning_expansion import (
 )
 from recall.reasoning_planner import (
     EvidenceDecision,
+    EvidenceDecisionKind,
     ExpansionStep,
     InferenceProposalTrace,
     PlannerInitialRetrieval,
+    PlannerOperation,
     ReasoningBudget,
     ReasoningBudgetUsage,
     ReasoningTrace,
@@ -43,6 +45,7 @@ from recall.reasoning_proposals import (
     ProposalStatus,
     ProposedRelation,
     ProviderFailure,
+    ProviderFailureKind,
 )
 from recall.types import AtomicFact, DecisionState, EvidenceCard
 from recall.support import (
@@ -335,6 +338,8 @@ def _evidence_bundle_from_dict(payload: Mapping[str, object]) -> EvidenceBundle:
             valid_until=_optional_datetime(item.get("valid_until")),
             cosine=_required_float(item["cosine"]),
             confidence=_required_float(item["confidence"]),
+            verdict=_checked_literal(item.get("verdict", "ok"), ("ok",), "evidence verdict"),
+            authority=str(item.get("authority", "unknown")),
         )
         for item in (_mapping(value) for value in _sequence(payload["items"]))
     )
@@ -473,7 +478,9 @@ def _proposal_from_dict(payload: Mapping[str, object]) -> InferenceProposal:
 
 def _provider_failure_from_dict(payload: Mapping[str, object]) -> ProviderFailure:
     return ProviderFailure(
-        kind=cast(Any, payload["kind"]),
+        kind=_checked_literal(
+            payload["kind"], get_args(ProviderFailureKind), "provider failure kind"
+        ),
         provider_id=str(payload["provider_id"]),
         model_id=str(payload["model_id"]),
         provider_revision=str(payload["provider_revision"]),
@@ -596,7 +603,9 @@ def _initial_retrieval_from_dict(payload: Mapping[str, object]) -> PlannerInitia
 def _expansion_step_from_dict(payload: Mapping[str, object]) -> ExpansionStep:
     return ExpansionStep(
         step_index=_required_int(payload["step_index"]),
-        operation=cast(Any, payload["operation"]),
+        operation=_checked_literal(
+            payload["operation"], get_args(PlannerOperation), "expansion operation"
+        ),
         input_node_ids=tuple(str(item) for item in _sequence(payload["input_node_ids"])),
         output_node_ids=tuple(str(item) for item in _sequence(payload["output_node_ids"])),
         accepted_node_ids=tuple(str(item) for item in _sequence(payload["accepted_node_ids"])),
@@ -611,7 +620,9 @@ def _expansion_step_from_dict(payload: Mapping[str, object]) -> ExpansionStep:
 
 def _evidence_decision_from_dict(payload: Mapping[str, object]) -> EvidenceDecision:
     return EvidenceDecision(
-        kind=cast(Any, payload["kind"]),
+        kind=_checked_literal(
+            payload["kind"], get_args(EvidenceDecisionKind), "evidence decision kind"
+        ),
         node_id=_optional_str(payload.get("node_id")),
         chunk_id=_optional_str(payload.get("chunk_id")),
         source=_optional_str(payload.get("source")),
@@ -623,7 +634,9 @@ def _evidence_decision_from_dict(payload: Mapping[str, object]) -> EvidenceDecis
 def _proposal_trace_from_dict(payload: Mapping[str, object]) -> InferenceProposalTrace:
     return InferenceProposalTrace(
         proposal_id=str(payload["proposal_id"]),
-        relation=cast(Any, payload["relation"]),
+        relation=_checked_literal(
+            payload["relation"], get_args(ProposedRelation), "proposal relation"
+        ),
         subject_id=str(payload["subject_id"]),
         object_id=str(payload["object_id"]),
         source_evidence_ids=tuple(str(item) for item in _sequence(payload["source_evidence_ids"])),
@@ -708,7 +721,8 @@ def _checked_literal(value: object, allowed: tuple[str, ...], field_name: str) -
     """Reject a serialized value that is outside its Literal vocabulary.
 
     A bare `cast` would let an unknown value flow into a typed field silently, so every
-    deserialized enum-like field goes through here and fails loudly instead.
+    deserialized enum-like field goes through here and fails loudly instead. The one exception
+    is an evidence card's verdict, which `recall.types` keeps as written when it is unknown.
     """
     if value not in allowed:
         raise EvidenceValidationError(f"{field_name} must be one of: {', '.join(allowed)}")
