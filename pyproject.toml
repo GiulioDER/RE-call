@@ -175,9 +175,15 @@ s3 = ["boto3>=1.35"]
 # stdio installations do not gain a cloud control plane or credential provider implicitly.
 aws = ["boto3>=1.35", "redis[hiredis]>=5,<9"]
 # Learned sparse retrieval uses transformers directly. Model weights are user-provisioned.
-sparse = ["transformers>=4.40,<6", "torch>=2.5,<3"]
-# Keep rerank and finetune sentence-transformers floors in step.
-rerank = ["sentence-transformers>=3.0", "transformers>=5.10,<6", "torch>=2.4,<3"]
+# Floors for transformers (5.10), torch (2.13) and sentence-transformers (5.6) are the first releases
+# that fix every advisory pip-audit reports against older versions with a fix (owner decision,
+# 2026-11-07). Older torch also lacks the torch>=2.6 that Transformers requires to load a
+# non-safetensors checkpoint.
+sparse = ["transformers>=5.10,<6", "torch>=2.13,<3"]
+# The rerank and finetune sentence-transformers floors used to be kept in step. Since 2026-11-07
+# rerank requires 5.6 (advisory fix) while finetune stays at 3.0, pending the owner's decision on
+# whether the finetune extra is needed at all.
+rerank = ["sentence-transformers>=5.6", "transformers>=5.10,<6", "torch>=2.13,<3"]
 eval = ["matplotlib>=3.7", "numpy"]
 # Model backed truth extraction. Runs on the ingest path only, never the query path, and is
 # OFF unless RECALL_TRUTH_EXTRACTION is set. Shares the `bench` extra's openai floor.
@@ -252,7 +258,10 @@ analysis = [
 # onnxruntime and tokenizers are imported directly by `recall-install --selftest`, so they are
 # declared here as in the `fastembed` extra rather than left to fastembed's own requirements.
 desktop = [
-    "PySide6>=6.7", "keyring>=25", "mcp~=2.2.0", "psycopg-pool>=3.2", "fastembed>=0.9.1,<1",
+    # PySide6-Essentials, not the PySide6 metapackage (owner decision, 2026-11-07): the desktop app
+    # imports only QtCore, QtGui and QtWidgets, which Essentials ships under the same `PySide6`
+    # import name; the metapackage also installs PySide6-Addons, which nothing here imports.
+    "PySide6-Essentials>=6.7", "keyring>=25", "mcp~=2.2.0", "psycopg-pool>=3.2", "fastembed>=0.9.1,<1",
     "onnxruntime>=1.17,<2", "tokenizers>=0.13,<1", "pillow>=13",
 ]
 
@@ -541,8 +550,8 @@ optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "bench", "eva
 # adapters are optional runtime surfaces, evaluation plotting is intentionally development only,
 # and promotion imports application supplied modules at runtime. The lean CI job intentionally
 # does not install those optional surfaces.
-per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
-package_module_name_map = {"beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "pillow" = "PIL", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
+per_rule_ignores = {DEP001 = ["PySide6", "llama_index"], DEP002 = ["PySide6-Essentials"], DEP003 = ["benchmarks", "llama_index"], DEP004 = ["matplotlib", "numpy"]}
+package_module_name_map = {"PySide6-Essentials" = "PySide6", "beautifulsoup4" = "bs4", "claude-agent-sdk" = "claude_agent_sdk", "langchain-core" = "langchain_core", "mem0ai" = "mem0", "pillow" = "PIL", "PyJWT" = "jwt", "psycopg-pool" = "psycopg_pool", "python-docx" = "docx", "python-dotenv" = "dotenv", "python-oxmsg" = "oxmsg", "python-pptx" = "pptx", "sentence-transformers" = "sentence_transformers"}
 
 [tool.ruff.lint]
 # Ruff 0.16 expands the implicit default rule set from 59 rules to 413. RE-call keeps the previous

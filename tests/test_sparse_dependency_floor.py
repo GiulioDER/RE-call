@@ -22,5 +22,6 @@ def test_sparse_requirements_reject_unsupported_torch_versions() -> None:
     }
     for version in ("2.0.1", "2.1.2", "2.2.2", "2.3.1", "2.4.1"):
         assert version not in requirements["torch"], f"unsupported torch {version} is admitted"
-    assert "2.5.0" in requirements["torch"]
+    # The floor is 2.13 since 2026-11-07 (advisory fixes), so the lowest admitted version moved.
+    assert "2.13.0" in requirements["torch"]
     assert "5.16.1" in requirements["transformers"]
