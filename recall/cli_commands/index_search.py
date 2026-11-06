@@ -39,8 +39,10 @@ from recall.control_plane import ControlPlane
 from recall.cli_commands._shared import (
     CALIBRATION_DOC_URL,
     _cli_trust,
+    _lite_embedder_spec,
     _make_embedder,
     _print_result,
+    _refuse_unbound_embedder,
     _refuse_removed_entailment,
     _run_queries,
     _positive_int,
@@ -80,7 +82,10 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "--tenant. Incremental: a file whose content hash is unchanged is skipped, and a file "
             "under the indexed folder that has vanished from disk is PRUNED; rows indexed from "
             "other folders are left alone. The embedder must be the same one the table was built with; a mismatch in "
-            "width is refused, and a mismatch in model at the same width is not detectable here."
+            "width is refused, and a mismatch in model at the same width is not detectable here. "
+            "Against a sqlite:/// Lite store the default is the embedder it recorded: a different "
+            "RECALL_EMBEDDER is refused, and a different --embedder is used with a warning and "
+            "becomes the store's recorded embedder."
         ),
     )
 
@@ -363,7 +368,23 @@ def _print_evidence(
 
 def _cmd_index(args: argparse.Namespace) -> None:
     route = _runtime_route(args)
-    embedder = _make_embedder(args.embedder)
+    name, switched = args.embedder, False
+    if is_lite_dsn(args.dsn):
+        # A lite file records the embedder it was built with; the global default (RECALL_EMBEDDER,
+        # else fastembed) knows nothing of it (CCA DAT-007).
+        from recall.lite.inspect import lite_file_meta
+
+        db = lite_dsn_path(args.dsn)
+        meta = lite_file_meta(db) or {}
+        name, switched = _lite_embedder_spec(
+            args, meta.get("embedder_spec"), db, force=False,
+            how_to_switch="re-embed it with `recall lite refresh --force`, or unset RECALL_EMBEDDER",
+        )
+        name = name or args.embedder
+        bound = meta.get("embedder_model")
+    embedder = _make_embedder(name)
+    if is_lite_dsn(args.dsn):
+        _refuse_unbound_embedder(embedder, bound, db, args, switched=switched)
     if route.uses_generation:
         raise SystemExit(
             f"{route.describe()}: local filesystem indexing is unavailable on the generation "
@@ -432,6 +453,8 @@ def _cmd_index(args: argparse.Namespace) -> None:
 
                     outcome = ensure_calibrated(store, embedder)
                     print(f"calibration: {outcome.status.value}: {outcome.reason}")
+                    if switched:
+                        store.record_embedder_spec(name)
                 from recall.stated_facts import reconcile_stated_facts
 
                 stated = reconcile_stated_facts(store)
