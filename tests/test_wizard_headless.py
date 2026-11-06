@@ -636,8 +636,6 @@ def _cli(config_path: Path, *extra: str) -> tuple[int, str]:
     try:
         cli_main(
             [
-                "--serving-dsn",
-                "postgresql://recall:recall@127.0.0.1:1/recall",
                 "wizard",
                 "--config",
                 str(config_path),
@@ -732,8 +730,6 @@ def test_the_command_refuses_to_run_unattended_without_being_asked(
     with pytest.raises(SystemExit) as exit_info:
         cli_main(
             [
-                "--serving-dsn",
-                "postgresql://recall:recall@127.0.0.1:1/recall",
                 "wizard",
                 "--config",
                 str(_write(tmp_path, _config(tmp_path))),
@@ -921,8 +917,6 @@ def test_the_configs_own_dsns_are_refused_when_insecure(
         with pytest.raises(SystemExit) as exit_info:
             cli_main(
                 [
-                    "--serving-dsn",
-                    "postgresql://recall:recall@127.0.0.1:1/recall",
                     "wizard",
                     "--headless",
                     "--config",

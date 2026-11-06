@@ -360,13 +360,13 @@ def test_the_forget_preview_warns_of_the_tombstone_on_the_generation_route(
         def check_schema(self) -> None:
             return None
 
-        def sources_in_any_generation(self) -> set[str]:
+        def sources_in_any_generation(self, names: list[str]) -> set[str]:
             return {"memo.md"}
 
         def manifest_uris_matching(self, names: list[str]) -> set[str]:
             return set()
 
-        def sources_in_legacy_table(self) -> set[str]:
+        def sources_in_legacy_table(self, names: list[str]) -> set[str]:
             return set()
 
     monkeypatch.setattr(generation_store, "GenerationStore", _GenerationStore)

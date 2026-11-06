@@ -51,9 +51,10 @@ except Exception as _dotenv_exc:  # noqa: BLE001 - see below  # BROAD-CATCH: fai
         # having printed; it depends only on `_DOTENV_ERROR` being set.
         pass
 
-DEFAULT_DSN = os.environ.get(
-    "RECALL_SERVING_DSN",
-    os.environ.get("RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall"),
+# `or`, not a nested default: the wizard writes RECALL_SERVING_DSN as "" into every server block
+# and container, and an empty value must fall through to RECALL_DSN as it does in the MCP server.
+DEFAULT_DSN = os.environ.get("RECALL_SERVING_DSN") or os.environ.get(
+    "RECALL_DSN", "postgresql://recall:recall@localhost:5432/recall"
 )
 DEFAULT_MIGRATION_DSN = os.environ.get("RECALL_MIGRATION_DSN")
 
@@ -138,11 +139,13 @@ def build_parser(command: str | None = None) -> argparse.ArgumentParser:
         "--serving-dsn",
         "--dsn",
         dest="dsn",
+        action=StoreGiven,
         default=DEFAULT_DSN,
         help="unprivileged application DSN (env: RECALL_SERVING_DSN; --dsn is deprecated)",
     )
     parser.add_argument(
         "--migration-dsn",
+        action=StoreGiven,
         default=DEFAULT_MIGRATION_DSN,
         help="DDL-owner DSN used only by `schema apply` (env: RECALL_MIGRATION_DSN)",
     )

@@ -76,6 +76,19 @@ except ImportError:  # pragma: no cover, exercised on environments without the d
 QApplication: Any = getattr(_qt_widgets, "QApplication", None)
 
 
+def _splade_hardware_probe() -> Any:
+    """The two answers the configuration page's SPLADE check reads, and nothing else.
+
+    `probe_system` also runs docker, wsl and systeminfo one after another (up to about 88 s),
+    which kept the SPLADE checkbox disabled while it waited for answers the page never looks at.
+    """
+    from types import SimpleNamespace
+
+    from recall.wizard.probe import probe_cuda_vram, probe_hardware
+
+    return SimpleNamespace(hardware=probe_hardware(), cuda_vram_bytes=probe_cuda_vram())
+
+
 if QApplication is not None:
 
     def _project_name(value: str) -> str:
@@ -1298,9 +1311,7 @@ if QApplication is not None:
             self.status.setText("Configuration saved. Open Calibration to certify the new set.")
 
         def _probe_hardware(self) -> Any:
-            from recall.wizard.probe import probe_system
-
-            return probe_system()
+            return _splade_hardware_probe()
 
         def _hardware_probe_done(self, result: Any) -> None:
             from recall.wizard.probe import splade_is_feasible

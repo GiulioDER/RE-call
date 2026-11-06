@@ -2419,6 +2419,22 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         )
         return {name: digest for name, digest in rows}
 
+    def sources_present(self, sources: Sequence[str]) -> set[str]:
+        """Which of `sources` this tenant holds, by an indexed lookup of the named sources only.
+
+        What `recall forget` and `recall withdraw` ask; `source_content_hashes` answers it too, but
+        by listing every source of the tenant (with a jsonb extraction per row) to check a few.
+        """
+        if not sources:
+            return set()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT DISTINCT source FROM {self._table} WHERE tenant_id = %s AND source = ANY(%s)",
+                (self._tenant, list(sources)),
+            ).fetchall()
+        )
+        return {str(row[0]) for row in rows}
+
     def source_content_hashes(self) -> dict[str, str]:
         """`{source: content_hash}` for this tenant — what the indexer compares against.
 

@@ -95,6 +95,9 @@ from recall.embedding_providers.openai_compat import (  # re-exported: this modu
 # this module, so every gate below and `recall.multimodal` share one spelling.
 MULTIMODAL_EMBEDDING_MODEL = "voyage-multimodal-3.5"
 MULTIMODAL_EMBEDDING_PROFILE = "voyage-multimodal-3.5-v1"
+# Every spelling `resolve_embedder` accepts for the hashing embedder, so the wizard's managed image
+# allowlist cannot fall behind it.
+HASHING_ALIASES = ("hashing", "hashing-64", "hashing:64")
 
 
 def require_multimodal_enabled(env: Mapping[str, str]) -> None:
@@ -146,7 +149,7 @@ def resolve_embedder(name: str, env: dict[str, str] | None = None) -> Embedder:
         return resolve_registered_embedder(profile, source)
     if name == "hashing" or name.startswith("hashing-") or name.startswith("hashing:"):
         # Only one dimension is offered here; a different suffix used to build 64 silently.
-        if name not in ("hashing", "hashing-64", "hashing:64"):
+        if name not in HASHING_ALIASES:
             raise ValueError(
                 f"unsupported hashing embedder: {name!r} (the hashing embedder is always 64 "
                 "dimensions; use hashing)"

@@ -547,9 +547,9 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
             # wholesale question here instead put the two surfaces on separate copies of
             # the live-state list, and only this one was pinned by a test.
             known = (
-                gen_store.sources_in_any_generation()
+                gen_store.sources_in_any_generation(requested)
                 | gen_store.manifest_uris_matching(list(requested))
-                | gen_store.sources_in_legacy_table()
+                | gen_store.sources_in_legacy_table(requested)
             )
             if withdraw:
                 # A memo every generation lost (forgotten, or left out of a promotion) is still
@@ -568,7 +568,7 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
             # it costs an active-generation lookup plus a DISTINCT scan.
             present = getattr(store, "sources_present", None)
             try:
-                # A lite store answers from its source index; PostgreSQL lists its sources.
+                # Lite and PostgreSQL stores both look up the named sources only.
                 visible_now = present(requested) if present is not None else set(store.source_content_hashes())
             except NoActiveGeneration:
                 visible_now = set()
