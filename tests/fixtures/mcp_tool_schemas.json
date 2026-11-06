@@ -1482,6 +1482,48 @@
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
+      "title": "Resolve a supersedes reference before writing it"
+    },
+    "description": "Which memo a `supersedes:` reference names here, by search's own rule, before you write it.\n\nCall it before writing `supersedes:` into a memo file. `status` is `resolved` (write the\n`write` value), `ambiguous` (several memos share the name: write the one you mean with its\nfolder, from `candidates`), `dangling` or `self`. `written_in` is the memo you will write\nit in. Writes nothing.",
+    "inputSchema": {
+      "properties": {
+        "reference": {
+          "title": "Reference",
+          "type": "string"
+        },
+        "written_in": {
+          "default": "",
+          "title": "Written In",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference"
+      ],
+      "title": "recall_resolve_referenceArguments",
+      "type": "object"
+    },
+    "name": "recall_resolve_reference",
+    "outputSchema": {
+      "properties": {
+        "result": {
+          "title": "Result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "title": "recall_resolve_referenceOutput",
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
       "title": "Plan a corpus rewrite"
     },
     "description": "Show which key a proposal would declare, in which file. Writes nothing.\n\nThere is deliberately no `recall_rewrite_apply`. The MCP client is the model, so\nletting it supply a reviewer id and an audit note would make the named human gate a\nformality it satisfies by typing a string: the gate becomes a field, not a person.\nThis surface proposes; a human applies at `recall rewrite apply`.",

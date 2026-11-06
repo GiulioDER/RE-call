@@ -100,6 +100,7 @@ from recall_mcp.lifecycle import (
     withdraw_memory,
     memory_inventory,
     memory_stats,
+    resolve_served_reference,
 )
 from recall_mcp.provenance import apply_fact_memory, current_facts_memory
 from recall_mcp.reasoning_admin import reasoning_proposals, rewrite_plan
@@ -3206,6 +3207,36 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             lambda: memory_inventory(
                 store,
                 limit=limit,
+                security_policy=state.get("source_security_policy"),
+                access_context=_access_context(state, store),
+            ).model_dump_json(indent=2)
+        )
+
+    @mcp.tool(
+        name="recall_resolve_reference",
+        annotations=ToolAnnotations(
+            title="Resolve a supersedes reference before writing it",
+            read_only_hint=True,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    async def recall_resolve_reference(ctx: Context[dict, object], reference: str, written_in: str = "") -> str:
+        """Which memo a `supersedes:` reference names here, by search's own rule, before you write it.
+
+        Call it before writing `supersedes:` into a memo file. `status` is `resolved` (write the
+        `write` value), `ambiguous` (several memos share the name: write the one you mean with its
+        folder, from `candidates`), `dangling` or `self`. `written_in` is the memo you will write
+        it in. Writes nothing.
+        """
+        state = _state(ctx)
+        store = await _require(SCOPE_READ, ctx)
+        return await _to_thread(
+            lambda: resolve_served_reference(
+                store,
+                reference,
+                written_in=written_in,
                 security_policy=state.get("source_security_policy"),
                 access_context=_access_context(state, store),
             ).model_dump_json(indent=2)

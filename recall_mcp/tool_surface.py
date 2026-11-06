@@ -66,6 +66,7 @@ ALL_TOOL_NAMES: frozenset[str] = frozenset(
         # Erases as recall_forget does, then gives back what the memo superseded; same scope.
         "recall_withdraw",
         "recall_inventory",
+        "recall_resolve_reference",
         "recall_stats",
         # The assistant surface (`recall_mcp.assistant`): registered only on a lite server whose
         # RECALL_ASSISTANT_MEMOS names a memo folder, so `all` adds nothing anywhere else.

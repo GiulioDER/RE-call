@@ -111,6 +111,8 @@ TOOLS: dict[str, tuple[str, str, dict]] = {
     "recall_rewrite_plan": (SCOPE_READ, "read", {"proposal_id": "ip_x"}),
     "recall_stats": (SCOPE_READ, "read", {}),
     "recall_inventory": (SCOPE_READ, "read", {}),
+    # READ: it says which memo a reference names; it writes nothing.
+    "recall_resolve_reference": (SCOPE_READ, "read", {"reference": "notes"}),
     "recall_tenants": (SCOPE_READ, "read", {}),
     "recall_job_status": (SCOPE_READ, "read", {"job_id": "job-1"}),
     "recall_calibration_status": (SCOPE_READ, "read", {}),
