@@ -1063,7 +1063,7 @@ class LiteStore:
         `forget_source_chunks` record naming each of `chunk_ids`, in the order they were appended."""
         if not chunk_ids:
             return {}
-        from recall.fact_retraction import latest_chunk_records
+        from recall.chunk_records import latest_chunk_records
 
         # By rowid, the order of append: `created_at` is the eval clock's time on a server that
         # runs one and wall time elsewhere, so it may put a later forget before an earlier prune

@@ -20,7 +20,7 @@ from. Two things take a memo away, and they are treated differently on purpose:
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
@@ -68,21 +68,6 @@ def fact_ledger_for(store: object, env: Mapping[str, str] | None = None) -> Any 
         configured = (os.environ if env is None else env).get(FACT_WRITE_DSN_ENV, "").strip()
         return PostgresFactLedger(configured or store.dsn, tenant_id=store.tenant)
     return None
-
-
-def latest_chunk_records(rows: Iterable[Sequence[Any]]) -> dict[str, tuple[str, str]]:
-    """`{chunk_id: (event_type, source)}` from `(chunk_id, event_type, source)` rows of
-    `prune_source_chunks` and `forget_source_chunks` records, in the order they were appended:
-    the last record of a chunk decides whether its memo was forgotten or only pruned.
-
-    The one rule both stores apply (`LiteStore.latest_chunk_records` and
-    `recall.store_receipts.ReceiptsAuditMixin.latest_chunk_records`, CCA CODE-001 of run
-    20261106T212835Z); each orders its rows by append, never by a clock an eval run sets.
-    """
-    latest: dict[str, tuple[str, str]] = {}
-    for chunk_id, kind, source in rows:
-        latest[str(chunk_id)] = (str(kind), str(source or ""))
-    return latest
 
 
 def prepare_retraction(

@@ -151,7 +151,7 @@ class ReceiptsAuditMixin:
         if not chunk_ids:
             return {}
 
-        from recall.fact_retraction import latest_chunk_records
+        from recall.chunk_records import latest_chunk_records
 
         def _op(conn: "psycopg.Connection") -> dict[str, tuple[str, str]]:
             # `created_at` is the server's clock_timestamp() (migration 0008), so it orders by
