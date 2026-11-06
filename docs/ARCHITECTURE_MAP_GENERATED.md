@@ -93,13 +93,13 @@ Cross package edges: 390
 | 13 | `recall.reasoning` |
 | 13 | `recall_mcp.assistant` |
 | 13 | `recall_mcp.desktop_ingest` |
+| 12 | `recall.cli_commands._shared` |
 | 12 | `recall.cli_commands.extract_rewrite` |
 | 12 | `recall.desktop.ui` |
 | 12 | `recall.eval.harness` |
 | 12 | `recall.setup` |
 | 12 | `recall.stated_facts` |
 | 12 | `recall.store` |
-| 12 | `recall_agent.memory` |
 
 ## Cross package edges
 
@@ -528,7 +528,7 @@ They are observations, not automatic failures.
 | `recall.cli` | 6 | 113 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._lite` | 3 | 112 |
-| `recall.cli_commands._shared` | 11 | 122 |
+| `recall.cli_commands._shared` | 12 | 122 |
 | `recall.cli_commands.backup_cmd` | 1 | 8 |
 | `recall.cli_commands.calibration_cmd` | 17 | 214 |
 | `recall.cli_commands.dashboard_cmd` | 4 | 186 |
