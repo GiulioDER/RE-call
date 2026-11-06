@@ -13,10 +13,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Version
 RE-call 0.15.0 adds Lite, a local store in one SQLite file that needs no Docker and no database
 server, and ships it in the PyPI wheel for the first time. It also adds the local memory dashboard,
 audit records looked up by exact key, stated facts in the fact ledger and the `recall withdraw`
-erasure counterpart, and it carries the fixes of pre-release audits of Lite, the MCP server and
-its authentication, the fact ledger, provenance, the dashboard, the hooks and the first-run code.
-The project license is now the AGPL-3.0 with a commercial license beside it (see Changed). Several
-changes are breaking; read the upgrade notes before upgrading a serving host.
+erasure counterpart, and it carries the fixes of pre-release audits of Lite, the MCP server and its
+authentication, the fact ledger, provenance, the dashboard, the hooks and the first-run code. The
+code audits run during this release recorded at least 1,068 bugs in the shipped packages whose fixes
+are in it (95 rated P1, the highest severity, 668 P2 and 305 P3), and 190 of the pull requests
+merged since 0.14.0 are fixes. The project license is now the AGPL-3.0 with a commercial license
+beside it (see Changed). Several changes are breaking; read the upgrade notes before upgrading a
+serving host.
 
 ### Upgrade notes
 
@@ -174,13 +177,19 @@ list as an ordered upgrade procedure.
   `recall_current_facts` gains `sources`, the memos behind each fact, and `contested`, values two
   memos state with no supersession between them, listed there and not under `facts`. A PostgreSQL
   append the controller role refuses is reported as -1 with a warning naming
-  `RECALL_FACT_WRITE_DSN`.
+  `RECALL_FACT_WRITE_DSN`. A forgotten or pruned memo that superseded another keeps that memo's
+  stated facts retired, as the document layer and applied facts already do; `recall withdraw` still
+  gives them back. A desktop upload's promote records stated facts through the controller DSN the
+  MCP server resolved.
 
-* Declared fact keys get a write path. `recall_current_facts` takes `subject` (and `predicate`) and
-  answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`, so
-  a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt for
-  a memo stating a `fact` gains `fact_key`: the key, its state, the values in force and the
-  supersession left to settle. The new deterministic rule `deterministic.stated_key_successor`
+* **The agent that writes a memo can settle supersession as it writes.** A writer, such as an LLM
+  agent calling `recall_remember`, declares the fact's key in the memo it writes instead of leaving
+  keys to be extracted from prose later. `recall_current_facts` takes `subject` (and `predicate`)
+  and answers with that subject's facts, matched ignoring case and spacing, plus `similar_subjects`,
+  so a writer can look a subject up and repeat an existing key exactly. A `recall_remember` receipt
+  for a memo stating a `fact` gains `fact_key`: the key, its state, the values in force and the
+  supersession left to settle, so the writer sees which earlier memo its fact should supersede and
+  can declare it. The new deterministic rule `deterministic.stated_key_successor`
   (`recall.declared_keys.successor_pairs`) proposes, for review only, that of the memos stating one
   single-valued key each supersedes the one of the latest earlier `valid_from`, whatever the value;
   it never writes an edge.
@@ -780,7 +789,10 @@ list as an ordered upgrade procedure.
   `plan_rewrite` refuses a value that names more than one memo before it is stored. The cycle check
   keys a memo by its path where another memo shares its name, so a memo superseding its namesake in
   another folder is no longer refused as superseding itself, and a chain through two same-named
-  memos is no longer reported as a cycle. A flat corpus keys and names every memo as before.
+  memos is no longer reported as a cycle. A flat corpus keys and names every memo as before. The
+  review queue keys a claim the same way, so claims about `a/notes.md` and `b/notes.md` are two
+  items and rejecting one no longer hides the other; a rejection recorded under the old file name
+  key still applies.
 
 * `RECALL_TRUST_MODE=development` under `RECALL_ENV=production` now logs a warning naming both
   variables when the policy is resolved (at MCP server startup, and on a `recall` search); the
