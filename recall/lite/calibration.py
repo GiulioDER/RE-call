@@ -402,17 +402,21 @@ def carry_forward(
     )
 
 
-def _fitted_for_another_model(store: LiteStore, fit: CalibrationArtifactV2) -> bool:
-    """True when `fit` was fitted for another model than the one the store is bound to (CCA
-    STAKES-001).
+def fitted_for_another_model(bound: tuple[str, int] | None, fit: CalibrationArtifactV2) -> bool:
+    """True when `fit` was fitted for another model than `bound`, the `(model, dimension)` the store
+    is bound to (None before one is) (CCA STAKES-001).
 
     A switch rebinds the store to the model that re-embedded it even when its refit saved no fit,
     so the newest fit can be the old model's. The trust gate checks the runtime embedder against
     the binding only, and read paths carry a fit forward with no embedder, so without this the old
-    model's threshold would decide the new model's answers."""
-    bound = store.bound_embedder()
+    model's threshold would decide the new model's answers. `recall doctor` asks it too, so its
+    report and search agree on such a fit."""
     model, dimension = fit.embedder_identity.get("model"), fit.embedder_identity.get("dimension", -1)
     return bound is not None and bound != _identity(model, dimension)
+
+
+def _fitted_for_another_model(store: LiteStore, fit: CalibrationArtifactV2) -> bool:
+    return fitted_for_another_model(store.bound_embedder(), fit)
 
 
 def resolve(store: LiteStore) -> CalibrationResolution:
