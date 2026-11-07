@@ -574,7 +574,7 @@ They are observations, not automatic failures.
 | `recall.desktop.github` | 3 | 6 |
 | `recall.desktop.install_ui` | 8 | 170 |
 | `recall.desktop.jobs` | 0 | 0 |
-| `recall.desktop.main` | 9 | 178 |
+| `recall.desktop.main` | 10 | 178 |
 | `recall.desktop.models` | 0 | 0 |
 | `recall.desktop.profiles` | 2 | 2 |
 | `recall.desktop.runtime` | 5 | 45 |
@@ -724,7 +724,7 @@ They are observations, not automatic failures.
 | `recall.records` | 7 | 41 |
 | `recall.records_files` | 5 | 44 |
 | `recall.related` | 9 | 115 |
-| `recall.rerank` | 4 | 17 |
+| `recall.rerank` | 5 | 17 |
 | `recall.retrieval_plan` | 1 | 1 |
 | `recall.retrieval_slo` | 0 | 0 |
 | `recall.retriever` | 8 | 43 |
