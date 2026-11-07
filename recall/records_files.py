@@ -9,7 +9,9 @@ lookup runs. No database, no network, no embedder.
 
 Currency follows the store's rule too: the memos' `supersedes` claims and validity windows are
 resolved by `recall.supersession.resolve_supersession_graph`, so a successor hides a record only
-inside its own window, and a retraction dated in the future does not hide its target yet.
+inside its own window, and a retraction dated in the future does not hide its target yet. A record
+a `supersedes:` reference names among several memos is reported `<ambiguous>`, as a store reports
+it (`recall.records.reported_successor`, the one rule both readers report by).
 
 The differences from a store, stated rather than left to be found:
 
@@ -17,6 +19,9 @@ The differences from a store, stated rather than left to be found:
   is the five front matter fields an entry reports, not a chunk's whole metadata.
 - Only memos holding an admitted record take part in the supersession graph. A memo whose record
   was refused still declares its `supersedes` edge to an indexed store; here it declares nothing.
+- A memo removed from the directory takes its claims with it. A store keeps a forgotten or pruned
+  memo's claims standing (`SupersessionRecord`), so a predecessor it retired stays retired there
+  and is current here.
 - `match_memo_records` answers an anchor query only, with no result limit (`lookup_records`
   refuses more than `MAX_RECORDS` matches) and no source policy (so a successor is never
   `<withheld>`), and returns the list of C5 record entries, not the envelope around them.
@@ -47,6 +52,7 @@ from recall.records import (
     match_candidates,
     record_parts,
     record_schema,
+    reported_successor,
     validated_anchor_query,
     validated_kinds,
 )
@@ -84,10 +90,11 @@ class LoadedMemoRecords(list[MemoRecord]):
         self.skipped = list(skipped)
 
 
+_Entries = dict[str, tuple[tuple[int, int], MemoRecord | str | None]]
 #: str(path) -> ((mtime_ns, size), a record, a refusal reason, or None for a memo without one).
-_CACHE: dict[str, tuple[tuple[int, int], MemoRecord | str | None]] = {}
+_CACHE: _Entries = {}
 #: Bumped whenever what a cache entry holds, or how a memo is read into one, changes.
-_CACHE_FORMAT = 3
+_CACHE_FORMAT = 4
 #: The modules that decide what a memo parses into. Their files' stamps are part of the cache tag,
 #: so changing how a memo is parsed or admitted re-reads every memo, not only a schema change.
 _READER_MODULES = ("recall.document", "recall.frontmatter", "recall.records", "recall.records_files")
@@ -104,8 +111,6 @@ _EXCLUDED_DIRS = frozenset(
 _EXCLUDED_NAMES = frozenset({".env", ".env.local", "tokens.json", "credentials.json", "secrets.json", "queries.json"})
 _EXCLUDED_SUFFIXES = frozenset({".json", ".toml", ".yaml", ".yml"})
 
-_Entries = dict[str, tuple[tuple[int, int], MemoRecord | str | None]]
-
 
 def _reader_files() -> list[str]:
     files: list[str] = []
@@ -117,13 +122,15 @@ def _reader_files() -> list[str]:
 
 def _cache_tag() -> str:
     """What a persisted cache was built by: the entry format, the schema records were admitted
-    under, and the size and modification time of every module that reads a memo. A cache with
-    another tag is ignored, so any change to the reading code re-reads every memo."""
+    under, and a hash of the content of every module that reads a memo. A cache with another tag
+    is ignored, so any change to the reading code re-reads every memo. The content, not the
+    modification time: a checkout or a reinstall rewrites the same code with a new mtime, and a
+    tag that moved with it made every memo cold for a change that changed nothing (CCA
+    DEPLOY-101, run 20261107T105648Z)."""
     parts = [str(_CACHE_FORMAT), json.dumps(record_schema(), sort_keys=True)]
     for file in _reader_files():
         try:
-            found = os.stat(file)
-            parts.append(f"{file}:{found.st_size}:{found.st_mtime_ns}")
+            parts.append(f"{file}:{hashlib.sha256(Path(file).read_bytes()).hexdigest()}")
         except OSError:
             parts.append(f"{file}:?")
     digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
@@ -229,10 +236,8 @@ def _append_cache_delta(path: Path, tag: str, entries: _Entries) -> None:
 def _write_cache_file(path: Path, tag: str, entries: _Entries) -> None:
     """Replace the persisted cache atomically and drop the delta journal it now holds. Never raises.
 
-    A load without a deadline calls this (the warm command, a library caller), and a load under a
-    deadline only to drop dead rows, after appending its own parses and only with as much time
-    left as the load took: the write grows with the cache, and a hook killed before the replace
-    leaves only a temporary file, which the next write removes.
+    `_persist` decides when. A process killed before the replace leaves only a temporary file,
+    which a later write removes once it is older than `_STALE_TEMP_SECONDS`.
     """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -347,9 +352,15 @@ def _read(path: Path, file: str) -> MemoRecord | str | None:
         return f"unreadable: {type(exc).__name__}"
     if RECORD_KEY not in text:
         return None
-    meta = parse_document(text).meta
+    document = parse_document(text)
+    meta = document.meta
     if RECORD_KEY not in meta:
         return None
+    if not document.human_body.strip():
+        # The indexer chunks the human body, and a record lives only in its chunks' metadata: a
+        # memo of front matter alone is stored as no chunk, so no store holds its record (CCA
+        # DAT-003, run 20261107T105648Z).
+        return "no body: the indexer stores no chunk, so no store holds this record"
     admitted = admit_record(meta, str(path))
     record = admitted.get(RECORD_KEY)
     if not isinstance(record, dict):
@@ -390,11 +401,8 @@ def load_memo_records(
 
     `deadline` (a `time.monotonic()` value) bounds the parsing: past it, what was parsed so far is
     appended to the cache's delta journal and `TimeoutError` is raised, so a cold cache warms over
-    a few calls instead of never. Under a deadline the cache is appended to, and then, when the
-    load read the whole directory with as much time left as it took, over a cache holding dead
-    rows, rewritten;
-    a load with no deadline rewrites it whole, folding the journal in and dropping removed memos.
-    A memo that raised an `OSError` on read is skipped and not cached, so the next load retries it.
+    a few calls instead of never. A load that completes saves the cache as `_persist` says. A memo
+    that raised an `OSError` on read is skipped and not cached, so the next load retries it.
     """
     started = time.monotonic()
     root = Path(directory).resolve()
@@ -441,24 +449,43 @@ def load_memo_records(
         elif isinstance(parsed, str):
             loaded.skipped.append((key, parsed))
     if cache_file is not None:
-        if deadline is not None:
-            # Appended first, so a rewrite killed at the hook's exit loses none of this load's parses.
-            _append_cache_delta(cache_file, tag, fresh)
-            now = time.monotonic()
-            if dead and deadline - now > now - started:
-                # A load that read the whole directory with as much time left as it took, over a
-                # cache holding dead rows (another tag's, or rows a later one replaced), rewrites
-                # it: only `warm` did, and nothing runs it, so every upgrade appended one more copy
-                # of the directory for every later launch to read (CCA PERF-001).
-                _write_cache_file(cache_file, tag, current)
-        elif fresh or set(persisted) != set(current) or _delta_path(cache_file).exists():
-            # Written with this directory's entries only, so a removed memo leaves the cache too.
-            _write_cache_file(cache_file, tag, current)
+        _persist(cache_file, tag, fresh=fresh, current=current, persisted=persisted, dead=dead,
+                 deadline=deadline, started=started)
     return loaded
 
 
+def _persist(
+    cache_file: Path,
+    tag: str,
+    *,
+    fresh: _Entries,
+    current: _Entries,
+    persisted: _Entries,
+    dead: int,
+    deadline: float | None,
+    started: float,
+) -> None:
+    """Save a completed load: the one statement of when the cache is appended to or rewritten.
+
+    Under a deadline, `fresh` is appended first, so a rewrite killed at the hook's exit loses none
+    of the load's parses; then, when the cache holds dead rows (another tag's, or rows a later one
+    replaced) and the load has as much time left as it took, the cache is rewritten. Only `warm`
+    did that before, and nothing runs it, so every upgrade appended one more copy of the directory
+    for every later launch to read (CCA PERF-001). With no deadline it is rewritten whenever it
+    changed, with this directory's entries only, so a removed memo leaves the cache too.
+    """
+    if deadline is not None:
+        _append_cache_delta(cache_file, tag, fresh)
+        now = time.monotonic()
+        if dead and deadline - now > now - started:
+            _write_cache_file(cache_file, tag, current)
+    elif fresh or set(persisted) != set(current) or _delta_path(cache_file).exists():
+        _write_cache_file(cache_file, tag, current)
+
+
 def _file(memo: MemoRecord) -> str:
-    return memo.file or Path(memo.source).name
+    # The store's rule (`recall.records._file_of`): with no root-relative `file`, the source.
+    return memo.file or memo.source
 
 
 def memo_supersession_graph(records: Sequence[MemoRecord]) -> SupersessionGraph:
@@ -521,9 +548,7 @@ def match_memo_records(
         repo=repo,
         wanted_ids=None,
         wanted_kinds=wanted_kinds,
-        superseded_by=lambda candidate: graph.successor(
-            graph.key(candidate.file, candidate.source), now=instant
-        ),
+        superseded_by=lambda candidate: reported_successor(graph, candidate.file, candidate.source, instant),
         now=instant,
     )
 

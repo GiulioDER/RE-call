@@ -888,6 +888,7 @@ def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unna
     A successor in `unnamed_files` (a false-positive memo) is reported as "superseded" without its
     name: no false-positive record may reach an auditor, its file name included.
     """
+    from recall.records import AMBIGUOUS
     from recall.supersession import parse_window, window_contains
 
     successor = entry.get("superseded_by")
@@ -899,7 +900,10 @@ def _line(entry: dict[str, Any], now: datetime, retraction_files: set[str], unna
     text = record.get(text_field)
     where = f"{anchor.get('file')} {anchor.get('symbol') or '(module)'}"
     notes = []
-    if successor is not None:
+    if successor == AMBIGUOUS:
+        # A `supersedes:` reference names this record's memo among several: it may be retracted.
+        notes.append("supersession ambiguous")
+    elif successor is not None:
         notes.append("superseded" if successor in unnamed_files else f"superseded by {successor}")
     if not window_contains(parse_window(entry.get("valid_from"), entry.get("valid_until")), now):
         notes.append("outside its validity window")

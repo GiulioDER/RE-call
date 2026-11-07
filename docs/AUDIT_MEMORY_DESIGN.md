@@ -104,6 +104,10 @@ Each CCA memo carries one new front matter key, a one-line JSON object, followin
 recall_record: {"v": 1, "kind": "false_positive", "repo": "owner/name", "finding_id": "BUG-003", "run_id": "...", "category": "concurrency", "severity": "P2", "anchors": [{"file": "pkg/pool.py", "symbol": "Pool._lease", "code_sha": "<sha256>"}], "claim": "one line"}
 ```
 
+Abridged: the shipped v1 schema (`recall/schemas/recall_record.v1.json`) requires more fields
+than this shows and refuses a record without them; the golden memos in
+`tests/fixtures/audit_memory/memos/` are complete examples.
+
 - `kind` is `bug`, `false_positive`, `false_positive_retraction`, `lesson` or
   `lesson_retraction`. A retraction carries `supersedes:` naming the record it retracts.
 - **The record carries every ledger field**, not a subset: for a bug, every `BugRow` field
