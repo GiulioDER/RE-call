@@ -374,6 +374,9 @@ def plan(
     index: dict[str, str] = dict(remote)
     for source, digest in remote.items():
         tail = _slashed(source)
+        # The whole slashed source too, so a prefix-free native source matches exactly as the
+        # `forget_missing` predicate below matches it.
+        index.setdefault(tail, digest)
         while "/" in tail:
             tail = tail.split("/", 1)[1]
             index.setdefault(tail, digest)

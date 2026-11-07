@@ -392,6 +392,19 @@ def test_a_windows_servers_native_sources_match_and_are_kept():
     assert decided.forget == []
 
 
+def test_a_prefix_free_native_source_matches_as_forget_matches_it():
+    """Upload matching and `forget_missing` must agree: forget kept `mem\\notes.md` for the local
+    `mem/notes.md`, while the index held only its suffix `notes.md` and re-uploaded it.
+
+    Red proof: removed `index.setdefault(tail, digest)` before the suffix loop; this failed at
+    `assert decided.unchanged == 1` (it was 0).
+    """
+    local = {"mem/notes.md": hosted.Change("mem/notes.md", Path("x"), "h", 1)}
+    decided = hosted.plan(local, {"mem\\notes.md": "h"}, forget_missing=True)
+    assert decided.unchanged == 1
+    assert decided.forget == []
+
+
 def test_a_backslash_in_a_posix_source_is_not_a_separator():
     """A source with a `/` is a URI or a POSIX path, where `\\` can be part of a file name.
 
