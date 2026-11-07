@@ -74,10 +74,10 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
         help="erase every fact value this tenant's fact ledger holds (tenant erasure)",
         description=(
             "Erase every fact value the tenant's fact ledger holds, as `recall forget` erases the "
-            "values of the memos it forgets: every fact payload, every evidence card and the "
-            "tenant's replay receipts are rewritten in place under fresh ids, so the ledger keeps "
-            "the shape of its history (event types, times, memo names) and no value or hash of "
-            "one. Nothing is listed by `recall_current_facts` afterwards. Chunks are not touched; "
+            "values of the memos it forgets: every fact payload and every evidence card are "
+            "rewritten in place under fresh ids, so the ledger keeps the shape of its history "
+            "(event types, times, memo names) and no value or hash of one, and the replay receipts "
+            "naming them are deleted. Nothing is listed by `recall_current_facts` afterwards. Chunks are not touched; "
             "forget their sources too. IRREVERSIBLE. Without --yes it only previews the counts. "
             "On PostgreSQL it runs through the controller role (RECALL_FACT_WRITE_DSN) and dead row "
             "versions stay until VACUUM; WAL, replicas and backups are the operator's to manage. "

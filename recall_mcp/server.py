@@ -3145,8 +3145,8 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         "removed" — check that list before assuming a name was actually forgotten. A fact
         applied with `recall_apply_fact` whose only evidence was in these sources is retracted
         with them, so `recall_current_facts` stops listing it, and its value is erased: the fact
-        ledger, the evidence cards citing these sources and the replay receipts echoing them are
-        rewritten in place under fresh ids, keeping the shape of the history but not the value. A
+        ledger and the evidence cards citing these sources are rewritten in place under fresh ids,
+        keeping the shape of the history but not the value, and the receipts naming them are deleted. A
         fact with evidence in a memo that survives stays. On a lite store or the legacy table a
         memo whose file was deleted from disk, and pruned by the next index, counts as surviving:
         its fact is hidden until the file comes back, unless this call names that memo too (a

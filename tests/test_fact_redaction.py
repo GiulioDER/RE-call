@@ -798,3 +798,118 @@ def test_t13_a_card_of_a_forgotten_chunk_is_erased_whatever_name_it_carries(back
 
     assert result.facts_retracted == 1, f"a card of the forgotten chunk left its fact unretracted: {result.message}"
     assert not _holds("4512", " ".join(backend.rows())), "the forgotten chunk's value is still in the fact tables"
+
+
+def test_owner_a_name_needle_deletes_only_receipts_naming_that_whole_name(backend: Backend) -> None:
+    """Node tests/test_fact_redaction.py::test_owner_a_name_needle_deletes_only_receipts_naming_that_whole_name[lite|pg].
+
+    Owner decision 2026-11-07: forgetting `x.md` deletes the receipt whose result names `x.md`,
+    and keeps those that only name `notes/x.md` or `box.md` (another memo, a longer name).
+    Red against the needles before this change (a bare name matched as a substring of any
+    result): fails on "a receipt naming another memo was deleted". Red, mutation of
+    `recall.fact_redaction._name_needles` (quotes dropped, `{name for name in names if name}`):
+    same failure, [lite] and [pg] (CI run 42380131503).
+    """
+    backend.remember("x.md")
+    assert backend.apply(DOOR, "x.md", "r1") == "APPLIED"
+    for key, payload in (
+        ("k-own", {"source": "x.md", "fact": "door"}),
+        ("k-path", {"source": "notes/x.md"}),
+        ("k-longer", {"note": "see box.md"}),
+    ):
+        backend.store.record_operation_receipt(key, json.dumps(payload), operation="recall_apply_fact")
+
+    forget_memory(backend.store, ["x.md"])
+
+    kept = {
+        key: backend.store.get_operation_receipt(key, operation="recall_apply_fact")
+        for key in ("k-own", "k-path", "k-longer")
+    }
+    assert kept["k-own"] is None, f"the forgotten memo's receipt survived: {kept}"
+    assert kept["k-path"] is not None and kept["k-longer"] is not None, (
+        f"a receipt naming another memo was deleted: {kept}"
+    )
+
+
+@pytest.mark.parametrize("rerun", [False, True], ids=["once", "rerun"])
+def test_a_receipt_naming_the_forgotten_memo_by_its_source_goes(
+    backend: Backend, monkeypatch: pytest.MonkeyPatch, rerun: bool
+) -> None:
+    """Node tests/test_fact_redaction.py::test_a_receipt_naming_the_forgotten_memo_by_its_source_goes[*].
+
+    A tool's receipt names a memo by its absolute source (`/notes/x.md`), while its card carries
+    the root-relative name (`x.md`): forgetting `x.md` deletes that receipt and keeps one naming
+    only `/notes/box.md`, on the first forget and on a re-run after a failed redaction, which
+    deletes nothing (CCA BUG-001 of run 20261107T140808Z). Red against the quoted-name needles
+    without `sources` (`plan_redaction` adding only `_name_needles(names)`): fails on "the
+    forgotten memo's receipt survived". Red for [rerun] only, mutation of `prepare_fact_erasure`
+    reading no recorded sources (the `sources_forgotten_as` loop removed): same failure. The [pg]
+    params were red on CI under the first mutation (run 42381881443), with no other test failing.
+    """
+    from recall import fact_redaction
+
+    backend.remember("x.md")
+    backend.remember("box.md")
+    assert backend.apply(DOOR, "x.md", "r1") == "APPLIED"
+    for key, payload in (("k-abs", {"used": ["/notes/x.md"]}), ("k-sibling", {"used": ["/notes/box.md"]})):
+        backend.store.record_operation_receipt(key, json.dumps(payload), operation="recall_report_use")
+
+    if rerun:
+        def boom(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("injected redaction failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(fact_redaction, "plan_redaction", boom)
+            assert forget_memory(backend.store, ["x.md"]).facts_redacted == -1
+    result = forget_memory(backend.store, ["x.md"])
+    assert result.facts_redacted == 1, result.message
+
+    kept = {key: backend.store.get_operation_receipt(key, operation="recall_report_use") for key in ("k-abs", "k-sibling")}
+    assert kept["k-abs"] is None, f"the forgotten memo's receipt survived: {kept}"
+    assert kept["k-sibling"] is not None, f"a receipt naming another memo was deleted: {kept}"
+
+
+def test_the_latest_prune_or_forget_record_of_a_source_decides_its_state(backend: Backend) -> None:
+    """Node tests/test_fact_redaction.py::test_the_latest_prune_or_forget_record_of_a_source_decides_its_state[lite|pg].
+
+    `latest_source_records` answers each source's latest `prune_source_chunks` or
+    `forget_source_chunks` record in append order, by `source_uri`, whatever chunks it names,
+    and nothing for a source without one (`prepare_fact_erasure` keeps a source an old forget
+    recorded only while it was not pruned since). Red, lite, mutation of
+    `LiteStore.latest_source_records` (`ORDER BY rowid DESC`): fails on "an earlier record
+    decided"; [pg] red on CI under `ORDER BY created_at DESC` in `ReceiptsAuditMixin`, same failure.
+    """
+    append = backend.store.append_audit_event
+    append("forget_source_chunks", {"chunk_ids": ["c1"]}, source_uri="/B/x.md")
+    append("prune_source_chunks", {"chunk_ids": ["c2"]}, source_uri="/B/x.md")
+    append("prune_source_chunks", {"chunk_ids": ["c3"]}, source_uri="/C/x.md")
+    append("forget_source_chunks", {"chunk_ids": ["c4"]}, source_uri="/C/x.md")
+
+    latest = backend.store.latest_source_records(["/B/x.md", "/C/x.md", "/D/x.md"])
+
+    assert {source: record.kind for source, record in latest.items()} == {
+        "/B/x.md": "prune_source_chunks", "/C/x.md": "forget_source_chunks",
+    }, f"an earlier record decided: {latest}"
+
+
+def test_a_non_ascii_name_deletes_its_receipts_escaped_or_not(backend: Backend) -> None:
+    """Node tests/test_fact_redaction.py::test_a_non_ascii_name_deletes_its_receipts_escaped_or_not[lite|pg].
+
+    Tools write a receipt's JSON escaped (`json.dumps` default: report_use, report_stale) or not
+    (`ensure_ascii=False`: apply_fact, index, forget), so forgetting `café.md` deletes both forms
+    (CCA CODE-002 of run 20261107T140808Z). Red, lite, mutations of `recall.fact_redaction.
+    _name_needles`: the escaped needle dropped fails on "the escaped receipt survived", the raw
+    needle dropped fails on "the raw receipt survived"; [pg] red on CI under the first.
+    """
+    backend.remember("café.md")
+    assert backend.apply(DOOR, "café.md", "r1") == "APPLIED"
+    payload = {"source": "café.md"}
+    backend.store.record_operation_receipt("k-escaped", json.dumps(payload), operation="recall_report_use")
+    backend.store.record_operation_receipt("k-raw", json.dumps(payload, ensure_ascii=False), operation="recall_apply_fact")
+
+    forget_memory(backend.store, ["café.md"])
+
+    escaped = backend.store.get_operation_receipt("k-escaped", operation="recall_report_use")
+    raw = backend.store.get_operation_receipt("k-raw", operation="recall_apply_fact")
+    assert escaped is None, f"the escaped receipt survived: {escaped}"
+    assert raw is None, f"the raw receipt survived: {raw}"

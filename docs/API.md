@@ -76,7 +76,7 @@ removal.
 | `recall generation` | Immutable generation lifecycle (`build`, `validate`, `promote`, `abandon`, `rollback`, `list`, `gc`, `stated-facts`: record the facts a generation's memos state, the active one by default). |
 | `recall graph` | Inspect or rebuild the deterministic Evidence Graph V1 (`rebuild`) without changing chunks or generation identity. |
 | `recall index` | Index a folder of supported documents or code. |
-| `recall forget` | Permanently erase indexed sources; the right-to-erasure path. Facts whose only evidence they were are retracted, and the values the sources supplied are erased from the fact ledger, the evidence cards and the replay receipts (rewritten in place under fresh ids). `--vacuum` also compacts a lite file. |
+| `recall forget` | Permanently erase indexed sources; the right-to-erasure path. Facts whose only evidence they were are retracted, and the values the sources supplied are erased from the fact ledger and the evidence cards (rewritten in place under fresh ids); the replay receipts naming them are deleted. `--vacuum` also compacts a lite file. |
 | `recall withdraw` | Erase indexed sources that were a mistake, as `recall forget` does (fact values included), and give back what they superseded: their `supersedes:` claims become void and the chain is spliced; facts whose only evidence they were are withdrawn, which also undoes the supersessions those facts made. Previews by default, `--yes` to act; served on a lite DSN. |
 | `recall search` | Query an indexed corpus through the trust layer. |
 | `recall scopes` | List the folders or facets a search can be filtered by, with their sizes. |

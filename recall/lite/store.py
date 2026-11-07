@@ -1093,6 +1093,18 @@ class LiteStore:
         )
         return latest_chunk_records(rows)
 
+    def latest_source_records(self, sources: Sequence[str]) -> dict[str, ChunkRecord]:
+        """`{source: ChunkRecord}` of the latest `prune_source_chunks` or `forget_source_chunks`
+        record of each of `sources`, by `source_uri`, in the order they were appended."""
+        if not sources:
+            return {}
+        rows = self._metadata_values(
+            "SELECT source_uri, event_type, source_uri FROM audit_events WHERE event_type IN (?, ?) "
+            "AND source_uri IN (SELECT value FROM json_each(?)) ORDER BY rowid",
+            (PRUNE_SOURCE_CHUNKS, FORGET_SOURCE_CHUNKS, json.dumps(list(sources))),
+        )
+        return latest_chunk_records(rows)
+
     def forgotten_source_chunks(self, sources: Sequence[str]) -> set[str]:
         """Recover the chunk ids recorded before these exact sources were forgotten."""
         if not sources:

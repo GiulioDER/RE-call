@@ -20,7 +20,9 @@ these rewrites and nothing else:
   `superseded` events derived from them, and every `supersedes_fact_ids` naming the fact, follow,
   so a retraction or withdrawal still pairs with its assertion and every projection lists what it
   listed before.
-- RECEIPTS (`recall_idempotency_receipts`) whose result names an erased id or memo are deleted.
+- RECEIPTS (`recall_idempotency_receipts`) whose result names an erased id or memo are deleted:
+  an id anywhere in the result, a memo's name only as a whole JSON string value, so erasing `x.md`
+  keeps a receipt that names only `notes/x.md` or `box.md` (owner decision 2026-11-07).
 - The MATERIALIZED CURRENT FACTS (`recall.fact_current`, migration 0030) are rebuilt from the
   rewritten ledger in the same transaction. A read would replay rather than trust rows naming
   ids that no longer resolve, so this is not about answers: those old ids hash the erased values,
@@ -136,8 +138,8 @@ class RedactionPlan:
     cards: tuple[CardRewrite, ...]
     #: The distinct fact values erased.
     facts: int
-    #: Strings whose presence in a receipt's result deletes the receipt: every replaced id and
-    #: the names of the erased memos.
+    #: Strings whose presence in a receipt's result deletes the receipt: every replaced id, and
+    #: the names of the erased memos as JSON strings, quotes included (`_name_needles`).
     needles: tuple[str, ...]
 
     @property
@@ -178,6 +180,18 @@ def _value_id(row: LedgerRow) -> str | None:
     return fact_identity(AtomicFact.from_payload(row.fact))
 
 
+def _name_needles(names: Iterable[str]) -> set[str]:
+    """Each erased memo name as the receipts' JSON writes it, quotes included, so it matches only a
+    whole string value: a bare `x.md` would also delete a receipt naming `notes/x.md` or `box.md`
+    (owner decision 2026-11-07). A tool may write non-ASCII escaped or not, so both forms."""
+    needles: set[str] = set()
+    for name in names:
+        if name:
+            needles.add(json.dumps(name))  # `\u00e9`: report_use, report_stale, ingest
+            needles.add(json.dumps(name, ensure_ascii=False))  # `é`: apply_fact, index, forget
+    return needles
+
+
 def plan_redaction(
     tenant_id: str,
     rows: Sequence[LedgerRow],
@@ -189,6 +203,7 @@ def plan_redaction(
     erased_chunk: Callable[[str], bool] | None = None,
     kept_chunk: Callable[[str], bool] | None = None,
     name_gone: Callable[[str], bool] | None = None,
+    sources: Iterable[str] = (),
 ) -> RedactionPlan:
     """The rewrites that erase what `erased` memos supplied (every value, with `everything`).
 
@@ -200,7 +215,9 @@ def plan_redaction(
     of it (CCA BUG-001 of run 20261106T212835Z). `name_gone(name)` says a name serves nothing now:
     the name of a card erased by its chunk is then a receipt needle too, as the name of a memo
     forgotten under it, though a pruned memo of another root carries it (CCA BUG-001 of run
-    20261107T124651Z; owner decision 2026-11-07, "erase"). `stored_cards` are the
+    20261107T124651Z; owner decision 2026-11-07, "erase"). `sources` are the absolute sources the
+    erasure removed, receipt needles under their own name, since a tool's receipt names a memo so
+    rather than by its card's root-relative name (CCA BUG-001 of run 20261107T140808Z). `stored_cards` are the
     card table's rows of this tenant that may need it, as `(card_id, card)`. The module docstring
     states the rule. Deterministic for a fixed `token`: maps are built in sorted order.
     """
@@ -321,7 +338,7 @@ def plan_redaction(
         if card_id in card_map and not is_redaction_marker(card)
     )
     replaced = {item.event_id for item in events if item.new_event_id != item.event_id}
-    needles = sorted({*fact_map, *card_map, *replaced} | {name for name in names if name})
+    needles = sorted({*fact_map, *card_map, *replaced} | _name_needles(names) | _name_needles(sources))
     return RedactionPlan(
         redaction_id=redaction_id,
         events=tuple(events),
@@ -445,6 +462,7 @@ class PostgresFactRedactor:
         chunk_ids: Collection[str] = (),
         kept_chunk: Callable[[str], bool] | None = None,
         name_gone: Callable[[str], bool] | None = None,
+        sources: Collection[str] = (),
     ) -> RedactionReport:
         """Plan and apply one redaction in one transaction. `names` bounds the card-table read to
         the memos `erased` may answer for, and `chunk_ids` adds the cards citing a chunk
@@ -460,7 +478,7 @@ class PostgresFactRedactor:
             # Only to learn which facts to lock: its ids are thrown away, so it draws none.
             first = plan_redaction(
                 self.tenant_id, rows, stored, erased=erased, everything=everything, token=lambda: "0" * 32,
-                erased_chunk=erased_chunk, kept_chunk=kept_chunk, name_gone=name_gone,
+                erased_chunk=erased_chunk, kept_chunk=kept_chunk, name_gone=name_gone, sources=sources,
             )
             if first.empty:
                 return RedactionReport()
@@ -468,7 +486,7 @@ class PostgresFactRedactor:
             rows = [_pg_row(row) for row in conn.execute(_LEDGER_ROW_SQL, (self.tenant_id,)).fetchall()]
             plan = plan_redaction(
                 self.tenant_id, rows, stored, erased=erased, everything=everything, token=token,
-                erased_chunk=erased_chunk, kept_chunk=kept_chunk, name_gone=name_gone,
+                erased_chunk=erased_chunk, kept_chunk=kept_chunk, name_gone=name_gone, sources=sources,
             )
             if plan.empty:
                 return RedactionReport()
@@ -607,6 +625,7 @@ class LiteFactRedactor:
         chunk_ids: Collection[str] = (),
         kept_chunk: Callable[[str], bool] | None = None,
         name_gone: Callable[[str], bool] | None = None,
+        sources: Collection[str] = (),
     ) -> RedactionReport:
         """`PostgresFactRedactor.redact` on the file, in one write transaction."""
         from datetime import UTC, datetime
@@ -620,7 +639,7 @@ class LiteFactRedactor:
         with self._store._write():
             plan = plan_redaction(
                 self.tenant_id, self._rows(), self._cards(), erased=erased, everything=everything, token=token,
-                erased_chunk=erased_chunk, kept_chunk=kept_chunk, name_gone=name_gone,
+                erased_chunk=erased_chunk, kept_chunk=kept_chunk, name_gone=name_gone, sources=sources,
             )
             if plan.empty:
                 return RedactionReport()
