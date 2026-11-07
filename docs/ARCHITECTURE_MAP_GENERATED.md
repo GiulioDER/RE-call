@@ -79,13 +79,13 @@ Cross package edges: 390
 | 17 | `recall_mcp.lifecycle` |
 | 17 | `recall_mcp.semantic_graph_cache` |
 | 16 | `recall.generation_store` |
+| 15 | `recall.doctor` |
 | 15 | `recall.lite.store` |
 | 15 | `recall_mcp.graph_first_api` |
 | 15 | `recall_mcp.query_construction_api` |
 | 15 | `recall_mcp.reasoning_diagnostics` |
 | 14 | `recall.calibration_v2` |
 | 14 | `recall.cli_commands.provenance_cmd` |
-| 14 | `recall.doctor` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall_mcp.reasoning_api` |
 | 13 | `recall.cli_commands._shared` |
@@ -582,7 +582,7 @@ They are observations, not automatic failures.
 | `recall.desktop.ui` | 12 | 174 |
 | `recall.desktop.updates` | 2 | 2 |
 | `recall.desktop.uploads` | 4 | 18 |
-| `recall.doctor` | 14 | 163 |
+| `recall.doctor` | 15 | 163 |
 | `recall.document` | 2 | 15 |
 | `recall.drift` | 6 | 113 |
 | `recall.dsn_security` | 1 | 1 |

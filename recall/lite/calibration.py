@@ -402,6 +402,22 @@ def carry_forward(
     )
 
 
+def bound_from_meta(meta: Mapping[str, Any]) -> tuple[str, int] | None:
+    """The `(model, dimension)` a store's meta binds it to, or None before a model is recorded.
+
+    The one reading of the binding: `LiteStore.bound_embedder` (search) and `inspect_lite_file`
+    (`recall doctor`) both call it, so they cannot disagree (CCA CODE-001). A width that does not
+    parse reads as -1, which no fit recorded with its width matches, so a hand-edited value fails
+    closed instead of raising."""
+    if "embedder_model" not in meta:
+        return None
+    try:
+        width = int(meta.get("embedder_dimension", -1))
+    except (TypeError, ValueError):
+        width = -1
+    return str(meta["embedder_model"]), width
+
+
 def fitted_for_another_model(bound: tuple[str, int] | None, fit: CalibrationArtifactV2) -> bool:
     """True when `fit` was fitted for another model than `bound`, the `(model, dimension)` the store
     is bound to (None before one is) (CCA STAKES-001).
