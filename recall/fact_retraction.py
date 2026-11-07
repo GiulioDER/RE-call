@@ -274,6 +274,21 @@ def prepare_fact_erasure(
         erased_chunks.update(chunk_ids)
         for chunk_id in chunk_ids:
             pruned.pop(chunk_id, None)
+    # The absolute sources this erasure removes: a tool's receipt (report_use, report_stale, forget)
+    # names a memo by its source, not by its card's root-relative name (CCA BUG-001 of run
+    # 20261107T140808Z). A re-run that deletes nothing reads them back from the forget's records.
+    forgotten: set[str] = set()
+    forgotten_as = getattr(store, "sources_forgotten_as", None)
+    if callable(forgotten_as) and touched_names:
+        for sources in forgotten_as(sorted(touched_names)).values():
+            forgotten.update(sources)
+    # A recorded source pruned since, after an index brought it back, is a state, not a decision
+    # (differential review of CCA run 20261107T140808Z): its own latest record decides, cited or not.
+    latest_of = getattr(store, "latest_source_records", None)
+    if callable(latest_of) and forgotten:
+        latest = latest_of(sorted(forgotten))
+        forgotten = {s for s in forgotten if s not in latest or latest[s].kind != PRUNE_SOURCE_CHUNKS}
+    forgotten |= set(gone_sources) | set(decided)
     chunk_cache: dict[str, bool] = {}
 
     def chunk_gone(chunk_id: str) -> bool:
@@ -328,6 +343,8 @@ def prepare_fact_erasure(
             chunk_ids=sorted(erased_chunks),
             kept_chunk=lambda chunk_id: chunk_id in pruned,
             name_gone=gone_name,
+            # Only a source nothing serves now: a memo indexed again keeps its receipts.
+            sources=sorted(s for s in forgotten if not any(target.chunks_for_source(s) for target in targets)),
         )
         return int(report.facts_redacted)
 

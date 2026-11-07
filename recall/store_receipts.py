@@ -190,6 +190,22 @@ class ReceiptsAuditMixin:
 
         return self._with_retry(_op)
 
+    def latest_source_records(self, sources: Sequence[str]) -> dict[str, ChunkRecord]:
+        """`LiteStore.latest_source_records` for this tenant, ordered as `latest_chunk_records`."""
+        if not sources:
+            return {}
+
+        def _op(conn: "psycopg.Connection") -> dict[str, ChunkRecord]:
+            rows = conn.execute(
+                "SELECT source_uri, event_type, source_uri FROM recall_audit_events "
+                "WHERE tenant_id = %s AND event_type IN (%s, %s) AND source_uri = ANY(%s) "
+                "ORDER BY created_at, (event_type = %s)",
+                (self._tenant, PRUNE_SOURCE_CHUNKS, FORGET_SOURCE_CHUNKS, list(sources), FORGET_SOURCE_CHUNKS),
+            ).fetchall()
+            return latest_chunk_records(rows)
+
+        return self._with_retry(_op)
+
     def forgotten_source_chunks(self, sources: Sequence[str]) -> set[str]:
         """Recover the chunk ids recorded before these exact sources were forgotten."""
         if not sources:
