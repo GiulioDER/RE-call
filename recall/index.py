@@ -1695,22 +1695,25 @@ class Indexer:
         A forget decides which facts it may retract for good; a memo merely pruned is a state, so
         a card of its chunk survives a later forget of another memo, and that is told from a memo
         forgotten earlier only by this positive record (owner decision 2026-11-06, CCA STAKES-001
-        of run 20261105T225204Z). Ids only, never text. A generation store keeps the name rule.
+        of run 20261105T225204Z). Ids only, never text, read in one query per store. A generation
+        store keeps the name rule.
         """
-        from recall.generation_store import GenerationStore
+        from recall.chunk_records import PRUNE_SOURCE_CHUNKS
+        from recall.fact_retraction import chunk_targets
 
         targets = [
-            target for target in (self._store, self._shadow.store if self._shadow is not None else None)
-            if target is not None and not isinstance(target, GenerationStore)
-            and callable(getattr(target, "chunks_for_source", None))
+            target for target in chunk_targets(self._store, self._shadow.store if self._shadow is not None else None)
+            if callable(getattr(target, "chunk_ids_for_sources", None))
         ]
         append = getattr(self._store, "append_audit_event", None)
         if not targets or not callable(append):
             return
-        for source in sorted(vanished):
-            ids = sorted({chunk.id for target in targets for chunk in target.chunks_for_source(source)})
-            if ids:
-                append("prune_source_chunks", {"chunk_ids": ids}, source_uri=source)
+        found: dict[str, set[str]] = {}
+        for target in targets:
+            for source, ids in target.chunk_ids_for_sources(sorted(vanished)).items():
+                found.setdefault(source, set()).update(ids)
+        for source in sorted(found):
+            append(PRUNE_SOURCE_CHUNKS, {"chunk_ids": sorted(found[source])}, source_uri=source)
 
     def _prune_vanished(self, root: Path, files: list[Path], known: dict[str, str]) -> int:
         """Delete rows for files that are gone from disk, scoped to `root`.
@@ -1725,7 +1728,10 @@ class Indexer:
 
         A pruned memo counts as forgotten for supersession (owner decision, 2026-10-23): the
         delete leaves its `SupersessionRecord`, so what it superseded stays retired while its file
-        is gone, and a restored file decides again with its own claims.
+        is gone, and a restored file decides again with its own claims. For facts it is a state:
+        its chunk ids are recorded (`_record_pruned_chunks`) under the fact ledger's erasure lock,
+        shared, before the delete, so a later forget of another memo keeps its cards as evidence;
+        a record that fails fails the prune, with the rows kept.
 
         "Gone from disk" is checked against the disk, not inferred from absence from `files`.
         Those are different questions: `files` is what THIS run's glob matched, and the glob

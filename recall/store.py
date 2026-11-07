@@ -1058,6 +1058,23 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
         )
         return [Chunk(id=row[0], source=row[1], text=row[2], metadata=row[3] or {}) for row in rows]
 
+    def chunk_ids_for_sources(self, sources: Sequence[str]) -> dict[str, list[str]]:
+        """`{source: [chunk id, ...]}` of these exact sources in this tenant, ids only, in one
+        read: what the indexer's prune records (CCA PERF-001 of run 20261106T212835Z)."""
+        found: dict[str, list[str]] = {}
+        if not sources:
+            return found
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT source, id FROM {self._table} "
+                "WHERE tenant_id = %s AND source = ANY(%s) ORDER BY source, id",
+                (self._tenant, list(sources)),
+            ).fetchall()
+        )
+        for source, chunk_id in rows:
+            found.setdefault(str(source), []).append(str(chunk_id))
+        return found
+
     def compiled_chunks_for_source_newest_first(
         self,
         source: str,

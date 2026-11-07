@@ -1104,8 +1104,8 @@ def test_perf002_a_hold_ends_at_its_time_budget(
     assert sorted(listed(store)) == ["4512", "Turin"]
 
 
-def test_s8_a_pruned_memo_is_a_state_when_another_is_forgotten(store: LiteStore, folder: Path, tmp_path: Path) -> None:
-    """Node tests/test_stated_facts.py::test_s8_a_pruned_memo_is_a_state_when_another_is_forgotten.
+def test_prune_record_a_pruned_memo_is_a_state_when_another_is_forgotten(store: LiteStore, folder: Path, tmp_path: Path) -> None:
+    """Node tests/test_stated_facts.py::test_prune_record_a_pruned_memo_is_a_state_when_another_is_forgotten.
 
     Owner decision 2026-11-06 on STAKES-001 of CCA run 20261105T225204Z ("Prune records"): a memo
     deleted from disk and pruned by a refresh is a state. door-a.md and door-b.md state DOOR;
@@ -1133,8 +1133,8 @@ def test_s8_a_pruned_memo_is_a_state_when_another_is_forgotten(store: LiteStore,
     assert listed(store) == ["4512"], f"the restored memo's fact stayed retracted: {listed(store)}"
 
 
-def test_s8_control_a_pruned_memo_the_forget_names_is_forgotten(store: LiteStore, folder: Path, tmp_path: Path) -> None:
-    """Node tests/test_stated_facts.py::test_s8_control_a_pruned_memo_the_forget_names_is_forgotten.
+def test_prune_record_control_a_pruned_memo_the_forget_names_is_forgotten(store: LiteStore, folder: Path, tmp_path: Path) -> None:
+    """Node tests/test_stated_facts.py::test_prune_record_control_a_pruned_memo_the_forget_names_is_forgotten.
 
     Control: naming the pruned memo in the forget is a decision, so the fact is retracted (not
     only hidden while both memos are away). Red, mutation of `prepare_fact_erasure`
@@ -1156,10 +1156,10 @@ def test_s8_control_a_pruned_memo_the_forget_names_is_forgotten(store: LiteStore
     assert listed(store) == []
 
 
-def test_s8_control_a_memo_forgotten_with_no_prune_record_stays_forgotten(
+def test_prune_record_control_a_memo_forgotten_with_no_prune_record_stays_forgotten(
     store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Node tests/test_stated_facts.py::test_s8_control_a_memo_forgotten_with_no_prune_record_stays_forgotten.
+    """Node tests/test_stated_facts.py::test_prune_record_control_a_memo_forgotten_with_no_prune_record_stays_forgotten.
 
     Control, fail closed: door-b.md was forgotten (its redaction failed, so its card was never
     redacted) and has no prune record, so forgetting door-a.md retracts the fact. Red, mutation of
@@ -1190,10 +1190,10 @@ def test_s8_control_a_memo_forgotten_with_no_prune_record_stays_forgotten(
     )
 
 
-def test_s8_the_prune_records_and_deletes_under_the_erasure_lock(
+def test_prune_record_the_prune_records_and_deletes_under_the_erasure_lock(
     store: LiteStore, folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Node tests/test_stated_facts.py::test_s8_the_prune_records_and_deletes_under_the_erasure_lock.
+    """Node tests/test_stated_facts.py::test_prune_record_the_prune_records_and_deletes_under_the_erasure_lock.
 
     CCA STAKES-001 of run 20261106T212835Z: on PostgreSQL a forget holds the fact ledger's
     erasure lock exclusively from its plan to its delete, and the indexer's prune held nothing,
