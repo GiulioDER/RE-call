@@ -1815,7 +1815,10 @@ class Indexer:
         # them would record a prune after that forget, and its card would then outlive every
         # later forget (CCA STAKES-001 of run 20261106T212835Z). Read again under the lock, a
         # memo a forget took first has no chunks left to record.
-        with erasure_lock_for(fact_ledger_for(self._store), shared=True):
+        # The Indexer's own environment, as the forget passes its runtime one: a controller DSN
+        # resolved from a secret is not in os.environ, and a lock taken on another database would
+        # exclude nothing (owner decision 2026-11-07).
+        with erasure_lock_for(fact_ledger_for(self._store, self._env), shared=True):
             self._record_pruned_chunks(vanished)
             if self._shadow is not None:
                 self._store.delete_sources_across(

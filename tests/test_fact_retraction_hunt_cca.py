@@ -312,3 +312,152 @@ def test_sec001_a_later_forget_wins_whatever_clock_stamped_it(store: LiteStore) 
     assert store.latest_chunk_records(["chunk-B"]) == {"chunk-B": ("forget_source_chunks", "/B/x.md")}, (
         "an earlier clock made a later forget lose to a prune"
     )
+
+
+def test_owner_a_bare_name_never_forgets_a_pruned_namesake_of_a_served_memo(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_owner_a_bare_name_never_forgets_a_pruned_namesake_of_a_served_memo.
+
+    Owner decision 2026-11-07: forgetting by the bare name `x.md` forgets the memo it serves
+    (/A/x.md) and never the pruned namesake /B/x.md, an unrelated memo of another root: its card
+    stays evidence, nothing is retracted, and its fact is current once /B is back. Red against
+    master 6d72d7cc8 (`card.source in asked` decided every pruned card of that name): fails on
+    "a bare name forgot the pruned namesake".
+    """
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    assert _apply(store, "B", "r2").code == DecisionCode.DUPLICATE
+    _prune(store, "B")
+
+    result = forget_memory(store, ["x.md"])
+
+    assert store.latest_chunk_records(["chunk-B"]) == {"chunk-B": ("prune_source_chunks", "/B/x.md")}, (
+        "a bare name forgot the pruned namesake"
+    )
+    assert result.facts_retracted == 0, result.message
+    store.upsert([Chunk("chunk-B", "/B/x.md", "text of B/x.md", {"file": "x.md"})], [[1.0] + [0.0] * (DIM - 1)])
+    assert current(store) == ["4512"], f"the restored namesake's fact is gone: {current(store)}"
+
+
+def test_owner_a_rerun_by_bare_name_never_forgets_the_pruned_namesake(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_owner_a_rerun_by_bare_name_never_forgets_the_pruned_namesake.
+
+    The same forget run again, once /A/x.md has no rows left (how a failed erasure is completed):
+    `x.md` serves nothing now and /A's card is redacted, but the first forget recorded /A under
+    `x.md` (`forget_source_aliases`), so the name still stands for two memos and decides neither.
+    Red against the first version of this change, which counted only the chunk records of cited
+    cards, and against the mutation of `_pruned_and_decided` (recall/fact_retraction.py: the
+    `sources_forgotten_as` lookup skipped): fails on "a re-run by bare name forgot the pruned
+    namesake".
+    """
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    assert _apply(store, "B", "r2").code == DecisionCode.DUPLICATE
+    _prune(store, "B")
+    forget_memory(store, ["x.md"])
+
+    forget_memory(store, ["x.md"])
+
+    assert store.latest_chunk_records(["chunk-B"])["chunk-B"].kind == "prune_source_chunks", (
+        "a re-run by bare name forgot the pruned namesake"
+    )
+
+
+def test_owner_control_a_bare_name_that_names_only_the_pruned_memo_forgets_it(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_owner_control_a_bare_name_that_names_only_the_pruned_memo_forgets_it.
+
+    Control: /A holds no memo and has no record, so `x.md` names the pruned /B/x.md alone, and
+    forgetting it by that name is a decision: the fact is retracted. Red, mutation of
+    `_pruned_and_decided` (the bare-name branch of `names_it` returning False): fails on "the
+    pruned memo the bare name named kept its fact".
+    """
+    store.delete_sources(["/A/x.md"])
+    assert _apply(store, "B", "r2").code == DecisionCode.APPLIED
+    _prune(store, "B")
+
+    result = forget_memory(store, ["x.md"])
+
+    assert result.facts_retracted == 1 and current(store) == [], f"the pruned memo the bare name named kept its fact: {result.message}"
+
+
+def test_bug002_a_card_erased_by_its_chunk_is_no_receipt_needle_by_name(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_bug002_a_card_erased_by_its_chunk_is_no_receipt_needle_by_name.
+
+    Owner decision 2026-11-07 on CCA BUG-002 of run 20261106T121445Z: a card erased by its chunk
+    while /B still serves `x.md` erases its fact, but `x.md` is no receipt needle, since a needle
+    deletes every receipt naming it, the surviving namesake's included. A name erased as a name
+    stays one. Red against master 6d72d7cc8 (every erasable card's name was a needle): fails on
+    "a name still served became a receipt needle".
+    """
+    from recall.fact_redaction import LiteFactRedactor, plan_redaction
+
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    redactor = LiteFactRedactor(store)
+
+    by_chunk = plan_redaction(
+        store.tenant, redactor._rows(), redactor._cards(), erased=lambda _name: False,
+        erased_chunk=lambda chunk: chunk == "chunk-A",
+    )
+    by_name = plan_redaction(
+        store.tenant, redactor._rows(), redactor._cards(), erased=lambda name: name == "x.md",
+    )
+
+    assert by_chunk.facts == 1
+    assert "x.md" not in by_chunk.needles, f"a name still served became a receipt needle: {by_chunk.needles}"
+    assert "x.md" in by_name.needles
+
+
+def test_bug001_a_pruned_memo_forgotten_by_source_keeps_its_name_as_a_needle(
+    store: LiteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_bug001_a_pruned_memo_forgotten_by_source_keeps_its_name_as_a_needle.
+
+    CCA BUG-001 of run 20261107T124651Z: /B/x.md alone states DOOR, is pruned, and is forgotten by
+    its absolute source. Its card is erased by its chunk and nothing serves `x.md` any more, so the
+    name is erased and stays a receipt needle (a receipt naming the memo goes with it). Red against
+    the first version of the owner change (a name was a needle only when `touched_names` held it,
+    which a pruned memo's name never is): fails on "the forgotten memo's name was no receipt
+    needle". Red, mutation of `plan_redaction` (recall/fact_redaction.py: the `name_gone` branch of
+    `name_erased` returning False): same failure.
+    """
+    import recall.fact_redaction as redaction
+
+    store.delete_sources(["/A/x.md"])
+    assert _apply(store, "B", "r2").code == DecisionCode.APPLIED
+    _prune(store, "B")
+    needles: list[tuple[str, ...]] = []
+    real = redaction.plan_redaction
+
+    def spied(*args: Any, **kwargs: Any) -> Any:
+        plan = real(*args, **kwargs)
+        needles.append(plan.needles)
+        return plan
+
+    monkeypatch.setattr(redaction, "plan_redaction", spied)
+
+    result = forget_memory(store, ["/B/x.md"])
+
+    assert result.facts_retracted == 1, result.message
+    assert needles and "x.md" in needles[-1], f"the forgotten memo's name was no receipt needle: {needles}"
+
+
+def test_stakes001_a_bare_name_that_decided_a_pruned_memo_stays_ambiguous(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_stakes001_a_bare_name_that_decided_a_pruned_memo_stays_ambiguous.
+
+    CCA STAKES-001 of run 20261107T124651Z: pruned /A/x.md, the only memo under `x.md`, is
+    forgotten by that bare name; later /B/x.md states DOOR and is pruned, and the same forget runs
+    again. The first forget recorded `x.md` as standing for /A, so the name stands for two memos
+    and decides neither: /B keeps its prune record and its fact. Red against the first version of
+    the owner change (a decided pruned memo left no `forget_source_aliases` record): fails on "a
+    later bare-name forget decided an unrelated pruned namesake".
+    """
+    store.delete_sources(["/B/x.md"])
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    _prune(store, "A")
+    assert forget_memory(store, ["x.md"]).facts_retracted == 1
+
+    store.upsert([Chunk("chunk-B", "/B/x.md", "text of B/x.md", {"file": "x.md"})], [[1.0] + [0.0] * (DIM - 1)])
+    assert _apply(store, "B", "r2").code == DecisionCode.APPLIED
+    _prune(store, "B")
+    forget_memory(store, ["x.md"])
+
+    assert store.latest_chunk_records(["chunk-B"])["chunk-B"].kind == "prune_source_chunks", (
+        "a later bare-name forget decided an unrelated pruned namesake"
+    )
