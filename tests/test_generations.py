@@ -3262,13 +3262,20 @@ def test_a_forget_that_fails_validation_names_the_source_and_the_repair(manager)
 
 
 @requires_db
-def test_sparse_search_breaks_rank_ties_by_chunk_id(manager) -> None:
-    """Item 10: twelve chunks with one text tie on `ts_rank`, and the top four must be the four
-    lowest chunk ids, in that order, whatever order the rows were written in.
+def test_sparse_search_breaks_rank_ties_by_position_in_the_corpus(manager) -> None:
+    """Item 10: twelve chunks with one text tie on `ts_rank`, and the top four must be ordinals
+    0 to 3 of their source, in that order, whatever order the rows were written in.
 
-    Red against `d56661c71` (`ORDER BY rank DESC` only): node
-    tests/test_generations.py::test_sparse_search_breaks_rank_ties_by_chunk_id fails on
-    "tied ranks were not ordered by chunk id".
+    The key is the root-relative file and the ordinal, not the chunk id: a generation chunk id
+    hashes the `source_uri` (absolute for a `file://` manifest) and the pipeline fingerprint, so
+    ordering ties by it made the same corpus rank its ties differently under another directory or
+    after a pipeline change. The legacy store had the same defect (PR 1253).
+
+    Red against `d56661c71` (`ORDER BY rank DESC` only) and against `ffa918217`
+    (`ORDER BY rank DESC, chunk_id`): node
+    tests/test_generations.py::test_sparse_search_breaks_rank_ties_by_position_in_the_corpus
+    fails on "tied ranks were not ordered by position in the corpus" (a chance pass against the
+    chunk id order is 1 in 11,880).
     """
     data = b"tie"
     manifest = _manifest(manager.tenant_id, data)
@@ -3278,18 +3285,11 @@ def test_sparse_search_breaks_rank_ties_by_chunk_id(manager) -> None:
     )
     manager.validate(generation.generation_id)
     manager.promote(generation.generation_id, unsafe_development=True)
-    with psycopg.connect(TEST_DSN, autocommit=True) as conn:
-        conn.execute("SELECT set_config('recall.tenant_id', %s, false)", (manager.tenant_id,))
-        lowest = [
-            str(row[0]) for row in conn.execute(
-                "SELECT chunk_id FROM recall_chunks_v1 WHERE tenant_id = %s "
-                "AND generation_id = %s ORDER BY chunk_id LIMIT 4",
-                (manager.tenant_id, generation.generation_id),
-            ).fetchall()
-        ]
 
     with GenerationStore(TEST_DSN, 64, tenant=manager.tenant_id) as store:
         hits = store.query_sparse("tie", 4)
 
     assert len({hit.score for hit in hits}) == 1, "the fixture did not produce a tie"
-    assert [hit.chunk.id for hit in hits] == lowest, "tied ranks were not ordered by chunk id"
+    assert [hit.chunk.metadata["ord"] for hit in hits] == [0, 1, 2, 3], (
+        "tied ranks were not ordered by position in the corpus"
+    )
