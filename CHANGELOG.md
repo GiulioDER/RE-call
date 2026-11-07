@@ -31,6 +31,10 @@ list as an ordered upgrade procedure.
   --with-migrations` with the migration role, then `recall schema grants --controller`. On a ledger
   that already holds events, run `recall provenance rebuild` after 0030. A database already at 0033
   applies 0029 last. PostgreSQL's pgvector must be 0.8.0 or later.
+* **Local fastembed models move out of the temp directory.** A model no profile pins is now
+  downloaded once more, into `%LOCALAPPDATA%\recall\fastembed` on Windows or
+  `~/.cache/recall/fastembed` elsewhere (`$XDG_CACHE_HOME` is honoured). An offline machine should
+  set `FASTEMBED_CACHE_PATH` to its existing cache, which still takes precedence.
 * **Run `recall schema apply` before starting a server.** A non-enterprise multi-tenant server and
   `recall quickstart --existing-dsn` no longer migrate a table on first use.
 * **Packaging:** `recall_aml`, the `hosted` extra and `recall-hosted` are gone from the wheel and
@@ -1134,6 +1138,12 @@ list as an ordered upgrade procedure.
   source per store; it is now one ids-only read per store. Checking afterwards which cited chunks
   are gone took one text read per chunk and is now one read per store. The forget decides exactly
   as before.
+
+* **A local fastembed model no longer breaks when Windows cleans the temp directory.**
+  fastembed's default cache is `<temp>/fastembed_cache`. Windows cleanup can empty it while
+  leaving the download metadata, and every later load then failed with `NO_SUCHFILE` instead of
+  downloading again. The embedder, the late-interaction reranker and the desktop self-test now use
+  the platform cache directory; `FASTEMBED_CACHE_PATH` still wins.
 
 * **Memory sync to a server running on Windows no longer re-uploads every memo (#1274).** Such a
   server records each source as a native `C:\...\memo.md` path, and the hook's sync matched
