@@ -197,9 +197,10 @@ def plan_redaction(
     card of the erased root's chunk (owner decision 2026-11-06, CCA SEC-001). `kept_chunk(chunk_id)`
     says a card's chunk is only pruned, so its card is evidence whatever its name says: a memo
     pruned from disk is a state, and its namesake in another root being forgotten erases nothing
-    of it (CCA BUG-001 of run 20261106T212835Z). `name_gone(name)` says a name serves nothing now
-    and no kept card carries it: the name of a card erased by its chunk is then a receipt needle
-    too, as the name of a memo forgotten under it (CCA BUG-001 of run 20261107T124651Z). `stored_cards` are the
+    of it (CCA BUG-001 of run 20261106T212835Z). `name_gone(name)` says a name serves nothing now:
+    the name of a card erased by its chunk is then a receipt needle too, as the name of a memo
+    forgotten under it, though a pruned memo of another root carries it (CCA BUG-001 of run
+    20261107T124651Z; owner decision 2026-11-07, "erase"). `stored_cards` are the
     card table's rows of this tenant that may need it, as `(card_id, card)`. The module docstring
     states the rule. Deterministic for a fixed `token`: maps are built in sorted order.
     """

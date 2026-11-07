@@ -318,15 +318,16 @@ def prepare_fact_erasure(
     def redact() -> int:
         if redactor is None:
             return 0
-        # A name a kept (only pruned) card still carries is not erased with a card of another root.
-        kept_names = {card.source for card in cited_cards if card.chunk_id in pruned}
+        # A name nothing serves is erased, a pruned memo carrying it included: its cards and
+        # facts stay, its receipts naming it go, as they do when a served memo of that name is
+        # forgotten (owner decision 2026-11-07, "erase").
         report = redactor.redact(
             erased=lambda name: name in touched_names and gone_name(name),
             names=sorted(touched_names),
             erased_chunk=chunk_gone,
             chunk_ids=sorted(erased_chunks),
             kept_chunk=lambda chunk_id: chunk_id in pruned,
-            name_gone=lambda name: gone_name(name) and name not in kept_names,
+            name_gone=gone_name,
         )
         return int(report.facts_redacted)
 

@@ -210,7 +210,8 @@ def test_owner_sources_forgotten_as_reads_this_tenants_alias_records(
     forget recorded under it included, carries that name. `ReceiptsAuditMixin.sources_forgotten_as`
     maps each name to the sources this tenant forgot under it, never another tenant's. Red,
     mutation of `sources_forgotten_as` (recall/store_receipts.py: `tenant_id = %s` replaced by
-    `(tenant_id = %s OR TRUE)`): fails on "another tenant's forget stood for this tenant's name".
+    `(tenant_id = %s OR TRUE)`, CI run 42376218427): fails on "another tenant's forget stood for
+    this tenant's name".
     """
     mine = _pg(make_store, f"owner-{uuid4().hex[:8]}")
     other = PgVectorStore(TEST_DSN, dim=DIM, table=mine.table, tenant=f"owner-{uuid4().hex[:8]}")

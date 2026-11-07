@@ -461,3 +461,37 @@ def test_stakes001_a_bare_name_that_decided_a_pruned_memo_stays_ambiguous(store:
     assert store.latest_chunk_records(["chunk-B"])["chunk-B"].kind == "prune_source_chunks", (
         "a later bare-name forget decided an unrelated pruned namesake"
     )
+
+
+def test_owner_erase_a_gone_name_a_pruned_namesake_carries_is_still_a_needle(
+    store: LiteStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_owner_erase_a_gone_name_a_pruned_namesake_carries_is_still_a_needle.
+
+    Owner decision 2026-11-07 ("erase"): /A/x.md and /B/x.md state DOOR and are both pruned; /A
+    is forgotten by its absolute source. Nothing serves `x.md`, so the name is a receipt needle
+    though pruned /B still carries it, as it is when a served memo of that name is forgotten; /B's
+    card and fact stay. Red against the first version of PR 1268 (`name_gone` excluded names a kept
+    pruned card carries): fails on "a gone name a pruned namesake carries was no receipt needle".
+    """
+    import recall.fact_redaction as redaction
+
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    assert _apply(store, "B", "r2").code == DecisionCode.DUPLICATE
+    _prune(store, "A")
+    _prune(store, "B")
+    needles: list[tuple[str, ...]] = []
+    real = redaction.plan_redaction
+
+    def spied(*args: Any, **kwargs: Any) -> Any:
+        plan = real(*args, **kwargs)
+        needles.append(plan.needles)
+        return plan
+
+    monkeypatch.setattr(redaction, "plan_redaction", spied)
+
+    result = forget_memory(store, ["/A/x.md"])
+
+    assert result.facts_retracted == 0, result.message
+    assert needles and "x.md" in needles[-1], f"a gone name a pruned namesake carries was no receipt needle: {needles}"
+    assert store.latest_chunk_records(["chunk-B"])["chunk-B"].kind == "prune_source_chunks"
