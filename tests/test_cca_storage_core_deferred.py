@@ -19,6 +19,7 @@ import pytest
 
 from recall.errors import RecallError
 from recall.security_policy import AccessContext, SourceSecurityPolicy, load_source_policy
+from tests.conftest import requires_db
 
 
 def _load(tmp_path: Path, payload: object) -> SourceSecurityPolicy | None:
@@ -228,7 +229,7 @@ def _lexical_sql(vec: list[float] | None) -> str:
 
 
 @pytest.mark.parametrize("vec", [None, [0.1, 0.2, 0.3]], ids=["lexical", "lexical-with-vector"])
-def test_lexical_leg_orders_ties_by_chunk_id(vec: list[float] | None) -> None:
+def test_lexical_leg_breaks_rank_ties(vec: list[float] | None) -> None:
     """DEF-30: both lexical SQL shapes ordered by rank alone before LIMIT.
 
     ts_rank plus the constant numeric boost ties readily, so which tied rows survived LIMIT k,
@@ -236,13 +237,53 @@ def test_lexical_leg_orders_ties_by_chunk_id(vec: list[float] | None) -> None:
     store sends, because the tie only shows on a database whose plan happens to differ.
 
     Red proof: at 8f67f5c70 every ORDER BY in `PgVectorStore._query_sparse` ended at
-    `rank DESC` / `score DESC`, so the regex finds no `, c.id` / `, id` tie-breaker and the
-    assertion fails for both shapes.
+    `rank DESC` / `score DESC`, so the regex finds no tie-breaker and the assertion fails for both
+    shapes. The tie-breaker must lead with the root-relative file, not the chunk id: the id hashes
+    the absolute path, see `test_lexical_ties_rank_the_same_wherever_the_corpus_lives`. At
+    8e8ed30fd (`, c.id` / `, id`) this assertion fails for both shapes too.
     """
     sql = _lexical_sql(vec)
-    orders = re.findall(r"ORDER BY (\w+) DESC(, (?:c\.)?id)?", sql)
+    orders = re.findall(r"ORDER BY (\w+) DESC(, COALESCE\((?:c\.)?metadata->>'file')?", sql)
     assert orders, sql
     assert all(tie for _, tie in orders), sql
+
+
+@requires_db
+@pytest.mark.parametrize("with_vector", [False, True], ids=["lexical", "lexical-with-vector"])
+def test_lexical_ties_rank_the_same_wherever_the_corpus_lives(
+    tmp_path: Path, make_store, with_vector: bool
+) -> None:
+    """The same corpus indexed under two directories returns its lexical ties in one order.
+
+    Eight files whose text matches the query identically tie on `ts_rank`. The chunk id is
+    `md5(absolute_path:ordinal)`, so breaking ties by id ordered them by a hash of the directory:
+    the LoCoMo harness indexes from a fresh temp dir per run, and on 2026-11-07 two identical
+    retrieval runs of master returned the same top-20 list for 5 of 1,536 questions (v0.14.0,
+    which had no tie-break: 1,442). The order must follow the root-relative file instead.
+
+    Red proof: at 8e8ed30fd (`ORDER BY rank DESC, c.id` in `PgVectorStore._query_sparse`) the top
+    three are three md5-ordered files that differ between the two roots and are not `note_0..2`,
+    so the first assertion fails for both shapes (a chance pass is 1 in 336 per root).
+    """
+    from recall.embeddings import HashingEmbedder
+    from recall.index import Indexer
+
+    embedder = HashingEmbedder(64)
+    files_by_root = []
+    for root in (tmp_path / "a", tmp_path / "b" / "deeper"):
+        root.mkdir(parents=True)
+        for i in range(8):
+            # Same length and same query-term position, so ts_rank ties exactly; the trailing
+            # word keeps every file distinct.
+            (root / f"note_{i}.md").write_text(f"museum trip {'abcdefgh'[i]}word\n", encoding="utf-8")
+        store = make_store(64)
+        Indexer(store, embedder).index_path(root)
+        vec = embedder.embed(["museum"])[0] if with_vector else None
+        hits = store.query_sparse("museum", 3, vec=vec)
+        files_by_root.append([hit.chunk.metadata["file"] for hit in hits])
+
+    assert files_by_root[0] == ["note_0.md", "note_1.md", "note_2.md"], files_by_root
+    assert files_by_root[1] == files_by_root[0], files_by_root
 
 
 # --- DEF-32 (DEPLOY-002): an unmigrated database says so, with the command that fixes it ----
