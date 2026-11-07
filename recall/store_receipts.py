@@ -14,6 +14,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from recall.constants import IDEMPOTENCY_RECEIPT_RETENTION_SECONDS
+from recall.chunk_records import FORGET_SOURCE_CHUNKS, PRUNE_SOURCE_CHUNKS, ChunkRecord, latest_chunk_records
 from recall.idempotency_receipts import (
     ANY_OPERATION,
     check_receipt_matches,
@@ -145,23 +146,25 @@ class ReceiptsAuditMixin:
 
         return self._with_retry(_op)
 
-    def latest_chunk_records(self, chunk_ids: Sequence[str]) -> dict[str, tuple[str, str]]:
+    def latest_chunk_records(self, chunk_ids: Sequence[str]) -> dict[str, ChunkRecord]:
         """`LiteStore.latest_chunk_records` for this tenant: the latest prune or forget record per
         chunk id, in the order they were appended."""
         if not chunk_ids:
             return {}
 
-        from recall.chunk_records import latest_chunk_records
-
-        def _op(conn: "psycopg.Connection") -> dict[str, tuple[str, str]]:
+        def _op(conn: "psycopg.Connection") -> dict[str, ChunkRecord]:
             # `created_at` is the server's clock_timestamp() (migration 0008), so it orders by
             # append; at one instant a forget sorts last, so a tie never keeps a forgotten memo.
+            # `?|` keeps only the records naming one of these chunks before their arrays are
+            # expanded, rather than every record the tenant ever wrote (CCA PERF-002 of run
+            # 20261106T212835Z).
             rows = conn.execute(
                 "SELECT chunk, event_type, source_uri FROM recall_audit_events, "
                 "jsonb_array_elements_text(payload->'chunk_ids') AS chunk "
-                "WHERE tenant_id = %s AND event_type IN ('prune_source_chunks', 'forget_source_chunks') "
-                "AND chunk = ANY(%s) ORDER BY created_at, (event_type = 'forget_source_chunks')",
-                (self._tenant, list(chunk_ids)),
+                "WHERE tenant_id = %s AND event_type IN (%s, %s) AND payload->'chunk_ids' ?| %s::text[] "
+                "AND chunk = ANY(%s) ORDER BY created_at, (event_type = %s)",
+                (self._tenant, PRUNE_SOURCE_CHUNKS, FORGET_SOURCE_CHUNKS, list(chunk_ids), list(chunk_ids),
+                 FORGET_SOURCE_CHUNKS),
             ).fetchall()
             return latest_chunk_records(rows)
 
@@ -175,8 +178,8 @@ class ReceiptsAuditMixin:
         def _op(conn: "psycopg.Connection") -> set[str]:
             rows = conn.execute(
                 "SELECT payload FROM recall_audit_events WHERE tenant_id = %s "
-                "AND event_type = 'forget_source_chunks' AND source_uri = ANY(%s)",
-                (self._tenant, list(sources)),
+                "AND event_type = %s AND source_uri = ANY(%s)",
+                (self._tenant, FORGET_SOURCE_CHUNKS, list(sources)),
             ).fetchall()
             return {chunk for (payload,) in rows for chunk in payload.get("chunk_ids", ())
                     if isinstance(chunk, str)}

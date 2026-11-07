@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from recall.calibration_v2 import CalibrationResolution
+from recall.chunk_records import FORGET_SOURCE_CHUNKS, PRUNE_SOURCE_CHUNKS, ChunkRecord, latest_chunk_records
 from recall.db_constants import DEFAULT_TABLE
 from recall import eval_clock
 from recall.errors import RecallError
@@ -1058,22 +1059,20 @@ class LiteStore:
         return {name for (payload,) in rows for name in json.loads(payload).get("aliases", ())
                 if isinstance(name, str)}
 
-    def latest_chunk_records(self, chunk_ids: Sequence[str]) -> dict[str, tuple[str, str]]:
-        """`{chunk_id: (event_type, source)}` of the latest `prune_source_chunks` or
+    def latest_chunk_records(self, chunk_ids: Sequence[str]) -> dict[str, ChunkRecord]:
+        """`{chunk_id: ChunkRecord}` of the latest `prune_source_chunks` or
         `forget_source_chunks` record naming each of `chunk_ids`, in the order they were appended."""
         if not chunk_ids:
             return {}
-        from recall.chunk_records import latest_chunk_records
-
         # By rowid, the order of append: `created_at` is the eval clock's time on a server that
         # runs one and wall time elsewhere, so it may put a later forget before an earlier prune
         # (CCA SEC-001 of run 20261106T212835Z).
         rows = self._metadata_values(
             "SELECT chunk.value, audit_events.event_type, audit_events.source_uri "
             "FROM audit_events, json_each(audit_events.payload, '$.chunk_ids') AS chunk "
-            "WHERE audit_events.event_type IN ('prune_source_chunks', 'forget_source_chunks') "
+            "WHERE audit_events.event_type IN (?, ?) "
             "AND chunk.value IN (SELECT value FROM json_each(?)) ORDER BY audit_events.rowid",
-            (json.dumps(list(chunk_ids)),),
+            (PRUNE_SOURCE_CHUNKS, FORGET_SOURCE_CHUNKS, json.dumps(list(chunk_ids))),
         )
         return latest_chunk_records(rows)
 
@@ -1082,8 +1081,8 @@ class LiteStore:
         if not sources:
             return set()
         rows = self._metadata_values(
-            "SELECT payload FROM audit_events WHERE event_type = 'forget_source_chunks' "
-            "AND source_uri IN (SELECT value FROM json_each(?))", (json.dumps(list(sources)),),
+            "SELECT payload FROM audit_events WHERE event_type = ? "
+            "AND source_uri IN (SELECT value FROM json_each(?))", (FORGET_SOURCE_CHUNKS, json.dumps(list(sources))),
         )
         return {chunk for (payload,) in rows for chunk in json.loads(payload).get("chunk_ids", ())
                 if isinstance(chunk, str)}
@@ -1147,6 +1146,20 @@ class LiteStore:
             "SELECT id, source, text, metadata FROM chunks WHERE source = ? ORDER BY indexed_at, id", (source,)
         )
         return [Chunk(id=cid, source=src, text=text, metadata=json.loads(metadata)) for cid, src, text, metadata in rows]
+
+    def chunk_ids_for_sources(self, sources: Sequence[str]) -> dict[str, list[str]]:
+        """`{source: [chunk id, ...]}` of these exact sources, ids only, in one read: what the
+        indexer's prune records (CCA PERF-001 of run 20261106T212835Z)."""
+        found: dict[str, list[str]] = {}
+        if not sources:
+            return found
+        rows = self._metadata_values(
+            "SELECT source, id FROM chunks WHERE source IN (SELECT value FROM json_each(?)) ORDER BY source, id",
+            (json.dumps(list(sources)),),
+        )
+        for source, chunk_id in rows:
+            found.setdefault(str(source), []).append(str(chunk_id))
+        return found
 
     def ensure_schema(self, script: str) -> None:
         """Run `IF NOT EXISTS` DDL for a table another `recall.lite` module owns (facts, receipts).

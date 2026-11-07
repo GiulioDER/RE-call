@@ -160,3 +160,42 @@ def test_p2_postgres_and_lite_retract_the_same(
     assert steps["forget a"] == 0 and steps["forget a: current"] != []
     assert steps["forget b"] == 1 and steps["forget b: current"] == []
     assert steps["re-learn c"] == "APPLIED" and len(steps["re-learn c: current"]) == 1
+
+
+def test_env003_the_latest_chunk_record_is_read_per_tenant_in_append_order(
+    make_store: Callable[[int], PgVectorStore],
+) -> None:
+    """Node tests/test_fact_retraction_postgres.py::test_env003_the_latest_chunk_record_is_read_per_tenant_in_append_order.
+
+    CCA ENV-003 of run 20261106T212835Z: `ReceiptsAuditMixin.latest_chunk_records` had no test on
+    PostgreSQL. One tenant prunes chunk c1 and then forgets it; another tenant prunes a chunk of the
+    same id afterwards. The first tenant's latest record is its own forget, whatever the other
+    tenant wrote, and the ids-only read the prune uses (`PgVectorStore.chunk_ids_for_sources`)
+    returns this tenant's chunks only, though the other tenant holds a chunk of the same id and
+    source. Red, mutation of `ReceiptsAuditMixin.latest_chunk_records` (recall/store_receipts.py:
+    `tenant_id = %s` replaced by `(tenant_id = %s OR TRUE)`, CI run 42312910524): fails on "another
+    tenant's record decided this tenant's chunk". (`%s IS NOT NULL` was rejected as proof: it errors
+    with IndeterminateDatatype before any assertion.) Red, mutation of
+    `PgVectorStore.chunk_ids_for_sources` (recall/store.py: `tenant_id = %s` replaced by
+    `(tenant_id = %s OR TRUE)`): fails on "another tenant's chunk was read for this tenant's prune".
+    """
+    mine = _pg(make_store, f"env003-{uuid4().hex[:8]}")
+    other = PgVectorStore(TEST_DSN, dim=DIM, table=mine.table, tenant=f"env003-{uuid4().hex[:8]}")
+    mine.append_audit_event("prune_source_chunks", {"chunk_ids": ["c1", "c2"]}, source_uri="/notes/a.md")
+    mine.append_audit_event("forget_source_chunks", {"chunk_ids": ["c1"]}, source_uri="/notes/a.md")
+    other.append_audit_event("prune_source_chunks", {"chunk_ids": ["c1"]}, source_uri="/elsewhere/a.md")
+
+    latest = mine.latest_chunk_records(["c1", "c2", "c3"])
+
+    assert latest == {
+        "c1": ("forget_source_chunks", "/notes/a.md"),
+        "c2": ("prune_source_chunks", "/notes/a.md"),
+    }, f"another tenant's record decided this tenant's chunk: {latest}"
+    assert latest["c1"].kind == "forget_source_chunks" and latest["c2"].source == "/notes/a.md"
+    _remember(mine, "a.md")
+    _remember(mine, "b.md")
+    _remember(other, "a.md")
+    ids = mine.chunk_ids_for_sources(["/notes/a.md", "/notes/b.md", "/notes/gone.md"])
+    assert ids == {"/notes/a.md": ["chunk-a.md"], "/notes/b.md": ["chunk-b.md"]}, (
+        f"another tenant's chunk was read for this tenant's prune: {ids}"
+    )

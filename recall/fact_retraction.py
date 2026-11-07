@@ -29,6 +29,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
+from recall.chunk_records import FORGET_SOURCE_CHUNKS, PRUNE_SOURCE_CHUNKS, ChunkRecord
 from recall.observability import get_logger
 from recall.supersession import SupersessionGraph, store_supersession_graph, window_contains
 
@@ -99,6 +100,41 @@ class FactErasure:
     redact: Callable[[], int]
 
 
+def chunk_targets(store: Any, shadow_store: Any | None) -> list[Any]:
+    """The stores whose chunks a forget erases and a prune records, by chunk id: `store` and the
+    shadow, never a generation store, which reads chunks one generation at a time and keeps the
+    name rule. One choice for both (CCA CODE-004 of run 20261106T212835Z)."""
+    from recall.generation_store import GenerationStore
+
+    return [
+        target for target in (store, shadow_store)
+        if target is not None and not isinstance(target, GenerationStore)
+    ]
+
+
+def _pruned_and_decided(
+    cited_cards: list[Any], targets: list[Any], erased_chunks: set[str], asked: set[str], gone_sources: set[str],
+) -> tuple[dict[str, ChunkRecord], dict[str, set[str]]]:
+    """The cited chunks whose latest record is the indexer's prune, and of those the ones this call
+    decides by naming their memo, grouped by its absolute source (`prepare_fact_erasure`)."""
+    candidates = sorted({card.chunk_id for card in cited_cards} - erased_chunks)
+    # One read: the stores of one tenant share its audit records, and the prune and the forget
+    # write theirs to the primary store (CCA PERF-003 of run 20261106T212835Z).
+    reader = next((target for target in targets if callable(getattr(target, "latest_chunk_records", None))), None)
+    pruned: dict[str, ChunkRecord] = {}
+    if reader is not None and candidates:
+        pruned = {
+            chunk: record for chunk, record in reader.latest_chunk_records(candidates).items()
+            if record.kind == PRUNE_SOURCE_CHUNKS
+        }
+    decided: dict[str, set[str]] = {}
+    for card in cited_cards:
+        record = pruned.get(card.chunk_id)
+        if record is not None and (card.source in asked or record.source in asked | gone_sources):
+            decided.setdefault(record.source, set()).add(card.chunk_id)
+    return pruned, decided
+
+
 def prepare_fact_erasure(
     ledger: Any,
     store: Any,
@@ -132,9 +168,11 @@ def prepare_fact_erasure(
     or the legacy table, though another root still serves a memo under its name; its value is then
     redacted as well when no other card supports it. A card whose chunk the indexer last recorded
     pruning (`prune_source_chunks`) survives unless this call names its memo: a memo deleted from
-    disk is a state, and only that positive record tells it from a forgotten one.
+    disk is a state, and only that positive record tells it from a forgotten one. Naming a pruned
+    memo records it as forgotten (`forget_source_chunks`) here, before anything is retracted, so
+    preparing writes as well as reads. A generation store has no prune records and keeps the name
+    rule.
     """
-    from recall.generation_store import GenerationStore
     from recall.types import RedactedEvidenceCard
 
     cited_cards = [
@@ -178,21 +216,18 @@ def prepare_fact_erasure(
     # SEC-001). Chunk ids hash the absolute source, so they never name another root's chunk. A
     # generation store reads chunks per generation only, so there it stays the name rule: a
     # retraction may fail to happen, never remove a fact that still has evidence.
-    chunk_targets = [
-        target for target in (store, shadow_store)
-        if target is not None and not isinstance(target, GenerationStore)
-    ]
+    targets = chunk_targets(store, shadow_store)
     erased_chunks: set[str] = set()
     for source in sorted(gone_sources):
-        ids = sorted({chunk.id for target in chunk_targets for chunk in target.chunks_for_source(source)})
+        ids = sorted({chunk.id for target in targets for chunk in target.chunks_for_source(source)})
         erased_chunks.update(ids)
         # Recorded before the rows vanish, like the aliases, so a forget re-run after a failed
         # retraction or redaction, which deletes nothing, still knows them (CCA BUG-001). Ids only.
         # One record per forget, never merged with an earlier one: the latest record of a chunk
         # decides whether it was forgotten or only pruned.
         if ids and callable(append):
-            append("forget_source_chunks", {"chunk_ids": ids}, source_uri=source)
-    for target in chunk_targets:
+            append(FORGET_SOURCE_CHUNKS, {"chunk_ids": ids}, source_uri=source)
+    for target in targets:
         recover_chunks = getattr(target, "forgotten_source_chunks", None)
         if callable(recover_chunks):
             erased_chunks.update(recover_chunks(sorted(named)))
@@ -205,24 +240,10 @@ def prepare_fact_erasure(
     # what the call names counts, never `touched_names`: that also holds every name a memo this
     # call erases is served under, so forgetting /A/x.md would decide a pruned /B/x.md (CCA BUG-001
     # of run 20261106T212835Z).
-    asked = set(named)
-    pruned: dict[str, tuple[str, str]] = {}
-    candidates = sorted({card.chunk_id for card in cited_cards} - erased_chunks)
-    for target in chunk_targets:
-        latest = getattr(target, "latest_chunk_records", None)
-        if callable(latest) and candidates:
-            pruned.update(
-                (chunk, record) for chunk, record in latest(candidates).items()
-                if record[0] == "prune_source_chunks"
-            )
-    decided: dict[str, set[str]] = {}
-    for card in cited_cards:
-        record = pruned.get(card.chunk_id)
-        if record is not None and (card.source in asked or record[1] in asked | gone_sources):
-            decided.setdefault(record[1], set()).add(card.chunk_id)
+    pruned, decided = _pruned_and_decided(cited_cards, targets, erased_chunks, set(named), gone_sources)
     for source, chunk_ids in sorted(decided.items()):
         if callable(append):
-            append("forget_source_chunks", {"chunk_ids": sorted(chunk_ids)}, source_uri=source)
+            append(FORGET_SOURCE_CHUNKS, {"chunk_ids": sorted(chunk_ids)}, source_uri=source)
         erased_chunks.update(chunk_ids)
         for chunk_id in chunk_ids:
             pruned.pop(chunk_id, None)
@@ -233,7 +254,7 @@ def prepare_fact_erasure(
         if chunk_id not in erased_chunks:
             return False
         if chunk_id not in chunk_cache:
-            chunk_cache[chunk_id] = all(target.chunk_by_id(chunk_id) is None for target in chunk_targets)
+            chunk_cache[chunk_id] = all(target.chunk_by_id(chunk_id) is None for target in targets)
         return chunk_cache[chunk_id]
 
     def touched(card: EvidenceCard) -> bool:

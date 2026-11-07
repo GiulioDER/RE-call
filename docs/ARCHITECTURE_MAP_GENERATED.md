@@ -641,7 +641,7 @@ They are observations, not automatic failures.
 | `recall.fact_ledger` | 5 | 31 |
 | `recall.fact_projection` | 2 | 6 |
 | `recall.fact_redaction` | 10 | 111 |
-| `recall.fact_retraction` | 10 | 111 |
+| `recall.fact_retraction` | 11 | 111 |
 | `recall.federation` | 4 | 121 |
 | `recall.fix` | 7 | 30 |
 | `recall.frontmatter` | 1 | 1 |
