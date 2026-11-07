@@ -30,6 +30,17 @@ A commercial license is granted in writing by the copyright holder. It may cover
 deployment, modification, redistribution, hosted service use, support, and trademark rights
 according to its written terms.
 
+## Third-party components
+
+A commercial license covers RE-call itself. The libraries, models and hosted services RE-call
+depends on stay under their own licenses and terms, which a commercial license does not change.
+They are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+[docs/MODEL_LICENSES.md](docs/MODEL_LICENSES.md). Some carry conditions of their own when you
+distribute them: `psycopg`, `psycopg-binary` and `psycopg-pool` are under the LGPL-3.0, and
+PySide6, used only by the optional desktop app, is offered under the LGPL-3.0 or the GPL. If you
+ship them with your product, meet their terms as well, including the LGPL's requirement that
+recipients can replace the library with a modified version.
+
 ## Earlier releases
 
 Every copy keeps the license it was published under. Releases published under the MIT License

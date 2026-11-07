@@ -228,3 +228,42 @@ def test_storing_a_calibration_surfaces_the_real_error(tmp_path: Path) -> None:
         store.save_calibration("{}", created_at="2026-10-07T00:00:00.000000+00:00", model="m", dimension=8)
     assert "calibration refused" in str(caught.value), "the rollback masked the real error"
     assert not store._conn.in_transaction  # noqa: SLF001
+
+
+def test_a_store_rebound_to_another_model_does_not_lend_it_the_old_threshold(tmp_path: Path) -> None:
+    """CCA STAKES-001 (run 20261106T152931Z). Invariant: once the store is bound to another model
+    than its newest fit was fitted for (a switch whose refit saved nothing), that fit decides
+    nothing: strict search with the new model is refused as stale, and a refit is wanted.
+    Failure caught: the trust gate compares the runtime embedder with the binding only, so the old
+    model's certified threshold answered the new model's searches as trusted.
+
+    Red proof, 2026-11-06 on the remote test host: with the `_fitted_for_another_model` check
+    removed from `recall.lite.calibration.resolve`, this failed at the STALE assertion
+    (`CERTIFIED`); with it removed from `_refit_wanted` instead, it failed at the last assertion;
+    restored, it passed."""
+    from recall.lite.calibration import _refit_wanted
+
+    store = _store(tmp_path, 48)
+    assert auto_calibrate(store, ContentWordEmbedder()).status is CalibrationStatus.CERTIFIED
+    store.record_embedder_spec("another", model="another-model", dimension=DIM)
+    assert store.resolve_calibration().status is CalibrationStatus.STALE, "the old model's fit still certified"
+    with pytest.raises(TrustRefusal) as refused:
+        _strict(store, ContentWordEmbedder(name="another-model"))
+    assert refused.value.code is TrustFailureCode.CALIBRATION_STALE
+    assert _refit_wanted(store), "a fit for another model was taken to cover the corpus"
+
+
+def test_a_model_is_recorded_only_with_its_dimension(tmp_path: Path) -> None:
+    """CCA DAT-002 (deferred pass of run 20261106T152931Z). Invariant: `record_embedder_spec`
+    refuses a model without its dimension (or the reverse) and writes nothing. Failure caught: a
+    model alone stored the text "None" as `embedder_dimension`, which every later binding read
+    fails to parse.
+
+    Red proof, 2026-11-07 on the remote test host: with the `if (model is None) != (dimension is
+    None):` check of `recall.lite.store.LiteStore.record_embedder_spec` made `if False:`, this
+    failed at `pytest.raises(ValueError)` (DID NOT RAISE); restored, it passed."""
+    store = _store(tmp_path, 48)
+    assert auto_calibrate(store, ContentWordEmbedder()).status is CalibrationStatus.CERTIFIED
+    with pytest.raises(ValueError):
+        store.record_embedder_spec("another", model="another-model")
+    assert store.bound_embedder() == ("test-content-words", DIM)

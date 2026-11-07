@@ -30,7 +30,7 @@ class PinnedReaderTokenizer:
             import tiktoken
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError(
-                "exact benchmark token accounting needs tiktoken; install recall-rag[bench]"
+                "exact benchmark token accounting needs tiktoken; install tiktoken==0.14.0"
             ) from exc
         return tiktoken.get_encoding(self.tokenizer_id)
 

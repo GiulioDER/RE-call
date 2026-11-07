@@ -101,7 +101,9 @@ def test_ignored_dependency_still_has_an_upper_bound(name: str) -> None:
     """
     specs = _requirements(name)
     assert specs, f"no requirement strings found for {name!r}"
-    uncapped = [s for s in specs if "<" not in s and "==" not in s]
+    # `~=X.Y.Z` is a compatible-release clause and carries an upper bound (`<X.(Y+1)`), the form the
+    # `mcp` extras use since 2026-11-06.
+    uncapped = [s for s in specs if "<" not in s and "==" not in s and "~=" not in s]
     assert not uncapped, (
         f"dependabot.yml ignores {name!r}, but these requirement strings in pyproject.toml carry "
         f"no upper bound: {uncapped} (all declarations: {specs}). A cap that holds in one extra "

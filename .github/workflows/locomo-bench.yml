@@ -1,0 +1,214 @@
+name: LoCoMo version comparison
+
+# Manual only. Compares two RE-call versions on LoCoMo with ONE harness: the `benchmarks/`
+# directory and `recall/eval/locomo.py` are taken from the revision this workflow is dispatched
+# on and copied over BOTH checkouts, so the only thing that differs between the arms is the
+# library under them. The baseline is fixed at the v0.14.0 tag and the candidate is the dispatched
+# revision; neither is an input, so a dispatch cannot point the job at an arbitrary ref. Each arm
+# gets its own virtualenv; RECALL_EMBEDDER is never set, so each version resolves its own default
+# embedder, and the artifacts record which one it was.
+#
+#   gh workflow run locomo-bench.yml --repo GiulioDER/RE-call -f stage=retrieval
+#   gh workflow run locomo-bench.yml --repo GiulioDER/RE-call -f stage=reader
+#
+# `retrieval` spends nothing (local bge-small embedder, no LLM). `reader` spends OpenRouter credit
+# on the reader and the judge, under a hard per-arm ceiling enforced by `benchmarks.capped_run`.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: retrieval (free) or reader (paid)
+        required: true
+        type: choice
+        options: [retrieval, reader]
+      conversations:
+        description: LoCoMo conversations to run (10 is all)
+        default: "10"
+        type: string
+      model:
+        description: OpenRouter model id, used as reader AND judge
+        default: deepseek/deepseek-v4.1-flash-1017
+        type: string
+      usd_per_m_in:
+        description: Model input price, USD per million tokens
+        default: "0.15"
+        type: string
+      usd_per_m_out:
+        description: Model output price, USD per million tokens
+        default: "0.60"
+        type: string
+      max_usd_per_arm:
+        description: Hard spend ceiling per reader arm, USD
+        default: "2.50"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: locomo-bench-${{ inputs.stage }}
+  cancel-in-progress: false
+
+env:
+  # snap-research/locomo, data/locomo10.json at commit cbfbc1d (2024-08-10). Git blob sha
+  # d95b872480b413d935821fdc3c84f8a8f5f29e73; the job checks it before running anything.
+  LOCOMO_URL: https://raw.githubusercontent.com/snap-research/locomo/cbfbc1dba6bc53d00625212a0f22d55ffee7c1fc/data/locomo10.json
+  LOCOMO_BLOB: d95b872480b413d935821fdc3c84f8a8f5f29e73
+  RECALL_DSN: postgresql://recall:recall@localhost:5432/recall
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  retrieval:
+    if: inputs.stage == 'retrieval'
+    name: Retrieval, both arms back to back
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    services:
+      db:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - &checkout_harness
+        name: Check out the harness revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+          path: harness
+      - &checkout_baseline
+        name: Check out the baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+          ref: v0.14.0
+          path: arm-baseline
+      - &checkout_candidate
+        name: Check out the candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: arm-candidate
+      - &setup_python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+      - &prepare
+        name: Overlay the harness and install each arm
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL "$LOCOMO_URL" -o locomo10.json
+          test "$(git hash-object locomo10.json)" = "$LOCOMO_BLOB"
+          for arm in baseline candidate; do
+            dir="arm-$arm"
+            rm -rf "$dir/benchmarks"
+            cp -r harness/benchmarks "$dir/benchmarks"
+            cp harness/recall/eval/locomo.py "$dir/recall/eval/locomo.py"
+            cp locomo10.json "$dir/locomo10.json"
+            python -m venv "venv-$arm"
+            "venv-$arm/bin/pip" install --quiet -e "$dir[fastembed,bench]"
+            echo "$arm: $(git -C "$dir" rev-parse HEAD) $("venv-$arm/bin/python" -c 'import importlib.metadata as m; print(m.version("recall-rag"))')"
+            "venv-$arm/bin/pip" freeze --exclude-editable > "freeze-$arm.txt"
+            # Each arm gets a fresh database of its own, migrated by its OWN version. The
+            # extension is created here because v0.14.0 registers the vector type on connect, and
+            # the default `chunks` target is migrated first because v0.14.0 refuses to migrate an
+            # evaluation table before it.
+            PGPASSWORD=recall psql -h localhost -U recall -d recall -v ON_ERROR_STOP=1 -q \
+              -c "CREATE DATABASE arm_$arm"
+            PGPASSWORD=recall psql -h localhost -U recall -d "arm_$arm" -v ON_ERROR_STOP=1 -q \
+              -c "CREATE EXTENSION IF NOT EXISTS vector"
+            RECALL_DSN="postgresql://recall:recall@localhost:5432/arm_$arm" "venv-$arm/bin/python" -c \
+              'import os; from recall.schema import apply_migrations; apply_migrations(os.environ["RECALL_DSN"], table="chunks", dim=384)' 1>&2
+          done | tee arms.txt
+      - name: Run both arms, baseline first
+        shell: bash
+        env:
+          CONVERSATIONS: ${{ inputs.conversations }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for arm in baseline candidate; do
+            start=$(date +%s)
+            ( cd "arm-$arm" && export RECALL_DSN="postgresql://recall:recall@localhost:5432/arm_$arm" \
+                && export LOCOMO_PER_QUESTION_OUT="../out/questions_$arm.json" \
+                && "../venv-$arm/bin/python" -m benchmarks.locomo_per_question \
+                --data locomo10.json --k 5 --k-curve 1,3,5,10,20 --candidate-k 20 \
+                --conversations "$CONVERSATIONS" \
+                --table "locomo_$arm" --out "../out/retrieval_$arm.json" ) 2> "out/retrieval_$arm.stderr" \
+              || { tail -40 "out/retrieval_$arm.stderr"; exit 1; }
+            echo "$arm wall_s=$(( $(date +%s) - start ))" | tee -a out/wall.txt
+            tail -25 "out/retrieval_$arm.stderr"
+          done
+          cp arms.txt freeze-*.txt out/
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: locomo-retrieval
+          path: out/
+
+  reader:
+    if: inputs.stage == 'reader'
+    name: Reader and judge, ${{ matrix.arm }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [baseline, candidate]
+    services:
+      db:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: recall
+          POSTGRES_PASSWORD: recall
+          POSTGRES_DB: recall
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U recall"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    steps:
+      - *checkout_harness
+      - *checkout_baseline
+      - *checkout_candidate
+      - *setup_python
+      - *prepare
+      - name: Run the arm under the spend ceiling
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RECALL_BENCH_MAX_USD: ${{ inputs.max_usd_per_arm }}
+          RECALL_BENCH_USD_PER_M_IN: ${{ inputs.usd_per_m_in }}
+          RECALL_BENCH_USD_PER_M_OUT: ${{ inputs.usd_per_m_out }}
+          ARM: ${{ matrix.arm }}
+          MODEL: ${{ inputs.model }}
+          CONVERSATIONS: ${{ inputs.conversations }}
+        run: |
+          set -uo pipefail
+          mkdir -p out
+          cd "arm-$ARM"
+          export RECALL_DSN="postgresql://recall:recall@localhost:5432/arm_$ARM"
+          "../venv-$ARM/bin/python" -m benchmarks.capped_run --arm recall \
+            --conversations "$CONVERSATIONS" --model "$MODEL" --data locomo10.json \
+            --out "../out/reader_$ARM" 2> "../out/reader_$ARM.stderr"
+          status=$?
+          tail -40 "../out/reader_$ARM.stderr"
+          cp ../arms.txt ../freeze-*.txt ../out/
+          exit $status
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        if: always()
+        with:
+          name: locomo-reader-${{ matrix.arm }}
+          path: out/

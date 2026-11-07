@@ -40,6 +40,8 @@ class LiteFileReport:
     #: The spec setup resolved the embedder from (`LiteStore.record_embedder_spec`); None for a
     #: store built before setup recorded it.
     embedder_spec: str | None = None
+    #: The RECALL_EMBED_PROFILE recorded with the spec ("" for none); None before it was recorded.
+    embedder_profile: str | None = None
     calibrated_at: str | None = None
     #: The corpus delta from the fit when the calibration in force was carried forward to this
     #: corpus rather than fitted on it; None for a fitted one.
@@ -193,6 +195,7 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
         fingerprint=fingerprint,
         embedder_model=meta.get("embedder_model"),
         embedder_spec=meta.get("embedder_spec"),
+        embedder_profile=meta.get("embedder_profile"),
         calibrated_at=calibrated_at,
         carried_delta=carried_delta,
     )

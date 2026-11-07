@@ -32,7 +32,7 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -57,6 +57,7 @@ __all__ = [
     "RefreshReport",
     "Snapshot",
     "check",
+    "embedder_refusal",
     "over_budget",
     "policy_key",
     "read_state",
@@ -87,6 +88,49 @@ def refresh_purpose(roots: Sequence[str | Path]) -> str:
     """
     folders = "\x00".join(sorted(str(Path(r).resolve()) for r in roots))
     return f"{PURPOSE}:{hashlib.sha256(folders.encode('utf-8')).hexdigest()[:12]}"
+
+
+def profile_mismatch(recorded: str | None, current: str) -> str | None:
+    """How to put RECALL_EMBED_PROFILE back when `current` differs from the `recorded` one, else
+    None; a store that recorded none is not compared. The one rule every guard applies (CCA
+    CODE-001)."""
+    if recorded is None or current == recorded:
+        return None
+    return f"set RECALL_EMBED_PROFILE={recorded!r}" if recorded else "unset RECALL_EMBED_PROFILE"
+
+
+def embedder_refusal(store: LiteStore, embedder: Embedder, env: Mapping[str, str]) -> str | None:
+    """Why a refresher with no `--force` and no typed `--embedder`, the MCP server's, must not
+    refresh `store` with `embedder` built from `env`; None when it may (owner decision 2026-11-06).
+
+    The same three questions `recall lite refresh` asks before it embeds: has the store been
+    switched to another spec or RECALL_EMBED_PROFILE than this environment names, and is it bound
+    to another model than this embedder. A server that refreshed anyway would re-embed a store a
+    person switched back to the embedder setup registered, and the two would undo each other.
+    """
+    from recall.lite.inspect import lite_file_meta
+
+    meta = lite_file_meta(store.path)
+    if meta is None:
+        # A lite store always has its meta table, so None is a read that failed, not "nothing
+        # recorded"; skipping the checks then would fail open (CCA DAT-003).
+        return "the store's embedder record could not be read, so the embedder cannot be checked"
+    rerun = "run `recall setup --lite` again to register the embedder the store now holds"
+    # Unset, the server builds its default (`recall_mcp.settings`), so that is what is compared
+    # (CCA STAKES-003); an empty value must not skip the check.
+    recorded, configured = meta.get("embedder_spec"), env.get("RECALL_EMBEDDER", "").strip() or "fastembed"
+    if recorded and configured != recorded:
+        return f"the store records the embedder {recorded!r}, and this server runs {configured!r}; {rerun}"
+    recorded_profile, profile = meta.get("embedder_profile"), env.get("RECALL_EMBED_PROFILE", "").strip()
+    if profile_mismatch(recorded_profile, profile) is not None:
+        return (
+            f"the store records RECALL_EMBED_PROFILE={recorded_profile!r}, and this server runs "
+            f"{profile!r}; {rerun}"
+        )
+    bound = store.bound_embedder()
+    if bound is not None and bound != (str(embedder.name), int(embedder.dim)):
+        return f"the store is bound to the model {bound[0]!r}, not {embedder.name!r}; {rerun}"
+    return None
 
 
 def _missing_reason(missing: Sequence[Path]) -> str:
@@ -376,6 +420,9 @@ def refresh(
     budget: IndexBudget | None = None,
     before: Snapshot | None = None,
     key_root: str | Path | None = None,
+    record_spec: str | None = None,
+    record_profile: str | None = None,
+    refusal_env: Mapping[str, str] | None = None,
 ) -> RefreshReport:
     """Bring `store` up to date with `roots`. See the module docstring; never raises on a busy lane.
 
@@ -400,6 +447,12 @@ def refresh(
     without their policy digest, so search would stop returning them (CCA SEC-001).
     `allow_prune` is for a person who has confirmed a large deletion
     (`recall lite refresh --allow-prune`); the server never passes it.
+
+    `record_spec` is the embedder spec to record with this run's re-embed, under the write lane,
+    and `record_profile` the RECALL_EMBED_PROFILE recorded beside it; the profile is written only
+    with a spec, so `record_profile` alone records nothing. `refusal_env` is the environment of a
+    refresher that can neither `--force` nor type an embedder (the MCP server): `embedder_refusal`
+    is asked with it under the lane, and a refusal is a FAILED refresh that embeds nothing.
     """
     if security_policy is not None and security_context is None:
         raise ValueError("security_context is required when security_policy is configured")
@@ -447,6 +500,9 @@ def refresh(
                 security_context=security_context,
                 budget=budget,
                 key_root=None if key_root is None else Path(key_root).resolve(),
+                record_spec=record_spec,
+                record_profile=record_profile,
+                refusal_env=refusal_env,
             )
     except LiteWriterCoalesced:
         report.outcome = Outcome.COALESCED
@@ -472,6 +528,9 @@ def _refresh_locked(
     security_context: AccessContext | None,
     budget: IndexBudget | None,
     key_root: Path | None = None,
+    record_spec: str | None = None,
+    record_profile: str | None = None,
+    refusal_env: Mapping[str, str] | None = None,
 ) -> RefreshReport:
     from recall.cache import default_cache
     from recall.context import context_policy_for_profile
@@ -482,6 +541,11 @@ def _refresh_locked(
     # whatever changes while it indexes moves the next snapshot, so it is refreshed next time.
     current = snapshot(roots)
     report.fingerprint, report.files_seen = current.fingerprint, current.count
+    if refusal_env is not None and (refusal := embedder_refusal(store, embedder, refusal_env)) is not None:
+        # Asked under the lane, so a switch that committed while this refresh queued is seen
+        # before anything is embedded with the embedder it replaced (CCA STAKES-002).
+        report.outcome, report.reason = Outcome.FAILED, refusal
+        return _finish(db, roots, report)
     if current.missing:
         # Gone while this refresh queued. Indexing an empty list would read as "every memo deleted".
         report.outcome = Outcome.FAILED
@@ -556,6 +620,12 @@ def _refresh_locked(
     stated = reconcile_stated_facts(store, roots=roots)
     report.facts_stated, report.facts_malformed = stated.facts_stated, stated.facts_malformed
     report.stated = stated.render()
+    if record_spec is not None:
+        # Under the write lane, with the re-embed it describes, so no other writer can rebind the
+        # store between them (CCA BUG-002): a later refresh with no flag resolves this embedder.
+        store.record_embedder_spec(
+            record_spec, profile=record_profile, model=str(embedder.name), dimension=int(embedder.dim)
+        )
     report.outcome = Outcome.REFRESHED
     report.reason = f"{current.count} file(s) checked in {time.monotonic() - started:.1f}s"
     report.calibration, report.calibration_reason = calibration.status.value, calibration.reason

@@ -867,6 +867,12 @@ list as an ordered upgrade procedure.
 
 ### Removed
 
+* **The `bench` extra is gone.** It installed `mem0ai==2.0.13`, `pyarrow` and the OpenAI SDK for
+  the repository's own benchmark harnesses, which the wheel does not ship, so nothing installed
+  from PyPI used them. `pip install "recall-rag[bench]"` now installs no extra packages, with a
+  warning from pip. A benchmark run installs those packages itself; `docs/DEPENDENCIES.md` gives
+  the command.
+
 * **BREAKING: the benchmark service package `recall_aml` is no longer distributed.** The wheel
   and the sdist no longer carry `recall_aml`, the `hosted` extra or the `recall-hosted` console
   script, which served one benchmark deployment and are not needed to use RE-call. No shipped
@@ -1323,6 +1329,24 @@ list as an ordered upgrade procedure.
   it.
 
 ### Security
+
+* **Dependency floors no longer admit versions with published advisories, where a fixed release
+  exists on the supported line.** Core `pydantic>=2.4`; `mcp` extra `PyJWT[crypto]>=2.15.0`,
+  `anyio>=4.14.2`, `httpx2>=2.12` and `starlette>=1.3.1`; `voyage` extra `requests>=2.33` and
+  `pillow>=13`; `documents` extra `pdfplumber>=0.11.9`; `langchain` extra `langchain-core>=0.3.85`;
+  `agent` extra `claude-agent-sdk>=0.2.121`; `sparse` and `rerank` extras `transformers>=5.10` and
+  `torch>=2.13`, and `rerank` also `sentence-transformers>=5.6`. The `desktop` extra installs
+  `PySide6-Essentials` instead of the `PySide6` metapackage, which also pulled in Qt add-on
+  modules the app never imports. The `openai`,
+  `extract` and `bench` extras now require `openai>=1.58`, the first release that accepts the
+  `reasoning_effort` argument RE-call passes, and the `desktop` extra declares the `onnxruntime`
+  and `tokenizers` its self-test imports. The `fastembed` and `desktop` extras require
+  `fastembed>=0.9.1`, the first release that allows Pillow 13, and declare `pillow>=13`. An
+  environment holding an older version of one of these must upgrade it to install 0.15.0. The
+  `mcp`, `dev` and `desktop` extras now accept any `mcp` 2.2.x patch release (`~=2.2.0`) instead
+  of exactly 2.2.0, so an upstream security patch can be installed without waiting for a RE-call
+  release. `COMMERCIAL_LICENSE.md` now states that third-party components keep their own licenses
+  under a commercial license, including the LGPL-3.0 terms of psycopg and PySide6.
 
 * **On Windows, no RE-call command runs an executable from the
   current directory.** Every console script (`recall`, `recall-mcp`, the desktop entry points and

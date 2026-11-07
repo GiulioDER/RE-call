@@ -21,7 +21,7 @@ transport.
 from __future__ import annotations
 
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -182,6 +182,10 @@ def test_the_voyage_client_is_built_with_the_sdk_retry_layer_off(
             return SimpleNamespace(embeddings=[[0.0, 1.0]])
 
     monkeypatch.setattr("recall._voyage_http.Client", _FakeClient)
+    # The SDK's PRESENCE is stubbed too: `_voyage_client_class` refuses to build the embedder when
+    # `find_spec("voyageai")` finds nothing, and the floor CI job installs no `voyage` extra. A
+    # spec-less module in `sys.modules` is the double it accepts.
+    monkeypatch.setitem(sys.modules, "voyageai", ModuleType("voyageai"))
 
     VoyageEmbedder(api_key="k")
 
