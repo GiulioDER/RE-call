@@ -4262,11 +4262,6 @@ fastembed = [
     { name = "pillow" },
     { name = "tokenizers" },
 ]
-finetune = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "sentence-transformers" },
-]
 langchain = [
     { name = "langchain-core" },
 ]
@@ -4328,7 +4323,6 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'atomic'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.26" },
     { name = "numpy", marker = "extra == 'eval'" },
-    { name = "numpy", marker = "extra == 'finetune'" },
     { name = "onnxruntime", marker = "extra == 'desktop'", specifier = ">=1.17,<2" },
     { name = "onnxruntime", marker = "extra == 'fastembed'", specifier = ">=1.17,<2" },
     { name = "openai", marker = "extra == 'extract'", specifier = ">=1.58" },
@@ -4364,7 +4358,6 @@ requires-dist = [
     { name = "requests", marker = "extra == 'voyage'", specifier = ">=2.33" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16,<0.17" },
     { name = "scipy", marker = "extra == 'agent-ab'", specifier = ">=1.11" },
-    { name = "sentence-transformers", marker = "extra == 'finetune'", specifier = ">=3.0" },
     { name = "sentence-transformers", marker = "extra == 'rerank'", specifier = ">=5.6" },
     { name = "starlette", marker = "extra == 'mcp'", specifier = ">=1.3.1" },
     { name = "threadpoolctl", marker = "extra == 'atomic'", specifier = ">=3.1" },
@@ -4380,7 +4373,7 @@ requires-dist = [
     { name = "vulture", marker = "extra == 'analysis'", specifier = ">=2,<3" },
     { name = "xlrd", marker = "extra == 'documents'", specifier = ">=2.0" },
 ]
-provides-extras = ["fastembed", "agent-ab", "documents", "pool", "mcp", "voyage", "atomic", "openai", "s3", "aws", "sparse", "rerank", "eval", "extract", "finetune", "langchain", "llamaindex", "agent", "dev", "analysis", "desktop"]
+provides-extras = ["fastembed", "agent-ab", "documents", "pool", "mcp", "voyage", "atomic", "openai", "s3", "aws", "sparse", "rerank", "eval", "extract", "langchain", "llamaindex", "agent", "dev", "analysis", "desktop"]
 
 [[package]]
 name = "redis"

@@ -58,7 +58,6 @@ PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
     ),
     "eval": ("matplotlib", "numpy"),
     "extract": ("openai",),
-    "finetune": ("sentence_transformers", "numpy"),
     "openai": ("openai",),
     "aws": ("boto3", "redis"),
     "pool": ("psycopg_pool",),

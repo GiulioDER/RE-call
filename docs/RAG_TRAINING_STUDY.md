@@ -103,7 +103,7 @@ the gap; don't fine-tune on faith.**
 ## Reproduce
 
 ```bash
-pip install -e ".[finetune]"
+pip install -e ".[rerank]"
 
 # Result 1 — the null (rich corpus)            -> Δ ≈ +0.00
 python benchmarks/finetune/train.py
