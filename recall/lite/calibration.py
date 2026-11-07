@@ -410,7 +410,8 @@ def _fit_width(fit: CalibrationArtifactV2) -> int | None:
     integer. The one reading of a fit's width, for `fitted_for_another_model` and `carry_forward`
     (CCA CODE-001): such a fit cannot be shown to be any model's, so neither may trust it."""
     try:
-        width = int(fit.embedder_identity.get("dimension"))
+        # `.get` is `Any | None` to mypy; a None width raises TypeError here, which is the point.
+        width = int(cast("Any", fit.embedder_identity.get("dimension")))
     except (TypeError, ValueError):
         return None
     return width if width >= 1 else None
