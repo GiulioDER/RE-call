@@ -654,6 +654,16 @@ def _fastembed_available() -> bool:
         return False
 
 
+def bash_executable() -> str:
+    """The bash a test should launch: Git Bash on Windows, where a bare `bash` can start
+    System32's WSL launcher instead, which has no Linux to run."""
+    if sys.platform != "win32":
+        return "bash"
+    from benchmarks.agent_ab.checkers._run import git_bash
+
+    return str(git_bash())
+
+
 #: The `floor` and `test` CI jobs install WITHOUT the optional extras, deliberately — their absence
 #: is what proves the import guards work (see pyproject's mypy overrides for the same reasoning).
 #: A test that needs a real local embedder must therefore skip rather than fail, or it turns an

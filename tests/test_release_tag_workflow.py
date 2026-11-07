@@ -9,6 +9,8 @@ import subprocess
 
 import pytest
 
+from tests.conftest import bash_executable
+
 WORKFLOW = pathlib.Path(__file__).resolve().parent.parent / ".github" / "workflows" / "release.yml"
 
 
@@ -81,14 +83,14 @@ def test_release_checksums_verify_beside_the_downloaded_assets(tmp_path: pathlib
     (build / "dist" / "packages").mkdir(parents=True)
     for name in ("recall_rag-9.9.9-py3-none-any.whl", "recall_rag-9.9.9.tar.gz"):
         (build / "dist" / "packages" / name).write_bytes(name.encode())
-    subprocess.run(["bash", "-c", command], cwd=build, check=True)
+    subprocess.run([bash_executable(), "-c", command], cwd=build, check=True)
 
     downloads = tmp_path / "downloads"
     downloads.mkdir()
     for asset in [*(build / "dist" / "packages").iterdir(), build / "dist" / "SHA256SUMS"]:
         shutil.copy(asset, downloads / asset.name)
     verified = subprocess.run(
-        ["sha256sum", "-c", "SHA256SUMS"], cwd=downloads, capture_output=True, text=True
+        [bash_executable(), "-c", "sha256sum -c SHA256SUMS"], cwd=downloads, capture_output=True, text=True
     )
 
     assert verified.returncode == 0, verified.stdout + verified.stderr

@@ -79,7 +79,10 @@ def test_eval_cache_refuses_archive_destination_escape(tmp_path, escape):
     elif escape == "absolute":
         member = (outside / "dsid_one__note.txt").as_posix()
     else:
-        (sources / "link").symlink_to(outside, target_is_directory=True)
+        try:
+            (sources / "link").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("creating a symlink needs privilege on this machine")
         member = "link/dsid_one__note.txt"
     questions = tmp_path / "questions.jsonl"
     questions.write_text(json.dumps({"expected_doc_ids": ["dsid_one"]}) + "\n")

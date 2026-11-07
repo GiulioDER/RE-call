@@ -327,6 +327,15 @@ def scan(
     return found
 
 
+def _slashed(source: str) -> str:
+    """`source` with `/` separators, which is what local names use.
+
+    A server running on Windows records a native path, whose only separator is `\\`. A source
+    that contains a `/` is a URI or a POSIX path, where `\\` may be part of a file name.
+    """
+    return source if "/" in source else source.replace("\\", "/")
+
+
 def plan(
     local: dict[str, Change],
     remote: dict[str, str],
@@ -364,7 +373,7 @@ def plan(
     #: a name with its suffix before the exact entry for that name was reached.
     index: dict[str, str] = dict(remote)
     for source, digest in remote.items():
-        tail = source
+        tail = _slashed(source)
         while "/" in tail:
             tail = tail.split("/", 1)[1]
             index.setdefault(tail, digest)
@@ -412,7 +421,8 @@ def plan(
         # root held a file of the same basename. Two rules answering one question ("do this local
         # name and this server source denote the same file?") is how the two halves disagree.
         for source in sorted(remote):
-            if not any(source == n or source.endswith("/" + n) for n in local):
+            slashed = _slashed(source)
+            if not any(slashed == n or slashed.endswith("/" + n) for n in local):
                 forget.append(source)
 
     return SyncPlan(
