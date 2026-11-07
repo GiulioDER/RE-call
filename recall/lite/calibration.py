@@ -426,9 +426,18 @@ def fitted_for_another_model(bound: tuple[str, int] | None, fit: CalibrationArti
     so the newest fit can be the old model's. The trust gate checks the runtime embedder against
     the binding only, and read paths carry a fit forward with no embedder, so without this the old
     model's threshold would decide the new model's answers. `recall doctor` asks it too, so its
-    report and search agree on such a fit."""
-    model, dimension = fit.embedder_identity.get("model"), fit.embedder_identity.get("dimension", -1)
-    return bound is not None and bound != _identity(model, dimension)
+    report and search agree on such a fit.
+
+    A fit that records no width, or one that is not a positive integer, cannot be shown to be the
+    bound model's, so it counts as another model's: it neither matches the -1 an unparseable bound
+    width reads as nor raises (CCA CODE-002, BUG-003)."""
+    if bound is None:
+        return False
+    try:
+        width = int(cast("Any", fit.embedder_identity.get("dimension")))
+    except (TypeError, ValueError):
+        return True
+    return width < 1 or bound != (str(fit.embedder_identity.get("model")), width)
 
 
 def _fitted_for_another_model(store: LiteStore, fit: CalibrationArtifactV2) -> bool:
