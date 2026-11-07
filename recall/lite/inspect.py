@@ -127,7 +127,7 @@ def lite_file_meta(path: str | Path) -> dict[str, str] | None:
 
 def inspect_lite_file(path: str | Path) -> LiteFileReport:
     """Read `path` as a lite store, read-only; an unreadable file is reported, never raised."""
-    from recall.lite.calibration import artifact_from_json, carry_forward, corpus_digest
+    from recall.lite.calibration import artifact_from_json, carry_forward, corpus_digest, fitted_for_another_model
 
     target = Path(path)
     if not target.exists():
@@ -165,7 +165,16 @@ def inspect_lite_file(path: str | Path) -> LiteFileReport:
             except Exception as exc:  # BROAD-CATCH: fail-open  # a tampered artifact is reported, not raised
                 return LiteFileReport(target, exists=True, error=f"the stored calibration does not verify: {exc}")
             threshold, separability, calibrated_at = artifact.threshold, artifact.separability, artifact.created_at
-            if artifact.corpus_fingerprint != fingerprint:
+            bound = None
+            if "embedder_model" in meta:
+                # A width that does not parse matches no fit, so the report fails closed.
+                width = str(meta.get("embedder_dimension", ""))
+                bound = (str(meta["embedder_model"]), int(width) if width.lstrip("-").isdigit() else -1)
+            if fitted_for_another_model(bound, artifact):
+                # Search refuses such a fit (`recall.lite.calibration.resolve`); the report must not
+                # call it current.
+                status = CalibrationStatus.STALE
+            elif artifact.corpus_fingerprint != fingerprint:
                 status = CalibrationStatus.STALE
                 corpus = _ReadOnlyCorpus(
                     conn, str(meta.get("tenant", "")), dim, rows, fingerprint, str(latest[0])

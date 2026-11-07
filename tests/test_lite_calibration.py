@@ -267,3 +267,22 @@ def test_a_model_is_recorded_only_with_its_dimension(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         store.record_embedder_spec("another", model="another-model")
     assert store.bound_embedder() == ("test-content-words", DIM)
+
+
+def test_the_doctor_report_agrees_with_search_on_a_fit_for_another_model(tmp_path: Path) -> None:
+    """Follow-up to CCA STAKES-001 (PR 1246). Invariant: `inspect_lite_file`, which `recall doctor`
+    reports from, reads a fit made for another model than the store is bound to as STALE, the
+    status `resolve` gives search. Failure caught: the report called the old model's certified fit
+    current while strict search refused it.
+
+    Red proof, 2026-11-07 on the remote test host: with the `fitted_for_another_model(bound,
+    artifact)` branch of `recall.lite.inspect.inspect_lite_file` made `if False:`, this failed at
+    the report assertion (`CERTIFIED`); restored, it passed."""
+    from recall.lite.inspect import inspect_lite_file
+
+    store = _store(tmp_path, 48)
+    assert auto_calibrate(store, ContentWordEmbedder()).status is CalibrationStatus.CERTIFIED
+    assert inspect_lite_file(store.path).calibration is CalibrationStatus.CERTIFIED
+    store.record_embedder_spec("another", model="another-model", dimension=DIM)
+    assert store.resolve_calibration().status is CalibrationStatus.STALE
+    assert inspect_lite_file(store.path).calibration is CalibrationStatus.STALE, "the report called the old fit current"
