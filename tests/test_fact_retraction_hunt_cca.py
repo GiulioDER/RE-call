@@ -55,6 +55,10 @@ def _apply(store: LiteStore, root: str, request_id: str, source: str = "x.md") -
     ).apply_fact(FactApplicationRequest(DOOR, (card.card_id,), request_id))
 
 
+#: The receipt needle for the name `x.md`: a JSON string, quotes included (`recall.fact_redaction._name_needles`).
+X_NEEDLE = '"x.md"'
+
+
 def _value_kept(store: LiteStore) -> bool:
     return any(event.fact is not None and event.fact.object == "4512" for event in LiteFactLedger(store).events)
 
@@ -418,8 +422,8 @@ def test_bug002_a_card_erased_by_its_chunk_is_no_receipt_needle_by_name(store: L
     )
 
     assert by_chunk.facts == 1
-    assert "x.md" not in by_chunk.needles, f"a name still served became a receipt needle: {by_chunk.needles}"
-    assert "x.md" in by_name.needles
+    assert X_NEEDLE not in by_chunk.needles, f"a name still served became a receipt needle: {by_chunk.needles}"
+    assert X_NEEDLE in by_name.needles
 
 
 def test_bug001_a_pruned_memo_forgotten_by_source_keeps_its_name_as_a_needle(
@@ -442,7 +446,7 @@ def test_bug001_a_pruned_memo_forgotten_by_source_keeps_its_name_as_a_needle(
     result = forget_memory(store, ["/B/x.md"])
 
     assert result.facts_retracted == 1, result.message
-    assert recorded_needles and "x.md" in recorded_needles[-1], (
+    assert recorded_needles and X_NEEDLE in recorded_needles[-1], (
         f"the forgotten memo's name was no receipt needle: {recorded_needles}"
     )
 
@@ -497,8 +501,37 @@ def test_owner_erase_a_gone_name_a_pruned_namesake_carries_is_still_a_needle(
     result = forget_memory(store, ["/A/x.md"])
 
     assert result.facts_retracted == 0, result.message
-    assert recorded_needles and "x.md" in recorded_needles[-1], (
+    assert recorded_needles and X_NEEDLE in recorded_needles[-1], (
         f"a gone name a pruned namesake carries was no receipt needle: {recorded_needles}"
     )
     assert store.latest_chunk_records(["chunk-B"])["chunk-B"].kind == "prune_source_chunks"
     assert result.facts_redacted == 0 and _value_kept(store), "the pruned namesake's value was erased with its gone name"
+
+
+@pytest.mark.parametrize("cited", [True, False], ids=["cited", "uncited"])
+def test_a_source_forgotten_then_indexed_again_and_pruned_keeps_its_receipts(
+    store: LiteStore, recorded_needles: list[tuple[str, ...]], cited: bool
+) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_a_source_forgotten_then_indexed_again_and_pruned_keeps_its_receipts[cited|uncited].
+
+    /B/x.md was forgotten once (its `forget_source_aliases` record names `x.md`), indexed again,
+    and is now pruned, a state, whether or not a card cites it; /A/x.md is forgotten. /A's source
+    is a whole-value receipt needle, /B's is not: the old record is no decision about the memo
+    pruned since (two differential reviews of CCA run 20261107T140808Z, the BUG-001 fix). Red,
+    mutation of `prepare_fact_erasure` (recall/fact_retraction.py, the `latest_source_records`
+    filter removed): both params fail on "a pruned source an old forget recorded became a receipt
+    needle". [uncited] was also red under the first version of the filter, which subtracted only
+    the sources of pruned chunks a card cites.
+    """
+    store.append_audit_event("forget_source_aliases", {"aliases": ["x.md"]}, source_uri="/B/x.md")
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    if cited:
+        assert _apply(store, "B", "r2").code == DecisionCode.DUPLICATE
+    _prune(store, "B")
+
+    forget_memory(store, ["/A/x.md"])
+
+    assert recorded_needles and '"/A/x.md"' in recorded_needles[-1], recorded_needles
+    assert '"/B/x.md"' not in recorded_needles[-1], (
+        f"a pruned source an old forget recorded became a receipt needle: {recorded_needles[-1]}"
+    )
