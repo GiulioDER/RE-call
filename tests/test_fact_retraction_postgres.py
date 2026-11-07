@@ -221,3 +221,25 @@ def test_owner_sources_forgotten_as_reads_this_tenants_alias_records(
     found = mine.sources_forgotten_as(["x.md", "y.md"])
 
     assert found == {"x.md": {"/A/x.md"}}, f"another tenant's forget stood for this tenant's name: {found}"
+
+
+def test_perf002_present_chunk_ids_reads_this_tenants_chunks_only(
+    make_store: Callable[[int], PgVectorStore],
+) -> None:
+    """Node tests/test_fact_retraction_postgres.py::test_perf002_present_chunk_ids_reads_this_tenants_chunks_only.
+
+    CCA PERF-002 of run 20261106T121445Z: after deletion a forget asks which erased chunks are
+    back in one ids-only read, `PgVectorStore.present_chunk_ids`. It must answer for this tenant
+    only, since another tenant may hold a chunk of the same id. Red, mutation of
+    `PgVectorStore.present_chunk_ids` (recall/store.py: `tenant_id = %s` replaced by
+    `(tenant_id = %s OR TRUE)`): fails on "another tenant's chunk counted as this tenant's".
+    """
+    mine = _pg(make_store, f"perf002-{uuid4().hex[:8]}")
+    other = PgVectorStore(TEST_DSN, dim=DIM, table=mine.table, tenant=f"perf002-{uuid4().hex[:8]}")
+    _remember(mine, "a.md")
+    _remember(other, "b.md")
+
+    found = mine.present_chunk_ids(["chunk-a.md", "chunk-b.md", "chunk-gone.md"])
+
+    assert found == {"chunk-a.md"}, f"another tenant's chunk counted as this tenant's: {found}"
+    assert mine.present_chunk_ids([]) == set()

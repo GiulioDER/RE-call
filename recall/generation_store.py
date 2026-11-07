@@ -1318,6 +1318,10 @@ class GenerationStore(PgVectorStore):
         # rule (`recall.fact_retraction.chunk_targets` never passes one).
         raise NotImplementedError("chunk_ids_for_sources reads the legacy chunk table only")
 
+    def present_chunk_ids(self, chunk_ids: Sequence[str]) -> set[str]:
+        # A forget asks it of the legacy table only (`recall.fact_retraction.chunk_targets`).
+        raise NotImplementedError("present_chunk_ids reads the legacy chunk table only")
+
     def source_chunk_texts(self, source: str) -> list[str]:
         """The text of one served source, chunk by chunk in ordinal order, from the pinned generation.
 
