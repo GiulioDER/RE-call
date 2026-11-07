@@ -8,6 +8,8 @@ from typing import Any, NamedTuple
 PRUNE_SOURCE_CHUNKS = "prune_source_chunks"
 #: The audit record a forget leaves: the chunk ids of a memo it erased.
 FORGET_SOURCE_CHUNKS = "forget_source_chunks"
+#: The audit record a forget leaves: the card names that stood for a memo it erased.
+FORGET_SOURCE_ALIASES = "forget_source_aliases"
 
 
 class ChunkRecord(NamedTuple):
@@ -32,3 +34,14 @@ def latest_chunk_records(rows: Iterable[Sequence[Any]]) -> dict[str, ChunkRecord
     for chunk_id, kind, source in rows:
         latest[str(chunk_id)] = ChunkRecord(str(kind), str(source or ""))
     return latest
+
+
+def sources_by_name(rows: Iterable[Sequence[Any]]) -> dict[str, set[str]]:
+    """`{name: {source, ...}}` from `(name, source)` rows of `forget_source_aliases` records,
+    skipping a row with no source: the fold both stores' `sources_forgotten_as` apply (CCA
+    CODE-002 of run 20261107T124651Z)."""
+    found: dict[str, set[str]] = {}
+    for name, source in rows:
+        if source:
+            found.setdefault(str(name), set()).add(str(source))
+    return found

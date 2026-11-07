@@ -32,16 +32,21 @@ from tests.fact_fixtures import NOW, evidence_card
 from tests.test_fact_retraction import DIM, DOOR, current
 
 
-@pytest.fixture
-def store(tmp_path: Path) -> LiteStore:
+def _two_roots(path: Path) -> LiteStore:
     """Two roots, each holding a memo whose root-relative name is `x.md`."""
-    opened = LiteStore(tmp_path / "memory.db", dim=DIM)
+    opened = LiteStore(path, dim=DIM)
     for root in ("A", "B"):
         opened.upsert(
             [Chunk(f"chunk-{root}", f"/{root}/x.md", f"text of {root}/x.md", {"file": "x.md"})],
             [[1.0] + [0.0] * (DIM - 1)],
         )
     return opened
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> LiteStore:
+    """Two roots, each holding a memo whose root-relative name is `x.md`."""
+    return _two_roots(tmp_path / "memory.db")
 
 
 def _apply(store: LiteStore, root: str, request_id: str, source: str = "x.md") -> ControllerDecision:
@@ -365,10 +370,9 @@ def test_owner_a_rerun_by_bare_name_never_forgets_the_pruned_namesake(store: Lit
     The same forget run again, once /A/x.md has no rows left (how a failed erasure is completed):
     `x.md` serves nothing now and /A's card is redacted, but the first forget recorded /A under
     `x.md` (`forget_source_aliases`), so the name still stands for two memos and decides neither.
-    Red against the first version of this change, which counted only the chunk records of cited
-    cards, and against the mutation of `_pruned_and_decided` (recall/fact_retraction.py: the
-    `sources_forgotten_as` lookup skipped): fails on "a re-run by bare name forgot the pruned
-    namesake".
+    Red, mutation of `_pruned_and_decided` (recall/fact_retraction.py: the `sources_forgotten_as`
+    lookup skipped, so a name counts only the chunk records of cited cards): fails on "a re-run by
+    bare name forgot the pruned namesake".
     """
     assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
     assert _apply(store, "B", "r2").code == DecisionCode.DUPLICATE
@@ -399,31 +403,35 @@ def test_owner_control_a_bare_name_that_names_only_the_pruned_memo_forgets_it(st
     assert result.facts_retracted == 1 and current(store) == [], f"the pruned memo the bare name named kept its fact: {result.message}"
 
 
-def test_bug002_a_card_erased_by_its_chunk_is_no_receipt_needle_by_name(store: LiteStore) -> None:
+def test_bug002_a_card_erased_by_its_chunk_is_no_receipt_needle_by_name(
+    store: LiteStore, tmp_path: Path, recorded_needles: list[tuple[str, ...]]
+) -> None:
     """Node tests/test_fact_retraction_hunt_cca.py::test_bug002_a_card_erased_by_its_chunk_is_no_receipt_needle_by_name.
 
     Owner decision 2026-11-07 on CCA BUG-002 of run 20261106T121445Z: a card erased by its chunk
     while /B still serves `x.md` erases its fact, but `x.md` is no receipt needle, since a needle
     deletes every receipt naming it, the surviving namesake's included. A name erased as a name
-    stays one. Red against master 6d72d7cc8 (every erasable card's name was a needle): fails on
-    "a name still served became a receipt needle".
+    stays one. Driven through the redactor's public `redact` (CCA CODE-005 of run
+    20261107T124651Z), each case on its own file. Red against master 6d72d7cc8 (every erasable
+    card's name was a needle): fails on "a name still served became a receipt needle". Red,
+    mutation of `plan_redaction` (recall/fact_redaction.py: `name_erased` returning True for
+    every erasable card): same failure.
     """
-    from recall.fact_redaction import LiteFactRedactor, plan_redaction
+    from recall.fact_redaction import LiteFactRedactor
 
-    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
-    redactor = LiteFactRedactor(store)
+    other = _two_roots(tmp_path / "by-name.db")
+    for opened in (store, other):
+        assert _apply(opened, "A", "r1").code == DecisionCode.APPLIED
 
-    by_chunk = plan_redaction(
-        store.tenant, redactor._rows(), redactor._cards(), erased=lambda _name: False,
-        erased_chunk=lambda chunk: chunk == "chunk-A",
+    by_chunk = LiteFactRedactor(store).redact(
+        erased=lambda _name: False, erased_chunk=lambda chunk: chunk == "chunk-A",
     )
-    by_name = plan_redaction(
-        store.tenant, redactor._rows(), redactor._cards(), erased=lambda name: name == "x.md",
-    )
+    by_name = LiteFactRedactor(other).redact(erased=lambda name: name == "x.md")
 
-    assert by_chunk.facts == 1
-    assert X_NEEDLE not in by_chunk.needles, f"a name still served became a receipt needle: {by_chunk.needles}"
-    assert X_NEEDLE in by_name.needles
+    assert by_chunk.facts_redacted == 1 and by_name.facts_redacted == 1
+    chunk_needles, name_needles = recorded_needles
+    assert X_NEEDLE not in chunk_needles, f"a name still served became a receipt needle: {chunk_needles}"
+    assert X_NEEDLE in name_needles
 
 
 def test_bug001_a_pruned_memo_forgotten_by_source_keeps_its_name_as_a_needle(

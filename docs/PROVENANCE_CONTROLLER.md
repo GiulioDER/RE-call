@@ -245,8 +245,11 @@ memo was forgotten. Since migration 0029, `recall_forget` (CLI, MCP, and the ass
   name, so both follow the renamed assertion; a `superseded` event follows its holder.
 - Replay receipts whose result names an erased id, or an erased memo as a whole JSON string
   value (its card name or its absolute source), are deleted; a receipt that mentions the memo
-  only inside a longer string is kept (owner decision 2026-11-07). One row per redaction is
-  appended to `recall_fact_redactions`.
+  only inside a longer string is kept (owner decision 2026-11-07). A card name counts only when
+  the name itself is erased: a card erased by its chunk while another root still serves its name
+  leaves receipts naming that name, which the surviving namesake shares, and only its absolute
+  source deletes them (owner decision 2026-11-07, CCA BUG-002 of run 20261106T121445Z). One row
+  per redaction is appended to `recall_fact_redactions`.
 - The materialized current facts are rebuilt from the rewritten ledger in the same transaction.
   A read would replay rather than trust rows naming ids that no longer resolve, but those ids hash
   the erased values, so leaving them would leave what the redaction removes.

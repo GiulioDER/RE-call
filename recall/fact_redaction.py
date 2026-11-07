@@ -22,7 +22,10 @@ these rewrites and nothing else:
   listed before.
 - RECEIPTS (`recall_idempotency_receipts`) whose result names an erased id or memo are deleted:
   an id anywhere in the result, a memo's name only as a whole JSON string value, so erasing `x.md`
-  keeps a receipt that names only `notes/x.md` or `box.md` (owner decision 2026-11-07).
+  keeps a receipt that names only `notes/x.md` or `box.md` (owner decision 2026-11-07). A name
+  counts only when the name itself is erased: a card erased by its chunk while another root still
+  serves its name leaves that name's receipts to the surviving namesake (CCA BUG-002 of run
+  20261106T121445Z).
 - The MATERIALIZED CURRENT FACTS (`recall.fact_current`, migration 0030) are rebuilt from the
   rewritten ledger in the same transaction. A read would replay rather than trust rows naming
   ids that no longer resolve, so this is not about answers: those old ids hash the erased values,

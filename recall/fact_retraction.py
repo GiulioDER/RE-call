@@ -29,7 +29,12 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
-from recall.chunk_records import FORGET_SOURCE_CHUNKS, PRUNE_SOURCE_CHUNKS, ChunkRecord
+from recall.chunk_records import (
+    FORGET_SOURCE_ALIASES,
+    FORGET_SOURCE_CHUNKS,
+    PRUNE_SOURCE_CHUNKS,
+    ChunkRecord,
+)
 from recall.observability import get_logger
 from recall.supersession import SupersessionGraph, store_supersession_graph, window_contains
 
@@ -129,10 +134,13 @@ def _pruned_and_decided(
     # One read: the stores of one tenant share its audit records, and the prune and the forget
     # write theirs to the primary store (CCA PERF-003 of run 20261106T212835Z).
     reader = next((target for target in targets if callable(getattr(target, "latest_chunk_records", None))), None)
-    latest: dict[str, ChunkRecord] = reader.latest_chunk_records(candidates) if reader is not None and candidates else {}
+    latest: dict[str, ChunkRecord] = (
+        reader.latest_chunk_records(candidates) if reader is not None and candidates else {}
+    )
     pruned = {chunk: record for chunk, record in latest.items() if record.kind == PRUNE_SOURCE_CHUNKS}
-    # Every memo each card name stood for: what it serves now, the memos pruned under it, and
-    # those a forget recorded under it, whose cards are redacted and so cite nothing.
+    # The memos each card name stood for besides what it serves now (`resolved`, joined in
+    # `names_it`): the memos pruned under it, and those a forget recorded under it, whose cards
+    # are redacted and so cite nothing.
     under: dict[str, set[str]] = {}
     for card in cited_cards:
         record = pruned.get(card.chunk_id)
@@ -227,7 +235,7 @@ def prepare_fact_erasure(
         if aliases and callable(append):
             identity = json.dumps([store.tenant, source, aliases], ensure_ascii=False)
             append(
-                "forget_source_aliases", {"aliases": aliases}, source_uri=source,
+                FORGET_SOURCE_ALIASES, {"aliases": aliases}, source_uri=source,
                 event_id="forget_alias_" + hashlib.sha256(identity.encode()).hexdigest(),
             )
 
