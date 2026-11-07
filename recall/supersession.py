@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import posixpath
 import unicodedata
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import cast
@@ -309,6 +309,24 @@ def _dangling_key(reference: str) -> str:
     read as a slash. One rule, so a withdrawn memo's dangling target is spliced under the key
     its live claimants' winner uses."""
     return reference.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def place_graph_key(key: str, file_of_source: Mapping[str, str], collided: Collection[str]) -> str | None:
+    """The root-relative file a graph `key` names, for a source policy to decide on, or None.
+
+    A file two roots hold is keyed by its absolute source (`SupersessionGraph.key`), which no
+    policy rule is written against: such a key is mapped back through `file_of_source` (the
+    caller's chunks, source to file). None when it cannot be placed: the source of a collided
+    file the caller holds no chunk of, or a file nested under a collided name. Shared by the
+    records lookup and the trust gate's withholding, so the two withhold the same names.
+    """
+    mapped = file_of_source.get(key)
+    if mapped is not None and mapped in collided:
+        return mapped
+    posix = key.replace("\\", "/")
+    if any(posix.endswith("/" + name.replace("\\", "/")) for name in collided):
+        return None
+    return key
 
 
 @dataclass(frozen=True)

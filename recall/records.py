@@ -46,7 +46,7 @@ from recall.errors import RecallError
 from recall.frontmatter import RECORD_KEY, RECORD_LABEL_KEYS, supersedes_targets, validity_bounds
 from recall.observability import get_logger
 from recall.security_policy import AccessContext, SourceSecurityPolicy
-from recall.supersession import store_supersession_graph
+from recall.supersession import SupersessionGraph, place_graph_key, store_supersession_graph
 from recall.types import Chunk
 
 _log = get_logger("records")
@@ -56,14 +56,20 @@ RECORD_VERSION = 1
 #: Chunk metadata key a code chunker writes (Session 3 of the audit memory plan): the
 #: ``{repo, file, symbol, code_sha}`` of the symbol the chunk holds.
 CODE_ANCHOR_KEY = "code_anchor"
-#: Every kind a record can have, plus ``code`` for a code chunk's anchor.
+#: Every kind a record can have, plus ``code`` for a code chunk's anchor. Restated rather than read
+#: from the schema at import; `tests/test_records_hunt2_cca.py` pins it to the schema's kinds.
 RECORD_KINDS: frozenset[str] = frozenset(
     {"bug", "false_positive", "false_positive_retraction", "lesson", "lesson_retraction", "code"}
 )
 MAX_QUERY_ANCHORS = 200
 MAX_RECORDS = 500
-#: `superseded_by` when a successor exists that the caller's source policy does not let it read.
+#: `superseded_by` when a successor exists that the caller's source policy does not let it read,
+#: or whose file cannot be placed for the policy to decide (a path two roots hold).
 WITHHELD = "<withheld>"
+#: `superseded_by` when a `supersedes:` reference names this record's file among several, so no
+#: successor can be named. Never None, which would present a possibly retracted record as current;
+#: the trust gate refuses such a document the same way (`ambiguous_supersession`), at every instant.
+AMBIGUOUS = "<ambiguous>"
 
 #: Best first. `anchor_match` is the best of a record's `anchor_matches`.
 MATCH_ORDER: tuple[str, ...] = ("exact", "symbol_changed", "file_only", "none")
@@ -388,14 +394,52 @@ def _string_list(value: object, name: str) -> list[str]:
     return list(value)
 
 
+def _validated_repo(repo: object) -> None:
+    if repo is not None and (not isinstance(repo, str) or not repo):
+        raise RecordsQueryError("repo must be a non-empty string")
+
+
+def reported_successor(
+    graph: SupersessionGraph,
+    file: str,
+    source: str,
+    now: datetime,
+    *,
+    allowed: Callable[[str], bool] | None = None,
+    file_of_source: Mapping[str, str] | None = None,
+) -> str | None:
+    """What a records reader reports in `superseded_by` for the document at `file`/`source`.
+
+    `AMBIGUOUS` when a `supersedes:` reference names its file among several (the graph's
+    `unresolved`), whatever else claims it, as the trust gate checks `unresolved` before any
+    successor; otherwise the successor that hides it at `now`, or None when it is current. With `allowed` (a
+    source policy's decision on a root-relative file), a successor the caller may not read, or
+    whose key cannot be placed (`recall.supersession.place_graph_key`), is `WITHHELD`. The one rule
+    both `lookup_records` and `recall.records_files.match_memo_records` report by.
+    """
+    key = graph.key(file, source)
+    if key in graph.unresolved:
+        return AMBIGUOUS
+    successor = graph.successor(key, now=now)
+    if successor is None:
+        return None
+    if allowed is None:
+        return successor
+    placed = place_graph_key(successor, file_of_source or {}, graph.collided)
+    # A successor the caller may not read is withheld, never reported as None: None would present
+    # a retracted record as current, and a current false positive is one CCA may suppress a
+    # finding on. The report keeps the graph key, so a collided successor is not reported as the
+    # name both roots hold.
+    return successor if placed is not None and allowed(placed) else WITHHELD
+
+
 def validated_anchor_query(repo: object, anchors: object) -> list[dict[str, Any]]:
     """`anchors` checked as the anchors of a query in `repo`; raises `RecordsQueryError` otherwise.
 
     The one statement of what an anchor query accepts, so `lookup_records` and
     `recall.records_files.match_memo_records` refuse the same queries with the same words.
     """
-    if repo is not None and (not isinstance(repo, str) or not repo):
-        raise RecordsQueryError("repo must be a non-empty string")
+    _validated_repo(repo)
     query_anchors = _validated_anchors(anchors)
     if repo is None:
         raise RecordsQueryError("an anchor query needs `repo`: anchors are paths inside one repository")
@@ -586,12 +630,14 @@ def lookup_records(
     lasts through that day, UTC). `superseded_by` is what hides the record at `now` (default: the
     current time), read from the store's supersession graph the way the trust gate reads it: a successor hides its predecessor
     only inside its own validity window, a chain names its deepest valid member, and a path two
-    roots hold is keyed by its source.
+    roots hold is keyed by its source. A record a `supersedes:` reference names among several
+    files is reported as ``"<ambiguous>"`` (`AMBIGUOUS`), as the trust gate refuses it.
 
     With a `security_policy` (and its `access_context`), a record in a file the caller may not
     read is left out before any edge is derived, so it is never returned and never named in
-    another record's `caused`; a successor the caller may not read is reported as ``"<withheld>"``
-    (`WITHHELD`), never as None, which would present a superseded record as current.
+    another record's `caused`; a successor the caller may not read, or whose file cannot be placed
+    for the policy to decide, is reported as ``"<withheld>"`` (`WITHHELD`), never as None, which
+    would present a superseded record as current. `reported_successor` holds the rule.
     """
     forms = sum(x for x in (anchors is not None, ids is not None, bool(all_records)))
     if forms != 1:
@@ -601,8 +647,7 @@ def lookup_records(
             raise RecordsQueryError("an unbounded limit is only for an all_records dump")
     elif isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_RECORDS:
         raise RecordsQueryError(f"limit must be an integer from 1 to {MAX_RECORDS}")
-    if repo is not None and (not isinstance(repo, str) or not repo):
-        raise RecordsQueryError("repo must be a non-empty string")
+    _validated_repo(repo)
     query_anchors = validated_anchor_query(repo, anchors) if anchors is not None else None
     wanted_ids = set(_string_list(ids, "ids")) if ids is not None else None
     wanted_kinds = validated_kinds(kinds)
@@ -671,40 +716,20 @@ def lookup_records(
     # A path two roots hold is keyed in the graph by its absolute source, which no source policy
     # is written against. Read before the policy filter, so a denied successor still maps.
     file_of_source = {chunk.source: _file_of(chunk) for chunk in chunks}
-
-    def successor_file(key: str) -> str | None:
-        """The root-relative file a successor's graph key names, or None when it cannot be told."""
-        file = file_of_source.get(key)
-        if file is not None and file in graph.collided:
-            return file
-        posix = key.replace("\\", "/")
-        if any(posix.endswith("/" + name.replace("\\", "/")) for name in graph.collided):
-            # Either the source of a collided file this lookup holds no chunk of, or a file
-            # nested under a collided name: which of the two cannot be told here.
-            return None
-        return key
-
-    def superseded_by(candidate: RecordCandidate) -> str | None:
-        successor = graph.successor(graph.key(candidate.file, candidate.source), now=instant)
-        if successor is None:
-            return None
-        file = successor_file(successor)
-        if file is None:
-            # No policy can be asked about a key it cannot place, so it is withheld, as a denial is.
-            return successor if policy is None else WITHHELD
-        # A successor the caller may not read is withheld, never reported as None: None would
-        # present a retracted record as current, and a current false positive is one CCA may
-        # suppress a finding on. The policy decides on the root-relative file; the report keeps
-        # the graph key, so a collided successor is not reported as the name both roots hold.
-        return successor if allowed(file) else WITHHELD
-
     records = match_candidates(
         candidates,
         query_anchors=query_anchors,
         repo=repo,
         wanted_ids=wanted_ids,
         wanted_kinds=wanted_kinds,
-        superseded_by=superseded_by,
+        superseded_by=lambda candidate: reported_successor(
+            graph,
+            candidate.file,
+            candidate.source,
+            instant,
+            allowed=allowed if policy is not None else None,
+            file_of_source=file_of_source,
+        ),
         now=instant,
     )
     truncated = False
@@ -768,9 +793,10 @@ def _record_chunks(store: Any, *, code_files: Collection[str] | None = None) -> 
     `code_files`, only the code anchors in those files (`record_rows_condition`).
 
     `LiteStore` and `GenerationStore` answer this themselves. The legacy PostgreSQL store is asked
-    here, through its own connection helper, rather than by a method on `PgVectorStore`: that
-    module is bound by the AML release manifest until the official runs end (2026-10-30), so it
-    cannot change. An audit tenant holds hundreds of records, so matching happens in Python.
+    here, through its own connection helper, rather than by a method on `PgVectorStore`. That was
+    written while `recall/store.py` was bound by the AML release manifest, a freeze that ended on
+    2026-10-30; the read stays here until a `PgVectorStore.record_chunks` replaces it. An audit
+    tenant holds hundreds of records, so matching happens in Python.
     """
     reader = getattr(store, "record_chunks", None)
     if callable(reader):
@@ -802,6 +828,7 @@ def _sort_ordinal(chunk: Chunk) -> int:
 
 
 __all__ = [
+    "AMBIGUOUS",
     "CODE_ANCHOR_KEY",
     "MATCH_ORDER",
     "MAX_QUERY_ANCHORS",
@@ -820,6 +847,7 @@ __all__ = [
     "record_problem",
     "record_rows_condition",
     "record_schema",
+    "reported_successor",
     "validated_anchor_query",
     "validated_kinds",
 ]

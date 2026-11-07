@@ -74,7 +74,7 @@ from recall.retriever import (
 from recall.scope import Scope, coerce_scope
 from recall.security_policy import AccessContext, SourceSecurityPolicy
 from recall.store import EdgeCandidates, PgVectorStore
-from recall.supersession import SupersessionGraph, stored_supersession_graph
+from recall.supersession import SupersessionGraph, place_graph_key, stored_supersession_graph
 from recall.support import calibration_coverage
 from recall.unknown_terms import apply_unknown_term_gate, check_unknown_terms
 from recall.trust_policy import (
@@ -164,12 +164,7 @@ def _withhold_unauthorized_names(
     }
 
     def denied(key: str) -> bool:
-        file: str | None = key
-        mapped = file_of_source.get(key)
-        if mapped is not None and mapped in collided:
-            file = mapped
-        elif any(key.replace("\\", "/").endswith("/" + name.replace("\\", "/")) for name in collided):
-            file = None  # a collided source this result holds no chunk of: cannot be placed
+        file = place_graph_key(key, file_of_source, collided)
         return file is None or not security_policy.decide(file, access_context).allowed
 
     changed = False
