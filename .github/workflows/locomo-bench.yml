@@ -116,7 +116,10 @@ jobs:
             cp harness/recall/eval/locomo.py "$dir/recall/eval/locomo.py"
             cp locomo10.json "$dir/locomo10.json"
             python -m venv "venv-$arm"
-            "venv-$arm/bin/pip" install --quiet -e "$dir[fastembed,bench]"
+            # The same explicit benchmark packages for both arms: master has no `bench` extra since
+            # 2026-11-07 (docs/DEPENDENCIES.md), and v0.14.0's pinned different floors.
+            "venv-$arm/bin/pip" install --quiet -e "$dir[fastembed]" \
+              "openai>=1.58" "mem0ai==2.0.13" "pyarrow>=23.0.1" "numpy>=1.26" "tiktoken==0.14.0"
             echo "$arm: $(git -C "$dir" rev-parse HEAD) $("venv-$arm/bin/python" -c 'import importlib.metadata as m; print(m.version("recall-rag"))')"
             "venv-$arm/bin/pip" freeze --exclude-editable > "freeze-$arm.txt"
             # Each arm gets a fresh database of its own, migrated by its OWN version. The
