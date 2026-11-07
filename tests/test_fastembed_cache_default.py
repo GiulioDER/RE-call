@@ -105,3 +105,28 @@ def test_an_explicit_env_does_not_hide_the_processs_cache_choice(
     monkeypatch.setenv("FASTEMBED_CACHE_PATH", str(tmp_path / "chosen"))
     FastEmbedEmbedder(env={})
     assert stub_fastembed.instances[-1].kwargs.get("cache_dir") == str(tmp_path / "chosen")
+
+
+def test_the_desktop_self_test_probes_only_where_the_embedder_loads(monkeypatch, tmp_path: Path) -> None:
+    """A model left in fastembed's old temp cache is not one the installer would load, so the
+    self-test must not resolve it: offline it would pass where the installer fails.
+
+    Red proof: restored the temp-directory candidate in `recall.desktop.main._model_cache_root`;
+    this failed at `assert main._model_cache_root() is None` (it returned the temp cache).
+    """
+    import tempfile
+
+    from recall.desktop import main
+
+    target = "models--qdrant--bge-small-en-v1.5-onnx-q"
+    legacy = tmp_path / "temp"
+    (legacy / "fastembed_cache" / target).mkdir(parents=True)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(legacy))
+    for key, value in _platform_env(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("FASTEMBED_CACHE_PATH", raising=False)
+    assert main._model_cache_root() is None
+
+    current = tmp_path / "cache-root" / "recall" / "fastembed"
+    (current / target).mkdir(parents=True)
+    assert main._model_cache_root() == current

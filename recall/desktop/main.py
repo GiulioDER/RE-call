@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -67,24 +66,18 @@ def _model_cache_root() -> Path | None:
 
     An unrelated model says nothing about whether this one was provisioned. A target directory
     counts even when broken: its load failure must remain visible rather than becoming a skip.
-    """
-    import tempfile
 
+    Only the directory an unpinned `FastEmbedEmbedder` loads from is probed. A model in the
+    temp directory or a Hugging Face cache is one the installer would not use, so a self-test
+    loading it could pass offline where the installer fails, or fail on a cache nothing reads.
+    """
     from recall.embedding_providers.local import default_fastembed_cache_dir
 
-    candidates = [
-        default_fastembed_cache_dir(),
-        # Where fastembed itself downloaded before RE-call named a cache directory.
-        Path(tempfile.gettempdir()) / "fastembed_cache",
-        Path(os.environ["HF_HOME"]) / "hub" if os.environ.get("HF_HOME") else None,
-        Path.home() / ".cache" / "huggingface" / "hub",
-        Path.home() / ".cache" / "fastembed",
-    ]
+    path = default_fastembed_cache_dir()
     target = "models--qdrant--bge-small-en-v1.5-onnx-q"
-    for path in candidates:
-        if path is not None and path.is_dir():
-            if any(child.name.lower() == target and child.is_dir() for child in path.iterdir()):
-                return path
+    if path is not None and path.is_dir():
+        if any(child.name.lower() == target and child.is_dir() for child in path.iterdir()):
+            return path
     return None
 
 
