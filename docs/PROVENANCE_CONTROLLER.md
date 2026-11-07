@@ -243,7 +243,9 @@ memo was forgotten. Since migration 0029, `recall_forget` (CLI, MCP, and the ass
   recoverable by enumeration.
 - A `retracted` or `withdrawn` event names its assertion by event id, and its own id hashes that
   name, so both follow the renamed assertion; a `superseded` event follows its holder.
-- Replay receipts whose result names an erased id or memo are deleted; one row per redaction is
+- Replay receipts whose result names an erased id, or an erased memo as a whole JSON string
+  value (its card name or its absolute source), are deleted; a receipt that mentions the memo
+  only inside a longer string is kept (owner decision 2026-11-07). One row per redaction is
   appended to `recall_fact_redactions`.
 - The materialized current facts are rebuilt from the rewritten ledger in the same transaction.
   A read would replay rather than trust rows naming ids that no longer resolve, but those ids hash

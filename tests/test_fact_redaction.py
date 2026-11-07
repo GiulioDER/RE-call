@@ -890,3 +890,26 @@ def test_the_latest_prune_or_forget_record_of_a_source_decides_its_state(backend
     assert {source: record.kind for source, record in latest.items()} == {
         "/B/x.md": "prune_source_chunks", "/C/x.md": "forget_source_chunks",
     }, f"an earlier record decided: {latest}"
+
+
+def test_a_non_ascii_name_deletes_its_receipts_escaped_or_not(backend: Backend) -> None:
+    """Node tests/test_fact_redaction.py::test_a_non_ascii_name_deletes_its_receipts_escaped_or_not[lite|pg].
+
+    Tools write a receipt's JSON escaped (`json.dumps` default: report_use, report_stale) or not
+    (`ensure_ascii=False`: apply_fact, index, forget), so forgetting `café.md` deletes both forms
+    (CCA CODE-002 of run 20261107T140808Z). Red, lite, mutations of `recall.fact_redaction.
+    _name_needles`: the escaped needle dropped fails on "the escaped receipt survived", the raw
+    needle dropped fails on "the raw receipt survived"; [pg] red on CI under the first.
+    """
+    backend.remember("café.md")
+    assert backend.apply(DOOR, "café.md", "r1") == "APPLIED"
+    payload = {"source": "café.md"}
+    backend.store.record_operation_receipt("k-escaped", json.dumps(payload), operation="recall_report_use")
+    backend.store.record_operation_receipt("k-raw", json.dumps(payload, ensure_ascii=False), operation="recall_apply_fact")
+
+    forget_memory(backend.store, ["café.md"])
+
+    escaped = backend.store.get_operation_receipt("k-escaped", operation="recall_report_use")
+    raw = backend.store.get_operation_receipt("k-raw", operation="recall_apply_fact")
+    assert escaped is None, f"the escaped receipt survived: {escaped}"
+    assert raw is None, f"the raw receipt survived: {raw}"

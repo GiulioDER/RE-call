@@ -184,7 +184,12 @@ def _name_needles(names: Iterable[str]) -> set[str]:
     """Each erased memo name as the receipts' JSON writes it, quotes included, so it matches only a
     whole string value: a bare `x.md` would also delete a receipt naming `notes/x.md` or `box.md`
     (owner decision 2026-11-07). A tool may write non-ASCII escaped or not, so both forms."""
-    return {json.dumps(name, ensure_ascii=ascii_only) for name in names if name for ascii_only in (True, False)}
+    needles: set[str] = set()
+    for name in names:
+        if name:
+            needles.add(json.dumps(name))  # `\u00e9`: report_use, report_stale, ingest
+            needles.add(json.dumps(name, ensure_ascii=False))  # `é`: apply_fact, index, forget
+    return needles
 
 
 def plan_redaction(
