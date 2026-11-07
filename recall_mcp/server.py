@@ -3146,7 +3146,10 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         with them, so `recall_current_facts` stops listing it, and its value is erased: the fact
         ledger, the evidence cards citing these sources and the replay receipts echoing them are
         rewritten in place under fresh ids, keeping the shape of the history but not the value. A
-        fact with evidence in a memo that survives stays. A name that matches nothing still
+        fact with evidence in a memo that survives stays. On a lite store or the legacy table a
+        memo whose file was deleted from disk, and pruned by the next index, counts as surviving:
+        its fact is hidden until the file comes back, unless this call names that memo too (a
+        memo pruned before 0.15.0 left no record and counts as forgotten). A name that matches nothing still
         completes the erasure of facts it supplied, so re-run a forget that reported a failure.
         Whatever a forgotten memory superseded stays retired; for a memory that was a mistake,
         and should give back what it replaced, use `recall_withdraw` instead.
