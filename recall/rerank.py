@@ -515,6 +515,11 @@ class LateInteractionReranker:
             raise ImportError(
                 'LateInteractionReranker requires: pip install "recall-rag[fastembed]"'
             ) from exc
+        if cache_dir is None:
+            from recall.embedding_providers.local import default_fastembed_cache_dir
+
+            default_cache = default_fastembed_cache_dir()
+            cache_dir = str(default_cache) if default_cache is not None else None
         encoder = LateInteractionTextEmbedding(
             model_name=model_name, cache_dir=cache_dir, threads=threads
         )

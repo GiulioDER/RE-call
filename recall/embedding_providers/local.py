@@ -289,6 +289,30 @@ def _batch_size_from_env(env: Mapping[str, str] | None = None) -> int | None:
     return size
 
 
+def default_fastembed_cache_dir(env: Mapping[str, str] | None = None) -> Path | None:
+    """Where fastembed keeps a model that no profile pins: `FASTEMBED_CACHE_PATH`, else the
+    platform cache directory. None when neither can be named (no home directory).
+
+    fastembed's own default is `<temp>/fastembed_cache`. Windows cleanup empties the temp
+    directory but can leave the download metadata, and fastembed then trusts the metadata and
+    fails every load with NO_SUCHFILE instead of downloading again.
+    """
+    source = os.environ if env is None else env
+    raw = source.get("FASTEMBED_CACHE_PATH", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    try:
+        if os.name == "nt":
+            base = source.get("LOCALAPPDATA")
+            root = Path(base) if base else Path.home() / "AppData" / "Local"
+        else:
+            base = source.get("XDG_CACHE_HOME")
+            root = Path(base) if base else Path.home() / ".cache"
+    except RuntimeError:  # `Path.home()` with no home directory: keep fastembed's own default
+        return None
+    return root / "recall" / "fastembed"
+
+
 class FastEmbedEmbedder:
     """Real local embeddings (no API key). Requires `pip install "recall-rag[fastembed]"`."""
 
@@ -347,7 +371,13 @@ class FastEmbedEmbedder:
         kwargs: dict[str, object] = {"model_name": identity.model_name if identity else model_name}
         if threads is not None:
             kwargs["threads"] = threads
-        if local_cache is not None:
+        if local_cache is None:
+            # The process environment, as fastembed itself reads `FASTEMBED_CACHE_PATH`: an
+            # explicit `env` mapping need not carry it, or the platform's cache root.
+            default_cache = default_fastembed_cache_dir()
+            if default_cache is not None:
+                kwargs["cache_dir"] = str(default_cache)
+        else:
             kwargs["cache_dir"] = local_cache
         if require_local:
             kwargs["local_files_only"] = True

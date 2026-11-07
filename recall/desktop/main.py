@@ -70,8 +70,11 @@ def _model_cache_root() -> Path | None:
     """
     import tempfile
 
+    from recall.embedding_providers.local import default_fastembed_cache_dir
+
     candidates = [
-        Path(os.environ["FASTEMBED_CACHE_PATH"]) if os.environ.get("FASTEMBED_CACHE_PATH") else None,
+        default_fastembed_cache_dir(),
+        # Where fastembed itself downloaded before RE-call named a cache directory.
         Path(tempfile.gettempdir()) / "fastembed_cache",
         Path(os.environ["HF_HOME"]) / "hub" if os.environ.get("HF_HOME") else None,
         Path.home() / ".cache" / "huggingface" / "hub",
