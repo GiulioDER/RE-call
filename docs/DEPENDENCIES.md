@@ -52,7 +52,7 @@ instead of presenting all three as an opaque embedder traceback.
 
 ## MCP Extra
 
-`mcp` is **pinned exactly at 2.2.0**, not ranged. RE-call uses the MCP 2 server import path,
+`mcp` is **held at the 2.2 minor** (`~=2.2.0`, any 2.2.x patch; exactly 2.2.0 until 2026-11-06). RE-call uses the MCP 2 server import path,
 context injection, and snake_case tool annotation fields. The boundaries below are why the floor
 sits where it does; they are kept as a record of what each version added, and as the map for a
 future bump:
@@ -63,7 +63,7 @@ future bump:
 | `>=1.27.2` | Adds `AccessToken.subject` and `.claims`, used to carry tenant identity. |
 | `>=2.0.0` | Provides `MCPServer`, typed request `Context` injection, and snake_case `ToolAnnotations` fields used by `recall_mcp.server`. |
 | `<3` | Next major is reserved as a port until its server, auth, and context APIs are tested here. |
-| `==2.2.0` | The pin itself. See below. |
+| `~=2.2.0` | The pin itself: the minor is fixed, patch releases are allowed. See below. |
 
 ### Why this one is pinned rather than ranged
 
@@ -85,6 +85,11 @@ Two things made the drift invisible:
   release in range.
 - **A range admits a version no one has run the suite against.** The pin converts that into a
   deliberate bump: a version change is now a diff, reviewed, with a full CI run behind it.
+
+🔁 Changed 2026-11-06, owner decision: the pin allows 2.2.x patch releases (`~=2.2.0`). An exact
+pin in a published extra kept a downstream security patch from installing next to RE-call until
+RE-call released. The 2.1.0 change that motivated the pin was a minor release, and the minor stays
+fixed; the main CI suite still installs the exact version in `uv.lock`.
 
 `RateLimited` keeps its `ToolError` base regardless. The pin controls *when* a new SDK arrives,
 not whether the code survives it.
@@ -137,17 +142,23 @@ choose the framework in its own environment:
 `GHSA-8mgp-746c-j5xp`. Install `llama-index-core` separately only in an environment that accepts
 that upstream dependency, then run the adapter tests there.
 
-## Benchmark Extra
+## Benchmark dependencies
 
-The `bench` extra is for deliberate local benchmark runs, not normal development or CI. It includes
-heavy or competitor-specific dependencies.
+There is no `bench` extra since 2026-11-07. It served only the repository's own benchmark harnesses,
+which the wheel does not ship, so it published an exact competitor pin and heavy packages that
+nothing installed from PyPI imports. A benchmark run installs them in its own environment, from a
+checkout:
 
-`mem0ai` is pinned exactly because it is the competitor being measured. Its extraction prompt,
+```bash
+pip install -e ".[dev,openai]" "mem0ai==2.0.13" "pyarrow>=23.0.1"
+```
+
+`mem0ai` stays pinned exactly because it is the competitor being measured. Its extraction prompt,
 retrieval defaults, and API move between releases, so a range would let a fresh install silently
 change a published comparison. Bumping it requires a deliberate re-run.
 
-`pyarrow` is required because the BEAM benchmark ships as parquet. `numpy` is required because
-benchmark modules import it directly.
+`pyarrow` is required because the BEAM benchmark ships as parquet; 23.0.1 is the first release
+without a published advisory. `numpy` and `tiktoken` come with `dev`.
 
 ## Development Tools
 

@@ -29,7 +29,6 @@ PROFILE_IMPORTS: dict[str, tuple[str, ...]] = {
         "pytest_benchmark",
     ),
     "atomic": ("numpy", "threadpoolctl", "recall.atomic_rescue"),
-    "bench": ("mem0", "openai", "pyarrow", "numpy", "tiktoken"),
     "fastembed": ("fastembed", "onnxruntime", "tokenizers", "recall.embeddings"),
     "mcp": ("mcp", "anyio", "psycopg_pool", "jwt", "httpx2", "recall_mcp.server"),
     "agent": ("claude_agent_sdk", "psycopg_pool", "recall_agent._sdk"),

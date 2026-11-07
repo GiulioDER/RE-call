@@ -8,7 +8,8 @@ remain under their own licences and terms.
 Every licence on this page was read from its source on 2026-10-20: Python packages from the PyPI
 JSON API for the exact version locked in `uv.lock`, models from their Hugging Face page,
 repositories from GitHub, papers from arXiv or Crossref. None was filled in from memory. When a
-lock entry changes, the row for it is stale until it is read again.
+lock entry changes, the row for it is stale until it is read again. The rows whose locked version had
+changed since then were read again on 2026-11-06; no licence among them had changed.
 
 Not legal advice.
 
@@ -22,7 +23,7 @@ unmodified, separately installed libraries.
 | `psycopg` 3.3.4 | LGPL-3.0-only | The PostgreSQL adapter. A core dependency (`psycopg[binary]`). |
 | `psycopg-binary` 3.3.4 | LGPL-3.0-only | The compiled distribution of psycopg pulled in by `psycopg[binary]`. Its wheels bundle the PostgreSQL client library libpq (PostgreSQL Licence) and, where the platform needs it, OpenSSL (OpenSSL 3, Apache-2.0); the Windows wheel for 3.3.4 carries `libpq`, `libssl-3` and `libcrypto-3`. |
 | `psycopg-pool` 3.3.3 | LGPL-3.0-only | Connection pooling; the `pool` and `mcp` extras. |
-| `certifi` 2026.6.17 | MPL-2.0 | Mozilla's CA bundle, pulled in by `requests` and `httpx`. |
+| `certifi` 2026.10.19 | MPL-2.0 | Mozilla's CA bundle, pulled in by `requests` and `httpx`. |
 | `tqdm` 4.69.0 | MPL-2.0 AND MIT | Progress bars, pulled in by `fastembed` and `huggingface-hub`. |
 | `orjson` 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) | JSON, pulled in by `langsmith`, which `voyageai` reaches through `langchain-text-splitters` and `langchain-core`. |
 
@@ -37,7 +38,7 @@ shipped services use: `mcp` (the MCP server), `pool`, `voyage`, `openai`, `faste
 default local embedder), `documents` (file extraction) and `atomic`. The last column names every one of those that pulls the package in;
 `core` means the base install.
 
-Research and benchmarking extras (`sparse`, `rerank`, `finetune`, `eval`, `bench`, `agent-ab`,
+Research and benchmarking extras (`sparse`, `rerank`, `finetune`, `eval`, `agent-ab`,
 `agent`, `aws`, `s3`, `langchain`, `dev`) are not listed. Their pinned closure is in `uv.lock`, and
 the model weights some of them download are covered in [docs/MODEL_LICENSES.md](docs/MODEL_LICENSES.md).
 
@@ -55,7 +56,7 @@ otherwise its trove classifier.
 | `anyio` | 4.15.1 | MIT | License-Expression | mcp, voyage, openai, fastembed |
 | `attrs` | 26.1.0 | MIT | License-Expression | mcp, voyage |
 | `beautifulsoup4` | 4.15.0 | MIT License | License | documents |
-| `certifi` | 2026.6.17 | MPL-2.0 | License | voyage, fastembed |
+| `certifi` | 2026.10.19 | MPL-2.0 | License | voyage, fastembed |
 | `cffi` | 2.1.0 | MIT-0 | License-Expression | mcp, documents |
 | `charset-normalizer` | 3.4.9 | MIT | License | voyage, fastembed, documents |
 | `click` | 8.4.2 | BSD-3-Clause | License-Expression | mcp, voyage, fastembed, documents |
@@ -63,17 +64,17 @@ otherwise its trove classifier.
 | `cryptography` | 50.0.0 | Apache-2.0 OR BSD-3-Clause | License-Expression | mcp, documents |
 | `distro` | 1.9.0 | Apache License, Version 2.0 | License | voyage |
 | `et-xmlfile` | 2.0.0 | MIT | License | documents |
-| `fastembed` | 0.8.1 | Apache-2.0 | License | fastembed |
-| `filelock` | 3.31.1 | MIT | License-Expression | voyage, fastembed |
+| `fastembed` | 0.9.1 | Apache-2.0 | License-Expression | fastembed |
+| `filelock` | 4.2.4 | MIT | License-Expression | voyage, fastembed |
 | `flatbuffers` | 25.12.19 | Apache 2.0 | License | fastembed |
 | `frozenlist` | 1.8.0 | Apache-2.0 | License | voyage |
 | `fsspec` | 2026.9.0 | BSD-3-Clause | License-Expression | voyage, fastembed |
 | `h11` | 0.16.0 | MIT | License | mcp, voyage, openai, fastembed |
 | `hf-xet` | 1.5.2 | Apache-2.0 | License-Expression | voyage, fastembed |
 | `httpcore` | 1.0.9 | BSD-3-Clause | License-Expression | voyage, fastembed |
-| `httpcore2` | 2.13.1 | BSD-3-Clause | License-Expression | mcp, openai |
+| `httpcore2` | 2.16.0 | BSD-3-Clause | License-Expression | mcp, openai |
 | `httpx` | 0.28.1 | BSD-3-Clause | License | voyage, fastembed |
-| `httpx2` | 2.13.1 | BSD-3-Clause | License-Expression | mcp, openai |
+| `httpx2` | 2.16.0 | BSD-3-Clause | License-Expression | mcp, openai |
 | `httpx2-jsfetch` | 1.0 | BSD-3-Clause | License-Expression | mcp, openai (Emscripten only) |
 | `huggingface-hub` | 1.24.0 | Apache-2.0 | License | voyage, fastembed |
 | `idna` | 3.18 | BSD-3-Clause | License-Expression | mcp, voyage, openai, fastembed |
@@ -82,10 +83,10 @@ otherwise its trove classifier.
 | `jsonpointer` | 3.1.1 | Modified BSD License | License | voyage |
 | `jsonschema` | 4.26.0 | MIT | License-Expression | mcp |
 | `jsonschema-specifications` | 2025.9.1 | MIT | License-Expression | mcp |
-| `langchain-core` | 1.6.7 | MIT | License | voyage |
+| `langchain-core` | 1.6.12 | MIT | License | voyage |
 | `langchain-protocol` | 0.0.18 | MIT | License | voyage |
 | `langchain-text-splitters` | 1.1.2 | MIT | License | voyage |
-| `langsmith` | 0.10.7 | MIT | License | voyage |
+| `langsmith` | 0.14.13 | MIT | License | voyage |
 | `loguru` | 0.7.3 | MIT License | classifier | fastembed |
 | `lxml` | 6.1.1 | BSD-3-Clause | License | documents |
 | `mcp` | 2.2.0 | MIT | License | mcp |
@@ -95,15 +96,15 @@ otherwise its trove classifier.
 | `numpy` | 2.5.1 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | License-Expression | core |
 | `olefile` | 0.47 | BSD | License | documents |
 | `onnxruntime` | 1.31.0 | MIT License | License | fastembed |
-| `openai` | 3.26.0 | Apache-2.0 | License-Expression | openai |
+| `openai` | 3.40.0 | Apache-2.0 | License-Expression | openai |
 | `openpyxl` | 3.1.5 | MIT | License | documents |
-| `opentelemetry-api` | 1.44.0 | Apache-2.0 | License-Expression | mcp |
+| `opentelemetry-api` | 1.45.1 | Apache-2.0 | License-Expression | mcp |
 | `orjson` | 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) | License-Expression | voyage |
 | `packaging` | 26.2 | Apache-2.0 OR BSD-2-Clause | License-Expression | voyage, fastembed |
 | `pdfminer-six` | 20260107 | MIT | License-Expression | documents |
 | `pdfplumber` | 0.11.10 | MIT License | classifier | documents |
-| `pgvector` | 0.5.0 | MIT | License-Expression | core |
-| `pillow` | 12.3.0 | MIT-CMU | License-Expression | voyage, fastembed, documents |
+| `pgvector` | 0.5.1 | MIT | License-Expression | core |
+| `pillow` | 13.0.0 | MIT-CMU | License-Expression | voyage, fastembed, documents |
 | `propcache` | 0.5.2 | Apache-2.0 | License | voyage |
 | `protobuf` | 6.33.6 | 3-Clause BSD License | License | fastembed |
 | `psycopg` | 3.3.4 | LGPL-3.0-only | License-Expression | core |
@@ -111,8 +112,8 @@ otherwise its trove classifier.
 | `psycopg-pool` | 3.3.3 | LGPL-3.0-only | License-Expression | mcp, pool |
 | `py-rust-stemmers` | 0.1.8 | none declared on PyPI; MIT in its source repository, qdrant/py-rust-stemmers |  | fastembed |
 | `pycparser` | 3.0 | BSD-3-Clause | License-Expression | mcp, documents |
-| `pydantic` | 2.13.5 | MIT | License-Expression | core |
-| `pydantic-core` | 2.46.5 | MIT | License-Expression | core |
+| `pydantic` | 2.14.1 | MIT | License-Expression | core |
+| `pydantic-core` | 2.50.1 | MIT | License-Expression | core |
 | `pyjwt` | 2.15.1 | MIT | License-Expression | mcp |
 | `pypdfium2` | 5.13.0 | BSD-3-Clause, Apache-2.0, dependency licenses | License | documents |
 | `python-docx` | 1.2.0 | MIT | License | documents |
@@ -128,14 +129,14 @@ otherwise its trove classifier.
 | `sniffio` | 1.3.1 | MIT OR Apache-2.0 | License | voyage, openai |
 | `soupsieve` | 2.9.2 | MIT | License-Expression | documents |
 | `sse-starlette` | 3.4.5 | BSD-3-Clause | License-Expression | mcp |
-| `starlette` | 1.7.0 | BSD-3-Clause | License-Expression | mcp |
+| `starlette` | 1.9.0 | BSD-3-Clause | License-Expression | mcp |
 | `tenacity` | 9.1.4 | Apache 2.0 | License | voyage |
 | `threadpoolctl` | 3.7.0 | BSD-3-Clause | License-Expression | atomic |
 | `tokenizers` | 0.23.3 | Apache Software License | classifier | voyage, fastembed |
 | `tqdm` | 4.69.0 | MPL-2.0 AND MIT | License | voyage, fastembed |
 | `truststore` | 0.10.4 | MIT | License-Expression | mcp, openai |
 | `typing-extensions` | 4.16.0 | PSF-2.0 | License-Expression | core |
-| `typing-inspection` | 0.4.2 | MIT | License-Expression | core |
+| `typing-inspection` | 0.4.4 | MIT | License-Expression | core |
 | `tzdata` | 2026.3 | Apache-2.0 | License | core (Windows only) |
 | `urllib3` | 2.8.0 | MIT | License-Expression | voyage, fastembed |
 | `uuid-utils` | 0.17.0 | BSD-3-Clause | License-Expression | voyage |
