@@ -470,7 +470,8 @@ def test_a_missing_transport_is_blocking_and_names_an_extra_that_installs_it(mon
     extras = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"][
         "optional-dependencies"
     ][extra.group(1)]
-    names = [re.split(r"[<>=!\[ ;]", dep, maxsplit=1)[0].lower() for dep in extras]
+    # `~` too: the mcp extra declares `mcp~=2.2.0` since 2026-11-06, which split to "mcp~" without it.
+    names = [re.split(r"[<>=!~\[ ;]", dep, maxsplit=1)[0].lower() for dep in extras]
     assert "mcp" in names and "httpx2" in names, f"[{extra.group(1)}] does not install the client"
 
 
