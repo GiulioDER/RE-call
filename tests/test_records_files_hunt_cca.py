@@ -13,8 +13,8 @@ Invariants and the failure each one catches:
 - H3 (CCA STAKES-003) a memo whose read raised an `OSError` is not cached as a refusal: the next
   load reads it again. Before the fix a passing lock skipped the memo until the file changed.
 - H4 (CCA PERF-001) a load under a deadline that reads the whole directory over a cache holding
-  another tag's rows rewrites the cache, so a tag change does not leave one more dead copy of the
-  directory in the journal for every later launch to read.
+  dead rows (rows a later one replaced, as two cold launches leave) rewrites the cache. Rewritten
+  for CCA BUG-101, which gave each tag its own file, so a tag change no longer leaves rows here.
 
 - H5 (architect REVISE of PERF-001) a rewrite under a deadline that is killed before its replace
   keeps this load's parses: they are appended first.
@@ -28,8 +28,8 @@ Red proof, recorded 2026-11-07, each test failing in its named assertion, then g
   `if target is None:` (the `_safe_target` check removed): "a link into node_modules was read".
 - H3 `...::test_a_read_error_is_retried_by_the_next_load`: pre-fix (tautology verify): "a passing
   read error was cached as a refusal".
-- H4 `...::test_a_tag_change_does_not_grow_the_journal`: pre-fix (tautology verify): "a tag change
-  left the old tag's copy of the directory in the journal".
+- H4 `...::test_duplicate_journal_rows_are_compacted` (rewritten 2026-11-07): the rewrite in
+  `_persist` mutated to `if False:`: "duplicate journal rows were left for every later launch".
 - H5 `...::test_a_killed_rewrite_keeps_the_parses`: `load_memo_records` mutated to append only when
   the cache holds no dead rows (the first version of this fix): "a killed rewrite lost every memo
   the load had parsed".
@@ -145,25 +145,24 @@ def test_a_read_error_is_retried_by_the_next_load(tmp_path: Path, monkeypatch: p
     assert second.skipped == []
 
 
-def test_a_tag_change_does_not_grow_the_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """H4: three upgrades (three cache tags), each followed by a hook load under a deadline,
-    leave the cache holding one copy of the directory, not three."""
+def test_duplicate_journal_rows_are_compacted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """H4: two cold launches appending the same parses (the journal then holds every row twice),
+    followed by a hook load under a deadline, leave the cache holding one copy of the directory.
+    Rewritten by CCA BUG-101: a tag change now opens a file of its own (`_versioned_path`), so
+    duplicate and replaced rows are what compaction has left to drop."""
     memos = copy_memos(tmp_path / "memos")
     cache = tmp_path / "cache" / "memos.json"
-    delta = cache.with_name(cache.name + ".delta")
-    for tag in ("3:aaaaaaaaaaaaaaaa", "3:bbbbbbbbbbbbbbbb", "3:cccccccccccccccc"):
-        monkeypatch.setattr(records_files, "_cache_tag", lambda tag=tag: tag)
-        records_files._CACHE.clear()  # a new process
-        load_memo_records(memos, cache_file=cache, deadline=time.monotonic() + 60)
-    rows = [line for line in delta.read_text(encoding="utf-8").splitlines() if line] if delta.exists() else []
-    persisted = cache.read_text(encoding="utf-8") if cache.exists() else ""
-    assert not any("aaaaaaaa" in row or "bbbbbbbb" in row for row in rows), (
-        "a tag change left the old tag's copy of the directory in the journal"
-    )
-    assert "aaaaaaaa" not in persisted and "bbbbbbbb" not in persisted
-    entries, dead = records_files._read_cache_file(cache, "3:cccccccccccccccc")
-    assert len(entries) == len(EXPECTED) and dead == 0
-
+    monkeypatch.setattr(records_files, "_cache_tag", lambda: "4:aaaaaaaaaaaaaaaa")
+    load_memo_records(memos, cache_file=cache, deadline=time.monotonic() + 60)
+    versioned = records_files._versioned_path(cache, "4:aaaaaaaaaaaaaaaa")
+    delta = versioned.with_name(versioned.name + ".delta")
+    delta.write_text(delta.read_text(encoding="utf-8") * 2, encoding="utf-8")
+    assert records_files._read_cache_file(versioned, "4:aaaaaaaaaaaaaaaa")[1] == len(EXPECTED)
+    records_files._CACHE.clear()  # a new process
+    load_memo_records(memos, cache_file=cache, deadline=time.monotonic() + 60)
+    entries, dead = records_files._read_cache_file(versioned, "4:aaaaaaaaaaaaaaaa")
+    assert dead == 0, "duplicate journal rows were left for every later launch to read"
+    assert len(entries) == len(EXPECTED)
 
 def test_a_killed_rewrite_keeps_the_parses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """H5 (architect REVISE of PERF-001): a rewrite under a deadline that is killed before its
@@ -171,9 +170,15 @@ def test_a_killed_rewrite_keeps_the_parses(tmp_path: Path, monkeypatch: pytest.M
     launch parses nothing again instead of repeating the same work forever."""
     memos = copy_memos(tmp_path / "memos")
     cache = tmp_path / "cache" / "memos.json"
-    monkeypatch.setattr(records_files, "_cache_tag", lambda: "3:aaaaaaaaaaaaaaaa")
+    monkeypatch.setattr(records_files, "_cache_tag", lambda: "4:aaaaaaaaaaaaaaaa")
     load_memo_records(memos, cache_file=cache, deadline=time.monotonic() + 60)
-    monkeypatch.setattr(records_files, "_cache_tag", lambda: "3:bbbbbbbbbbbbbbbb")  # an upgrade
+    # Dead rows (each written twice, as two cold launches leave them) and one memo the next load
+    # parses fresh: the rewrite is then due, and only the append before it keeps that parse.
+    versioned = records_files._versioned_path(cache, "4:aaaaaaaaaaaaaaaa")
+    delta = versioned.with_name(versioned.name + ".delta")
+    delta.write_text(delta.read_text(encoding="utf-8") * 2, encoding="utf-8")
+    (memos / "nested").mkdir()
+    (memos / "nested" / "new.md").write_bytes((memos / BUG).read_bytes().replace(b"BUG-001", b"BUG-906"))
     records_files._CACHE.clear()
 
     def killed(*args: object, **kwargs: object) -> None:

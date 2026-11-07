@@ -17,7 +17,7 @@ from typing import Any
 from recall.backends import lite_route_refusal, open_legacy_store
 from recall.cli_commands._lite import lite_read_meta
 from recall.lite import is_lite_dsn, lite_dsn_path
-from recall.records import MAX_QUERY_ANCHORS, RECORD_KINDS, RecordsQueryError, lookup_records
+from recall.records import AMBIGUOUS, MAX_QUERY_ANCHORS, RECORD_KINDS, RecordsQueryError, lookup_records
 from recall.runtime_route import RouteConfigurationError, RuntimeRoute, resolve_runtime_route
 from recall.security_policy import (
     AccessContext,
@@ -174,7 +174,9 @@ def _print(result: dict[str, Any], args: argparse.Namespace) -> None:
         return
     for record in records:
         marks = []
-        if record["superseded_by"]:
+        if record["superseded_by"] == AMBIGUOUS:
+            marks.append("supersession ambiguous")
+        elif record["superseded_by"]:
             marks.append(f"superseded by {terminal_safe(record['superseded_by'])}")
         if record["valid_until"]:
             lapse = "expired" if record.get("expired") else "valid until"

@@ -224,7 +224,7 @@ def test_cache_file_serves_a_new_process(tmp_path: Path, monkeypatch: pytest.Mon
     memos = copy_memos(tmp_path / "memos")
     cache = tmp_path / "cache" / "memos.json"
     first = load_memo_records(memos, cache_file=cache)
-    assert cache.is_file()
+    assert records_files._versioned_path(cache, records_files._cache_tag()).is_file()
 
     records_files._CACHE.clear()
     reads: list[str] = []

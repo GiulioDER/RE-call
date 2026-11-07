@@ -271,11 +271,12 @@ Claude settings is approved.
   `RECALL_AUDITOR_BRIEF_BUDGET` (seconds, default 3, at most 4; an invalid value is logged and
   replaced). 🔁 Corrected 2026-11-04: this said "at most 30", the cap as built; CCA ENV-007 lowered
   it to 4 s so a budget cannot outlast the 5 s Codex SubagentStart timeout. The log is `<config home>/logs/recall-auditor-brief.log` and the parsed-memo cache
-  `<config home>/cache/recall-auditor-brief-memos-<hash of the memo directory>.json`, one per
-  directory, where the config home is `RECALL_HOOK_CONFIG_HOME`, else `CLAUDE_CONFIG_DIR`, else
+  `<config home>/cache/recall-auditor-brief-memos-<hash of the memo directory>.<code version tag>.json`, one per
+  directory and version of the reading code (a version's file no load has used for a week is
+  removed), where the config home is `RECALL_HOOK_CONFIG_HOME`, else `CLAUDE_CONFIG_DIR`, else
   `~/.claude`. `python -m recall_hooks warm-auditor-brief` fills the cache with no deadline; run it
   with the hook's own interpreter and `PYTHONPATH` (the hook's timeout log prints the exact
-  command), because a cache written by another copy of RE-call is ignored.
+  command), because another copy of RE-call keeps a cache of its own.
 - **Codex** has no launch input a hook can rewrite, so it gets the brief as advisory context
   instead: `SubagentStart` runs `recall_hooks.codex`, which recovers the auditor type (for an
   agent type of `default`, from the child transcript's parent link), sends the shared
