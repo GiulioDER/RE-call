@@ -39,6 +39,7 @@ from recall.store import (
     PgVectorStore,
     SupersessionGraph,
     _first_write_sql,
+    _lexical_tie_order,
     resolve_supersession_graph,
     supersession_rows_sql,
 )
@@ -737,12 +738,12 @@ class GenerationStore(PgVectorStore):
                 FROM recall_chunks_v1 c, q
                 WHERE c.tenant_id = %(tenant)s AND c.generation_id = %(generation)s
                   AND c.tsv @@ q.tsq {source_filter}
-                ORDER BY rank DESC, chunk_id
+                ORDER BY rank DESC, {_lexical_tie_order("c.", "source_uri", "chunk_id")}
                 LIMIT %(k)s
             )
             SELECT chunk_id, source_uri, text, metadata, indexed_at, first_indexed_at,
                    {score} AS score
-            FROM top_k ORDER BY rank DESC, chunk_id
+            FROM top_k ORDER BY rank DESC, {_lexical_tie_order("", "source_uri", "chunk_id")}
         """
         params: dict[str, Any] = {
             "q": text,
