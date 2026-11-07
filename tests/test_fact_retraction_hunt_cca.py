@@ -59,6 +59,24 @@ def _value_kept(store: LiteStore) -> bool:
     return any(event.fact is not None and event.fact.object == "4512" for event in LiteFactLedger(store).events)
 
 
+@pytest.fixture
+def recorded_needles(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
+    """The receipt needles of every redaction plan made while the test runs, in order (CCA CODE-002
+    of run 20261107T133200Z: one spy for every test that watches needles)."""
+    import recall.fact_redaction as redaction
+
+    needles: list[tuple[str, ...]] = []
+    real = redaction.plan_redaction
+
+    def spied(*args: Any, **kwargs: Any) -> Any:
+        plan = real(*args, **kwargs)
+        needles.append(plan.needles)
+        return plan
+
+    monkeypatch.setattr(redaction, "plan_redaction", spied)
+    return needles
+
+
 def test_sec001_a_namesake_under_another_root_does_not_keep_a_forgotten_fact(store: LiteStore) -> None:
     """Node tests/test_fact_retraction_hunt_cca.py::test_sec001_a_namesake_under_another_root_does_not_keep_a_forgotten_fact.
 
@@ -405,7 +423,7 @@ def test_bug002_a_card_erased_by_its_chunk_is_no_receipt_needle_by_name(store: L
 
 
 def test_bug001_a_pruned_memo_forgotten_by_source_keeps_its_name_as_a_needle(
-    store: LiteStore, monkeypatch: pytest.MonkeyPatch
+    store: LiteStore, recorded_needles: list[tuple[str, ...]]
 ) -> None:
     """Node tests/test_fact_retraction_hunt_cca.py::test_bug001_a_pruned_memo_forgotten_by_source_keeps_its_name_as_a_needle.
 
@@ -417,25 +435,16 @@ def test_bug001_a_pruned_memo_forgotten_by_source_keeps_its_name_as_a_needle(
     needle". Red, mutation of `plan_redaction` (recall/fact_redaction.py: the `name_gone` branch of
     `name_erased` returning False): same failure.
     """
-    import recall.fact_redaction as redaction
-
     store.delete_sources(["/A/x.md"])
     assert _apply(store, "B", "r2").code == DecisionCode.APPLIED
     _prune(store, "B")
-    needles: list[tuple[str, ...]] = []
-    real = redaction.plan_redaction
-
-    def spied(*args: Any, **kwargs: Any) -> Any:
-        plan = real(*args, **kwargs)
-        needles.append(plan.needles)
-        return plan
-
-    monkeypatch.setattr(redaction, "plan_redaction", spied)
 
     result = forget_memory(store, ["/B/x.md"])
 
     assert result.facts_retracted == 1, result.message
-    assert needles and "x.md" in needles[-1], f"the forgotten memo's name was no receipt needle: {needles}"
+    assert recorded_needles and "x.md" in recorded_needles[-1], (
+        f"the forgotten memo's name was no receipt needle: {recorded_needles}"
+    )
 
 
 def test_stakes001_a_bare_name_that_decided_a_pruned_memo_stays_ambiguous(store: LiteStore) -> None:
@@ -464,7 +473,7 @@ def test_stakes001_a_bare_name_that_decided_a_pruned_memo_stays_ambiguous(store:
 
 
 def test_owner_erase_a_gone_name_a_pruned_namesake_carries_is_still_a_needle(
-    store: LiteStore, monkeypatch: pytest.MonkeyPatch
+    store: LiteStore, recorded_needles: list[tuple[str, ...]]
 ) -> None:
     """Node tests/test_fact_retraction_hunt_cca.py::test_owner_erase_a_gone_name_a_pruned_namesake_carries_is_still_a_needle.
 
@@ -473,25 +482,23 @@ def test_owner_erase_a_gone_name_a_pruned_namesake_carries_is_still_a_needle(
     though pruned /B still carries it, as it is when a served memo of that name is forgotten; /B's
     card and fact stay. Red against the first version of PR 1268 (`name_gone` excluded names a kept
     pruned card carries): fails on "a gone name a pruned namesake carries was no receipt needle".
+    The kept half (CCA CODE-001 of run 20261107T133200Z): /B's value has two guards here, the
+    `kept_chunk=` argument of `prepare_fact_erasure`'s redaction call and `name_gone` deciding
+    needles only, so one mutation alone stays green. Red, both mutated together (recall/
+    fact_retraction.py: `kept_chunk=` dropped; recall/fact_redaction.py: `erasable` also true when
+    `name_gone(name)`), fails on "the pruned namesake's value was erased with its gone name"; the
+    test before this assertion passed under the same mutation.
     """
-    import recall.fact_redaction as redaction
-
     assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
     assert _apply(store, "B", "r2").code == DecisionCode.DUPLICATE
     _prune(store, "A")
     _prune(store, "B")
-    needles: list[tuple[str, ...]] = []
-    real = redaction.plan_redaction
-
-    def spied(*args: Any, **kwargs: Any) -> Any:
-        plan = real(*args, **kwargs)
-        needles.append(plan.needles)
-        return plan
-
-    monkeypatch.setattr(redaction, "plan_redaction", spied)
 
     result = forget_memory(store, ["/A/x.md"])
 
     assert result.facts_retracted == 0, result.message
-    assert needles and "x.md" in needles[-1], f"a gone name a pruned namesake carries was no receipt needle: {needles}"
+    assert recorded_needles and "x.md" in recorded_needles[-1], (
+        f"a gone name a pruned namesake carries was no receipt needle: {recorded_needles}"
+    )
     assert store.latest_chunk_records(["chunk-B"])["chunk-B"].kind == "prune_source_chunks"
+    assert result.facts_redacted == 0 and _value_kept(store), "the pruned namesake's value was erased with its gone name"
