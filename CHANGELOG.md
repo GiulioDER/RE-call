@@ -1129,6 +1129,18 @@ list as an ordered upgrade procedure.
   own lock and statement timeouts. Each hold also ends once it has run 30 s, after the statement in
   hand, so a large replay ledger no longer holds the lock past a forget's wait.
 
+* **A forget reads chunk ids, not chunk texts, while it holds the erasure lock (#1273).** Finding
+  which chunks it erases, and which forgotten sources are still served, took one full-text read per
+  source per store; it is now one ids-only read per store. Checking afterwards which cited chunks
+  are gone took one text read per chunk and is now one read per store. The forget decides exactly
+  as before.
+
+* **Memory sync to a server running on Windows no longer re-uploads every memo (#1274).** Such a
+  server records each source as a native `C:\...\memo.md` path, and the hook's sync matched
+  sources on `/` only. So no memo was ever recognised as already stored, and a sync that also
+  removes vanished memos would have named every server source for deletion. A source with no `/`
+  is now read with `\` as its separator.
+
 * **Supersession cache freshness and latest-state reads no longer scan a tenant's whole
   removal history.** Migration 0034 adds a per-tenant revision table and 0035 an index on the
   audit ledger, built CONCURRENTLY. **Deploying needs `--with-migrations`.**
