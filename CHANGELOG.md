@@ -15,8 +15,8 @@ server, and ships it in the PyPI wheel for the first time. It also adds the loca
 audit records looked up by exact key, stated facts in the fact ledger and the `recall withdraw`
 erasure counterpart, and it carries the fixes of pre-release audits of Lite, the MCP server and its
 authentication, the fact ledger, provenance, the dashboard, the hooks and the first-run code. The
-code audits run during this release recorded at least 1,068 bugs in the shipped packages whose fixes
-are in it (95 rated P1, the highest severity, 668 P2 and 305 P3), and 190 of the pull requests
+code audits run during this release recorded at least 1,224 bugs in the shipped packages whose fixes
+are in it (99 rated P1, the highest severity, 794 P2 and 331 P3), and 215 of the pull requests
 merged since 0.14.0 are fixes. The project license is now the AGPL-3.0 with a commercial license
 beside it (see Changed). Several changes are breaking; read the upgrade notes before upgrading a
 serving host.
@@ -28,29 +28,32 @@ list as an ordered upgrade procedure.
 
 * **Migrations 0026 to 0035** (fact ledger retraction, value erasure, the materialized current
   facts, withdrawal, the supersession revision table and its index) need `recall schema apply
-  --with-migrations` with the migration role, then `recall schema grants --controller`. On a
-  ledger that already holds events, run `recall provenance rebuild` after 0030. A database already
-  at 0033 applies 0029 last. PostgreSQL's pgvector must be 0.8.0 or later.
+  --with-migrations` with the migration role, then `recall schema grants --controller`. On a ledger
+  that already holds events, run `recall provenance rebuild` after 0030. A database already at 0033
+  applies 0029 last. PostgreSQL's pgvector must be 0.8.0 or later.
 * **Run `recall schema apply` before starting a server.** A non-enterprise multi-tenant server and
   `recall quickstart --existing-dsn` no longer migrate a table on first use.
 * **Packaging:** `recall_aml`, the `hosted` extra and `recall-hosted` are gone from the wheel and
-  the sdist; numpy is a core dependency; the QNLI entailment judge and its `entail` extra are
-  removed, and a configuration that still sets `RECALL_ENTAILMENT` to a true value refuses.
-* **Corpora re-embed or re-index once.** Every FastEmbed profile fingerprint changes once, an
-  `st:` model loaded from a local directory or a pinned revision fingerprints its weights, the
-  structured document version and the code chunker version move, and document extraction moves to
-  v3. Upgrading `voyageai`, `fastembed`, `onnxruntime`, `tokenizers` or `sentence-transformers` on
-  a serving host turns every generation that recorded a profile into `LINEAGE_MISMATCH` until it
-  is rebuilt, so pin those libraries or rebuild before switching traffic (#909).
+  the sdist, and so are the `bench` and `finetune` extras; dependency floors moved past published
+  advisories (for example `fastembed>=0.9.1` and `pillow>=13`), so an environment holding an older
+  version must upgrade it; numpy is a core dependency; the QNLI entailment judge and its `entail`
+  extra are removed, and a configuration that still sets `RECALL_ENTAILMENT` to a true value
+  refuses.
+* **Corpora re-embed or re-index once.** Every FastEmbed profile fingerprint changes once, an `st:`
+  model loaded from a local directory or a pinned revision fingerprints its weights, the structured
+  document version and the code chunker version move, and document extraction moves to v3. Upgrading
+  `voyageai`, `fastembed`, `onnxruntime`, `tokenizers` or `sentence-transformers` on a serving host
+  turns every generation that recorded a profile into `LINEAGE_MISMATCH` until it is rebuilt, so pin
+  those libraries or rebuild before switching traffic (#909).
 * **Rebuild semantic graphs once.** The graph builder's output changed (date handling, file
   identity, supersedes of compiled records, duplicate diagnostics), and its schema version moves
   from 2 to 3. Existing graphs keep serving under the version they were built with; run `recall
   graph rebuild --generation <id>` for each live generation to pick up the fixes. A generation left
-  in `validating` by older code is rebuilt by `recall generation validate` rather than failed.
-  The change is one way: code before 0.15.0 refuses a graph built at version 3, and 0.15.0
-  refuses one built by a newer version. Upgrade the serving checkout and the CLI that builds and
-  validates generations together, and after a rollback run `recall graph rebuild` with the older
-  code for each live generation.
+  in `validating` by older code is rebuilt by `recall generation validate` rather than failed. The
+  change is one way: code before 0.15.0 refuses a graph built at version 3, and 0.15.0 refuses one
+  built by a newer version. Upgrade the serving checkout and the CLI that builds and validates
+  generations together, and after a rollback run `recall graph rebuild` with the older code for each
+  live generation.
 * **Atomic rescue artifacts built by 0.14.0 are refused**: their `manifest.json` lacks
   `embedding_fingerprint`. Rebuild them.
 * **Configuration that refuses now:** a source policy file with an unknown or misspelled key, an
@@ -58,18 +61,19 @@ list as an ordered upgrade procedure.
   above 3600, an unknown `RECALL_DEPENDENCY_INVALIDATION` value, a `RECALL_GRAPH_*` control outside
   its vocabulary (a blank value still means the default), and a `RECALL_MULTIMODAL_ENABLED` that is
   not a recognised boolean, all at startup. Source policies whose redactions are not sorted get new
-  digests, so rows filtered on the old digest return nothing until a re-index. * **Calibration:** a
-  labelled set that repeats a query, or labels one both ways, is refused; a v2 `recall calibration
-  import` needs `--labels` and a matching `--embedder`; some v2 bundles fitted before #1106
-  re-derive a different threshold and must be recalibrated. * **Behaviour that changes answers or
-  scripts:** strict PostgreSQL searches refuse a term absent from the generation (`unknown_term`, on
-  by default); `recall_reasoning_query` answers with the `dated` profile by default; a forget by a
-  name that matches several sources refuses and lists them; an explicit glob index skips `.git`,
-  `.venv`, `venv`, `node_modules`, `site-packages` and `__pycache__`; an `as_of` without an offset
-  is read as UTC; a stdio server refuses a `tenant` argument naming another tenant; a dependency
-  projection read that raises is `DEPENDENCY_UNAVAILABLE`; and every tool that writes a
-  `supersedes:` edge is gated. * **Redis idempotency:** the request fingerprint is bound to the
-  authenticated principal, so a key in flight across the upgrade needs a new key.
+  digests, so rows filtered on the old digest return nothing until a re-index.
+* **Calibration:** a labelled set that repeats a query, or labels one both ways, is refused; a v2
+  `recall calibration import` needs `--labels` and a matching `--embedder`; some v2 bundles fitted
+  before #1106 re-derive a different threshold and must be recalibrated.
+* **Behaviour that changes answers or scripts:** strict PostgreSQL searches refuse a term absent
+  from the generation (`unknown_term`, on by default); `recall_reasoning_query` answers with the
+  `dated` profile by default; a forget by a name that matches several sources refuses and lists
+  them; an explicit glob index skips `.git`, `.venv`, `venv`, `node_modules`, `site-packages` and
+  `__pycache__`; an `as_of` without an offset is read as UTC; a stdio server refuses a `tenant`
+  argument naming another tenant; a dependency projection read that raises is
+  `DEPENDENCY_UNAVAILABLE`; and every tool that writes a `supersedes:` edge is gated.
+* **Redis idempotency:** the request fingerprint is bound to the authenticated principal, so a key
+  in flight across the upgrade needs a new key.
 
 ### Added
 
@@ -107,7 +111,12 @@ list as an ordered upgrade procedure.
   or an index that drops a source, deletes the calibration evidence quoting it, so strict search
   refuses until the next refit. SQLite `secure_delete` is on for every connection. `recall
   --embedder X lite refresh` uses X, and `recall lite refresh` follows a `sqlite:///` DSN without
-  `--store`.
+  `--store`. A Lite store keeps the embedder it was built with: `recall lite refresh` refuses a
+  shell `RECALL_EMBEDDER` that differs from the store's recorded embedder unless `--force` is given,
+  a typed `--embedder` proceeds with a warning, re-embeds the memo folders and records the new
+  embedder, and `recall index` on a `sqlite:///` store uses the recorded embedder instead of the
+  default. A calibration fitted for another model, or with no usable recorded width, reads as stale
+  in both strict search and `recall doctor`.
 
 * **The lite store keeps itself current with its memo folder.** The MCP server refreshes a
   `recall setup --lite` store when it starts and, before a search, when the folder changed (at most
@@ -167,7 +176,9 @@ list as an ordered upgrade procedure.
   rather than reusing its chunks. `recall records` applies the source policy, every entry carries
   `expired`, a call with neither anchors nor ids is refused, and a memo with two `recall_record`
   lines is refused. A record holding text that cannot be stored is dropped with a warning and the
-  memo is indexed without it.
+  memo is indexed without it. A record whose memo a `supersedes:` reference names among several
+  files reports `superseded_by: "<ambiguous>"`, as the trust gate refuses it, and a record memo with
+  no body is skipped.
 
 * A `recall_record` of kind `bug` may carry `defect_class`, one of the fixed classes cca-audit's
   `audit-fix.md` lists ("Defect classes"), or null, and `defect_class_reason`. Both are optional,
@@ -388,7 +399,10 @@ list as an ordered upgrade procedure.
   a link committed there cannot make the machine contact another host, and it gives no block inside
   a CCA run held out from memory. `recall setup` and the Claude Code plugin do not install it: add
   the `PreToolUse` entry with matcher `Agent` to your Claude Code settings by hand. The Codex plugin
-  runs it from `SubagentStart`.
+  runs it from `SubagentStart`. The memo reader checks a file under a Windows directory junction for
+  containment, holds a file symbolic link to the indexer's link rules, retries a memo a transient
+  read error refused, and keeps one cache file per code version, so two installed versions no longer
+  evict each other's cache.
 
 * The auditor brief hook now labels and ranks a record anchored at a whole file (no symbol) as
   `file_only`, below records anchored at a real symbol, and within a level lists symbol anchors
@@ -867,12 +881,12 @@ list as an ordered upgrade procedure.
 
 ### Removed
 
-* **The `bench` and `finetune` extras are gone.** It installed `mem0ai==2.0.13`, `pyarrow` and the OpenAI SDK for
-  the repository's own benchmark harnesses, which the wheel does not ship, so nothing installed
-  from PyPI used them. `pip install "recall-rag[bench]"` now installs no extra packages, with a
-  warning from pip. A benchmark run installs those packages itself; `docs/DEPENDENCIES.md` gives
-  the command. The `finetune` extra is gone for the same reason: it served only the fine-tuning
-  study under `benchmarks/finetune/`, which now installs the `rerank` extra.
+* **The `bench` and `finetune` extras are gone.** `bench` installed `mem0ai==2.0.13`, `pyarrow` and
+  the OpenAI SDK for the repository's own benchmark harnesses, which the wheel does not ship, so
+  nothing installed from PyPI used them. `pip install "recall-rag[bench]"` now installs no extra
+  packages, with a warning from pip. A benchmark run installs those packages itself;
+  `docs/DEPENDENCIES.md` gives the command. The `finetune` extra is gone for the same reason: it
+  served only one of the repository's benchmark studies, which now installs the `rerank` extra.
 
 * **BREAKING: the benchmark service package `recall_aml` is no longer distributed.** The wheel
   and the sdist no longer carry `recall_aml`, the `hosted` extra or the `recall-hosted` console
@@ -919,14 +933,20 @@ list as an ordered upgrade procedure.
 
 ### Fixed
 
-* **A memo pruned from disk no longer loses its facts when another memo is forgotten (#1244).**
-  A forget counted every memo the store no longer served as gone, so forgetting one memo retracted
-  for good a fact that a memo deleted from disk also stated, and restoring that file did not bring
-  it back. The indexer's prune now leaves an audit record of the chunk ids it removed
+* **A memo pruned from disk no longer loses its facts when another memo is forgotten (#1244).** A
+  forget counted every memo the store no longer served as gone, so forgetting one memo retracted for
+  good a fact that a memo deleted from disk also stated, and restoring that file did not bring it
+  back. The indexer's prune now leaves an audit record of the chunk ids it removed
   (`prune_source_chunks`, ids only), and a forget keeps a card whose chunk was last pruned as
   evidence: the fact is hidden while the memo is away and current again when it returns. A forget
-  that names the pruned memo still forgets it. Memos pruned before this release have no record
-  and still count as forgotten.
+  that names the pruned memo still forgets it. Memos pruned before this release have no record and
+  still count as forgotten. A bare root-relative name forgets a pruned memo only when it names that
+  memo and no other. A forget deletes only the receipts that name an erased memo as a whole value,
+  by name or by absolute source, so forgetting `x.md` no longer deletes a receipt that names
+  `notes/x.md`, and a card erased by its chunk while another root still serves its name keeps the
+  namesake's receipts. The prune takes the fact ledger's erasure lock with the indexer's own
+  environment. `recall forget --help` and the `recall_forget` description say that a memo pruned
+  from disk counts as surviving.
 
 * **Applying a fact on a generation store no longer refuses every evidence card.**
   `GenerationStore.generation_id` returned `"legacy"`, so `recall_apply_fact` built its controller
@@ -1163,7 +1183,8 @@ list as an ordered upgrade procedure.
   `valid_until` runs to the end of its day only for a bare date. The strict response decoder keeps
   each item's authority and verdict, raises `EvidenceValidationError` for a malformed `trust_state`
   or date, and refuses a citation that names no item of the trusted evidence. An authored file
-  entity no longer replaces the document's own file identity.
+  entity no longer replaces the document's own file identity. A graph step that fails after
+  expansion, in the calibration read, the margin read or context assembly, also keeps the seeds.
 
 * **A rescued parent is scored as a chunk.** Atomic rescue passed the 24 word view's cosine to the
   trust layer, whose threshold was fitted on chunk cosines, so a rescue could jump the top five or
@@ -1177,6 +1198,13 @@ list as an ordered upgrade procedure.
   the staged artifact before publishing it, and gives the published directory the umask's mode
   without ever setting the process umask; an unreadable `.npz` member is refused. The expectation
   cache is keyed on the receipt's hash, so a receipt rewritten in place is read again.
+
+* **Tied keyword scores rank the same wherever a corpus was indexed.** The keyword leg broke
+  `ts_rank` ties by chunk id, which hashes the absolute path (and, on a generation store, the
+  pipeline fingerprint), so the same corpus indexed from another directory could keep different tied
+  rows under the limit and fuse to a different ranking. Ties now order by the root-relative file,
+  then the chunk's position, on the legacy and the generation store. Rankings with tied keyword
+  scores can change once.
 
 * **Atomic rescue stays out of scoped searches.** Document, structural and successor expansion
   re-searches re-ran the selection per source, could insert another source's parent, and raised
@@ -1337,17 +1365,16 @@ list as an ordered upgrade procedure.
   `pillow>=13`; `documents` extra `pdfplumber>=0.11.9`; `langchain` extra `langchain-core>=0.3.85`;
   `agent` extra `claude-agent-sdk>=0.2.121`; `sparse` and `rerank` extras `transformers>=5.10` and
   `torch>=2.13`, and `rerank` also `sentence-transformers>=5.6`. The `desktop` extra installs
-  `PySide6-Essentials` instead of the `PySide6` metapackage, which also pulled in Qt add-on
-  modules the app never imports. The `openai`,
-  `extract` and `bench` extras now require `openai>=1.58`, the first release that accepts the
-  `reasoning_effort` argument RE-call passes, and the `desktop` extra declares the `onnxruntime`
-  and `tokenizers` its self-test imports. The `fastembed` and `desktop` extras require
-  `fastembed>=0.9.1`, the first release that allows Pillow 13, and declare `pillow>=13`. An
-  environment holding an older version of one of these must upgrade it to install 0.15.0. The
-  `mcp`, `dev` and `desktop` extras now accept any `mcp` 2.2.x patch release (`~=2.2.0`) instead
-  of exactly 2.2.0, so an upstream security patch can be installed without waiting for a RE-call
-  release. `COMMERCIAL_LICENSE.md` now states that third-party components keep their own licenses
-  under a commercial license, including the LGPL-3.0 terms of psycopg and PySide6.
+  `PySide6-Essentials` instead of the `PySide6` metapackage, which also pulled in Qt add-on modules
+  the app never imports. The `openai` and `extract` extras now require `openai>=1.58`, the first
+  release that accepts the `reasoning_effort` argument RE-call passes, and the `desktop` extra
+  declares the `onnxruntime` and `tokenizers` its self-test imports. The `fastembed` and `desktop`
+  extras require `fastembed>=0.9.1`, the first release that allows Pillow 13, and declare
+  `pillow>=13`. An environment holding an older version of one of these must upgrade it to install
+  0.15.0. The `mcp`, `dev` and `desktop` extras now accept any `mcp` 2.2.x patch release (`~=2.2.0`)
+  instead of exactly 2.2.0, so an upstream security patch can be installed without waiting for a
+  RE-call release. `COMMERCIAL_LICENSE.md` now states that third-party components keep their own
+  licenses under a commercial license, including the LGPL-3.0 terms of psycopg and PySide6.
 
 * **On Windows, no RE-call command runs an executable from the
   current directory.** Every console script (`recall`, `recall-mcp`, the desktop entry points and
@@ -1495,12 +1522,11 @@ list as an ordered upgrade procedure.
   (CVE-2026-112940, CVE-2026-112913, CVE-2026-112907; GHSA-xmj3-9gf7-h52w). Both reach RE-call only
   transitively.
 
-* **An environment that keeps fastembed 0.9.0 or earlier keeps a Pillow with open advisories.**
-  The advisories published against Pillow 12.3.0 from 2026-10-20 are fixed in 13.0.0, and the lock
-  pins 13.0.0 with fastembed 0.9.1, the first fastembed that allows it. fastembed 0.9.0 and earlier
-  require `pillow<13`, and the `fastembed` extra still admits them (`fastembed>=0.3,<1`). A fresh
-  `pip install "recall-rag[fastembed]"` resolves fastembed 0.9.1 and Pillow 13.0.0; in an existing
-  environment run `python -m pip install --upgrade fastembed pillow`.
+* **Pillow 12.3.0 and earlier carry open advisories, so the extras that install Pillow now require
+  13.0.0 or later.** The advisories published against Pillow 12.3.0 from 2026-10-20 are fixed in
+  13.0.0. fastembed 0.9.0 and earlier require `pillow<13`, so the `fastembed` and `desktop` extras
+  now require `fastembed>=0.9.1` with `pillow>=13`, and the `voyage` extra requires `pillow>=13`. In
+  an existing environment run `python -m pip install --upgrade fastembed pillow`.
 
 ## [0.14.0] (2026-09-17)
 
