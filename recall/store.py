@@ -1093,6 +1093,20 @@ class PgVectorStore(SourceMutationMixin, SupersessionMixin, ReceiptsAuditMixin):
             found.setdefault(str(source), []).append(str(chunk_id))
         return found
 
+    def present_chunk_ids(self, chunk_ids: Sequence[str]) -> set[str]:
+        """Which of these chunk ids exist in this tenant, ids only, in one read: what a forget
+        asks after deletion, where `chunk_by_id` per id read every text (CCA PERF-002 of run
+        20261106T121445Z)."""
+        if not chunk_ids:
+            return set()
+        rows = self._with_retry(
+            lambda conn: conn.execute(
+                f"SELECT id FROM {self._table} WHERE tenant_id = %s AND id = ANY(%s)",
+                (self._tenant, list(chunk_ids)),
+            ).fetchall()
+        )
+        return {str(row[0]) for row in rows}
+
     def compiled_chunks_for_source_newest_first(
         self,
         source: str,

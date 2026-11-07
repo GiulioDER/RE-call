@@ -1213,6 +1213,16 @@ class LiteStore:
         cid, source, text, metadata = rows[0]
         return Chunk(id=cid, source=source, text=text, metadata=json.loads(metadata) or {})
 
+    def present_chunk_ids(self, chunk_ids: Sequence[str]) -> set[str]:
+        """Which of these chunk ids exist, ids only, in one read, as
+        `PgVectorStore.present_chunk_ids` (CCA PERF-002 of run 20261106T121445Z)."""
+        if not chunk_ids:
+            return set()
+        rows = self._metadata_values(
+            "SELECT id FROM chunks WHERE id IN (SELECT value FROM json_each(?))", (json.dumps(list(chunk_ids)),)
+        )
+        return {str(row[0]) for row in rows}
+
     # ------------------------------------------------------------------ idempotency receipts
 
     def get_operation_receipt(

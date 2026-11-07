@@ -248,9 +248,14 @@ def prepare_fact_erasure(
     # generation store reads chunks per generation only, so there it stays the name rule: a
     # retraction may fail to happen, never remove a fact that still has evidence.
     targets = chunk_targets(store, shadow_store)
+    # Ids only, one read per target, under the erasure lock (CCA PERF-001 of run 20261106T121445Z).
+    ids_of: dict[str, set[str]] = {}
+    for target in targets:
+        for source, ids in target.chunk_ids_for_sources(sorted(gone_sources)).items():
+            ids_of.setdefault(source, set()).update(ids)
     erased_chunks: set[str] = set()
     for source in sorted(gone_sources):
-        ids = sorted({chunk.id for target in targets for chunk in target.chunks_for_source(source)})
+        ids = sorted(ids_of.get(source, ()))
         erased_chunks.update(ids)
         # Recorded before the rows vanish, like the aliases, so a forget re-run after a failed
         # retraction or redaction, which deletes nothing, still knows them (CCA BUG-001). Ids only.
@@ -297,15 +302,13 @@ def prepare_fact_erasure(
         latest = latest_of(sorted(forgotten))
         forgotten = {s for s in forgotten if s not in latest or latest[s].kind != PRUNE_SOURCE_CHUNKS}
     forgotten |= set(gone_sources) | set(decided)
-    chunk_cache: dict[str, bool] = {}
+    # Look again after deletion, as `remaining` does: a chunk indexed again is evidence again. One
+    # ids-only read per target, on the first card asked about (CCA CODE-001 and PERF-002 of run
+    # 20261106T121445Z).
+    present = _settled(lambda: {cid for target in targets for cid in target.present_chunk_ids(sorted(erased_chunks))})
 
     def chunk_gone(chunk_id: str) -> bool:
-        # Look again after deletion, as `remaining` does: a chunk indexed again is evidence again.
-        if chunk_id not in erased_chunks:
-            return False
-        if chunk_id not in chunk_cache:
-            chunk_cache[chunk_id] = all(target.chunk_by_id(chunk_id) is None for target in targets)
-        return chunk_cache[chunk_id]
+        return chunk_id in erased_chunks and chunk_id not in present()
 
     def touched(card: EvidenceCard) -> bool:
         # A card whose own chunk this deletion erases is touched by it even when its name, stamped
@@ -352,7 +355,7 @@ def prepare_fact_erasure(
             kept_chunk=lambda chunk_id: chunk_id in pruned,
             name_gone=gone_name,
             # Only a source nothing serves now: a memo indexed again keeps its receipts.
-            sources=sorted(s for s in forgotten if not any(target.chunks_for_source(s) for target in targets)),
+            sources=sorted(forgotten.difference(*(target.chunk_ids_for_sources(sorted(forgotten)) for target in targets))),
         )
         return int(report.facts_redacted)
 
