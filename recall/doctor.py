@@ -1087,11 +1087,18 @@ def _lite_checks(dsn: str, *, tenant: str, table: str = DEFAULT_TABLE) -> Iterat
         # Both names come from the store file, so they are filtered before a terminal prints them.
         from recall.trust import terminal_safe
 
+        # Same name, other or unusable width: naming the model twice would contradict itself.
+        detail = (
+            f"fitted for the model {terminal_safe(found.stale_for_model)} with a width that does not "
+            "match the store's, so strict search refuses it"
+            if found.stale_for_model == found.embedder_model
+            else f"fitted for the model {terminal_safe(found.stale_for_model)}, but the store is bound to "
+            f"{terminal_safe(found.embedder_model or '')}, so strict search refuses it"
+        )
         yield Check(
             "calibration",
             "warn",
-            f"fitted for the model {terminal_safe(found.stale_for_model)}, but the store is bound to "
-            f"{terminal_safe(found.embedder_model or '')}, so strict search refuses it",
+            detail,
             "recall index <your memory folder>   (refits it with the store's model)",
         )
     elif found.calibration is CalibrationStatus.STALE:

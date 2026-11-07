@@ -148,3 +148,18 @@ def test_the_doctor_reads_the_binding_as_search_does(tmp_path: Path) -> None:
     assert inspect_lite_file(db).calibration is CalibrationStatus.CERTIFIED, "the report and search disagree"
     _set_meta(db, "embedder_dimension", f"--{DIM}")
     assert inspect_lite_file(db).calibration is CalibrationStatus.STALE
+
+
+def test_a_fit_for_the_bound_model_with_another_width_does_not_name_it_twice(tmp_path: Path) -> None:
+    """CCA DOC-001 (run 20261107T122657Z). Invariant: when the stale fit names the store's own
+    model and only its width differs, the doctor says the width does not match. Failure caught: it
+    printed "fitted for the model m, but the store is bound to m", which contradicts itself.
+
+    Red proof, 2026-11-07 on the remote test host: with the same-model branch of the detail in
+    `recall.doctor._lite_checks` removed (always the two-model wording), this failed at the
+    assertion; restored, it passed."""
+    db = _certified_store(tmp_path)
+    _set_meta(db, "embedder_dimension", str(DIM + 1))
+    status, detail = _checks("sqlite:///" + db.as_posix())["calibration"]
+    assert status == "warn", detail
+    assert "does not match the store's" in detail and "bound to test-content-words" not in detail, detail

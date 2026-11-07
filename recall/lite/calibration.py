@@ -298,7 +298,10 @@ def carry_forward(
         return refuse("a carried calibration is not carried again; it is refitted")
     if not fit.certified:
         return refuse("the last fit did not certify, so it has no threshold to carry")
-    fit_identity = _identity(fit.embedder_identity.get("model"), fit.embedder_identity.get("dimension", -1))
+    width = _fit_width(fit)
+    if width is None:
+        return refuse("the fit records no usable embedding width, so it cannot be shown to be any model's")
+    fit_identity = (str(fit.embedder_identity.get("model")), width)
     if embedder is not None and _identity(embedder.name, embedder.dim) != fit_identity:
         return refuse("the embedder is not the one the fit used, and a threshold binds to one model")
     stored = store.calibration_evidence(fit.calibration_id)
@@ -402,6 +405,17 @@ def carry_forward(
     )
 
 
+def _fit_width(fit: CalibrationArtifactV2) -> int | None:
+    """The width `fit` records, or None when it records none or one that is not a positive
+    integer. The one reading of a fit's width, for `fitted_for_another_model` and `carry_forward`
+    (CCA CODE-001): such a fit cannot be shown to be any model's, so neither may trust it."""
+    try:
+        width = int(fit.embedder_identity.get("dimension"))
+    except (TypeError, ValueError):
+        return None
+    return width if width >= 1 else None
+
+
 def bound_from_meta(meta: Mapping[str, Any]) -> tuple[str, int] | None:
     """The `(model, dimension)` a store's meta binds it to, or None before a model is recorded.
 
@@ -433,11 +447,8 @@ def fitted_for_another_model(bound: tuple[str, int] | None, fit: CalibrationArti
     width reads as nor raises (CCA CODE-002, BUG-003)."""
     if bound is None:
         return False
-    try:
-        width = int(cast("Any", fit.embedder_identity.get("dimension")))
-    except (TypeError, ValueError):
-        return True
-    return width < 1 or bound != (str(fit.embedder_identity.get("model")), width)
+    width = _fit_width(fit)
+    return width is None or bound != (str(fit.embedder_identity.get("model")), width)
 
 
 def _fitted_for_another_model(store: LiteStore, fit: CalibrationArtifactV2) -> bool:
