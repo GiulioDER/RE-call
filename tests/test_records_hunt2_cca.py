@@ -14,14 +14,18 @@ Invariants and the failure each one catches:
   the indexer stores no chunk for it and so no store holds its record.
 - A6 (CCA DEPLOY-101) the cache tag follows the reader modules' content, not their modification
   time: the same code rewritten with a new mtime keeps the tag, changed code changes it.
+- A8 (architect residual of BUG-002) ambiguity wins over a successor another claim names by
+  path, as the trust gate checks `unresolved` first.
 - A7 (CCA CODE-005) a memo with no root-relative `file` is keyed by its source, as the store keys
   a chunk with none, not by its basename, so two such memos in different folders stay two.
 - A control (CCA CODE-001) pins `RECORD_KINDS` to the schema's kinds.
 
 Red proof, recorded 2026-11-07, each test failing in its named assertion, then green on the fix:
-- A1, A2, A4: `reported_successor` mutated to return None for an unresolved key: "an ambiguously
+- A1 to A4 and A8: the `unresolved` check in `reported_successor` removed: "an ambiguously
   retracted lesson read as current (memo reader)" / "(store reader)" / "the brief did not flag".
 - A3: the same mutation: "an ambiguously retracted lesson read as current before valid_from".
+- A8: also red before the reorder (successor checked first): "a named successor hid an
+  ambiguous supersession".
 - A5: the empty-body check in `_read` removed: "a memo with no body was admitted".
 - A6: `_cache_tag` mutated back to `st_size:st_mtime_ns`: "rewriting identical code changed the tag".
 - A7: `_file` mutated back to `Path(memo.source).name`: "two memos with one basename shared a key".
@@ -169,3 +173,17 @@ def test_record_kinds_match_the_schema() -> None:
         kind = branch["properties"]["kind"]
         kinds.update([kind["const"]] if "const" in kind else kind["enum"])
     assert RECORD_KINDS - {"code"} == kinds
+
+
+def test_ambiguity_wins_over_a_named_successor(tmp_path: Path) -> None:
+    """A8 (architect residual of BUG-002): a record that one claim names by path and another
+    names ambiguously reads `<ambiguous>`, not the path claimant, as the trust gate checks
+    `unresolved` before any successor (`recall/trust_gate.py`)."""
+    memos = _ambiguous_memos(tmp_path / "memos")
+    raw = (memos / RETRACTION).read_bytes()
+    stem = b"supersedes: RE-call__lesson__6a3ae35062b9\n"
+    assert stem in raw
+    (memos / "r2.md").write_bytes(raw.replace(stem, b"supersedes: a/RE-call__lesson__6a3ae35062b9\n"))
+    entries = {Path(e["source"]).parent.name: e for e in _lesson_entries(memos, AFTER)}
+    assert entries["a"]["superseded_by"] == AMBIGUOUS, "a named successor hid an ambiguous supersession"
+    assert entries["b"]["superseded_by"] == AMBIGUOUS

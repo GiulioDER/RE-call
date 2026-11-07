@@ -410,16 +410,19 @@ def reported_successor(
 ) -> str | None:
     """What a records reader reports in `superseded_by` for the document at `file`/`source`.
 
-    The successor that hides it at `now`, or `AMBIGUOUS` when a `supersedes:` reference names its
-    file among several (the graph's `unresolved`), or None when it is current. With `allowed` (a
+    `AMBIGUOUS` when a `supersedes:` reference names its file among several (the graph's
+    `unresolved`), whatever else claims it, as the trust gate checks `unresolved` before any
+    successor; otherwise the successor that hides it at `now`, or None when it is current. With `allowed` (a
     source policy's decision on a root-relative file), a successor the caller may not read, or
     whose key cannot be placed (`recall.supersession.place_graph_key`), is `WITHHELD`. The one rule
     both `lookup_records` and `recall.records_files.match_memo_records` report by.
     """
     key = graph.key(file, source)
+    if key in graph.unresolved:
+        return AMBIGUOUS
     successor = graph.successor(key, now=now)
     if successor is None:
-        return AMBIGUOUS if key in graph.unresolved else None
+        return None
     if allowed is None:
         return successor
     placed = place_graph_key(successor, file_of_source or {}, graph.collided)
