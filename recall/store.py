@@ -246,7 +246,7 @@ SPARSE_DIM = 30522
 SPARSE_EF_SEARCH_MULTIPLIER = 10
 
 
-def _lexical_tie_order(alias: str) -> str:
+def _lexical_tie_order(alias: str, source_col: str = "source", id_col: str = "id") -> str:
     """ORDER BY terms that break lexical rank ties by where a chunk sits INSIDE its corpus.
 
     `ts_rank` ties for every short chunk matching the same lexemes once. The chunk id cannot break
@@ -254,12 +254,13 @@ def _lexical_tie_order(alias: str) -> str:
     directory (every benchmark run indexes from a fresh temp dir) ranked its ties differently and
     LoCoMo top-20 lists stopped repeating between identical runs. The root-relative `file` and the
     chunk ordinal are the same wherever the corpus lives; the id stays last for rows without them.
+    `GenerationStore` passes its own column names: its chunk id also hashes the `source_uri`.
     """
     return (
-        f"COALESCE({alias}metadata->>'file', {alias}source) COLLATE \"C\", "
+        f"COALESCE({alias}metadata->>'file', {alias}{source_col}) COLLATE \"C\", "
         f"CASE WHEN ({alias}metadata->>'ord') ~ '^[0-9]+$' "
         f"THEN ({alias}metadata->>'ord')::bigint ELSE 0 END, "
-        f"{alias}id"
+        f"{alias}{id_col}"
     )
 
 
