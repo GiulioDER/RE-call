@@ -4,7 +4,7 @@
 corpus, using `OnlineContrastiveLoss` over `(query, chunk)` pairs, and measures the lift on a
 **held-out** query split (so it's generalization, not memorization).
 
-    pip install -e ".[finetune]"
+    pip install -e ".[rerank]"
     python benchmarks/finetune/train.py --epochs 8
 
 Output: base vs fine-tuned test MRR / nDCG@10 and the delta. The fine-tuned model is saved to

@@ -38,7 +38,7 @@ shipped services use: `mcp` (the MCP server), `pool`, `voyage`, `openai`, `faste
 default local embedder), `documents` (file extraction) and `atomic`. The last column names every one of those that pulls the package in;
 `core` means the base install.
 
-Research and benchmarking extras (`sparse`, `rerank`, `finetune`, `eval`, `agent-ab`,
+Research and benchmarking extras (`sparse`, `rerank`, `eval`, `agent-ab`,
 `agent`, `aws`, `s3`, `langchain`, `dev`) are not listed. Their pinned closure is in `uv.lock`, and
 the model weights some of them download are covered in [docs/MODEL_LICENSES.md](docs/MODEL_LICENSES.md).
 

@@ -180,18 +180,14 @@ aws = ["boto3>=1.35", "redis[hiredis]>=5,<9"]
 # 2026-11-07). Older torch also lacks the torch>=2.6 that Transformers requires to load a
 # non-safetensors checkpoint.
 sparse = ["transformers>=5.10,<6", "torch>=2.13,<3"]
-# The rerank and finetune sentence-transformers floors used to be kept in step. Since 2026-11-07
-# rerank requires 5.6 (advisory fix) while finetune stays at 3.0, pending the owner's decision on
-# whether the finetune extra is needed at all.
+# `rerank` also serves the fine-tuning study under benchmarks/finetune/, since the `finetune` extra
+# was removed on 2026-11-07 (owner decision): it declared only sentence-transformers and numpy, both
+# already here or in core.
 rerank = ["sentence-transformers>=5.6", "transformers>=5.10,<6", "torch>=2.13,<3"]
 eval = ["matplotlib>=3.7", "numpy"]
 # Model backed truth extraction. Runs on the ingest path only, never the query path, and is
 # OFF unless RECALL_TRUTH_EXTRACTION is set. Shares the `bench` extra's openai floor.
 extract = ["openai>=1.58"]
-# Keep the benchmark on the Sentence Transformers legacy trainer. `accelerate` is deliberately
-# absent: CVE-2026-69112 affects its checkpoint loading helpers, and there is no fixed upstream
-# release yet. The benchmark does not need that optional package when it uses `old_fit`.
-finetune = ["sentence-transformers>=3.0", "numpy"]
 # The adapters do not install their host frameworks. LlamaIndex currently pulls NLTK directly,
 # and NLTK's latest release is affected by PYSEC-2026-3740 / GHSA-8mgp-746c-j5xp with no patched
 # release. Keep the compatibility marker so existing `.[llamaindex]` commands remain valid, but
@@ -547,7 +543,7 @@ allow_indirect_imports = true
 [tool.deptry]
 extend_exclude = ["benchmarks", "docs", "results", "scripts", "examples"]
 known_first_party = ["recall", "recall_mcp", "recall_agent", "recall_hooks", "recall_aml"]
-optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "eval", "finetune"]
+optional_dependencies_dev_groups = ["dev", "agent-ab", "analysis", "eval"]
 # These are deliberate boundaries rather than missing declarations. The GUI and LlamaIndex
 # adapters are optional runtime surfaces, evaluation plotting is intentionally development only,
 # and promotion imports application supplied modules at runtime. The lean CI job intentionally

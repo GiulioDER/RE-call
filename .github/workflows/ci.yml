@@ -93,8 +93,6 @@ jobs:
             extra: "[eval]"
           - profile: extract
             extra: "[extract]"
-          - profile: finetune
-            extra: "[finetune]"
           - profile: fastembed
             extra: "[fastembed]"
           - profile: mcp
@@ -1175,7 +1173,7 @@ jobs:
       # vulnerability fails CI.
       - name: Audit dependencies (pip-audit)
         # CVE-2026-69112 currently has no patched PyPI release or supported package/fixed-version
-        # metadata. `accelerate` is only in the optional finetune extra and no RE-call package
+        # metadata. `accelerate` is declared by no RE-call extra and no RE-call package
         # imports it. Keep the exception narrow and temporary, while every other resolved package
         # remains a hard gate. Remove it as soon as the upstream fixed release is published.
         #

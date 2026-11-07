@@ -14,7 +14,7 @@ pip install -e ".[dev]"
 ```
 
 `.[dev]` installs the engine plus `pytest`, `pytest-timeout`, `ruff`, and `mcp` — enough to run the
-suite and the linter. Optional extras (`fastembed`, `voyage`, `rerank`, `eval`, `finetune`, `pool`)
+suite and the linter. Optional extras (`fastembed`, `voyage`, `rerank`, `eval`, `pool`)
 layer in as needed; see `pyproject.toml` for what each unlocks.
 
 ## Run the test suite — needs a real pgvector database

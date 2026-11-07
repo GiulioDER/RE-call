@@ -119,11 +119,11 @@ effect. Model weights are downloaded or provisioned by the user, never vendored 
 walking in through an unbounded floor. The current range is a compatibility claim for the APIs used
 here; raising the cap should be treated as a port and tested separately.
 
-Reranking and fine-tuning share the same `sentence-transformers` floor. Bump them
-together. The `finetune` extra intentionally does not install `accelerate`: CVE-2026-69112 affects
-its checkpoint loading helpers, and upstream has not published a fixed release. The reproducible
-benchmark uses Sentence Transformers' `old_fit` path, so the vulnerable optional package is not
-part of a RE-call install or its dependency audit. Do not re-add `accelerate` until a fixed upstream
+There is no `finetune` extra since 2026-11-07: the fine-tuning study under `benchmarks/finetune/`
+installs `rerank`, which carries the same `sentence-transformers`. Neither installs `accelerate`:
+CVE-2026-69112 affects its checkpoint loading helpers, and upstream has not published a fixed
+release. The reproducible benchmark uses Sentence Transformers' `old_fit` path, so the vulnerable
+optional package is not part of a RE-call install or its dependency audit. Do not re-add `accelerate` until a fixed upstream
 release is available and reviewed against the advisory.
 
 ## Framework Adapters
