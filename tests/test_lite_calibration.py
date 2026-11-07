@@ -326,3 +326,27 @@ def test_a_fit_whose_width_is_not_a_number_reads_as_another_models() -> None:
         except (TypeError, ValueError) as exc:
             pytest.fail(f"raised {type(exc).__name__} for width {width!r}")
         assert result is True, f"a fit with width {width!r} was taken for the bound model's"
+
+
+def test_carry_forward_refuses_a_fit_with_no_usable_width_instead_of_raising(tmp_path: Path) -> None:
+    """CCA CODE-001 (run 20261107T122657Z). Invariant: `carry_forward`, which `status_report` and
+    `ensure_calibrated` reach without the `fitted_for_another_model` guard, reads a fit's width by
+    the same rule and refuses a fit whose width is not a positive integer. Failure caught: it read
+    the width through `_identity`, which raised ValueError on a non-numeric one.
+
+    Red proof, 2026-11-07 on the remote test host: with `carry_forward` restored to
+    `fit_identity = _identity(fit.embedder_identity.get("model"), fit.embedder_identity.get("dimension", -1))`,
+    this failed at the `pytest.fail` below ("raised ValueError"); restored, it passed."""
+    import dataclasses
+
+    from recall.lite.calibration import artifact_from_json, carry_forward
+
+    store = _store(tmp_path, 48)
+    assert auto_calibrate(store, ContentWordEmbedder()).status is CalibrationStatus.CERTIFIED
+    fit = artifact_from_json(store.latest_calibration_json() or "")
+    bad = dataclasses.replace(fit, embedder_identity={"model": "test-content-words", "dimension": "not-a-width"})
+    try:
+        carried = carry_forward(store, bad)
+    except (TypeError, ValueError) as exc:
+        pytest.fail(f"carry_forward raised {type(exc).__name__} on a fit with no usable width")
+    assert carried.artifact is None and "usable embedding width" in carried.reason, carried.reason
