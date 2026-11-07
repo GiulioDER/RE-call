@@ -579,7 +579,9 @@ def reasoning_model_choices(base_url: str) -> list[Choice]:
     """Models offered for a cloud provider, default first, always ending in manual entry.
 
     The OpenRouter ids were verified against its live catalogue on 2026-08-14, which is how a
-    sixth candidate that no longer exists was caught before shipping. They will still go stale:
+    sixth candidate that no longer exists was caught before shipping. The default moved from
+    `openai/gpt-4o-mini` to `deepseek/deepseek-v4.1-flash` on 2026-11-06, read from the same
+    catalogue that day. They will still go stale:
     this is a static list inside a released artifact, and the provider's roster is not ours. The
     manual entry is the mitigation and must stay last on every provider.
 
@@ -607,8 +609,8 @@ def reasoning_model_choices(base_url: str) -> list[Choice]:
         ]
     return [
         Choice(
-            label="gpt-4o mini",
-            value="openai/gpt-4o-mini",
+            label="deepseek v4.1 flash",
+            value="deepseek/deepseek-v4.1-flash",
             description="Small, fast and inexpensive, the default",
         ),
         Choice(

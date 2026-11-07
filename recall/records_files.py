@@ -99,6 +99,10 @@ _STALE_TEMP_SECONDS = 60.0
 _EXCLUDED_DIRS = frozenset(
     {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "site-packages", "__pycache__"}
 )
+#: The names and suffixes the indexer's link-target rule refuses (`recall.index._safe_link_target`),
+#: restated for the same reason and pinned the same way.
+_EXCLUDED_NAMES = frozenset({".env", ".env.local", "tokens.json", "credentials.json", "secrets.json", "queries.json"})
+_EXCLUDED_SUFFIXES = frozenset({".json", ".toml", ".yaml", ".yml"})
 
 _Entries = dict[str, tuple[tuple[int, int], MemoRecord | str | None]]
 
@@ -155,33 +159,53 @@ def _delta_path(path: Path) -> Path:
     return path.with_name(path.name + ".delta")
 
 
-def _read_cache_file(path: Path, tag: str) -> _Entries:
-    """The persisted entries: the base file, then the delta journal's lines in order (later wins).
+def _read_cache_file(path: Path, tag: str) -> tuple[_Entries, int]:
+    """The persisted entries: the base file, then the delta journal's lines in order (later wins),
+    and how many persisted rows were dead weight: a base or journal line from another tag, one
+    that does not parse, or one a later row for the same memo replaced.
 
-    A file or line from another tag, or one that does not parse, is skipped: an unreadable cache
-    is a cold cache, never an error.
+    A dead row is skipped: an unreadable cache is a cold cache, never an error. Every row the
+    writers here emit begins with its tag, so a row from another tag is skipped without decoding
+    it; decoding them all cost about a second of a hook's budget (CCA PERF-001, measured
+    2026-11-06 on a journal of 9,230 rows, two thirds of them under dead tags).
     """
+    prefix = '{"tag":' + _dumps(tag) + ","
     entries: _Entries = {}
+    dead = 0
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(document, dict) and document.get("tag") == tag:
+        text = path.read_text(encoding="utf-8")
+        if text.startswith(prefix):
+            document = json.loads(text)
             for key, (stamp, entry) in document["entries"].items():
                 entries[str(key)] = ((int(stamp[0]), int(stamp[1])), _from_json(entry))
+        else:
+            dead += 1
+    except FileNotFoundError:
+        pass
     except Exception:  # BROAD-CATCH: fail-open  (an unreadable cache is a cold cache, never an error)
         entries = {}
+        dead += 1
     try:
         lines = _delta_path(path).read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError):
-        return entries
+        return entries, dead
     for line in lines:
+        if not line:
+            continue
+        if not line.startswith(prefix):
+            dead += 1
+            continue
         try:
             row = json.loads(line)
-            if isinstance(row, dict) and row.get("tag") == tag:
-                stamp = row["stamp"]
-                entries[str(row["key"])] = ((int(stamp[0]), int(stamp[1])), _from_json(row["entry"]))
-        except Exception:  # BROAD-CATCH: fail-open  (a torn or foreign line is skipped)
+            stamp, key = row["stamp"], str(row["key"])
+            entry = ((int(stamp[0]), int(stamp[1])), _from_json(row["entry"]))
+        except Exception:  # BROAD-CATCH: fail-open  (a torn line is skipped)
+            dead += 1
             continue
-    return entries
+        if key in entries:
+            dead += 1  # a later row replaces an earlier one: a memo edited, or two cold launches
+        entries[key] = entry
+    return entries, dead
 
 
 def _append_cache_delta(path: Path, tag: str, entries: _Entries) -> None:
@@ -205,8 +229,10 @@ def _append_cache_delta(path: Path, tag: str, entries: _Entries) -> None:
 def _write_cache_file(path: Path, tag: str, entries: _Entries) -> None:
     """Replace the persisted cache atomically and drop the delta journal it now holds. Never raises.
 
-    Only a load without a deadline calls this (the warm command, a library caller): the write
-    grows with the cache, so under a hook's deadline it could be killed before its replace.
+    A load without a deadline calls this (the warm command, a library caller), and a load under a
+    deadline only to drop dead rows, after appending its own parses and only with as much time
+    left as the load took: the write grows with the cache, and a hook killed before the replace
+    leaves only a temporary file, which the next write removes.
     """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,19 +260,46 @@ def _write_cache_file(path: Path, tag: str, entries: _Entries) -> None:
         pass
 
 
+def _is_junction(entry: os.DirEntry[str]) -> bool:
+    """Whether `entry` is a Windows directory junction, which `is_symlink()` does not report."""
+    probe = getattr(entry, "is_junction", None)  # Python 3.12+
+    if probe is not None:
+        return bool(probe())
+    mount_point = getattr(stat_module, "IO_REPARSE_TAG_MOUNT_POINT", None)
+    return mount_point is not None and getattr(entry.stat(follow_symlinks=False), "st_reparse_tag", 0) == mount_point
+
+
+def _safe_target(resolved_root: Path, target: Path) -> bool:
+    """`recall.index._safe_link_target`'s rule for the file a link reads: no excluded directory
+    above it, and a name and suffix the default scan would read. Stricter in one place, stated:
+    the target must be markdown, where the indexer also reads a link to another document type."""
+    relative = target.relative_to(resolved_root)
+    if any(part in _EXCLUDED_DIRS for part in relative.parts[:-1]):
+        return False
+    return (
+        not target.name.startswith(".")
+        and target.name.casefold() not in _EXCLUDED_NAMES
+        and target.suffix.lower() not in _EXCLUDED_SUFFIXES
+        and target.suffix.lower() in _MEMO_SUFFIXES
+    )
+
+
 def _memo_files(root: Path) -> list[tuple[Path, os.stat_result | OSError]]:
     """The memo files the indexer's default walk would read under `root`, each with its stat.
 
-    The indexer's rules (`recall.index._default_walk`, `_safe_default_file`, `_confined_with_stats`):
-    no hidden directory or file, none of `_EXCLUDED_DIRS`, no directory symlink followed, and a
-    file symlink kept only when it resolves inside `root`. Walked with `os.scandir`, whose entries
-    carry their stat on Windows, so each memo costs one directory listing rather than two stats.
+    The indexer's rules (`recall.index._default_walk`, `_safe_default_file`, `_confined_with_stats`,
+    `_safe_link_target`): no hidden directory or file, none of `_EXCLUDED_DIRS`, no directory
+    symlink followed, and a file reached through a link (a file symlink, or any file under a
+    Windows junction, which the walk enters like the indexer's) kept only when it resolves inside
+    `root` and the file it resolves to passes `_safe_target`. Walked with `os.scandir`, whose
+    entries carry their stat on Windows, so each memo costs one directory listing rather than two
+    stats; only a linked file is resolved.
     """
     resolved_root = root.resolve()
     found: list[tuple[Path, os.stat_result | OSError]] = []
-    pending = [root]
+    pending = [(root, False)]
     while pending:
-        directory = pending.pop()
+        directory, linked = pending.pop()
         try:
             with os.scandir(directory) as listing:
                 entries = list(listing)
@@ -259,13 +312,13 @@ def _memo_files(root: Path) -> list[tuple[Path, os.stat_result | OSError]]:
             try:
                 if entry.is_dir(follow_symlinks=False):
                     if entry.name not in _EXCLUDED_DIRS:
-                        pending.append(path)
+                        pending.append((path, linked or _is_junction(entry)))
                     continue
                 if path.suffix.lower() not in _MEMO_SUFFIXES:
                     continue
-                if entry.is_symlink():
+                if linked or entry.is_symlink():
                     target = within(resolved_root, path)
-                    if target is None:
+                    if target is None or not _safe_target(resolved_root, target):
                         continue
                     status = target.stat()
                 else:
@@ -283,10 +336,14 @@ def _text(value: object) -> str | None:
 
 
 def _read(path: Path, file: str) -> MemoRecord | str | None:
-    """`path`'s admitted record, the reason it was refused, or None when it declares none."""
+    """`path`'s admitted record, the reason it was refused, or None when it declares none.
+
+    An `OSError` is raised, not returned: a sharing violation or a scanner's lock passes, and a
+    refusal returned here is cached under the file's unchanged stamp until the file changes.
+    """
     try:
         text = path.read_text(encoding="utf-8-sig").replace("\x00", "")
-    except (OSError, UnicodeDecodeError) as exc:
+    except UnicodeDecodeError as exc:
         return f"unreadable: {type(exc).__name__}"
     if RECORD_KEY not in text:
         return None
@@ -333,14 +390,18 @@ def load_memo_records(
 
     `deadline` (a `time.monotonic()` value) bounds the parsing: past it, what was parsed so far is
     appended to the cache's delta journal and `TimeoutError` is raised, so a cold cache warms over
-    a few calls instead of never. Under a deadline the cache is only ever appended to; a load with
-    no deadline rewrites it whole, folding the journal in and dropping removed memos.
+    a few calls instead of never. Under a deadline the cache is appended to, and then, when the
+    load read the whole directory with as much time left as it took, over a cache holding dead
+    rows, rewritten;
+    a load with no deadline rewrites it whole, folding the journal in and dropping removed memos.
+    A memo that raised an `OSError` on read is skipped and not cached, so the next load retries it.
     """
+    started = time.monotonic()
     root = Path(directory).resolve()
     if not root.is_dir():
         raise NotADirectoryError(f"memo directory {root} is not a directory")
     tag = _cache_tag() if cache_file is not None else ""
-    persisted = _read_cache_file(cache_file, tag) if cache_file is not None else {}
+    persisted, dead = _read_cache_file(cache_file, tag) if cache_file is not None else ({}, 0)
     current: _Entries = {}
     fresh: _Entries = {}
     loaded = LoadedMemoRecords()
@@ -367,7 +428,12 @@ def load_memo_records(
                 raise TimeoutError(
                     f"read {index} of {len(files)} memos before the deadline; the cache keeps them"
                 )
-            parsed = _read(path, path.relative_to(root).as_posix())
+            try:
+                parsed = _read(path, path.relative_to(root).as_posix())
+            except OSError as exc:
+                # Not cached: the next load tries the file again (CCA STAKES-003).
+                loaded.skipped.append((key, f"unreadable: {type(exc).__name__}"))
+                continue
             fresh[key] = (stamp, parsed)
         _CACHE[key] = current[key] = (stamp, parsed)
         if isinstance(parsed, MemoRecord):
@@ -376,7 +442,15 @@ def load_memo_records(
             loaded.skipped.append((key, parsed))
     if cache_file is not None:
         if deadline is not None:
+            # Appended first, so a rewrite killed at the hook's exit loses none of this load's parses.
             _append_cache_delta(cache_file, tag, fresh)
+            now = time.monotonic()
+            if dead and deadline - now > now - started:
+                # A load that read the whole directory with as much time left as it took, over a
+                # cache holding dead rows (another tag's, or rows a later one replaced), rewrites
+                # it: only `warm` did, and nothing runs it, so every upgrade appended one more copy
+                # of the directory for every later launch to read (CCA PERF-001).
+                _write_cache_file(cache_file, tag, current)
         elif fresh or set(persisted) != set(current) or _delta_path(cache_file).exists():
             # Written with this directory's entries only, so a removed memo leaves the cache too.
             _write_cache_file(cache_file, tag, current)

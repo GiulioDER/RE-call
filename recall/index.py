@@ -1689,6 +1689,29 @@ class Indexer:
             )
         return len(chunks)
 
+    def _record_pruned_chunks(self, vanished: list[str]) -> None:
+        """Record, before the rows go, the chunk ids each vanished source loses.
+
+        A forget decides which facts it may retract for good; a memo merely pruned is a state, so
+        a card of its chunk survives a later forget of another memo, and that is told from a memo
+        forgotten earlier only by this positive record (owner decision 2026-11-06, CCA STAKES-001
+        of run 20261105T225204Z). Ids only, never text. A generation store keeps the name rule.
+        """
+        from recall.generation_store import GenerationStore
+
+        targets = [
+            target for target in (self._store, self._shadow.store if self._shadow is not None else None)
+            if target is not None and not isinstance(target, GenerationStore)
+            and callable(getattr(target, "chunks_for_source", None))
+        ]
+        append = getattr(self._store, "append_audit_event", None)
+        if not targets or not callable(append):
+            return
+        for source in sorted(vanished):
+            ids = sorted({chunk.id for target in targets for chunk in target.chunks_for_source(source)})
+            if ids:
+                append("prune_source_chunks", {"chunk_ids": ids}, source_uri=source)
+
     def _prune_vanished(self, root: Path, files: list[Path], known: dict[str, str]) -> int:
         """Delete rows for files that are gone from disk, scoped to `root`.
 
@@ -1778,10 +1801,20 @@ class Indexer:
         from recall.lite.assistant_memos import forget_memo_requests
 
         forget_memo_requests(vanished)
-        if self._shadow is not None:
-            self._store.delete_sources_across(
-                [self._store.table, self._shadow.store.table], vanished
-            )
-        else:
-            self._store.delete_sources(vanished)
+        from recall.fact_retraction import fact_ledger_for
+        from recall.provenance_controller import erasure_lock_for
+
+        # Held shared from the chunks it records to the delete, as a forget holds it exclusively
+        # from its plan to its delete: a prune that read a memo's chunks while a forget erased
+        # them would record a prune after that forget, and its card would then outlive every
+        # later forget (CCA STAKES-001 of run 20261106T212835Z). Read again under the lock, a
+        # memo a forget took first has no chunks left to record.
+        with erasure_lock_for(fact_ledger_for(self._store), shared=True):
+            self._record_pruned_chunks(vanished)
+            if self._shadow is not None:
+                self._store.delete_sources_across(
+                    [self._store.table, self._shadow.store.table], vanished
+                )
+            else:
+                self._store.delete_sources(vanished)
         return len(vanished)

@@ -284,7 +284,9 @@ def test_stakes001_source_scoped_reasoning_admits_no_cross_source_neighbour(monk
     inside, outside = scored("inside", "notes/a.md"), scored("outside", "notes/b.md")
     assembled: dict[str, tuple[str, ...]] = {}
 
-    class Stop(Exception):
+    # BaseException: since BUG-101 the assembly runs inside the graph step's error handler,
+    # which turns an Exception into GRAPH_PROVIDER_ERROR rather than stopping the request.
+    class Stop(BaseException):
         pass
 
     def assemble(raw, candidates, **_kwargs):

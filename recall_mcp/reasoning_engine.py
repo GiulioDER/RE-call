@@ -225,6 +225,26 @@ def _execute_reasoning_query(
                 excluded_chunk_ids=frozenset(hit.chunk.id for hit in raw.hits),
                 source=source,
             )
+            candidates = expansion.scored_candidates
+            if source is not None:
+                # The semantic graph spans the whole store, so a source scoped request keeps
+                # only neighbours inside that source, matched the way the search scope matches.
+                candidates = tuple(
+                    candidate
+                    for candidate in candidates
+                    if candidate.chunk.metadata.get("file") == source
+                    or candidate.chunk.source == source
+                )
+                expansion = replace(expansion, scored_candidates=candidates)
+            # The calibration read and the margin read are graph steps too: a failure in either
+            # must reach the provider boundary like a failed expansion, not end the query.
+            active_calibration = _resolve_graph_calibration(store, request, calibration)
+            context = _assemble_graph_first_context(
+                raw,
+                candidates,
+                calibration=active_calibration,
+                tail_replacement_margin=_graph_tail_replacement_margin(),
+            )
         except TrustRefusal:
             raise
         except Exception as exc:  # BROAD-CATCH: error-translation
@@ -235,24 +255,10 @@ def _execute_reasoning_query(
             # The same context cut every success path applies, without the graph's tail margin,
             # whose own read may be what raised.
             return replace(raw, hits=raw.hits[:GRAPH_FIRST_CONTEXT_K])
-        candidates = expansion.scored_candidates
-        if source is not None:
-            # The semantic graph spans the whole store, so a source scoped request keeps only
-            # neighbours inside that source, matched the way the search scope matches it.
-            candidates = tuple(
-                candidate
-                for candidate in candidates
-                if candidate.chunk.metadata.get("file") == source or candidate.chunk.source == source
-            )
-            expansion = replace(expansion, scored_candidates=candidates)
+        # Published only once every graph step succeeded, so the provider never serves an
+        # expansion whose context was never assembled.
         graph_first_expansion["result"] = expansion
-        active_calibration = _resolve_graph_calibration(store, request, calibration)
-        return _assemble_graph_first_context(
-            raw,
-            candidates,
-            calibration=active_calibration,
-            tail_replacement_margin=_graph_tail_replacement_margin(),
-        )
+        return context
 
     def retrieve(request: ReasoningRequest) -> TrustedResult:
         if "result" not in retrieval_cache:

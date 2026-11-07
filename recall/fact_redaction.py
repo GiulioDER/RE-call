@@ -187,12 +187,16 @@ def plan_redaction(
     everything: bool = False,
     token: Callable[[], str] | None = None,
     erased_chunk: Callable[[str], bool] | None = None,
+    kept_chunk: Callable[[str], bool] | None = None,
 ) -> RedactionPlan:
     """The rewrites that erase what `erased` memos supplied (every value, with `everything`).
 
     `erased(name)` says whether a card naming memo `name` is erased now, and `erased_chunk(chunk_id)`
     whether the chunk a card cites is: a memo another root holds under the same name does not keep a
-    card of the erased root's chunk (owner decision 2026-11-06, CCA SEC-001). `stored_cards` are the
+    card of the erased root's chunk (owner decision 2026-11-06, CCA SEC-001). `kept_chunk(chunk_id)`
+    says a card's chunk is only pruned, so its card is evidence whatever its name says: a memo
+    pruned from disk is a state, and its namesake in another root being forgotten erases nothing
+    of it (CCA BUG-001 of run 20261106T212835Z). `stored_cards` are the
     card table's rows of this tenant that may need it, as `(card_id, card)`. The module docstring
     states the rule. Deterministic for a fixed `token`: maps are built in sorted order.
     """
@@ -201,6 +205,8 @@ def plan_redaction(
 
     def erasable(card: Mapping[str, Any]) -> bool:
         if is_redaction_marker(card):
+            return False
+        if not everything and kept_chunk is not None and kept_chunk(str(card.get("chunk_id", ""))):
             return False
         return (
             everything
@@ -421,10 +427,12 @@ class PostgresFactRedactor:
         token: Callable[[], str] | None = None,
         erased_chunk: Callable[[str], bool] | None = None,
         chunk_ids: Collection[str] = (),
+        kept_chunk: Callable[[str], bool] | None = None,
     ) -> RedactionReport:
         """Plan and apply one redaction in one transaction. `names` bounds the card-table read to
         the memos `erased` may answer for, and `chunk_ids` adds the cards citing a chunk
-        `erased_chunk` may answer for, whatever name they carry (all of them with `everything`)."""
+        `erased_chunk` may answer for, whatever name they carry (all of them with `everything`).
+        `kept_chunk` exempts a card whose chunk is only pruned (`plan_redaction`)."""
         from psycopg.types.json import Jsonb
 
         if reason not in REASONS:
@@ -435,7 +443,7 @@ class PostgresFactRedactor:
             # Only to learn which facts to lock: its ids are thrown away, so it draws none.
             first = plan_redaction(
                 self.tenant_id, rows, stored, erased=erased, everything=everything, token=lambda: "0" * 32,
-                erased_chunk=erased_chunk,
+                erased_chunk=erased_chunk, kept_chunk=kept_chunk,
             )
             if first.empty:
                 return RedactionReport()
@@ -443,7 +451,7 @@ class PostgresFactRedactor:
             rows = [_pg_row(row) for row in conn.execute(_LEDGER_ROW_SQL, (self.tenant_id,)).fetchall()]
             plan = plan_redaction(
                 self.tenant_id, rows, stored, erased=erased, everything=everything, token=token,
-                erased_chunk=erased_chunk,
+                erased_chunk=erased_chunk, kept_chunk=kept_chunk,
             )
             if plan.empty:
                 return RedactionReport()
@@ -580,6 +588,7 @@ class LiteFactRedactor:
         token: Callable[[], str] | None = None,
         erased_chunk: Callable[[str], bool] | None = None,
         chunk_ids: Collection[str] = (),
+        kept_chunk: Callable[[str], bool] | None = None,
     ) -> RedactionReport:
         """`PostgresFactRedactor.redact` on the file, in one write transaction."""
         from datetime import UTC, datetime
@@ -593,7 +602,7 @@ class LiteFactRedactor:
         with self._store._write():
             plan = plan_redaction(
                 self.tenant_id, self._rows(), self._cards(), erased=erased, everything=everything, token=token,
-                erased_chunk=erased_chunk,
+                erased_chunk=erased_chunk, kept_chunk=kept_chunk,
             )
             if plan.empty:
                 return RedactionReport()

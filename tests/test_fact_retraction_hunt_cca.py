@@ -236,3 +236,79 @@ def test_env001_activation_records_stated_facts_through_the_managers_environment
 
     assert manager._record_stated_facts_after_activation("g1") == 1
     assert written == [env], "stated facts were recorded through the process environment"
+
+
+def _prune(store: LiteStore, root: str) -> None:
+    """What `recall.index.Indexer._prune_vanished` does to root `root`'s memo gone from disk: its
+    chunk ids recorded (`prune_source_chunks`), then its rows deleted."""
+    store.append_audit_event("prune_source_chunks", {"chunk_ids": [f"chunk-{root}"]}, source_uri=f"/{root}/x.md")
+    store.delete_sources([f"/{root}/x.md"])
+
+
+def test_bug001_forgetting_a_root_never_decides_its_pruned_namesake(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_bug001_forgetting_a_root_never_decides_its_pruned_namesake.
+
+    CCA BUG-001 of run 20261106T212835Z: two roots hold `x.md` and state DOOR; /B's memo is
+    pruned (a state); /A's is forgotten. The forget named only /A, so /B's card stays evidence:
+    no forget record for /B, nothing retracted or redacted, and the fact is current once /B is
+    back. Red against the first prune-records change (`decided` matched `touched_names`, which
+    holds `x.md` because /A is served under it): fails on "the pruned namesake was recorded as
+    forgotten". Red, mutation of `prepare_fact_erasure`'s redaction call (recall/fact_retraction.py,
+    the `kept_chunk=` argument dropped): fails on "the pruned namesake's value was erased".
+    """
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    assert _apply(store, "B", "r2").code == DecisionCode.DUPLICATE
+    _prune(store, "B")
+
+    result = forget_memory(store, ["/A/x.md"])
+
+    assert store.latest_chunk_records(["chunk-B"]) == {"chunk-B": ("prune_source_chunks", "/B/x.md")}, (
+        "the pruned namesake was recorded as forgotten"
+    )
+    assert result.facts_retracted == 0, result.message
+    assert _value_kept(store), "the pruned namesake's value was erased"
+    store.upsert([Chunk("chunk-B", "/B/x.md", "text of B/x.md", {"file": "x.md"})], [[1.0] + [0.0] * (DIM - 1)])
+    assert current(store) == ["4512"], f"the restored namesake's fact is gone: {current(store)}"
+
+
+def test_bug001_control_naming_the_pruned_memo_forgets_it(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_bug001_control_naming_the_pruned_memo_forgets_it.
+
+    Control: the same setup, but the forget names both sources, so the pruned /B is a decision
+    and the fact goes. Red, mutation of `prepare_fact_erasure` (recall/fact_retraction.py: the
+    `decided` match on `record[1]` against the sources this call names dropped, leaving the
+    root-relative name only): fails on "a pruned memo the forget named kept its fact".
+    """
+    assert _apply(store, "A", "r1").code == DecisionCode.APPLIED
+    assert _apply(store, "B", "r2").code == DecisionCode.DUPLICATE
+    _prune(store, "B")
+
+    result = forget_memory(store, ["/A/x.md", "/B/x.md"])
+
+    assert result.facts_retracted == 1 and current(store) == [], f"a pruned memo the forget named kept its fact: {result.message}"
+    assert store.latest_chunk_records(["chunk-B"])["chunk-B"][0] == "forget_source_chunks"
+
+
+def test_sec001_a_later_forget_wins_whatever_clock_stamped_it(store: LiteStore) -> None:
+    """Node tests/test_fact_retraction_hunt_cca.py::test_sec001_a_later_forget_wins_whatever_clock_stamped_it.
+
+    CCA SEC-001 of run 20261106T212835Z: a prune recorded at wall time, then a forget recorded by
+    a server whose evaluation clock reads 2023. The forget came later, so it is the chunk's latest
+    record. Red, mutation of `LiteStore.latest_chunk_records` (recall/lite/store.py: `ORDER BY
+    audit_events.rowid` replaced by `ORDER BY audit_events.created_at`): fails on "an earlier
+    clock made a later forget lose to a prune".
+    """
+    from datetime import UTC, datetime
+
+    from recall import eval_clock
+
+    store.append_audit_event("prune_source_chunks", {"chunk_ids": ["chunk-B"]}, source_uri="/B/x.md")
+    eval_clock.install(lambda: datetime(2023, 5, 1, tzinfo=UTC))
+    try:
+        store.append_audit_event("forget_source_chunks", {"chunk_ids": ["chunk-B"]}, source_uri="/B/x.md")
+    finally:
+        eval_clock.uninstall()
+
+    assert store.latest_chunk_records(["chunk-B"]) == {"chunk-B": ("forget_source_chunks", "/B/x.md")}, (
+        "an earlier clock made a later forget lose to a prune"
+    )
