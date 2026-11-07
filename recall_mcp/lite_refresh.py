@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from recall.index_budget import IndexBudget, budget_from_env
 from recall.lite import LiteStore
-from recall.lite.refresh import Outcome, Snapshot, read_state, refresh, snapshot
+from recall.lite.refresh import Outcome, Snapshot, embedder_refusal, read_state, refresh, snapshot
 
 if TYPE_CHECKING:
     from recall.embeddings import Embedder
@@ -98,11 +98,15 @@ class LiteAutoRefresher:
         security_context: AccessContext | None = None,
         budget: IndexBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
+        env: Mapping[str, str] | None = None,
     ) -> None:
         self._store, self._embedder, self._roots = store, embedder, roots
         self._interval_s, self._wait_s, self._clock = interval_s, wait_s, clock
         self._policy, self._context = security_policy, security_context
         self._budget = budget
+        # The embedder settings this server was started with, which the guard compares with the
+        # ones the store recorded before every refresh.
+        self._env = dict(env or {})
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._last_check = -math.inf
@@ -154,6 +158,7 @@ class LiteAutoRefresher:
             security_policy=security_policy,
             security_context=security_context,
             budget=budget,
+            env=env,
         )
 
     def start(self) -> None:
@@ -171,8 +176,11 @@ class LiteAutoRefresher:
             current = snapshot(self._roots)
             fingerprint = current.fingerprint
             if fingerprint == self._refreshed:
+                # A switch made while no memo changed starts no refresh, so it is asked here, a
+                # meta read (CCA ENV-002); otherwise nothing is missing.
+                refusal = embedder_refusal(self._store, self._embedder, self._env)
                 with self._lock:
-                    self._failure = None  # back to a snapshot that refreshed: nothing is missing
+                    self._failure = refusal
                 return
             if fingerprint == self._failed and self._refreshed_elsewhere(fingerprint):
                 return
@@ -247,6 +255,10 @@ class LiteAutoRefresher:
                 budget=self._budget,
                 before=before,
                 key_root=self._roots[0],  # RECALL_INDEX_ROOT: the server's single root names files
+                # The guard `recall lite refresh` applies, asked under the write lane; a server
+                # cannot answer it with --force or --embedder (owner decision 2026-11-06), so a
+                # refusal is a failed refresh whose reason retrievals carry.
+                refusal_env=self._env,
             )
         except Exception as exc:  # BROAD-CATCH: fail-open  # logged; the next check retries
             _log.warning("lite auto refresh failed: %s", exc)

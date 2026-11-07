@@ -88,6 +88,7 @@ Cross package edges: 390
 | 14 | `recall.doctor` |
 | 14 | `recall.eval.promotion.__main__` |
 | 14 | `recall_mcp.reasoning_api` |
+| 13 | `recall.cli_commands._shared` |
 | 13 | `recall.eval.labelled` |
 | 13 | `recall.lite.refresh` |
 | 13 | `recall.reasoning` |
@@ -99,7 +100,6 @@ Cross package edges: 390
 | 12 | `recall.setup` |
 | 12 | `recall.stated_facts` |
 | 12 | `recall.store` |
-| 12 | `recall_agent.memory` |
 
 ## Cross package edges
 
@@ -528,7 +528,7 @@ They are observations, not automatic failures.
 | `recall.cli` | 6 | 113 |
 | `recall.cli_commands` | 0 | 0 |
 | `recall.cli_commands._lite` | 3 | 112 |
-| `recall.cli_commands._shared` | 10 | 122 |
+| `recall.cli_commands._shared` | 13 | 122 |
 | `recall.cli_commands.backup_cmd` | 1 | 8 |
 | `recall.cli_commands.calibration_cmd` | 17 | 214 |
 | `recall.cli_commands.dashboard_cmd` | 4 | 186 |

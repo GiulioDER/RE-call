@@ -402,6 +402,19 @@ def carry_forward(
     )
 
 
+def _fitted_for_another_model(store: LiteStore, fit: CalibrationArtifactV2) -> bool:
+    """True when `fit` was fitted for another model than the one the store is bound to (CCA
+    STAKES-001).
+
+    A switch rebinds the store to the model that re-embedded it even when its refit saved no fit,
+    so the newest fit can be the old model's. The trust gate checks the runtime embedder against
+    the binding only, and read paths carry a fit forward with no embedder, so without this the old
+    model's threshold would decide the new model's answers."""
+    bound = store.bound_embedder()
+    model, dimension = fit.embedder_identity.get("model"), fit.embedder_identity.get("dimension", -1)
+    return bound is not None and bound != _identity(model, dimension)
+
+
 def resolve(store: LiteStore) -> CalibrationResolution:
     """The newest calibration, judged against the corpus as it is now.
 
@@ -414,6 +427,8 @@ def resolve(store: LiteStore) -> CalibrationResolution:
     if raw is None:
         return CalibrationResolution(CalibrationStatus.MISSING)
     artifact = artifact_from_json(raw)
+    if _fitted_for_another_model(store, artifact):
+        return CalibrationResolution(CalibrationStatus.STALE)
     if artifact.corpus_fingerprint != store.corpus_fingerprint():
         carried = carry_forward(store, artifact)
         if carried.artifact is None:
@@ -620,6 +635,8 @@ def _refit_wanted(store: LiteStore) -> bool:
     try:
         fit = artifact_from_json(raw)
     except ARTIFACT_READ_ERRORS:
+        return True
+    if _fitted_for_another_model(store, fit):
         return True
     if fit.corpus_fingerprint == store.corpus_fingerprint():
         return False

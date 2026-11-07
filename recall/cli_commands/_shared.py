@@ -7,6 +7,10 @@ lives in that consumer's module instead.
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+from typing import NamedTuple
+from pathlib import Path
 
 from recall._env import refuse_removed_entailment
 from recall.calibration import Calibration
@@ -48,6 +52,138 @@ def _make_embedder(name: str) -> Embedder:
             remediation="check `recall doctor` and install the extra named by the diagnostic",
         )
         raise SystemExit(diagnostic.render()) from exc
+
+
+def _typed_and_shell_embedder(args: argparse.Namespace) -> tuple[str, str]:
+    """The `--embedder` typed on this command line ("" when none) and RECALL_EMBEDDER from the
+    shell, read one way by every Lite embedder guard (CCA CODE-001).
+
+    Only a typed --embedder, before or after the subcommand, counts: the global option's default
+    is RECALL_EMBEDDER or fastembed, which must not count as deliberate (`recall.cli.StoreGiven`).
+    """
+    typed = getattr(args, "embedder", "") if getattr(args, "embedder_given", False) else ""
+    return typed, os.environ.get("RECALL_EMBEDDER", "").strip()
+
+
+class _LiteEmbedderChoice(NamedTuple):
+    """What `_lite_embedder_spec` chose; read by name, since spec and profile are both strings."""
+
+    spec: str
+    profile: str
+    switched: bool
+
+
+def _lite_embedder_spec(
+    args: argparse.Namespace,
+    recorded: str | None,
+    db: Path,
+    *,
+    force: bool,
+    how_to_switch: str,
+    recorded_profile: str | None = None,
+) -> _LiteEmbedderChoice:
+    """The embedder spec and RECALL_EMBED_PROFILE for the lite store `db`, and whether they switch
+    away from the ones the store recorded (CCA DAT-006, DAT-007, SEC-001).
+
+    A typed `--embedder` wins, then RECALL_EMBEDDER, then `recorded`; "" when there is none. A
+    switch re-embeds what the run indexes, leaves other sources on the old vectors, and the
+    recalibration rebinds the store, while the MCP server `recall setup --lite` configured still
+    names the old embedder. So a RECALL_EMBEDDER left in a shell, which is how a switch happens by
+    accident, is refused unless `force`; a typed one is deliberate and only warned about.
+
+    The profile outranks any spec when the embedder is built (`recall.embeddings.resolve_embedder`),
+    so one that differs from `recorded_profile` is refused unless `force`, whatever was typed.
+    """
+    from recall.lite.refresh import profile_mismatch
+
+    profile = os.environ.get("RECALL_EMBED_PROFILE", "").strip()
+    restore = profile_mismatch(recorded_profile, profile)
+    profile_switched = restore is not None
+    if profile_switched and not force:
+        raise SystemExit(
+            f"RECALL_EMBED_PROFILE={profile!r} differs from {recorded_profile!r}, the profile {db} was "
+            f"built with; {how_to_switch}, or {restore}"
+        )
+    typed, env = _typed_and_shell_embedder(args)
+    spec = typed or env or recorded or ""
+    if not recorded or spec == recorded:
+        return _LiteEmbedderChoice(spec, profile, profile_switched)
+    if not typed and not force:
+        raise SystemExit(
+            f"RECALL_EMBEDDER={spec!r} differs from {recorded!r}, the embedder {db} was built "
+            f"with; {how_to_switch}, or unset RECALL_EMBEDDER"
+        )
+    print(
+        f"warning: {db} was built with {recorded!r}; embedding with {spec!r} instead. What this run "
+        "indexes is re-embedded, other sources keep the old vectors, and the MCP server "
+        f"`recall setup --lite` configured still names {recorded!r} until setup is run again.",
+        file=sys.stderr,
+    )
+    return _LiteEmbedderChoice(spec, profile, True)
+
+
+def _lite_read_embedder(args: argparse.Namespace, command: str, *, erasure: bool = False) -> str:
+    """The embedder a command that only reads or erases `args.dsn` builds (CCA ENV-002): the global
+    `--embedder` value unless the DSN is a Lite store, so no call site repeats that test (CCA
+    CODE-002).
+
+    A typed `--embedder` wins, then RECALL_EMBEDDER, then the spec the store recorded, and only
+    then the global default, which knows nothing of the store. A RECALL_EMBEDDER that differs from
+    the recorded spec is refused, as index and refresh refuse it: a model other than the one that
+    built the vectors ranks nonsense without raising. A RECALL_EMBED_PROFILE that differs from the
+    recorded one is refused before any of that, even with a typed `--embedder`, because the profile
+    outranks every spec when the embedder is built (CCA SEC-001).
+
+    An `erasure` embeds nothing and needs the embedder for the store's width only, so it takes the
+    recorded spec over RECALL_EMBEDDER and refuses nothing: a stray variable must not stop a forget.
+    """
+    from recall.lite import is_lite_dsn, lite_dsn_path
+    from recall.lite.inspect import lite_file_meta
+
+    if not is_lite_dsn(args.dsn):
+        return str(args.embedder)
+    db = lite_dsn_path(args.dsn)
+    meta = lite_file_meta(db) or {}
+    recorded = meta.get("embedder_spec")
+    typed, env = _typed_and_shell_embedder(args)
+    if erasure:
+        return typed or recorded or str(args.embedder)
+    from recall.lite.refresh import profile_mismatch
+
+    recorded_profile = meta.get("embedder_profile")
+    profile = os.environ.get("RECALL_EMBED_PROFILE", "").strip()
+    if (restore := profile_mismatch(recorded_profile, profile)) is not None:
+        # The profile outranks a typed --embedder when the embedder is built (CCA SEC-001).
+        raise SystemExit(
+            f"recall {command}: RECALL_EMBED_PROFILE={profile!r} differs from {recorded_profile!r}, the "
+            f"profile {db} was built with; {restore}"
+        )
+    if recorded and not typed and env and env != recorded:
+        raise SystemExit(
+            f"recall {command}: RECALL_EMBEDDER={env!r} differs from {recorded!r}, the embedder {db} "
+            "was built with; unset RECALL_EMBEDDER, or pass --embedder to use another one anyway"
+        )
+    return typed or env or recorded or str(args.embedder)
+
+
+def _refuse_unbound_embedder(
+    embedder: Embedder, bound: str | None, db: Path, args: argparse.Namespace, *, switched: bool
+) -> None:
+    """Refuse an embedder other than the model `db`'s calibration is bound to, unless it was typed
+    or the switch confirmed (CCA ENV-001).
+
+    The recorded spec alone cannot say what built the vectors: the MCP server refreshes with the
+    embedder `recall setup --lite` wrote into its environment and rebinds the calibration
+    (`embedder_model`) without touching the spec, so a spec that matches can name another model
+    than the store holds, and two commands would then re-embed the store back and forth unseen.
+    """
+    if bound is None or switched or getattr(args, "embedder_given", False) or embedder.name == bound:
+        return
+    raise SystemExit(
+        f"{db} is bound to the model {bound!r}, not {embedder.name!r}; the MCP server may have "
+        "refreshed it with the embedder `recall setup --lite` configured. Run setup again to "
+        "choose one, or pass --embedder to switch deliberately"
+    )
 
 
 def _refuse_removed_entailment() -> None:

@@ -38,8 +38,11 @@ from recall.control_plane import ControlPlane
 from recall.cli_commands._shared import (
     CALIBRATION_DOC_URL,
     _cli_trust,
+    _lite_embedder_spec,
+    _lite_read_embedder,
     _make_embedder,
     _print_result,
+    _refuse_unbound_embedder,
     _refuse_removed_entailment,
     _run_queries,
     _positive_int,
@@ -79,7 +82,10 @@ def register(sub: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
             "--tenant. Incremental: a file whose content hash is unchanged is skipped, and a file "
             "under the indexed folder that has vanished from disk is PRUNED; rows indexed from "
             "other folders are left alone. The embedder must be the same one the table was built with; a mismatch in "
-            "width is refused, and a mismatch in model at the same width is not detectable here."
+            "width is refused, and a mismatch in model at the same width is not detectable here. "
+            "Against a sqlite:/// Lite store the default is the embedder it recorded: a different "
+            "RECALL_EMBEDDER is refused, and a different --embedder is used with a warning and "
+            "becomes the store's recorded embedder."
         ),
     )
 
@@ -364,7 +370,26 @@ def _print_evidence(
 
 def _cmd_index(args: argparse.Namespace) -> None:
     route = _runtime_route(args)
-    embedder = _make_embedder(args.embedder)
+    name, profile, switched = args.embedder, "", False
+    if is_lite_dsn(args.dsn):
+        # A lite file records the embedder it was built with; the global default (RECALL_EMBEDDER,
+        # else fastembed) knows nothing of it (CCA DAT-007).
+        from recall.lite.inspect import lite_file_meta
+
+        db = lite_dsn_path(args.dsn)
+        meta = lite_file_meta(db) or {}
+        recorded = meta.get("embedder_spec")
+        choice = _lite_embedder_spec(
+            args, recorded, db, force=False,
+            how_to_switch="re-embed it with `recall lite refresh --force`",
+            recorded_profile=meta.get("embedder_profile"),
+        )
+        name, profile, switched = choice.spec, choice.profile, choice.switched
+        name = name or args.embedder
+        bound = meta.get("embedder_model")
+    embedder = _make_embedder(name)
+    if is_lite_dsn(args.dsn):
+        _refuse_unbound_embedder(embedder, bound, db, args, switched=switched)
     if route.uses_generation:
         raise SystemExit(
             f"{route.describe()}: local filesystem indexing is unavailable on the generation "
@@ -431,6 +456,12 @@ def _cmd_index(args: argparse.Namespace) -> None:
 
                     outcome = ensure_calibrated(store, embedder)
                     print(f"calibration: {outcome.status.value}: {outcome.reason}")
+                    if switched or recorded is None or meta.get("embedder_profile") is None:
+                        # Also on a store this command built, so the next plain index or refresh
+                        # resolves this embedder and refuses a different one (CCA ENV-003).
+                        store.record_embedder_spec(
+                            name, profile=profile, model=str(embedder.name), dimension=int(embedder.dim)
+                        )
                 from recall.stated_facts import reconcile_stated_facts
 
                 stated = reconcile_stated_facts(store)
@@ -501,7 +532,7 @@ def _cmd_remove(args: argparse.Namespace, *, withdraw: bool) -> None:
         )
     # After the refusals: building an embedder loads a model or sends a billed probe, and erasure
     # embeds nothing; a refused command must not pay for it.
-    embedder = _make_embedder(args.embedder)
+    embedder = _make_embedder(_lite_read_embedder(args, command, erasure=True))
     # Keep a GenerationStore-typed handle alongside the widened one: the corpus probe below
     # exists only on the subclass, and narrowing here is what lets the type checker see it.
     gen_store: GenerationStore | None = (
@@ -809,7 +840,7 @@ def _cmd_search(args: argparse.Namespace) -> None:
         scope = _search_scope(args)
     except ValueError as exc:
         raise SystemExit(f"recall search: {exc}") from exc
-    embedder = _make_embedder(args.embedder)
+    embedder = _make_embedder(_lite_read_embedder(args, "search"))
     # ⚠️ Deliberately NOT `load_for(embedder.name)`, and a bug audit talked me into that once.
     #
     # `trusted_search` only consults the generation-bound resolver when `calibration is None`

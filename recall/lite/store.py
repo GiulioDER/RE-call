@@ -1495,16 +1495,56 @@ class LiteStore:
                 (payload,),
             )
 
-    def record_embedder_spec(self, spec: str) -> None:
-        """Keep the embedder spec setup resolved (`fastembed`, `voyage:<model>`), so a refresh run
-        with no `--embedder` resolves the same one. `embedder_model` alone cannot: it is the model's
-        own name, which `recall.embeddings.resolve_embedder` does not accept."""
+    def record_embedder_spec(
+        self, spec: str, *, profile: str | None = None, model: str | None = None, dimension: int | None = None
+    ) -> None:
+        """Keep the spec of the embedder that built the store (`fastembed`, `voyage:<model>`), so a
+        run with no `--embedder` resolves the same one. Setup writes it, and so do a refresh or an
+        index that switches, rebinds or adopts; index, refresh, search, forget and withdraw read it.
+        `embedder_model` alone cannot serve: it is the model's own name, which
+        `recall.embeddings.resolve_embedder` does not accept.
+
+        `model` and `dimension` are those of the embedder that just re-embedded the store. They
+        replace a model an earlier calibration recorded, even when this run's refit saved none (a
+        corpus below the calibration floor): the vectors are that model's now, and a binding left
+        naming the old one refused the next plain refresh. A store never calibrated keeps no model.
+
+        `profile` is the RECALL_EMBED_PROFILE the embedder was built under ("" for none), which
+        outranks the spec when an embedder is built, so a guard compares both (CCA SEC-001).
+        """
+        if (model is None) != (dimension is None):
+            # One without the other wrote the text "None" as the width, which every later binding
+            # read fails to parse (CCA DAT-002).
+            raise ValueError("record_embedder_spec takes model and dimension together")
         with self._write():
             self._conn.execute(
                 "INSERT INTO meta(key, value) VALUES ('embedder_spec', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (spec,),
             )
+            if profile is not None:
+                self._conn.execute(
+                    "INSERT INTO meta(key, value) VALUES ('embedder_profile', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (profile,),
+                )
+            if model is not None:
+                self._conn.executemany(
+                    "UPDATE meta SET value = ? WHERE key = ?",
+                    [(model, "embedder_model"), (str(dimension), "embedder_dimension")],
+                )
+
+    def bound_embedder(self) -> tuple[str, int] | None:
+        """The `(model, dimension)` the binding names (`embedder_model`), or None before one is.
+
+        Read from meta, never through `generation_binding()`, which resolves the calibration and
+        so would call back into the resolver that asks this."""
+        meta = dict(self._metadata_values(
+            "SELECT key, value FROM meta WHERE key IN ('embedder_model', 'embedder_dimension')"
+        ))
+        if "embedder_model" not in meta:
+            return None
+        return str(meta["embedder_model"]), int(meta.get("embedder_dimension", -1))
 
     def calibration_evidence(self, calibration_id: str) -> tuple[str, bytes, str] | None:
         """`(queries JSON, vectors, sources JSON)` stored with `calibration_id`, or None."""
