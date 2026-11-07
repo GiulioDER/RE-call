@@ -1083,6 +1083,17 @@ def _lite_checks(dsn: str, *, tenant: str, table: str = DEFAULT_TABLE) -> Iterat
             "none yet: strict search refuses until memory holds enough text to test itself (about 20 memos)",
             "recall index <your memory folder>   (calibrates automatically after indexing)",
         )
+    elif found.calibration is CalibrationStatus.STALE and found.stale_for_model is not None:
+        # Both names come from the store file, so they are filtered before a terminal prints them.
+        from recall.trust import terminal_safe
+
+        yield Check(
+            "calibration",
+            "warn",
+            f"fitted for the model {terminal_safe(found.stale_for_model)}, but the store is bound to "
+            f"{terminal_safe(found.embedder_model or '')}, so strict search refuses it",
+            "recall index <your memory folder>   (refits it with the store's model)",
+        )
     elif found.calibration is CalibrationStatus.STALE:
         yield Check(
             "calibration",

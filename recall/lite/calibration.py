@@ -402,17 +402,37 @@ def carry_forward(
     )
 
 
-def _fitted_for_another_model(store: LiteStore, fit: CalibrationArtifactV2) -> bool:
-    """True when `fit` was fitted for another model than the one the store is bound to (CCA
-    STAKES-001).
+def bound_from_meta(meta: Mapping[str, Any]) -> tuple[str, int] | None:
+    """The `(model, dimension)` a store's meta binds it to, or None before a model is recorded.
+
+    The one reading of the binding: `LiteStore.bound_embedder` (search) and `inspect_lite_file`
+    (`recall doctor`) both call it, so they cannot disagree (CCA CODE-001). A width that does not
+    parse reads as -1, which no fit recorded with its width matches, so a hand-edited value fails
+    closed instead of raising."""
+    if "embedder_model" not in meta:
+        return None
+    try:
+        width = int(meta.get("embedder_dimension", -1))
+    except (TypeError, ValueError):
+        width = -1
+    return str(meta["embedder_model"]), width
+
+
+def fitted_for_another_model(bound: tuple[str, int] | None, fit: CalibrationArtifactV2) -> bool:
+    """True when `fit` was fitted for another model than `bound`, the `(model, dimension)` the store
+    is bound to (None before one is) (CCA STAKES-001).
 
     A switch rebinds the store to the model that re-embedded it even when its refit saved no fit,
     so the newest fit can be the old model's. The trust gate checks the runtime embedder against
     the binding only, and read paths carry a fit forward with no embedder, so without this the old
-    model's threshold would decide the new model's answers."""
-    bound = store.bound_embedder()
+    model's threshold would decide the new model's answers. `recall doctor` asks it too, so its
+    report and search agree on such a fit."""
     model, dimension = fit.embedder_identity.get("model"), fit.embedder_identity.get("dimension", -1)
     return bound is not None and bound != _identity(model, dimension)
+
+
+def _fitted_for_another_model(store: LiteStore, fit: CalibrationArtifactV2) -> bool:
+    return fitted_for_another_model(store.bound_embedder(), fit)
 
 
 def resolve(store: LiteStore) -> CalibrationResolution:

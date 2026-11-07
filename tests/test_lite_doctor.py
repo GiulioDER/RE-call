@@ -99,3 +99,52 @@ def test_a_carried_calibration_is_reported_as_carried(tmp_path: Path) -> None:
     status, detail = _checks("sqlite:///" + db.as_posix())["calibration"]
     assert status == "ok", f"the doctor called a carried calibration stale: {detail}"
     assert "carried forward" in detail and "4%" in detail, detail
+
+
+def _set_meta(db: Path, key: str, value: str) -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    with conn:
+        conn.execute("UPDATE meta SET value = ? WHERE key = ?", (value, key))
+    conn.close()
+
+
+def test_a_fit_for_another_model_names_that_model(tmp_path: Path) -> None:
+    """CCA DOC-001 (run 20261107T115351Z). Invariant: when the doctor reports a calibration stale
+    because the store is bound to another model than the fit was made for, it says so and names
+    both models. Failure caught: it printed the only STALE message it had, which blames a changed
+    corpus that never changed.
+
+    Red proof, 2026-11-07 on the remote test host: with `and found.stale_for_model is not None`
+    replaced by `and False` in `recall.doctor._lite_checks`, this failed at the detail assertion
+    ("fitted to an earlier version ..."); restored, it passed."""
+    db = _certified_store(tmp_path)
+    with LiteStore(db, dim=DIM) as store:
+        store.record_embedder_spec("another", model="another-model", dimension=DIM)
+    status, detail = _checks("sqlite:///" + db.as_posix())["calibration"]
+    assert status == "warn", detail
+    assert "fitted for the model test-content-words" in detail and "another-model" in detail, detail
+
+
+def test_the_doctor_reads_the_binding_as_search_does(tmp_path: Path) -> None:
+    """CCA CODE-001 (run 20261107T115351Z). Invariant: the doctor and search read a store's bound
+    width through one parser, so a width `int()` accepts (" 64") is current for both, and one it
+    rejects ("--64") makes the doctor report STALE instead of raising. Failure caught: the doctor's
+    own guard read " 64" as unknown (STALE while search answered) and let "--64" through to an
+    `int()` that raised out of `inspect_lite_file`.
+
+    Red proof, 2026-11-07 on the remote test host: with `bound_from_meta(meta)` in
+    `recall.lite.inspect.inspect_lite_file` replaced by the earlier inline guard
+    (`int(width) if width.lstrip("-").isdigit() else -1`), this failed at the first assertion
+    (`STALE`); restored, it passed."""
+    from recall.calibration_v2 import CalibrationStatus
+    from recall.lite.inspect import inspect_lite_file
+
+    db = _certified_store(tmp_path)
+    _set_meta(db, "embedder_dimension", f" {DIM}")
+    with LiteStore(db, dim=DIM) as store:
+        assert store.resolve_calibration().status is CalibrationStatus.CERTIFIED
+    assert inspect_lite_file(db).calibration is CalibrationStatus.CERTIFIED, "the report and search disagree"
+    _set_meta(db, "embedder_dimension", f"--{DIM}")
+    assert inspect_lite_file(db).calibration is CalibrationStatus.STALE

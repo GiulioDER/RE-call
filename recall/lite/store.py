@@ -1552,12 +1552,11 @@ class LiteStore:
 
         Read from meta, never through `generation_binding()`, which resolves the calibration and
         so would call back into the resolver that asks this."""
-        meta = dict(self._metadata_values(
+        from recall.lite.calibration import bound_from_meta
+
+        return bound_from_meta(dict(self._metadata_values(
             "SELECT key, value FROM meta WHERE key IN ('embedder_model', 'embedder_dimension')"
-        ))
-        if "embedder_model" not in meta:
-            return None
-        return str(meta["embedder_model"]), int(meta.get("embedder_dimension", -1))
+        )))
 
     def calibration_evidence(self, calibration_id: str) -> tuple[str, bytes, str] | None:
         """`(queries JSON, vectors, sources JSON)` stored with `calibration_id`, or None."""
