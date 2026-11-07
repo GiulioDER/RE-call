@@ -1044,7 +1044,9 @@ def test_warm_reports_the_cache_it_wrote(
     recommends runs the hook's own interpreter with `-P`."""
     monkeypatch.setattr(sys, "stdin", _NoStdin())
     assert recall_hooks.main(["warm-auditor-brief"]) == 0
-    cache = auditor_brief.cache_path(auditor_brief.memo_directory())
+    from recall import records_files
+
+    cache = records_files.versioned_cache_file(auditor_brief.cache_path(auditor_brief.memo_directory()))
     assert str(cache) in capsys.readouterr().out, "warm did not say which cache it wrote"
     assert cache.is_file()
     command = auditor_brief.warm_command()

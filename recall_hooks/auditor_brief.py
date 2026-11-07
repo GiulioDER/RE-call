@@ -1229,7 +1229,7 @@ def warm() -> int:
         print(f"recall: cannot read the memo directory {directory}: {exc}", file=sys.stderr)
         return 1
     print(
-        f"recall: cached {len(loaded)} record(s) from {directory} in {cache}; "
+        f"recall: cached {len(loaded)} record(s) from {directory} in {records_files.versioned_cache_file(cache)}; "
         f"{len(loaded.skipped)} memo(s) skipped"
     )
     return 0

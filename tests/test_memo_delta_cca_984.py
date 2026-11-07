@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import recall.records_files as records_files
 from recall.records_files import load_memo_records
 from tests.audit_memory_support import EXPECTED, copy_memos
 
@@ -24,9 +25,10 @@ def test_corrupt_utf8_delta_keeps_valid_memos(tmp_path: Path) -> None:
     expected_ids = {record["id"] for record in EXPECTED.values()}
     assert expected_ids, "the admitted-memo control must not be empty"
     assert {memo.record["id"] for memo in first} == expected_ids
-    assert cache.is_file(), "the control must establish a valid persisted base cache"
+    versioned = records_files._versioned_path(cache, records_files._cache_tag())
+    assert versioned.is_file(), "the control must establish a valid persisted base cache"
 
-    delta = cache.with_name(cache.name + ".delta")
+    delta = versioned.with_name(versioned.name + ".delta")
     delta.write_bytes(b"\xff\xfe\n")
     recovered = None
     decode_error: UnicodeDecodeError | None = None

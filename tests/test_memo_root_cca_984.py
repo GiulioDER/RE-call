@@ -86,7 +86,7 @@ def test_overlapping_roots_preserve_qualified_supersession(tmp_path: Path, cache
     assert parent_matches[outer_id]["superseded_by"] == "sub/fix.md"
     assert parent_matches[inner_id]["superseded_by"] is None
     if cache is not None:
-        assert cache.is_file(), "the persisted-cache route was not established"
+        assert records_files._versioned_path(cache, records_files._cache_tag()).is_file(), "the persisted-cache route was not established"
         records_files._CACHE.clear()
 
     warm = load_memo_records(child, cache_file=cache)
@@ -140,7 +140,7 @@ def test_relative_root_after_chdir_reads_its_own_memo(
     assert [memo.record["id"] for memo in first] == [first_id]
     assert not first.skipped
     if cache is not None:
-        assert cache.is_file(), "the persisted-cache route was not established"
+        assert records_files._versioned_path(cache, records_files._cache_tag()).is_file(), "the persisted-cache route was not established"
         records_files._CACHE.clear()
 
     monkeypatch.chdir(second_dir)

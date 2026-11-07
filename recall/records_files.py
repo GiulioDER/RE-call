@@ -100,6 +100,10 @@ _CACHE_FORMAT = 4
 _READER_MODULES = ("recall.document", "recall.frontmatter", "recall.records", "recall.records_files")
 #: A temporary file left by a write that was killed is removed by the next full write past this age.
 _STALE_TEMP_SECONDS = 60.0
+#: Another code version's cache file no load has used for this long is removed: that version is
+#: gone (an upgrade, an old checkout). Every completed load marks its own files as used, written
+#: or not (`_remove_stale_versions`).
+_STALE_CACHE_SECONDS = 7 * 24 * 3600.0
 #: The directories the indexer's default walk never enters (`recall.index._DEFAULT_INDEX_EXCLUDED_DIRS`).
 #: Restated rather than imported, because importing `recall.index` costs over a second and this module
 #: is on a hook's path; `tests/test_records_files.py` pins the two sets equal.
@@ -160,6 +164,49 @@ def _dumps(value: object) -> str:
     # decodes from a memo's `\udc00` escape), and the failure would leave the cache unwritten
     # forever. The escapes read back to the same strings.
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+
+
+def _versioned_path(cache_file: Path, tag: str) -> Path:
+    """The file one version of the reading code keeps its cache in, beside `cache_file`.
+
+    One file per tag: two versions reading one memo directory (an upgrade's old and new copy, two
+    interpreters) once shared a file, and a load under a deadline compacted the other version's
+    rows away, so alternating launches parsed the whole directory cold (CCA BUG-101).
+    """
+    return cache_file.with_name(f"{cache_file.stem}.{tag.replace(':', '-')}{cache_file.suffix}")
+
+
+def versioned_cache_file(cache_file: Path) -> Path:
+    """The file `load_memo_records(..., cache_file=cache_file)` keeps this code's cache in."""
+    return _versioned_path(cache_file, _cache_tag())
+
+
+def _remove_stale_versions(cache_file: Path, keep: Path) -> None:
+    """Mark `keep` (this version's file and journal) as used, then remove the cache files other
+    versions left beside `cache_file` and no load has used for `_STALE_CACHE_SECONDS`, the
+    untagged file older RE-call wrote included. Never raises.
+
+    The mark is what keeps a version that only reads: a load over unchanged memos writes nothing,
+    and its file would otherwise age out under another version's cleanup while still in use.
+    """
+    for own in (keep, _delta_path(keep)):
+        try:
+            os.utime(own)
+        except OSError:
+            continue
+    candidates = {cache_file, _delta_path(cache_file)}
+    try:
+        candidates.update(cache_file.parent.glob(f"{cache_file.stem}.*{cache_file.suffix}"))
+        candidates.update(cache_file.parent.glob(f"{cache_file.stem}.*{cache_file.suffix}.delta"))
+    except OSError:
+        return
+    cutoff = time.time() - _STALE_CACHE_SECONDS
+    for path in candidates - {keep, _delta_path(keep)}:
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            continue
 
 
 def _delta_path(path: Path) -> Path:
@@ -395,7 +442,9 @@ def load_memo_records(
 
     Each file is parsed once per `(path, mtime_ns, size)`; a changed file is read again. The cache
     lives in this process and, with `cache_file`, also on disk, because a hook is a new process
-    every time. Measured 2026-10-22 on the Windows workstation: the first open of a memo file cost
+    every time. On disk each version of the reading code keeps its own file beside `cache_file`
+    (`_versioned_path`), and a version's file no load has used for a week is removed. Measured
+    2026-10-22 on the Windows workstation: the first open of a memo file cost
     about 12 ms (on-access scanning) and a second read about 1 ms, so a cold directory of hundreds
     of memos does not fit a one-second hook.
 
@@ -409,6 +458,9 @@ def load_memo_records(
     if not root.is_dir():
         raise NotADirectoryError(f"memo directory {root} is not a directory")
     tag = _cache_tag() if cache_file is not None else ""
+    configured = cache_file
+    if cache_file is not None:
+        cache_file = _versioned_path(cache_file, tag)
     persisted, dead = _read_cache_file(cache_file, tag) if cache_file is not None else ({}, 0)
     current: _Entries = {}
     fresh: _Entries = {}
@@ -448,9 +500,10 @@ def load_memo_records(
             loaded.append(parsed)
         elif isinstance(parsed, str):
             loaded.skipped.append((key, parsed))
-    if cache_file is not None:
+    if configured is not None and cache_file is not None:
         _persist(cache_file, tag, fresh=fresh, current=current, persisted=persisted, dead=dead,
                  deadline=deadline, started=started)
+        _remove_stale_versions(configured, keep=cache_file)
     return loaded
 
 
@@ -559,4 +612,5 @@ __all__ = [
     "load_memo_records",
     "match_memo_records",
     "memo_supersession_graph",
+    "versioned_cache_file",
 ]
