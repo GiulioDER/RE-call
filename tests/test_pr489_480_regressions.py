@@ -28,6 +28,8 @@ def official_runner(tmp_path):
     """Run the actual shell entry point with external and paid transports stubbed."""
     if shutil.which("bash") is None:
         pytest.skip("the official runner requires bash")
+    if sys.platform == "win32":
+        pytest.skip("the fixture stubs git and benchd as shebang scripts on PATH; Windows runs the real git.exe")
     repo = tmp_path / "repo"
     scripts = repo / "benchmarks" / "benchd"
     scripts.mkdir(parents=True)

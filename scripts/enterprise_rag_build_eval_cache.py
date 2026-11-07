@@ -77,7 +77,7 @@ def build_cache(
                 json.dumps(payload, ensure_ascii=False),
                 encoding="utf-8",
             )
-            index[dsid] = str(rel)
+            index[dsid] = rel.as_posix()
             missing.remove(dsid)
             if not missing:
                 break

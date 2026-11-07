@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
+import re
 import shlex
 from types import SimpleNamespace
 
@@ -252,18 +254,12 @@ def test_printed_followups_select_the_created_store(tmp_path, monkeypatch, capsy
     selected.write_text(expected)
     cli.main(["dashboard", "--root", str(root), "--db-dsn-file", str(selected), "--no-browser"])
     assert dbs[-1] is not None and dbs[-1].dsn == expected, "invalid explicit dashboard control"
-    commands = [
-        shlex.split(line.strip())
-        for line in printed.splitlines()
-        if line.strip().startswith("env ")
-    ]
+    commands = _printed_followups(printed)
     assert len(commands) == 2, "setup provided no executable configured followups"
     executed = []
-    for command in commands:
-        assert command.pop(0) == "env"
-        while command and command[0] != "recall":
-            key, separator, value = command.pop(0).partition("=")
-            assert separator and key.startswith("RECALL_"), "invalid printed environment"
+    for env, command in commands:
+        for key, value in env.items():
+            assert key.startswith("RECALL_"), "invalid printed environment"
             monkeypatch.setenv(key, value)
         assert command and command.pop(0) == "recall"
         if "dashboard" in command:
@@ -274,6 +270,43 @@ def test_printed_followups_select_the_created_store(tmp_path, monkeypatch, capsy
     assert set(executed) == {"doctor", "dashboard"}
     assert seen[-1] == expected and dbs[-1] is not None and dbs[-1].dsn == expected
     assert not (root / ".env").exists(), "setup unexpectedly rewrote project configuration"
+
+
+def _printed_followups(printed: str) -> list[tuple[dict[str, str], list[str]]]:
+    """Each printed followup as (environment, argv), in the shell form setup prints here.
+
+    POSIX prints `env K=V recall ...`; Windows prints PowerShell `$env:K = 'V'` assignments
+    followed by bare `recall ...` lines, single-quoted with '' as the escaped quote.
+
+    Red proof (Windows): made `recall.lite.setup._followup_commands` drop the `$env:` lines;
+    `test_printed_followups_select_the_created_store` failed at its final DSN assertion, the
+    commands having reached PostgreSQL instead of the created store.
+    """
+    lines = [line.strip() for line in printed.splitlines()]
+    if os.name != "nt":
+        followups = []
+        for line in lines:
+            if not line.startswith("env "):
+                continue
+            command = shlex.split(line)[1:]
+            env = {}
+            while command and command[0] != "recall":
+                key, separator, value = command.pop(0).partition("=")
+                assert separator, "invalid printed environment"
+                env[key] = value
+            followups.append((env, command))
+        return followups
+    quoted = r"'((?:[^']|'')*)'"
+    env = {}
+    for line in lines:
+        match = re.fullmatch(r"\$env:(\w+) = " + quoted, line)
+        if match:
+            env[match[1]] = match[2].replace("''", "'")
+    return [
+        (env, [q.replace("''", "'") if q else bare for q, bare in re.findall(quoted + r"|(\S+)", line)])
+        for line in lines
+        if line.startswith("recall ")
+    ]
 
 
 @pytest.mark.parametrize("filename, valid_pattern", [

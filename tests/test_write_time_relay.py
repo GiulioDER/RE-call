@@ -267,12 +267,19 @@ def test_failure_is_not_hidden_as_an_empty_result(monkeypatch, tmp_path):
 
 
 def test_unreachable_database_keeps_followup_calls_fast_and_stops_cleanly(monkeypatch, tmp_path):
-    """The production process boundary, not just a mocked socket, remains fail-open."""
+    """The production process boundary, not just a mocked socket, remains fail-open.
+
+    Red proof (Windows, with this checkout on PYTHONPATH so the spawned helper runs it): set
+    `relay.RETRY_BACKOFF_SECONDS` to 0; this failed at `assert elapsed_ms < 500` (2095 ms).
+    """
 
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     config = {"dsn": "postgresql://u:p@127.0.0.1:1/db", "tenant": "default"}
     (tmp_path / "recall-hook.json").write_text(json.dumps(config), encoding="utf-8")
-    options = {"k": 5, "connect_timeout": 0.2}
+    # The smallest value `write_time.settings` passes on. Below 1 s psycopg truncates the timeout
+    # to 0, its 130 s default; Linux refuses port 1 at once, so that never showed there, but
+    # Windows takes about 2 s to refuse a loopback port and the helper then never answered.
+    options = {"k": 5, "connect_timeout": 1.0}
 
     with pytest.raises(relay.RelayUnavailable):
         relay.search("session-check", "a sufficiently long draft", config, options)

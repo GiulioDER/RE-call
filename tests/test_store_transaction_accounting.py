@@ -10,6 +10,7 @@ The successful cases are controls for behavior that already counted correctly.
 
 from contextlib import nullcontext
 import re
+import sys
 
 import psycopg
 import pytest
@@ -20,6 +21,10 @@ from tests.conftest import TEST_DSN, requires_db
 
 
 @requires_db
+@pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="the independent wire count is libpq tracing (pgconn.trace), which psycopg supports on Linux only",
+)
 @pytest.mark.parametrize("outcome", ["commit", "error", "forced", "rollback"])
 @pytest.mark.parametrize("nested", [False, True], ids=["outer", "nested"])
 def test_transaction_count_matches_wire_statements(tmp_path, nested, outcome):

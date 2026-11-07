@@ -137,7 +137,7 @@ def test_rerun_keeps_build_recipes_consistent_with_preserved_images(
             continue
         tag = service["image"].split(":", 1)[1]
         built_from = compose.parent / service["build"]["dockerfile"]
-        assert f"=={tag}" in built_from.read_text(), f"{name} would build a different image version"
+        assert f"=={tag}" in built_from.read_text(encoding="utf-8"), f"{name} would build a different image version"
 
 
 @pytest.mark.parametrize("failure", ["raise", "refuse"])

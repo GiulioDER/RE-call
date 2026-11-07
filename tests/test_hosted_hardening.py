@@ -375,6 +375,47 @@ def test_forget_uses_the_same_anchored_rule_as_matching():
     assert decided.forget == ["file:///s/project/notes.md"]
 
 
+def test_a_windows_servers_native_sources_match_and_are_kept():
+    """A server running on Windows records `C:\\...\\worktree\\notes.md`. Split on `/` only, no
+    suffix of it matched, so every sync re-uploaded every memo and `forget_missing` named every
+    source for deletion. Found by the 0.15.0 Windows suite run
+    (`tests/test_pr579_sync_regression.py::test_legacy_sync_replaces_edited_memo_and_preserves_other_project`).
+
+    Red proof: made `_slashed` return `source` unchanged (the pre-fix behaviour); this
+    failed at `assert decided.unchanged == 1` (it was 0, the memo was planned for upload).
+    """
+    local = {"worktree/notes.md": hosted.Change("worktree/notes.md", Path("x"), "h", 1)}
+    remote = {"C:\\stage\\uploads\\worktree\\notes.md": "h"}
+    decided = hosted.plan(local, remote, forget_missing=True)
+    assert decided.unchanged == 1
+    assert decided.upload == []
+    assert decided.forget == []
+
+
+def test_a_prefix_free_native_source_matches_as_forget_matches_it():
+    """Upload matching and `forget_missing` must agree: forget kept `mem\\notes.md` for the local
+    `mem/notes.md`, while the index held only its suffix `notes.md` and re-uploaded it.
+
+    Red proof: removed `index.setdefault(tail, digest)` before the suffix loop; this failed at
+    `assert decided.unchanged == 1` (it was 0).
+    """
+    local = {"mem/notes.md": hosted.Change("mem/notes.md", Path("x"), "h", 1)}
+    decided = hosted.plan(local, {"mem\\notes.md": "h"}, forget_missing=True)
+    assert decided.unchanged == 1
+    assert decided.forget == []
+
+
+def test_a_backslash_in_a_posix_source_is_not_a_separator():
+    """A source with a `/` is a URI or a POSIX path, where `\\` can be part of a file name.
+
+    Red proof: made `_slashed` replace `\\` unconditionally; this failed at
+    `assert [c.name for b in decided.upload for c in b] == ["notes.md"]`.
+    """
+    local = {"notes.md": hosted.Change("notes.md", Path("x"), "h", 1)}
+    decided = hosted.plan(local, {"file:///s/odd\\notes.md": "h"})
+    assert [c.name for b in decided.upload for c in b] == ["notes.md"]
+
+
 # ------------------------------------------------------------------------------------ the endpoint
 
 

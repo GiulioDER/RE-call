@@ -204,6 +204,9 @@ def test_the_raw_stream_is_written_before_it_is_parsed(tmp_path: Path, monkeypat
         return _FakeProcess()
 
     monkeypatch.setattr(claude_exec.asyncio, "create_subprocess_exec", _fake_launch)
+    # The fake has no pid or stdin, so take the launch path without a Windows job object; the
+    # stream capture under test is the same on every platform.
+    monkeypatch.setattr(claude_exec, "WindowsJob", lambda: None)
     with pytest.raises(ClaudeTranscriptError):
         asyncio.run(claude_exec.run_claude_case(row, RECALL_ON, config))
 

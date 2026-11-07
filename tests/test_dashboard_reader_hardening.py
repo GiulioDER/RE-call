@@ -35,13 +35,20 @@ def _read(root: Path, name: str) -> tuple[int, str]:
     return response.status, response.body.decode()
 
 
+def _symlink(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("creating a symlink needs privilege on this machine")
+
+
 def test_reader_rejects_outside_symlink_before_graph_read(tmp_path: Path) -> None:
     """SEC-001: an admitted name cannot render an outside symlink target."""
     root = tmp_path / "corpus"
     root.mkdir()
     outside = tmp_path / "outside.md"
     outside.write_text("# Outside\n\nOUTSIDE_BODY_MARKER", encoding="utf-8")
-    (root / "alias.md").symlink_to(outside)
+    _symlink(root / "alias.md", outside)
     status, page = _read(root, "alias.md")
     assert status == 404, "SEC-001: outside symlink was admitted"
     assert "OUTSIDE_BODY_MARKER" not in page
@@ -54,7 +61,7 @@ def test_outside_symlink_cannot_supply_reader_relationships(tmp_path: Path) -> N
     (root / "safe.md").write_text("# Safe\n\nSafe text", encoding="utf-8")
     outside = tmp_path / "outside.md"
     outside.write_text("---\nsupersedes: safe.md\n---\n# OUTSIDE_TITLE_MARKER", encoding="utf-8")
-    (root / "alias.md").symlink_to(outside)
+    _symlink(root / "alias.md", outside)
     status, page = _read(root, "safe.md")
     assert status == 200
     assert "href='/read?path=alias.md'" not in page, "SEC-001: outside graph declaration reached reader"
@@ -63,7 +70,7 @@ def test_outside_symlink_cannot_supply_reader_relationships(tmp_path: Path) -> N
 def test_in_corpus_symlink_still_reads(tmp_path: Path) -> None:
     """Nonbehavioral control: an internal symlink remains a readable memo."""
     (tmp_path / "memo.md").write_text("# Memo\n\nINSIDE_MARKER", encoding="utf-8")
-    (tmp_path / "alias.md").symlink_to(tmp_path / "memo.md")
+    _symlink(tmp_path / "alias.md", tmp_path / "memo.md")
     status, page = _read(tmp_path, "alias.md")
     assert status == 200 and "INSIDE_MARKER" in page
 

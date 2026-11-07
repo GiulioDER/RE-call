@@ -7,7 +7,7 @@ import yaml
 
 def test_signed_attachment_commands_have_repository_context_without_checkout():
     """Baseline160a23a3f fails repository-context assertion, no workflow is dispatched."""
-    workflow = yaml.safe_load(Path(".github/workflows/windows-installer.yml").read_text())
+    workflow = yaml.safe_load(Path(".github/workflows/windows-installer.yml").read_text(encoding="utf-8"))
     job = workflow["jobs"]["attach"]
     checked_out = False
     observed = []
