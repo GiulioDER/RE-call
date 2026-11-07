@@ -525,9 +525,9 @@ class ForgetResult(BaseModel):
     facts_redacted: int = Field(
         default=0,
         description="Fact values erased from the fact ledger because these sources supplied them: "
-        "the value, every evidence card citing these sources and the replay receipts echoing "
-        "them are rewritten in place under fresh ids, so the ledger no longer holds the value or a "
-        "hash of it. A value a surviving memo also states stays. -1 means the erasure FAILED (or "
+        "the value and every evidence card citing these sources are rewritten in place under "
+        "fresh ids, so the ledger no longer holds the value or a hash of it, and the replay "
+        "receipts naming them are deleted. A value a surviving memo also states stays. -1 means the erasure FAILED (or "
         "was not attempted because the retraction failed) and this forget must be re-run with "
         "the same source names.",
     )
