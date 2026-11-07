@@ -1059,6 +1059,23 @@ class LiteStore:
         return {name for (payload,) in rows for name in json.loads(payload).get("aliases", ())
                 if isinstance(name, str)}
 
+    def sources_forgotten_as(self, names: Sequence[str]) -> dict[str, set[str]]:
+        """`{name: {source, ...}}`: the sources a forget recorded under each of these card names
+        (`forget_source_aliases`), so a name still stands for a memo forgotten under it."""
+        found: dict[str, set[str]] = {}
+        if not names:
+            return found
+        rows = self._metadata_values(
+            "SELECT alias.value, audit_events.source_uri "
+            "FROM audit_events, json_each(audit_events.payload, '$.aliases') AS alias "
+            "WHERE audit_events.event_type = 'forget_source_aliases' "
+            "AND alias.value IN (SELECT value FROM json_each(?))", (json.dumps(list(names)),),
+        )
+        for name, source in rows:
+            if source:
+                found.setdefault(str(name), set()).add(str(source))
+        return found
+
     def latest_chunk_records(self, chunk_ids: Sequence[str]) -> dict[str, ChunkRecord]:
         """`{chunk_id: ChunkRecord}` of the latest `prune_source_chunks` or
         `forget_source_chunks` record naming each of `chunk_ids`, in the order they were appended."""

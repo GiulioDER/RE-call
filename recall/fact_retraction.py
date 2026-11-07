@@ -114,23 +114,44 @@ def chunk_targets(store: Any, shadow_store: Any | None) -> list[Any]:
 
 def _pruned_and_decided(
     cited_cards: list[Any], targets: list[Any], erased_chunks: set[str], asked: set[str], gone_sources: set[str],
+    resolved: Mapping[str, list[str]],
 ) -> tuple[dict[str, ChunkRecord], dict[str, set[str]]]:
     """The cited chunks whose latest record is the indexer's prune, and of those the ones this call
-    decides by naming their memo, grouped by its absolute source (`prepare_fact_erasure`)."""
+    decides by naming their memo, grouped by its absolute source (`prepare_fact_erasure`).
+
+    A call names a pruned memo by its absolute source, or by its root-relative name when that
+    name names this memo and no other: no memo the store serves under it, no other pruned memo
+    carrying it, and no memo a forget recorded under it (`forget_source_aliases`). A namesake
+    under an unrelated root is never forgotten by a bare name, a forget run again after its memo
+    is gone included (owner decision 2026-11-07); `resolved` is what each card name served before
+    the deletion."""
     candidates = sorted({card.chunk_id for card in cited_cards} - erased_chunks)
     # One read: the stores of one tenant share its audit records, and the prune and the forget
     # write theirs to the primary store (CCA PERF-003 of run 20261106T212835Z).
     reader = next((target for target in targets if callable(getattr(target, "latest_chunk_records", None))), None)
-    pruned: dict[str, ChunkRecord] = {}
-    if reader is not None and candidates:
-        pruned = {
-            chunk: record for chunk, record in reader.latest_chunk_records(candidates).items()
-            if record.kind == PRUNE_SOURCE_CHUNKS
-        }
+    latest: dict[str, ChunkRecord] = reader.latest_chunk_records(candidates) if reader is not None and candidates else {}
+    pruned = {chunk: record for chunk, record in latest.items() if record.kind == PRUNE_SOURCE_CHUNKS}
+    # Every memo each card name stood for: what it serves now, the memos pruned under it, and
+    # those a forget recorded under it, whose cards are redacted and so cite nothing.
+    under: dict[str, set[str]] = {}
+    for card in cited_cards:
+        record = pruned.get(card.chunk_id)
+        if record is not None:
+            under.setdefault(card.source, set()).add(record.source)
+    forgotten_as = getattr(reader, "sources_forgotten_as", None)
+    if callable(forgotten_as) and under:
+        for name, sources in forgotten_as(sorted(under)).items():
+            under.setdefault(name, set()).update(sources)
+
+    def names_it(card: Any, record: ChunkRecord) -> bool:
+        if record.source in asked | gone_sources:
+            return True
+        return card.source in asked and set(resolved.get(card.source, ())) | under[card.source] == {record.source}
+
     decided: dict[str, set[str]] = {}
     for card in cited_cards:
         record = pruned.get(card.chunk_id)
-        if record is not None and (card.source in asked or record.source in asked | gone_sources):
+        if record is not None and names_it(card, record):
             decided.setdefault(record.source, set()).add(card.chunk_id)
     return pruned, decided
 
@@ -201,15 +222,17 @@ def prepare_fact_erasure(
     # Keep only source names, never memo text. The mapping must commit before the chunks vanish,
     # so a failed append can be retried with the original absolute source.
     append = getattr(store, "append_audit_event", None)
-    if callable(append):
-        for source in sorted(gone_sources):
-            aliases = sorted(name for name, values in resolved.items() if source in values)
-            if aliases:
-                identity = json.dumps([store.tenant, source, aliases], ensure_ascii=False)
-                append(
-                    "forget_source_aliases", {"aliases": aliases}, source_uri=source,
-                    event_id="forget_alias_" + hashlib.sha256(identity.encode()).hexdigest(),
-                )
+
+    def record_aliases(source: str, aliases: list[str]) -> None:
+        if aliases and callable(append):
+            identity = json.dumps([store.tenant, source, aliases], ensure_ascii=False)
+            append(
+                "forget_source_aliases", {"aliases": aliases}, source_uri=source,
+                event_id="forget_alias_" + hashlib.sha256(identity.encode()).hexdigest(),
+            )
+
+    for source in sorted(gone_sources):
+        record_aliases(source, sorted(name for name, values in resolved.items() if source in values))
 
     # The chunks this deletion erases, so a card citing one is gone although a memo another root
     # holds under the same root-relative name is still served (owner decision 2026-11-06, CCA
@@ -235,13 +258,17 @@ def prepare_fact_erasure(
     # of run 20261105T225204Z): a card whose chunk's latest record is the indexer's prune survives,
     # so a fact it also states is hidden while the memo is away instead of retracted for good. No
     # record means gone, as before: a memo forgotten before these records existed stays forgotten.
-    # A pruned memo this call names, by its name or its source, is a decision; it is recorded as
-    # forgotten first, so a later forget reads it so even when this call's redaction fails. Only
+    # A pruned memo this call names, by its source or by a root-relative name that stands for it
+    # alone (`_pruned_and_decided`), is a decision; it is recorded as forgotten first, with the
+    # names it was decided under, so a later forget reads it so even when this call's redaction
+    # fails and a bare name stays ambiguous once it stood for it (CCA STAKES-001 of run
+    # 20261107T124651Z, DOC-001). Only
     # what the call names counts, never `touched_names`: that also holds every name a memo this
     # call erases is served under, so forgetting /A/x.md would decide a pruned /B/x.md (CCA BUG-001
     # of run 20261106T212835Z).
-    pruned, decided = _pruned_and_decided(cited_cards, targets, erased_chunks, set(named), gone_sources)
+    pruned, decided = _pruned_and_decided(cited_cards, targets, erased_chunks, set(named), gone_sources, resolved)
     for source, chunk_ids in sorted(decided.items()):
+        record_aliases(source, sorted({card.source for card in cited_cards if card.chunk_id in chunk_ids}))
         if callable(append):
             append(FORGET_SOURCE_CHUNKS, {"chunk_ids": sorted(chunk_ids)}, source_uri=source)
         erased_chunks.update(chunk_ids)
@@ -291,12 +318,16 @@ def prepare_fact_erasure(
     def redact() -> int:
         if redactor is None:
             return 0
+        # A name nothing serves is erased, a pruned memo carrying it included: its cards and
+        # facts stay, its receipts naming it go, as they do when a served memo of that name is
+        # forgotten (owner decision 2026-11-07, "erase").
         report = redactor.redact(
             erased=lambda name: name in touched_names and gone_name(name),
             names=sorted(touched_names),
             erased_chunk=chunk_gone,
             chunk_ids=sorted(erased_chunks),
             kept_chunk=lambda chunk_id: chunk_id in pruned,
+            name_gone=gone_name,
         )
         return int(report.facts_redacted)
 

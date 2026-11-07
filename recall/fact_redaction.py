@@ -188,6 +188,7 @@ def plan_redaction(
     token: Callable[[], str] | None = None,
     erased_chunk: Callable[[str], bool] | None = None,
     kept_chunk: Callable[[str], bool] | None = None,
+    name_gone: Callable[[str], bool] | None = None,
 ) -> RedactionPlan:
     """The rewrites that erase what `erased` memos supplied (every value, with `everything`).
 
@@ -196,7 +197,10 @@ def plan_redaction(
     card of the erased root's chunk (owner decision 2026-11-06, CCA SEC-001). `kept_chunk(chunk_id)`
     says a card's chunk is only pruned, so its card is evidence whatever its name says: a memo
     pruned from disk is a state, and its namesake in another root being forgotten erases nothing
-    of it (CCA BUG-001 of run 20261106T212835Z). `stored_cards` are the
+    of it (CCA BUG-001 of run 20261106T212835Z). `name_gone(name)` says a name serves nothing now:
+    the name of a card erased by its chunk is then a receipt needle too, as the name of a memo
+    forgotten under it, though a pruned memo of another root carries it (CCA BUG-001 of run
+    20261107T124651Z; owner decision 2026-11-07, "erase"). `stored_cards` are the
     card table's rows of this tenant that may need it, as `(card_id, card)`. The module docstring
     states the rule. Deterministic for a fixed `token`: maps are built in sorted order.
     """
@@ -214,18 +218,30 @@ def plan_redaction(
             or (erased_chunk is not None and erased_chunk(str(card.get("chunk_id", ""))))
         )
 
+    def name_erased(card: Mapping[str, Any]) -> bool:
+        # A name is a receipt needle only when the name itself is erased: a card erased by its
+        # chunk while another root still serves its name would otherwise delete the surviving
+        # namesake's receipts (owner decision 2026-11-07, CCA BUG-002 of run 20261106T121445Z).
+        name = str(card.get("source", ""))
+        if everything or (erased is not None and erased(name)):
+            return True
+        by_chunk = erased_chunk is not None and erased_chunk(str(card.get("chunk_id", "")))
+        return by_chunk and name_gone is not None and name_gone(name)
+
     cards_now: set[str] = set()
     names: set[str] = set()
     for row in rows:
         for card in row.evidence_cards:
             if erasable(card):
                 cards_now.add(str(card["card_id"]))
-                names.add(str(card.get("source", "")))
+                if name_erased(card):
+                    names.add(str(card.get("source", "")))
     table = [(str(card_id), stored) for card_id, stored in stored_cards]
     for card_id, stored in table:
         if erasable(stored):
             cards_now.add(card_id)
-            names.add(str(stored.get("source", "")))
+            if name_erased(stored):
+                names.add(str(stored.get("source", "")))
 
     holders: dict[str, list[LedgerRow]] = {}
     for row in rows:
@@ -428,6 +444,7 @@ class PostgresFactRedactor:
         erased_chunk: Callable[[str], bool] | None = None,
         chunk_ids: Collection[str] = (),
         kept_chunk: Callable[[str], bool] | None = None,
+        name_gone: Callable[[str], bool] | None = None,
     ) -> RedactionReport:
         """Plan and apply one redaction in one transaction. `names` bounds the card-table read to
         the memos `erased` may answer for, and `chunk_ids` adds the cards citing a chunk
@@ -443,7 +460,7 @@ class PostgresFactRedactor:
             # Only to learn which facts to lock: its ids are thrown away, so it draws none.
             first = plan_redaction(
                 self.tenant_id, rows, stored, erased=erased, everything=everything, token=lambda: "0" * 32,
-                erased_chunk=erased_chunk, kept_chunk=kept_chunk,
+                erased_chunk=erased_chunk, kept_chunk=kept_chunk, name_gone=name_gone,
             )
             if first.empty:
                 return RedactionReport()
@@ -451,7 +468,7 @@ class PostgresFactRedactor:
             rows = [_pg_row(row) for row in conn.execute(_LEDGER_ROW_SQL, (self.tenant_id,)).fetchall()]
             plan = plan_redaction(
                 self.tenant_id, rows, stored, erased=erased, everything=everything, token=token,
-                erased_chunk=erased_chunk, kept_chunk=kept_chunk,
+                erased_chunk=erased_chunk, kept_chunk=kept_chunk, name_gone=name_gone,
             )
             if plan.empty:
                 return RedactionReport()
@@ -589,6 +606,7 @@ class LiteFactRedactor:
         erased_chunk: Callable[[str], bool] | None = None,
         chunk_ids: Collection[str] = (),
         kept_chunk: Callable[[str], bool] | None = None,
+        name_gone: Callable[[str], bool] | None = None,
     ) -> RedactionReport:
         """`PostgresFactRedactor.redact` on the file, in one write transaction."""
         from datetime import UTC, datetime
@@ -602,7 +620,7 @@ class LiteFactRedactor:
         with self._store._write():
             plan = plan_redaction(
                 self.tenant_id, self._rows(), self._cards(), erased=erased, everything=everything, token=token,
-                erased_chunk=erased_chunk, kept_chunk=kept_chunk,
+                erased_chunk=erased_chunk, kept_chunk=kept_chunk, name_gone=name_gone,
             )
             if plan.empty:
                 return RedactionReport()

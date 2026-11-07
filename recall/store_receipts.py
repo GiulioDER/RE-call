@@ -146,6 +146,26 @@ class ReceiptsAuditMixin:
 
         return self._with_retry(_op)
 
+    def sources_forgotten_as(self, names: Sequence[str]) -> dict[str, set[str]]:
+        """`LiteStore.sources_forgotten_as` for this tenant."""
+        found: dict[str, set[str]] = {}
+        if not names:
+            return found
+
+        def _op(conn: "psycopg.Connection") -> list[tuple[str, str]]:
+            return conn.execute(
+                "SELECT alias, source_uri FROM recall_audit_events, "
+                "jsonb_array_elements_text(payload->'aliases') AS alias "
+                "WHERE tenant_id = %s AND event_type = 'forget_source_aliases' "
+                "AND payload->'aliases' ?| %s::text[] AND alias = ANY(%s)",
+                (self._tenant, list(names), list(names)),
+            ).fetchall()
+
+        for name, source in self._with_retry(_op):
+            if source:
+                found.setdefault(str(name), set()).add(str(source))
+        return found
+
     def latest_chunk_records(self, chunk_ids: Sequence[str]) -> dict[str, ChunkRecord]:
         """`LiteStore.latest_chunk_records` for this tenant: the latest prune or forget record per
         chunk id, in the order they were appended."""

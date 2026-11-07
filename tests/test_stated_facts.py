@@ -1242,3 +1242,38 @@ def test_prune_record_the_prune_records_and_deletes_under_the_erasure_lock(
     pruning = [entry for entry in seen if entry[0] in ("prune_source_chunks", "delete")]
     assert [kind for kind, _ in pruning] == ["prune_source_chunks", "delete"], seen
     assert all(inside for _, inside in pruning), f"the prune wrote outside the erasure lock: {seen}"
+
+
+def test_prune_record_the_erasure_lock_is_found_with_the_indexers_environment(
+    store: LiteStore, folder: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Node tests/test_stated_facts.py::test_prune_record_the_erasure_lock_is_found_with_the_indexers_environment.
+
+    Owner decision 2026-11-07: the prune finds the fact ledger whose erasure lock it holds with
+    the Indexer's own environment, as a forget does with its runtime one; a controller DSN an MCP
+    server resolved from a secret is not in os.environ. Red, mutation of `Indexer._prune_vanished`
+    (recall/index.py: `fact_ledger_for(self._store, self._env)` back to
+    `fact_ledger_for(self._store)`): fails on "the prune looked the lock up without the Indexer's
+    environment".
+    """
+    import recall.fact_retraction as retraction
+    from recall.index import Indexer
+
+    memo(folder, "door-b.md", facts=[DOOR])
+    environment = {"RECALL_EMBED_CACHE": "off", "RECALL_PRUNE_LOCK_PROBE": "indexer"}
+    indexer = Indexer(store, ContentWordEmbedder(), env=environment)  # type: ignore[arg-type]
+    indexer.index_path(folder)
+    seen: list[object] = []
+    real = retraction.fact_ledger_for
+
+    def looked_up(target: object, env: object = None) -> object:
+        seen.append(env)
+        return real(target, env)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(retraction, "fact_ledger_for", looked_up)
+    (folder / "door-b.md").unlink()
+    indexer.index_path(folder)
+
+    assert seen and all(isinstance(env, dict) and env.get("RECALL_PRUNE_LOCK_PROBE") == "indexer" for env in seen), (
+        f"the prune looked the lock up without the Indexer's environment: {seen}"
+    )

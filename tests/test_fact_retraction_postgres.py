@@ -199,3 +199,25 @@ def test_env003_the_latest_chunk_record_is_read_per_tenant_in_append_order(
     assert ids == {"/notes/a.md": ["chunk-a.md"], "/notes/b.md": ["chunk-b.md"]}, (
         f"another tenant's chunk was read for this tenant's prune: {ids}"
     )
+
+
+def test_owner_sources_forgotten_as_reads_this_tenants_alias_records(
+    make_store: Callable[[int], PgVectorStore],
+) -> None:
+    """Node tests/test_fact_retraction_postgres.py::test_owner_sources_forgotten_as_reads_this_tenants_alias_records.
+
+    Owner decision 2026-11-07: a bare name forgets a pruned memo only when nothing else, a memo a
+    forget recorded under it included, carries that name. `ReceiptsAuditMixin.sources_forgotten_as`
+    maps each name to the sources this tenant forgot under it, never another tenant's. Red,
+    mutation of `sources_forgotten_as` (recall/store_receipts.py: `tenant_id = %s` replaced by
+    `(tenant_id = %s OR TRUE)`, CI run 42376218427): fails on "another tenant's forget stood for
+    this tenant's name".
+    """
+    mine = _pg(make_store, f"owner-{uuid4().hex[:8]}")
+    other = PgVectorStore(TEST_DSN, dim=DIM, table=mine.table, tenant=f"owner-{uuid4().hex[:8]}")
+    mine.append_audit_event("forget_source_aliases", {"aliases": ["x.md", "notes/x.md"]}, source_uri="/A/x.md")
+    other.append_audit_event("forget_source_aliases", {"aliases": ["x.md"]}, source_uri="/C/x.md")
+
+    found = mine.sources_forgotten_as(["x.md", "y.md"])
+
+    assert found == {"x.md": {"/A/x.md"}}, f"another tenant's forget stood for this tenant's name: {found}"
