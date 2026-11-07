@@ -238,8 +238,13 @@ class _Cursor:
 
 
 class _Conn:
-    def __init__(self, *, bypass: bool) -> None:
+    def __init__(self, *, bypass: bool, scan_step: int = 10) -> None:
         self.bypass = bypass
+        # Each read of the HNSW scan counter advances it by `scan_step`, so one tenant measured
+        # between two reads shows `scan_step` scans: 10 matches `_row`'s 10 queries, 0 is a run
+        # the planner answered without the index.
+        self.scan_step = scan_step
+        self.scans = 0
 
     def __enter__(self) -> _Conn:
         return self
@@ -250,6 +255,9 @@ class _Conn:
     def execute(self, sql: str, params: object = None) -> _Cursor:
         if "pg_roles" in sql:
             return _Cursor([(self.bypass,)])
+        if "idx_scan" in sql:
+            self.scans += self.scan_step
+            return _Cursor([(self.scans,)])
         if "FROM recall_generations g" in sql:
             # Row level security hides every row from a role that cannot bypass it.
             return _Cursor([("a", "gen-a", 100), ("b", "gen-b", 100)] if self.bypass else [])
@@ -276,6 +284,7 @@ def _main(
     measure: Any,
     extra: tuple[str, ...] = (),
     connects: list[str] | None = None,
+    scan_step: int = 10,
 ) -> tuple[int, dict[str, Any], dict[str, Any]]:
     connected: dict[str, Any] = {}
 
@@ -283,7 +292,7 @@ def _main(
         if connects is not None:
             connects.append(dsn)
         connected.update(kwargs)
-        return _Conn(bypass=bypass)
+        return _Conn(bypass=bypass, scan_step=scan_step)
 
     monkeypatch.setattr(script.psycopg, "connect", connect)
     monkeypatch.setattr(script, "register_vector", lambda conn: None)
@@ -469,3 +478,49 @@ def test_rows_added_after_the_count_make_it_measure_again() -> None:
     GenerationMoved). Restored, green."""
     with pytest.raises(script.GenerationMoved):
         script.generation_vectors(_StreamingConn(10, 8, counted=9), "acme", "gen-1")  # type: ignore[arg-type]
+
+
+def test_every_connection_forces_custom_plans() -> None:
+    """Invariant: the store's and the listing's connections plan every statement with its values.
+    Failure mode: psycopg prepares a statement after five executions, and the generic plan of the
+    dense query is an exact scan, so the run measured exact search under the HNSW label (memory
+    r@20 0.999 on a production corpus 2026-11-07, for an index whose walk gives 0.933).
+
+    Red proof by mutation (the option is new, so the pre-fix script has no line to fail against):
+    with `custom` set to "" in `read_only_options`, this failed at its assertion. Restored, green.
+    """
+    assert "plan_cache_mode=force_custom_plan" in script.read_only_options("postgresql://example/db")
+
+
+def test_a_tenant_whose_index_was_not_walked_is_recorded_as_failed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Invariant: a tenant whose HNSW index was scanned fewer times than it was queried is not
+    scored. Failure mode: the planner answers from another plan and the run reports that plan's
+    recall as the index's.
+
+    Red proof, 2026-11-07: against origin/master's script (a675d72ef, before this fix) this failed
+    at `assert code == 1` (0: both tenants scored as measured). Restored, green.
+    """
+    monkeypatch.setattr(script, "INDEX_SCAN_FLUSH_WAIT_S", 0.0, raising=False)
+    code, summary, _ = _main(
+        monkeypatch, tmp_path, bypass=True, measure=lambda conn, dsn, tenant, dim, args: _row(tenant),
+        scan_step=0,
+    )
+
+    assert code == 1
+    assert summary["tenants"] == []
+    assert [f["tenant"] for f in summary["failed"]] == ["a", "b"]
+    assert all("IndexNotWalked" in f["error"] for f in summary["failed"])
+
+
+def test_a_walked_tenant_records_its_index_scans(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Invariant: a run whose index was walked once per query is scored and says how many scans it
+    saw. Red proof by mutation: with `index_scans_since` returning 0, this failed at
+    `assert code == 0`. Restored, green."""
+    code, summary, _ = _main(
+        monkeypatch, tmp_path, bypass=True, measure=lambda conn, dsn, tenant, dim, args: _row(tenant)
+    )
+
+    assert code == 0
+    assert [t["hnsw_index_scans"] for t in summary["tenants"]] == [10, 10]

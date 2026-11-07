@@ -9,7 +9,10 @@ its HNSW path, and scores it against exact cosine search computed in numpy over 
 generation's vectors. The query's own row is excluded from both lists. Generation-scoped search is
 exact by default since #847, so the measurement forces `RECALL_GENERATION_DENSE_SEARCH=hnsw`, the
 setting an operator would opt into, and records the path it measured: without that it would
-compare exact search with itself and report full recall for an index it never walked.
+compare exact search with itself and report full recall for an index it never walked. The code path
+is not the plan, though: every connection forces custom plans, because the generic plan of a
+prepared dense query is exact, and a tenant whose HNSW index was scanned fewer times than it was
+queried (`pg_stat_all_indexes`) is recorded as failed rather than scored.
 
 Why it exists. The HNSW index is built over the whole table, every tenant and every retained
 generation, while a query asks for one tenant's active generation: a small slice, which is the case
@@ -41,7 +44,8 @@ queries that lost at least one neighbour), `short_results` (walks that returned 
 largest k), `exact_fallbacks`, `ids_outside_generation` (returned ids that are not in the measured
 generation), `share_of_table` (the tenant's rows over the whole table, the selectivity of the
 filtered walk), the `ef_search` and `iterative_scan` it ran under, `hnsw_ms_p50` and `hnsw_ms_p95`,
-and `remeasured_after_change`.
+`hnsw_index_scans` (scans of the table's HNSW indexes during the measurement, cluster wide), and
+`remeasured_after_change`.
 """
 
 from __future__ import annotations
@@ -301,6 +305,42 @@ def format_row(row: dict[str, Any], ks: list[int]) -> str:
     )
 
 
+class IndexNotWalked(Exception):
+    """Fewer HNSW index scans happened than queries were sent: some answers came from another plan."""
+
+
+#: Scans of every HNSW index on the table, cluster wide. The counter is the planner's own record of
+#: which plan ran, so it checks the served query path itself rather than a re-statement of its SQL.
+_HNSW_INDEX_SCANS_SQL = """
+    SELECT coalesce(sum(s.idx_scan), 0)
+    FROM pg_stat_all_indexes s
+    JOIN pg_class i ON i.oid = s.indexrelid
+    JOIN pg_am am ON am.oid = i.relam
+    WHERE s.relid = 'recall_chunks_v1'::regclass AND am.amname = 'hnsw'
+"""
+#: How long to wait for the store's backends to publish their counters. A backend flushes its
+#: statistics when its connection closes, which lands a moment after `store.close()` returns.
+INDEX_SCAN_FLUSH_WAIT_S = 10.0
+
+
+def hnsw_index_scans(conn: psycopg.Connection) -> int:
+    return int(conn.execute(_HNSW_INDEX_SCANS_SQL).fetchone()[0])
+
+
+def index_scans_since(conn: psycopg.Connection, before: int, at_least: int) -> int:
+    """HNSW index scans since `before`, waiting up to `INDEX_SCAN_FLUSH_WAIT_S` for `at_least`.
+
+    Another session's HNSW scan in the same window also counts, so this can only overstate: it can
+    let a partly unwalked run pass, never fail a walked one.
+    """
+    deadline = time.monotonic() + INDEX_SCAN_FLUSH_WAIT_S
+    while True:
+        scans = hnsw_index_scans(conn) - before
+        if scans >= at_least or time.monotonic() >= deadline:
+            return scans
+        time.sleep(0.25)
+
+
 def measure_all(
     conn: psycopg.Connection,
     generations: list[tuple[str, str, int]],
@@ -319,6 +359,7 @@ def measure_all(
             skipped.append({"tenant": tenant, "rows": n})
             continue
         try:
+            scans_before = hnsw_index_scans(conn)
             try:
                 row = measure_tenant(conn, args.dsn, tenant, DIMENSION, args)
                 row["remeasured_after_change"] = False
@@ -326,6 +367,13 @@ def measure_all(
                 print(f"{tenant}: its served corpus changed mid-measurement; measuring it once more")
                 row = measure_tenant(conn, args.dsn, tenant, DIMENSION, args)
                 row["remeasured_after_change"] = True
+            row["hnsw_index_scans"] = index_scans_since(conn, scans_before, row["queries"])
+            if row["hnsw_index_scans"] < row["queries"]:
+                raise IndexNotWalked(
+                    f"{row['queries']} queries sent, but the HNSW index was scanned only "
+                    f"{row['hnsw_index_scans']} times: the planner answered the rest without it, so "
+                    "this is not a measurement of the index"
+                )
         except Exception as exc:  # noqa: BLE001  # BROAD-CATCH: one tenant must not lose the run
             failures.append({"tenant": tenant, "error": f"{type(exc).__name__}: {exc}"})
             print(f"{tenant}: FAILED, {type(exc).__name__}: {exc}", flush=True)
@@ -401,7 +449,11 @@ def read_only_options(dsn: str, statement_timeout_ms: int | None = None) -> str:
     timeout when one is given; the keyword would otherwise replace them rather than add to them."""
     existing = psycopg.conninfo.conninfo_to_dict(dsn).get("options") or ""
     timeout = "" if statement_timeout_ms is None else f" -c statement_timeout={statement_timeout_ms}"
-    return f"{existing} -c default_transaction_read_only=on{timeout}".strip()
+    # psycopg prepares a statement after five executions, and the generic plan PostgreSQL may then
+    # use for the dense query is an exact scan of the generation (bitmap plus Sort): measured
+    # 2026-11-07 on a production corpus, it reported r@20 0.999 for an index whose walk gives 0.933.
+    custom = " -c plan_cache_mode=force_custom_plan"
+    return f"{existing} -c default_transaction_read_only=on{custom}{timeout}".strip()
 
 
 def run_status(results: list[dict[str, Any]], failures: list[dict[str, Any]], missing: list[str]) -> int:
