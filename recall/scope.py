@@ -179,6 +179,16 @@ class Scope:
         """`facet` lowercased, matching the ``lower(...)`` `GROUP_SQL` applies to the stored side."""
         return None if self.facet is None else self.facet.strip().lower()
 
+    def matches_source_policy(self, source: str, digest: object) -> bool:
+        """In-memory counterpart of the stored source and policy stamp predicates."""
+        return (
+            (self.security_policy_digest is None or digest == self.security_policy_digest)
+            and (
+                self.source_prefixes is None
+                or any(re.fullmatch(_source_prefix_regex_pattern(prefix), source) for prefix in self.source_prefixes)
+            )
+        )
+
     def predicate(
         self, alias: str, source_column: str = "source"
     ) -> tuple[str, dict[str, object]]:

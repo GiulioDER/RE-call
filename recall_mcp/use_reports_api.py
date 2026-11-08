@@ -16,9 +16,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from contextlib import nullcontext
 from typing import Any
 
 from recall.errors import RecallError
+from recall.security_policy import AccessContext, SourceSecurityPolicy
+from recall.types import Chunk
 
 #: The `event_type` of a report in `recall_audit_events`; the dashboard reads it by this name.
 USE_REPORT_EVENT = "use_report"
@@ -73,6 +76,47 @@ def resolve_sources(names: Sequence[str], known: set[str], field: str) -> list[s
     return resolved
 
 
+def authorized_report_rows(
+    store: Any,
+    names: Sequence[str],
+    policy: SourceSecurityPolicy,
+    context: AccessContext,
+    *,
+    include_text: bool,
+    exact: bool = False,
+) -> dict[str, list[Chunk]]:
+    if store.tenant != context.tenant:
+        raise PermissionError("access context tenant does not match the serving store")
+    if len(names) > 2 * MAX_SOURCES:
+        raise UseReportRefused("too many report sources")
+    wanted = {name.strip() for name in names}
+    scope = policy.scope_for(context)
+    if not wanted or not scope.source_prefixes:
+        return {}
+    aliases = {name for name in wanted if not exact and name == _basename(name)}
+    snapshot = getattr(store, "snapshot", None)
+    result: dict[str, list[Chunk]] = {}
+    with snapshot() if callable(snapshot) else nullcontext():
+        scoped_reader = getattr(store, "iter_scoped_chunks", None)
+        chunks = (
+            scoped_reader(scope, sources=sorted(wanted), basenames=sorted(aliases), include_text=include_text)
+            if callable(scoped_reader) else store.iter_chunks()
+        )
+        for chunk in chunks:
+            if chunk.source not in wanted and _basename(chunk.source) not in aliases:
+                continue
+            file = chunk.metadata.get("file")
+            if not scope.matches_source_policy(
+                file if isinstance(file, str) and file else chunk.source,
+                chunk.metadata.get("security_policy_digest"),
+            ):
+                continue
+            matches = result.setdefault(chunk.source, [])
+            if include_text:
+                matches.append(chunk)
+    return result
+
+
 def report_use(
     store: Any,
     *,
@@ -83,6 +127,8 @@ def report_use(
     task_succeeded: bool | None = None,
     query: str | None = None,
     note: str | None = None,
+    security_policy: SourceSecurityPolicy | None = None,
+    access_context: AccessContext | None = None,
 ) -> dict[str, Any]:
     """Record one report, or raise `UseReportRefused` with the reason."""
     task = _context(task, MAX_TASK_CHARS)
@@ -90,7 +136,12 @@ def report_use(
         raise UseReportRefused("task is required: say in a sentence what you were doing")
     if effect not in EFFECTS:
         raise UseReportRefused(f"effect must be one of {', '.join(EFFECTS)}")
-    known = set(store.source_content_hashes())
+    if security_policy is None:
+        known = set(store.source_content_hashes())
+    elif access_context is None:
+        raise UseReportRefused("source policy requires an access context")
+    else:
+        known = set(authorized_report_rows(store, (*used, *wrong), security_policy, access_context, include_text=False))
     used_sources = resolve_sources(used, known, "used")
     wrong_sources = resolve_sources(wrong, known, "wrong")
     both = sorted(set(used_sources) & set(wrong_sources))

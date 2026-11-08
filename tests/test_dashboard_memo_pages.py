@@ -24,7 +24,7 @@ from recall.dashboard.server import DashboardApp
 from recall.rewrite import _derived_value
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 
 
 @pytest.fixture

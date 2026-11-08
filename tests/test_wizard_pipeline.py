@@ -133,6 +133,7 @@ class _FakeManager:
         security_policy: Any = None,
         security_context: Any = None,
         progress: Any = None,
+        policy_source_root: Path | None = None,
     ) -> Any:
         self._recorder.note("build")
         self.built = True

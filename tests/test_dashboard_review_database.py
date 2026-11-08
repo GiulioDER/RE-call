@@ -115,7 +115,7 @@ import pytest
 
 from recall.dashboard import db as dbq
 from recall.dashboard import review
-from recall.dashboard.server import COOKIE, DashboardApp
+from recall.dashboard.server import DashboardApp
 from recall.document import parse_document
 from recall.frontmatter import supersedes_targets
 from recall.rewrite import RejectionLedger, RewriteRefused, claim_key, default_ledger_path
@@ -243,7 +243,7 @@ def test_an_unreachable_database_leaves_the_folder_queue(corpus: Path) -> None:
 
 
 PORT = 8766
-SIGNED = {"Host": f"127.0.0.1:{PORT}", "Cookie": f"{COOKIE}=tok123"}
+SIGNED = {"Host": f"127.0.0.1:{PORT}", "Authorization": "Bearer tok123"}
 
 
 def test_the_queue_page_reads_the_database_and_reject_closes_it(corpus: Path, monkeypatch) -> None:

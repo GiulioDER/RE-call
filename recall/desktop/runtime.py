@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from recall.wizard.database import probe_database
 from recall.desktop.models import (
@@ -162,17 +163,26 @@ class SdkMcpGateway:
 
         headers = {}
         token = read_token(self.profile)
+        endpoint = self.profile.endpoint or ""
+        loopback_http = False
         if token:
+            try:
+                url = urlsplit(endpoint)
+                loopback_http = url.scheme == "http" and url.hostname in {"localhost", "127.0.0.1", "::1"}
+            except ValueError as exc:
+                raise RuntimeErrorBase("Invalid authenticated MCP endpoint. Use HTTPS or loopback HTTP.") from exc
+            if not url.hostname or (url.scheme != "https" and not loopback_http):
+                raise RuntimeErrorBase("Authenticated MCP endpoints require HTTPS or loopback HTTP.")
             headers["Authorization"] = f"Bearer {token}"
         try:
             import httpx2
 
-            http_client = httpx2.AsyncClient(headers=headers)
+            http_client = httpx2.AsyncClient(headers=headers, trust_env=not loopback_http)
         except ImportError:
             http_client = None
         try:
             async with streamable_http_client(
-                self.profile.endpoint or "", http_client=http_client
+                endpoint, http_client=http_client
             ) as streams:
                 async with ClientSession(*streams) as session:
                     await session.initialize()

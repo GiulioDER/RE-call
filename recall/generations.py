@@ -10,7 +10,7 @@ from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, cast, get_args
 from urllib.parse import unquote, urlsplit
 
@@ -256,8 +256,22 @@ _METADATA_RULE_VERSION = "recall-record-2026-10-21"
 _PRE_RECORD_METADATA_RULE_VERSION = "relative-file-paths-2026-08-29"
 
 
-def manifest_relative_paths(manifest: "IndexManifestV1") -> dict[str, str]:
-    """Return each manifest URI relative to the common directory of the manifest."""
+def manifest_relative_paths(
+    manifest: "IndexManifestV1", *, local_root: Path | None = None,
+) -> dict[str, str]:
+    """Name manifest sources relative to a fixed local root or the manifest's common directory."""
+    if local_root is not None:
+        from recall.confinement import within
+        from recall.manifest import local_path_for
+
+        root = local_root.resolve()
+        paths: dict[str, str] = {}
+        for entry in manifest.objects:
+            local_path = within(root, local_path_for(entry.uri))
+            if local_path is None:
+                raise ValueError("manifest source is outside the configured upload root")
+            paths[entry.uri] = local_path.relative_to(root).as_posix()
+        return paths
     parts = [urlsplit(entry.uri) for entry in manifest.objects]
     if not parts:
         return {}
@@ -1327,8 +1341,14 @@ class GenerationManager:
         security_policy: SourceSecurityPolicy | None = None,
         security_context: AccessContext | None = None,
         progress: BuildProgressSink | None = None,
+        *,
+        policy_source_root: Path | None = None,
     ) -> BuildStats:
         """Build a BUILDING generation from its manifest.
+
+        With `policy_source_root`, all objects must be local and confined to that root.
+        Their paths relative to it are the stored file keys and source policy inputs.
+        Otherwise the build derives those keys from the manifest's common directory.
 
         `progress`, when given, receives a plan before any embedding, an update at every stage of
         every object, and a final count (see `recall.build_progress`). It observes the build and
@@ -1376,7 +1396,7 @@ class GenerationManager:
                 self._check_build_identity(pipeline, embedder, security_policy, security_context)
             )
 
-            relative_paths = manifest_relative_paths(manifest)
+            relative_paths = manifest_relative_paths(manifest, local_root=policy_source_root)
             group_keys, group_fingerprints = _context_groups(
                 manifest, runtime_profile, grouped_passages, tombstones
             )

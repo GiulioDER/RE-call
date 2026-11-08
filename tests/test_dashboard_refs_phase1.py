@@ -31,7 +31,7 @@ from tests.test_dashboard_corpus import _file, _graph
 NOW = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
 OLD = "the deploy host for staging is alpha"
 NEW = "the deploy host for staging is now gamma"
-SIGNED = {"Host": "127.0.0.1:8765", "Cookie": "recall_dashboard=tok"}
+SIGNED = {"Host": "127.0.0.1:8765", "Authorization": "Bearer tok"}
 
 
 @pytest.fixture

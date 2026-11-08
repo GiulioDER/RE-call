@@ -11,7 +11,9 @@ from __future__ import annotations
 import ctypes
 import os
 from pathlib import Path
+import socket
 import subprocess
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -49,6 +51,41 @@ def test_child_refuses_a_different_configuration(tmp_path, monkeypatch, changed)
     current = config
     assert relay._serve(path, relay._token_digest("token")) == 0
     assert sockets == [1], "the matching configuration must still reach startup"
+
+
+def test_stalled_unauthenticated_relay_client_does_not_block_ping(tmp_path, monkeypatch):
+    """At 65b7a791c the legitimate ping timed out after the stalled client received its proof."""
+    config = {"dsn": "postgresql://example/a", "tenant": "a", "project_root": str(tmp_path)}
+    path = tmp_path / "relay.json"
+    token = "synthetic-relay-token"
+    relay._atomic_write(path, relay._initial_state(token, relay._fingerprint(config, write_time.settings(config))))
+    monkeypatch.setattr(relay, "load_config", lambda: config)
+    ready = threading.Event()
+    published = {}
+
+    def publish(_path, state, _token):
+        published.update(state)
+        ready.set()
+        return True
+
+    monkeypatch.setattr(relay, "_publish_startup_state", publish)
+    thread = threading.Thread(target=relay._serve, args=(path,), daemon=True)
+    thread.start()
+    try:
+        assert ready.wait(3), "test relay did not publish its endpoint"
+        with socket.create_connection(("127.0.0.1", published["port"]), timeout=2) as slow:
+            slow.sendall(b'{"op":"hello","nonce":"slow"}\n')
+            assert relay._read_line(slow).get("proof")
+            slow.sendall(b'{"op":')
+            try:
+                result = relay._endpoint_request(published, {"op": "ping", "token": token}, timeout=0.6)
+            except (OSError, relay.RelayUnavailable):
+                result = None
+            assert result == {"status": "ok"}, "one stalled pre-authentication frame blocked the authenticated ping"
+    finally:
+        relay._atomic_write(relay._stop_marker_path(path), {"token": token})
+        thread.join(3)
+    assert not thread.is_alive()
 
 
 def test_detached_child_does_not_import_the_project_package(tmp_path, monkeypatch):

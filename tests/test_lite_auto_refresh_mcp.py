@@ -486,7 +486,7 @@ def test_recall_index_checks_the_policy_on_the_names_it_stores(lite_env: dict[st
     root = Path(lite_env["RECALL_INDEX_ROOT"])
     _write_memos(root / "mem", 2)
     policy = tmp_path / "policy.json"
-    policy.write_text(json.dumps({"rules": [{"prefix": "mem", "principals": [], "purposes": ["retrieval"], "redactions": []}]}),
+    policy.write_text(json.dumps({"rules": [{"prefix": "mem", "principals": [], "purposes": ["indexing"], "redactions": []}]}),
                       encoding="utf-8")
     env = {**lite_env, "RECALL_SOURCE_POLICY_FILE": str(policy)}
 

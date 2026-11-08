@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import copy
 import csv
 import io
 import os
@@ -22,12 +23,13 @@ import tempfile
 import threading
 import urllib.parse
 import zipfile
+import zlib
 from dataclasses import dataclass, replace
 from email import policy
 from email.parser import BytesParser
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Literal
+from typing import IO, Any, Iterable, Iterator, Literal
 from xml.etree import ElementTree
 from recall.errors import RecallError
 from recall.frontmatter import MARKDOWN_SUFFIXES
@@ -348,6 +350,47 @@ def _extract_pdf(path: Path, data: bytes) -> ExtractedDocument:
     return _result("\n\n".join(sections), "pdf", tables=table_count)
 
 
+MAX_OFFICE_MEMBERS = 10_000
+MAX_OFFICE_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_OFFICE_TOTAL_BYTES = 128 * 1024 * 1024
+
+
+@contextlib.contextmanager
+def _bounded_office_package(data: bytes) -> Iterator[IO[bytes]]:
+    # Office SDKs eagerly read members. Normalize the archive through bounded reads before
+    # letting them read its contents, and spill the expanded copy to disk above one MiB.
+    with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as package:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as source, zipfile.ZipFile(package, "w") as output:
+                members = source.infolist()
+                if (
+                    len(members) > MAX_OFFICE_MEMBERS
+                    or sum(member.file_size for member in members) > MAX_OFFICE_TOTAL_BYTES
+                    or any(member.file_size > MAX_OFFICE_MEMBER_BYTES for member in members)
+                ):
+                    raise DocumentExtractionError("Office package exceeds the archive expansion limit")
+                for member in members:
+                    if member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                        raise DocumentExtractionError("Office package uses unsupported ZIP compression")
+                    probe = copy.copy(member)
+                    # ZipExtFile truncates at file_size before checking CRC. Allow one extra
+                    # byte through so a forged size and matching prefix CRC cannot hide it.
+                    probe.file_size += 1
+                    remaining = member.file_size
+                    with source.open(probe) as reader, output.open(member.filename, "w") as writer:
+                        while block := reader.read(min(64 * 1024, remaining + 1)):
+                            remaining -= len(block)
+                            if remaining < 0:
+                                raise DocumentExtractionError("Office member exceeds its declared size")
+                            writer.write(block)
+                    if remaining:
+                        raise DocumentExtractionError("Office member is smaller than its declared size")
+        except (OSError, RuntimeError, EOFError, UnicodeError, zipfile.BadZipFile, zlib.error) as exc:
+            raise DocumentExtractionError("invalid Office package") from exc
+        package.seek(0)
+        yield package
+
+
 def _extract_docx(data: bytes) -> ExtractedDocument:
     try:
         from docx import Document
@@ -357,16 +400,19 @@ def _extract_docx(data: bytes) -> ExtractedDocument:
         ) from exc
 
     try:
-        document = Document(io.BytesIO(data))
-        sections = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
-        tables = 0
-        for index, table in enumerate(document.tables, start=1):
-            markdown = _rows_to_markdown(
-                [[cell.text for cell in row.cells] for row in table.rows]
-            )
-            if markdown:
-                tables += 1
-                sections.append(f"### Table {index}\n\n{markdown}")
+        with _bounded_office_package(data) as package:
+            document = Document(package)
+            sections = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
+            tables = 0
+            for index, table in enumerate(document.tables, start=1):
+                markdown = _rows_to_markdown(
+                    [[cell.text for cell in row.cells] for row in table.rows]
+                )
+                if markdown:
+                    tables += 1
+                    sections.append(f"### Table {index}\n\n{markdown}")
+    except DocumentExtractionError:
+        raise
     except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract DOCX: {type(exc).__name__}") from exc
     return _result("\n\n".join(sections), "docx", tables=tables)
@@ -381,16 +427,19 @@ def _extract_spreadsheet(suffix: str, data: bytes) -> ExtractedDocument:
                 "XLSX extraction requires the documents extra: pip install \"recall-rag[documents]\""
             ) from exc
         try:
-            workbook = load_workbook(io.BytesIO(data), read_only=True, data_only=False)
-            sections: list[str] = []
-            tables = 0
-            for sheet in workbook.worksheets:
-                rows = _bounded_rows(sheet.iter_rows(values_only=True), sheet.max_row, sheet.max_column)
-                markdown = _rows_to_markdown(rows)
-                if markdown:
-                    tables += 1
-                    sections.append(f"## Sheet: {sheet.title}\n\n{markdown}")
-            workbook.close()
+            with _bounded_office_package(data) as package:
+                workbook = load_workbook(package, read_only=True, data_only=False)
+                sections: list[str] = []
+                tables = 0
+                for sheet in workbook.worksheets:
+                    rows = _bounded_rows(sheet.iter_rows(values_only=True), sheet.max_row, sheet.max_column)
+                    markdown = _rows_to_markdown(rows)
+                    if markdown:
+                        tables += 1
+                        sections.append(f"## Sheet: {sheet.title}\n\n{markdown}")
+                workbook.close()
+        except DocumentExtractionError:
+            raise
         except Exception as exc:  # BROAD-CATCH: error-translation
             raise DocumentExtractionError(f"could not extract XLSX: {type(exc).__name__}") from exc
         return _result("\n\n".join(sections), suffix.removeprefix("."), tables=tables)
@@ -446,25 +495,28 @@ def _extract_pptx(data: bytes) -> ExtractedDocument:
             "PPTX extraction requires the documents extra: pip install \"recall-rag[documents]\""
         ) from exc
     try:
-        presentation = Presentation(io.BytesIO(data))
-        sections: list[str] = []
-        tables = 0
-        for slide_number, slide in enumerate(presentation.slides, start=1):
-            slide_parts: list[str] = []
-            for shape in slide.shapes:
-                if getattr(shape, "has_table", False):
-                    markdown = _rows_to_markdown(
-                        [[cell.text for cell in row.cells] for row in shape.table.rows]
-                    )
-                    if markdown:
-                        tables += 1
-                        slide_parts.append(markdown)
-                elif getattr(shape, "has_text_frame", False):
-                    text = shape.text.strip()
-                    if text:
-                        slide_parts.append(text)
-            if slide_parts:
-                sections.append(f"## Slide {slide_number}\n\n" + "\n\n".join(slide_parts))
+        with _bounded_office_package(data) as package:
+            presentation = Presentation(package)
+            sections: list[str] = []
+            tables = 0
+            for slide_number, slide in enumerate(presentation.slides, start=1):
+                slide_parts: list[str] = []
+                for shape in slide.shapes:
+                    if getattr(shape, "has_table", False):
+                        markdown = _rows_to_markdown(
+                            [[cell.text for cell in row.cells] for row in shape.table.rows]
+                        )
+                        if markdown:
+                            tables += 1
+                            slide_parts.append(markdown)
+                    elif getattr(shape, "has_text_frame", False):
+                        text = shape.text.strip()
+                        if text:
+                            slide_parts.append(text)
+                if slide_parts:
+                    sections.append(f"## Slide {slide_number}\n\n" + "\n\n".join(slide_parts))
+    except DocumentExtractionError:
+        raise
     except Exception as exc:  # BROAD-CATCH: error-translation
         raise DocumentExtractionError(f"could not extract PPTX: {type(exc).__name__}") from exc
     return _result("\n\n".join(sections), "pptx", tables=tables)

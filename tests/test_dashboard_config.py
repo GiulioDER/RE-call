@@ -59,7 +59,7 @@ from recall.dashboard.server import DashboardApp
 from recall_mcp.config_report import build_report, redact_argv
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 PLACEHOLDER = "CHANGEME-SENTINEL"
 
 

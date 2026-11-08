@@ -1292,7 +1292,7 @@ class Indexer:
                 derived_hash,
                 self._embedder,
                 self._context_policy,
-                None if self._security_policy is None else self._security_policy.content_digest,
+                None if self._security_policy is None else self._security_policy.digest,
                 context_group_id,
             )
             shadow_fingerprint = (
@@ -1301,7 +1301,7 @@ class Indexer:
                     derived_hash,
                     self._shadow.embedder,
                     self._shadow.context_policy,
-                    None if self._security_policy is None else self._security_policy.content_digest,
+                    None if self._security_policy is None else self._security_policy.digest,
                     context_group_id,
                 )
             )
@@ -1450,13 +1450,13 @@ class Indexer:
                     "context_mode": policy.mode,
                     "context_version": policy.version,
                     "context_group_id": context_group_id,
-                    **({"security_policy_digest": self._security_policy.digest}
-                       if self._security_policy is not None else {}),
                     "text_start": piece.start if piece is not None else None,
                     "text_end": piece.end if piece is not None else None,
                     "heading_hierarchy": list(piece.headings) if piece is not None else [],
                     **extra_metadata,
                     **self.apply_provenance(meta),
+                    **({"file": rel[f], "security_policy_digest": self._security_policy.digest}
+                       if self._security_policy is not None else {}),
                 }
 
             for i, ct in enumerate(raw_chunks):

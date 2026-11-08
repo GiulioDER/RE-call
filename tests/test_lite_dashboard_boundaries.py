@@ -80,7 +80,7 @@ def test_missing_store_recovers_its_tenant_without_a_restart(
             "stale_quote_sha256": old_sha, "stale_quote_chars": old_chars,
             "current_quote_sha256": new_sha, "current_quote_chars": new_chars,
         })
-    signed = {"Host": "127.0.0.1:8765", "Cookie": f"recall_dashboard={app.token}; recall_tenant=memory"}
+    signed = {"Host": "127.0.0.1:8765", "Authorization": f"Bearer {app.token}", "Cookie": "recall_tenant=memory"}
     page = app.handle("GET", "/retrieval", signed)
     assert page.status == 200
     assert b"the recovered query" in page.body, "the dashboard retained the unavailable store's fallback tenant"

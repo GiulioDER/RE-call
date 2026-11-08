@@ -7,10 +7,13 @@ import json
 import os
 import re
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from recall._env import strict_bool
 from recall.scope import Scope
+
+if TYPE_CHECKING:
+    from recall.types import Chunk
 
 Classification = Literal["public", "internal", "confidential", "restricted"]
 
@@ -168,6 +171,8 @@ class SourceSecurityPolicy:
         )
         payload = {
             "default_deny": default_deny,
+            # Older indexers could take the source identity from document metadata.
+            "source_identity_version": 2,
             "rules": [
                 {
                     "prefix": rule.prefix,
@@ -247,6 +252,13 @@ class SourceSecurityPolicy:
     def redact(self, source: str, text: str, context: AccessContext) -> tuple[str, PolicyDecision]:
         decision = self.decide(source, context)
         return self.redact_with_decision(text, decision)
+
+    def allows_stored_chunk(self, chunk: Chunk, context: AccessContext) -> bool:
+        """Authorize the stored representation against the current policy as retrieval does."""
+        file = chunk.metadata.get("file")
+        return chunk.metadata.get("security_policy_digest") == self.digest and self.decide(
+            file if isinstance(file, str) and file else chunk.source, context
+        ).allowed
 
     def redact_with_decision(self, text: str, decision: PolicyDecision) -> tuple[str, PolicyDecision]:
         """Apply the decision's redactions in order; raise PermissionError when it denies."""

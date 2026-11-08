@@ -35,7 +35,7 @@ from recall.dashboard.graph import build_graph
 from recall.dashboard.server import DashboardApp
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
 
 

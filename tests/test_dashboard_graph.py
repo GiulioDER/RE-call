@@ -127,14 +127,14 @@ def app(tmp_path: Path, monkeypatch) -> DashboardApp:
 
 def test_the_graph_data_needs_the_session(app: DashboardApp) -> None:
     assert app.handle("GET", "/api/graph.json", HOST).status == 403
-    response = app.handle("GET", "/api/graph.json", {**HOST, "Cookie": "recall_dashboard=tok"})
+    response = app.handle("GET", "/api/graph.json", {**HOST, "Authorization": "Bearer tok"})
     assert response.status == 200
     payload = json.loads(response.body)
     assert {n["id"] for n in payload["nodes"]} == {"a.md", "b.md"}
 
 
 def test_the_page_loads_only_the_packaged_script(app: DashboardApp) -> None:
-    signed = {**HOST, "Cookie": "recall_dashboard=tok"}
+    signed = {**HOST, "Authorization": "Bearer tok"}
     page = app.handle("GET", "/graph", signed).body.decode()
     # Any case: a browser runs <SCRIPT> as readily as <script>, so a case-sensitive count would
     # miss an injected tag (CodeQL py/bad-tag-filter on PR 886).

@@ -370,7 +370,6 @@ def _report(findings: list[dict[str, Any]], summary_path: str | None) -> None:
                 properties.insert(1, f"line={finding['line']}")
             message = f"{finding['description']} Remediation: {finding['recommendation']}"
             print(f"::{level} {','.join(properties)}::{_escape_command(message)}")
-            print(f"{finding['severity'].upper()} {location}: {finding['title']}")
             lines.append(f"- **{finding['severity'].upper()}** `{location}`: {finding['title']}")
             lines.append(f"  {finding['description']}")
             lines.append(f"  Remediation: {finding['recommendation']}")

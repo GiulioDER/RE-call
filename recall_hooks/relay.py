@@ -23,7 +23,9 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
+from select import select
 from collections.abc import Iterator
 from typing import Any, Callable, Mapping, Protocol, TypedDict, cast
 
@@ -34,6 +36,9 @@ STATE_PREFIX = "relay-"
 # The client hook is configured with a five-second timeout.  Keep both relay waits below that
 # ceiling so a failed helper cannot outlive the hook invocation that owns it.
 REQUEST_TIMEOUT_SECONDS = 4.0
+HANDSHAKE_TIMEOUT_SECONDS = 1.0
+MAX_PENDING_HANDSHAKES = 16
+MAX_REQUEST_BYTES = 256 * 1024
 #: The helper's own query bound, below REQUEST_TIMEOUT_SECONDS by design.
 RELAY_STATEMENT_TIMEOUT_SECONDS = 3.0
 START_TIMEOUT_SECONDS = 4.0
@@ -596,17 +601,27 @@ def stop_all() -> None:
             continue
 
 
-def _read_request(client: socket.socket) -> dict[str, Any]:
-    """Read one bounded newline framed request from a relay client."""
+@dataclass
+class _Handshake:
+    deadline: float
+    data: bytearray = field(default_factory=bytearray)
+    greeted: bool = False
 
-    client.settimeout(REQUEST_TIMEOUT_SECONDS)
-    data = b""
-    while b"\n" not in data and len(data) <= 256 * 1024:
-        chunk = client.recv(65536)
-        if not chunk:
-            break
-        data += chunk
-    request = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+
+def _read_request(client: socket.socket, handshake: _Handshake) -> dict[str, Any] | None:
+    """Consume one available fragment without blocking other clients."""
+    chunk = client.recv(65536)
+    if not chunk:
+        raise ValueError("incomplete relay request")
+    data = handshake.data
+    data.extend(chunk)
+    end = data.find(b"\n")
+    if (len(data) if end < 0 else end) > MAX_REQUEST_BYTES:
+        raise ValueError("relay request is too large")
+    if end < 0:
+        return None
+    request = json.loads(data[:end].decode("utf-8"))
+    data.clear()
     if not isinstance(request, dict):
         raise ValueError("relay request is not an object")
     return request
@@ -792,6 +807,8 @@ def _serve(state_path_value: Path, expected_token_digest: str | None = None) -> 
         listener.close()
         return 0
     stop_requested = False
+    listener.setblocking(False)
+    pending: dict[socket.socket, _Handshake] = {}
 
     try:
         while not stop_requested:
@@ -802,38 +819,74 @@ def _serve(state_path_value: Path, expected_token_digest: str | None = None) -> 
                 break
             if time.time() - float(state.get("last_used", state.get("created_at", time.time()))) > IDLE_TIMEOUT_SECONDS:
                 break
-            try:
-                client, _ = listener.accept()
-            except socket.timeout:
-                continue
-            with client:
-                authenticated = False
-                request: dict[str, Any] = {}
+            now = time.monotonic()
+            for client, handshake in list(pending.items()):
+                if handshake.deadline <= now:
+                    del pending[client]
+                    client.close()
+            wait = min((handshake.deadline - now for handshake in pending.values()), default=1.0)
+            ready, _, _ = select([listener, *pending], [], [], min(wait, 1.0))
+            for client in ready:
+                if client is listener:
+                    try:
+                        incoming, _ = listener.accept()
+                    except (BlockingIOError, ConnectionAbortedError):
+                        continue
+                    if len(pending) >= MAX_PENDING_HANDSHAKES:
+                        incoming.close()
+                    else:
+                        incoming.setblocking(False)
+                        pending[incoming] = _Handshake(time.monotonic() + HANDSHAKE_TIMEOUT_SECONDS)
+                    continue
+                handshake = pending[client]
                 try:
-                    request = _read_request(client)
-                    if request.get("op") == "hello":
-                        # Prove this helper holds the token, then read the real request on the
-                        # same connection. A client sends nothing secret until the proof checks.
+                    if time.monotonic() >= handshake.deadline:
+                        raise ValueError("relay handshake expired")
+                    request = _read_request(client, handshake)
+                    if request is None:
+                        continue
+                    if not handshake.greeted and request.get("op") == "hello":
+                        # The proof exchange does not reset the absolute handshake deadline.
                         nonce = str(request.get("nonce", ""))[:256]
                         client.sendall((json.dumps({"proof": _server_proof(token, nonce)}) + "\n").encode())
-                        request = _read_request(client)
-                    response, connection, next_connect, stop_requested, authenticated = _handle_request(
-                        request, token, connection, next_connect, config, options, connect
-                    )
-                except Exception as exc:  # noqa: BLE001, malformed local input must not crash child  # BROAD-CATCH: error-translation
-                    response = {"status": "error", "error": type(exc).__name__}
-                stopping = _read(_stop_marker_path(state_path_value))
-                if isinstance(stopping, dict) and stopping.get("token") == token:
-                    stop_requested = True
-                if authenticated and not stop_requested:
-                    state["last_used"] = time.time()
-                if not stop_requested and request.get("op") == "query":
-                    _write_state_if_owned(state_path_value, state, token)
-                try:
-                    client.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
-                except OSError:
-                    pass
+                        handshake.greeted = True
+                        continue
+                except (OSError, ValueError, RecursionError):
+                    del pending[client]
+                    client.close()
+                    continue
+                del pending[client]
+                with client:
+                    dispatch_started = time.monotonic()
+                    authenticated = False
+                    try:
+                        response, connection, next_connect, stop_requested, authenticated = _handle_request(
+                            request, token, connection, next_connect, config, options, connect
+                        )
+                    except Exception as exc:  # BROAD-CATCH: error-translation
+                        response = {"status": "error", "error": type(exc).__name__}
+                    stopping = _read(_stop_marker_path(state_path_value))
+                    if isinstance(stopping, dict) and stopping.get("token") == token:
+                        stop_requested = True
+                    if authenticated and not stop_requested:
+                        state["last_used"] = time.time()
+                        if request.get("op") == "query":
+                            _write_state_if_owned(state_path_value, state, token)
+                    try:
+                        client.settimeout(REQUEST_TIMEOUT_SECONDS)
+                        client.sendall((json.dumps(response, separators=(",", ":")) + "\n").encode())
+                    except OSError:
+                        pass
+                    if authenticated:
+                        # Clients cannot progress while an authenticated query owns the connection.
+                        elapsed = time.monotonic() - dispatch_started
+                        for waiting in pending.values():
+                            waiting.deadline += elapsed
+                if stop_requested:
+                    break
     finally:
+        for client in pending:
+            client.close()
         if connection is not None:
             try:
                 connection.close()

@@ -34,7 +34,7 @@ from recall.dashboard.markdown import render
 from recall.dashboard.server import DashboardApp
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 
 NEW = """---
 supersedes: old-port.md

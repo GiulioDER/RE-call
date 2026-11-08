@@ -112,8 +112,15 @@ def test_sec001_denied_neighbour_leaves_no_byte_or_label_trace_in_the_counters()
     `security_policy`, and the store counted their bytes into the request's trace. Red on the
     pre-fix tree: `candidate_fetched_count` was 2 (the denied chunk counted).
     """
-    allowed = Chunk("a", "public/a.md", "visible text", {"file": "public/a.md"})
-    denied = Chunk("b", "restricted/b.md", "secret text " * 20, {"file": "restricted/b.md"})
+    policy = SourceSecurityPolicy((SourceRule("public", classification="public"),))
+    allowed = Chunk(
+        "a", "public/a.md", "visible text",
+        {"file": "public/a.md", "security_policy_digest": policy.digest},
+    )
+    denied = Chunk(
+        "b", "restricted/b.md", "secret text " * 20,
+        {"file": "restricted/b.md", "security_policy_digest": policy.digest},
+    )
 
     class Store:
         def chunks_by_ids(self, ids: tuple[str, ...]) -> dict[str, Chunk]:
@@ -130,7 +137,7 @@ def test_sec001_denied_neighbour_leaves_no_byte_or_label_trace_in_the_counters()
             request=SimpleNamespace(generation=SimpleNamespace(generation_id="g")),  # type: ignore[arg-type]
             candidate_ids=("a", "b"),
             performance=trace,
-            security_policy=SourceSecurityPolicy((SourceRule("public", classification="public"),)),
+            security_policy=policy,
             access_context=AccessContext("alice", "acme", clearance="public"),
             stats=stats,
             generation_scope=lambda *_args: nullcontext(),

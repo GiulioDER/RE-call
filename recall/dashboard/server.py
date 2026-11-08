@@ -7,9 +7,9 @@ Safety, each enforced in `DashboardApp.handle` and each covered by a test:
 
 * **This machine only.** The server binds 127.0.0.1, and a request whose `Host` header is not this
   server's own address is refused, which stops a web page elsewhere reaching it by DNS rebinding.
-* **A person's decisions.** Every request needs the per-launch token, first from the printed URL,
-  then from an HttpOnly, SameSite=Strict cookie. Every POST also carries it as a form field, so a
-  form on another site cannot submit one. The only JSON route is the read-only graph data.
+* **A person's decisions.** The printed launch token opens a browser session with an unguessable
+  route prefix. Navigation keeps the prefix on this server, and responses suppress referrers.
+  Every POST also requires a separate form secret. The only JSON route is read-only graph data.
 * **Corpus text is data.** Every string from a memo, a report or a proposal is HTML-escaped before it
   is written. The only script is this package's own `static/graph.js`, which builds the page with
   `textContent`; the Content-Security-Policy allows no inline script and nothing from elsewhere.
@@ -49,7 +49,6 @@ from recall.dashboard.db import DashboardDB
 from recall.multimodal import MULTIMODAL_TENANT
 from recall.truth_extraction.types import STATUS_VOCABULARY
 
-COOKIE = "recall_dashboard"
 REVIEWER_COOKIE = "recall_reviewer"
 TENANT_COOKIE = "recall_tenant"
 # Every other RE-call surface (the CLI, the MCP server, lite setup) opens `default`; so does this.
@@ -94,6 +93,7 @@ _CSP = (
     "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; "
     "img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
 )
+_INTERNAL_URL = re.compile(rb"""(\b(?:href|src|action)=['"])/(?!/)""")
 
 
 @dataclass(frozen=True)
@@ -468,9 +468,9 @@ class DashboardApp:
         self._labels = {**KNOWN_LABELS, **dict(self.pinned_tenants)}
         self.port = port
         self.token = token or secrets.token_urlsafe(32)
-        # The form secret is independent of the cookie value and is never sent as a cookie: browsers
-        # send a 127.0.0.1 cookie to every port, so another local service can learn the session
-        # token, and a secret computable from it would let that service forge every POST.
+        # Browser cookies are shared across ports. Authenticate navigation with an unguessable
+        # path and keep the independent form secret for mutations.
+        self._session_path = "/_session/" + secrets.token_urlsafe(32)
         self.csrf = secrets.token_urlsafe(32)
         self.db = db
         # The tenants whose agent reports belong to this folder's review queue; a report filed in
@@ -479,11 +479,6 @@ class DashboardApp:
         self._hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         if port == 80:  # a browser leaves the default port out of Host
             self._hosts |= {"127.0.0.1", "localhost"}
-        # Browsers scope cookies by host, never by port, so a dashboard on another port would
-        # overwrite a fixed-name session cookie (logging this one out) and hand it its tenant.
-        # The plain names are still read, never written; a plain session cookie authenticates only
-        # with this process's own token, so another dashboard's cannot.
-        self._cookie = f"{COOKIE}_{port}"
         self._tenant_cookie = f"{TENANT_COOKIE}_{port}"
         self._reviewer_cookie = f"{REVIEWER_COOKIE}_{port}"
         # Per request, so concurrent requests on the threading server never share a tenant.
@@ -627,23 +622,22 @@ class DashboardApp:
         url = urlsplit(target)
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         cookies = parse_cookies(headers.get("Cookie") or headers.get("cookie") or "")
-        has_cookie = any(name in cookies and self._same_token(cookies[name]) for name in (self._cookie, COOKIE))
 
-        if method == "GET" and "token" in query:
+        if method == "GET" and url.path == "/" and "token" in query:
             if not self._same_token(query["token"]):
                 return _bare_error(HTTPStatus.FORBIDDEN, "That link is not this session's. Use the one `recall dashboard` printed.")
             rest = {k: v for k, v in query.items() if k != "token"}
-            location = url.path + (("?" + urlencode(rest)) if rest else "")
+            location = self._session_path + "/" + (("?" + urlencode(rest)) if rest else "")
             return Response(
                 HTTPStatus.SEE_OTHER,
                 b"",
-                (
-                    ("Location", location),
-                    ("Set-Cookie", f"{self._cookie}={self.token}; HttpOnly; SameSite=Strict; Path=/"),
-                ),
+                (("Location", location),),
             )
-        if not has_cookie:
+        browser_session = url.path.startswith(self._session_path + "/")
+        scheme, _, bearer = (headers.get("Authorization") or headers.get("authorization") or "").partition(" ")
+        if not browser_session and not (scheme.lower() == "bearer" and self._same_token(bearer)):
             return _bare_error(HTTPStatus.FORBIDDEN, "Open the link `recall dashboard` printed to start a session.")
+        path = url.path.removeprefix(self._session_path) if browser_session else url.path
 
         self._resolve_pending_lite_tenant()
         chosen = query.get("tenant", "")
@@ -654,13 +648,23 @@ class DashboardApp:
         if getattr(self.db, "lite", False):
             remembered = ""  # one tenant per file; a cookie from another dashboard on this port would hide it
         self._request.tenant = chosen or remembered or self.default_tenant
-        self._request.path = url.path
+        self._request.path = path
         self._request.query = dict(query)
         self._request.memo_names = None
-        self._request.find = query.get("q", "") if url.path == "/find" else ""
-        response = self._route(method, url.path, query, cookies, body)
+        self._request.find = query.get("q", "") if path == "/find" else ""
+        response = self._route(method, path, query, cookies, body)
         if chosen:
             response = Response(response.status, response.body, response.headers + (_set_cookie(self._tenant_cookie, chosen),))
+        if browser_session:
+            response_headers = tuple(
+                (name, self._session_path + value if name == "Location" and value.startswith("/") else value)
+                for name, value in response.headers
+            )
+            page = response.body
+            if dict(response.headers).get("Content-Type", "").startswith("text/html"):
+                prefix = self._session_path.encode("ascii")
+                page = _INTERNAL_URL.sub(lambda match: match[1] + prefix + b"/", page)
+            return Response(response.status, page, response_headers)
         return response
 
     def _reviewer(self, cookies: Mapping[str, str]) -> str:

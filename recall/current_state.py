@@ -201,6 +201,8 @@ def project_current_state(
     known_as_of: datetime | None = None,
     source: str | None = None,
     max_records: int | None = None,
+    *,
+    source_allowed: Callable[[str], bool] | None = None,
 ) -> CurrentStateProjection:
     """Build a deterministic current state view from one generation snapshot.
 
@@ -222,10 +224,10 @@ def project_current_state(
             if generation_id is None:
                 generation_id = getattr(store, "generation_id", "legacy")
             return _project(
-                store, instant, known_as_of, source, str(generation_id), max_records
+                store, instant, known_as_of, source, str(generation_id), max_records, source_allowed
             )
     generation_id = str(getattr(store, "generation_id", "legacy"))
-    return _project(store, instant, known_as_of, source, generation_id, max_records)
+    return _project(store, instant, known_as_of, source, generation_id, max_records, source_allowed)
 
 
 def _project(
@@ -235,6 +237,7 @@ def _project(
     source: str | None,
     generation_id: str,
     max_records: int | None,
+    source_allowed: Callable[[str], bool] | None,
 ) -> CurrentStateProjection:
     chunks_by_source: dict[str, list[Chunk]] = {}
     asserted_at_by_source: dict[str, datetime | None] = {}
@@ -267,6 +270,8 @@ def _project(
 
     def selected(key: str, chunks: list[Chunk]) -> bool:
         """The final loop's filter: `source` names the record, its path, or one of its chunks."""
+        if source_allowed is not None and (not source_allowed(_file(chunks[0])) or not source_allowed(key)):
+            return False
         return (
             source is None
             or key == source

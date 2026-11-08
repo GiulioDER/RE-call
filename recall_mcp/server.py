@@ -108,7 +108,7 @@ from recall_mcp.related_api import records_memory, related_memory
 from recall.records import RecordsQueryError
 from recall_mcp.stale_reports_api import report_stale
 from recall.stale_reports import StaleReportRefused
-from recall_mcp.use_reports_api import EFFECTS, UseReportRefused, report_use
+from recall_mcp.use_reports_api import EFFECTS, UseReportRefused, authorized_report_rows, report_use
 # Through the service facade on purpose: this wrapper injects the service-level retrieval seams.
 from recall_mcp.service import query_construction_challenge, tenant_scopes
 from recall_mcp.status import JobLedger, calibration_status, job_status
@@ -1531,6 +1531,14 @@ def _register_search_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
 
                 result, federation = await _to_thread(execute)
                 plan_payload = retrieval_plan.as_dict()
+                if "allowed_tenants" in plan_payload:
+                    token = get_access_token()
+                    if token is None or SCOPE_FEDERATE not in (token.scopes or ()):
+                        plan_payload["allowed_tenants"] = sorted(
+                            retrieval_plan.allowed_tenants & {getattr(store, "tenant", "default")}
+                        )
+                    elif (bound := (token.claims or {}).get("bound_tenants")) is not None:
+                        plan_payload["allowed_tenants"] = sorted(retrieval_plan.allowed_tenants & set(bound))
                 if federation is not None:
                     plan_payload["federation"] = federation
                 update: dict[str, object] = {"retrieval_plan": plan_payload}
@@ -1952,6 +1960,44 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
     _record_mutation_result = deps.record_mutation_result
     _state = deps.state
     _access_context = deps.access_context
+
+    async def report_authorization(
+        state: dict, ctx: Context[dict, object],
+    ) -> tuple[PgVectorStore | None, dict[str, Any], dict[str, object]]:
+        policy = state.get("source_security_policy")
+        if not isinstance(policy, SourceSecurityPolicy):
+            return None, {}, {}
+        reader_store = await _require(SCOPE_READ, ctx)
+        access = _access_context(state, reader_store)
+        assert access is not None
+        return (
+            reader_store,
+            {"security_policy": policy, "access_context": access},
+            {"source_policy": policy.digest, "clearance": access.clearance, "egress": access.egress_allowed},
+        )
+
+    async def report_replay(
+        store: PgVectorStore | None, access: dict[str, Any], replay: str, *, stale: bool = False,
+    ) -> str:
+        if store is None:
+            return replay
+        receipt = json.loads(replay)
+        if receipt.get("status") == "reconciliation_required":
+            return replay
+        names = (
+            [receipt["stale_source"], receipt["replacing_source"]] if stale
+            else [*receipt["used"], *receipt["wrong"]]
+        )
+        if names:
+            known = await _to_thread(
+                lambda: authorized_report_rows(
+                    store, names, access["security_policy"], access["access_context"],
+                    include_text=False, exact=True,
+                )
+            )
+            if any(name not in known for name in names):
+                raise ToolError("reported sources are unavailable")
+        return replay
 
     @mcp.tool(
         name="recall_related",
@@ -2422,6 +2468,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         operation = "recall_report_stale"
+        reader_store, report_access, policy_binding = await report_authorization(state, ctx)
         fingerprint = _mutation_fingerprint(
             operation,
             {
@@ -2430,6 +2477,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 "stale_quote": stale_quote,
                 "current_quote": current_quote,
                 "task": task,
+                **policy_binding,
             },
         )
         store, replay = await _require_mutation(
@@ -2440,7 +2488,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             idempotency_fingerprint=fingerprint,
         )
         if replay is not None:
-            return replay
+            return await report_replay(reader_store, report_access, replay, stale=True)
         assert store is not None
         # An authenticated server serves many tenants from one process root, so it records
         # reports only in the caller's own ledger (SEC-001).
@@ -2457,6 +2505,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         task=task,
                         env=_runtime_env_for(state),
                         sidecar=sidecar,
+                        **report_access,
                     )
                 )
             except StaleReportRefused as exc:
@@ -2508,6 +2557,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         """
         state = _state(ctx)
         operation = "recall_report_use"
+        reader_store, report_access, policy_binding = await report_authorization(state, ctx)
         fingerprint = _mutation_fingerprint(
             operation,
             {
@@ -2518,6 +2568,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                 "task_succeeded": task_succeeded,
                 "query": query,
                 "note": note,
+                **policy_binding,
             },
         )
         store, replay = await _require_mutation(
@@ -2528,7 +2579,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             idempotency_fingerprint=fingerprint,
         )
         if replay is not None:
-            return replay
+            return await report_replay(reader_store, report_access, replay)
         assert store is not None
         with METRICS.timer("recall_tool_latency_ms", tool="report_use"):
             try:
@@ -2542,6 +2593,7 @@ def _register_reasoning_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         task_succeeded=task_succeeded,
                         query=query,
                         note=note,
+                        **report_access,
                     )
                 )
             except UseReportRefused as exc:
@@ -2715,7 +2767,7 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
                         shadow_embedder=shadow_embedder,
                         control_plane=registry.control_plane if registry is not None else None,
                         security_policy=state.get("source_security_policy"),
-                        security_context=_access_context(state, store),
+                        security_context=_access_context(state, store, purpose="indexing"),
                         env=_runtime_env_for(state),
                     ).model_dump_json(indent=2)
                 )
@@ -2850,7 +2902,8 @@ def _register_ingest_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
             with METRICS.timer("recall_tool_latency_ms", tool="ingest"):
                 result = await _to_thread(
                     lambda: ingest_into_serving_store(
-                        state, store, str(root), category, access_context=_access_context(state, store),
+                        state, store, str(root), category,
+                        access_context=_access_context(state, store, purpose="indexing"),
                         **({"source_namespace": source_namespace} if source_namespace is not None else {}),
                     )
                 )
@@ -3090,7 +3143,7 @@ def _register_memory_admin_tools(mcp: MCPServer, deps: _ToolDeps) -> None:
         )
         control = registry.control_plane if registry is not None else None
         try:
-            security_context = _access_context(state, store)
+            security_context = _access_context(state, store, purpose="erasure")
         except PermissionError:
             # An invalid clearance claim is refused before anything is read or deleted.
             await _release_mutation_reservation(state, store.tenant, idempotency_key)
@@ -3444,7 +3497,7 @@ def _register_assistant_tools(mcp: MCPServer, deps: _ToolDeps, held: _HeldTools)
                     memo_ref(memo_id) or "",
                     security_policy=refresh["security_policy"],
                     # The caller's context for the erasure, as `recall_forget` passes it.
-                    security_context=_access_context(state, store),
+                    security_context=_access_context(state, store, purpose="erasure"),
                     refresh_context=refresh["security_context"],
                 )
             )

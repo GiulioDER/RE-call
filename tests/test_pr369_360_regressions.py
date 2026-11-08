@@ -207,6 +207,34 @@ def test_remote_gateway_closes_owned_client(monkeypatch, failure):
     assert clients and all(client.closed for client in clients), "HTTP client leaked"
 
 
+@pytest.mark.parametrize("endpoint", ["http://remote.test/mcp", "http://localhost:80@remote.test/mcp"])
+def test_remote_gateway_refuses_to_send_bearer_over_cleartext(monkeypatch, endpoint):
+    """At 65b7a791c both plaintext endpoint forms reached client creation with the bearer."""
+    import httpx2
+    import mcp.client.streamable_http
+
+    sent = []
+
+    class Client:
+        def __init__(self, **kwargs):
+            sent.append(kwargs["headers"])
+
+        async def aclose(self):
+            pass
+
+    def transport(*args, **kwargs):
+        raise RuntimeErrorBase("transport reached")
+
+    monkeypatch.setattr(httpx2, "AsyncClient", Client)
+    monkeypatch.setattr(mcp.client.streamable_http, "streamable_http_client", transport)
+    monkeypatch.setattr("recall.desktop.runtime.read_token", lambda _profile: "synthetic-token")
+    gateway = SdkMcpGateway(RuntimeProfile(RuntimeMode.VPS_MCP, endpoint=endpoint))
+    with pytest.raises(RuntimeErrorBase) as refused:
+        gateway.call("recall_stats", {})
+    assert not sent, "the gateway sent the bearer to a cleartext transport"
+    assert "HTTPS" in str(refused.value)
+
+
 @pytest.mark.parametrize("field", ["generation_id", "pipeline_fingerprint", "corpus_fingerprint"])
 @pytest.mark.parametrize("mode", ["depth", "model"])
 def test_unpinned_expansion_retains_initial_lineage(field, mode):

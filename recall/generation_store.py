@@ -876,8 +876,10 @@ class GenerationStore(PgVectorStore):
         )
         return frozenset(str(row[0]) for row in found)
 
-    def _legacy_rows_for_identifiers(self, identifiers: list[str]) -> list[tuple[Any, ...]]:
-        """(source, file) pairs for the adopted v0.8 rows matching any requested identifier."""
+    def _legacy_rows_for_identifiers(
+        self, identifiers: list[str], *, include_policy_digest: bool = False,
+    ) -> list[tuple[Any, ...]]:
+        """Source identities for adopted v0.8 rows matching a requested identifier."""
         exists = self._with_retry(
             lambda conn: conn.execute(
                 "SELECT to_regclass(%s) IS NOT NULL", (self._migration_target,)
@@ -885,10 +887,11 @@ class GenerationStore(PgVectorStore):
         )
         if not exists or not exists[0]:
             return []
+        digest = ", metadata->>'security_policy_digest'" if include_policy_digest else ""
         return list(
             self._with_retry(
                 lambda conn: conn.execute(
-                    f"SELECT DISTINCT source, metadata->>'file' FROM {self._migration_target} "
+                    f"SELECT DISTINCT source, metadata->>'file'{digest} FROM {self._migration_target} "
                     "WHERE tenant_id = %s "
                     "AND (metadata->>'file' = ANY(%s) OR source = ANY(%s))",
                     (self._tenant, identifiers, identifiers),
@@ -1035,18 +1038,18 @@ class GenerationStore(PgVectorStore):
         return resolved
 
     def _erasure_subject_rows(self, sources: list[str]) -> list[tuple[Any, ...]]:
-        """`(source, file)` for `sources` across everything the tenant holds, as
+        """`(source, file, policy_digest)` for `sources` across everything the tenant holds, as
         `sources_for_identifiers` resolves: every generation and the adopted v0.8 table."""
         rows: list[tuple[Any, ...]] = list(
             self._with_retry(
                 lambda conn: conn.execute(
-                    "SELECT DISTINCT source_uri, metadata->>'file' FROM recall_chunks_v1 "
-                    "WHERE tenant_id = %s AND source_uri = ANY(%s)",
+                    "SELECT DISTINCT source_uri, metadata->>'file', metadata->>'security_policy_digest' "
+                    "FROM recall_chunks_v1 WHERE tenant_id = %s AND source_uri = ANY(%s)",
                     (self._tenant, sources),
                 ).fetchall()
             )
         )
-        return rows + self._legacy_rows_for_identifiers(sources)
+        return rows + self._legacy_rows_for_identifiers(sources, include_policy_digest=True)
 
     def record_chunks(self, code_files: Sequence[str] | None = None) -> list[Chunk]:
         """Every chunk of the served generation carrying an audit record or a code anchor (with

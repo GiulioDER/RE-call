@@ -43,7 +43,9 @@ from recall.embeddings import (
 from recall.frontmatter import supersedes_key
 from recall.observability import (
     METRICS,
+    PerformanceTrace,
     current_performance_trace,
+    performance_trace_scope,
 )
 from recall.observability import (
     get_logger as _get_logger,
@@ -66,10 +68,12 @@ from recall.security_policy import (
 from recall.semantic_graph import (
     RELATION_KINDS,
     SemanticGraphProjection,
+    build_semantic_graph,
 )
 from recall.store import PgVectorStore
 from recall.trust import evaluate, resolve_successor
 from recall.types import (
+    Chunk,
     Provenance,
     RetrievalResult,
     ScoredChunk,
@@ -309,6 +313,8 @@ def _reset_graph_projection_cache() -> None:
         _CONTROLLED_GRAPHS.clear()
         _SEMANTIC_GRAPH_CACHE.clear()
         _SEMANTIC_GRAPH_INFLIGHT.clear()
+        _SCOPED_SEMANTIC_GRAPHS.clear()
+        _SCOPED_SEMANTIC_FLIGHTS.clear()
     with _DETERMINISTIC_PROPOSAL_CACHE_LOCK:
         _DETERMINISTIC_PROPOSAL_CACHE.clear()
         _DETERMINISTIC_PROPOSAL_INFLIGHT.clear()
@@ -567,6 +573,96 @@ def _cached_semantic_graph(
     return semantic
 
 
+_ScopedKey = tuple[str, str, str, str, str, tuple[str, ...]]
+_SCOPED_SEMANTIC_GRAPHS: OrderedDict[_ScopedKey, SemanticGraphProjection] = OrderedDict()
+_SCOPED_SEMANTIC_FLIGHTS: dict[_ScopedKey, _SemanticGraphFlight] = {}
+_MAX_SCOPED_GRAPH_ROWS = 100_000
+_MAX_SCOPED_GRAPH_TEXT_BYTES = 64 * 1024 * 1024
+
+
+def _scoped_semantic_graph(
+    store: PgVectorStore,
+    semantic: SemanticGraphProjection,
+    policy: SourceSecurityPolicy,
+    access: AccessContext,
+) -> SemanticGraphProjection | None:
+    # A denied chunk can contribute an alias to a visible entity.
+    generation = semantic.generation_id
+    corpus = _graph_projection._corpus_fingerprint(store, generation)
+    live_fingerprint = getattr(store, "_read_corpus_fingerprint", None)
+
+    def still_current() -> bool:
+        # A request pin deliberately hides a later fingerprint. The chunk cursor uses a
+        # separate transaction and must not bless rows changed by an intervening erasure.
+        current = live_fingerprint(generation) if callable(live_fingerprint) else _graph_projection._corpus_fingerprint(store, generation)
+        return current == corpus
+
+    if corpus is not None and (corpus != semantic.corpus_fingerprint or not still_current()):
+        return None
+    scope = policy.scope_for(access)
+    prefixes = scope.source_prefixes or ()
+
+    def project() -> SemanticGraphProjection | None:
+        rows: list[Chunk] = []
+        text_bytes = 0
+        with performance_trace_scope(PerformanceTrace()), _generation_scope(store, generation):
+            if prefixes:
+                scoped_reader = getattr(store, "iter_scoped_chunks", None)
+                chunks = scoped_reader(scope) if callable(scoped_reader) else store.iter_chunks()
+                for chunk in chunks:
+                    file = chunk.metadata.get("file")
+                    if not scope.matches_source_policy(
+                        file if isinstance(file, str) and file else chunk.source,
+                        chunk.metadata.get("security_policy_digest"),
+                    ):
+                        continue
+                    rows.append(chunk)
+                    text_bytes += len(chunk.text.encode("utf-8"))
+                    if len(rows) > _MAX_SCOPED_GRAPH_ROWS or text_bytes > _MAX_SCOPED_GRAPH_TEXT_BYTES:
+                        return None
+        if not still_current():
+            return None
+        return build_semantic_graph(
+            rows, tenant_id=semantic.tenant_id, generation_id=generation,
+            pipeline_fingerprint=semantic.pipeline_fingerprint,
+            corpus_fingerprint=semantic.corpus_fingerprint,
+        )
+
+    if corpus is None:
+        return project()
+    key = (store.tenant, generation, corpus, semantic.graph_id, policy.digest, prefixes)
+    with _GRAPH_PROJECTION_LOCK:
+        cached = _SCOPED_SEMANTIC_GRAPHS.get(key)
+        if cached is not None:
+            _SCOPED_SEMANTIC_GRAPHS.move_to_end(key)
+            return cached
+        flight = _SCOPED_SEMANTIC_FLIGHTS.get(key)
+        owner = flight is None
+        if flight is None:
+            flight = _SemanticGraphFlight()
+            _SCOPED_SEMANTIC_FLIGHTS[key] = flight
+    if not owner:
+        flight.done.wait()
+        if flight.error is not None:
+            raise flight.error
+        return flight.result
+    try:
+        flight.result = project()
+    except BaseException as exc:
+        flight.error = exc
+        raise
+    finally:
+        with _GRAPH_PROJECTION_LOCK:
+            if _SCOPED_SEMANTIC_FLIGHTS.get(key) is flight:
+                _SCOPED_SEMANTIC_FLIGHTS.pop(key)
+                if flight.result is not None:
+                    _SCOPED_SEMANTIC_GRAPHS[key] = flight.result
+                    if len(_SCOPED_SEMANTIC_GRAPHS) > _SEMANTIC_GRAPH_CACHE_MAX:
+                        _SCOPED_SEMANTIC_GRAPHS.popitem(last=False)
+            flight.done.set()
+    return flight.result
+
+
 def _retrieval_graph(
     retrieval: TrustedResult, *, include_text: bool = True
 ) -> ReasoningGraphProjection:
@@ -765,6 +861,7 @@ def _graph_expansion_dependencies() -> _graph_expansion.GraphExpansionDependenci
     """Bind graph orchestration to current service seams at call time."""
     return _graph_expansion.GraphExpansionDependencies(
         cached_semantic_graph=_cached_semantic_graph,
+        scoped_semantic_graph=_scoped_semantic_graph,
         combined_graph_policy_fingerprint=_combined_graph_policy_fingerprint,
         generation_scope=_generation_scope,
         graph_precision_feature_flags=_graph_precision_feature_flags,

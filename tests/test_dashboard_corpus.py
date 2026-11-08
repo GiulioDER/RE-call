@@ -77,7 +77,7 @@ from recall.supersession import SupersessionGraph
 from tests.conftest import TEST_DSN, _db_available, db_unreachable_reason, requires_db
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 TODAY = "2026-10-08"
 
 

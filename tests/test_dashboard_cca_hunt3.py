@@ -28,7 +28,7 @@ from recall.stale_reports import StaleReportQueue, default_queue_path
 from recall.supersession import SupersessionGraph
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 NOW = datetime(2026, 11, 4, 20, 0, tzinfo=UTC)
 OLD_QUOTE = "it is still being prepared for PyPI"
 NEW_QUOTE = "was published to PyPI on 2 September"

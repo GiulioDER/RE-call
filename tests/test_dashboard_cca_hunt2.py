@@ -37,7 +37,7 @@ from tests.test_dashboard_db_pages import FakeCorpus
 
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
 OLD_QUOTE = "it is still being prepared for PyPI"
 NEW_QUOTE = "was published to PyPI on 2 September"
@@ -109,9 +109,13 @@ def _hidden(page: str, name: str) -> str:
 
 def test_bug001_a_foreign_cookie_on_localhost_does_not_lock_the_person_out(root: Path) -> None:
     """BUG-001: SimpleCookie raised on `x@y` and dropped the whole header at a key-only cookie."""
+    from recall.dashboard.server import parse_cookies
+
     app = _app(root)
-    for header in ("x@y=1; recall_dashboard_8765=tok", "flag; recall_dashboard_8765=tok", "a=hello world; recall_dashboard_8765=tok"):
-        assert app.handle("GET", "/", {**HOST, "Cookie": header}).status == 200, header
+    for foreign in ("x@y=1", "flag", "a=hello world"):
+        header = foreign + "; recall_reviewer_8765=reviewer"
+        assert parse_cookies(header)["recall_reviewer_8765"] == "reviewer"
+        assert app.handle("GET", "/", {**SIGNED, "Cookie": header}).status == 200, header
 
 
 def test_env011_a_name_outside_latin1_never_breaks_the_reply_after_a_write(root: Path) -> None:
@@ -133,7 +137,7 @@ def test_env014_a_tenant_cookie_from_another_dashboard_is_not_applied(root: Path
     fake = FakeCorpus()
     fake.install(monkeypatch)
     app = _app(root, db=DashboardDB("postgresql://fake"))
-    app.handle("GET", "/retrieval", {**HOST, "Cookie": "recall_dashboard=tok; recall_tenant=re-call-code-gen"})
+    app.handle("GET", "/retrieval", {**HOST, "Authorization": "Bearer tok", "Cookie": "recall_tenant=re-call-code-gen"})
     assert ("searches", "memory") in fake.asked and ("searches", "re-call-code-gen") not in fake.asked
 
 

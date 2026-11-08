@@ -69,14 +69,15 @@ Those counters are **two fields, and reading them as one gives the wrong answer*
   deciding which stage or criterion needs attention.
 * `graph_expansion_refusals` counts refusals of the WHOLE expansion, before any candidate is
   discovered: `graph_not_ready`, `tenant_mismatch`, `generation_mismatch`, `pipeline_mismatch`,
-  `corpus_mismatch`, `no_trusted_seed`, `selective_gate`. At most one fires per query.
+  `corpus_mismatch`, `no_trusted_seed`, `selective_gate`, `scoped_graph_unavailable`. At most one fires per query.
+  `scoped_graph_unavailable` means the authorized projection exceeded its build limits or its
+  corpus changed during the read.
   `graph_gate_reason` carries the same name, except that `selective_gate` is reported as
   `graph_gate_not_met`; it is also set without a refusal, to `graph_gate_not_met` when no
   relation was eligible and to `missing_chunk` when no candidate could be scored. Non-zero here
   means expansion never started, so the admission criteria had nothing to do with the outcome.
-* Under a source security policy a neighbour the policy denies is counted as `missing_chunk`, in
-  `graph_admission_rejections` and in `graph_gate_reason`, deliberately: the response does not say
-  that the policy refused it. Under a policy that label is therefore not evidence of missing rows.
+* A source security policy filters the graph before candidate discovery. If a discovered chunk
+  becomes unavailable during the request, the response can count it as `missing_chunk`.
 
 `selective_gate` used to be reported in the first field, which put `{'selective_gate': 1}` beside
 `graph_candidates_discovered: 0` even though admission had not started. Relation admission can

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
 from collections.abc import Callable
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
@@ -14,6 +13,7 @@ from recall.current_state import MAX_CURRENT_STATE_RECORDS, project_current_stat
 from recall.errors import RecallError
 from recall.fact_retraction import FactErasure, fact_ledger_for, prepare_fact_erasure
 from recall.guards import staleness
+from recall.lineage import canonical_sha256
 from recall.observability import METRICS, get_logger
 from recall.provenance_controller import erasure_lock_for
 from recall.uploads import delete_staged_sources
@@ -82,27 +82,16 @@ def current_state_memory(
 ) -> CurrentStateResult:
     """Return a bounded, deterministic authored current state projection."""
     _validate_security_context(store, security_policy, access_context)
+
+    def source_allowed(file: str) -> bool:
+        assert security_policy is not None and access_context is not None
+        return security_policy.decide(file, access_context).allowed
+
     projection: CurrentStateProjection = project_current_state(
-        store, as_of=as_of, source=source, max_records=max_records
+        store, as_of=as_of, source=source, max_records=max_records,
+        source_allowed=source_allowed if security_policy is not None else None,
     )
-    if security_policy is not None:
-        assert access_context is not None
-        projection = replace(
-            projection,
-            records=tuple(
-                replace(
-                    record,
-                    successor_chain=tuple(
-                        successor
-                        for successor in record.successor_chain
-                        if security_policy.decide(successor, access_context).allowed
-                    ),
-                )
-                for record in projection.records
-                if security_policy.decide(record.source, access_context).allowed
-            ),
-        )
-    return CurrentStateResult(
+    result = CurrentStateResult(
         schema_version=projection.schema_version,
         projection_id=projection.projection_id,
         tenant_id=projection.tenant_id,
@@ -116,7 +105,10 @@ def current_state_memory(
                 source=record.source,
                 state=record.state,
                 chunk_ids=list(record.chunk_ids),
-                successor_chain=list(record.successor_chain),
+                successor_chain=[
+                    successor for successor in record.successor_chain
+                    if security_policy is None or source_allowed(successor)
+                ],
                 valid_from=record.valid_from.isoformat() if record.valid_from else None,
                 valid_until=record.valid_until.isoformat() if record.valid_until else None,
                 diagnostics=list(record.diagnostics),
@@ -124,6 +116,19 @@ def current_state_memory(
             for record in projection.records
         ],
     )
+    if security_policy is not None:
+        # The raw IDs include hidden dependency records. Bind the public IDs only to fields
+        # the caller can see, while retaining the trust verdict for each visible record.
+        lineage = (result.schema_version, result.tenant_id, result.generation_id, result.as_of)
+        for record in result.records:
+            record.state_id = "state_" + canonical_sha256(
+                (lineage, record.model_dump(exclude={"state_id"}))
+            )[:24]
+        result.corpus_fingerprint = None
+        result.projection_id = "csp_" + canonical_sha256(
+            result.model_dump(exclude={"projection_id"})
+        )[:24]
+    return result
 
 
 def _fact_ledger_for(store: object) -> Any | None:
@@ -310,6 +315,7 @@ def _authorize_erasure(
     security_context: AccessContext,
     *,
     withdraw: bool,
+    requested: list[str],
 ) -> None:
     """Refuse an erasure unless the policy allows every name the sources about to go are
     authorized by, before anything is deleted.
@@ -329,6 +335,16 @@ def _authorize_erasure(
         for name in sorted(subjects.get(source) or {source}):
             if not security_policy.decide(name, security_context).allowed:
                 raise ErasureNotAuthorized(f"source {name!r} is not authorized for erasure")
+    for target in (store, shadow_store):
+        if target is None or not to_delete:
+            continue
+        rows = target._erasure_subject_rows(to_delete)
+        current = {source for source, _file, digest in rows if digest == security_policy.digest}
+        if any(
+            source not in current and (digest is not None or source not in requested)
+            for source, _file, digest in rows
+        ):
+            raise ErasureNotAuthorized("source identity must be verified before erasure; reindex under the current policy")
 
 
 def _preflight_erasure(
@@ -400,7 +416,8 @@ def _forget_memory_unlocked(
     if security_policy is not None:
         assert security_context is not None
         _authorize_erasure(
-            store, shadow_store, to_delete, security_policy, security_context, withdraw=withdraw
+            store, shadow_store, to_delete, security_policy, security_context,
+            withdraw=withdraw, requested=requested
         )
     for identifier in found:
         matches = sorted(set(resolved[identifier]))

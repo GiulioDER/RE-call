@@ -39,7 +39,7 @@ from recall.dashboard.server import DashboardApp
 from recall.stale_reports import StaleReportQueue, default_queue_path
 
 HOST = {"Host": "127.0.0.1:8765"}
-SIGNED = {**HOST, "Cookie": "recall_dashboard=tok"}
+SIGNED = {**HOST, "Authorization": "Bearer tok"}
 OLD_QUOTE = "the dashboard listens on port 8080"
 NEW_QUOTE = "the dashboard listens on port 8765"
 WHEN = datetime(2026, 10, 7, 9, 0, tzinfo=UTC)

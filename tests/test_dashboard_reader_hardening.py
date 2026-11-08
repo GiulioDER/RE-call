@@ -25,7 +25,7 @@ import pytest
 from recall.dashboard.markdown import render
 from recall.dashboard.server import DashboardApp
 
-SIGNED = {"Host": "127.0.0.1:8765", "Cookie": "recall_dashboard=tok"}
+SIGNED = {"Host": "127.0.0.1:8765", "Authorization": "Bearer tok"}
 
 
 def _read(root: Path, name: str) -> tuple[int, str]:

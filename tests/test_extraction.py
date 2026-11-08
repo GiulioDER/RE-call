@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import gc
+import io
+import sys
+import zipfile
 import weakref
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,6 +27,29 @@ def test_text_and_csv_are_normalized_to_searchable_utf8(tmp_path: Path) -> None:
     assert "| Metric | Value |" in table.text
     assert "| Revenue | 42 |" in table.text
     assert table.metadata["table_count"] == 1
+
+
+@pytest.mark.parametrize(("extension", "module", "constructor"), [
+    (".docx", "docx", "Document"), (".pptx", "pptx", "Presentation"),
+    (".xlsx", "openpyxl", "load_workbook"),
+])
+def test_office_expansion_is_bounded_before_parsing(monkeypatch, extension, module, constructor) -> None:
+    """At 65b7a791c each SDK constructor saw the oversized package."""
+    from recall import extraction
+
+    # A compressed package within the upload limit must be refused before the parser sees it.
+    monkeypatch.setattr(extraction, "MAX_OFFICE_MEMBER_BYTES", 1024, raising=False)
+    parsed = []
+    def parse(package, **kwargs):
+        parsed.append(package)
+    monkeypatch.setitem(sys.modules, module, SimpleNamespace(**{constructor: parse}))
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("media/image.bin", b"0" * 2048)
+    with pytest.raises(DocumentExtractionError) as exc:
+        extract_document(Path("upload" + extension), package.getvalue())
+    assert not parsed, "Office parser consumed an oversized package"
+    assert "expansion" in str(exc.value)
 
 
 def test_docx_tables_are_extracted(tmp_path: Path) -> None:
@@ -290,3 +317,26 @@ def test_pdf_pages_are_closed_as_they_are_read_so_memory_stays_bounded(
     for number, line in enumerate(lines, start=1):
         assert f"## Page {number}\n\n{line}" in document.text
     assert document.metadata["source_format"] == "pdf"
+
+@pytest.mark.parametrize("corruption", ["utf8", "size"])
+def test_malformed_office_member_is_refused_before_parser(monkeypatch, corruption):
+    """CCA BUG-003 and NUM-001. A bad name escaped, or an underdeclared member reached the SDK."""
+    import struct
+
+    parsed = []
+    monkeypatch.setitem(sys.modules, "docx", SimpleNamespace(Document=parsed.append))
+    package = io.BytesIO()
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("é.xml", b"x" * 65536)
+    data = bytearray(package.getvalue())
+    central = data.index(b"PK\x01\x02")
+    if corruption == "utf8":
+        data[central + 46] = 0xff
+    else:
+        for offset in (14, 22, central + 16, central + 24):
+            struct.pack_into("<I", data, offset, 0)
+    try:
+        extract_document(Path("upload.docx"), bytes(data))
+    except (DocumentExtractionError, UnicodeError) as exc:
+        assert isinstance(exc, DocumentExtractionError)
+    assert not parsed, "malformed Office member reached the SDK"
