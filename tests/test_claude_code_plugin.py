@@ -360,3 +360,18 @@ def test_the_manifest_carries_the_mcp_server_itself() -> None:
         "a plugin/.mcp.json is gitignored by this repository's secrets rule and would not ship"
     )
     assert "memory" in _json(MANIFEST)["mcpServers"]
+
+
+def test_every_manifest_names_the_packages_license() -> None:
+    """The marketplace entry said Apache-2.0 while the plugin and the package are AGPL-3.0-only, so
+    a marketplace install showed the wrong license. Found while preparing the 0.15.0 directory
+    submission.
+
+    Red proof: restored `"license": "Apache-2.0"` in .claude-plugin/marketplace.json; this failed
+    at the marketplace assertion.
+    """
+    package = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["license"]
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    marketplace = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
+    assert manifest["license"] == package
+    assert [entry.get("license") for entry in marketplace["plugins"]] == [package]
